@@ -554,7 +554,7 @@ export function BrainBuilder({
       {/* BELOW 768px THE ROW WRAPS instead of scrolling: at 390px the tabs and
           Save / Publish sat off-screen in a 1082px row. From md up it is the
           one-line, horizontally scrolling row it always was. */}
-      <div className="flex min-h-11 flex-shrink-0 flex-wrap items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 md:h-11 md:flex-nowrap md:overflow-x-auto md:px-4 md:py-0">
+      <div className="flex min-h-11 flex-shrink-0 flex-wrap items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 xl:h-11 xl:flex-nowrap xl:overflow-x-auto xl:px-4 xl:py-0">
         {/* THE ARROW KEEPS ITS MEANING WITHOUT THE WORDS. At the declared 1280px
             minimum the row overflowed by ~124px even on a valid flow, and the
             tabs — navigation — scrolled under the sticky verdict group, leaving
@@ -668,7 +668,7 @@ export function BrainBuilder({
             and the three buttons stay put while the identity and tabs scroll under
             them. `bg-surface-1` is required, not cosmetic: without it the scrolled
             row shows through. */}
-        <div className="flex flex-shrink-0 flex-wrap items-center gap-2 bg-surface-1 md:sticky md:right-0 md:flex-nowrap md:pl-2">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 bg-surface-1 xl:sticky xl:right-0 xl:flex-shrink-0 xl:flex-nowrap xl:pl-2">
         {validation && (
           validation.ok
             ? (

@@ -415,11 +415,10 @@ export function RunsTab(
               {t('agentFlows.runs.selectRun')}
             </p>
           ) : flowBody === null ? (
-            <p className="p-10 text-center text-caption text-text-tertiary">Đang tải luồng…</p>
+            <p className="p-10 text-center text-caption text-text-tertiary">{t('agentFlows.trace.loadingFlow')}</p>
           ) : !flowBody.length ? (
             <p className="p-10 text-center text-caption text-text-tertiary">
-              Không dựng được luồng của run này — bản v{detail.version} có thể đã bị xoá.
-              Các bước vẫn xem được ở khung bên phải.
+              {t('agentFlows.trace.flowGone', { version: String(detail.version) })}
             </p>
           ) : (
             <div className="p-4">
@@ -525,9 +524,10 @@ export function RunsTab(
                       ? `/agent-flows?flow=${encodeURIComponent(detail.parent.brain_key)}&tab=runs&run=${detail.parent.id}`
                       : undefined}
                     className="mb-2 block rounded-md border border-brand/25 bg-brand/5 px-2.5 py-1.5 text-caption text-text-secondary hover:border-brand/50">
-                    Run này là một Skill được gọi từ flow <b>{detail.parent.brain_key || '?'}</b>
-                    {detail.parent.step_key ? <> (bước <b>{detail.parent.step_key}</b>)</> : null}
-                    {' '}— mở run cha.
+                    {t('agentFlows.trace.parentRun', {
+                      flow: detail.parent.brain_key || '?',
+                      step: detail.parent.step_key ? ` (${detail.parent.step_key})` : '',
+                    })}
                   </a>
                 )}
                 {/* Lifted to the top of the run summary: this is what somebody
@@ -595,8 +595,7 @@ export function RunsTab(
                 )}
 
                 <p className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2 text-tiny text-text-tertiary">
-                  Bấm vào một bước trên sơ đồ để xem nó nhận gì, trả ra gì và chạy
-                  với cấu hình nào.
+                  {t('agentFlows.trace.clickStep')}
                 </p>
 
                 <Label className="mt-3">{t('agentFlows.runs.question')}</Label>
@@ -669,10 +668,10 @@ export function RunsTab(
 
                 <Label className="mt-3">{t('agentFlows.runs.cost')}</Label>
                 <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-2">
-                  <Money label="Vào" value={detail.usage.prompt_tokens} unit="token" />
-                  <Money label="Ra" value={detail.usage.completion_tokens} unit="token" />
-                  <Money label="Model" value={detail.usage.llm_calls} unit="lượt" />
-                  <Money label="Tool" value={detail.usage.tool_calls} unit="lượt" />
+                  <Money label={t('agentFlows.trace.tokensIn')} value={detail.usage.prompt_tokens} unit="token" />
+                  <Money label={t('agentFlows.trace.tokensOut')} value={detail.usage.completion_tokens} unit="token" />
+                  <Money label="Model" value={detail.usage.llm_calls} unit={t('agentFlows.trace.calls')} />
+                  <Money label="Tool" value={detail.usage.tool_calls} unit={t('agentFlows.trace.calls')} />
                   {/* Cost LAST and separately: it is the number an operator is
                       accountable for, and `null` says the provider did not
                       report a price rather than pretending the turn was free. */}
@@ -680,7 +679,7 @@ export function RunsTab(
                     {detail.usage.usd != null ? (
                       <b className="font-strong">${detail.usage.usd.toFixed(4)}</b>
                     ) : (
-                      <span className="text-tiny text-text-quaternary">chưa có giá</span>
+                      <span className="text-tiny text-text-quaternary">{t('agentFlows.trace.noPrice')}</span>
                     )}
                   </span>
                 </div>
@@ -698,7 +697,7 @@ export function RunsTab(
                     onClick={() => download(`run-${detail.id}.json`, detail)}
                     className="text-tiny text-text-quaternary underline-offset-2 hover:underline"
                   >
-                    Tải JSON cả run
+                    {t('agentFlows.trace.downloadRun')}
                   </button>
                 </div>
                 <div className="mt-1 overflow-hidden rounded-lg border border-[rgb(var(--border-line))]">
@@ -917,6 +916,7 @@ function BudgetLine({ budget }: { budget: StepBudget }) {
  *  Labelled with the version so nobody debugs yesterday's result against today's
  *  settings. */
 function StepInspector({ step, configSource }: { step: RunStep; configSource?: string }) {
+  const { t } = useI18n();
   const [tab, setTab] = React.useState<'config' | 'input' | 'output'>('input');
   const tok = (step.prompt_tokens ?? 0) + (step.completion_tokens ?? 0);
 
@@ -926,7 +926,7 @@ function StepInspector({ step, configSource }: { step: RunStep; configSource?: s
         {([
           ['input', 'INPUT'],
           ['output', 'OUTPUT'],
-          ['config', 'Cấu hình'],
+          ['config', t('agentFlows.trace.config')],
         ] as const).map(([k, label]) => (
           <button
             key={k}
@@ -982,7 +982,7 @@ function StepInspector({ step, configSource }: { step: RunStep; configSource?: s
           {!!step.tool_calls?.length && (
             <div className="mt-1.5">
               <div className="mb-1 text-tiny font-strong uppercase tracking-wider text-text-quaternary">
-                Công cụ đã gọi ({step.tool_calls.length})
+                {t('agentFlows.trace.toolsCalled', { count: step.tool_calls.length })}
               </div>
               <div className="flex flex-wrap gap-1">
                 {step.tool_calls.map((name, i) => (
@@ -1087,11 +1087,12 @@ function asTable(v: unknown): { columns: string[]; rows: unknown[][] } | null {
 }
 
 function Scalar({ v }: { v: unknown }) {
+  const { t } = useI18n();
   if (v === null || v === undefined || v === '') {
-    return <span className="text-tiny italic text-text-quaternary">(trống)</span>;
+    return <span className="text-tiny italic text-text-quaternary">{t('agentFlows.trace.empty')}</span>;
   }
   if (typeof v === 'boolean') {
-    return <span className="text-tiny text-text-secondary">{v ? 'có' : 'không'}</span>;
+    return <span className="text-tiny text-text-secondary">{v ? t('agentFlows.trace.yes') : t('agentFlows.trace.no')}</span>;
   }
   return (
     <span className="whitespace-pre-wrap break-words text-tiny leading-5 text-text-secondary">

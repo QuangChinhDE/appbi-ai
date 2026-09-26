@@ -206,9 +206,13 @@ const PACK_CATEGORY: Record<string, 'data' | 'analysis' | 'knowledge' | 'externa
 const CATEGORY_ORDER = ['data', 'analysis', 'knowledge', 'external', 'other'] as const;
 
 export function ToolPicker({
-  packs, granted, onToggle, skills = [],
+  packs, granted, onToggle, onToggleMany, skills = [],
 }: {
   packs: ToolPack[]; granted: string[]; onToggle: (name: string, on: boolean) => void;
+  /** A whole group at once, in ONE update. Calling `onToggle` per tool read the
+   *  same stale grant list each time: found in the browser, "select all" saved
+   *  41 grants for 33 tools (duplicates) or ticked only the last one. */
+  onToggleMany?: (names: string[], on: boolean) => void;
   /** Published Skills this author may attach. Granted as `skill:<key>`. */
   skills?: SkillSummary[];
 }) {
@@ -417,7 +421,9 @@ export function ToolPicker({
                 )}
                 <button type="button"
                   className="ml-auto text-micro text-text-tertiary underline-offset-2 hover:underline"
-                  onClick={() => names.forEach((n) => onToggle(n, !allOn))}>
+                  onClick={() => (onToggleMany
+                    ? onToggleMany(names, !allOn)
+                    : names.forEach((n) => onToggle(n, !allOn)))}>
                   {allOn ? t('agentFlows.toolPicker.clearAll') : t('agentFlows.toolPicker.selectAll')}
                 </button>
               </div>
