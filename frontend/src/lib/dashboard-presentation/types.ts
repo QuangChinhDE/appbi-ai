@@ -195,12 +195,31 @@ export interface PresentationPlan {
   suggestions?: DesignSuggestion[];
   /** The model's own one-line account of what it did, shown in the diff. */
   rationale?: string;
+  /** Presentation blocks a REDESIGN adds (headline, summary, chapter,
+   *  takeaway). Sections place them by their (negative) id like a visual.
+   *  They carry finding KEYS, never numbers. */
+  blocks?: PlanBlock[];
 }
 
 // ── Snapshot: what the planner is allowed to SEE ────────────────────────────
 
 /** A visual described without a single field that could identify a data
  *  source. No SQL, no dataset id, no column names, no rows. */
+export type BlockVariant = 'headline' | 'summary' | 'callout' | 'chapter' | 'takeaway';
+export const BLOCK_VARIANTS: BlockVariant[] = ['headline', 'summary', 'callout', 'chapter', 'takeaway'];
+
+/** A block in a plan. `id` is negative until the block is created. */
+export interface PlanBlock {
+  id: VisualId;
+  variant: BlockVariant;
+  eyebrow?: string;
+  title?: string;
+  /** Finding keys (`kind:dashboardChartId`) the block states, in order. */
+  findings: string[];
+  /** Sit on the canvas without a card (editorial prose, a flush summary). */
+  frameless?: boolean;
+}
+
 export interface SnapshotVisual {
   dashboardChartId: VisualId;
   chartType: string;
@@ -232,6 +251,11 @@ export interface SnapshotVisual {
   /** The allow-listed style keys this tile already carries, so a restyle can
    *  build on the current look instead of guessing it. */
   currentStyle: Record<string, unknown>;
+  /** The finding kinds this visual can support, from its shape (a monthly
+   *  additive series → trend/peak/latest/period_comparison…). */
+  findingKinds?: string[];
+  /** For a narrative block already on the page: its role and who made it. */
+  block?: { variant: BlockVariant; origin?: 'ai' | 'author'; draftOnly?: boolean; findings: string[] };
 }
 
 /**
@@ -240,7 +264,7 @@ export interface SnapshotVisual {
  * chart's written description. Labels only: no SQL, no dataset ids, no rows.
  */
 export interface VisualMeaning {
-  measures: Array<{ label: string; agg?: string; format?: string; description?: string }>;
+  measures: Array<{ label: string; agg?: string; format?: string; description?: string; additive?: boolean }>;
   dimensions: Array<{ label: string; temporal?: boolean }>;
   /** True when the visual is organised over time (a date axis or a time grain). */
   temporal: boolean;
@@ -274,6 +298,9 @@ export interface DashboardPresentationSnapshot {
     cardTreatment?: string;
   };
   capabilities: unknown;
+  /** What the page currently says: findings its tiles support (sentence + key).
+   *  Aggregates only; a block references them by key. */
+  findings?: { key: string; sentence: string }[];
 }
 
 // ── The mutation the compiler produces ──────────────────────────────────────
@@ -293,6 +320,20 @@ export interface PresentationMutation {
   notes: string[];
   /** The layer this mutation was built at - what the validator holds it to. */
   layer: DesignLayer;
+  /** Presentation blocks the plan adds (narrative, section header). Each has a
+   *  NEGATIVE temporary id until Apply creates it as a draft-only row; its
+   *  geometry is in `layoutOverrides` under that id like any tile. Only a
+   *  `redesign` may create blocks. */
+  createdBlocks?: CreatedBlock[];
+}
+
+/** A block a redesign adds to the canvas. It carries no data of its own: a
+ *  narrative references findings by key, a heading carries words. */
+export interface CreatedBlock {
+  tempId: VisualId;
+  widgetType: 'narrative' | 'section_header';
+  widgetConfig: Record<string, unknown>;
+  layout: Partial<DashboardChartLayout> & { x: number; y: number; w: number; h: number; pageId?: string };
 }
 
 /** A tile as the validator sees it — enough to prove identity and semantics

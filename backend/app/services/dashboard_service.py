@@ -1,6 +1,7 @@
 """
 CRUD service for dashboards.
 """
+import re
 from typing import List, Optional
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
@@ -92,6 +93,56 @@ def normalize_dashboard_theme_config(theme_config: Optional[dict]) -> Optional[d
     return normalized
 
 
+#: Finding kinds a narrative block may reference (frontend `report-findings.ts`).
+NARRATIVE_FINDING_KINDS = frozenset({
+    "kpi_value", "trend", "peak", "latest", "period_comparison", "top_item",
+    "concentration", "attainment", "partial_periods",
+})
+NARRATIVE_VARIANTS = frozenset({"headline", "summary", "callout", "chapter", "takeaway"})
+_FINDING_KEY_RE = re.compile(r"^([a-z_]+):(-?\d+)$")
+
+
+def is_draft_only_item(item) -> bool:
+    """A grid item AI Design created in a draft that has not been published.
+
+    Such items exist as real rows (so the editor can move, resize and lock them
+    like any tile) but are invisible to public/embed until Publish, and are
+    deleted by Discard.
+    """
+    layout = getattr(item, "layout", None)
+    return isinstance(layout, dict) and bool(layout.get("draftOnly"))
+
+
+def normalize_narrative_config(config: dict) -> dict:
+    """The one shape a narrative block is stored in.
+
+    A narrative never stores a number: it stores WHICH findings it states
+    (`kind:dashboardChartId`) and the words around them. The values are
+    recomputed from the tiles' rows under the viewer's filters every time it is
+    rendered. Unknown keys are dropped; a malformed finding reference is dropped
+    rather than stored, so a block cannot point at something no renderer knows.
+    """
+    out: dict = {}
+    variant = str(config.get("variant") or "summary").strip().lower()
+    out["variant"] = variant if variant in NARRATIVE_VARIANTS else "summary"
+    for key, limit in (("eyebrow", 80), ("title", 200), ("prose", 1200), ("tone", 16)):
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()[:limit]
+    items = []
+    for item in config.get("items") or []:
+        ref = item.get("finding") if isinstance(item, dict) else item
+        m = _FINDING_KEY_RE.match(str(ref or "").strip())
+        if m and m.group(1) in NARRATIVE_FINDING_KINDS:
+            items.append({"finding": f"{m.group(1)}:{m.group(2)}"})
+    out["items"] = items[:8]
+    if config.get("transparentBackground") is True:
+        out["transparentBackground"] = True
+    if config.get("origin") in ("ai", "author"):
+        out["origin"] = config["origin"]
+    return out
+
+
 def normalize_dashboard_widget_config(widget_type: str | None, widget_config: Optional[dict]) -> dict:
     """Normalize MCP/spec widget aliases to the runtime config keys."""
     config = dict(widget_config or {})
@@ -135,6 +186,9 @@ def normalize_dashboard_widget_config(widget_type: str | None, widget_config: Op
             config["text"] = str(body)
         tone = str(config.get("tone") or "accent").strip().lower()
         config["tone"] = tone if tone in {"accent", "info", "success", "warning", "danger", "neutral"} else "accent"
+
+    elif wt == "narrative":
+        config = normalize_narrative_config(config)
 
     elif wt == "hero_strip":
         headline = config.get("headline") or config.get("title") or config.get("text")

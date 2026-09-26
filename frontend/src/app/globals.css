@@ -1731,3 +1731,31 @@
 .chart-surface-light .recharts-cartesian-grid line {
   stroke: rgb(226 230 235) !important;
 }
+
+/* ── Report Experience: narrative blocks ────────────────────────────────────
+   Words bound to findings. They inherit the report's text colour and font so a
+   theme or direction restyles them with everything else; the accent marks the
+   one figure a takeaway leads with. Variants encode ROLE, not decoration. */
+.dashboard-narrative { color: inherit; }
+.dashboard-narrative__inner { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px; min-height: 100%; justify-content: center; }
+.dashboard-narrative__eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; opacity: .65; }
+.dashboard-narrative__headline { margin: 0; font-size: clamp(20px, 2.3vw, 32px); line-height: 1.18; font-weight: 600; letter-spacing: -.01em; text-wrap: balance; max-width: 46ch; }
+.dashboard-narrative__title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.3; }
+.dashboard-narrative__prose { margin: 0; font-size: 14px; line-height: 1.6; opacity: .85; max-width: 72ch; }
+.dashboard-narrative__list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.dashboard-narrative__item { font-size: 14px; line-height: 1.5; padding-left: 12px; border-left: 2px solid color-mix(in srgb, currentColor 18%, transparent); max-width: 72ch; }
+.dashboard-narrative__item.is-pending { opacity: .5; font-style: italic; }
+.dashboard-narrative__item.is-unavailable { opacity: .6; font-style: italic; }
+.dashboard-narrative__hint { margin: 0; font-size: 12px; opacity: .55; }
+.dashboard-narrative__figure { font-size: 28px; font-weight: 650; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--dashboard-accent, currentColor); }
+.dashboard-narrative__figure.is-down { color: #c2410c; }
+[data-narrative-variant="headline"] .dashboard-narrative__inner { justify-content: flex-end; gap: 10px; }
+[data-narrative-variant="headline"] .dashboard-narrative__item { border-left: 0; padding-left: 0; font-size: 15px; opacity: .8; }
+[data-narrative-variant="summary"] .dashboard-narrative__item:first-child { border-left-color: var(--dashboard-accent, currentColor); }
+[data-narrative-variant="callout"] .dashboard-narrative__inner,
+[data-narrative-variant="takeaway"] .dashboard-narrative__inner { justify-content: flex-start; padding: 6px 4px; }
+[data-narrative-variant="callout"] .dashboard-narrative__item,
+[data-narrative-variant="takeaway"] .dashboard-narrative__item { border-left: 0; padding-left: 0; }
+[data-narrative-variant="chapter"] .dashboard-narrative__inner { justify-content: flex-start; gap: 8px; padding-top: 10px; }
+[data-narrative-variant="chapter"] .dashboard-narrative__title { font-size: clamp(18px, 1.7vw, 24px); font-weight: 600; letter-spacing: -.01em; }
+[data-narrative-variant="chapter"] .dashboard-narrative__item { border-left: 0; padding-left: 0; font-size: 15px; line-height: 1.65; }

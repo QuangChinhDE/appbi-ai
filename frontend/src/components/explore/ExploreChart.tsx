@@ -36,6 +36,7 @@ import { useExportMode } from '@/lib/export-mode';
 import { applyCalculatedFields, buildExploreChartModel, type ChartSeriesDef } from './chartDataAdapter';
 import { AdvancedExploreChart, ADVANCED_EXPLORE_CHART_TYPES } from './AdvancedExploreCharts';
 import { useI18n } from '@/providers/LanguageProvider';
+import { parseBucket } from '@/lib/time-buckets';
 
 // Phase-15.83 — DA dropped the FE row cap; the chart renders every row
 // the BE returns. Constants removed (no longer referenced); if Recharts
@@ -1385,7 +1386,7 @@ function applyTimeGranularity(
 
 function EmptyState({ message }: { message: string }) {
   return (
-    <div className="h-full flex items-center justify-center text-text-quaternary">
+    <div className="h-full flex items-center justify-center text-text-quaternary" data-empty-state>
       <p className="text-sm text-center max-w-xs px-4">{message}</p>
     </div>
   );
@@ -1448,6 +1449,13 @@ export interface ExploreChartProps {
    *  per-series override). Lets a CR1 measure with format.kind='percent'
    *  render as "30%" instead of "0.3" out of the box. */
   formatMap?: Map<string, import('./ExploreChartConfig').NumberFormat>;
+  /** {field → currency symbol} from the measure's declared currency code. When
+   *  the chart's series share one declared currency it replaces the style
+   *  default "$"; a symbol the author picked (anything but "$") is kept. */
+  currencyMap?: Map<string, string>;
+  /** Buckets of the time axis that are not whole periods (from the chart data
+   *  response). Shown as a footnote under the chart; no row is hidden. */
+  timeCompleteness?: import('@/types/api').TimeCompleteness;
   /** Rendered inside a dashboard tile (which supplies its own card frame).
    *  Currently only affects KPI: drops KpiCard's nested card chrome and lets
    *  it fill the tile width instead of capping at max-w-xl. Default false
@@ -1470,6 +1478,57 @@ export interface ExploreChartProps {
   kpiLabelInHeader?: boolean;
 }
 
+/** Chart types whose marks are positioned by a measure value on an axis. */
+const AXIS_VALUE_CHART_TYPES: ReadonlySet<string> = new Set([
+  'TIME_SERIES', 'LINE', 'AREA', 'BAR', 'STACKED_BAR', 'GROUPED_BAR', 'HORIZONTAL_BAR', 'BAR_LINE', 'COMBO',
+]);
+
+/** True when at least one row carries a finite number for one of the chart's
+ *  measures. Numeric strings count (the value is plottable once coerced). */
+export function hasPlottableMeasure(rows: any[], rc: { metrics?: any[]; lineMetric?: any }): boolean {
+  const metrics = [...(rc.metrics ?? []), rc.lineMetric].filter(Boolean);
+  if (metrics.length === 0) return true; // nothing to check; other guards own it
+  const keys = metrics.flatMap((m: any) => [metricKey(m), String(m.field || '')]).filter(Boolean);
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    for (const k of keys) {
+      const v = (row as any)[k];
+      if (v === null || v === undefined || v === '') continue;
+      if (Number.isFinite(typeof v === 'number' ? v : Number(v))) return true;
+    }
+  }
+  // Rows keyed by an alias this check does not know: do not claim "no data".
+  return !rows.some((row) => row && keys.some((k) => k in row));
+}
+
+/**
+ * Recharts finds its series by walking `children` and matching component TYPES
+ * (`<Line>`, `<Bar>` …), flattening Fragments with `react-is`. Under the Next 15
+ * App Router, React elements carry React 19's `react.transitional.element` tag,
+ * which the `react-is@18` recharts resolves does not recognise — so a series
+ * returned inside `<React.Fragment>` was invisible to the chart: every LINE and
+ * TIME_SERIES tile drew its axes and no line at all. Unwrap Fragments here,
+ * against THIS runtime's `React.Fragment`, keeping keys, so the series reach
+ * recharts as a flat list.
+ */
+function flatChartChildren(nodes: React.ReactNode): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  const walk = (node: React.ReactNode, prefix: string) => {
+    if (Array.isArray(node)) { node.forEach((n, i) => walk(n, `${prefix}${i}.`)); return; }
+    if (React.isValidElement(node) && node.type === React.Fragment) {
+      const key = node.key != null ? `${prefix}${String(node.key)}.` : prefix;
+      React.Children.forEach((node.props as { children?: React.ReactNode }).children, (child, i) => {
+        if (React.isValidElement(child)) out.push(React.cloneElement(child, { key: `${key}${child.key ?? i}` }));
+        else if (child) walk(child, `${key}${i}.`);
+      });
+      return;
+    }
+    if (node !== null && node !== undefined && node !== false) out.push(node);
+  };
+  walk(nodes, '');
+  return out;
+}
+
 function ExploreChartInner({
   type,
   data,
@@ -1482,6 +1541,7 @@ function ExploreChartInner({
   highlightData,
   labelMap,
   formatMap,
+  currencyMap,
   embedded = false,
   onViewerDrill,
   viewerGrain,
@@ -1539,9 +1599,22 @@ function ExploreChartInner({
         }
         if (changed) s = { ...s, seriesFormats: merged };
       }
+      // The declared currency of the measures replaces the "$" default. Only
+      // when every series that has one agrees — a chart mixing BRL and USD keeps
+      // its own setting rather than labelling one of them wrongly.
+      if (currencyMap && currencyMap.size && (!s.currencySymbol || s.currencySymbol === '$')) {
+        const nrc = normalizeRoleConfig(type, roleConfig);
+        const fields = [...nrc.metrics, nrc.lineMetric, nrc.benchmarkMetric].filter(Boolean).map((m: any) => String(m.field || ''));
+        const syms = new Set(
+          fields
+            .map((f) => currencyMap.get(f) ?? (f.includes('.') ? currencyMap.get(f.split('.').slice(-1)[0]) : undefined))
+            .filter((x): x is string => !!x),
+        );
+        if (syms.size === 1) s = { ...s, currencySymbol: [...syms][0] };
+      }
       return s;
     },
-    [baseStyle, onStyleConfigChange, ephemeralDrill, formatMap, type, roleConfig, dashboardTheme.displayUnits],
+    [baseStyle, onStyleConfigChange, ephemeralDrill, formatMap, currencyMap, type, roleConfig, dashboardTheme.displayUnits],
   );
   const PALETTE = useMemo(
     () => {
@@ -2653,6 +2726,12 @@ function ExploreChartInner({
   if (invalidMessage) {
     return <EmptyState message={invalidMessage} />;
   }
+  // Rows came back but not one measure cell is a number: an axis chart would
+  // draw its axes and no marks, which reads as "the value is zero" or, worse,
+  // as a working chart. Say so instead.
+  if (AXIS_VALUE_CHART_TYPES.has(type) && !hasPlottableMeasure(data, normalizeRoleConfig(type, roleConfig))) {
+    return <EmptyState message={t('explore.emptyState.noNumericValues')} />;
+  }
 
   if (type === 'KPI') {
     if (!kpiMetric || kpiValue === undefined) return <EmptyState message={t('explore.emptyState.kpi')} />;
@@ -3528,7 +3607,7 @@ function ExploreChartInner({
                 )}
               />
               {renderLegend()}
-              {displaySeries.map((series, i) => {
+              {flatChartChildren(displaySeries.map((series, i) => {
                 const color = getSeriesColor(series.key, i);
                 return (
                   <React.Fragment key={series.key}>
@@ -3566,7 +3645,7 @@ function ExploreChartInner({
                     )}
                   </React.Fragment>
                 );
-              })}
+              }))}
               {renderBenchmarkLines('y', displayData)}
               {renderAnnotations()}
             </AreaChart>,
@@ -3639,7 +3718,7 @@ function ExploreChartInner({
                 )}
               />
               {renderLegend()}
-              {displaySeries.map((series, i) => {
+              {flatChartChildren(displaySeries.map((series, i) => {
                 const stroke = getSeriesColor(series.key, i);
                 return (
                   <React.Fragment key={series.key}>
@@ -3673,7 +3752,7 @@ function ExploreChartInner({
                     )}
                   </React.Fragment>
                 );
-              })}
+              }))}
               {renderBenchmarkLines('y', displayData)}
               {renderAnnotations()}
             </LineChart>,
@@ -3732,7 +3811,7 @@ function ExploreChartInner({
           )}
         />
         {renderLegend()}
-        {displaySeries.map((series, i) => {
+        {flatChartChildren(displaySeries.map((series, i) => {
           const baseColor = getSeriesColor(series.key, i);
           if (isHighlight) {
             return (
@@ -3764,7 +3843,7 @@ function ExploreChartInner({
               )}
             </Bar>
           );
-        })}
+        }))}
         {renderBenchmarkLines('x', hbarData)}
         {renderAnnotations()}
       </BarChart>
@@ -3861,7 +3940,7 @@ function ExploreChartInner({
                 )}
               />
               {renderLegend()}
-              {hasFreeFormMix
+              {flatChartChildren(hasFreeFormMix
                 ? allComboSeries.map((series, index) => {
                     const mode = renderAsMap[series.key] ?? 'bar';
                     const color = getSeriesColor(series.key, index);
@@ -3958,8 +4037,7 @@ function ExploreChartInner({
                       )}
                     </Line>
                   </>
-                )
-              }
+                ))}
               {renderBenchmarkLines('y', displayData)}
               {renderAnnotations()}
             </ComposedChart>,
@@ -3998,7 +4076,7 @@ function ExploreChartInner({
               )}
             />
             {renderLegend()}
-            {displayBarSeries.map((series, i) => {
+            {flatChartChildren(displayBarSeries.map((series, i) => {
               const baseColor = getSeriesColor(series.key, i);
               const hasConditional = conditionalSeriesRules.length > 0;
               if (isHighlight) {
@@ -4033,7 +4111,7 @@ function ExploreChartInner({
                   )}
                 </Bar>
               );
-            })}
+            }))}
             {renderBenchmarkLines('y', barChartData)}
             {renderAnnotations()}
           </BarChart>,
@@ -4077,7 +4155,49 @@ export function ExploreChart(props: ExploreChartProps) {
           100% { opacity: 1; transform: translateY(0); }
         }
       `}</style>
-      <ExploreChartMemo {...props} />
+      {props.timeCompleteness?.partial?.length ? (
+        <div style={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: '1 1 auto', minHeight: 0 }}>
+            <ExploreChartMemo {...props} />
+          </div>
+          <PartialPeriodNote completeness={props.timeCompleteness} />
+        </div>
+      ) : (
+        <ExploreChartMemo {...props} />
+      )}
     </div>
+  );
+}
+
+function formatBucket(raw: string, grain: string): string {
+  // Naive engine timestamps name a calendar period: read them as UTC, or a
+  // viewer east of UTC sees every bucket labelled one month early.
+  const d = parseBucket(raw);
+  if (!d) return String(raw);
+  const opts: Intl.DateTimeFormatOptions =
+    grain === 'year' ? { year: 'numeric' }
+      : grain === 'month' || grain === 'quarter' ? { year: 'numeric', month: 'short' }
+        : { year: 'numeric', month: 'short', day: 'numeric' };
+  return d.toLocaleDateString(undefined, { ...opts, timeZone: 'UTC' });
+}
+
+/** The honest footnote for a time series whose edges are not whole periods:
+ *  which buckets, and which rule said so. Rendered on every surface that
+ *  renders the chart (builder, public, embed) because it is part of the data. */
+function PartialPeriodNote({ completeness }: { completeness: import('@/types/api').TimeCompleteness }) {
+  const { t } = useI18n();
+  const inProgress = completeness.partial.filter((p) => p.reason === 'in_progress').map((p) => formatBucket(p.bucket, completeness.grain));
+  const thin = completeness.partial.filter((p) => p.reason === 'edge_low_volume').map((p) => formatBucket(p.bucket, completeness.grain));
+  const parts: string[] = [];
+  if (thin.length) parts.push(t('explore.partialPeriods.thin', { periods: thin.join(', ') }));
+  if (inProgress.length) parts.push(t('explore.partialPeriods.inProgress', { periods: inProgress.join(', ') }));
+  return (
+    <p
+      data-testid="partial-period-note"
+      data-partial-count={completeness.partial.length}
+      style={{ flex: '0 0 auto', margin: '4px 2px 0', fontSize: 11, lineHeight: 1.35, opacity: 0.72 }}
+    >
+      {parts.join(' · ')}
+    </p>
   );
 }

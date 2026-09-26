@@ -530,6 +530,10 @@ class ChartDataResponse(BaseModel):
     # ignore the field, new clients display it. Never contains the raw
     # rows (those live in `data`); only metadata + the rendered SQL.
     debug: Optional[ChartDebugInfo] = None
+    # Time-axis buckets that are not whole periods (in progress / thin launch or
+    # cut-off edge). Only restates buckets already in `data`, with the rule that
+    # flagged them; None when the chart has no time grain.
+    time_completeness: Optional[Dict[str, Any]] = None
 
 
 # Dashboard Schemas

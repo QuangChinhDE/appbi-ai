@@ -126,7 +126,9 @@ export function resolveTileFrameStyle(input: TileFrameInput): ResolvedTileFrame 
 /** Title typography — identical in the builder and the published report. */
 export const TILE_TITLE_CLASS = 'dashboard-tile-title min-w-0 flex-1 truncate text-[13px] font-semibold text-text-primary';
 /** A KPI's header label: quieter than a chart title, same in both renderers. */
-export const TILE_KPI_LABEL_CLASS = 'dashboard-kpi-label min-w-0 flex-1 truncate text-[13px] font-medium text-text-secondary';
+// A KPI label wraps to two lines rather than truncating: on a 2-up phone row
+// the header shares ~150px with its actions, and "R…" is not a label.
+export const TILE_KPI_LABEL_CLASS = 'dashboard-kpi-label min-w-0 flex-1 line-clamp-2 break-words text-[13px] leading-snug font-medium text-text-secondary';
 
 export function tileKindOf(chartType: string | null | undefined, widgetType?: string | null): 'kpi' | 'table' | 'chart' | 'widget' {
   if (widgetType && widgetType !== 'chart') return 'widget';

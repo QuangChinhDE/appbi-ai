@@ -95,6 +95,9 @@ import {
 } from '@/lib/dashboard-layout-convert';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
+import { ReportEvidenceProvider, useReportFindings } from '@/lib/report-evidence';
+import { renderFindingSentence } from '@/lib/report-findings';
+import { coerceModelProposals, deriveProposals, type ContentProposal, type TileContext } from '@/lib/dashboard-presentation/proposals';
 
 function semanticDimensionToFilterType(type: string | undefined): FilterType {
   switch ((type ?? '').toLowerCase()) {
@@ -221,8 +224,8 @@ function stripUndefined<T extends Record<string, any>>(value: T): T {
   return out as T;
 }
 
-export default function DashboardDetailPage() {
-  const { t } = useI18n();
+function DashboardDetailPageInner() {
+  const { t, locale } = useI18n();
   const params = useParams();
   const dashboardId = Number(params.id);
 
@@ -262,6 +265,9 @@ export default function DashboardDetailPage() {
   // the layout, in one server transaction — on Publish. Nothing writes the
   // published theme directly any more. Discard drops it.
   const [pendingThemeConfig, setPendingThemeConfig] = useState<any | null>(null);
+  // Blocks an AI Design preview adds (negative temporary ids). Rendered through
+  // the same page memo as every tile, so the preview shows what Apply creates.
+  const [previewBlocks, setPreviewBlocks] = useState<any[] | null>(null);
   // An AI design being LOOKED at: the theme keys and slicer-cluster keys it
   // would write. A view layer only — never staged — so the preview shows the
   // dock/variant/density exactly as Apply will, and Discard is free.
@@ -381,6 +387,7 @@ export default function DashboardDetailPage() {
       !hasLocalLayoutChanges
       && !previewLayoutOverrides
       && !pendingThemeConfig
+      && !previewBlocks?.length
       && (!beDrafts || Object.keys(beDrafts).length === 0)
     ) {
       return serverDashboard;
@@ -388,7 +395,7 @@ export default function DashboardDetailPage() {
     return {
       ...serverDashboard,
       ...(pendingThemeConfig ? { theme_config: pendingThemeConfig } : {}),
-      dashboard_charts: serverDashboard.dashboard_charts.map((dc) => {
+      dashboard_charts: [...serverDashboard.dashboard_charts, ...((previewBlocks ?? []) as any[])].map((dc) => {
         const beOverride = beDrafts
           ? (beDrafts[dc.id] ?? beDrafts[String(dc.id) as any])
           : null;
@@ -406,7 +413,7 @@ export default function DashboardDetailPage() {
         };
       }),
     };
-  }, [serverDashboard, localLayoutOverrides, hasLocalLayoutChanges, previewLayoutOverrides, pendingThemeConfig]);
+  }, [serverDashboard, localLayoutOverrides, hasLocalLayoutChanges, previewLayoutOverrides, pendingThemeConfig, previewBlocks]);
 
   // The dock the CLUSTER will actually use. Resolved here too so the wrapper
   // that positions the cluster beside the grid cannot disagree with the
@@ -504,6 +511,8 @@ export default function DashboardDetailPage() {
     layout: Record<number, Record<string, any>>;
     theme: any;
     slicerCluster: any;
+    /** Draft-only blocks this step created (next side only). Undo removes them. */
+    createdBlockIds?: number[];
   };
   type UndoEntry =
     | { kind: 'layout'; prev: Record<number, Record<string, any>>; next: Record<number, Record<string, any>> }
@@ -605,6 +614,15 @@ export default function DashboardDetailPage() {
     if (entry.kind === 'layout') { setLocalLayoutOverrides(value as any); return; }
     if (entry.kind === 'ai-presentation') {
       const state = value as PresentationState;
+      // Undoing a design that CREATED blocks removes those draft-only rows (they
+      // were never published). Redo cannot resurrect them under the same ids, so
+      // that entry leaves the redo branch rather than redo half a design.
+      const created = entry.next.createdBlockIds ?? [];
+      if (dir === 'prev' && created.length) {
+        void Promise.all(created.map((id) => dashboardApi.removeChart(dashboardId, id).catch(() => null)))
+          .then(() => queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] }));
+        redoRef.current = redoRef.current.filter((e) => e !== entry);
+      }
       setLocalLayoutOverrides(state.layout);
       if (state.slicerCluster !== undefined) {
         // Draft only: the auto-stage sees draft ≠ applied and writes it, so an
@@ -864,11 +882,35 @@ export default function DashboardDetailPage() {
   // never hidden — the popup sits OVER the report, it does not shrink it.
   const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false);
 
-  const commitPresentation = React.useCallback((commit: {
+  const commitPresentation = React.useCallback(async (commit: {
     layoutOverrides: Record<number, Record<string, any>>;
     themePatch: Record<string, any> | null;
     slicerClusterPatch: Record<string, any> | null;
+    createdBlocks?: import('@/lib/dashboard-presentation/types').CreatedBlock[];
   }) => {
+    // Blocks first: each becomes a DRAFT-ONLY row (invisible to /d and /embed
+    // until Publish, deleted by Discard), then its temporary id is swapped for
+    // the real one so it moves, resizes and locks like any tile.
+    let layoutOverrides = commit.layoutOverrides;
+    const createdIds: number[] = [];
+    if (commit.createdBlocks?.length) {
+      layoutOverrides = { ...layoutOverrides };
+      for (const block of commit.createdBlocks) {
+        const before = new Set(((queryClient.getQueryData(['dashboards', dashboardId]) as any)?.dashboard_charts ?? []).map((d: any) => d.id));
+        try {
+          const layout = { ...block.layout, ...(layoutOverrides[block.tempId] ?? {}), pageId: block.layout.pageId ?? activePageId, draftOnly: true };
+          const updated: any = await dashboardApi.addWidget(dashboardId, block.widgetType, layout as any, block.widgetConfig as any);
+          const fresh = (updated?.dashboard_charts ?? []).find((d: any) => !before.has(d.id) && d.widget_type === block.widgetType);
+          if (updated) queryClient.setQueryData(['dashboards', dashboardId], updated);
+          delete layoutOverrides[block.tempId];
+          if (fresh) createdIds.push(fresh.id);
+        } catch (err) {
+          console.error('Failed to create design block:', err);
+          toast.error(t('dashboards.aiDesign.blockCreateFailed'));
+        }
+      }
+      setPreviewBlocks(null);
+    }
     // One undo entry for one click (§14). The `before` half is captured here,
     // from live state, rather than being handed in — a caller that snapshotted
     // earlier would record a baseline that has since moved.
@@ -887,15 +929,16 @@ export default function DashboardDetailPage() {
         slicerCluster: nextCluster === undefined ? undefined : draftSlicerClusterLayout,
       },
       next: {
-        layout: commit.layoutOverrides,
+        layout: layoutOverrides,
         theme: nextTheme,
         slicerCluster: nextCluster,
+        createdBlockIds: createdIds,
       },
     });
 
     setPreviewLayoutOverrides(null);
     setPreviewPresentation(null);
-    setLocalLayoutOverrides(commit.layoutOverrides);
+    setLocalLayoutOverrides(layoutOverrides);
     if (nextCluster !== undefined) {
       // Draft only. Marking it applied as well (as this used to) told the
       // auto-stage there was nothing to send, so an AI dock change never
@@ -905,7 +948,7 @@ export default function DashboardDetailPage() {
     // Draft, don't persist: the colour lands on Save/Publish and Discard drops
     // it — an AI Apply must not silently repaint the live report (§ theme-draft).
     if (nextTheme !== undefined) paintThemeDraft(nextTheme);
-  }, [dashboard?.theme_config, draftSlicerClusterLayout, localLayoutOverrides]);
+  }, [dashboard?.theme_config, draftSlicerClusterLayout, localLayoutOverrides, activePageId, dashboardId, queryClient, t]);
 
   // Tile focus (Canvas/Grid highlight). Declared here — above useAiDesign —
   // because in AI mode a focused tile scopes the redesign to that one visual
@@ -943,7 +986,25 @@ export default function DashboardDetailPage() {
     [datasetModelsById],
   );
 
+  // The findings the tiles on screen currently support — what the report SAYS,
+  // for the planner to decide what leads. Sentences are rendered with the same
+  // templates the narrative blocks use.
+  const reportFindings = useReportFindings();
+  const aiFindings = React.useMemo(
+    () => Array.from(reportFindings.findings.values()).map((f) => ({
+      key: f.key, sentence: renderFindingSentence(f, t as any, locale),
+    })),
+    [reportFindings, t, locale],
+  );
+  const directionLabels = React.useMemo(() => ({
+    whatMoved: t('report.direction.whatMoved'),
+    latestStatus: t('report.direction.latestStatus'),
+    detail: t('report.direction.detail'),
+  }), [t]);
+
   const aiDesign = useAiDesign({
+    findings: aiFindings,
+    directionLabels,
     dashboardId: Number(dashboardId),
     dashboard,
     activePageId,
@@ -962,12 +1023,67 @@ export default function DashboardDetailPage() {
     onCommit: commitPresentation,
   });
 
+  // ── Content proposals ─────────────────────────────────────────────────────
+  // Changes to what a tile SAYS (its order, its title): listed with before →
+  // after, applied only on the author's Accept as a draft edit (one undo,
+  // published on Publish), and audited either way.
+  const [decidedProposals, setDecidedProposals] = useState<Set<string>>(() => new Set());
+  const proposalTiles = React.useMemo(() => {
+    const map = new Map<number, TileContext>();
+    for (const dc of (dashboard?.dashboard_charts ?? []) as any[]) {
+      if (dc.widget_type && dc.widget_type !== 'chart') continue;
+      const override = (dc.layout?.styleConfigOverride ?? {}) as Record<string, unknown>;
+      const base = (dc.chart?.config?.styleConfig ?? {}) as Record<string, unknown>;
+      map.set(dc.id, {
+        tileId: dc.id,
+        title: String(dc.layout?.custom_title || base.chartTitle || dc.chart?.name || ''),
+        currentSortRules: (override.chartSortRules ?? base.chartSortRules) as unknown[] | undefined,
+        currentStyleOverride: override,
+      });
+    }
+    return map;
+  }, [dashboard?.dashboard_charts]);
+  const contentProposals = React.useMemo(() => {
+    const all = [
+      ...deriveProposals(reportFindings.evidence, proposalTiles),
+      ...coerceModelProposals(aiDesign.modelProposals, proposalTiles),
+    ];
+    const seen = new Set<string>();
+    return all.filter((p) => {
+      if (decidedProposals.has(p.id) || seen.has(p.id)) return false;
+      seen.add(p.id);
+      return true;
+    });
+  }, [reportFindings.evidence, proposalTiles, aiDesign.modelProposals, decidedProposals]);
+  const decideProposal = React.useCallback((proposal: ContentProposal, accepted: boolean) => {
+    setDecidedProposals((current) => new Set(current).add(proposal.id));
+    if (accepted) {
+      const prev = localLayoutOverrides;
+      const next = { ...prev, [proposal.tileId]: { ...(prev[proposal.tileId] ?? {}), ...proposal.patch } };
+      pushUndo({ kind: 'layout', prev, next });
+      setLocalLayoutOverrides(next);
+    }
+    void dashboardApi.recordProposalDecision(dashboardId, {
+      decision: accepted ? 'accepted' : 'rejected', kind: proposal.kind, tile_id: proposal.tileId,
+      before: proposal.auditBefore, after: proposal.auditAfter, source: proposal.source,
+    }).catch((err) => console.error('Failed to record proposal decision:', err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localLayoutOverrides, dashboardId]);
+
   // The preview is a view layer, so it is pushed into the render overlay rather
   // than returned by the hook and threaded through every child.
   React.useEffect(() => {
     setPreviewLayoutOverrides(
       aiDesign.pending ? (aiDesign.pending.mutation.layoutOverrides as any) : null,
     );
+    const blocks = aiDesign.pending?.mutation.createdBlocks ?? [];
+    setPreviewBlocks(blocks.length
+      ? blocks.map((b) => ({
+          id: b.tempId, dashboard_id: Number(dashboardId), chart_id: null, chart: null,
+          widget_type: b.widgetType, widget_config: b.widgetConfig,
+          layout: { ...b.layout, pageId: b.layout.pageId ?? activePageId }, parameters: {},
+        }))
+      : null);
     setPreviewPresentation(
       aiDesign.pending
         ? {
@@ -3839,6 +3955,9 @@ export default function DashboardDetailPage() {
               turns={aiDesign.turns}
               busy={aiDesign.busy}
               onSubmit={aiDesign.submit}
+              onDirection={aiDesign.applyDirection}
+              proposals={contentProposals}
+              onDecideProposal={decideProposal}
               pendingDiff={aiDesign.pending?.diff ?? null}
               onApply={aiDesign.apply}
               onDiscard={aiDesign.discard}
@@ -4152,5 +4271,15 @@ export default function DashboardDetailPage() {
           />
         )}
     </DashboardThemeProvider>
+  );
+}
+
+/** The page provides the report's evidence store so the AI Design panel can
+ *  read the findings the tiles below are showing. */
+export default function DashboardDetailPage() {
+  return (
+    <ReportEvidenceProvider>
+      <DashboardDetailPageInner />
+    </ReportEvidenceProvider>
   );
 }

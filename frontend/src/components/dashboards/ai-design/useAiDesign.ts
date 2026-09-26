@@ -1,7 +1,9 @@
 'use client';
 
 import React from 'react';
+import { DIRECTION_IDS, planForDirection, type DirectionId } from '@/lib/dashboard-presentation/directions';
 import { toast } from 'sonner';
+import { applyReviewRepairs, capturePreview, reviewNote, type VisionReview } from '@/lib/dashboard-presentation/vision-review';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { Dashboard, DashboardChart, DashboardThemeConfig } from '@/types/api';
@@ -60,15 +62,24 @@ export interface UseAiDesignInput {
   fieldMeta?: FieldMetaIndex;
   /** The rendered preview, for the post-render quality pass. */
   getCanvasRoot?: () => HTMLElement | null;
+  /** The findings the page's tiles currently support, as the reader would
+   *  read them (sentence + key). Aggregates only — never rows. */
+  findings?: { key: string; sentence: string }[];
+  /** Words a direction puts on the page, in the user's language. */
+  directionLabels?: Partial<import('@/lib/dashboard-presentation/directions').DirectionLabels>;
   /** Commit a design. One call, one undo entry. */
   onCommit: (input: {
     layoutOverrides: Record<number, Record<string, any>>;
     themePatch: Record<string, any> | null;
     slicerClusterPatch: Record<string, any> | null;
+    /** Blocks the design adds; created as draft-only rows by the page. */
+    createdBlocks?: import('@/lib/dashboard-presentation/types').CreatedBlock[];
   }) => void;
 }
 
 interface PendingDesign {
+  /** The visual review of the rendered preview, when one ran. */
+  review?: VisionReview;
   mutation: PresentationMutation;
   diff: PresentationDiff;
   previewTiles: DashboardChart[];
@@ -115,7 +126,7 @@ export function useAiDesign(input: UseAiDesignInput) {
     return { ...(input.currentTheme ?? {}), ...pending.mutation.themePatch } as DashboardThemeConfig;
   }, [input.currentTheme, pending]);
 
-  const snapshot = React.useMemo(() => {
+  const baseSnapshot = React.useMemo(() => {
     if (!input.dashboard) return null;
     return buildPresentationSnapshot({
       dashboard: { ...input.dashboard, theme_config: seenTheme ?? input.dashboard.theme_config } as Dashboard,
@@ -131,6 +142,15 @@ export function useAiDesign(input: UseAiDesignInput) {
     input.dashboard, seenTheme, baselineTiles, input.activePageId, input.activePageName,
     input.pageCount, input.slicers, input.slicerDock, input.fieldMeta,
   ]);
+  // What the report currently SAYS: the findings its tiles support right now.
+  // The planner reads them to decide what leads; it can reference them by key
+  // and never needs (or gets) a row of data.
+  const findingsKey = JSON.stringify(input.findings ?? []);
+  const snapshot = React.useMemo(
+    () => (baseSnapshot ? { ...baseSnapshot, findings: (input.findings ?? []).slice(0, 40) } : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseSnapshot, findingsKey],
+  );
 
   // A preview outlives neither the page it was drawn for nor the selection it
   // was scoped to.
@@ -140,8 +160,28 @@ export function useAiDesign(input: UseAiDesignInput) {
     );
   }, [input.activePageId, targetsKey]);
 
+  const [modelProposals, setModelProposals] = React.useState<unknown[]>([]);
+
   const build = React.useCallback((rawPlan: unknown, grantedLayer: DesignLayer, targets: number[]) => {
-    const { plan, notes: boundaryNotes } = coerceModelPlan(rawPlan, { grantedLayer, targets });
+    const coerced = coerceModelPlan(rawPlan, { grantedLayer, targets, knownTileIds: baselineTiles.map((t) => t.id) });
+    // Content proposals travel beside the design, never inside it: they wait
+    // for a person's Accept.
+    const rawProposals = (rawPlan as any)?.proposals;
+    if (Array.isArray(rawProposals) && rawProposals.length) setModelProposals(rawProposals);
+    let plan = coerced.plan;
+    const boundaryNotes = coerced.notes;
+    // A redesign that names one of the direction grammars and brings no blocks
+    // of its own is composed by that grammar; the model's palette choices stay.
+    const style = plan.direction?.style as string | undefined;
+    if (plan.layer === 'redesign' && targets.length === 0 && DIRECTION_IDS.includes(style as DirectionId) && !(plan.blocks?.length)) {
+      const pack = planForDirection(style as DirectionId, snapshot!, input.directionLabels);
+      plan = {
+        ...pack,
+        themeIntent: { ...(pack.themeIntent ?? {}), ...pickPalette(plan.themeIntent) } as any,
+        rationale: plan.rationale || pack.rationale,
+        suggestions: plan.suggestions,
+      };
+    }
     const built = buildPresentationMutation({
       plan,
       snapshot: snapshot!,
@@ -153,7 +193,7 @@ export function useAiDesign(input: UseAiDesignInput) {
     });
     built.mutation.notes = [...boundaryNotes, ...built.mutation.notes];
     return { plan, built };
-  }, [snapshot, baselineTiles, input.activePageId, seenTheme, input.gridGapPx]);
+  }, [snapshot, baselineTiles, input.activePageId, seenTheme, input.gridGapPx, input.directionLabels]);
 
   const submit = React.useCallback(async (prompt: string, images?: string[]) => {
     if (!snapshot || busy) return;
@@ -294,6 +334,56 @@ export function useAiDesign(input: UseAiDesignInput) {
     return () => window.clearTimeout(timer);
   }, [pending, input.getCanvasRoot, committedTiles, selected]);
 
+  // ── Visual review (bounded: one vision call per preview) ─────────────────
+  // After the deterministic pass, look at the RENDERED preview as an image and
+  // ask a vision model to review it against the rubric. Its repairs go through
+  // the allow-list and the validator, inside the granted scope; its scores are
+  // shown as advice. No model / any failure → the preview stands as it is.
+  const reviewedSeq = React.useRef(0);
+  React.useEffect(() => {
+    if (!pending || reviewedSeq.current === pending.seq || !input.getCanvasRoot) return;
+    const seq = pending.seq;
+    const timer = window.setTimeout(async () => {
+      reviewedSeq.current = seq;
+      const root = input.getCanvasRoot?.();
+      if (!root) return;
+      const image = await capturePreview(root);
+      if (!image) return;
+      const tilesForReview = committedTiles.map((tile) => ({
+        id: tile.id,
+        kind: String(tile.widget_type && tile.widget_type !== 'chart' ? tile.widget_type : tile.chart?.chart_type ?? 'visual'),
+        title: String((tile.layout as any)?.custom_title || (tile.chart as any)?.config?.styleConfig?.chartTitle || tile.chart?.name || ''),
+      }));
+      let review: VisionReview;
+      try {
+        review = await dashboardApi.critiquePresentation(input.dashboardId, {
+          image, tiles: tilesForReview, direction: pending.mutation.layer === 'redesign' ? 'redesign' : pending.mutation.layer,
+        });
+      } catch {
+        return; // no vision model or a failed call: the deterministic review stands
+      }
+      const scope = new Set<number>(selected.length ? selected : committedTiles.map((tile) => tile.id));
+      setPending((current) => {
+        if (!current || current.seq !== seq) return current;
+        const { mutation, applied } = applyReviewRepairs(current.mutation, review, {
+          allowed: scope,
+          currentStyle: (id) => ((committedTiles.find((tile) => tile.id === id)?.layout as any)?.styleConfigOverride ?? {}),
+        });
+        const verdict = applied > 0
+          ? validateMutationAgainst({ tiles: committedTiles, mutation, pageId: current.pageId, targets: selected })
+          : { ok: false };
+        const next = verdict.ok ? mutation : current.mutation;
+        const note = reviewNote(review, verdict.ok ? applied : 0);
+        const diff = diffPresentation(committedTiles, next);
+        diff.notes = [...current.diff.notes, note];
+        // The review is part of the conversation the author reads.
+        setTurns((previous) => [...previous, { role: 'assistant', text: note }]);
+        return { ...current, mutation: next, diff, previewTiles: applyMutationToTiles(committedTiles, next), review };
+      });
+    }, 2600);
+    return () => window.clearTimeout(timer);
+  }, [pending, input.getCanvasRoot, input.dashboardId, committedTiles, selected]);
+
   const apply = React.useCallback(() => {
     if (!pending) return;
     if (pending.pageId !== input.activePageId || pending.targetsKey !== targetsKey) {
@@ -309,6 +399,7 @@ export function useAiDesign(input: UseAiDesignInput) {
       slicerClusterPatch: Object.keys(pending.mutation.slicerClusterPatch ?? {}).length > 0
         ? (pending.mutation.slicerClusterPatch as Record<string, any>)
         : null,
+      createdBlocks: pending.mutation.createdBlocks ?? [],
     });
     setPending(null);
     toast.success(t('dashboards.aiDesign.applied'));
@@ -319,16 +410,60 @@ export function useAiDesign(input: UseAiDesignInput) {
     toast.info(t('dashboards.aiDesign.discarded'));
   }, [t]);
 
+  /** One click on a direction: an explicit request to recompose the page, so it
+   *  is a redesign, planned by the direction grammar and previewed like any
+   *  other design (Apply / Discard / one undo). */
+  const applyDirection = React.useCallback((direction: DirectionId) => {
+    if (!snapshot || busy) return;
+    const plan = planForDirection(direction, snapshot, input.directionLabels);
+    const built = buildPresentationMutation({
+      plan, snapshot, tiles: baselineTiles, pageId: input.activePageId,
+      currentTheme: seenTheme, gridGapPx: input.gridGapPx, targets: [],
+    });
+    setTurns((previous) => [...previous, { role: 'user', text: t(`dashboards.aiDesign.direction.${direction}`) }]);
+    if (!built.ok) {
+      setTurns((previous) => [...previous, {
+        role: 'assistant',
+        text: `${t('dashboards.aiDesign.rejected')} ${t('dashboards.aiDesign.rejectedDetail')}`,
+        violations: [...built.planValidation.violations, ...built.mutationValidation.violations],
+      }]);
+      return;
+    }
+    const diff = diffPresentation(committedTiles, built.mutation);
+    seqRef.current += 1;
+    setPending({
+      mutation: built.mutation,
+      diff,
+      previewTiles: applyMutationToTiles(committedTiles, built.mutation),
+      pageId: input.activePageId,
+      targetsKey: keyOf([]),
+      seq: seqRef.current,
+    });
+    setTurns((previous) => [...previous, { role: 'assistant', text: plan.rationale ?? '', diff }]);
+  }, [snapshot, busy, input.directionLabels, baselineTiles, input.activePageId, seenTheme, input.gridGapPx, committedTiles, t]);
+
   return {
     turns,
     busy,
     submit,
     apply,
     discard,
+    applyDirection,
+    /** Raw proposals the model returned (coerced by the page against its tiles). */
+    modelProposals,
     pending,
     /** Tiles to render while previewing; null means render the real state. */
     previewTiles: pending?.previewTiles ?? null,
     visualCount: snapshot?.visuals.length ?? 0,
     selectedCount: selected.length,
   };
+}
+
+/** The colour choices of a model's theme intent — kept when a direction grammar
+ *  composes the page (the model picked a palette; the grammar owns structure). */
+function pickPalette(intent: Record<string, any> | undefined): Record<string, any> {
+  if (!intent) return {};
+  const out: Record<string, any> = {};
+  for (const key of ['colorway', 'accent', 'dataColors', 'mode']) if (intent[key] !== undefined) out[key] = intent[key];
+  return out;
 }

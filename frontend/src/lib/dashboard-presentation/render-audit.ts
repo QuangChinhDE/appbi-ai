@@ -24,7 +24,10 @@ export type RenderFindingCode =
   | 'content.overflow'
   | 'text.lowContrast'
   | 'tile.overlap'
-  | 'tile.offCanvas';
+  | 'tile.offCanvas'
+  // A chart drew its axes and no data marks, and did not say it has no data.
+  // It reads as "the value is zero" or as a working chart; it is neither.
+  | 'chart.noMarks';
 
 export interface RenderFinding {
   code: RenderFindingCode;
@@ -44,6 +47,9 @@ export interface TileMeasure {
   titleColor?: string;
   surfaceColor?: string;
   contrast?: number;
+  /** Data marks drawn (lines/bars/sectors/areas/points) — null for a chart
+   *  that is not an SVG plot (a custom visual). */
+  marks?: number;
 }
 
 export interface RenderAuditResult {
@@ -103,6 +109,24 @@ function kindOf(el: HTMLElement): TileMeasure['kind'] {
   const declared = el.getAttribute('data-tile-kind');
   if (declared === 'kpi' || declared === 'table' || declared === 'widget' || declared === 'chart') return declared;
   return el.querySelector('.dashboard-kpi-value') ? 'kpi' : 'chart';
+}
+
+/** Data marks in a tile's plot: a line or area with a real path, a bar or a
+ *  sector with area, a dot. null when the tile has no recharts plot at all
+ *  (KPI-like and custom visuals are judged elsewhere). */
+export function countDataMarks(el: Element): number | null {
+  const svg = el.querySelector('svg.recharts-surface');
+  if (!svg) return null;
+  let n = 0;
+  svg.querySelectorAll('.recharts-line-curve, .recharts-area-area, .recharts-area-curve').forEach((p) => {
+    if ((p.getAttribute('d') ?? '').length > 8) n += 1;
+  });
+  svg.querySelectorAll('.recharts-bar-rectangle path, .recharts-rectangle, .recharts-sector, .recharts-pie-sector path, .recharts-scatter-symbol, .recharts-radial-bar-sector, .recharts-funnel-trapezoid')
+    .forEach((p) => {
+      const d = p.getAttribute('d') ?? '';
+      if (d.length > 8 || p.tagName.toLowerCase() !== 'path') n += 1;
+    });
+  return n;
 }
 
 function rectsOverlap(a: TileMeasure['rect'], b: TileMeasure['rect']): boolean {
@@ -190,6 +214,15 @@ export function auditRenderedTiles(root: ParentNode = document): RenderAuditResu
         detail: `content ${body.scrollHeight}px in a ${body.clientHeight}px body`,
         value: body.clientHeight / Math.max(1, body.scrollHeight),
       });
+    }
+
+    if (kind === 'chart' && !loading) {
+      const marks = countDataMarks(el);
+      measure.marks = marks ?? undefined;
+      const saysEmpty = !!el.querySelector('.dashboard-empty-state, [data-empty-state], [data-testid="chart-empty"]');
+      if (marks === 0 && !saysEmpty) {
+        findings.push({ code: 'chart.noMarks', tileId, detail: 'the chart rendered axes but no data marks', value: 0 });
+      }
     }
 
     if (container && box.right > container.right + 2) {

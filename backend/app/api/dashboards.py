@@ -5,12 +5,12 @@ import json
 import re
 import secrets
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile, status
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from app.services import dashboard_presence
 
@@ -2060,6 +2060,82 @@ def plan_dashboard_presentation(
     return PresentationPlanResponse(plan=plan)
 
 
+class PresentationCritiqueRequest(BaseModel):
+    """A rendered preview to review. The image is the preview the author is
+    looking at (a data URL, JPEG/PNG); the tile list names what is on it."""
+    image: str = Field(..., min_length=32, max_length=6_000_000)
+    tiles: List[Dict[str, Any]] = Field(default_factory=list, max_length=80)
+    direction: Optional[str] = Field(default=None, max_length=40)
+
+
+@router.post("/{dashboard_id}/presentation-critique", status_code=status.HTTP_200_OK)
+def critique_presentation_preview(
+    dashboard_id: int,
+    body: PresentationCritiqueRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """One visual review of a rendered AI Design preview (advice, not a gate).
+    503 when no vision model is configured — the client then keeps its
+    deterministic review only."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    if not body.image.startswith("data:image/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="image must be a data:image URL")
+    from app.services.dashboard_presentation_critic import CritiqueUnavailable, critique_rendered_preview
+    try:
+        return critique_rendered_preview(image=body.image, tiles=body.tiles, direction=body.direction)
+    except CritiqueUnavailable as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+class ContentProposalDecision(BaseModel):
+    """A person's decision on a change AI Design PROPOSED to what a tile says.
+
+    The change itself is applied by the editor like any draft edit (it reaches
+    /d only on Publish); this records WHO decided WHAT, before → after."""
+    decision: Literal["accepted", "rejected"]
+    kind: Literal["sort_by_value", "retitle"]
+    tile_id: int
+    before: Optional[Any] = None
+    after: Optional[Any] = None
+    source: Literal["ai", "rule"] = "ai"
+
+
+@router.post("/{dashboard_id}/content-proposals/decision", status_code=status.HTTP_200_OK)
+def record_content_proposal_decision(
+    dashboard_id: int,
+    body: ContentProposalDecision,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Audit a content proposal decision. Only an editor can make one, and only
+    for a tile on this dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    tile = db.query(DashboardChart).filter(
+        DashboardChart.id == body.tile_id, DashboardChart.dashboard_id == dashboard_id,
+    ).first()
+    if tile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tile not on this dashboard")
+    from app.models.audit_log import AuditAction
+    from app.services.audit_service import audit
+    action = (AuditAction.DASHBOARD_CONTENT_PROPOSAL_ACCEPTED if body.decision == "accepted"
+              else AuditAction.DASHBOARD_CONTENT_PROPOSAL_REJECTED)
+    audit(
+        db, action, request=request, user_id=current_user.id,
+        resource_type="dashboard", resource_id=str(dashboard_id),
+        details={"kind": body.kind, "tile_id": body.tile_id, "before": body.before,
+                 "after": body.after, "source": body.source},
+    )
+    return {"ok": True, "decision": body.decision}
+
+
 @router.post("/{dashboard_id}/widgets", response_model=DashboardResponse)
 def add_widget_to_dashboard(
     dashboard_id: int,
@@ -2075,6 +2151,13 @@ def add_widget_to_dashboard(
     widget_type = request.widget_type or "text"
     if widget_type == "chart":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use /charts endpoint for chart widgets")
+    # A draft-only block belongs to the draft of whoever created it — stamped
+    # here, never taken from the client, so another editor's publish cannot
+    # publish it and another editor's discard cannot delete it.
+    if getattr(request.layout, "draftOnly", False):
+        request.layout.draftOwner = str(current_user.id)
+    elif hasattr(request.layout, "draftOwner"):
+        delattr(request.layout, "draftOwner")
     try:
         dashboard = DashboardService.add_widget(
             db,
@@ -2398,6 +2481,14 @@ def publish_dashboard_draft(
         row.layout = merged
         flag_modified(row, "layout")
 
+    # ── Blocks this user's AI Design created in the draft go live now, in the
+    #    same commit as the layout: flag cleared, owner mark dropped. ──
+    for row in rows:
+        lay = row.layout if isinstance(row.layout, dict) else None
+        if lay and lay.get("draftOnly") and str(lay.get("draftOwner") or user_key) == user_key:
+            row.layout = {k: v for k, v in lay.items() if k not in ("draftOnly", "draftOwner")}
+            flag_modified(row, "layout")
+
     # ── Filter / slicer slots (still a shared draft — applied + cleared here) ──
     draft_filters_config = snapshot.get("filters_config")
     if isinstance(draft_filters_config, list):
@@ -2452,6 +2543,13 @@ def discard_dashboard_draft(
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
     require_edit_access(db, current_user, dash, "dashboards")
+    # Blocks this user's draft created were never published: discarding the
+    # draft removes them. Published rows are never touched here.
+    user_key = str(current_user.id)
+    for row in db.query(DashboardChart).filter(DashboardChart.dashboard_id == dashboard_id).all():
+        lay = row.layout if isinstance(row.layout, dict) else None
+        if lay and lay.get("draftOnly") and str(lay.get("draftOwner") or user_key) == user_key:
+            db.delete(row)
     dash.draft_snapshot = None
     flag_modified(dash, "draft_snapshot")
     db.commit()

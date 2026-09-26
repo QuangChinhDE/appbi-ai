@@ -24,6 +24,9 @@ from app.core.dependencies import ALGORITHM
 from app.core.logging import get_logger
 from app.models.models import Dashboard, DashboardChart, DashboardPublicLink
 from app.schemas import ChartDataResponse, DashboardResponse
+from app.services.dashboard_service import is_draft_only_item
+
+_PUBLIC_MEASURE_TYPES = frozenset({"count", "sum", "avg", "min", "max", "count_distinct", "percent_of_total", "formula"})
 from app.schemas.schemas import AiChatSessionSave
 from app.services import ChartService
 from app.services.dataset_model_service import get_dataset_model, get_distinct_field_values, _DISTINCT_FETCH_CEILING
@@ -1085,6 +1088,14 @@ def get_public_dashboard(
 
     # Public viewers get view-level permission (read-only, no edit actions)
     dash.user_permission = "view"
+    # A block staged by AI Design and not yet published is the editor's draft:
+    # it never reaches /d or /embed until Publish clears the flag (same commit
+    # as the layout). set_committed_value: shape the served copy only — never a
+    # pending change the session could flush as a delete.
+    from sqlalchemy.orm.attributes import set_committed_value as _set_committed
+    _set_committed(dash, "dashboard_charts", [
+        dc for dc in (dash.dashboard_charts or []) if not is_draft_only_item(dc)
+    ])
     for dashboard_chart in dash.dashboard_charts or []:
         ChartService.hydrate_runtime_config(db, dashboard_chart.chart, auto_generate=False)
 
@@ -1196,7 +1207,17 @@ def get_public_dashboard(
                     meas.append({
                         "name": me.get("name"),
                         "label": me.get("label"),
-                        "format": {"kind": fmt.get("kind")} if isinstance(fmt, dict) else None,
+                        # Display-only: the kind, the currency CODE (so a BRL
+                        # measure is not shown in dollars) and decimals.
+                        "format": {
+                            "kind": fmt.get("kind"),
+                            "currency": fmt.get("currency"),
+                            "decimals": fmt.get("decimals"),
+                        } if isinstance(fmt, dict) else None,
+                        # The aggregation word only (sum/avg/…), never its SQL:
+                        # a report finding may state a share of a total only for
+                        # an additive measure.
+                        "type": me.get("type") if me.get("type") in _PUBLIC_MEASURE_TYPES else None,
                     })
                 views_out.append({"name": v.get("name"), "dimensions": dims, "measures": meas})
             return {"views": views_out}

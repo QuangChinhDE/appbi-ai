@@ -13,6 +13,8 @@ that boundary at the three seams the feature added:
 """
 from __future__ import annotations
 
+import pytest
+
 import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_presentation_planner.db")
@@ -190,3 +192,32 @@ def test_request_schema_accepts_layer_and_targets_and_maps_legacy_focus():
     from pydantic import ValidationError
     with _pytest.raises(ValidationError):
         PresentationPlanRequest(prompt="p", snapshot={}, granted_layer="admin")
+
+
+# ── Visual review of a rendered preview ──────────────────────────────────────
+
+def test_a_visual_review_keeps_only_the_rubric_and_the_closed_repairs():
+    from app.services.dashboard_presentation_critic import normalize_critique
+    out = normalize_critique({
+        "scores": {"hierarchy": 4.4, "legibility": 9, "made_up": 5},
+        "summary": "Clear verdict, crowded bottom half.",
+        "issues": [
+            {"visual": 7, "problem": "Bars crowd their labels", "fix": {"key": "showDataLabels", "value": False}},
+            {"visual": 7, "problem": "Title small", "fix": {"key": "chartTitleFontSize", "value": 40}},
+            {"visual": 7, "problem": "Wants a pie", "fix": {"key": "chartType", "value": "PIE"}},
+            {"visual": 999, "problem": "Not on the page", "fix": {"key": "tileFrame", "value": "flush"}},
+        ],
+    }, [7])
+    assert out["scores"] == {"hierarchy": 4, "legibility": 5}
+    fixes = [i.get("fix") for i in out["issues"]]
+    assert fixes[0] == {"key": "showDataLabels", "value": False}
+    assert fixes[1] == {"key": "chartTitleFontSize", "value": 22}, "a size outside the range must be clamped"
+    assert fixes[2] is None, "a semantic change (chart type) must never be a repair"
+    assert "visual" not in out["issues"][3] and fixes[3] is None, "a tile not on the page gets no fix"
+
+
+def test_no_vision_model_means_no_review_not_a_made_up_one(monkeypatch):
+    from app.services import dashboard_presentation_critic as critic
+    monkeypatch.setattr(critic.LLMClient, "complete_json_multimodal", staticmethod(lambda **kw: None))
+    with pytest.raises(critic.CritiqueUnavailable):
+        critic.critique_rendered_preview(image="data:image/jpeg;base64,AAAA", tiles=[{"id": 1}], direction=None)

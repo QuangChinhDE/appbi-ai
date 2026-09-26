@@ -24,6 +24,7 @@ create is touched.
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 
@@ -90,7 +91,10 @@ def _config(chart_type: str, title: str, role: dict) -> dict:
 CHARTS = [
     ("E2E Revenue", "KPI", {"metrics": [{"field": "revenue", "agg": "sum"}]}, (0, 0, 12, 6)),
     ("E2E Orders", "KPI", {"metrics": [{"field": "orders", "agg": "sum"}]}, (12, 0, 12, 6)),
-    ("E2E Average order value", "KPI", {"metrics": [{"field": "revenue", "agg": "avg"}]}, (24, 0, 12, 6)),
+    # Average order value is total revenue / total orders — a formula measure
+    # declared on the semantic view below — not AVG(revenue) over the rows,
+    # which is "average revenue per region-channel-month" wearing AOV's label.
+    ("E2E Average order value", "KPI", {"metrics": [{"field": "{view}.aov", "agg": "auto"}]}, (24, 0, 12, 6)),
     ("E2E Revenue over time", "TIME_SERIES",
      {"metrics": [{"field": "revenue", "agg": "sum"}], "timeField": "order_month", "dimension": "order_month"},
      (0, 9, 24, 16)),
@@ -101,6 +105,30 @@ CHARTS = [
     ("E2E Sales detail", "TABLE",
      {"metrics": [], "selectedColumns": ["region", "channel", "revenue", "orders"]}, (18, 25, 18, 14)),
 ]
+
+
+def _declare_measures(db, table_id: int) -> str:
+    """The business measures the fixture's KPIs mean, on its semantic view."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.semantic import SemanticView
+    from app.schemas.semantic import MeasureDefinition
+
+    view = db.query(SemanticView).filter(SemanticView.dataset_table_id == table_id).one()
+    wanted = [
+        {"name": "total_revenue", "label": "Revenue", "type": "sum", "sql": "${TABLE}.revenue",
+         "format": {"kind": "currency", "currency": "USD"}},
+        {"name": "total_orders", "label": "Orders", "type": "sum", "sql": "${TABLE}.orders"},
+        {"name": "aov", "label": "Average order value", "type": "formula",
+         "expression": "${total_revenue} / NULLIF(${total_orders}, 0)",
+         "depends_on": ["total_revenue", "total_orders"], "format": {"kind": "currency", "currency": "USD"}},
+    ]
+    names = {m["name"] for m in wanted}
+    kept = [m for m in (view.measures or []) if isinstance(m, dict) and m.get("name") not in names]
+    view.measures = kept + [MeasureDefinition.model_validate(m).model_dump() for m in wanted]
+    flag_modified(view, "measures")
+    db.flush()
+    return view.name
 
 
 def main() -> int:
@@ -133,6 +161,7 @@ def main() -> int:
         # takes right after creating the dataset. Without it every chart answers
         # "Invalid field reference" and the gate would be measuring error cards.
         generate_dataset_model(db, int(dataset_id), force=False)
+        view_name = _declare_measures(db, table_id)
 
         if dashboard is None:
             dashboard = Dashboard(
@@ -150,6 +179,7 @@ def main() -> int:
             db.flush()
 
         for name, chart_type, role, (x, y, w, h) in CHARTS:
+            role = json.loads(json.dumps(role).replace("{view}", view_name))
             chart = db.query(Chart).filter(Chart.name == name).first()
             if chart is None:
                 chart = ChartService.create(db, ChartCreate(

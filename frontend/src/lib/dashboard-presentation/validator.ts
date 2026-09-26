@@ -35,6 +35,7 @@ import {
   templateIds,
 } from './capabilities';
 import { clampLayer } from './intent';
+import { coercePlanBlocks, resolveSectionRef } from './blocks';
 import {
   COMPOSITION_STYLES,
   DESIGN_LAYERS,
@@ -124,6 +125,8 @@ export interface CoerceOptions {
   grantedLayer: DesignLayer;
   /** The visuals the user selected. Empty/undefined means the whole page. */
   targets?: VisualId[] | null;
+  /** Tiles on this page — what a block's finding reference may point at. */
+  knownTileIds?: VisualId[];
 }
 
 /**
@@ -157,12 +160,24 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
       : 'Kept the change to the visuals you named rather than rebuilding the page.');
   }
 
+  // Blocks first, so sections can place them by the id the model used ("b1").
+  const coercedBlocks = coercePlanBlocks(
+    layer === 'redesign' ? source.blocks : undefined,
+    new Set(options.knownTileIds ?? []),
+  );
+  notes.push(...coercedBlocks.notes);
+  if (layer !== 'redesign' && Array.isArray(source.blocks) && source.blocks.length > 0) {
+    notes.push("New text blocks come with a redesign; this change kept the page's content as it is.");
+  }
+
   let sections = Array.isArray(source.sections)
     ? source.sections.map((section: any) => ({
         // `section_break` used to exist and placed its visuals full width; its
         // heading was never rendered, so it is read as what it actually did.
         primitive: section?.primitive === 'section_break' ? 'full_width' : section?.primitive,
-        visuals: Array.isArray(section?.visuals) ? section.visuals.map(toId).filter(Number.isFinite) : [],
+        visuals: Array.isArray(section?.visuals)
+          ? section.visuals.map((ref: unknown) => resolveSectionRef(ref, coercedBlocks.idMap)).filter((id: number | null): id is number => id !== null && Number.isFinite(id))
+          : [],
       }))
     : [];
 
@@ -295,8 +310,11 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
         }))
     : [];
 
+
+  // The retired `decorativeElements` key still creates nothing — say so, and
+  // point at what does (a block in a redesign).
   if (Array.isArray(source.decorativeElements) && source.decorativeElements.length > 0) {
-    notes.push('Section headers are not something AI Design can add yet; none were created.');
+    notes.push('Section headers are added as text blocks in a redesign; the requested decorative elements were not created.');
   }
 
   const plan: PresentationPlan = {
@@ -313,6 +331,7 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
     ...(Object.keys(tileStyles).length ? { tileStyles } : {}),
     ...(suggestions.length ? { suggestions } : {}),
     ...(typeof source.rationale === 'string' ? { rationale: source.rationale } : {}),
+    ...(coercedBlocks.blocks.length ? { blocks: coercedBlocks.blocks } : {}),
   };
 
   return { plan, notes };

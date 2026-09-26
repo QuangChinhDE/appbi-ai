@@ -14,6 +14,8 @@
 import { DASHBOARD_GRID_COLS, GRID_VERSION, dashboardRowHeight } from '@/lib/dashboard-pages';
 import { MIN_TILE_H, MIN_TILE_W, MAX_TILE_H } from './capabilities';
 import type {
+  BlockVariant,
+  PlanBlock,
   DashboardPresentationSnapshot,
   LayoutPrimitive,
   PresentationDensity,
@@ -94,6 +96,16 @@ const KPI_ROLES: ReadonlySet<string> = new Set(['kpi', 'headline']);
 const CHART_TYPE_MIN_PX: Record<string, number> = {
   GAUGE: 220, FUNNEL: 240, PIE: 210, DONUT: 210, RADAR: 240,
   WATERFALL: 240, SANKEY: 260, TREEMAP: 210, RADIAL_BAR: 220, PODIUM: 210,
+};
+
+/** Target height of a block by what it is: a headline is a band, a summary
+ *  sits beside a chart, a chapter introduces the chart below it. */
+const BLOCK_TARGET_PX: Record<BlockVariant, number> = {
+  headline: 150,
+  summary: 260,
+  callout: 120,
+  chapter: 130,
+  takeaway: 170,
 };
 
 /** How a primitive divides a row. `null` means "share equally between however
@@ -329,6 +341,12 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
     if (!fixed.has(visual.dashboardChartId)) byId.set(visual.dashboardChartId, visual);
   }
 
+  // Blocks the plan adds are placed like visuals (negative ids) so a section
+  // can put a headline above the numbers or a summary beside the hero. Their
+  // height comes from what they are, not from a chart role.
+  const blockById = new Map<VisualId, PlanBlock>();
+  for (const block of plan.blocks ?? []) blockById.set(block.id, block);
+
   const density = plan.direction?.density ?? 'balanced';
   const heightScale = DENSITY_HEIGHT_SCALE[density] ?? 1;
   const gapPx = input.gridGapPx ?? DEFAULT_GRID_GAP_PX;
@@ -343,6 +361,8 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
     // 109px / 109px / 51px, which reads as a rendering fault rather than a
     // design. A row is a band; the tallest thing in it sets the band.
     const heights = ids.map((id) => {
+      const block = blockById.get(id);
+      if (block) return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, BLOCK_TARGET_PX[block.variant] * heightScale), gapPx);
       const visual = byId.get(id);
       const pref = plan.visualPreferences?.[String(id)];
       const role = pref?.role ?? visual?.displayRoleHint ?? 'supporting';
@@ -380,6 +400,8 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
   // deliberately gives every tile in its row the SAME height — the rail is the
   // one place tiles that are NOT in a shared row get sized individually.
   const rowsForRole = (id: VisualId, extraScale: number): number => {
+    const block = blockById.get(id);
+    if (block) return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, BLOCK_TARGET_PX[block.variant] * heightScale * extraScale), gapPx);
     const visual = byId.get(id);
     const pref = plan.visualPreferences?.[String(id)];
     const role = pref?.role ?? visual?.displayRoleHint ?? 'supporting';
@@ -446,7 +468,7 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
         notes.push(`Visual ${id} appeared more than once in the plan; kept the first placement.`);
         return false;
       }
-      return byId.has(id);
+      return byId.has(id) || blockById.has(id);
     });
     if (ids.length === 0) continue;
 

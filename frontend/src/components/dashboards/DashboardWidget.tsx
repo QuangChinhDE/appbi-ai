@@ -5,9 +5,12 @@ import type { DashboardChart, DashboardWidgetType } from '@/types/api';
 import { renderTemplate } from '@/lib/dashboard-expression';
 import { renderMarkdown } from '@/lib/dashboard-markdown';
 import { useI18n } from '@/providers/LanguageProvider';
+import { NarrativeWidget } from './NarrativeWidget';
 
 type Props = {
   widget: DashboardChart;
+  /** Builder surface: blocks may show authoring hints (empty / static text). */
+  editing?: boolean;
   params?: Record<string, any>;
   onParamChange?: (paramName: string, value: any) => void;
 };
@@ -17,7 +20,7 @@ type Props = {
  * back to a labeled placeholder so a future widget kind never crashes a
  * dashboard rendered by an older client.
  */
-export function DashboardWidget({ widget, params = {}, onParamChange }: Props) {
+export function DashboardWidget({ widget, params = {}, onParamChange, editing = false }: Props) {
   const { t } = useI18n();
   const type: DashboardWidgetType = (widget.widget_type ?? 'chart') as DashboardWidgetType;
   const cfg = widget.widget_config ?? {};
@@ -45,6 +48,8 @@ export function DashboardWidget({ widget, params = {}, onParamChange }: Props) {
       return <CalloutWidget config={cfg} />;
     case 'hero_strip':
       return <HeroStripWidget config={cfg} />;
+    case 'narrative':
+      return <NarrativeWidget config={cfg} editing={editing} />;
     case 'html_fragment':
       return <HtmlFragmentWidget config={cfg} />;
     default:

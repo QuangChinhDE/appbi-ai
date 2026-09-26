@@ -43,6 +43,16 @@ layers:
     label: "Backend core (config, database, dependencies, crypto)"
     may_depend_on: ["be_core"]     # leaf: no api/services/models/modules
 
+  # Schema migrations. Unclassified, every new migration blocked the server gate
+  # as UNKNOWN (backend/alembic/** is a blocking glob) - which taught nothing and
+  # stopped legitimate additive changes. Classified here AND bound to the
+  # schema_migrations feature below, so a migration always requires the chain
+  # check: classification must not become a quieter way to skip review.
+  - id: migrations
+    match: ["backend/alembic/**"]
+    label: "Alembic schema migrations"
+    may_depend_on: ["be_core", "be_models", "migrations"]
+
   - id: be_models
     match: ["backend/app/models/**"]
     label: "Backend models (SQLAlchemy ORM)"
@@ -218,6 +228,12 @@ protected:
 #    description (validate_fix_plan) to the right owner files.
 # ─────────────────────────────────────────────────────────────────────────────
 features:
+  - id: schema_migrations
+    label: "Alembic schema migrations (single head, parent committed, additive)"
+    files: ["backend/alembic/**"]
+    keywords: [migration, alembic, "down_revision", "schema change"]
+    required_tests: [alembic_chain]
+
   - id: distinct_value_cascade
     label: "Slicer/filter dropdown distinct-value cascade"
     files: [backend/app/services/dataset_model_service.py, backend/app/api/public.py]
@@ -450,6 +466,12 @@ tests:
   protection_approval_is_one_commit:
     run: "pytest scripts/ci/test_protection_approval_is_one_commit.py"
     locks: "the owner-approval hatch is a COMMIT and not a switch: unset blocks, `true`/`1`/`*`/a branch name block, the exact head SHA permits a declared removal, a later push invalidates it, and it never excuses a protected subsystem losing a required gate. Also that change-guardrail.yml exports exactly the variable the checker reads - the two disagreed, so the hatch had never opened"
+  alembic_chain:
+    run: "python scripts/ci/alembic_chain.py"
+    locks: "one alembic head, and every down_revision a migration that exists in the tree - a missing parent crash-loops the backend at boot"
+  guardrail_architecture_diff:
+    run: "pytest scripts/ci/test_guardrail_architecture_diff.py"
+    locks: "the architecture check judges the imports a diff ADDS: a new violating import is caught, an old one in a touched file is not charged to the change, a file absent from the diff map is still scanned whole; migrations are classified AND bound to alembic_chain; an unclassified runtime path still blocks"
   guardrail_diff_range:
     run: "pytest scripts/ci/test_guardrail_diff_range.py"
     locks: "the guardrail tells an EMPTY diff from one it could not resolve: a real zero-change range is allowed, an unresolvable base/head or a git failure returns unknown and a non-zero exit, and --json stays valid JSON in every state"

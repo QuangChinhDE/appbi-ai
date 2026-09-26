@@ -21,6 +21,8 @@ export interface PresentationDiff {
   themeKeys: string[];
   slicerKeys: string[];
   notes: string[];
+  /** Text blocks this change adds (headline, summary, chapter, takeaway). */
+  addedBlocks: number;
 }
 
 function rectOf(tile: DashboardChart): { x: number; y: number; w: number; h: number } {
@@ -73,6 +75,7 @@ export function diffPresentation(
     themeKeys: Object.keys(mutation.themePatch ?? {}),
     slicerKeys: Object.keys(mutation.slicerClusterPatch ?? {}),
     notes: mutation.notes ?? [],
+    addedBlocks: mutation.createdBlocks?.length ?? 0,
   };
 }
 
@@ -82,6 +85,7 @@ export function summarizeDiff(diff: PresentationDiff): string[] {
   if (diff.moved.length) lines.push(`Moved ${diff.moved.length} visual${diff.moved.length === 1 ? '' : 's'}`);
   if (diff.resized.length) lines.push(`Resized ${diff.resized.length} visual${diff.resized.length === 1 ? '' : 's'}`);
   if (diff.restyled.length) lines.push(`Restyled ${diff.restyled.length} visual${diff.restyled.length === 1 ? '' : 's'}`);
+  if (diff.addedBlocks) lines.push(`Added ${diff.addedBlocks} text block${diff.addedBlocks === 1 ? '' : 's'} bound to live findings`);
   if (diff.slicerKeys.length) lines.push('Repositioned the filters');
   if (diff.themeKeys.length) lines.push(`Theme: ${diff.themeKeys.length} setting${diff.themeKeys.length === 1 ? '' : 's'}`);
   if (lines.length === 0) lines.push('Nothing to change — the page already matches that description');
@@ -93,5 +97,6 @@ export function isEmptyDiff(diff: PresentationDiff): boolean {
     && diff.resized.length === 0
     && diff.restyled.length === 0
     && diff.themeKeys.length === 0
-    && diff.slicerKeys.length === 0;
+    && diff.slicerKeys.length === 0
+    && (diff.addedBlocks ?? 0) === 0;
 }

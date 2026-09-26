@@ -173,6 +173,12 @@ function formatNumericValue(
   }
 
   if (format === 'currency') {
+    // A headline figure in the millions reads as R$13.6M, not R$13,591,643.7 —
+    // the full digits are for a table cell (choose 'number' to keep them).
+    if (abs >= 1_000_000) {
+      const scaled = abs >= 1_000_000_000 ? `${(numericValue / 1_000_000_000).toFixed(decimalPlaces)}B` : `${(numericValue / 1_000_000).toFixed(decimalPlaces)}M`;
+      return `${currencySymbol}${scaled}`;
+    }
     return `${currencySymbol}${numericValue.toLocaleString(undefined, {
       minimumFractionDigits: 0,
       maximumFractionDigits: decimalPlaces,
