@@ -42,8 +42,10 @@ def _squash(s: str) -> str:
 
 
 def _close(a: float, b: float) -> bool:
+    """Equal within tolerance, by MAGNITUDE: "giảm 5,23%" states -5.23 with the
+    direction in words (found in the browser on a correct month-on-month)."""
     scale = max(abs(a), abs(b))
-    return a == b or (scale and abs(a - b) / scale <= _TOL)
+    return a == b or bool(scale and abs(abs(a) - abs(b)) / scale <= _TOL)
 
 
 def _is_time(dim: str | None) -> bool:

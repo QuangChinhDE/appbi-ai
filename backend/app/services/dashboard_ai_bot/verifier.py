@@ -69,6 +69,11 @@ _STRIP_SPANS = [
     re.compile(r"\[(?:DESC|DIAG|PRED|PRESC|HIGH|MED|LOW|WEB)\]", re.IGNORECASE),
     re.compile(r"https?://\S+"),
     re.compile(r"`[^`]*`"),               # inline code / ids
+    # A PERIOD IS A LABEL: "2018-08", "08/2018", "2018/08/31" name a time, not a
+    # figure. Found in the browser: a correct month-on-month answer read "2018-08"
+    # as a claim of 8 (and "-07" as 7) and was flagged "4 figures do not match".
+    re.compile(r"(?<![\d.,])\d{4}[-/.]\d{1,2}(?:[-/.]\d{1,2})?(?![\d])"),
+    re.compile(r"(?<![\d.,])\d{1,2}/\d{4}(?![\d])"),
     # A QUOTED NAME IS A LABEL — which is what this list already says about
     # citations. Answers cite their source by name, and report names carry digits:
     # `"Olist · Điểm đánh giá TB · page-1"` yielded a claim of 1, that matched no
@@ -284,6 +289,9 @@ def _matches(value: float, evidence: list[float], tolerance: float) -> bool:
         if scale == 0:
             continue
         if abs(ev - value) / scale <= tolerance:
+            return True
+        # "giảm 5,23%" states the MAGNITUDE of -5.23 with the direction in words.
+        if abs(abs(ev) - abs(value)) / scale <= tolerance:
             return True
         # A percentage may be written as 12,5 while evidence holds 0.125 (or
         # the reverse). Accept both readings rather than flagging a formatting

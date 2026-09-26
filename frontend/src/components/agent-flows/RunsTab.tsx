@@ -943,14 +943,14 @@ function StepInspector({ step, configSource }: { step: RunStep; configSource?: s
         <span className="ml-auto flex items-center gap-2 text-tiny text-text-quaternary">
           {step.prompt_tokens != null ? (
             <>
-              <span>vào {(step.prompt_tokens ?? 0).toLocaleString()}</span>
-              <span>ra {(step.completion_tokens ?? 0).toLocaleString()}</span>
+              <span>{t('agentFlows.trace.tokensInLower', { n: (step.prompt_tokens ?? 0).toLocaleString() })}</span>
+              <span>{t('agentFlows.trace.tokensOutLower', { n: (step.completion_tokens ?? 0).toLocaleString() })}</span>
               <b className="text-text-tertiary">{tok.toLocaleString()} token</b>
             </>
           ) : (
             // NULL is not zero. A run recorded before per-step accounting genuinely
             // does not know its cost, and "0" would claim the step was free.
-            <span>chưa ghi token cho run này</span>
+            <span>{t('agentFlows.trace.noTokens')}</span>
           )}
         </span>
       </div>
@@ -1004,8 +1004,8 @@ function StepInspector({ step, configSource }: { step: RunStep; configSource?: s
         <>
           <p className="mb-1 text-tiny text-text-quaternary">
             {configSource?.startsWith('v')
-              ? `Cấu hình của bản ${configSource} — đúng bản đã chạy run này, không phải bản hiện tại.`
-              : (configSource || 'Không đọc được cấu hình của bản đã chạy.')}
+              ? t('agentFlows.trace.configOf', { version: String(configSource) })
+              : (configSource || t('agentFlows.trace.configUnreadable'))}
           </p>
           <ValueView
             filename={`buoc-${step.key}-cauhinh.json`}
@@ -1207,6 +1207,7 @@ function download(name: string, data: unknown) {
 function ValueView({
   raw, empty, filename,
 }: { raw: string | null | undefined; empty: string; filename: string }) {
+  const { t } = useI18n();
   const [showRaw, setShowRaw] = React.useState(false);
   const text = (raw ?? '').trim();
 
@@ -1256,11 +1257,11 @@ function ValueView({
       <div className="flex items-center gap-2">
         <button type="button" onClick={() => setShowRaw((s) => !s)}
           className="text-tiny text-text-quaternary underline-offset-2 hover:underline">
-          {showRaw ? 'Xem dạng dễ đọc' : 'Xem JSON gốc'}
+          {showRaw ? t('agentFlows.trace.viewReadable') : t('agentFlows.trace.viewRaw')}
         </button>
         <button type="button" onClick={() => download(filename, parsed)}
           className="text-tiny text-text-quaternary underline-offset-2 hover:underline">
-          Tải JSON
+          {t('agentFlows.trace.downloadJson')}
         </button>
       </div>
 

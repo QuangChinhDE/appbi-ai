@@ -411,3 +411,16 @@ def test_a_flagged_draft_on_the_last_round_is_kept_not_emptied(monkeypatch):
             pass
     asyncio.run(go())
     assert rt.calls == 1 and strategy.collected == "Bang SP chiếm 19,78%."
+
+
+def test_a_correct_month_on_month_with_period_labels_and_a_worded_sign(world):
+    """Browser, f6eb6caa: '2018-08 … 2018-07 … giảm 5.23%' — the dates were read as
+    claims of 8 and 7 and the decrease (-5.23 in the evidence) did not match."""
+    from app.services.dashboard_ai_bot.verifier import extract_answer_claims, verify_answer
+
+    text = "GMV 2018-08 là 1,003,308.47 so với 2018-07 là 1,058,728.03, giảm 5.23% (tháng 08/2018)."
+    assert [v for v, _ in extract_answer_claims(text)] == [1003308.47, 1058728.03, 5.23]
+    assert verify_answer(text, [1003308.47, 1058728.03, -5.23]).unmatched == []
+    ctx, state = world(MOM_Q, asked=("gmv",))
+    _rec(state, "compare_periods", _compare(1003308.47, 1058728.03, -5.23), {"chart_id": MONTHLY})
+    assert _why(state, ctx, text) == []
