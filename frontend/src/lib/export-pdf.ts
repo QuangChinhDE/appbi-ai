@@ -634,6 +634,7 @@ async function drawPageSnapshot(
   const availW = g.usableW;
   const availH = g.bottom - startContentY();
   let dataUrl: string | null = null;
+  let snapshotCanvas: HTMLCanvasElement | null = null;
   let cw = 0;
   let ch = 0;
   try {
@@ -654,6 +655,7 @@ async function drawPageSnapshot(
     });
     cw = canvas.width;
     ch = canvas.height;
+    snapshotCanvas = canvas;
     dataUrl = canvas.toDataURL('image/jpeg', 0.85);
   } catch {
     dataUrl = null;
@@ -667,6 +669,42 @@ async function drawPageSnapshot(
     return { scale: 0, failed: true };
   }
   const fit = Math.min(1, availW / (cw / 3.7795), availH / (ch / 3.7795));
+  const widthFit = Math.min(1, availW / (cw / 3.7795));
+  // A long report squeezed onto ONE sheet came out too small to read (charts
+  // the size of a stamp). When one sheet would push it below the readable
+  // scale, keep the width-fit scale and continue on further sheets, breaking
+  // at the bottom edge of a grid row so no chart is cut in two.
+  if (snapshotCanvas && fit < SNAPSHOT_SMALL_SCALE && widthFit > fit) {
+    const pxPerSheet = Math.floor((availH / widthFit) * 3.7795);
+    const rootTop = root.getBoundingClientRect().top;
+    const pxPerCss = ch / Math.max(1, root.scrollHeight);
+    const cuts = Array.from(root.querySelectorAll<HTMLElement>('.react-grid-item'))
+      .map((el) => Math.round((el.getBoundingClientRect().bottom - rootTop) * pxPerCss))
+      .filter((y) => y > 0 && y < ch)
+      .sort((a, b) => a - b);
+    const drawW = (cw / 3.7795) * widthFit;
+    const x = MARGIN + Math.max(0, (availW - drawW) / 2);
+    let from = 0;
+    let sheet = 0;
+    while (from < ch) {
+      const limit = from + pxPerSheet;
+      // The lowest row edge that still fits on this sheet (else a hard cut).
+      const edge = cuts.filter((y) => y > from + pxPerSheet * 0.35 && y <= limit).pop();
+      const to = limit >= ch ? ch : (edge ?? limit);
+      const slice = document.createElement('canvas');
+      slice.width = cw;
+      slice.height = to - from;
+      slice.getContext('2d')?.drawImage(snapshotCanvas, 0, from, cw, to - from, 0, 0, cw, to - from);
+      if (sheet > 0) {
+        pdf.addPage(opts.format, opts.orientation);
+        drawPageHeader(pdf, opts, page, ctx.pageNo, ctx.total);
+      }
+      pdf.addImage(slice.toDataURL('image/jpeg', 0.85), 'JPEG', x, startContentY(), drawW, ((to - from) / 3.7795) * widthFit);
+      from = to;
+      sheet += 1;
+    }
+    return { scale: widthFit, failed: false };
+  }
   const drawW = (cw / 3.7795) * fit;
   const drawH = (ch / 3.7795) * fit;
   const x = MARGIN + Math.max(0, (availW - drawW) / 2);
