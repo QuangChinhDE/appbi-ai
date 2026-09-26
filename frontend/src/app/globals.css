@@ -1783,3 +1783,19 @@
 .dashboard-tile-title-row[data-kpi]:focus-within > a,
 .dashboard-tile-title-row[data-kpi]:focus-within > button,
 .dashboard-tile-title-row[data-kpi]:focus-within > div { display: inline-flex; }
+
+/* KPI context: the span the number covers, then a comparison that carries its
+   own window and value, so a change is never read as the total's change. */
+.dashboard-kpi-scope { display: block; font-size: 11px; opacity: .6; margin-bottom: 2px; }
+.dashboard-kpi-window { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; font-size: 11.5px; }
+.dashboard-kpi-window-label { opacity: .7; }
+.dashboard-kpi-window-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* KPI context steps down on a short tile: sparkline first, then the
+   comparison; the one-line scope stays as long as anything does. */
+.dashboard-kpi-context[data-fit="compact"] .dashboard-kpi-spark { display: none; }
+.dashboard-kpi-context[data-fit="scope"] .dashboard-kpi-spark,
+.dashboard-kpi-context[data-fit="scope"] .dashboard-kpi-window { display: none; }
+
+.dashboard-kpi-context { container-type: inline-size; }
+@container (max-width: 170px) { .dashboard-kpi-scope-prefix { display: none; } }

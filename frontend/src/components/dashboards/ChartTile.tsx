@@ -6,7 +6,7 @@ import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
 import { buildTileEvidence, usePublishTileEvidence } from '@/lib/report-evidence';
-import { KpiContext } from './KpiContext';
+import { KpiContext, kpiRowValue } from './KpiContext';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
@@ -1709,6 +1709,7 @@ function ChartTileBase({
       {isKpiCard && chartData && exploreConfig?.roleConfig?.metrics?.[0]?.field ? (
           <KpiContext
             measureField={exploreConfig.roleConfig.metrics[0].field}
+            kpiValue={kpiRowValue(chartData.data)}
             goalDirection={(exploreConfig.styleConfig as any)?.kpiGoalDirection ?? null}
           />
         ) : null}

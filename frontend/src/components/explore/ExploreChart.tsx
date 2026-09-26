@@ -182,7 +182,9 @@ function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string, m
   // force-rotated (no regression for the common case).
   const long = maxLabelChars >= 11;
   const veryLong = maxLabelChars >= 16;
-  if (count > 60 || (long && count > 8)) {
+  // Vertical text is the last resort: it is the hardest to read, and ten
+  // category names stood on end read as a barcode. Diagonal first.
+  if (count > 30 || (veryLong && count > 16)) {
     angle = -90;                                   // vertical → zero horizontal overlap
     height = Math.min(150, 70 + Math.min(maxLabelChars, 22) * 4);
   } else if (count > 25 || (long && count > 2) || veryLong) {
@@ -1570,6 +1572,7 @@ function ExploreChartInner({
   viewerGrain,
   lockDateGrain = false,
   kpiLabelInHeader = false,
+  timeCompleteness,
 }: ExploreChartProps) {
   const { t } = useI18n();
   const baseStyle = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
@@ -2119,9 +2122,15 @@ function ExploreChartInner({
   // 'always' turns labels on for a theme built around stated numbers
   // (executive / vibrant); 'off' keeps a minimal chrome clean. 'auto' leaves
   // the decision to the chart, which is the historical behaviour.
+  // With no choice made by the author or the theme, a dashboard bar chart of a
+  // few bars states its values: a ranking is read by its numbers, and the
+  // visual review kept flagging "bar chart lacks data labels".
+  const autoBarLabels = embedded && chrome?.dataLabels !== 'off'
+    && (type === 'BAR' || type === 'HBAR' || type === 'COLUMN')
+    && metrics.length === 1 && data.length > 0 && data.length <= 12;
   const showDataLabels = style.dataLabelConfig?.enabled
     ?? opinion(style.showDataLabels, DEFAULT_STYLE_CONFIG.showDataLabels)
-    ?? (chrome?.dataLabels === 'always');
+    ?? (chrome?.dataLabels === 'always' || autoBarLabels);
   // Phase-15.84 — collision registry as a Map keyed by series+pointIndex.
   // Recreated each React render. Recharts replays `content` on every
   // animation tick within the same render closure; the Map shape is
@@ -3032,7 +3041,8 @@ function ExploreChartInner({
     const pieH = rootSize.height;
     const longestPieLabel = sortedPieData.reduce((mx: number, r: any) => Math.max(mx, String(r?.displayName ?? r?.name ?? '').length + 6), 0);
     const pieOuterRadius: number | string = pieW > 0 && pieH > 0
-      ? Math.max(36, Math.min(pieH * 0.4, pieW / 2 - Math.min(pieW * 0.28, longestPieLabel * 6.6 + 18)))
+      // +40: the label sits a leader line (~20px) beyond the rim, plus its own padding.
+      ? Math.max(36, Math.min(pieH * 0.4, pieW / 2 - Math.min(pieW * 0.3, longestPieLabel * 6.6 + 40)))
       : '60%';
     const fitPieText = (text: string, x: number, anchor: 'start' | 'end', fontSize: number): string | null => {
       if (!(pieW > 0)) return text;
@@ -3041,13 +3051,22 @@ function ExploreChartInner({
       if (maxChars < 4) return null;
       return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}…`;
     };
+    // Slices too thin to label keep their name in the legend and their value
+    // in the tooltip; their leader lines go too (a line to nothing is noise).
+    const pieMinShare = sortedPieData.length > 4 ? 0.06 : 0.03;
+    const renderPieLabelLine = (p: any) => {
+      if (!(p?.percent > pieMinShare) || !Array.isArray(p.points) || p.points.length < 2) return <g />;
+      const [a, b] = p.points;
+      return <path d={`M${a.x},${a.y}L${b.x},${b.y}`} stroke={p.stroke} strokeWidth={1} fill="none" />;
+    };
     const renderPieLabel = (entry: any) => {
       const { name, value, percent, x, y, cx, cy, midAngle } = entry;
       const rawName = String(entry?.payload?.name ?? name ?? '');
       const displayName = String(entry?.payload?.displayName ?? name ?? rawName);
-      // Skip slices below 3% — match Recharts default to keep small
-      // slice labels from overlapping near the centre.
-      if (percent === undefined || percent <= 0.03) return null;
+      // Skip small slices: below 3% always, below 6% once there are more than
+      // four slices — thin wedges' labels pile up at the rim. Every slice keeps
+      // its name in the legend and its value in the tooltip.
+      if (percent === undefined || percent <= pieMinShare) return null;
       // Phase-B3 — guard non-finite anchors (degenerate slice geometry).
       if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
       const sliceKey = rawName;
@@ -3146,7 +3165,7 @@ function ExploreChartInner({
                   : undefined}
                 onClick={handlePieClick}
                 label={renderPieLabel}
-                labelLine={showDataLabels}
+                labelLine={showDataLabels ? renderPieLabelLine : false}
               >
                 {sortedPieData.map((row: any, i) => {
                   // Cross-highlight: dim each slice by its highlighted share
@@ -3731,7 +3750,11 @@ function ExploreChartInner({
     const displaySeries = categoricalSeriesWithCalc;
     // Cross-highlight: dim the baseline line and overlay a solid line of the
     // P-contribution (`<key>__hl`). Keeps full series context (PBI-parity).
-    const displayData = isHighlight ? buildHighlightSplitRows(baseLineData, displaySeries) : baseLineData;
+    const partialKeys = partialBucketKeys(timeCompleteness, baseLineData, xField);
+    const splitPartial = !isHighlight && partialKeys.size > 0;
+    const displayData = isHighlight
+      ? buildHighlightSplitRows(baseLineData, displaySeries)
+      : splitPartial ? splitPartialRows(baseLineData, displaySeries.map((s) => s.key), xField, partialKeys) : baseLineData;
     const lineDualYAxis = dualYAxis && displaySeries.length >= 2;
     const selectedRightSeries = yAxisRightSeriesKey
       ? displaySeries.find((series) => series.key === yAxisRightSeriesKey)
@@ -3804,6 +3827,23 @@ function ExploreChartInner({
                         <LabelList dataKey={series.key} content={rightAxisMinMaxLabelContent(series.key, displayData)} />
                       )}
                     </Line>
+                    {splitPartial && (
+                      // An incomplete period (in progress, or far below a
+                      // typical one at the data's edge) is drawn faded and
+                      // dashed: its value stays readable in the tooltip, but a
+                      // half-counted month no longer reads as a collapse.
+                      <Line isAnimationActive={animate} type="monotone" dataKey={`${series.key}__partial`}
+                        name={`${series.label} ${t('explore.chart.incompletePeriod')}`}
+                        hide={hiddenSeries.has(series.key)}
+                        stroke={stroke}
+                        strokeOpacity={0.45}
+                        strokeWidth={Math.max(1, lineWidth - 0.5)}
+                        strokeDasharray="4 4"
+                        dot={{ r: 2.5, strokeWidth: 1.5, fill: 'transparent' }}
+                        legendType="none"
+                        connectNulls={false}
+                        yAxisId={rightAxisSeries?.key === series.key ? 'right' : 0} />
+                    )}
                     {isHighlight && (
                       <Line isAnimationActive={animate} type="monotone" dataKey={`${series.key}__hl`}
                         name={series.label}
@@ -4233,6 +4273,51 @@ export function ExploreChart(props: ExploreChartProps) {
       )}
     </div>
   );
+}
+
+/** The x values of this chart's rows that the engine flagged as incomplete. */
+function partialBucketKeys(
+  completeness: import('@/types/api').TimeCompleteness | undefined,
+  rows: Record<string, any>[],
+  xField: string,
+): Set<string> {
+  const out = new Set<string>();
+  if (!completeness?.partial?.length || !xField) return out;
+  const flagged = new Set(completeness.partial
+    .map((p) => parseBucket(p.bucket)?.getTime())
+    .filter((v): v is number => typeof v === 'number'));
+  for (const row of rows) {
+    const d = parseBucket(row?.[xField]);
+    if (d && flagged.has(d.getTime())) out.add(String(row[xField]));
+  }
+  return out;
+}
+
+/**
+ * Rows for a line whose incomplete periods are drawn apart: on a partial row
+ * the value moves from `key` to `key__partial`; the complete neighbour of a
+ * partial row carries it too, so the dashed segment joins the solid line.
+ */
+function splitPartialRows(
+  rows: Record<string, any>[],
+  keys: string[],
+  xField: string,
+  partial: Set<string>,
+): Record<string, any>[] {
+  const isPartial = rows.map((r) => partial.has(String(r?.[xField])));
+  return rows.map((row, i) => {
+    const out: Record<string, any> = { ...row };
+    const neighbourOfPartial = !isPartial[i] && (isPartial[i - 1] || isPartial[i + 1]);
+    for (const key of keys) {
+      if (isPartial[i]) {
+        out[`${key}__partial`] = row[key];
+        out[key] = null;
+      } else if (neighbourOfPartial) {
+        out[`${key}__partial`] = row[key];
+      }
+    }
+    return out;
+  });
 }
 
 function formatBucket(raw: string, grain: string): string {

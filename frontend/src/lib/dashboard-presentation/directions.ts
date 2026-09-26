@@ -10,8 +10,9 @@
  *               beside the argument chart) → supporting evidence → detail last.
  *               Light, spacious, calm.
  *  - operations "What needs attention right now?"  Current state (numbers and
- *               the latest period of each series) → exceptions the data itself
- *               flags (concentration, a missed target, incomplete periods) →
+ *               the latest period of each series) → what the data flags, said
+ *               as what it is (against target, where one exists; observations
+ *               such as concentration or incomplete periods, titled neutrally) →
  *               the monitoring series → drill-down (rankings, then tables).
  *               Dark, compact, contained cards, filters docked in a rail. A
  *               target is shown only where one exists; none is invented.
@@ -55,7 +56,10 @@ export interface DirectionLabels {
   whatMoved: string;
   latestStatus: string;
   detail: string;
-  needsAttention: string;
+  /** Neutral observations the data flags (concentration, incomplete periods). */
+  worthKnowing: string;
+  /** Results against a target — only where the data has one. */
+  againstTarget: string;
   keepInMind: string;
 }
 
@@ -63,7 +67,8 @@ const DEFAULT_LABELS: DirectionLabels = {
   whatMoved: 'What moved',
   latestStatus: 'Latest period',
   detail: 'Detail',
-  needsAttention: 'Needs attention',
+  worthKnowing: 'Worth knowing',
+  againstTarget: 'Against target',
   keepInMind: 'What to keep in mind',
 };
 
@@ -262,15 +267,18 @@ function operations(s: DashboardPresentationSnapshot, labels: DirectionLabels): 
     .filter((id): id is VisualId => id !== null);
   if (status.length) b.push(status.length === 3 ? 'three_equal' : status.length === 2 ? 'two_equal' : 'full_width', status);
 
-  // 2 · Exceptions — only what the data itself flags: a target met or missed
-  //     (where a target exists), a result carried by one member, periods that
-  //     are not complete. No threshold is invented to fill the slot.
-  const exceptions = keys(
-    ...allOf('attainment', p.kpis),
+  // 2 · What the data itself flags — said as what it is. A result carried by a
+  //     few members, or a period not yet complete, is an OBSERVATION, not a
+  //     problem: it is titled neutrally. A target met or missed is a separate
+  //     block, and only where the data has a target. No threshold is invented,
+  //     and nothing is called bad because it fell.
+  const targets = b.block('callout', allOf('attainment', p.kpis).slice(0, 4), { title: labels.againstTarget });
+  if (targets !== null) b.push('full_width', [targets]);
+  const observations = keys(
     ...allOf('concentration', p.breakdowns),
     ...allOf('partial_periods', p.temporal),
   ).slice(0, 5);
-  const attention = b.block('callout', exceptions, { title: labels.needsAttention });
+  const attention = b.block('callout', observations, { title: labels.worthKnowing });
 
   // 3 · Monitoring: the series, with gridlines to read values off; the
   //     exception list beside the series it is about.

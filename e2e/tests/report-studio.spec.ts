@@ -287,6 +287,30 @@ test('a filter moves the KPI, the charts and the narrative together — no stale
   }
 });
 
+test('a KPI says which span its number covers, and its change carries its own window and value', async ({ page, request }) => {
+  const c = await copy(request);
+  try {
+    await page.goto(`/d/${c.token}`);
+    await settled(page);
+    const ctx = page.locator('.dashboard-kpi-context').first();
+    // The scope is the part that keeps the number honest: it is the last thing a
+    // short tile gives up, and the fixture's KPI tiles have room for it.
+    await expect(ctx, 'no KPI context').toBeVisible();
+    expect(await ctx.getAttribute('data-fit'), 'the KPI context was dropped entirely').not.toBe('none');
+    // The fixture's revenue series adds up to its revenue KPI: the scope is proven.
+    await expect(ctx.locator('.dashboard-kpi-scope'), 'the KPI does not say which span it covers').toContainText(/All periods|Toàn kỳ/);
+    // Where the change is shown, it carries its own window and value.
+    if (await ctx.locator('.dashboard-kpi-window').isVisible()) {
+      const kpiValue = (await page.locator('.dashboard-kpi-value').first().textContent())?.trim();
+      const windowValue = (await ctx.locator('.dashboard-kpi-window-value').textContent())?.trim();
+      expect(windowValue, 'the change has no value of its own').toBeTruthy();
+      expect(windowValue, 'the comparison repeats the total instead of its own window').not.toEqual(kpiValue);
+    }
+  } finally {
+    await request.delete(`${DASH}/${c.id}`);
+  }
+});
+
 test('export is taken from the published report and is a real PDF', async ({ page, request }) => {
   test.setTimeout(240_000);
   const c = await copy(request);
@@ -304,6 +328,14 @@ test('export is taken from the published report and is a real PDF', async ({ pag
     const bytes = readFileSync(path!);
     expect(bytes.subarray(0, 4).toString(), 'not a PDF').toBe('%PDF');
     expect(bytes.length, 'an empty PDF').toBeGreaterThan(10_000);
+    // What the file IS, not only that it exists: a fully loaded report must
+    // export with nothing missing, at a size a stakeholder can read. (Evidence:
+    // a complete report once exported "1 chart failed to load" + "shrunk to 47%".)
+    const outcome = await page.evaluate(() => (window as any).__APPBI_LAST_EXPORT__ ?? null);
+    expect(outcome, 'the exporter recorded nothing').not.toBeNull();
+    expect(outcome.warnings.filter((w: any) => w.kind === 'incomplete'), 'the export says data is missing from a loaded report').toEqual([]);
+    expect(outcome.minPrintScale, 'a sheet was printed too small to read').toBeGreaterThanOrEqual(0.62);
+    expect(outcome.pages).toBeGreaterThan(0);
   } finally {
     await request.delete(`${DASH}/${c.id}`);
   }

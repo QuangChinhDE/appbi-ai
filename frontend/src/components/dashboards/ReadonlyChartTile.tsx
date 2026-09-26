@@ -10,7 +10,7 @@ import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { useI18n } from '@/providers/LanguageProvider';
 import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
 import { buildTileEvidence, usePublishTileEvidence } from '@/lib/report-evidence';
-import { KpiContext } from './KpiContext';
+import { KpiContext, kpiRowValue } from './KpiContext';
 import { metricKey, metricLabel, normalizeRoleConfig } from '@/components/explore/ExploreChartConfig';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
 import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-style';
@@ -638,6 +638,7 @@ export function ReadonlyChartTile({
         {isKpiCard && chartData && (roleConfig as any)?.metrics?.[0]?.field ? (
           <KpiContext
             measureField={(roleConfig as any).metrics[0].field}
+            kpiValue={kpiRowValue(chartData.data)}
             goalDirection={(effectiveStyleConfig as any)?.kpiGoalDirection ?? null}
           />
         ) : null}

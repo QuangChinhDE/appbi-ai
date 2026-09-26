@@ -1048,7 +1048,8 @@ function DashboardDetailPageInner() {
     whatMoved: t('report.direction.whatMoved'),
     latestStatus: t('report.direction.latestStatus'),
     detail: t('report.direction.detail'),
-    needsAttention: t('report.direction.needsAttention'),
+    worthKnowing: t('report.direction.worthKnowing'),
+    againstTarget: t('report.direction.againstTarget'),
     keepInMind: t('report.direction.keepInMind'),
   }), [t]);
 

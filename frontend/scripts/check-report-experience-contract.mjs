@@ -282,6 +282,18 @@ check('a reference redesign says what carried over, what was approximated and wh
   assert(!/3\.2x/.test(note), 'a figure from the model reached the note');
 });
 
+check('a PDF note about print size is never announced as missing data (evidence: "1 chart failed to load" on a complete report)', () => {
+  const pdfMod = load('lib/export-pdf.ts');
+  const note = pdfMod.exportWarningHeadline([{ page: 'Overview', chart: '(whole page)', reason: 'printed at 47%', kind: 'note' }]);
+  assert(note && note.incomplete === 0 && !/thiếu dữ liệu/.test(note.title + note.summary), JSON.stringify(note));
+  const missing = pdfMod.exportWarningHeadline([
+    { page: 'Overview', chart: 'Revenue by month', reason: 'no data' },
+    { page: 'Overview', chart: '(whole page)', reason: 'printed small', kind: 'note' },
+  ]);
+  assert(missing && missing.incomplete === 1 && /thiếu dữ liệu/.test(missing.title), 'a real gap was not announced, or was over-counted');
+  assert(pdfMod.exportWarningHeadline([]) === null, 'a warnings page with nothing to say');
+});
+
 // ── directions ──────────────────────────────────────────────────────────────
 
 const signature = (r) => ({
@@ -383,7 +395,9 @@ check('operations reads current state → exceptions → monitoring → drill-do
   const blocks = r.plan.blocks ?? [];
   const attention = blocks.find((b) => b.variant === 'callout');
   assert(attention, 'operations has no exceptions');
-  for (const f of attention.findings) assert(/^(attainment|concentration|partial_periods):/.test(f), `an exception that is not an exception: ${f}`);
+  for (const f of attention.findings) assert(/^(concentration|partial_periods):/.test(f), `an observation block holds ${f}`);
+  // A fact is not a problem: concentration / incomplete periods are titled neutrally.
+  assert(!/attention|problem|risk|warning/i.test(attention.title ?? ''), `an observation is titled as a problem: ${attention.title}`);
   const pos = (id) => r.plan.sections.findIndex((s) => s.visuals.includes(id));
   const heading = blocks.find((b) => b.variant === 'chapter' && b.findings.length === 0);
   assert(heading, 'no drill-down heading');

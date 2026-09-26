@@ -490,8 +490,11 @@ export function KpiCard({
   // to stop a long number overflowing a short tile, not to inflate a short
   // number to 72px because the tile happens to be tall — which is how six KPIs
   // ended up shouting in identical 58px digits.
+  // The number leads: ~2.3x body text (a 14px theme → 32px) so value, label
+  // and context read as three levels, not two sizes of the same text. The
+  // width/height clamp below still keeps it on one line inside the tile.
   const themeKpiRole = dashTheme.tokens
-    ? Math.round(dashTheme.tokens.typoBase * 1.85)
+    ? Math.round(dashTheme.tokens.typoBase * 2.3)
     : undefined;
   const fontCeil = resolvedValueFontSize
     ?? (dashTheme.kpiFontSize as number | undefined)
