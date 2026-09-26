@@ -197,6 +197,22 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
     notes.push(`${healedPrimitives} section(s) named a layout that does not exist; they were placed by how many visuals they hold.`);
   }
 
+  // A block the model wrote but never placed (seen with the real model: a
+  // headline and a summary in `blocks`, an empty "summary" section) is placed
+  // by its role — a headline opens the page, anything else follows the first
+  // section (the numbers) — rather than silently not appearing.
+  if (layer === 'redesign' && coercedBlocks.blocks.length) {
+    const placedIds = new Set(sections.flatMap((s) => s.visuals));
+    const unplaced = coercedBlocks.blocks.filter((b) => !placedIds.has(b.id));
+    for (const b of unplaced.filter((x) => x.variant !== 'headline').reverse()) {
+      sections.splice(Math.min(1, sections.length), 0, { primitive: 'full_width', visuals: [b.id] });
+    }
+    for (const b of unplaced.filter((x) => x.variant === 'headline')) {
+      sections.unshift({ primitive: 'full_width', visuals: [b.id] });
+    }
+    if (unplaced.length) notes.push(`${unplaced.length} text block(s) the design wrote but did not place were placed by their role.`);
+  }
+
   // A reference that opens with a headline, or explains itself in a paragraph,
   // gets that STRUCTURE even when the model did not write the block: the
   // model reports what it saw (`referenceStructure`), and the block is built

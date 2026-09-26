@@ -294,6 +294,16 @@ check('a PDF note about print size is never announced as missing data (evidence:
   assert(pdfMod.exportWarningHeadline([]) === null, 'a warnings page with nothing to say');
 });
 
+check('a block the model wrote but did not place is placed by its role (seen: headline + summary in blocks, never in a section)', () => {
+  const raw = { layer: 'redesign', direction: { style: 'editorial' },
+    blocks: [{ id: 'b1', variant: 'headline', findings: ['trend:5'] }, { id: 'b2', variant: 'summary', findings: ['peak:5'] }],
+    sections: [{ primitive: 'kpi_strip', visuals: [1, 2] }, { primitive: 'summary', visuals: [] }, { primitive: 'full_width', visuals: [5] }] };
+  const out = validator.coerceModelPlan(raw, { grantedLayer: 'redesign', knownTileIds: [1, 2, 5] });
+  const ids = Object.fromEntries(out.plan.blocks.map((b) => [b.variant, b.id]));
+  assert(out.plan.sections[0].visuals[0] === ids.headline, 'the headline does not open the page');
+  assert(out.plan.sections[2].visuals[0] === ids.summary, `the summary is not right after the numbers: ${JSON.stringify(out.plan.sections)}`);
+});
+
 check('a reference that opens with a headline gets one, built from live findings — not from model text', () => {
   const raw = { layer: 'redesign', direction: { style: 'editorial' }, referenceStructure: { headline: true, summary: true },
     blocks: [], sections: [{ primitive: 'kpi_strip', visuals: [1, 2] }, { primitive: 'full_width', visuals: [5] }] };

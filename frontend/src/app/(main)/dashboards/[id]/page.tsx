@@ -672,6 +672,10 @@ function DashboardDetailPageInner() {
     void applyThemeConfig(value);
   };
   const doUndo = () => {
+    // Not while an Apply is still committing: its undo entry is written when
+    // the last block exists, so an Undo in between undid something else and
+    // left the new blocks behind.
+    if (committingPresentationRef.current) return;
     const entry = undoRef.current.pop();
     if (!entry) { toast.info(t('dashboards.detail.nothingToUndo')); return; }
     redoRef.current.push(entry);
@@ -680,6 +684,7 @@ function DashboardDetailPageInner() {
     toast.success(t(entry.kind === 'theme' ? 'dashboards.detail.undoTheme' : 'dashboards.detail.undoLayout'));
   };
   const doRedo = () => {
+    if (committingPresentationRef.current) return;
     const entry = redoRef.current.pop();
     if (!entry) return;
     undoRef.current.push(entry);
@@ -3410,7 +3415,7 @@ function DashboardDetailPageInner() {
                       <button
                         type="button"
                         onClick={doUndo}
-                        disabled={!canUndo}
+                        disabled={!canUndo || isCommittingPresentation}
                         className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
                         title={t('dashboards.detail.undo')}
                       >
@@ -3419,7 +3424,7 @@ function DashboardDetailPageInner() {
                       <button
                         type="button"
                         onClick={doRedo}
-                        disabled={!canRedo}
+                        disabled={!canRedo || isCommittingPresentation}
                         className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
                         title={t('dashboards.detail.redo')}
                       >
