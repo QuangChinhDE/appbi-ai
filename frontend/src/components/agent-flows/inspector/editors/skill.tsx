@@ -54,6 +54,27 @@ export function SkillEditor(props: NodeEditorProps) {
               </button>
             )}
           </p>
+          {/* WHAT COMES BACK — the Skill's typed output contract, at the step
+              that depends on it (it used to be visible only in the Skill's own
+              type dialog). */}
+          <div data-testid="skill-contract" className="mb-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2 text-caption">
+            <div className="text-tiny font-strong uppercase tracking-wider text-text-quaternary">
+              {t('agentFlows.inspector.skill.returnsTitle')}
+            </div>
+            <p className="text-text-secondary">
+              {skill.contract.returns === 'number'
+                ? t('agentFlows.inspector.skill.returnsNumber', {
+                    step: skill.contract.value_step || '?', path: skill.contract.value_path || '?' })
+                : t('agentFlows.inspector.skill.returnsText')}
+            </p>
+            {!!skill.contract.output && <p className="text-text-tertiary">{skill.contract.output}</p>}
+            {skill.lifecycle && skill.lifecycle.lifecycle !== 'active' && (
+              <p className="mt-1 text-warning">
+                {t(`agentFlows.inspector.skill.lifecycle.${skill.lifecycle.lifecycle}`)}
+                {skill.lifecycle.reason ? ` — ${skill.lifecycle.reason}` : ''}
+              </p>
+            )}
+          </div>
           {skill.contract.inputs.length ? (
             <BindingRows
               args={skill.contract.inputs.map((i) => [

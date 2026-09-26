@@ -270,6 +270,10 @@ class CapabilityView:
     auto_loaded: list[dict[str, Any]] = field(default_factory=list)
     invoked: list[str] = field(default_factory=list)
     rejected: list[dict[str, str]] = field(default_factory=list)
+    #: WHY each capability of the latest round is shown: "core", "loaded"
+    #: (discovered, auto-loaded or used — it stays), or "question" (ranked for
+    #: the question, with its score). "What the AI sees" names it per tool.
+    why_shown: dict[str, str] = field(default_factory=dict)
     question: str = ""
     context: str = ""
     _haystacks: dict[str, dict[str, float]] = field(default_factory=dict, repr=False)
@@ -342,12 +346,15 @@ class CapabilityView:
             self.question = query
         if not self.shortlisted:
             self.visible = list(self.eligible)
+            self.why_shown = {n: "all" for n in self.visible}
         else:
             chosen: list[str] = []
             core = CORE if self.schema_budget else COUNT_CORE
+            why: dict[str, str] = {}
             for name in [*(c for c in core if c in self.eligible), *self.sticky]:
                 if name not in chosen:
                     chosen.append(name)
+                    why[name] = "core" if name in core else "loaded"
             used = sum(self._schema_size(n) for n in chosen)
             ranked = [(n, s) for n, s in self.rank(self.question, context=self.context) if s > 0]
             # THE CUTOFF IS RELATIVE TO THE BEST CANDIDATE, not to the core. The
@@ -376,8 +383,10 @@ class CapabilityView:
                     continue  # a smaller one further down may still fit
                 chosen.append(name)
                 picked.append(name)
+                why[name] = f"question:{score:.1f}"
                 used += size
             self.visible = chosen
+            self.why_shown = why
         self.rounds.append(list(self.visible))
         return self.visible
 
@@ -589,6 +598,7 @@ class CapabilityView:
             "auto_loaded": [dict(a) for a in self.auto_loaded],
             "invoked": list(self.invoked),
             "rejected": list(self.rejected),
+            "why_shown": dict(self.why_shown),
         }
 
 

@@ -25,7 +25,7 @@ import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep, type ToolSpec, type ChildRun, type CapabilityTrace, type StepBudget } from '@/lib/agentFlows';
+import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep, type ToolSpec, type ChildRun, type CapabilityTrace, type ClaimFlag, type StepBudget } from '@/lib/agentFlows';
 import { FlowCanvas } from './FlowCanvas';
 import { toolLabel } from './inspector/ToolPicker';
 import { ConversationsPanel } from './ConversationsPanel';
@@ -326,12 +326,14 @@ export function RunsTab(
         /* left: the conversation's turns · middle: the flow as it ran · right: the
            chosen step. The three panes were already here for a flat run list; a
            conversation just supplies a better left column. */
-        <div className="flex min-h-0 flex-1">
+        // BELOW 1024px THE THREE PANES STACK: at 390px the canvas was 0px wide
+        // and the step list and inspector sat off-screen. From lg up, side by side.
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row lg:overflow-hidden">
         {/* LEFT — every turn of this conversation, in order.
             A card per turn rather than table rows: the question is the only thing
             that identifies a turn to a person, and in a 360px column an aligned
             table truncates it worst of all. */}
-        <div className="flex w-[360px] flex-shrink-0 flex-col border-r border-[rgb(var(--border-line))]">
+        <div className="flex max-h-[45vh] w-full flex-shrink-0 flex-col border-b border-[rgb(var(--border-line))] lg:max-h-none lg:w-[360px] lg:border-b-0 lg:border-r">
           <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-[rgb(var(--border-line))] px-2 py-1.5">
             <Button size="sm" variant="ghost" onClick={closeConversation}>
               <ChevronLeft className="h-3.5 w-3.5" /> {t('agentFlows.conv.back')}
@@ -407,7 +409,7 @@ export function RunsTab(
             outcome painted onto it. Reused rather than rebuilt: a second
             renderer would drift from the first, and the shape a person debugs
             must be the shape they authored. */}
-        <div className="min-w-0 flex-1 overflow-auto bg-surface-2/30">
+        <div className="min-h-[40vh] min-w-0 flex-shrink-0 overflow-auto bg-surface-2/30 lg:min-h-0 lg:flex-1 lg:flex-shrink">
           {!detail ? (
             <p className="p-10 text-center text-caption text-text-tertiary">
               {t('agentFlows.runs.selectRun')}
@@ -439,7 +441,7 @@ export function RunsTab(
         {/* RIGHT — the node clicked on the canvas. Falls back to the run's own
             summary when nothing is selected, so the pane is never blank while a
             run is open. */}
-        <aside className="flex w-[420px] flex-shrink-0 flex-col overflow-auto border-l border-[rgb(var(--border-line))] bg-surface-1">
+        <aside className="flex w-full flex-shrink-0 flex-col overflow-auto border-t border-[rgb(var(--border-line))] bg-surface-1 lg:w-[420px] lg:border-l lg:border-t-0">
           {!detail ? (
             <p className="p-6 text-center text-caption text-text-tertiary">
               {t('agentFlows.runs.selectRun')}
@@ -756,17 +758,27 @@ function stepTitle(
 /** SKILLS THIS STEP RAN, each a run of its own. Opened in the Skill's own Runs
  *  tab, where its steps are — the parent keeps only the link, so the two traces
  *  cannot disagree. */
-const INVOKED_AS_LABEL: Record<string, string> = {
-  agent_capability: 'Agent gọi như một khả năng',
-  skill_node: 'bước Skill',
-  coordinator_lane: 'trong một nhánh điều phối',
-};
+/** A refusal or exclusion CODE, as a sentence the author can act on. Unknown
+ *  codes fall back to the code itself — it stays in the trace, never hidden. */
+function useReason() {
+  const { t } = useI18n();
+  return (code: string) => {
+    const key = `agentFlows.reason.${code}`;
+    const text = t(key);
+    return text && text !== key ? text : code;
+  };
+}
+
+function figure(f: ClaimFlag): string {
+  return `${f.value.toLocaleString()}${f.pct ? '%' : ''}`;
+}
 
 function ChildRuns({ runs }: { runs: ChildRun[] }) {
+  const { t } = useI18n();
   return (
     <div className="mt-1.5">
       <div className="mb-1 text-tiny font-strong uppercase tracking-wider text-text-quaternary">
-        Skill đã chạy ({runs.length})
+        {t('agentFlows.trace.skillsRan', { count: runs.length })}
       </div>
       <div className="space-y-1">
         {runs.map((c) => (
@@ -775,9 +787,9 @@ function ChildRuns({ runs }: { runs: ChildRun[] }) {
             className="flex flex-wrap items-center gap-1.5 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-1 text-tiny hover:border-brand/40">
             <b className="font-mono text-text-secondary">{c.brain_key}</b>
             <span className="text-text-tertiary">v{c.version ?? '?'}</span>
-            <span className="text-text-tertiary">· {INVOKED_AS_LABEL[c.invoked_as || ''] || c.invoked_as}</span>
+            <span className="text-text-tertiary">· {t(`agentFlows.trace.invokedAs.${c.invoked_as || 'agent_capability'}`)}</span>
             <span className={c.status === 'ok' ? 'text-success' : 'text-warning'}>· {c.status}</span>
-            <span className="text-text-quaternary">· {c.llm_calls} model · {c.tool_calls} tool · {c.tokens} token</span>
+            <span className="text-text-quaternary">· {t('agentFlows.trace.childCost', { llm: c.llm_calls, tools: c.tool_calls, tokens: c.tokens })}</span>
           </a>
         ))}
       </div>
@@ -787,69 +799,93 @@ function ChildRuns({ runs }: { runs: ChildRun[] }) {
 
 /** WHAT THIS STEP COULD SEE, AND WHAT IT TRIED. Granted vs eligible vs shown each
  *  round, what it discovered, what it invoked and what was refused — the run-time
- *  half of "What the AI sees". */
+ *  half of "What the AI sees". Every reason is a sentence, with its code kept. */
 function CapabilityView({ view }: { view: CapabilityTrace }) {
+  const { t } = useI18n();
+  const reason = useReason();
   const rounds = view.visible_per_round || [];
   const chars = view.schema_chars_per_round || [];
   const excluded = Object.entries(view.excluded || {});
   const hasView = (view.granted || []).length > 0;
+  const whyClaim = (f: ClaimFlag) => t(`agentFlows.claim.${f.why}`, {
+    what: [f.of?.member, f.of?.dimension, f.of?.measure].filter((x) => x && x !== '__time__').join(' / '),
+  });
   return (
     <div className="mt-1.5 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-1.5 text-tiny text-text-secondary">
       <div className="mb-1 font-strong uppercase tracking-wider text-text-quaternary">
-        Khả năng của bước này
+        {t('agentFlows.trace.capabilities')}
       </div>
       {hasView && (
         <p>
-          Được cấp {view.granted.length} · dùng được ở đây {view.eligible.length}
+          {t('agentFlows.trace.granted', { granted: view.granted.length, eligible: view.eligible.length })}
+          {' · '}
           {view.shortlisted
             ? (view.schema_budget
-              ? ` · mỗi lượt nạp đủ định nghĩa trong ~${view.schema_budget.toLocaleString()} ký tự (theo câu hỏi); phần còn lại nằm trong danh mục của find_capability`
-              : ` · mỗi lượt nạp tối đa ${view.limit} (tác giả đặt)`)
-            : ' · hiện đủ mọi khả năng'}
+              ? t('agentFlows.trace.routedBudget', { chars: view.schema_budget.toLocaleString() })
+              : t('agentFlows.trace.routedCount', { limit: view.limit }))
+            : t('agentFlows.trace.showsAll')}
         </p>
       )}
       {rounds.map((r, i) => (
         <p key={i} className="mt-0.5 text-text-tertiary">
-          Lượt {i + 1}{chars[i] != null ? ` (${chars[i].toLocaleString()} ký tự schema)` : ''}:{' '}
-          {r.length ? r.join(', ') : '(không được đưa công cụ — lượt trả lời)'}
+          {t('agentFlows.trace.round', { n: i + 1 })}
+          {chars[i] != null ? ` (${t('agentFlows.trace.schemaChars', { chars: chars[i].toLocaleString() })})` : ''}:{' '}
+          {r.length ? r.join(', ') : t('agentFlows.trace.answerRound')}
         </p>
       ))}
       {(view.discoveries || []).map((d, i) => (
         <p key={`d${i}`} className="mt-0.5">
-          Lượt {d.round}: tìm “{d.need || d.names.join(', ')}” → nạp{' '}
-          {d.loaded.length ? d.loaded.join(', ') : '(không có gì mới)'}
-          {!!d.not_available.length && ` · không có: ${d.not_available.join(', ')}`}
+          {t('agentFlows.trace.discovery', { n: d.round, need: d.need || d.names.join(', ') })}{' '}
+          {d.loaded.length ? d.loaded.join(', ') : t('agentFlows.trace.nothingNew')}
+          {!!d.not_available.length && ` · ${t('agentFlows.trace.notAvailable')}: ${d.not_available.join(', ')}`}
         </p>
       ))}
       {!view.discoveries?.length && !!view.discovered?.length && (
-        <p className="mt-0.5">Tự tìm thêm: {view.discovered.join(', ')}</p>
+        <p className="mt-0.5">{t('agentFlows.trace.discovered')}: {view.discovered.join(', ')}</p>
       )}
       {!!view.auto_loaded?.length && (
         <p className="mt-0.5 text-text-tertiary">
-          Gọi khi chưa có định nghĩa → nạp cho lượt sau:{' '}
-          {view.auto_loaded.map((a) => `${a.name} (lượt ${a.round})`).join(', ')}
+          {t('agentFlows.trace.autoLoaded')}:{' '}
+          {view.auto_loaded.map((a) => `${a.name} (${t('agentFlows.trace.round', { n: a.round })})`).join(', ')}
         </p>
       )}
       {!!view.final_rounds && (
-        <p className="mt-0.5 text-text-tertiary">
-          {view.final_rounds} lượt cuối không được đưa công cụ (hết lượt dành cho bước này) — bước trả lời bằng những gì đã có.
-        </p>
+        <p className="mt-0.5 text-text-tertiary">{t('agentFlows.trace.finalRounds', { count: view.final_rounds })}</p>
       )}
       {!!view.evidence?.length && (
         <p className="mt-0.5 text-text-tertiary">
-          Kết quả tạo ra: {view.evidence.map((e) => `${e.ref} (${e.tool})`).join(', ')}
+          {t('agentFlows.trace.evidence')}: {view.evidence.map((e) => `${e.ref} (${e.tool})`).join(', ')}
         </p>
       )}
-      {!!view.invoked?.length && <p className="mt-0.5">Đã dùng: {view.invoked.join(', ')}</p>}
+      {!!view.invoked?.length && <p className="mt-0.5">{t('agentFlows.trace.invoked')}: {view.invoked.join(', ')}</p>}
       {!!view.rejected?.length && (
-        <p className="mt-0.5 text-warning">
-          Bị từ chối: {view.rejected.map((r) => `${r.name} (${r.code})`).join(', ')}
-        </p>
+        <ul className="mt-0.5 space-y-0.5 text-warning">
+          {view.rejected.map((r, i) => (
+            <li key={i}>
+              {t('agentFlows.trace.refused')}: <b>{r.name}</b> — {reason(r.code)}{' '}
+              <code className="text-text-quaternary">{r.code}</code>
+            </li>
+          ))}
+        </ul>
       )}
       {!!excluded.length && (
-        <p className="mt-0.5 text-text-quaternary">
-          Không hiện vì: {excluded.map(([n, why]) => `${n} (${why})`).join(', ')}
-        </p>
+        <ul className="mt-0.5 space-y-0.5 text-text-quaternary">
+          {excluded.map(([n, why]) => (
+            <li key={n}>{t('agentFlows.trace.notShown')}: <b>{n}</b> — {reason(why)} <code>{why}</code></li>
+          ))}
+        </ul>
+      )}
+      {!!view.claim_review?.flagged?.length && (
+        <div className="mt-1 rounded bg-warning/5 p-1 text-warning">
+          <p className="font-strong">{t('agentFlows.trace.draftReturned')}</p>
+          <ul>{view.claim_review.flagged.map((f, i) => <li key={i}>{figure(f)} — {whyClaim(f)}</li>)}</ul>
+        </div>
+      )}
+      {!!view.claims?.flagged?.length && (
+        <div className="mt-1 rounded bg-danger/5 p-1 text-danger">
+          <p className="font-strong">{t('agentFlows.trace.claimsUnverified')}</p>
+          <ul>{view.claims.flagged.map((f, i) => <li key={i}>{figure(f)} — {whyClaim(f)}</li>)}</ul>
+        </div>
       )}
     </div>
   );
@@ -858,12 +894,14 @@ function CapabilityView({ view }: { view: CapabilityTrace }) {
 /** WHERE THE BUDGET WENT, for this step: what it could spend when it started,
  *  what it had to leave for the steps after it, and what it spent. */
 function BudgetLine({ budget }: { budget: StepBudget }) {
+  const { t } = useI18n();
   return (
     <p className="mt-1 text-tiny text-text-tertiary">
-      Ngân sách: dùng {budget.llm_calls} lượt mô hình · {budget.tool_calls} lượt công cụ
-      {' '}(được dùng tối đa {budget.llm_available_at_start} lượt mô hình khi bắt đầu
+      {t('agentFlows.trace.budget', {
+        llm: budget.llm_calls, tools: budget.tool_calls, start: budget.llm_available_at_start,
+      })}
       {budget.llm_reserved_for_later > 0
-        ? `; ${budget.llm_reserved_for_later} lượt giữ cho các bước sau` : ''})
+        ? ` ${t('agentFlows.trace.budgetReserved', { count: budget.llm_reserved_for_later })}` : ''}
     </p>
   );
 }

@@ -51,6 +51,8 @@ export interface CanvasProps {
   toolSpecs?: Record<string, ToolSpec>;
   selectedKey: string | null;
   answerKey: string;
+  /** A Skill's canvas says what a Skill receives and returns, not "viewer". */
+  flowType?: string;
   onSelect: (key: string) => void;
   onInsert: (target: InsertTarget) => void;
   /** The step that is the canvas's single tab stop when NOTHING is selected.
@@ -194,7 +196,7 @@ export function FlowCanvas(props: CanvasProps) {
 
       <SystemBand
         id="input" register={register}
-        title="INPUT" hint={t('agentFlows.canvas.inputHint')}
+        title="INPUT" hint={t(props.flowType === 'skill' ? 'agentFlows.canvas.inputHintSkill' : 'agentFlows.canvas.inputHint')}
       />
       <Gap />
       <Body nodes={nodes} containerPath="" {...shared} />
@@ -202,7 +204,7 @@ export function FlowCanvas(props: CanvasProps) {
       <Gap />
       <SystemBand
         id="output" register={register}
-        title="OUTPUT" hint={t('agentFlows.canvas.outputHint')}
+        title="OUTPUT" hint={t(props.flowType === 'skill' ? 'agentFlows.canvas.outputHintSkill' : 'agentFlows.canvas.outputHint')}
       />
 
       {drag.key && (

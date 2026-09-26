@@ -551,7 +551,10 @@ export function BrainBuilder({
           elements at breakpoints was the alternative and it is the wrong shape: it
           makes reachability depend on guessing every width in advance, which is
           how this row lost its buttons in the first place. */}
-      <div className="flex h-11 flex-shrink-0 items-center gap-2 overflow-x-auto border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
+      {/* BELOW 768px THE ROW WRAPS instead of scrolling: at 390px the tabs and
+          Save / Publish sat off-screen in a 1082px row. From md up it is the
+          one-line, horizontally scrolling row it always was. */}
+      <div className="flex min-h-11 flex-shrink-0 flex-wrap items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 md:h-11 md:flex-nowrap md:overflow-x-auto md:px-4 md:py-0">
         {/* THE ARROW KEEPS ITS MEANING WITHOUT THE WORDS. At the declared 1280px
             minimum the row overflowed by ~124px even on a valid flow, and the
             tabs — navigation — scrolled under the sticky verdict group, leaving
@@ -665,7 +668,7 @@ export function BrainBuilder({
             and the three buttons stay put while the identity and tabs scroll under
             them. `bg-surface-1` is required, not cosmetic: without it the scrolled
             row shows through. */}
-        <div className="sticky right-0 flex flex-shrink-0 items-center gap-2 bg-surface-1 pl-2">
+        <div className="flex flex-shrink-0 flex-wrap items-center gap-2 bg-surface-1 md:sticky md:right-0 md:flex-nowrap md:pl-2">
         {validation && (
           validation.ok
             ? (
@@ -743,12 +746,16 @@ export function BrainBuilder({
       {/* body */}
       <div className="relative min-h-0 flex-1">
         {mode === 'design' && (
-          <div className="flex h-full">
+          // BELOW 768px CANVAS ABOVE, INSPECTOR BELOW, both full width: the
+          // fixed-width inspector used to squeeze the canvas to 0px at 390px, so
+          // no step could be selected. From md up: side by side, as before.
+          <div className="flex h-full flex-col md:flex-row">
             <main
               ref={(el) => { canvasRef.current = el; }}
               onScroll={syncViewport}
-              className="relative min-w-0 flex-1 overflow-auto bg-[rgb(var(--surface-0))] [background-image:linear-gradient(rgb(var(--border-line)/.45)_1px,transparent_1px),linear-gradient(90deg,rgb(var(--border-line)/.45)_1px,transparent_1px)] [background-size:24px_24px]">
+              className="relative min-h-[45%] min-w-0 flex-1 overflow-auto bg-[rgb(var(--surface-0))] md:min-h-0 [background-image:linear-gradient(rgb(var(--border-line)/.45)_1px,transparent_1px),linear-gradient(90deg,rgb(var(--border-line)/.45)_1px,transparent_1px)] [background-size:24px_24px]">
               <FlowCanvas
+                flowType={flowType}
                 nodes={body.nodes}
                 specs={specs}
                 toolSpecs={toolSpecsByName}
@@ -818,13 +825,13 @@ export function BrainBuilder({
               onKeyDown={inspector.onKeyDown}
               onDoubleClick={inspector.reset}
               title={t('agentFlows.builder.resizeInspector')}
-              className="group relative w-1.5 flex-shrink-0 cursor-col-resize bg-[rgb(var(--border-line))] transition-colors hover:bg-brand focus:bg-brand focus:outline-none"
+              className="group relative hidden w-1.5 flex-shrink-0 cursor-col-resize bg-[rgb(var(--border-line))] transition-colors hover:bg-brand focus:bg-brand focus:outline-none md:block"
             >
               <span className="absolute inset-y-0 -left-1 -right-1" />
             </div>
             <aside
-              style={{ width: inspector.width }}
-              className="flex flex-shrink-0 flex-col overflow-hidden border-l border-[rgb(var(--border-line))] bg-surface-1"
+              style={{ ['--inspector-w' as string]: `${inspector.width}px` }}
+              className="flex max-h-[55%] w-full flex-shrink-0 flex-col overflow-hidden border-t border-[rgb(var(--border-line))] bg-surface-1 md:max-h-none md:w-[var(--inspector-w)] md:max-w-[50vw] md:border-l md:border-t-0"
             >
               <div className="flex h-11 flex-shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))] px-3">
                 <b className="truncate text-caption font-strong">

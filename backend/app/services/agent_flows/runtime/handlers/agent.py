@@ -176,6 +176,8 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
             #: Listed, one line each, inside `find_capability` — loadable on demand.
             "catalogue": view.catalogue(),
             "schema_chars": schema_chars(schemas),
+            #: Why each shown capability is there (core / loaded / question:score).
+            "why_shown": dict(view.why_shown),
         },
         "knowledge_scope": dict(getattr(rctx.ctx, "knowledge_scope", None) or {}),
         "budget": {

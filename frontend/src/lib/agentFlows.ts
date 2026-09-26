@@ -706,6 +706,20 @@ export interface CapabilityTrace {
   final_rounds?: number;
   /** Evidence references this step created (what a formula can name). */
   evidence?: { ref: string; tool: string }[];
+  /** Why each shown capability is there: "core", "loaded", "all", "question:<score>". */
+  why_shown?: Record<string, string>;
+  /** The answer draft the runtime sent back: figures whose meaning did not
+   *  match the question, or percentages no tool produced. */
+  claim_review?: { flagged: ClaimFlag[] };
+  /** The final check of the answer's figures (what is still unverified). */
+  claims?: { flagged: ClaimFlag[] };
+}
+
+export interface ClaimFlag {
+  value: number;
+  pct?: boolean;
+  why: string;
+  of?: { measure?: string | null; dimension?: string | null; member?: string | null };
 }
 
 /** A Skill run created by another run. */

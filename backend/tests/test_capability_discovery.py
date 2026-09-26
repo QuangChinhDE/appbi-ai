@@ -401,3 +401,19 @@ def test_an_author_count_is_what_it_was_before_the_reader_joined_the_core():
     budgeted = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, question=q)
     budgeted.refresh()
     assert "get_chart_summary" in budgeted.visible
+
+
+def test_each_shown_capability_says_why_it_is_shown():
+    """Browser check: "What the AI sees" said only "chosen for the question".
+    Each shown capability now carries its reason — core, loaded, or the question
+    score — and the trace keeps it."""
+    view = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, question="Dự báo doanh thu tháng tới")
+    view.refresh()
+    assert set(view.why_shown) == set(view.visible)
+    for name in view.visible:
+        why = view.why_shown[name]
+        assert why == "core" if name in CAP.CORE else why.startswith("question:"), (name, why)
+    assert view.to_trace()["why_shown"] == view.why_shown
+    whole = CAP.build_view(STARTER, _ctx(), web_enabled=True)
+    whole.refresh()
+    assert set(whole.why_shown.values()) == {"all"}
