@@ -294,6 +294,23 @@ check('a PDF note about print size is never announced as missing data (evidence:
   assert(pdfMod.exportWarningHeadline([]) === null, 'a warnings page with nothing to say');
 });
 
+check('a reference that opens with a headline gets one, built from live findings — not from model text', () => {
+  const raw = { layer: 'redesign', direction: { style: 'editorial' }, referenceStructure: { headline: true, summary: true },
+    blocks: [], sections: [{ primitive: 'kpi_strip', visuals: [1, 2] }, { primitive: 'full_width', visuals: [5] }] };
+  const out = validator.coerceModelPlan(raw, { grantedLayer: 'redesign', knownTileIds: [1, 2, 5, 7],
+    liveFindings: ['period_comparison:5', 'trend:5', 'latest:5', 'top_item:7'] });
+  const head = out.plan.blocks.find((b) => b.variant === 'headline');
+  assert(head && out.plan.sections[0].visuals[0] === head.id, 'the report does not open with the headline');
+  assert(head.findings.join() === 'period_comparison:5,trend:5', head.findings.join());
+  const summary = out.plan.blocks.find((b) => b.variant === 'summary');
+  assert(summary && !summary.findings.some((f) => head.findings.includes(f)), 'the summary repeats the headline');
+  // Negative control: no live finding → no block is invented, and style-only never gets blocks.
+  const none = validator.coerceModelPlan(raw, { grantedLayer: 'redesign', knownTileIds: [1, 2, 5], liveFindings: [] });
+  assert(!(none.plan.blocks ?? []).length, 'a block was created with nothing to state');
+  const style = validator.coerceModelPlan({ ...raw, layer: 'style' }, { grantedLayer: 'style', knownTileIds: [5], liveFindings: ['trend:5'] });
+  assert(!(style.plan.blocks ?? []).length, 'a style-only change created a block');
+});
+
 // ── directions ──────────────────────────────────────────────────────────────
 
 const signature = (r) => ({

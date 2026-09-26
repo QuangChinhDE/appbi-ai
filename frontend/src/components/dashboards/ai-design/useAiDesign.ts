@@ -170,7 +170,10 @@ export function useAiDesign(input: UseAiDesignInput) {
   const [modelProposals, setModelProposals] = React.useState<unknown[]>([]);
 
   const build = React.useCallback((rawPlan: unknown, grantedLayer: DesignLayer, targets: number[]) => {
-    const coerced = coerceModelPlan(rawPlan, { grantedLayer, targets, knownTileIds: baselineTiles.map((t) => t.id) });
+    const coerced = coerceModelPlan(rawPlan, {
+      grantedLayer, targets, knownTileIds: baselineTiles.map((t) => t.id),
+      liveFindings: (snapshot?.findings ?? []).map((f) => f.key),
+    });
     // Content proposals travel beside the design, never inside it: they wait
     // for a person's Accept.
     const rawProposals = (rawPlan as any)?.proposals;

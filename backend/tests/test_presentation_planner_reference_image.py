@@ -231,3 +231,8 @@ def test_the_reference_clause_asks_what_carried_over():
 def test_the_reference_clause_asks_for_its_structure_not_only_its_look():
     with_ref = planner.build_planner_prompt(snapshot=_SNAPSHOT, user_prompt="match this", has_reference=True)
     assert "STRUCTURE" in with_ref and '"headline" block' in with_ref
+
+
+def test_the_model_reports_the_reference_structure_as_data():
+    with_ref = planner.build_planner_prompt(snapshot=_SNAPSHOT, user_prompt="match this", has_reference=True)
+    assert "referenceStructure" in with_ref

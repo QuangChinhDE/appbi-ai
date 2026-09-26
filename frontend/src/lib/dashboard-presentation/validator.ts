@@ -127,6 +127,9 @@ export interface CoerceOptions {
   targets?: VisualId[] | null;
   /** Tiles on this page — what a block's finding reference may point at. */
   knownTileIds?: VisualId[];
+  /** Finding keys the report supports right now — what a block the boundary
+   *  adds for a reference's structure may state. */
+  liveFindings?: string[];
 }
 
 /**
@@ -192,6 +195,41 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
     : [];
   if (healedPrimitives > 0) {
     notes.push(`${healedPrimitives} section(s) named a layout that does not exist; they were placed by how many visuals they hold.`);
+  }
+
+  // A reference that opens with a headline, or explains itself in a paragraph,
+  // gets that STRUCTURE even when the model did not write the block: the
+  // model reports what it saw (`referenceStructure`), and the block is built
+  // here from the report's own live findings — never from words or figures the
+  // model typed. Only in a redesign, and only with findings to state.
+  const refStructure = source.referenceStructure;
+  if (layer === 'redesign' && refStructure && typeof refStructure === 'object') {
+    const live = options.liveFindings ?? [];
+    const said = new Set(coercedBlocks.blocks.flatMap((b) => b.findings));
+    const pick = (kinds: string[], n: number) => kinds
+      .flatMap((kind) => live.filter((key) => key.startsWith(`${kind}:`)))
+      .filter((key, i, all) => !said.has(key) && all.indexOf(key) === i)
+      .slice(0, n);
+    const nextId = () => Math.min(-1, ...coercedBlocks.blocks.map((b) => Number(b.id)).filter(Number.isFinite)) - 1;
+    if (refStructure.headline === true && !coercedBlocks.blocks.some((b) => b.variant === 'headline')) {
+      const findings = pick(['period_comparison', 'trend', 'top_item'], 2);
+      if (findings.length) {
+        const id = nextId();
+        coercedBlocks.blocks.push({ id, variant: 'headline', findings });
+        findings.forEach((f) => said.add(f));
+        sections.unshift({ primitive: 'full_width', visuals: [id] });
+        notes.push('The reference opens with a headline; so does the report, stated from its own findings.');
+      }
+    }
+    if (refStructure.summary === true && !coercedBlocks.blocks.some((b) => b.variant === 'summary')) {
+      const findings = pick(['latest', 'peak', 'top_item', 'concentration'], 3);
+      if (findings.length) {
+        const id = nextId();
+        coercedBlocks.blocks.push({ id, variant: 'summary', findings, frameless: true });
+        sections.splice(Math.min(2, sections.length), 0, { primitive: 'full_width', visuals: [id] });
+        notes.push('The reference explains itself in a paragraph; the report has a summary of its own findings in that place.');
+      }
+    }
   }
 
   const visualPreferences: Record<string, any> = {};

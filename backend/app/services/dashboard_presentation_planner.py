@@ -151,6 +151,10 @@ PLAN_SCHEMA_HINT: Dict[str, Any] = {
         {"kind": "retitle", "visual": "dashboardChartId", "title": "a clearer title in plain words, NO digits — the author must accept it"}
     ],
     "suggestions": [{"visual": "dashboardChartId", "text": "a non-presentation idea, shown not applied"}],
+    "referenceStructure": {
+        "headline": "only with a reference image: true if it opens with a headline or text band",
+        "summary": "true if it has an explanatory paragraph",
+    },
     "referenceReport": {
         "converted": ["only with a reference image: traits of its look you reproduced, in plain words, NO digits"],
         "approximated": ["traits you could only approximate, and how"],
@@ -317,7 +321,8 @@ def build_planner_prompt(
             "too: if it opens with a headline or a text band, open with a "
             "\"headline\" block built from INPUT.findings; if it has an explanatory "
             "paragraph, add a \"summary\" block; if it groups numbers in a strip, "
-            "use kpi_strip; if one chart dominates, make it the hero. Then say honestly, in "
+            "use kpi_strip; if one chart dominates, make it the hero. Report what you "
+            "saw in \"referenceStructure\" ({headline, summary} as true/false). Then say honestly, in "
             "\"referenceReport\", which traits of the reference you converted, which "
             "you could only approximate and which this report cannot reproduce — "
             "the author decides with that in hand.\n"
