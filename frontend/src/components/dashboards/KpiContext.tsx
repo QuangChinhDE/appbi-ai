@@ -17,7 +17,7 @@
 import React from 'react';
 
 import { useReportFindings } from '@/lib/report-evidence';
-import { formatBucketLabel, formatPct, formatValue, type Finding, type TileEvidence } from '@/lib/report-findings';
+import { formatBucketLabel, formatPct, formatValue, inferGrain, type Finding, type TileEvidence } from '@/lib/report-findings';
 import { parseBucket } from '@/lib/time-buckets';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -141,7 +141,10 @@ function scopeOf(e: TileEvidence, kpiValue: number | undefined, locale?: string)
   if (pts.length < 2) return null;
   const total = pts.reduce((s, p) => s + p.v, 0);
   if (Math.abs(total - kpiValue) > Math.max(1e-6, Math.abs(kpiValue) * 0.005)) return null;
-  return `${formatBucketLabel(pts[0].raw, e.grain, locale)} – ${formatBucketLabel(pts[pts.length - 1].raw, e.grain, locale)}`;
+  // A series that declares no grain is named by the grain its buckets have
+  // (the same inference the findings use): "Jan 2024", not "Jan 1, 2024".
+  const grain = e.grain ?? inferGrain(pts.map((p) => ({ date: p.d })));
+  return `${formatBucketLabel(pts[0].raw, grain, locale)} – ${formatBucketLabel(pts[pts.length - 1].raw, grain, locale)}`;
 }
 
 /** The KPI's number: the first finite value in its single result row. */

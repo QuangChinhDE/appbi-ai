@@ -129,7 +129,7 @@ function timeSeries(t: TileEvidence): { complete: TimePoint[]; excluded: string[
 
 /** The grain a series' buckets actually have, when the chart did not declare
  *  one: every bucket on the 1st of a month → month; on Jan 1st → year. */
-function inferGrain(points: TimePoint[]): string | undefined {
+export function inferGrain(points: Array<{ date: Date }>): string | undefined {
   if (points.length < 2) return undefined;
   const firstOfMonth = points.every((p) => p.date.getUTCDate() === 1 && p.date.getUTCHours() === 0);
   if (!firstOfMonth) return undefined;
