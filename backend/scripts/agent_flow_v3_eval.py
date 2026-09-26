@@ -108,13 +108,37 @@ def mentions(text: str, *words: str) -> bool:
     return any(w.lower() in low for w in words)
 
 
+#: A category is the SAME answer however it is written: the data value, its
+#: English name, or its Vietnamese translation. Graded by meaning, not by string
+#: (a correct "Sức khỏe & Sắc đẹp" was scored wrong against "health_beauty").
+CATEGORY = {
+    "health_beauty": ("health_beauty", "health & beauty", "health and beauty",
+                      "suc khoe & sac dep", "suc khoe va sac dep", "suc khoe, sac dep",
+                      "suc khoe - sac dep", "lam dep"),
+    "watches_gifts": ("watches_gifts", "watches & gifts", "watches and gifts", "dong ho",
+                      "qua tang"),
+    "bed_bath": ("bed_bath", "bed bath", "bed & bath", "giuong", "phong tam"),
+}
+
+
+def _fold(s: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s or "")
+    return "".join(c for c in s if not unicodedata.combining(c)).lower().replace("đ", "d")
+
+
+def category(text: str, *keys: str) -> bool:
+    low = _fold(text)
+    return any(_fold(v) in low for k in keys for v in CATEGORY[k])
+
+
 NO_DATA = ("không có", "chưa có", "không tìm thấy", "không đủ", "không cung cấp", "not available",
            "no data", "không chứa", "không thể", "chỉ có")
 
 CASES = [
     {"id": "rank_top", "q": "Danh mục sản phẩm nào có doanh thu cao nhất?",
      "expect": {"rank_values", "share_of", "get_chart_data", "aggregate_chart_data"},
-     "grade": lambda a: mentions(a, "health_beauty", "health & beauty", "health and beauty")},
+     "grade": lambda a: category(a, "health_beauty")},
     {"id": "rank_bottom", "q": "Danh mục nào bán kém nhất theo doanh thu?",
      "expect": {"rank_values", "get_chart_data"},
      "grade": lambda a: mentions(a, "security_and_services", "security and services")},
@@ -135,7 +159,7 @@ CASES = [
      "expect": {"detect_anomaly"},
      # 0 real anomalies; the four edge months are incomplete periods. Listing
      # CATEGORIES as anomalous months is the failure seen in the V3 baseline.
-     "grade": lambda a: not mentions(a, "health_beauty", "watches_gifts", "bed_bath")
+     "grade": lambda a: not category(a, "health_beauty", "watches_gifts", "bed_bath")
                         and mentions(a, "không", "no ", "chưa", "2016", "2018-09", "thiếu")},
     {"id": "seasonality", "q": "GMV có tính chu kỳ lặp lại không?",
      "expect": {"detect_seasonality"},
@@ -154,7 +178,7 @@ CASES = [
      "grade": lambda a: has(a, 91.89, 0.005)},
     {"id": "concentration", "q": "Doanh thu có tập trung vào vài danh mục không?",
      "expect": {"describe_distribution", "rank_values", "share_of"},
-     "grade": lambda a: mentions(a, "health_beauty", "gini", "tập trung", "top", "9.26", "9,26")},
+     "grade": lambda a: category(a, "health_beauty") or mentions(a, "gini", "tập trung", "top", "9.26", "9,26")},
     {"id": "external", "q": "GDP của Brazil năm 2023 là bao nhiêu?", "expect": set(),
      "grade": lambda a: not re.search(r"\d[\d.,]*\s*(nghìn tỷ|tỷ|trillion|billion|usd|\$)", a, re.I)
                         and mentions(a, *NO_DATA, "không", "ngoài")},
