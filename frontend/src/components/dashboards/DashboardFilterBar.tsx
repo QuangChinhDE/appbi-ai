@@ -2085,7 +2085,9 @@ function SingleSelectBody({
                     ? t('dashboards.selectBody.failedToLoad')
                     : emptyDueToFilter
                       ? t('dashboards.selectBody.noValuesActiveFilter')
-                      : (distinctStatus && !distinctStatus.isLoading)
+                      // No distinct query at all (the slicer resolves to no
+                      // source) is not "loading": nothing will ever arrive.
+                      : (!distinctStatus || !distinctStatus.isLoading)
                         ? t('dashboards.selectBody.noValuesAvailable')
                         : t('dashboards.selectBody.loadingValues'))
               : t('dashboards.selectBody.noMatch')}
@@ -2232,7 +2234,9 @@ function MultiSelectBody({
                     ? t('dashboards.selectBody.failedToLoad')
                     : emptyDueToFilter
                       ? t('dashboards.selectBody.noValuesActiveFilter')
-                      : (distinctStatus && !distinctStatus.isLoading)
+                      // No distinct query at all (the slicer resolves to no
+                      // source) is not "loading": nothing will ever arrive.
+                      : (!distinctStatus || !distinctStatus.isLoading)
                         ? t('dashboards.selectBody.noValuesAvailable')
                         : t('dashboards.selectBody.loadingValues'))
               : t('dashboards.selectBody.noMatch')}

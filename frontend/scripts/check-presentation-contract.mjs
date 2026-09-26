@@ -2181,6 +2181,23 @@ check('RESPONSIVE proof: slivers are widened at tablet width, in reading order, 
   assertEqual(order, ['1', '2', '3', '4', '5', '6', '7', '8'], 'reading order changed');
 });
 
+check('RESPONSIVE proof: a tile widened at tablet width leaves no hole in the row it now sits alone in', () => {
+  // Two half-width charts; at 820px each is widened past half, so the second
+  // wraps. Both rows must end at the grid edge (PR #7: a half-width chart with
+  // an empty half beside it).
+  const colPx = 820 / 36;
+  const need = Math.ceil(pages.RESPONSIVE_MIN_WIDTH_PX.chart / colPx);
+  const half = Math.min(18, need - 1);
+  const layout = [{ i: '1', x: 0, y: 0, w: half, h: 14 }, { i: '2', x: half, y: 0, w: half, h: 14 }, { i: '3', x: 0, y: 14, w: 36, h: 10 }];
+  const out = pages.deriveTabletLayout(layout, { kindOf: () => 'chart', referenceWidthPx: 820 });
+  const rows = new Map();
+  for (const it of out) rows.set(it.y, (rows.get(it.y) ?? 0) + it.w);
+  for (const [y, used] of rows) assert(used === 36, `row at y=${y} fills ${used}/36 columns`);
+  for (let a = 0; a < out.length; a += 1) for (let b = a + 1; b < out.length; b += 1) {
+    assert(!structureMod.overlaps(out[a], out[b]), `tiles ${out[a].i}/${out[b].i} overlap`);
+  }
+});
+
 check('RESPONSIVE proof: the phone stack keeps order and a readable height per kind', () => {
   const layout = [{ i: 'k', x: 20, y: 0, w: 8, h: 2 }, { i: 'c', x: 0, y: 0, w: 20, h: 4 }];
   const out = pages.deriveStackedLayout(layout, { kindOf: (it) => (it.i === 'k' ? 'kpi' : 'chart'), rowPitchPx: 24 });

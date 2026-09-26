@@ -377,16 +377,37 @@ export function deriveTabletLayout<T extends { x: number; y: number; w: number; 
   });
   if (!widened) return layouts;
   const ordered = [...sized].sort((a, b) => (a.item.y - b.item.y) || (a.item.x - b.item.x));
-  let x = 0;
+  // Flow into rows, then let each row fill the grid. Widening one tile to its
+  // tablet span pushes its neighbour to the next row; without the fill, the
+  // row it left keeps the leftover columns as a hole beside the chart (the
+  // Olist report at 820px had a half-width chart with an empty half beside it).
+  const rows: Array<Array<{ item: T; w: number }>> = [];
+  let used = 0;
+  for (const entry of ordered) {
+    if (rows.length === 0 || (used + entry.w > cols && used > 0)) { rows.push([]); used = 0; }
+    rows[rows.length - 1].push(entry);
+    used += entry.w;
+  }
+  const out: T[] = [];
   let y = 0;
-  let rowH = 0;
-  return ordered.map(({ item, w }) => {
-    if (x + w > cols && x > 0) { y += rowH; x = 0; rowH = 0; }
-    const placed = { ...item, x, y, w };
-    x += w;
-    rowH = Math.max(rowH, item.h);
-    return placed;
-  });
+  for (const row of rows) {
+    const total = row.reduce((s, e) => s + e.w, 0);
+    // Spare columns go to the row's tiles in proportion to their width; the
+    // last tile takes the rounding, so the row ends exactly at the grid edge.
+    const widths = total >= cols
+      ? row.map((e) => e.w)
+      : row.map((e) => Math.floor((e.w * cols) / total));
+    if (total < cols) widths[widths.length - 1] = cols - widths.slice(0, -1).reduce((s, w) => s + w, 0);
+    let x = 0;
+    let rowH = 0;
+    row.forEach((e, i) => {
+      out.push({ ...e.item, x, y, w: widths[i] });
+      x += widths[i];
+      rowH = Math.max(rowH, e.item.h);
+    });
+    y += rowH;
+  }
+  return out;
 }
 
 // ── Responsive report grid (public / embed) ─────────────────────────────────

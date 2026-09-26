@@ -899,6 +899,18 @@ function buildDataLabelContent(opts: {
         style: styleForLabel,
       });
     }
+    // A data label is read at a glance: an amount reads at display magnitude,
+    // like its axis ("R$1.3M", not "R$1,258,681.3"), unless the author gave the
+    // DATA LABEL its own format (a per-label/series override). The chart-wide
+    // decimalPlaces is saved on nearly every chart, so it is not that signal.
+    // The tooltip keeps the precise value.
+    const n = Number(value);
+    const authoredPrecision = resolved.format !== undefined
+      || (seriesKey ? style.seriesDecimalPlaces?.[seriesKey] !== undefined : false);
+    if (!authoredPrecision && Number.isFinite(n) && Math.abs(n) >= 10_000
+      && (styleForLabel.numberFormat === 'currency' || styleForLabel.numberFormat === 'number')) {
+      return formatAxisValue(n, { ...styleForLabel, axisDisplayUnits: 'auto' } as ChartStyleConfig, seriesKey);
+    }
     return formatNumber(value, styleForLabel, seriesKey);
   };
 
@@ -3012,6 +3024,23 @@ function ExploreChartInner({
     // renderer. Previously Recharts `label` prop took a string only, so
     // colour/size from the editor went nowhere. Position/rotation
     // stay N/A for radial layout (Pie picks the angle).
+    // Outside labels need horizontal room beside the pie. Size the radius from
+    // the measured tile so the longest label fits (up to ~28% of the width per
+    // side), and clip any label that still would not, with the full text in a
+    // <title> — a label cut by the tile edge ("dit_card (78%)") reads as broken.
+    const pieW = rootSize.width;
+    const pieH = rootSize.height;
+    const longestPieLabel = sortedPieData.reduce((mx: number, r: any) => Math.max(mx, String(r?.displayName ?? r?.name ?? '').length + 6), 0);
+    const pieOuterRadius: number | string = pieW > 0 && pieH > 0
+      ? Math.max(36, Math.min(pieH * 0.4, pieW / 2 - Math.min(pieW * 0.28, longestPieLabel * 6.6 + 18)))
+      : '60%';
+    const fitPieText = (text: string, x: number, anchor: 'start' | 'end', fontSize: number): string | null => {
+      if (!(pieW > 0)) return text;
+      const room = anchor === 'start' ? pieW - x - 4 : x - 4;
+      const maxChars = Math.floor(room / (fontSize * 0.6));
+      if (maxChars < 4) return null;
+      return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}…`;
+    };
     const renderPieLabel = (entry: any) => {
       const { name, value, percent, x, y, cx, cy, midAngle } = entry;
       const rawName = String(entry?.payload?.name ?? name ?? '');
@@ -3029,6 +3058,9 @@ function ExploreChartInner({
       if (!resolved) {
         // Render a soft "Name (X%)" so the chart still has a visual
         // identifier — matches the old behaviour pre-15.84.
+        const soft = `${displayName} (${(percent * 100).toFixed(0)}%)`;
+        const fitted = fitPieText(soft, x, x > cx ? 'start' : 'end', 11);
+        if (!fitted) return null;
         return (
           <text x={x} y={y}
             fill="rgb(var(--text-secondary))"
@@ -3036,7 +3068,8 @@ function ExploreChartInner({
             textAnchor={x > cx ? 'start' : 'end'}
             dominantBaseline="central"
           >
-            {`${displayName} (${(percent * 100).toFixed(0)}%)`}
+            {fitted !== soft ? <title>{soft}</title> : null}
+            {fitted}
           </text>
         );
       }
@@ -3057,9 +3090,11 @@ function ExploreChartInner({
             style: styleForLabel,
           })
         : `${displayName}: ${formatNumber(value, styleForLabel, sliceKey)} (${(percent * 100).toFixed(0)}%)`;
-      const approxWidth = text.length * resolved.fontSize * 0.6;
-      const approxHeight = resolved.fontSize + 4;
       const anchor: 'start' | 'end' = x > cx ? 'start' : 'end';
+      const shown = fitPieText(text, x, anchor, resolved.fontSize);
+      if (!shown) return null;
+      const approxWidth = shown.length * resolved.fontSize * 0.6;
+      const approxHeight = resolved.fontSize + 4;
       const bgX = anchor === 'start' ? x - 3 : x - approxWidth - 3;
       return (
         <g>
@@ -3081,7 +3116,8 @@ function ExploreChartInner({
             textAnchor={anchor}
             dominantBaseline="central"
           >
-            {text}
+            {shown !== text ? <title>{text}</title> : null}
+            {shown}
           </text>
         </g>
       );
@@ -3100,12 +3136,14 @@ function ExploreChartInner({
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie isAnimationActive={animate} data={sortedPieData} dataKey="value" nameKey="displayName"
-                cx="50%" cy="45%" outerRadius="60%"
+                cx="50%" cy="45%" outerRadius={pieOuterRadius}
                 // Hole % is relative to the 60% outer radius — NOT the
                 // container — so it can never exceed the outer radius and blank
                 // the donut (the old `${pieInnerRadius}%` was container-relative,
                 // so an 80% hole = 80% container > 60% outer → empty ring).
-                innerRadius={pieInnerRadius > 0 ? `${(pieInnerRadius / 100) * 60}%` : undefined}
+                innerRadius={pieInnerRadius > 0
+                  ? (typeof pieOuterRadius === 'number' ? (pieInnerRadius / 100) * pieOuterRadius : `${(pieInnerRadius / 100) * 60}%`)
+                  : undefined}
                 onClick={handlePieClick}
                 label={renderPieLabel}
                 labelLine={showDataLabels}

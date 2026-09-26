@@ -644,8 +644,13 @@ async function drawPageSnapshot(
       useCORS: true,
       logging: false,
       backgroundColor: '#ffffff',
-      windowWidth: root.scrollWidth,
-      windowHeight: root.scrollHeight,
+      // The clone window must be as wide as the REAL page. With the element's
+      // own width, a grid beside a slicer rail re-lays out narrower in the
+      // clone while its tiles keep their pixel positions, and the snapshot
+      // cropped the right half of every row. The element is still what is
+      // captured; only the layout context matches the screen.
+      windowWidth: Math.max(document.documentElement.clientWidth, window.innerWidth, root.getBoundingClientRect().right),
+      windowHeight: Math.max(document.documentElement.clientHeight, root.scrollHeight),
     });
     cw = canvas.width;
     ch = canvas.height;
