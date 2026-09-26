@@ -34,10 +34,34 @@ Evidence for the eight acceptance scenarios is in [`evidence/`](evidence/README.
 - **Duplicate evidence:** a narrative repeated the KPI tiles, and the starter doubled a time series across two date
   axes.
 
+## Release-candidate round (final head `dddb4c06`)
+
+| DoD | Status | What closed it / evidence |
+|---|---|---|
+| 1 Semantic presentation | Met | A KPI states its span only when the series is proven to add up to it. The change carries its own window and value, and the span is named at the grain of its buckets. Incomplete periods are dashed. e2e: "a KPI says which span its number covers"; S1 asserts dashed partials and KPI scope. |
+| 2 Fact ≠ problem | Met | "Needs attention" is gone: observations are titled "Worth knowing", and "Against target" appears only with a target. The contract rejects an observation titled as a problem. |
+| 3 Legibility residuals | Met, with a limit | KPI value about 2.3× body text; pie labels only on slices ≥6%, with no stray leader lines; diagonal axis labels before vertical; values on small bar charts when nobody decided. The KPI context steps down rather than squeezing the number. The critic's model score is advice and certifies nothing. |
+| 4 PDF production-ready | Met | Print scale is judged on screen size. Only a genuinely missing chart may say data is missing. The exporter records itself for the gate. e2e and S8 assert no incomplete warning and print scale ≥0.62. 6 pages rendered and reviewed. |
+| 5 Studio UX | Met | The Studio preview (before/after at 1440/820/390) is unchanged. Undo/Redo, Save and Publish are all disabled while an Apply commits (two races found and fixed). |
+| 6 Expressiveness / reference | Met, with a limit | Directions differ in structure (S4 signatures). A reference's structure is guaranteed at the plan boundary from live findings (S5: "opens with a headline"). The dark band and warm surface are not reproduced — see limitations. |
+| 7 Visual critic | Met, with a limit | Settled render, 2 rounds, repairs through the validator, re-check names what is still visible. It reviews the builder preview at the builder's width and filters, not each device width. |
+| 8 S1–S8 at final head | Met | 8/8 PASS, 99 assertions, at `dddb4c06` on the production image. |
+| 9 Visual review | Done | Screenshots and every PDF page opened. Defects found this way (KPI span by day; KPI number squeezed out at 390; stuck tile; unplaced blocks) were fixed and re-verified. |
+| 10 Meaningful gates | Met | Negative controls: export headline, observation title, no block when nothing is live, style-only makes no block, unplaced blocks. |
+| 11 browser_verify / tsc | UNVERIFIED (see handoff) | The protocol was run against a dedicated container built from the commit. The gate itself is manual. tsc was run directly and is clean. |
+| 12 Performance | Met | The first viewport is warm at 0.7–0.95 s. Cold first render after a restart was 18.2 s (one observation). |
+| 13 Safety | Kept | No semantic, permission, lock or persistence path changed. Blocks come only from live finding keys. |
+
 ## Known limitations
 
-- **Visual review residuals.** In S3 the re-check still reported four legibility issues: KPI value size, pie label
-  density, bar label size, and one bar chart without labels. They are shown to the author and are not claimed as fixed.
+- **Visual review residuals.** Model-scored legibility is advice. The four residuals from the earlier run were fixed in
+  the renderer, and the re-check on the final run still names what it sees. Nothing is certified by a score.
+- **Reference fidelity.** Hierarchy is reproduced (headline band, KPI strip, summary, hero chart). The reference's dark
+  header band and warm paper surface are not: theme colourways have no band surface or warm paper tone. The lead
+  finding the model picks may differ from the reference's theme (in S5 it led with delivery days).
+- **Critic scope.** It reviews the builder preview at the builder's width and current filters, not each device width.
+- **Cold start.** The first render of a large report right after a backend restart was 18.2 s in one run; warm it is
+  under 1 s for the first viewport.
 - **Reference design.** Only presentation is reproduced: layout, type, mood and accent. Photos, custom fonts, a
   reference's own header text and arbitrary CSS or JS are not. The model says which traits were not converted.
 - **HTML import.** The separate "Import HTML" modal was not part of this acceptance. The reference scenario uses the
