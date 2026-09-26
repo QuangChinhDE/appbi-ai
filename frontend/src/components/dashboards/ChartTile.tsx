@@ -148,7 +148,15 @@ function useStickyVisibility(rootMargin = '300px') {
     }
     const observer = new IntersectionObserver(
       (entries) => {
-        const isVisible = entries.some((entry) => entry.isIntersecting);
+        // A superseded observer can still deliver a queued entry for the node
+        // it watched — which, once removed, reports "not intersecting". Landing
+        // after the NEW observer's "intersecting", it froze `current` at false
+        // for a tile in plain view, and its data was never fetched (seen on the
+        // production image: chart metadata loaded, the data request never sent).
+        if (observerRef.current !== observer) return;
+        const mine = entries.filter((entry) => entry.target === node);
+        if (mine.length === 0) return;
+        const isVisible = mine[mine.length - 1].isIntersecting;
         setCurrent(isVisible);
         if (isVisible) setVisible(true);
       },
