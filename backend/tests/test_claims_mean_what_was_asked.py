@@ -638,3 +638,24 @@ def test_periods_named_together_share_their_year():
     assert CC._periods("tháng 3 và tháng 4 năm 2018") == {("m", 2018, 3), ("m", 2018, 4)}
     assert CC._periods("Q4 2017 vs Q3") == {("q", 2017, 4), ("q", 2017, 3)}
     assert CC._periods("Doanh thu Việt Nam 2018") == set()
+
+
+def test_a_worked_out_change_never_replaces_the_computed_one(world):
+    """Browser, link 39 (run 3786): compare_periods gave -5.23%; the answer listed
+    July then August and published "tăng 5.52%" — the reversed baseline."""
+    ctx, state = world("GMV tháng 8/2018 so với tháng 7/2018 thay đổi bao nhiêu phần trăm?", asked=("gmv",))
+    res = _compare(1003308.47, 1058728.03, -5.23)
+    res["data"]["current"]["label"], res["data"]["baseline"]["label"] = "2018-08", "2018-07"
+    _rec(state, "compare_periods", res, {"chart_id": MONTHLY})
+    text = "Tháng 7/2018 là 1,058,728.03, tháng 8/2018 là 1,003,308.47: tăng 5.52%."
+    assert (5.52, "unsupported") in _why(state, ctx, text)
+    assert _why(state, ctx, "Tháng 7/2018 là 1,058,728.03, tháng 8/2018 là 1,003,308.47: giảm 5.23%.") == []
+
+
+def test_a_refusal_detail_dict_is_never_a_reader_sentence():
+    from app.services.agent_flows.runtime.handlers.data import _why
+
+    assert _why({"ok": False, "error_code": "dimension_mismatch", "error": "x",
+                 "detail": {"requested_dimension": "a", "charts_with_dimension": [686]}}) == ""
+    assert _why({"ok": False, "error": "failed to load", "detail": {"k": 1}}) == "failed to load"
+    assert _why({"ok": False, "error": "e", "detail": "column x missing"}) == "column x missing"

@@ -1286,7 +1286,7 @@ function ValueView({
           {!!Object.keys(vars).length && (
             <section>
               <h4 className="mb-1 text-tiny font-strong uppercase tracking-wider text-text-quaternary">
-                Biến đã đặt tên
+                {t('agentFlows.trace.namedVars')}
               </h4>
               <div className="rounded bg-surface-1 p-2"><Value v={vars} /></div>
             </section>
@@ -1294,7 +1294,7 @@ function ValueView({
           {!!Object.keys(outs).length && (
             <section>
               <h4 className="mb-1 text-tiny font-strong uppercase tracking-wider text-text-quaternary">
-                Kết quả của các bước trước
+                {t('agentFlows.trace.priorOutputs')}
               </h4>
               <div className="rounded bg-surface-1 p-2"><Value v={outs} /></div>
             </section>

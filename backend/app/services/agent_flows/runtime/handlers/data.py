@@ -507,7 +507,13 @@ def _why(payload: Any) -> str:
     """
     if not isinstance(payload, dict) or payload.get("ok"):
         return ""
-    return str(payload.get("detail") or payload.get("error") or "").strip()
+    # A DELIBERATE REFUSAL IS NOT A BROKEN READ, and a structured `detail` is for
+    # the trace, never a sentence (browser: "{'requested_dimension': …}" reached
+    # the viewer notes).
+    if payload.get("error_code") in ("dimension_mismatch", "period_not_in_chart"):
+        return ""
+    detail = payload.get("detail")
+    return str(detail if isinstance(detail, str) and detail else payload.get("error") or "").strip()
 
 
 def _failure_reasons(entries: list[dict]) -> list[str]:

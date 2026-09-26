@@ -74,6 +74,9 @@ _STRIP_SPANS = [
     # as a claim of 8 (and "-07" as 7) and was flagged "4 figures do not match".
     re.compile(r"(?<![\d.,])\d{4}[-/.]\d{1,2}(?:[-/.]\d{1,2})?(?![\d])"),
     re.compile(r"(?<![\d.,])\d{1,2}/\d{4}(?![\d])"),
+    # "tháng 7", "quý 4", "month 8" name a period too (browser, run 3775: "so với
+    # tháng 7, GMV tháng 8 …" was read as figures 7 and 8 beside a correct −5.23%).
+    re.compile(r"(?:th[áa]ng|thg|qu[ýy]|month|quarter)\s+\d{1,2}(?![\d/]|[.,]\d)", re.IGNORECASE),
     # A QUOTED NAME IS A LABEL — which is what this list already says about
     # citations. Answers cite their source by name, and report names carry digits:
     # `"Olist · Điểm đánh giá TB · page-1"` yielded a claim of 1, that matched no

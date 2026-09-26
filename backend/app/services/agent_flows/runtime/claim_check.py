@@ -254,7 +254,7 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
 _MAX_OPERANDS = 6
 
 
-def _resolve_derived(pending, claims, flagged, in_evidence, text) -> list[dict]:
+def _resolve_derived(pending, claims, flagged, in_evidence, text, changes=()) -> list[dict]:
     """Flags for figures only arithmetic could support. Operands: figures the
     answer states, a tool read, and that were NOT themselves flagged; at most
     `_MAX_OPERANDS`, so pair combinations stay too few to match by chance."""
@@ -265,6 +265,12 @@ def _resolve_derived(pending, claims, flagged, in_evidence, text) -> list[dict]:
         operands = []
     out = []
     for value, pct in pending:
+        # A CHANGE THE TOOLS COMPUTED IS THE CHANGE. Browser, link 39: compare_periods
+        # gave -5.23%, the answer listed July then August and said "tăng 5,52%" —
+        # (Jul - Aug) / Aug, the wrong baseline — and arithmetic accepted it.
+        if pct and changes:
+            out.append({"value": value, "pct": pct, "why": "unsupported"})
+            continue
         ok = _derived(value, operands, text) if pct else _derived_plain(value, operands)
         if not ok:
             out.append({"value": value, "pct": pct, "why": "unsupported"})
@@ -420,7 +426,8 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             e = support[0]
             flagged.append({"value": value, "pct": pct, "why": reasons[0],
                             "of": {k: e.get(k) for k in ("measure", "dimension", "member")}})
-    flagged += _resolve_derived(pending, claims, flagged, in_evidence, text)
+    flagged += _resolve_derived(pending, claims, flagged, in_evidence, text,
+                                [e for e in ledger if "periods" in e and e.get("ratio")])
     return {"target": {**t, "measures": sorted(t["measures"])}, "flagged": flagged}
 
 
