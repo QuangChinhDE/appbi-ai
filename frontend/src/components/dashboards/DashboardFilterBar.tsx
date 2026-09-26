@@ -1835,6 +1835,11 @@ function FilterCard({
   // card stretches via flex-1 (set on the OUTER wrapper). We still set a
   // sensible width on the inner box so the popover anchor doesn't collapse
   // when the row has only 1 filter.
+  // Width the segmented control needs: "All" plus each option at ~7.2px a
+  // character and the button's padding, plus the card's own padding.
+  const segmentedNeedPx = segmented
+    ? 32 + ['All', ...mergedValues.map((v: any) => String(v ?? ''))].reduce((sum, s) => sum + Math.ceil(s.length * 7.2) + 22, 0)
+    : 0;
   const cardWidthStyle: React.CSSProperties = openSide
     ? { width: '100%' }
     : distributeChildren
@@ -1844,7 +1849,12 @@ function FilterCard({
       // still the intent, but a control is capped at the width its content can
       // actually use; the row stays balanced and stops looking empty.
       ? { width: '100%', minWidth: 140, maxWidth: 320 }
-      : { width: `${liveWidth ?? f.widthPx ?? 190}px`, minWidth: 140, maxWidth: 320 };
+      : segmented
+        // Segmented buttons must show every option ("Central", not "C…"): the
+        // card is as wide as its options need, up to the row, never the
+        // dropdown's 190px.
+        ? { width: `${Math.max(liveWidth ?? f.widthPx ?? 190, segmentedNeedPx)}px`, minWidth: 140, maxWidth: '100%' }
+        : { width: `${liveWidth ?? f.widthPx ?? 190}px`, minWidth: 140, maxWidth: 320 };
   // Outer wrapper class: `inline-block` is the legacy fixed-width mode.
   // With distribute on, switch to `flex-1` so siblings share the row.
   const outerWrapperClass = openSide
@@ -2085,7 +2095,9 @@ function SingleSelectBody({
                     ? t('dashboards.selectBody.failedToLoad')
                     : emptyDueToFilter
                       ? t('dashboards.selectBody.noValuesActiveFilter')
-                      : (distinctStatus && !distinctStatus.isLoading)
+                      // No distinct query at all (the slicer resolves to no
+                      // source) is not "loading": nothing will ever arrive.
+                      : (!distinctStatus || !distinctStatus.isLoading)
                         ? t('dashboards.selectBody.noValuesAvailable')
                         : t('dashboards.selectBody.loadingValues'))
               : t('dashboards.selectBody.noMatch')}
@@ -2232,7 +2244,9 @@ function MultiSelectBody({
                     ? t('dashboards.selectBody.failedToLoad')
                     : emptyDueToFilter
                       ? t('dashboards.selectBody.noValuesActiveFilter')
-                      : (distinctStatus && !distinctStatus.isLoading)
+                      // No distinct query at all (the slicer resolves to no
+                      // source) is not "loading": nothing will ever arrive.
+                      : (!distinctStatus || !distinctStatus.isLoading)
                         ? t('dashboards.selectBody.noValuesAvailable')
                         : t('dashboards.selectBody.loadingValues'))
               : t('dashboards.selectBody.noMatch')}

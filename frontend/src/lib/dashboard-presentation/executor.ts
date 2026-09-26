@@ -20,7 +20,7 @@ import type { Dashboard, DashboardChart, DashboardChartLayout, DashboardThemeCon
 import { COLORWAYS, COLORWAY_KEYS, TEMPLATES, TEMPLATE_KEYS } from '@/lib/dashboard-theme-catalog';
 import { GRID_VERSION, scaleGridLayoutForRender } from '@/lib/dashboard-pages';
 import { compilePresentationPlan } from './compiler';
-import { blockWidgetConfig } from './blocks';
+import { blockWidgetConfig, blockWidgetType } from './blocks';
 import { isAllowedChartStyleKey, isAllowedThemeKey, isAllowedFont, isValidStyleValue, KPI_ONLY_STYLE_KEYS } from './capabilities';
 import { buildPresentationFingerprint } from './snapshot';
 import { applyStructureOperations, avoidFixed } from './structure';
@@ -309,7 +309,7 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
       if (block) {
         created.push({
           tempId: id,
-          widgetType: 'narrative',
+          widgetType: blockWidgetType(block),
           widgetConfig: blockWidgetConfig(block),
           layout: { x: rect.x, y: rect.y, w: rect.w, h: rect.h, gv: GRID_VERSION, pageId },
         });

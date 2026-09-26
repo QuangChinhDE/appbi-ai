@@ -6,6 +6,7 @@ import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
 import { buildTileEvidence, usePublishTileEvidence } from '@/lib/report-evidence';
+import { KpiContext, kpiRowValue } from './KpiContext';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
@@ -147,7 +148,15 @@ function useStickyVisibility(rootMargin = '300px') {
     }
     const observer = new IntersectionObserver(
       (entries) => {
-        const isVisible = entries.some((entry) => entry.isIntersecting);
+        // A superseded observer can still deliver a queued entry for the node
+        // it watched — which, once removed, reports "not intersecting". Landing
+        // after the NEW observer's "intersecting", it froze `current` at false
+        // for a tile in plain view, and its data was never fetched (seen on the
+        // production image: chart metadata loaded, the data request never sent).
+        if (observerRef.current !== observer) return;
+        const mine = entries.filter((entry) => entry.target === node);
+        if (mine.length === 0) return;
+        const isVisible = mine[mine.length - 1].isIntersecting;
         setCurrent(isVisible);
         if (isVisible) setVisible(true);
       },
@@ -1159,7 +1168,7 @@ function ChartTileBase({
           for a scoped restyle, not start a grid drag. */}
       <div className={`mb-2 flex flex-col gap-1 pr-8 ${aiDesignMode ? '' : 'drag-handle cursor-grab active:cursor-grabbing'}`}>
         {/* Title row */}
-        <div className="flex items-center gap-1.5 min-h-[1.5rem]">
+        <div className="dashboard-tile-title-row flex items-center gap-1.5 min-h-[1.5rem]" data-kpi={isKpiCard ? '' : undefined}>
         {isEditingTitle ? (
           <>
             <input
@@ -1705,6 +1714,13 @@ function ChartTileBase({
           </div>
         ) : null}
       </div>
+      {isKpiCard && chartData && exploreConfig?.roleConfig?.metrics?.[0]?.field ? (
+          <KpiContext
+            measureField={exploreConfig.roleConfig.metrics[0].field}
+            kpiValue={kpiRowValue(chartData.data)}
+            goalDirection={(exploreConfig.styleConfig as any)?.kpiGoalDirection ?? null}
+          />
+        ) : null}
 
       <ChartDetailModal
         chartId={chartId}

@@ -60,6 +60,9 @@ export function coercePlanBlocks(raw: unknown, knownTileIds: ReadonlySet<VisualI
         droppedRefs += 1;
         continue;
       }
+      // "Revenue is R$13.6M" only repeats a KPI tile on the same page; a
+      // block says what the tiles do not (change, peak, leader, attainment).
+      if (parsed.kind === 'kpi_value') continue;
       const key = `${parsed.kind}:${parsed.tileId}`;
       if (!findings.includes(key)) findings.push(key);
     }
@@ -98,8 +101,14 @@ export function resolveSectionRef(ref: unknown, idMap: Map<string, VisualId>): V
   return Number.isFinite(n) && s !== '' ? n : null;
 }
 
+/** The widget a created block becomes: a heading is a section header. */
+export function blockWidgetType(block: PlanBlock): 'narrative' | 'section_header' {
+  return block.heading ? 'section_header' : 'narrative';
+}
+
 /** The widget config a created block is stored with. */
 export function blockWidgetConfig(block: PlanBlock): Record<string, unknown> {
+  if (block.heading) return { title: block.title ?? '', origin: 'ai' };
   return {
     variant: block.variant,
     ...(block.eyebrow ? { eyebrow: block.eyebrow } : {}),

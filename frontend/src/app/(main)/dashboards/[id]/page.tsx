@@ -3,6 +3,9 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import { useIsStudioPreview, isStudioMessage, studioFrameId, type StudioMessage, type StudioPreviewState } from '@/lib/studio/preview-mode';
+import { StudioPreview } from '@/components/dashboards/StudioPreview';
+import { pendingWork } from '@/lib/dashboard-presentation/vision-review';
 import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, Clock, GripVertical, Lock, Hand } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
@@ -29,7 +32,7 @@ import { buildPresentationMutation, tilesWithLocalEdits, toLocalLayoutOverrides 
 import { useAiDesign } from '@/components/dashboards/ai-design/useAiDesign';
 import { DashboardThemeModal } from '@/components/dashboards/DashboardThemeModal';
 import { DashboardCanvas } from '@/components/dashboards/DashboardCanvas';
-import { Palette, Move, Undo2, Redo2, ArrowUpToLine } from 'lucide-react';
+import { Palette, Move, Undo2, Redo2, ArrowUpToLine, Eye } from 'lucide-react';
 import { ChartTile } from '@/components/dashboards/ChartTile';
 import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
@@ -363,6 +366,12 @@ function DashboardDetailPageInner() {
   /** True for the WHOLE save (layout, then theme, then filters) — not just the
    *  layout request — so the controls never report "saved" half-way through. */
   const [isStagingDraft, setIsStagingDraft] = useState(false);
+  // An AI Apply commits in steps (create its blocks, then move the tiles).
+  // Save/Publish in between would stage the OLD layout with the NEW blocks —
+  // the published report then had the blocks at the bottom and every chart
+  // where it was. Nothing is staged or published while a commit is running.
+  const [isCommittingPresentation, setIsCommittingPresentation] = useState(false);
+  const committingPresentationRef = React.useRef(false);
   // Always-current mirror of localLayoutOverrides so undo-capture can read the
   // pre-change value without adding it to every handler's dep array.
   const localLayoutOverridesRef = React.useRef(localLayoutOverrides);
@@ -479,7 +488,11 @@ function DashboardDetailPageInner() {
   }, [dashboardDatasetIds, datasetModelQueries]);
   const resPerms = getResourcePermissions(dashboard?.user_permission);
   const canShare = resPerms.canShare;
-  const canEditResource = resPerms.canEdit;
+  // The Studio preview iframe is a viewer of this page: no editing, no edit
+  // lock, no presence heartbeat (it would otherwise compete with the author's
+  // own tab for the page lock).
+  const studioPreview = useIsStudioPreview();
+  const canEditResource = resPerms.canEdit && !studioPreview;
   // Phase-B17 — publish conflict (someone else published the SAME tiles).
   const [publishConflict, setPublishConflict] = useState<{ editor: string | null; tiles?: string[] } | null>(null);
   const updateDashboardMutation = useUpdateDashboard();
@@ -511,8 +524,10 @@ function DashboardDetailPageInner() {
     layout: Record<number, Record<string, any>>;
     theme: any;
     slicerCluster: any;
-    /** Draft-only blocks this step created (next side only). Undo removes them. */
+    /** Draft-only blocks this step created (next side only). Undo removes them;
+     *  redo creates them again from `createdBlockSpecs` and records the new ids. */
     createdBlockIds?: number[];
+    createdBlockSpecs?: { widgetType: string; widgetConfig: Record<string, unknown>; layout: Record<string, unknown> }[];
   };
   type UndoEntry =
     | { kind: 'layout'; prev: Record<number, Record<string, any>>; next: Record<number, Record<string, any>> }
@@ -621,7 +636,26 @@ function DashboardDetailPageInner() {
       if (dir === 'prev' && created.length) {
         void Promise.all(created.map((id) => dashboardApi.removeChart(dashboardId, id).catch(() => null)))
           .then(() => queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] }));
-        redoRef.current = redoRef.current.filter((e) => e !== entry);
+      }
+      const specs = entry.next.createdBlockSpecs ?? [];
+      if (dir === 'next' && specs.length) {
+        // Redo re-creates the blocks the design added (as draft-only rows) and
+        // records their new ids, so a further undo removes the right rows.
+        void (async () => {
+          const ids: number[] = [];
+          for (const spec of specs) {
+            const before = new Set(((queryClient.getQueryData(['dashboards', dashboardId]) as any)?.dashboard_charts ?? []).map((d: any) => d.id));
+            try {
+              const updated: any = await dashboardApi.addWidget(dashboardId, spec.widgetType, { ...spec.layout, draftOnly: true } as any, spec.widgetConfig as any);
+              if (updated) queryClient.setQueryData(['dashboards', dashboardId], updated);
+              const fresh = (updated?.dashboard_charts ?? []).find((d: any) => !before.has(d.id) && d.widget_type === spec.widgetType);
+              if (fresh) ids.push(fresh.id);
+            } catch (err) {
+              console.error('Redo could not re-create a design block:', err);
+            }
+          }
+          entry.next.createdBlockIds = ids;
+        })();
       }
       setLocalLayoutOverrides(state.layout);
       if (state.slicerCluster !== undefined) {
@@ -638,6 +672,10 @@ function DashboardDetailPageInner() {
     void applyThemeConfig(value);
   };
   const doUndo = () => {
+    // Not while an Apply is still committing: its undo entry is written when
+    // the last block exists, so an Undo in between undid something else and
+    // left the new blocks behind.
+    if (committingPresentationRef.current) return;
     const entry = undoRef.current.pop();
     if (!entry) { toast.info(t('dashboards.detail.nothingToUndo')); return; }
     redoRef.current.push(entry);
@@ -646,6 +684,7 @@ function DashboardDetailPageInner() {
     toast.success(t(entry.kind === 'theme' ? 'dashboards.detail.undoTheme' : 'dashboards.detail.undoLayout'));
   };
   const doRedo = () => {
+    if (committingPresentationRef.current) return;
     const entry = redoRef.current.pop();
     if (!entry) return;
     undoRef.current.push(entry);
@@ -888,6 +927,9 @@ function DashboardDetailPageInner() {
     slicerClusterPatch: Record<string, any> | null;
     createdBlocks?: import('@/lib/dashboard-presentation/types').CreatedBlock[];
   }) => {
+    committingPresentationRef.current = true;
+    setIsCommittingPresentation(true);
+    try {
     // Blocks first: each becomes a DRAFT-ONLY row (invisible to /d and /embed
     // until Publish, deleted by Discard), then its temporary id is swapped for
     // the real one so it moves, resizes and locks like any tile.
@@ -933,6 +975,11 @@ function DashboardDetailPageInner() {
         theme: nextTheme,
         slicerCluster: nextCluster,
         createdBlockIds: createdIds,
+        createdBlockSpecs: (commit.createdBlocks ?? []).map((b) => ({
+          widgetType: b.widgetType,
+          widgetConfig: b.widgetConfig as Record<string, unknown>,
+          layout: { ...b.layout, ...(commit.layoutOverrides[b.tempId] ?? {}), pageId: b.layout.pageId ?? activePageId } as Record<string, unknown>,
+        })),
       },
     });
 
@@ -948,6 +995,12 @@ function DashboardDetailPageInner() {
     // Draft, don't persist: the colour lands on Save/Publish and Discard drops
     // it — an AI Apply must not silently repaint the live report (§ theme-draft).
     if (nextTheme !== undefined) paintThemeDraft(nextTheme);
+    } finally {
+      // Cleared in the same render batch as the new layout: the render that
+      // re-enables Publish is the one that already holds the moved tiles.
+      committingPresentationRef.current = false;
+      setIsCommittingPresentation(false);
+    }
   }, [dashboard?.theme_config, draftSlicerClusterLayout, localLayoutOverrides, activePageId, dashboardId, queryClient, t]);
 
   // Tile focus (Canvas/Grid highlight). Declared here — above useAiDesign —
@@ -1000,6 +1053,9 @@ function DashboardDetailPageInner() {
     whatMoved: t('report.direction.whatMoved'),
     latestStatus: t('report.direction.latestStatus'),
     detail: t('report.direction.detail'),
+    worthKnowing: t('report.direction.worthKnowing'),
+    againstTarget: t('report.direction.againstTarget'),
+    keepInMind: t('report.direction.keepInMind'),
   }), [t]);
 
   const aiDesign = useAiDesign({
@@ -1093,6 +1149,70 @@ function DashboardDetailPageInner() {
         : null,
     );
   }, [aiDesign.pending]);
+
+  // Studio preview (the author's tab): the whole report before and after the
+  // pending design, as the same overlays the canvas renders — local unsaved
+  // edits first, the AI design on top. Nothing here writes a layout.
+  const [studioOpen, setStudioOpen] = useState(false);
+  const studioBefore = React.useMemo<StudioPreviewState>(() => ({
+    overrides: Object.keys(localLayoutOverrides).length ? (localLayoutOverrides as any) : null,
+    blocks: null,
+    presentation: pendingThemeConfig ? { theme: pendingThemeConfig, slicerCluster: {} } : null,
+    pageId: activePageId ?? null,
+  }), [localLayoutOverrides, pendingThemeConfig, activePageId]);
+  const studioAfter = React.useMemo<StudioPreviewState>(() => {
+    const merged: Record<number, Record<string, unknown>> = { ...(localLayoutOverrides as any) };
+    for (const [id, o] of Object.entries(previewLayoutOverrides ?? {})) merged[Number(id)] = { ...(merged[Number(id)] ?? {}), ...(o as any) };
+    const theme = { ...(pendingThemeConfig ?? {}), ...(previewPresentation?.theme ?? {}) };
+    return {
+      overrides: Object.keys(merged).length ? merged : null,
+      blocks: previewBlocks ?? null,
+      presentation: Object.keys(theme).length || Object.keys(previewPresentation?.slicerCluster ?? {}).length
+        ? { theme, slicerCluster: previewPresentation?.slicerCluster ?? {} }
+        : null,
+      pageId: activePageId ?? null,
+    };
+  }, [localLayoutOverrides, previewLayoutOverrides, previewBlocks, previewPresentation, pendingThemeConfig, activePageId]);
+
+  // Studio preview (inside the iframe): show exactly the state the author's tab
+  // sends — before or after an AI design — through the same overlays the canvas
+  // uses, and report the report's full height and whether it has settled, so the
+  // frame can be sized to the whole report and a capture never shows spinners.
+  React.useEffect(() => {
+    if (!studioPreview) return;
+    const frame = studioFrameId();
+    const onMessage = (e: MessageEvent) => {
+      if (!isStudioMessage(e)) return;
+      const m = e.data as StudioMessage;
+      if (m.type !== 'appbi-studio-state' || m.frame !== frame) return;
+      setPreviewLayoutOverrides((m.state.overrides as any) ?? null);
+      setPreviewBlocks(m.state.blocks && m.state.blocks.length ? (m.state.blocks as any[]) : null);
+      setPreviewPresentation((m.state.presentation as any) ?? null);
+      if (m.state.pageId) setCurrentPageId(m.state.pageId);
+    };
+    window.addEventListener('message', onMessage);
+    window.parent?.postMessage({ type: 'appbi-studio-ready', frame } satisfies StudioMessage, window.location.origin);
+    let last = '';
+    let lastHeight = -1;
+    let still = 0;
+    const beat = window.setInterval(() => {
+      const main = document.querySelector('main') as HTMLElement | null;
+      if (!main) return;
+      const height = Math.ceil(main.scrollHeight);
+      // Settled = the report is there (tiles mounted), nothing is loading, and
+      // its height has held for three beats. A frame that has not started
+      // fetching yet has nothing pending either — that is not "finished".
+      still = height === lastHeight ? still + 1 : 0;
+      lastHeight = height;
+      const hasTiles = main.querySelector('[data-grid-item-id]') !== null;
+      const settled = hasTiles && pendingWork(main) === null && still >= 3;
+      const key = `${height}:${settled}`;
+      if (key === last) return;
+      last = key;
+      window.parent?.postMessage({ type: 'appbi-studio-height', frame, height, settled } satisfies StudioMessage, window.location.origin);
+    }, 400);
+    return () => { window.removeEventListener('message', onMessage); window.clearInterval(beat); };
+  }, [studioPreview]);
 
   // Clicking a chart while the AI panel is minimised should bring the panel
   // back — otherwise the "Editing: X" chip the click just armed is invisible.
@@ -1586,6 +1706,7 @@ function DashboardDetailPageInner() {
   };
 
   const handleSaveDraft = async () => {
+    if (committingPresentationRef.current) return;
     const { ok } = await stageAllToDraft();
     if (ok) {
       // Save flushes local overrides → the pre-save snapshots in the undo stack
@@ -1677,6 +1798,7 @@ function DashboardDetailPageInner() {
   };
 
   const handlePublish = async () => {
+    if (committingPresentationRef.current) return;
     // Capture base versions BEFORE the flush clears local overrides.
     const tileBaseV = buildTileBaseV();
     // Everything is staged first; Publish runs only if ALL of it was accepted.
@@ -3051,6 +3173,7 @@ function DashboardDetailPageInner() {
   return (
     <DashboardThemeProvider theme={previewTheme} className="min-h-full bg-surface-2">
       {/* ── Sticky compact header (single row) ── */}
+      {!studioPreview && (
       <div className="sticky top-0 z-20 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8">
         <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-surface-1 shadow-linear-sm overflow-visible">
 
@@ -3292,7 +3415,7 @@ function DashboardDetailPageInner() {
                       <button
                         type="button"
                         onClick={doUndo}
-                        disabled={!canUndo}
+                        disabled={!canUndo || isCommittingPresentation}
                         className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
                         title={t('dashboards.detail.undo')}
                       >
@@ -3301,7 +3424,7 @@ function DashboardDetailPageInner() {
                       <button
                         type="button"
                         onClick={doRedo}
-                        disabled={!canRedo}
+                        disabled={!canRedo || isCommittingPresentation}
                         className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
                         title={t('dashboards.detail.redo')}
                       >
@@ -3333,6 +3456,7 @@ function DashboardDetailPageInner() {
                         disabled={
                           !hasUnsavedPresentation
                           || isStagingDraft
+                          || isCommittingPresentation
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
@@ -3349,6 +3473,7 @@ function DashboardDetailPageInner() {
                         disabled={
                           publishDashboardMutation.isPending
                           || isStagingDraft
+                          || isCommittingPresentation
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white transition-colors hover:bg-brand-hover disabled:opacity-50"
@@ -3615,6 +3740,18 @@ function DashboardDetailPageInner() {
                   and a person needs to see which mode they are in without
                   opening anything. Grid only — a canvas dashboard has no grid
                   for a composition to compile onto. */}
+              {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
+                <button
+                  type="button"
+                  data-testid="studio-preview-open"
+                  onClick={() => setStudioOpen(true)}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary"
+                  title={t('dashboards.studio.openFull')}
+                >
+                  <Eye className="h-3 w-3" />
+                  {t('dashboards.studio.open')}
+                </button>
+              )}
               {canEditThisPage && (dashboard?.layout_mode ?? 'grid') === 'grid' && (
                 <div
                   className="inline-flex h-7 items-center rounded-md border border-[rgb(var(--border-line))] p-0.5"
@@ -3666,6 +3803,7 @@ function DashboardDetailPageInner() {
           {/* Row 2 (pages) merged into title dropdown; Row 3 (filter) merged into header Filter popover. */}
         </div>
       </div>
+      )}
 
       {/* ── Content area ──
           Phase-15.81 — when the FilterPane is open we render a 2-column
@@ -3866,6 +4004,11 @@ function DashboardDetailPageInner() {
           <DashboardGrid
             dashboardId={dashboardId}
             dashboardCharts={visibleDashboardCharts}
+            // In the Studio preview iframe, an IntersectionObserver measures
+            // against the TOP-level viewport, so tiles in the part of the frame
+            // scrolled out of the overlay would never mount. The preview is a
+            // whole-report view: every tile renders.
+            disableLazy={studioPreview}
             canEdit={canEditThisPage}
             allowAppearanceEdit={canEditThisPage}
             themeConfig={dashboard?.theme_config}
@@ -3935,6 +4078,17 @@ function DashboardDetailPageInner() {
             frame it will publish at (the page reserves `lg:pr` for the drawer so
             nothing hides behind it), and typing a long instruction grows the box
             inside the drawer instead of reflowing the whole page. */}
+        {studioOpen && !studioPreview && (
+          <StudioPreview
+            dashboardId={Number(dashboardId)}
+            before={studioBefore}
+            after={studioAfter}
+            hasPending={Boolean(aiDesign.pending)}
+            onApply={() => { aiDesign.apply(); setStudioOpen(false); }}
+            onDiscard={() => { aiDesign.discard(); setStudioOpen(false); }}
+            onClose={() => setStudioOpen(false)}
+          />
+        )}
         {designMode === 'ai' && (aiPanelCollapsed ? (
           <button
             type="button"
@@ -3961,6 +4115,7 @@ function DashboardDetailPageInner() {
               pendingDiff={aiDesign.pending?.diff ?? null}
               onApply={aiDesign.apply}
               onDiscard={aiDesign.discard}
+              onPreview={() => setStudioOpen(true)}
               onCollapse={() => setAiPanelCollapsed(true)}
               onClose={() => { aiDesign.discard(); setDesignMode('manual'); }}
               visualCount={aiDesign.visualCount}

@@ -221,3 +221,18 @@ def test_no_vision_model_means_no_review_not_a_made_up_one(monkeypatch):
     monkeypatch.setattr(critic.LLMClient, "complete_json_multimodal", staticmethod(lambda **kw: None))
     with pytest.raises(critic.CritiqueUnavailable):
         critic.critique_rendered_preview(image="data:image/jpeg;base64,AAAA", tiles=[{"id": 1}], direction=None)
+
+
+def test_the_reference_clause_asks_what_carried_over():
+    with_ref = planner.build_planner_prompt(snapshot=_SNAPSHOT, user_prompt="match this", has_reference=True)
+    assert "referenceReport" in with_ref and "cannot reproduce" in with_ref
+
+
+def test_the_reference_clause_asks_for_its_structure_not_only_its_look():
+    with_ref = planner.build_planner_prompt(snapshot=_SNAPSHOT, user_prompt="match this", has_reference=True)
+    assert "STRUCTURE" in with_ref and '"headline" block' in with_ref
+
+
+def test_the_model_reports_the_reference_structure_as_data():
+    with_ref = planner.build_planner_prompt(snapshot=_SNAPSHOT, user_prompt="match this", has_reference=True)
+    assert "referenceStructure" in with_ref

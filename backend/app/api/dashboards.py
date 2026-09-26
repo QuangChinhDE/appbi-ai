@@ -2060,6 +2060,36 @@ def plan_dashboard_presentation(
     return PresentationPlanResponse(plan=plan)
 
 
+class ReportStarterRequest(BaseModel):
+    """Start a report from data: the dataset and what the report is for."""
+    dataset_id: int
+    goal: str = Field(default="", max_length=1000)
+    name: Optional[str] = Field(default=None, max_length=200)
+
+
+@router.post("/report-starter", status_code=status.HTTP_201_CREATED)
+def start_report_from_data(
+    body: ReportStarterRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """A first draft of real, engine-validated charts for `goal` on a new
+    dashboard the user then shapes. Needs view access to the dataset."""
+    from app.models.dataset import Dataset as _Dataset
+    from app.services.report_starter_service import build_report_starter
+
+    dataset = db.query(_Dataset).filter(_Dataset.id == body.dataset_id).first()
+    if dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found")
+    require_view_access(db, current_user, dataset, "datasets")
+    try:
+        return build_report_starter(db, dataset_id=body.dataset_id, goal=body.goal, name=body.name,
+                                    owner_id=current_user.id)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 class PresentationCritiqueRequest(BaseModel):
     """A rendered preview to review. The image is the preview the author is
     looking at (a data URL, JPEG/PNG); the tile list names what is on it."""

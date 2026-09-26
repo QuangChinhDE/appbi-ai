@@ -137,8 +137,11 @@ function snap(tiles) {
     slicers: [{ id: 's1', label: 'State', type: 'dropdown' }], slicerDock: 'top', fieldMeta: FIELD_META,
   });
 }
-function build(direction, tiles = olistTiles()) {
-  const snapshot = snap(tiles);
+// What the Olist report supports right now: its breakdowns are concentrated and
+// its lead series has incomplete edge months (the conditional findings).
+const OLIST_LIVE = ['concentration:7', 'concentration:8', 'partial_periods:5'];
+function build(direction, tiles = olistTiles(), live = OLIST_LIVE) {
+  const snapshot = { ...snap(tiles), findings: live.map((key) => ({ key, sentence: key })) };
   const plan = directions.planForDirection(direction, snapshot);
   const built = executor.buildPresentationMutation({ plan, snapshot, tiles, pageId: 'page-1', currentTheme: {}, gridGapPx: 8, targets: [] });
   return { plan, built, snapshot };
@@ -244,6 +247,14 @@ check('a finding reference to a chart not on the page, or an unknown kind, is dr
   assert(blocks[0].findings.join() === 'peak:5', blocks[0].findings.join());
 });
 
+check('a block does not restate a KPI tile ("Revenue is R$13.6M"); it keeps what the tiles do not say', () => {
+  const { blocks } = blocksMod.coercePlanBlocks(
+    [{ id: 'b1', variant: 'headline', findings: ['kpi_value:5', 'trend:6', 'attainment:5'] },
+     { id: 'b2', variant: 'summary', findings: ['kpi_value:5'] }], new Set([5, 6]));
+  assert(blocks.length === 1, 'a block made only of restated KPI values was created');
+  assert(blocks[0].findings.join() === 'trend:6,attainment:5', blocks[0].findings.join());
+});
+
 check('blocks exist only in a redesign; sections place them by the model id', () => {
   const raw = { layer: 'redesign', direction: { style: 'executive' }, blocks: [{ id: 'b1', variant: 'headline', findings: ['trend:5'] }],
     sections: [{ primitive: 'full_width', visuals: ['b1'] }, { primitive: 'full_width', visuals: [5] }] };
@@ -251,6 +262,63 @@ check('blocks exist only in a redesign; sections place them by the model id', ()
   assert(red.blocks.length === 1 && red.sections[0].visuals[0] === red.blocks[0].id && red.blocks[0].id < 0, 'block not placed by id');
   const sty = validator.coerceModelPlan(raw, { grantedLayer: 'style', knownTileIds: [5] });
   assert(!sty.plan.blocks && sty.notes.some((n) => /redesign/i.test(n)), 'a style change created blocks');
+});
+
+check('a model plan naming a layout that does not exist is placed, not refused ("summary" is a block, not a layout)', () => {
+  const raw = { layer: 'redesign', direction: { style: 'executive' }, blocks: [{ id: 'b1', variant: 'summary', findings: ['trend:5'] }],
+    sections: [{ primitive: 'kpi_strip', visuals: [1, 2] }, { primitive: 'summary', visuals: ['b1'] }, { primitive: 'bogus', visuals: [5, 6] }] };
+  const out = validator.coerceModelPlan(raw, { grantedLayer: 'redesign', knownTileIds: [1, 2, 5, 6] });
+  const prims = out.plan.sections.map((s) => s.primitive);
+  assert(prims.join() === 'kpi_strip,full_width,two_equal', prims.join());
+  assert(out.notes.some((n) => /does not exist/.test(n)), 'the healing was not disclosed');
+});
+
+check('a reference redesign says what carried over, what was approximated and what is not supported — in words, no figures', () => {
+  const raw = { layer: 'redesign', direction: { style: 'editorial' }, sections: [{ primitive: 'full_width', visuals: [5] }],
+    referenceReport: { converted: ['serif headings', 'spacious rhythm'], approximated: ['dark header band as a dark theme'], unsupported: ['photo background', 'a 3.2x hero'] } };
+  const out = validator.coerceModelPlan(raw, { grantedLayer: 'redesign', knownTileIds: [5] });
+  const note = out.notes.find((n) => n.startsWith('From the reference'));
+  assert(note && /serif headings/.test(note) && /approximated: dark header band/.test(note) && /not supported here: photo background/.test(note), String(note));
+  assert(!/3\.2x/.test(note), 'a figure from the model reached the note');
+});
+
+check('a PDF note about print size is never announced as missing data (evidence: "1 chart failed to load" on a complete report)', () => {
+  const pdfMod = load('lib/export-pdf.ts');
+  const note = pdfMod.exportWarningHeadline([{ page: 'Overview', chart: '(whole page)', reason: 'printed at 47%', kind: 'note' }]);
+  assert(note && note.incomplete === 0 && !/thiếu dữ liệu/.test(note.title + note.summary), JSON.stringify(note));
+  const missing = pdfMod.exportWarningHeadline([
+    { page: 'Overview', chart: 'Revenue by month', reason: 'no data' },
+    { page: 'Overview', chart: '(whole page)', reason: 'printed small', kind: 'note' },
+  ]);
+  assert(missing && missing.incomplete === 1 && /thiếu dữ liệu/.test(missing.title), 'a real gap was not announced, or was over-counted');
+  assert(pdfMod.exportWarningHeadline([]) === null, 'a warnings page with nothing to say');
+});
+
+check('a block the model wrote but did not place is placed by its role (seen: headline + summary in blocks, never in a section)', () => {
+  const raw = { layer: 'redesign', direction: { style: 'editorial' },
+    blocks: [{ id: 'b1', variant: 'headline', findings: ['trend:5'] }, { id: 'b2', variant: 'summary', findings: ['peak:5'] }],
+    sections: [{ primitive: 'kpi_strip', visuals: [1, 2] }, { primitive: 'summary', visuals: [] }, { primitive: 'full_width', visuals: [5] }] };
+  const out = validator.coerceModelPlan(raw, { grantedLayer: 'redesign', knownTileIds: [1, 2, 5] });
+  const ids = Object.fromEntries(out.plan.blocks.map((b) => [b.variant, b.id]));
+  assert(out.plan.sections[0].visuals[0] === ids.headline, 'the headline does not open the page');
+  assert(out.plan.sections[2].visuals[0] === ids.summary, `the summary is not right after the numbers: ${JSON.stringify(out.plan.sections)}`);
+});
+
+check('a reference that opens with a headline gets one, built from live findings — not from model text', () => {
+  const raw = { layer: 'redesign', direction: { style: 'editorial' }, referenceStructure: { headline: true, summary: true },
+    blocks: [], sections: [{ primitive: 'kpi_strip', visuals: [1, 2] }, { primitive: 'full_width', visuals: [5] }] };
+  const out = validator.coerceModelPlan(raw, { grantedLayer: 'redesign', knownTileIds: [1, 2, 5, 7],
+    liveFindings: ['period_comparison:5', 'trend:5', 'latest:5', 'top_item:7'] });
+  const head = out.plan.blocks.find((b) => b.variant === 'headline');
+  assert(head && out.plan.sections[0].visuals[0] === head.id, 'the report does not open with the headline');
+  assert(head.findings.join() === 'period_comparison:5,trend:5', head.findings.join());
+  const summary = out.plan.blocks.find((b) => b.variant === 'summary');
+  assert(summary && !summary.findings.some((f) => head.findings.includes(f)), 'the summary repeats the headline');
+  // Negative control: no live finding → no block is invented, and style-only never gets blocks.
+  const none = validator.coerceModelPlan(raw, { grantedLayer: 'redesign', knownTileIds: [1, 2, 5], liveFindings: [] });
+  assert(!(none.plan.blocks ?? []).length, 'a block was created with nothing to state');
+  const style = validator.coerceModelPlan({ ...raw, layer: 'style' }, { grantedLayer: 'style', knownTileIds: [5], liveFindings: ['trend:5'] });
+  assert(!(style.plan.blocks ?? []).length, 'a style-only change created a block');
 });
 
 // ── directions ──────────────────────────────────────────────────────────────
@@ -275,6 +343,12 @@ check('each direction is valid, loses no visual and creates live-bound blocks', 
     assert(created.length > 0, `${d}: no blocks`);
     for (const b of created) {
       assert(!/\d/.test(JSON.stringify(b.widgetConfig.title ?? '')), `${d}: a block title carries a figure`);
+      if (b.widgetType === 'section_header') {
+        // A heading introduces a section: words only, never a finding or a figure.
+        assert(b.widgetConfig.title && !('items' in b.widgetConfig), `${d}: a heading without a title, or with findings`);
+        continue;
+      }
+      assert(b.widgetType === 'narrative' && b.widgetConfig.items.length > 0, `${d}: a narrative block states nothing`);
       for (const i of b.widgetConfig.items) assert(/^[a-z_]+:\d+$/.test(i.finding), `${d}: bad finding ref ${i.finding}`);
     }
   }
@@ -327,6 +401,77 @@ check('the grammar adapts to a report of a different shape (no time series, no K
   assert((build('editorial', tiles).plan.blocks ?? []).some((b) => b.variant === 'chapter' && b.findings.some((f) => f.startsWith('top_item'))), 'editorial chapters lost their category findings');
 });
 
+check('a direction says each finding once per page — no chapter repeats the headline', () => {
+  const shapes = [olistTiles(), [
+    roleTile(21, 'BAR', 'Tickets by team', { metrics: [M('p.value')], dimension: 'p.type' }, 0, 0, 18, 12),
+    roleTile(22, 'PIE', 'Tickets by channel', { metrics: [M('p.value')], dimension: 'c.category' }, 0, 18, 18, 12),
+  ]];
+  for (const tiles of shapes) for (const d of directions.DIRECTION_IDS) {
+    const said = new Map();
+    for (const b of build(d, tiles).plan.blocks ?? []) for (const f of b.findings) {
+      assert(!said.has(f), `${d}: ${f} is said by a ${said.get(f)} and again by a ${b.variant}`);
+      said.set(f, b.variant);
+    }
+  }
+});
+
+check('operations reads current state → exceptions → monitoring → drill-down, and flags only what the data flags', () => {
+  const r = build('operations');
+  const order = r.plan.sections.map((s) => s.primitive);
+  assert(order[0] === 'kpi_strip', `operations opens with ${order[0]}`);
+  const blocks = r.plan.blocks ?? [];
+  const attention = blocks.find((b) => b.variant === 'callout');
+  assert(attention, 'operations has no exceptions');
+  for (const f of attention.findings) assert(/^(concentration|partial_periods):/.test(f), `an observation block holds ${f}`);
+  // A fact is not a problem: concentration / incomplete periods are titled neutrally.
+  assert(!/attention|problem|risk|warning/i.test(attention.title ?? ''), `an observation is titled as a problem: ${attention.title}`);
+  const pos = (id) => r.plan.sections.findIndex((s) => s.visuals.includes(id));
+  const heading = blocks.find((b) => b.variant === 'chapter' && b.findings.length === 0);
+  assert(heading, 'no drill-down heading');
+  assert(pos(attention.id) < pos(heading.id) && pos(heading.id) < pos(12), 'exceptions, then drill-down, then the table');
+  assert(pos(attention.id) === pos(5), 'the exception list is not beside the series it is about');
+  // The fixture has no target: no attainment is claimed anywhere.
+  for (const d of directions.DIRECTION_IDS) for (const b of build(d).plan.blocks ?? []) {
+    assert(!b.findings.some((f) => f.startsWith('attainment:')), `${d} claimed a target the data has none of`);
+  }
+});
+
+check('a conditional finding the data does not support is never planned — no empty "Needs attention" card', () => {
+  for (const d of directions.DIRECTION_IDS) {
+    const r = build(d, olistTiles(), []);
+    for (const b of r.plan.blocks ?? []) {
+      assert(!b.findings.some((f) => /^(concentration|partial_periods|attainment):/.test(f)), `${d}: planned an unsupported ${b.findings}`);
+      assert(b.heading || b.findings.length > 0, `${d}: a ${b.variant} block with nothing to state`);
+    }
+    assert(!(r.plan.blocks ?? []).some((b) => b.variant === 'callout'), `${d}: an exceptions/caveats card with nothing in it`);
+  }
+});
+
+check('editorial ends on what to keep in mind: caveats, said once, last', () => {
+  const r = build('editorial');
+  const blocks = r.plan.blocks ?? [];
+  const caveats = blocks.find((b) => b.variant === 'callout');
+  assert(caveats, 'editorial has no caveats');
+  for (const f of caveats.findings) assert(/^(partial_periods|concentration|attainment):/.test(f), `a caveat that is not a caveat: ${f}`);
+  const last = r.plan.sections.map((s) => s.visuals).flat().filter((id) => id < 0).pop();
+  assert(last === caveats.id, 'the caveats are not the last word');
+});
+
+check('a redesign that forgets the report headline keeps it as the first line, not an appendix', () => {
+  const headlineTile = { id: 600, chart_id: null, widget_type: 'narrative', chart: null, parameters: null,
+    widget_config: { variant: 'headline', items: [{ finding: 'trend:5' }], origin: 'ai' },
+    layout: { x: 0, y: 0, w: 36, h: 5, gv: 2, pageId: 'page-1' } };
+  const tiles = [headlineTile, ...olistTiles().map((tile) => ({ ...tile, layout: { ...tile.layout, y: tile.layout.y + 5 } }))];
+  const snapshot = snap(tiles);
+  const plan = { layer: 'redesign', direction: { style: 'executive', density: 'balanced' }, visualPreferences: {},
+    sections: [{ primitive: 'kpi_strip', visuals: [1, 2, 3, 4] }, { primitive: 'full_width', visuals: [5] }] };
+  const built = executor.buildPresentationMutation({ plan, snapshot, tiles, pageId: 'page-1', currentTheme: {}, gridGapPx: 8, targets: [] });
+  assert(built.ok, JSON.stringify(built.mutationValidation?.violations?.slice(0, 2)));
+  const o = built.mutation.layoutOverrides;
+  assert(o[600] && o[600].y === 0, `the headline was placed at y=${o[600]?.y}`);
+  assert(o[1].y >= o[600].y + o[600].h, 'the numbers were placed over or above the headline');
+});
+
 check('an existing AI block is reused in its slot, not duplicated', () => {
   const first = build('executive');
   const headline = first.built.mutation.createdBlocks.find((b) => b.widgetConfig.variant === 'headline');
@@ -362,6 +507,11 @@ check('a model retitle is a proposal, never an applied change, and carries no ty
   for (const o of Object.values(r.built.mutation.layoutOverrides)) assert(!('custom_title' in o), 'a design wrote a title');
 });
 
+check('a narrative figure is not coloured by direction alone (a fall in cost is not bad news)', () => {
+  const css = readFileSync(resolve(SRC, 'app/globals.css'), 'utf8');
+  assert(!/\.dashboard-narrative__figure\.is-(down|up)\s*\{[^}]*color/.test(css), 'a direction colour is back on narrative figures');
+});
+
 // ── visual review repairs ───────────────────────────────────────────────────
 
 const vision = load('lib/dashboard-presentation/vision-review.ts');
@@ -381,6 +531,31 @@ check('a visual review can only repair presentation, only in scope', () => {
   assert(!('dataLimit' in out.mutation.layoutOverrides[7].styleConfigOverride), 'a semantic key (Top-N) became a repair');
   assert(!out.mutation.layoutOverrides[8], 'an out-of-scope tile was repaired');
   assert(!('x' in out.mutation.layoutOverrides[7]), 'a review moved a tile');
+});
+
+check('the review loop is closed: a repair is resolved only when the re-rendered image no longer shows it', () => {
+  const mutation = { layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'style' };
+  const first = { scores: { legibility: 2 }, overall: 2, summary: '', issues: [
+    { visual: 7, problem: 'labels overlap', fix: { key: 'showDataLabels', value: false } },
+    { visual: 9, problem: 'title too faint', fix: { key: 'tileFrame', value: 'card' } },
+  ] };
+  const out = vision.applyReviewRepairs(mutation, first, { allowed: new Set([7, 9]), currentStyle: () => ({}) });
+  assert(out.repaired.length === 2 && out.repaired[0].visual === 7, JSON.stringify(out.repaired));
+  // The re-check still sees a problem on 9, and legibility is still low.
+  const recheck = { scores: { legibility: 2 }, overall: 2, summary: '', issues: [{ visual: 9, problem: 'title still faint' }] };
+  const outcome = vision.reviewOutcome(out.repaired, recheck);
+  assert(outcome.resolved.map((r) => r.visual).join() === '7', 'a repair still visible was counted as resolved');
+  assert(outcome.persisting.map((r) => r.visual).join() === '9', 'the persisting issue was lost');
+  assert(outcome.lowLegibility, 'low legibility after repair was not flagged');
+  const note = vision.recheckNote(outcome, recheck);
+  assert(/1 of 2/.test(note) && /Still visible: visual 9/.test(note) && /not accepted/.test(note), note);
+  assert(vision.MAX_REVIEW_ROUNDS === 2, 'the loop is not bounded to one re-check');
+});
+
+check('a render defect is reported as a render defect, not as a design issue', () => {
+  const note = vision.renderDefectNote([{ code: 'chart.noMarks', tileId: 4, detail: 'the chart rendered axes but no data marks' }]);
+  assert(/Render defects, not design choices/.test(note) && /visual 4/.test(note), note);
+  assert(vision.renderDefectNote([]) === '', 'an empty defect list produced a note');
 });
 
 // ── responsive + currency ───────────────────────────────────────────────────

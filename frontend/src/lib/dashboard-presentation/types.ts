@@ -218,6 +218,9 @@ export interface PlanBlock {
   findings: string[];
   /** Sit on the canvas without a card (editorial prose, a flush summary). */
   frameless?: boolean;
+  /** A section heading: its title introduces the tiles below it. It states no
+   *  finding, so it is created as a section header, not as a narrative. */
+  heading?: boolean;
 }
 
 export interface SnapshotVisual {

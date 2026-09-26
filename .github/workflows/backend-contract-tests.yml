@@ -186,7 +186,8 @@ jobs:
             tests/test_node_child_slots.py \
             tests/test_presentation_planner_reference_image.py \
             tests/test_dashboard_presentation_publish_is_atomic.py \
-            tests/test_chart_value_normalization.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
+            tests/test_chart_value_normalization.py \
+            tests/test_report_starter.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
       # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
       #
       # The step below reports failures. Nothing reported SUCCESS, so a

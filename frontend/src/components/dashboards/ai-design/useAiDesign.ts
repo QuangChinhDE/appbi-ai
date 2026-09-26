@@ -3,7 +3,10 @@
 import React from 'react';
 import { DIRECTION_IDS, planForDirection, type DirectionId } from '@/lib/dashboard-presentation/directions';
 import { toast } from 'sonner';
-import { applyReviewRepairs, capturePreview, reviewNote, type VisionReview } from '@/lib/dashboard-presentation/vision-review';
+import {
+  applyReviewRepairs, capturePreview, MAX_REVIEW_ROUNDS, recheckNote, renderDefectNote, renderDefects, reviewNote,
+  reviewOutcome, waitForSettledRender, type RepairRecord, type VisionReview,
+} from '@/lib/dashboard-presentation/vision-review';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { Dashboard, DashboardChart, DashboardThemeConfig } from '@/types/api';
@@ -80,6 +83,10 @@ export interface UseAiDesignInput {
 interface PendingDesign {
   /** The visual review of the rendered preview, when one ran. */
   review?: VisionReview;
+  /** Which review round the preview is waiting for (0 = first look, 1 = the
+   *  re-check of a repaired render), and what the first look repaired. */
+  reviewRound?: number;
+  repaired?: RepairRecord[];
   mutation: PresentationMutation;
   diff: PresentationDiff;
   previewTiles: DashboardChart[];
@@ -163,7 +170,10 @@ export function useAiDesign(input: UseAiDesignInput) {
   const [modelProposals, setModelProposals] = React.useState<unknown[]>([]);
 
   const build = React.useCallback((rawPlan: unknown, grantedLayer: DesignLayer, targets: number[]) => {
-    const coerced = coerceModelPlan(rawPlan, { grantedLayer, targets, knownTileIds: baselineTiles.map((t) => t.id) });
+    const coerced = coerceModelPlan(rawPlan, {
+      grantedLayer, targets, knownTileIds: baselineTiles.map((t) => t.id),
+      liveFindings: (snapshot?.findings ?? []).map((f) => f.key),
+    });
     // Content proposals travel beside the design, never inside it: they wait
     // for a person's Accept.
     const rawProposals = (rawPlan as any)?.proposals;
@@ -334,19 +344,35 @@ export function useAiDesign(input: UseAiDesignInput) {
     return () => window.clearTimeout(timer);
   }, [pending, input.getCanvasRoot, committedTiles, selected]);
 
-  // ── Visual review (bounded: one vision call per preview) ─────────────────
-  // After the deterministic pass, look at the RENDERED preview as an image and
-  // ask a vision model to review it against the rubric. Its repairs go through
-  // the allow-list and the validator, inside the granted scope; its scores are
-  // shown as advice. No model / any failure → the preview stands as it is.
-  const reviewedSeq = React.useRef(0);
+  // ── Visual review — a closed loop, bounded to MAX_REVIEW_ROUNDS calls ─────
+  // Round 0: look at the RENDERED preview (only once it has settled), split
+  // render defects from design issues, and fold the design repairs through the
+  // allow-list and the validator, inside the granted scope. If anything was
+  // repaired, round 1 looks again at the re-rendered preview and reports which
+  // repaired issues are still visible — it never repairs again, and nothing is
+  // called fixed while the final image still shows it. Scores are advice only.
+  // No model / any failure → the preview stands as it is, and says so.
+  const reviewedKey = React.useRef('');
   React.useEffect(() => {
-    if (!pending || reviewedSeq.current === pending.seq || !input.getCanvasRoot) return;
+    if (!pending || !input.getCanvasRoot) return;
+    const round = pending.reviewRound ?? 0;
+    const key = `${pending.seq}:${round}`;
+    if (reviewedKey.current === key || round >= MAX_REVIEW_ROUNDS) return;
     const seq = pending.seq;
     const timer = window.setTimeout(async () => {
-      reviewedSeq.current = seq;
+      reviewedKey.current = key;
       const root = input.getCanvasRoot?.();
       if (!root) return;
+      // Review the FINISHED report, never a loading placeholder.
+      const readiness = await waitForSettledRender(root);
+      if (!readiness.ready) {
+        setTurns((previous) => [...previous, {
+          role: 'assistant',
+          text: t('dashboards.aiDesign.reviewSkipped', { reason: readiness.reason ?? '' }),
+        }]);
+        return;
+      }
+      const defects = renderDefects(root);
       const image = await capturePreview(root);
       if (!image) return;
       const tilesForReview = committedTiles.map((tile) => ({
@@ -362,10 +388,21 @@ export function useAiDesign(input: UseAiDesignInput) {
       } catch {
         return; // no vision model or a failed call: the deterministic review stands
       }
+      // A visual with a render defect is not a design issue; its "fix" is not applied.
+      const brokenIds = new Set(defects.map((d) => d.tileId).filter((id): id is number => id !== null));
+      const designReview: VisionReview = { ...review, issues: review.issues.filter((i) => i.visual === undefined || !brokenIds.has(i.visual)) };
+      const defectNote = renderDefectNote(defects);
       const scope = new Set<number>(selected.length ? selected : committedTiles.map((tile) => tile.id));
       setPending((current) => {
-        if (!current || current.seq !== seq) return current;
-        const { mutation, applied } = applyReviewRepairs(current.mutation, review, {
+        if (!current || current.seq !== seq || (current.reviewRound ?? 0) !== round) return current;
+        if (round > 0) {
+          const outcome = reviewOutcome(current.repaired ?? [], designReview);
+          const note = [recheckNote(outcome, review), defectNote].filter(Boolean).join(' ');
+          const diff = { ...current.diff, notes: [...current.diff.notes, note] };
+          setTurns((previous) => [...previous, { role: 'assistant', text: note }]);
+          return { ...current, diff, review, reviewRound: round + 1 };
+        }
+        const { mutation, applied, repaired } = applyReviewRepairs(current.mutation, designReview, {
           allowed: scope,
           currentStyle: (id) => ((committedTiles.find((tile) => tile.id === id)?.layout as any)?.styleConfigOverride ?? {}),
         });
@@ -373,16 +410,21 @@ export function useAiDesign(input: UseAiDesignInput) {
           ? validateMutationAgainst({ tiles: committedTiles, mutation, pageId: current.pageId, targets: selected })
           : { ok: false };
         const next = verdict.ok ? mutation : current.mutation;
-        const note = reviewNote(review, verdict.ok ? applied : 0);
+        const note = [reviewNote(review, verdict.ok ? applied : 0), defectNote].filter(Boolean).join(' ');
         const diff = diffPresentation(committedTiles, next);
         diff.notes = [...current.diff.notes, note];
         // The review is part of the conversation the author reads.
         setTurns((previous) => [...previous, { role: 'assistant', text: note }]);
-        return { ...current, mutation: next, diff, previewTiles: applyMutationToTiles(committedTiles, next), review };
+        return {
+          ...current, mutation: next, diff, previewTiles: applyMutationToTiles(committedTiles, next), review,
+          // Something was repaired → look again at the re-rendered preview.
+          reviewRound: verdict.ok && applied > 0 ? 1 : MAX_REVIEW_ROUNDS,
+          repaired: verdict.ok ? repaired : [],
+        };
       });
     }, 2600);
     return () => window.clearTimeout(timer);
-  }, [pending, input.getCanvasRoot, input.dashboardId, committedTiles, selected]);
+  }, [pending, input.getCanvasRoot, input.dashboardId, committedTiles, selected, t]);
 
   const apply = React.useCallback(() => {
     if (!pending) return;

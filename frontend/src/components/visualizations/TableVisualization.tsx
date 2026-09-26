@@ -697,6 +697,31 @@ export function TableVisualization({
     && allColumnWidthsResolved
     && containerWidth > 0
     && naturalTotalWidth > containerWidth;
+  // A narrow tile (a phone) gets tighter cells, so more of the width is text.
+  const narrowTable = !exporting && containerWidth > 0 && containerWidth < 480;
+  const cellPadX = narrowTable ? 8 : 16;
+  // Each column's floor is its own unbreakable content — the longest word of
+  // its header and its widest formatted value — so fitting to the tile never
+  // breaks "CUSTOMER_STATE" into letters or "R$83,035" across lines. When the
+  // floors together exceed the tile, the table scrolls sideways instead.
+  const columnFloors = useMemo(() => {
+    const charPx = 7.6;
+    const sample = rows.slice(0, 60);
+    const out: Record<string, number> = {};
+    for (const col of cols) {
+      const header = String(lookupColumnLabel(col, columnLabels) ?? col);
+      const headerWord = header.split(/[\s_.-]+/).reduce((m, w) => Math.max(m, w.length), 0);
+      const valueLen = sample.reduce((m, r) => {
+        const v = formatCellValue((r as any)?.[col], { numberFormat: getColumnFormat(col), decimalPlaces, currencySymbol });
+        const longest = String(v ?? '').split(/\s+/).reduce((mm, w) => Math.max(mm, w.length), 0);
+        return Math.max(m, longest);
+      }, 0);
+      out[col] = Math.min(240, Math.max(MIN_FIT_COLUMN_WIDTH - (16 - cellPadX) * 2,
+        Math.ceil(Math.max(headerWord + 2, valueLen) * charPx) + cellPadX * 2));
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colsKey, rows, columnLabels, decimalPlaces, currencySymbol, cellPadX]);
   const renderColumnWidths = useMemo(() => {
     if (!shouldFitToContainer) return liveColumnWidths;
     // Water-fill so the total lands ON the container width even with a floor:
@@ -709,11 +734,11 @@ export function TableVisualization({
     const frozen = new Set<string>();
     for (let pass = 0; pass <= cols.length; pass++) {
       const free = cols.filter((col) => !frozen.has(col));
-      const frozenWidth = (cols.length - free.length) * MIN_FIT_COLUMN_WIDTH;
+      const frozenWidth = cols.filter((col) => frozen.has(col)).reduce((sum, col) => sum + columnFloors[col], 0);
       const freeNatural = free.reduce((sum, col) => sum + liveColumnWidths[col], 0);
       if (freeNatural <= 0) break;
       const scale = (containerWidth - frozenWidth) / freeNatural;
-      const toFreeze = free.filter((col) => liveColumnWidths[col] * scale < MIN_FIT_COLUMN_WIDTH);
+      const toFreeze = free.filter((col) => liveColumnWidths[col] * scale < columnFloors[col]);
       if (toFreeze.length === 0) {
         for (const col of free) out[col] = Math.floor(liveColumnWidths[col] * scale);
         break;
@@ -721,12 +746,12 @@ export function TableVisualization({
       toFreeze.forEach((col) => frozen.add(col));
     }
     for (const col of cols) {
-      if (out[col] == null) out[col] = MIN_FIT_COLUMN_WIDTH;
+      if (out[col] == null) out[col] = columnFloors[col];
     }
     return out;
     // colsKey captures the column set; liveColumnWidths/containerWidth drive the scale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldFitToContainer, containerWidth, colsKey, liveColumnWidths]);
+  }, [shouldFitToContainer, containerWidth, colsKey, liveColumnWidths, columnFloors]);
 
   const tableWidth = allColumnWidthsResolved
     // Each measured width is Math.ceil'd (see the measure effect), so the raw sum
@@ -782,7 +807,8 @@ export function TableVisualization({
                       headerCellRefs.current[col] = element;
                     }}
                     className={clsx(
-                      "group/table-header relative border-b-2 border-[rgb(var(--border-line))] px-4 py-3 font-semibold text-text-secondary",
+                      "group/table-header relative border-b-2 border-[rgb(var(--border-line))] py-3 font-semibold text-text-secondary",
+                      narrowTable ? "px-2" : "px-4",
                       "cursor-pointer hover:bg-surface-2 select-none",
                     )}
                     style={{ textAlign: alignment }}
@@ -886,7 +912,7 @@ export function TableVisualization({
                   return (
                     <td
                       key={col}
-                      className="border-b border-[rgb(var(--border-line))] px-4 py-2.5 align-top"
+                      className={clsx("border-b border-[rgb(var(--border-line))] py-2.5 align-top", narrowTable ? "px-2" : "px-4")}
                       style={{
                         ...colorStyle,
                         textAlign: alignment,

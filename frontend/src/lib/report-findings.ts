@@ -27,6 +27,11 @@ export type FindingKind =
   | 'attainment'
   | 'partial_periods';
 
+/** Kinds stated only when the data supports them (a concentrated breakdown, a
+ *  target, incomplete periods). Absent, they are simply not said — so a block
+ *  built only of them would render empty. */
+export const CONDITIONAL_FINDING_KINDS: ReadonlySet<string> = new Set(['partial_periods', 'concentration', 'attainment']);
+
 export const FINDING_KINDS: readonly FindingKind[] = [
   'kpi_value', 'trend', 'peak', 'latest', 'period_comparison', 'top_item',
   'concentration', 'attainment', 'partial_periods',
@@ -124,7 +129,7 @@ function timeSeries(t: TileEvidence): { complete: TimePoint[]; excluded: string[
 
 /** The grain a series' buckets actually have, when the chart did not declare
  *  one: every bucket on the 1st of a month → month; on Jan 1st → year. */
-function inferGrain(points: TimePoint[]): string | undefined {
+export function inferGrain(points: Array<{ date: Date }>): string | undefined {
   if (points.length < 2) return undefined;
   const firstOfMonth = points.every((p) => p.date.getUTCDate() === 1 && p.date.getUTCHours() === 0);
   if (!firstOfMonth) return undefined;

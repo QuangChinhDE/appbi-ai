@@ -127,6 +127,9 @@ export interface CoerceOptions {
   targets?: VisualId[] | null;
   /** Tiles on this page — what a block's finding reference may point at. */
   knownTileIds?: VisualId[];
+  /** Finding keys the report supports right now — what a block the boundary
+   *  adds for a reference's structure may state. */
+  liveFindings?: string[];
 }
 
 /**
@@ -170,16 +173,80 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
     notes.push("New text blocks come with a redesign; this change kept the page's content as it is.");
   }
 
+  let healedPrimitives = 0;
   let sections = Array.isArray(source.sections)
-    ? source.sections.map((section: any) => ({
+    ? source.sections.map((section: any) => {
+        const visuals = Array.isArray(section?.visuals)
+          ? section.visuals.map((ref: unknown) => resolveSectionRef(ref, coercedBlocks.idMap)).filter((id: number | null): id is number => id !== null && Number.isFinite(id))
+          : [];
         // `section_break` used to exist and placed its visuals full width; its
         // heading was never rendered, so it is read as what it actually did.
-        primitive: section?.primitive === 'section_break' ? 'full_width' : section?.primitive,
-        visuals: Array.isArray(section?.visuals)
-          ? section.visuals.map((ref: unknown) => resolveSectionRef(ref, coercedBlocks.idMap)).filter((id: number | null): id is number => id !== null && Number.isFinite(id))
-          : [],
-      }))
+        let primitive = section?.primitive === 'section_break' ? 'full_width' : section?.primitive;
+        // A model that names a layout that does not exist ("summary" is a
+        // BLOCK variant, not a layout) meant "put these here": the section is
+        // placed by how many visuals it holds instead of refusing the whole
+        // redesign over one word.
+        if (!LAYOUT_PRIMITIVES.includes(primitive)) {
+          healedPrimitives += 1;
+          primitive = visuals.length <= 1 ? 'full_width' : visuals.length === 2 ? 'two_equal' : visuals.length === 3 ? 'three_equal' : 'two_equal';
+        }
+        return { primitive, visuals };
+      })
     : [];
+  if (healedPrimitives > 0) {
+    notes.push(`${healedPrimitives} section(s) named a layout that does not exist; they were placed by how many visuals they hold.`);
+  }
+
+  // A block the model wrote but never placed (seen with the real model: a
+  // headline and a summary in `blocks`, an empty "summary" section) is placed
+  // by its role — a headline opens the page, anything else follows the first
+  // section (the numbers) — rather than silently not appearing.
+  if (layer === 'redesign' && coercedBlocks.blocks.length) {
+    const placedIds = new Set(sections.flatMap((s) => s.visuals));
+    const unplaced = coercedBlocks.blocks.filter((b) => !placedIds.has(b.id));
+    for (const b of unplaced.filter((x) => x.variant !== 'headline').reverse()) {
+      sections.splice(Math.min(1, sections.length), 0, { primitive: 'full_width', visuals: [b.id] });
+    }
+    for (const b of unplaced.filter((x) => x.variant === 'headline')) {
+      sections.unshift({ primitive: 'full_width', visuals: [b.id] });
+    }
+    if (unplaced.length) notes.push(`${unplaced.length} text block(s) the design wrote but did not place were placed by their role.`);
+  }
+
+  // A reference that opens with a headline, or explains itself in a paragraph,
+  // gets that STRUCTURE even when the model did not write the block: the
+  // model reports what it saw (`referenceStructure`), and the block is built
+  // here from the report's own live findings — never from words or figures the
+  // model typed. Only in a redesign, and only with findings to state.
+  const refStructure = source.referenceStructure;
+  if (layer === 'redesign' && refStructure && typeof refStructure === 'object') {
+    const live = options.liveFindings ?? [];
+    const said = new Set(coercedBlocks.blocks.flatMap((b) => b.findings));
+    const pick = (kinds: string[], n: number) => kinds
+      .flatMap((kind) => live.filter((key) => key.startsWith(`${kind}:`)))
+      .filter((key, i, all) => !said.has(key) && all.indexOf(key) === i)
+      .slice(0, n);
+    const nextId = () => Math.min(-1, ...coercedBlocks.blocks.map((b) => Number(b.id)).filter(Number.isFinite)) - 1;
+    if (refStructure.headline === true && !coercedBlocks.blocks.some((b) => b.variant === 'headline')) {
+      const findings = pick(['period_comparison', 'trend', 'top_item'], 2);
+      if (findings.length) {
+        const id = nextId();
+        coercedBlocks.blocks.push({ id, variant: 'headline', findings });
+        findings.forEach((f) => said.add(f));
+        sections.unshift({ primitive: 'full_width', visuals: [id] });
+        notes.push('The reference opens with a headline; so does the report, stated from its own findings.');
+      }
+    }
+    if (refStructure.summary === true && !coercedBlocks.blocks.some((b) => b.variant === 'summary')) {
+      const findings = pick(['latest', 'peak', 'top_item', 'concentration'], 3);
+      if (findings.length) {
+        const id = nextId();
+        coercedBlocks.blocks.push({ id, variant: 'summary', findings, frameless: true });
+        sections.splice(Math.min(2, sections.length), 0, { primitive: 'full_width', visuals: [id] });
+        notes.push('The reference explains itself in a paragraph; the report has a summary of its own findings in that place.');
+      }
+    }
+  }
 
   const visualPreferences: Record<string, any> = {};
   for (const [key, value] of Object.entries(source.visualPreferences ?? {})) {
@@ -310,6 +377,24 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
         }))
     : [];
 
+
+  // What of a reference design carried over, told to the author as a note:
+  // plain words only (a typed figure is dropped), a few items per list.
+  const ref = source.referenceReport;
+  if (ref && typeof ref === 'object') {
+    const items = (value: unknown) => (Array.isArray(value) ? value : [])
+      .map((s) => (typeof s === 'string' ? s.trim().slice(0, 120) : ''))
+      .filter((s) => s && !/\d/.test(s))
+      .slice(0, 5);
+    const parts: string[] = [];
+    const converted = items(ref.converted);
+    const approximated = items(ref.approximated);
+    const unsupported = items(ref.unsupported);
+    if (converted.length) parts.push(`From the reference — converted: ${converted.join('; ')}`);
+    if (approximated.length) parts.push(`approximated: ${approximated.join('; ')}`);
+    if (unsupported.length) parts.push(`not supported here: ${unsupported.join('; ')}`);
+    if (parts.length) notes.push(`${parts.join('. ')}.`);
+  }
 
   // The retired `decorativeElements` key still creates nothing — say so, and
   // point at what does (a block in a redesign).

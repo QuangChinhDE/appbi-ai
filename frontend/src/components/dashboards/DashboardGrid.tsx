@@ -17,7 +17,7 @@ import { DASHBOARD_GRID_COLS, REPORT_STACK_BREAKPOINT, dashboardRowHeight, deriv
 import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { useExportMode } from '@/lib/export-mode';
 import { useI18n } from '@/providers/LanguageProvider';
-import { ReportEvidenceProvider } from '@/lib/report-evidence';
+import { ReportEvidenceProvider, citedTilesOf } from '@/lib/report-evidence';
 
 // Non-responsive grid: a single 12-column layout that simply scales cell
 // width with the container. Avoiding ResponsiveGridLayout means opening
@@ -276,6 +276,8 @@ function DashboardGridInner({
 
   // Finer grid: 36 cols + a row height coupled to the theme gap so ×3-migrated
   // tiles keep their exact pixel size (see dashboardRowHeight). Margin unchanged.
+  // A narrative's evidence mounts with the page (see citedTilesOf).
+  const citedTileIds = React.useMemo(() => citedTilesOf(dashboardCharts), [dashboardCharts]);
   const gridMargin = getDashboardGridMargin(themeConfig);
   const gridRowHeight = dashboardRowHeight(gridMargin[1]);
   return (
@@ -432,7 +434,7 @@ function DashboardGridInner({
               onRemove={isWidget ? undefined : onRemoveChart}
               isRemoving={removingChartId === dc.id}
             >
-              {disableLazy || isWidget ? tile : <LazyChartSlot>{tile}</LazyChartSlot>}
+              {disableLazy || isWidget || citedTileIds.has(dc.id) ? tile : <LazyChartSlot>{tile}</LazyChartSlot>}
             </ChartErrorBoundary>
           </div>
         );

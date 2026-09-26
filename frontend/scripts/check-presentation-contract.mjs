@@ -2019,6 +2019,21 @@ check('STRUCTURE proof: "make this bigger" disturbs only what it would cover', (
   assertEqual(validator.findOverlaps(after), [], 'the grown tile overlaps');
 });
 
+check('STRUCTURE proof: the lead KPI of a strip grows by re-dividing its row, not by pushing a neighbour down', () => {
+  const K = (id, x) => ({ id, chart_id: 900 + id, widget_type: 'chart', layout: { x, y: 0, w: 9, h: 5, gv: 2, pageId: 'page-1' },
+    chart: { id: 900 + id, name: `K${id}`, chart_type: 'KPI', dataset_id: 1, config: {} } });
+  const tiles = [K(1, 0), K(2, 9), K(3, 18), K(4, 27)];
+  const built = build(tiles, { layer: 'structure', direction: {}, sections: [], visualPreferences: {}, structure: { operations: [{ op: 'resize', visuals: [1], size: 'larger' }] } });
+  assert(built.ok, 'resize refused');
+  const after = rectsById(executor.applyMutationToTiles(tiles, built.mutation));
+  assert(after[1].w > 9, 'the lead KPI did not grow');
+  assert([2, 3, 4].every((id) => after[id].y === 0), `a KPI left the row: ${JSON.stringify(after)}`);
+  assert(after[1].w + after[2].w + after[3].w + after[4].w === 36, 'the row does not fill the grid');
+  assert([2, 3, 4].every((id) => after[id].w >= 8), `a neighbour was squeezed below a readable width: ${JSON.stringify(after)}`);
+  assert(after[1].x < after[2].x && after[2].x < after[3].x && after[3].x < after[4].x, 'the reading order changed');
+  assertEqual(validator.findOverlaps(after), [], 'overlap');
+});
+
 // ── Safety is unchanged ─────────────────────────────────────────────────────
 
 check('SAFETY proof: no layer can change semantics through the presentation path', () => {
@@ -2164,6 +2179,23 @@ check('RESPONSIVE proof: slivers are widened at tablet width, in reading order, 
   }
   const order = [...out].sort((p, q) => p.y - q.y || p.x - q.x).map((it) => it.i);
   assertEqual(order, ['1', '2', '3', '4', '5', '6', '7', '8'], 'reading order changed');
+});
+
+check('RESPONSIVE proof: a tile widened at tablet width leaves no hole in the row it now sits alone in', () => {
+  // Two half-width charts; at 820px each is widened past half, so the second
+  // wraps. Both rows must end at the grid edge (PR #7: a half-width chart with
+  // an empty half beside it).
+  const colPx = 820 / 36;
+  const need = Math.ceil(pages.RESPONSIVE_MIN_WIDTH_PX.chart / colPx);
+  const half = Math.min(18, need - 1);
+  const layout = [{ i: '1', x: 0, y: 0, w: half, h: 14 }, { i: '2', x: half, y: 0, w: half, h: 14 }, { i: '3', x: 0, y: 14, w: 36, h: 10 }];
+  const out = pages.deriveTabletLayout(layout, { kindOf: () => 'chart', referenceWidthPx: 820 });
+  const rows = new Map();
+  for (const it of out) rows.set(it.y, (rows.get(it.y) ?? 0) + it.w);
+  for (const [y, used] of rows) assert(used === 36, `row at y=${y} fills ${used}/36 columns`);
+  for (let a = 0; a < out.length; a += 1) for (let b = a + 1; b < out.length; b += 1) {
+    assert(!structureMod.overlaps(out[a], out[b]), `tiles ${out[a].i}/${out[b].i} overlap`);
+  }
 });
 
 check('RESPONSIVE proof: the phone stack keeps order and a readable height per kind', () => {

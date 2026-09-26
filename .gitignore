@@ -125,6 +125,8 @@ e2e/.env
 e2e/.auth/
 e2e/test-results/
 e2e/playwright-report/
+e2e/acceptance-results/
+e2e/acceptance-report/
 e2e/blob-report/
 e2e/.cache/
 e2e/shots/
@@ -341,3 +343,4 @@ backend/tests/.testdata/
 !backend/tests/test_presentation_planner_reference_image.py
 !backend/tests/test_dashboard_presentation_publish_is_atomic.py
 !backend/tests/test_chart_value_normalization.py
+!backend/tests/test_report_starter.py

@@ -25,6 +25,42 @@ import type { StructureOperation, VisualId } from './types';
 
 export interface Rect { x: number; y: number; w: number; h: number }
 
+/** The narrowest a tile may be squeezed to when a neighbour grows in its row. */
+const MIN_ROW_SHARE_COLS = 8;
+
+/**
+ * A tile that grew inside a row shares the row instead of breaking it. The
+ * lead KPI of a four-up strip made 1.5x wider used to overlap its neighbour,
+ * which was then pushed onto a row of its own, leaving a hole. When the rest of
+ * the row is movable and each can keep a readable width, the others divide the
+ * columns left over, in their existing order; otherwise nothing is changed and
+ * `settle` resolves the overlap as before.
+ */
+function reflowRowAround(rects: Map<VisualId, Rect>, id: VisualId, before: Rect, fixed: ReadonlySet<VisualId>) {
+  const grown = { ...rects.get(id)! };
+  if (grown.w <= before.w || grown.w >= COLS) return;
+  const row = Array.from(rects.entries()).filter(([other, r]) => other !== id && r.y === before.y);
+  if (row.length === 0 || row.some(([other]) => fixed.has(other))) return;
+  let share = Math.floor((COLS - grown.w) / row.length);
+  if (share < MIN_ROW_SHARE_COLS) {
+    // Grow only as far as leaves every neighbour a readable width (a KPI
+    // label needs ~8 of 36 columns); if that is no growth at all, leave the
+    // row to `settle`.
+    share = MIN_ROW_SHARE_COLS;
+    const capped = COLS - share * row.length;
+    if (capped <= before.w) return;
+    grown.w = capped;
+  }
+  const order = [...row, [id, grown] as [VisualId, Rect]].sort((a, b) => (a[0] === id ? before.x : a[1].x) - (b[0] === id ? before.x : b[1].x));
+  let x = 0;
+  let spare = COLS - grown.w - share * row.length;
+  for (const [other, r] of order) {
+    const w = other === id ? grown.w : share + (spare-- > 0 ? 1 : 0);
+    rects.set(other, { ...r, x, y: before.y, w });
+    x += w;
+  }
+}
+
 const COLS = DASHBOARD_GRID_COLS;
 
 export function overlaps(a: Rect, b: Rect): boolean {
@@ -240,6 +276,7 @@ export function applyStructureOperations(
             next = { ...r };
           }
           rects.set(id, next);
+          reflowRowAround(rects, id, r, fixed);
         }
         rects = settle({ rects, moved, fixed, vacated });
         break;
