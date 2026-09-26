@@ -1748,8 +1748,10 @@
 .dashboard-narrative__item.is-unavailable { opacity: .6; font-style: italic; }
 .dashboard-narrative__hint { margin: 0; font-size: 12px; opacity: .55; }
 .dashboard-narrative__figure { font-size: 28px; font-weight: 650; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--dashboard-accent, currentColor); }
-.dashboard-narrative__figure.is-down { color: #c2410c; }
-[data-narrative-variant="headline"] .dashboard-narrative__inner { justify-content: flex-end; gap: 10px; }
+/* A fall is not bad news by itself (cost, late orders, returns): the figure
+   keeps the accent colour whichever way it moved; the sign carries direction. */
+/* The sentence leads its box: spare height (a re-wrapped phone column) falls below it, not above. */
+[data-narrative-variant="headline"] .dashboard-narrative__inner { justify-content: flex-start; gap: 10px; }
 [data-narrative-variant="headline"] .dashboard-narrative__item { border-left: 0; padding-left: 0; font-size: 15px; opacity: .8; }
 [data-narrative-variant="summary"] .dashboard-narrative__item:first-child { border-left-color: var(--dashboard-accent, currentColor); }
 [data-narrative-variant="callout"] .dashboard-narrative__inner,

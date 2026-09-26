@@ -366,6 +366,12 @@ function DashboardDetailPageInner() {
   /** True for the WHOLE save (layout, then theme, then filters) — not just the
    *  layout request — so the controls never report "saved" half-way through. */
   const [isStagingDraft, setIsStagingDraft] = useState(false);
+  // An AI Apply commits in steps (create its blocks, then move the tiles).
+  // Save/Publish in between would stage the OLD layout with the NEW blocks —
+  // the published report then had the blocks at the bottom and every chart
+  // where it was. Nothing is staged or published while a commit is running.
+  const [isCommittingPresentation, setIsCommittingPresentation] = useState(false);
+  const committingPresentationRef = React.useRef(false);
   // Always-current mirror of localLayoutOverrides so undo-capture can read the
   // pre-change value without adding it to every handler's dep array.
   const localLayoutOverridesRef = React.useRef(localLayoutOverrides);
@@ -916,6 +922,9 @@ function DashboardDetailPageInner() {
     slicerClusterPatch: Record<string, any> | null;
     createdBlocks?: import('@/lib/dashboard-presentation/types').CreatedBlock[];
   }) => {
+    committingPresentationRef.current = true;
+    setIsCommittingPresentation(true);
+    try {
     // Blocks first: each becomes a DRAFT-ONLY row (invisible to /d and /embed
     // until Publish, deleted by Discard), then its temporary id is swapped for
     // the real one so it moves, resizes and locks like any tile.
@@ -981,6 +990,12 @@ function DashboardDetailPageInner() {
     // Draft, don't persist: the colour lands on Save/Publish and Discard drops
     // it — an AI Apply must not silently repaint the live report (§ theme-draft).
     if (nextTheme !== undefined) paintThemeDraft(nextTheme);
+    } finally {
+      // Cleared in the same render batch as the new layout: the render that
+      // re-enables Publish is the one that already holds the moved tiles.
+      committingPresentationRef.current = false;
+      setIsCommittingPresentation(false);
+    }
   }, [dashboard?.theme_config, draftSlicerClusterLayout, localLayoutOverrides, activePageId, dashboardId, queryClient, t]);
 
   // Tile focus (Canvas/Grid highlight). Declared here — above useAiDesign —
@@ -1685,6 +1700,7 @@ function DashboardDetailPageInner() {
   };
 
   const handleSaveDraft = async () => {
+    if (committingPresentationRef.current) return;
     const { ok } = await stageAllToDraft();
     if (ok) {
       // Save flushes local overrides → the pre-save snapshots in the undo stack
@@ -1776,6 +1792,7 @@ function DashboardDetailPageInner() {
   };
 
   const handlePublish = async () => {
+    if (committingPresentationRef.current) return;
     // Capture base versions BEFORE the flush clears local overrides.
     const tileBaseV = buildTileBaseV();
     // Everything is staged first; Publish runs only if ALL of it was accepted.
@@ -3433,6 +3450,7 @@ function DashboardDetailPageInner() {
                         disabled={
                           !hasUnsavedPresentation
                           || isStagingDraft
+                          || isCommittingPresentation
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
@@ -3449,6 +3467,7 @@ function DashboardDetailPageInner() {
                         disabled={
                           publishDashboardMutation.isPending
                           || isStagingDraft
+                          || isCommittingPresentation
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white transition-colors hover:bg-brand-hover disabled:opacity-50"

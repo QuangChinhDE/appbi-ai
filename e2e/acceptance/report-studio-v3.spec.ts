@@ -13,7 +13,7 @@ import path from 'node:path';
 const API = process.env.E2E_API_URL || 'http://localhost:8000';
 const DASH = `${API}/api/v1/dashboards`;
 const EVIDENCE = path.resolve(__dirname, '..', '..', 'docs', 'features', 'report-studio-v3', 'evidence');
-const OLIST = process.env.ACCEPT_OLIST_DASHBOARD || 'Olist review';
+const OLIST = process.env.ACCEPT_OLIST_DASHBOARD || 'Olist commercial review';
 const OLIST_DATASET = 'Olist E-Commerce';
 const SALES_DATASET = 'E2E presentation sales';
 const FIXTURE = 'E2E Presentation fixture';
@@ -24,22 +24,44 @@ const results: Record<string, ScenarioResult> = {};
 const made: number[] = [];
 
 function scenario(name: string): ScenarioResult {
-  results[name] = results[name] ?? { status: 'PASS', assertions: [], metrics: {}, evidence: [], notes: [] };
+  // NOT VERIFIED until an assertion has actually run: a scenario that did not
+  // run is never reported as a pass.
+  results[name] = results[name] ?? { status: 'NOT VERIFIED', assertions: [], metrics: {}, evidence: [], notes: [] };
   return results[name];
+}
+
+/** The baseline a scenario needs, or a hard failure that says which is missing. */
+function need<T>(r: ScenarioResult, value: T | undefined, what: string): T {
+  if (value === undefined || value === null) {
+    r.status = 'NOT VERIFIED';
+    r.notes.push(`${what} is missing on this environment`);
+    throw new Error(`${what} is missing — scenario NOT VERIFIED`);
+  }
+  return value;
 }
 
 /** An assertion that is recorded, then enforced. */
 function check(r: ScenarioResult, label: string, ok: boolean, detail = '') {
   r.assertions.push(`${ok ? 'PASS' : 'FAIL'} — ${label}${detail ? ` (${detail})` : ''}`);
   if (!ok) r.status = 'FAIL';
+  else if (r.status === 'NOT VERIFIED' && !r.notes.some((n) => /NOT VERIFIED|no design|missing/.test(n))) r.status = 'PASS';
   expect.soft(ok, `${label} ${detail}`).toBe(true);
 }
 
+const RESULTS = path.join(EVIDENCE, 'results.json');
+/** Merged into the file after EVERY test: Playwright restarts its worker after a
+ *  failure, and results held only in memory were lost with it. */
+function persist() {
+  let prior: any = {};
+  try { prior = JSON.parse(fs.readFileSync(RESULTS, 'utf8')); } catch { prior = {}; }
+  const sha = process.env.ACCEPT_SHA ?? prior.sha ?? '';
+  fs.writeFileSync(RESULTS, JSON.stringify({ sha, ranAt: new Date().toISOString(), results: { ...(prior.results ?? {}), ...results } }, null, 2));
+}
 test.beforeAll(() => { fs.mkdirSync(EVIDENCE, { recursive: true }); });
+test.afterEach(() => persist());
 test.afterAll(async ({ request }) => {
   for (const id of made) await request.delete(`${DASH}/${id}`).catch(() => {});
-  const sha = process.env.ACCEPT_SHA ?? '';
-  fs.writeFileSync(path.join(EVIDENCE, 'results.json'), JSON.stringify({ sha, ranAt: new Date().toISOString(), results }, null, 2));
+  persist();
 });
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -147,7 +169,10 @@ async function askAi(page: Page, r: ScenarioResult, prompt: string, label: strin
   await page.getByTestId('ai-design-send').click();
   const ok = await page.getByTestId('ai-design-apply').waitFor({ state: 'visible', timeout: 180_000 }).then(() => true).catch(() => false);
   r.metrics[`${label}_preview_ms`] = Date.now() - t0;
-  if (!ok) { r.status = 'NOT VERIFIED'; r.notes.push(`${label}: the model returned no design within 180s`); }
+  if (!ok) {
+    r.status = 'NOT VERIFIED';
+    r.notes.push(`${label}: the model returned no design within 180s — NOT VERIFIED. Panel said: ${(await panelText(page).catch(() => '')).slice(-500)}`);
+  }
   return ok;
 }
 
@@ -208,8 +233,7 @@ test('S1 create a report from data (two datasets with independent semantics)', a
 test('S2 manual canvas, a lock, then a style-only AI change keeps geometry', async ({ page, request }) => {
   const r = scenario('S2 manual + style-only + locks');
   const src = await idOf(request, FIXTURE);
-  test.skip(!src, 'fixture missing');
-  const id = await copyOf(request, src!);
+  const id = await copyOf(request, need(r, src, `fixture "${FIXTURE}"`));
   await page.goto(`/dashboards/${id}`);
   await settle(page);
   await shot(page, r, 's2-authored');
@@ -240,6 +264,9 @@ test('S2 manual canvas, a lock, then a style-only AI change keeps geometry', asy
   await shot(page, r, 's2-manual-edited');
   const geometry = await rects(page);
 
+  // The whole page, not the tile the lock menu left selected.
+  await openAi(page);
+  await page.getByTestId('ai-design-target').getByRole('button', { name: /^(Whole page|Cả trang)$/ }).first().click({ timeout: 3000 }).catch(() => {});
   const ok = await askAi(page, r, 'Make this look like a premium, modern SaaS report. Style only — keep my layout exactly as it is.', 's2_style');
   if (!ok) return;
   await page.waitForTimeout(3000);
@@ -263,8 +290,7 @@ test('S2 manual canvas, a lock, then a style-only AI change keeps geometry', asy
 test('S3 full redesign with the real model: preview, compare, apply', async ({ page, request }) => {
   const r = scenario('S3 full redesign');
   const src = await idOf(request, OLIST);
-  test.skip(!src, 'Olist report missing');
-  const id = await copyOf(request, src!);
+  const id = await copyOf(request, need(r, src, `baseline "${OLIST}"`));
   await page.goto(`/dashboards/${id}`);
   await settle(page);
   await shot(page, r, 's3-before');
@@ -305,7 +331,7 @@ test('S3 full redesign with the real model: preview, compare, apply', async ({ p
 test('S4 executive / operations / editorial on the same baseline, published at 1440/820/390', async ({ page, request, context }) => {
   const r = scenario('S4 three directions');
   const src = await idOf(request, OLIST);
-  test.skip(!src, 'Olist report missing');
+  need(r, src, `baseline "${OLIST}"`);
   const signatures: Record<string, string> = {};
   for (const direction of ['executive', 'operations', 'editorial'] as const) {
     const id = await copyOf(request, src!);
@@ -356,7 +382,7 @@ header h1{font-size:40px;margin:10px 0 0;font-weight:500}
 test('S5 reference image → native live-data report', async ({ page, request }) => {
   const r = scenario('S5 reference design');
   const src = await idOf(request, OLIST);
-  test.skip(!src, 'Olist report missing');
+  need(r, src, `baseline "${OLIST}"`);
   // The reference: a static design with NO data (placeholders), rendered to an image.
   const ref = await page.context().newPage();
   await ref.setViewportSize({ width: 1440, height: 1100 });
@@ -397,8 +423,7 @@ test('S5 reference image → native live-data report', async ({ page, request })
 test('S6 a filter moves KPI, charts and narrative together', async ({ page, request }) => {
   const r = scenario('S6 filters + narrative');
   const src = await idOf(request, OLIST);
-  test.skip(!src, 'Olist report missing');
-  const id = await copyOf(request, src!);
+  const id = await copyOf(request, need(r, src, `baseline "${OLIST}"`));
   await page.goto(`/dashboards/${id}`);
   await settle(page);
   await openAi(page);
@@ -413,7 +438,10 @@ test('S6 a filter moves KPI, charts and narrative together', async ({ page, requ
   await settle(pub);
   const read = () => pub.evaluate(() => ({
     sentences: Array.from(document.querySelectorAll('[data-testid="narrative-widget"] [data-finding]')).map((e) => (e.textContent ?? '').trim()),
-    kpis: Array.from(document.querySelectorAll('[data-grid-item-id]')).map((e) => (e.textContent ?? '').replace(/\s+/g, ' ').trim()).filter((s) => s.length < 90).slice(0, 6),
+    // The KPI tiles themselves: label + value.
+    kpis: Array.from(document.querySelectorAll('[data-grid-item-id]'))
+      .filter((e) => e.querySelector('.dashboard-kpi-label'))
+      .map((e) => (e.textContent ?? '').replace(/\s+/g, ' ').trim()),
     states: Array.from(document.querySelectorAll('[data-testid="narrative-widget"]')).map((e) => e.getAttribute('data-finding-state')).join(','),
   }));
   const all = await read();
@@ -439,7 +467,7 @@ test('S6 a filter moves KPI, charts and narrative together', async ({ page, requ
 test('S7 AI-created blocks: undo removes, redo re-creates, save, reload, publish', async ({ page, request }) => {
   const r = scenario('S7 undo/redo AI blocks');
   const src = await idOf(request, OLIST);
-  test.skip(!src, 'Olist report missing');
+  need(r, src, `baseline "${OLIST}"`);
   const narr = async (id: number) => (await get(request, id)).dashboard_charts.filter((c: any) => c.widget_type === 'narrative').length;
   for (const source of ['model', 'direction'] as const) {
     const id = await copyOf(request, src!);
@@ -492,16 +520,14 @@ test('S7 AI-created blocks: undo removes, redo re-creates, save, reload, publish
 test('S8 builder, /d, /embed and the exported PDF show the same report', async ({ page, request, context }) => {
   const r = scenario('S8 public / embed / export');
   const src = await idOf(request, OLIST);
-  test.skip(!src, 'Olist report missing');
-  const id = await copyOf(request, src!);
+  const id = await copyOf(request, need(r, src, `baseline "${OLIST}"`));
   await page.goto(`/dashboards/${id}`);
   await settle(page);
   await openAi(page);
   await page.getByTestId('ai-design-direction-executive').click();
   await page.getByTestId('ai-design-apply').click();
-  await page.waitForTimeout(2000);
-  await page.getByTestId('dashboard-publish').click();
-  await page.waitForTimeout(3000);
+  await page.getByTestId('dashboard-publish').click({ timeout: 30_000 });
+  await expect.poll(async () => (await get(request, id)).dashboard_charts.filter((c: any) => c.widget_type === 'narrative' && !c.layout?.draftOnly).length, { timeout: 30_000 }).toBeGreaterThan(0);
   await page.getByTestId('design-mode-manual').click().catch(() => {});
   await settle(page);
   const builderTiles = await page.locator('main [data-grid-item-id]').count();

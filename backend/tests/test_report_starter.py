@@ -83,3 +83,10 @@ def test_the_slicer_filters_by_the_lead_breakdown():
     kept = [c for c in rs.enumerate_candidates(MODEL) if c["kind"] == "category"][:1]
     s = rs._slicer_for(MODEL, kept, 7)
     assert s and s["fieldKey"] == kept[0]["role"]["dimension"] and s["datasetId"] == 7 and s["operator"] == "in"
+
+
+def test_the_detail_table_reads_as_its_breakdown_not_its_column():
+    lead = next(c for c in rs.enumerate_candidates(MODEL) if c["kind"] == "category"
+                and c["role"]["dimension"].endswith("product_category_name_english"))
+    labels = rs._column_labels(lead)
+    assert labels["product_category_name_english"] == "Product category", labels

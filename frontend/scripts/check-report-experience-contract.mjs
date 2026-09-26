@@ -448,6 +448,11 @@ check('a model retitle is a proposal, never an applied change, and carries no ty
   for (const o of Object.values(r.built.mutation.layoutOverrides)) assert(!('custom_title' in o), 'a design wrote a title');
 });
 
+check('a narrative figure is not coloured by direction alone (a fall in cost is not bad news)', () => {
+  const css = readFileSync(resolve(SRC, 'app/globals.css'), 'utf8');
+  assert(!/\.dashboard-narrative__figure\.is-(down|up)\s*\{[^}]*color/.test(css), 'a direction colour is back on narrative figures');
+});
+
 // ── visual review repairs ───────────────────────────────────────────────────
 
 const vision = load('lib/dashboard-presentation/vision-review.ts');

@@ -172,6 +172,36 @@ test('AI-created blocks: Apply → Undo removes → Redo re-creates → Save dra
   }
 });
 
+test('Publish right after Apply publishes the applied layout, not the blocks over the old one', async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const c = await copy(request);
+  try {
+    await page.goto(`/dashboards/${c.id}`);
+    await settled(page);
+    await page.getByTestId('design-mode-ai').click();
+    await page.getByTestId('ai-design-direction-executive').click();
+    await page.getByTestId('ai-design-apply').click();
+    // As soon as the button allows it — the race a person hits by clicking twice.
+    await page.getByTestId('dashboard-publish').click({ timeout: 30_000 });
+    await expect.poll(async () => (await narratives(request, c.id)).filter((n: any) => !n.layout?.draftOnly).length, { timeout: 30_000 }).toBeGreaterThan(0);
+    const d = await request.get(`${DASH}/${c.id}`).then((r) => r.json());
+    const head = d.dashboard_charts.find((x: any) => x.widget_type === 'narrative' && x.widget_config?.variant === 'headline');
+    expect(head, 'no published headline').toBeTruthy();
+    const topOfCharts = Math.min(...d.dashboard_charts.filter((x: any) => x.widget_type === 'chart').map((x: any) => Number(x.layout?.y ?? 0)));
+    expect(head.layout.y, 'the headline was published below the charts (old layout + new blocks)').toBeLessThan(topOfCharts);
+    const pub = await page.context().newPage();
+    await pub.goto(`/d/${c.token}`);
+    await settled(pub);
+    const firstBlockTop = await pub.getByTestId('narrative-widget').first().evaluate((e) => e.getBoundingClientRect().top);
+    const firstChartTop = await pub.locator('[data-grid-item-id]').evaluateAll((els) => Math.min(...els
+      .filter((e) => !e.querySelector('[data-testid="narrative-widget"]')).map((e) => e.getBoundingClientRect().top)));
+    expect(firstBlockTop, '/d opens with the charts, not with the verdict').toBeLessThan(firstChartTop);
+    await pub.close();
+  } finally {
+    await request.delete(`${DASH}/${c.id}`);
+  }
+});
+
 test('studio preview shows the whole report before/after at 1440/820/390 and never moves the canvas', async ({ page, request }) => {
   test.setTimeout(180_000);
   const c = await copy(request);
@@ -236,7 +266,9 @@ test('a filter moves the KPI, the charts and the narrative together — no stale
     await settled(pub);
     const read = () => pub.evaluate(() => ({
       text: Array.from(document.querySelectorAll('[data-testid="narrative-widget"] [data-finding]')).map((e) => e.textContent).join(' | '),
-      kpi: Array.from(document.querySelectorAll('[data-grid-item-id]')).map((e) => e.textContent ?? '').find((s) => /revenue/i.test(s)) ?? '',
+      kpi: Array.from(document.querySelectorAll('[data-grid-item-id]'))
+        .filter((e) => e.querySelector('.dashboard-kpi-label'))
+        .map((e) => e.textContent ?? '').find((s) => /revenue/i.test(s)) ?? '',
       states: Array.from(document.querySelectorAll('[data-testid="narrative-widget"]')).map((e) => e.getAttribute('data-finding-state')).join(','),
     }));
     const all = await read();

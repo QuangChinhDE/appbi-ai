@@ -396,10 +396,21 @@ def _detail_table(db: Session, kept: List[Dict[str, Any]]) -> Optional[Dict[str,
         cand = {"id": f"{lead['id']}-table", "kind": "table", "type": "TABLE", "table": lead["table"],
                 "role": {"metrics": attempt, "dimension": lead["role"]["dimension"]},
                 "title": f"{lead.get('dimension_label') or 'Detail'} — detail", "measure": lead["measure"],
-                "style": {"dataLimit": 25}}
+                # The header reads as the breakdown's name ("Product category"),
+                # not its column ("product_category_name_english"); amounts to the unit.
+                "style": {"dataLimit": 25, "decimalPlaces": 0,
+                          "tableColumnLabels": _column_labels(lead)}}
         if _runs(db, cand):
             return cand
     return None
+
+
+def _column_labels(lead: Dict[str, Any]) -> Dict[str, str]:
+    ref = str(lead["role"]["dimension"])
+    label = str(lead.get("dimension_label") or "")
+    if not label:
+        return {}
+    return {ref: label, ref.partition(".")[2] or ref: label}
 
 
 def _slicer_for(model: Dict[str, Any], kept: List[Dict[str, Any]], dataset_id: int) -> Optional[Dict[str, Any]]:

@@ -310,7 +310,10 @@ export function deriveStackedLayout<T extends { i?: string; x: number; y: number
     // more height instead of scrolling inside its own box.
     if (opts?.kindOf && opts.kindOf(item) === 'widget' && cols < DASHBOARD_GRID_COLS) {
       const widthShare = Math.min(1, Math.max(0, Number(item.w) / DASHBOARD_GRID_COLS));
-      h = Math.round(h * Math.min(2.6, Math.max(1, widthShare * 2.6)));
+      // At most 1.3×: the phone headline is set smaller (clamped type) as well as
+      // narrower, so it barely grows; 2.6× and then 1.8× both left a tall
+      // empty card under a two-line headline.
+      h = Math.round(h * Math.min(1.3, Math.max(1, widthShare * 1.3)));
     }
     if (opts?.kindOf && pitch > 0) {
       const minPx = STACK_MIN_HEIGHT_PX[opts.kindOf(item)] ?? 0;
