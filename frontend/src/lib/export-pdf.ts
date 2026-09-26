@@ -62,6 +62,10 @@ export interface PdfExportWarning {
   page: string;
   chart: string;
   reason: string;
+  /** `incomplete` = a chart or page is missing from the file (the default);
+   *  `note` = everything is there, but the reader should know something about
+   *  how it was laid out. Only `incomplete` may say the report lacks data. */
+  kind?: 'incomplete' | 'note';
 }
 
 export interface PdfExportOptions {
@@ -102,6 +106,9 @@ export interface PdfPageSource {
 // flag it in the report's warning section instead of quietly shipping a page
 // nobody can use.
 const SNAPSHOT_SMALL_SCALE = 0.62;
+/** The snapshot is captured at this device scale; its canvas pixels are not
+ *  screen pixels. Readability is judged on screen size, i.e. fit × this. */
+const SNAPSHOT_CAPTURE_SCALE = 1.6;
 
 const MARGIN = 10; // mm
 const HEADER_H = 16; // mm reserved for the page header
@@ -257,6 +264,26 @@ function formatStamp(d: Date): string {
  * quietly drops a failed tile is worse than one that says so: the reader has no
  * way to know a number is missing rather than zero.
  */
+/**
+ * The warnings page's headline. Only what is really missing may be announced
+ * as missing: a layout note (a page printed small) is not data the report lacks.
+ */
+export function exportWarningHeadline(warnings: PdfExportWarning[]): { title: string; summary: string; incomplete: number } | null {
+  if (!warnings.length) return null;
+  const incomplete = warnings.filter((w) => (w.kind ?? 'incomplete') === 'incomplete').length;
+  return incomplete > 0
+    ? {
+        incomplete,
+        title: 'Cảnh báo: báo cáo xuất thiếu dữ liệu',
+        summary: `${incomplete} biểu đồ/trang không có đủ dữ liệu tại thời điểm xuất file. Số liệu trong báo cáo này chưa đầy đủ.`,
+      }
+    : {
+        incomplete: 0,
+        title: 'Ghi chú khi xuất file',
+        summary: 'Báo cáo đầy đủ dữ liệu; các ghi chú dưới đây chỉ về cách trình bày trên giấy.',
+      };
+}
+
 function drawWarnings(pdf: jsPDF, opts: PdfExportOptions, warnings: PdfExportWarning[]) {
   if (!warnings.length) return;
   pdf.addPage(opts.format, opts.orientation);
@@ -264,16 +291,12 @@ function drawWarnings(pdf: jsPDF, opts: PdfExportOptions, warnings: PdfExportWar
   pdf.setFont(FONT, 'bold');
   pdf.setFontSize(12);
   pdf.setTextColor(180, 83, 9);
-  pdf.text('Cảnh báo: báo cáo xuất thiếu dữ liệu', MARGIN, MARGIN + 8);
+  const headline = exportWarningHeadline(warnings)!;
+  pdf.text(headline.title, MARGIN, MARGIN + 8);
   pdf.setFont(FONT, 'normal');
   pdf.setFontSize(9);
   pdf.setTextColor(100, 116, 139);
-  pdf.text(
-    `${warnings.length} biểu đồ không tải được dữ liệu tại thời điểm xuất file. Số liệu trong báo cáo này chưa đầy đủ.`,
-    MARGIN,
-    MARGIN + 14,
-    { maxWidth: g.usableW },
-  );
+  pdf.text(headline.summary, MARGIN, MARGIN + 14, { maxWidth: g.usableW });
   let y = MARGIN + 22;
   pdf.setFontSize(8.5);
   for (const w of warnings) {
@@ -641,7 +664,7 @@ async function drawPageSnapshot(
     // scale 1.6 keeps chart labels legible after the fit-shrink below without
     // making a multi-MB page; JPEG for the same reason the tiled path uses it.
     const canvas = await html2canvas(root, {
-      scale: 1.6,
+      scale: SNAPSHOT_CAPTURE_SCALE,
       useCORS: true,
       logging: false,
       backgroundColor: '#ffffff',
@@ -674,7 +697,10 @@ async function drawPageSnapshot(
   // the size of a stamp). When one sheet would push it below the readable
   // scale, keep the width-fit scale and continue on further sheets, breaking
   // at the bottom edge of a grid row so no chart is cut in two.
-  if (snapshotCanvas && fit < SNAPSHOT_SMALL_SCALE && widthFit > fit) {
+  // Judged on SCREEN size: a canvas captured at 1.6x and drawn at 47% of its
+  // pixels prints at ~75% of what the reader saw — readable. The old check
+  // compared canvas pixels and warned "shrunk to 47%" on a legible page.
+  if (snapshotCanvas && fit * SNAPSHOT_CAPTURE_SCALE < SNAPSHOT_SMALL_SCALE && widthFit > fit) {
     const pxPerSheet = Math.floor((availH / widthFit) * 3.7795);
     const rootTop = root.getBoundingClientRect().top;
     const pxPerCss = ch / Math.max(1, root.scrollHeight);
@@ -703,13 +729,13 @@ async function drawPageSnapshot(
       from = to;
       sheet += 1;
     }
-    return { scale: widthFit, failed: false };
+    return { scale: widthFit * SNAPSHOT_CAPTURE_SCALE, failed: false };
   }
   const drawW = (cw / 3.7795) * fit;
   const drawH = (ch / 3.7795) * fit;
   const x = MARGIN + Math.max(0, (availW - drawW) / 2);
   pdf.addImage(dataUrl, 'JPEG', x, startContentY(), drawW, drawH);
-  return { scale: fit, failed: false };
+  return { scale: fit * SNAPSHOT_CAPTURE_SCALE, failed: false };
 }
 
 /**
@@ -887,6 +913,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
     return done;
   }
 
+  let minPrintScale = Infinity;
   for (let i = 0; i < opts.pages.length; i++) {
     const page = opts.pages[i];
     if (i > 0) pdf.addPage(opts.format, opts.orientation);
@@ -930,6 +957,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
         message: `Đang chụp trang ${i + 1}/${total}${page.name ? ` — ${page.name}` : ''}…`,
       });
       const shot = await drawPageSnapshot(pdf, root, opts, page, { pageNo, total });
+      minPrintScale = Math.min(minPrintScale, shot.failed ? 0 : shot.scale);
       if (shot.failed) {
         warnings.push({
           page: page.name || `Trang ${i + 1}`,
@@ -941,6 +969,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
         warnings.push({
           page: page.name || `Trang ${i + 1}`,
           chart: '(toàn trang)',
+          kind: 'note',
           reason: `Trang bị thu nhỏ còn ${Math.round(shot.scale * 100)}% để vừa một tờ — chọn khổ A3 hoặc hướng ngang để dễ đọc hơn.`,
         });
       }
@@ -1019,6 +1048,15 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
   }
 
   report({ phase: 'finalize', ratio: 0.96, message: 'Đang tạo file PDF…' });
+  // What the file IS, for the e2e gate (as __APPBI_RENDER_AUDIT__ is for
+  // the page): sheets, the smallest print scale (screen size = 1), warnings.
+  try {
+    (window as any).__APPBI_LAST_EXPORT__ = {
+      pages: pdf.getNumberOfPages(),
+      minPrintScale: Number.isFinite(minPrintScale) ? minPrintScale : null,
+      warnings: warnings.map((w) => ({ kind: w.kind ?? 'incomplete', chart: w.chart, reason: w.reason })),
+    };
+  } catch { /* no window (tests) */ }
   drawWarnings(pdf, opts, warnings);
   stampFooters(
     pdf,
