@@ -819,6 +819,12 @@ async def invoke_skill(
         state.claim_ledger.extend(
             {**e, "ref": None} for e in (getattr(child_state, "claim_ledger", None) or []))
         state.evidence_sources.add(f"skill:{skill_key}")
+        # A figure the child WITHHELD stays withheld up here: the parent may relay
+        # the child's (redacted) words, and the run must still say it is partial.
+        # Found in acceptance: the parent copied the placeholder and ran `ok`.
+        if getattr(child_state, "unverified_claims", None):
+            state.unverified_claims = [*(getattr(state, "unverified_claims", None) or []),
+                                       *child_state.unverified_claims]
         state.prompt_tokens += child_state.prompt_tokens
         state.completion_tokens += child_state.completion_tokens
         for c in child_state.citations:

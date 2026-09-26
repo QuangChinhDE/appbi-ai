@@ -486,3 +486,17 @@ def test_periods_are_read_as_written():
     assert CC._periods("quý 4/2017 so với quý 3/2017") == {("q", 2017, 4), ("q", 2017, 3)}
     assert CC._periods("GMV tháng 11 năm 2017") == {("m", 2017, 11)}
     assert CC._periods("Bang nào cao nhất?") == set()
+
+
+def test_a_change_worked_out_from_two_stated_figures_is_checked_by_arithmetic(world):
+    """A correct percentage the model computed from two figures it states and the
+    tools read is not "invented"; a wrong one still is."""
+    ctx, state = world(MOM_Q, asked=("gmv",))
+    _rec(state, "total_measure", {"ok": True, "kind": "value", "data": {
+        "chart_id": MONTHLY, "value": 1107301.89, "measure": "dataset_table_438.gmv"}}, {"chart_id": MONTHLY})
+    _rec(state, "total_measure", {"ok": True, "kind": "value", "data": {
+        "chart_id": MONTHLY, "value": 863547.10, "measure": "dataset_table_438.gmv"}}, {"chart_id": MONTHLY})
+    good = "GMV tháng 1/2018 là 1,107,301.89, tháng 12/2017 là 863,547.10: tăng 28.23%."
+    assert _why(state, ctx, good) == []
+    bad = "GMV tháng 1/2018 là 1,107,301.89, tháng 12/2017 là 863,547.10: tăng 31.5%."
+    assert (31.5, "unsupported") in _why(state, ctx, bad)

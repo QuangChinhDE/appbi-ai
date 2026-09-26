@@ -451,10 +451,11 @@ async def run(
             except Exception:                                   # noqa: BLE001
                 final = {}
             if final.get("flagged"):
-                state.unverified_claims = final["flagged"]
+                # Extended, not replaced: a Skill child's withheld figures are
+                # already here (`skills.invoke_skill`).
+                state.unverified_claims = [*(state.unverified_claims or []), *final["flagged"]]
                 # THE PUBLIC ANSWER NEVER CARRIES A FLAGGED FIGURE: it is withheld
-                # (the draft stays in the audit trace), a whole-report total is
-                # restated with its true meaning, and the reader is told why.
+                # (the draft stays in the audit trace) and the reader is told why.
                 final["draft"] = text
                 loc = _locale_of(rctx)
                 text = claim_check.redact(text, final["flagged"], loc)

@@ -226,6 +226,20 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str) -> bool
     return not any(lab & asked for lab in labels)
 
 
+def _derived(value: float, operands: list[float]) -> bool:
+    """Is this percentage the change or the share between two figures the answer
+    states and the evidence holds? Checked by arithmetic, to 0.05 points — a
+    correct "(1,107,301.89 - 863,547.10) / 863,547.10 = 28.23%" is not invented."""
+    for i, a in enumerate(operands):
+        for j, b in enumerate(operands):
+            if i == j or not b:
+                continue
+            for x in ((a - b) / b * 100, a / b * 100):
+                if abs(abs(value) - abs(x)) <= 0.05:
+                    return True
+    return False
+
+
 def _names_measure(ctx: Any, measure: str) -> bool:
     from app.services.agent_flows.tools.packs.discover import _score, _terms_of
 
@@ -272,7 +286,11 @@ def check(state: Any, ctx: Any, text: str) -> dict:
     delivered = any(e.get("dimension") == t["dimension"] and
                     (e.get("measure") in t["measures"] or not e.get("measure"))
                     for e in ledger) if wants_member else True
-    for value, pct in extract_answer_claims(text):
+    claims = extract_answer_claims(text)
+    # Figures the answer states AND a tool read: the only operands a percentage
+    # the model worked out itself may be checked against (see `_derived`).
+    operands = [v for v, p in claims if not p and v and in_evidence(v)]
+    for value, pct in claims:
         if pct:
             support = [e for e in ledger if e.get("ratio") and
                        (_close(value, float(e["value"])) or _close(value, float(e["value"]) * 100))]
@@ -285,7 +303,7 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             # so never contradicted). Only a percentage no proportion produced,
             # or a figure nothing read at all, is unsupported.
             if pct:
-                if not any(_close(value, float(e["value"])) for e in ledger if e.get("ratio")):
+                if not any(_close(value, float(e["value"])) for e in ledger if e.get("ratio"))                         and not _derived(value, operands):
                     flagged.append({"value": value, "pct": pct, "why": "unsupported"})
             elif not in_evidence(value) and (abs(value) >= 1000 or value != int(value)):
                 flagged.append({"value": value, "pct": pct, "why": "unsupported"})

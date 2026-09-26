@@ -688,3 +688,30 @@ def test_a_skill_whose_steps_read_nothing_is_incomplete_not_ok():
     words_only["nodes"] = [{**SKILL_BODY["nodes"][0], "tools": []}]
     assert _did_no_work(_flow(words_only, "loi_khuyen"), idle) is False, \
         "a Skill that was never meant to read data is not held to it"
+
+
+def test_a_figure_the_child_withheld_leaves_the_parent_run_partial(monkeypatch, skill_db):
+    """Acceptance: the child withheld its figure (run partial); the parent relayed
+    the redacted words and ran `ok` with no notice."""
+    model = _Model(parent_script=[SKILL_CALL, ("text", "Skill báo: tăng [đã ẩn: chưa kiểm chứng].")],
+                   child_script=[("calls", [("total_measure", {"chart_id": 41})]),
+                                 *[("text", "Doanh thu tăng 19,78% so với kỳ trước.")] * 4])  # it will not fix it
+    from app.services.agent_flows.runtime import claim_check as CC
+
+    # The child's own check flags its figure (how is `test_claims_mean_what_was_asked`'s
+    # business); this test is about what the PARENT does with a withheld figure.
+    seen: list[str] = []
+
+    def check(state, ctx, text):
+        seen.append(text or "")
+        if "19,78" in (text or ""):
+            return {"flagged": [{"value": 19.78, "pct": True, "why": "unsupported"}]}
+        return {}
+
+    monkeypatch.setattr(CC, "check", check)
+    env, state, _ = _run(monkeypatch, skill_db.db, PARENT_GRANTING_SKILL, model)
+    [child] = _children(skill_db.db)
+    assert child.status == "partial", seen
+    assert state.unverified_claims, "the child's withheld figure is carried to the parent"
+    assert env["status"] == "partial"
+    assert any(n.get("code") == "claims_unverified" for n in env.get("notices") or [])
