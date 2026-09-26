@@ -170,16 +170,29 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
     notes.push("New text blocks come with a redesign; this change kept the page's content as it is.");
   }
 
+  let healedPrimitives = 0;
   let sections = Array.isArray(source.sections)
-    ? source.sections.map((section: any) => ({
+    ? source.sections.map((section: any) => {
+        const visuals = Array.isArray(section?.visuals)
+          ? section.visuals.map((ref: unknown) => resolveSectionRef(ref, coercedBlocks.idMap)).filter((id: number | null): id is number => id !== null && Number.isFinite(id))
+          : [];
         // `section_break` used to exist and placed its visuals full width; its
         // heading was never rendered, so it is read as what it actually did.
-        primitive: section?.primitive === 'section_break' ? 'full_width' : section?.primitive,
-        visuals: Array.isArray(section?.visuals)
-          ? section.visuals.map((ref: unknown) => resolveSectionRef(ref, coercedBlocks.idMap)).filter((id: number | null): id is number => id !== null && Number.isFinite(id))
-          : [],
-      }))
+        let primitive = section?.primitive === 'section_break' ? 'full_width' : section?.primitive;
+        // A model that names a layout that does not exist ("summary" is a
+        // BLOCK variant, not a layout) meant "put these here": the section is
+        // placed by how many visuals it holds instead of refusing the whole
+        // redesign over one word.
+        if (!LAYOUT_PRIMITIVES.includes(primitive)) {
+          healedPrimitives += 1;
+          primitive = visuals.length <= 1 ? 'full_width' : visuals.length === 2 ? 'two_equal' : visuals.length === 3 ? 'three_equal' : 'two_equal';
+        }
+        return { primitive, visuals };
+      })
     : [];
+  if (healedPrimitives > 0) {
+    notes.push(`${healedPrimitives} section(s) named a layout that does not exist; they were placed by how many visuals they hold.`);
+  }
 
   const visualPreferences: Record<string, any> = {};
   for (const [key, value] of Object.entries(source.visualPreferences ?? {})) {
@@ -310,6 +323,24 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
         }))
     : [];
 
+
+  // What of a reference design carried over, told to the author as a note:
+  // plain words only (a typed figure is dropped), a few items per list.
+  const ref = source.referenceReport;
+  if (ref && typeof ref === 'object') {
+    const items = (value: unknown) => (Array.isArray(value) ? value : [])
+      .map((s) => (typeof s === 'string' ? s.trim().slice(0, 120) : ''))
+      .filter((s) => s && !/\d/.test(s))
+      .slice(0, 5);
+    const parts: string[] = [];
+    const converted = items(ref.converted);
+    const approximated = items(ref.approximated);
+    const unsupported = items(ref.unsupported);
+    if (converted.length) parts.push(`From the reference — converted: ${converted.join('; ')}`);
+    if (approximated.length) parts.push(`approximated: ${approximated.join('; ')}`);
+    if (unsupported.length) parts.push(`not supported here: ${unsupported.join('; ')}`);
+    if (parts.length) notes.push(`${parts.join('. ')}.`);
+  }
 
   // The retired `decorativeElements` key still creates nothing — say so, and
   // point at what does (a block in a redesign).

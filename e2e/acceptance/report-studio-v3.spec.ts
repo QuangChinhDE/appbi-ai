@@ -404,6 +404,7 @@ test('S5 reference image → native live-data report', async ({ page, request })
   await settle(page);
   const text = await panelText(page);
   r.metrics.s5_panel = text.slice(-1600);
+  check(r, 'the author is told what carried over from the reference (converted / approximated / not supported)', /From the reference/.test(text));
   await page.getByTestId('ai-design-apply').click();
   await page.waitForTimeout(2500);
   await settle(page);

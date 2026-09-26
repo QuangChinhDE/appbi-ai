@@ -264,6 +264,24 @@ check('blocks exist only in a redesign; sections place them by the model id', ()
   assert(!sty.plan.blocks && sty.notes.some((n) => /redesign/i.test(n)), 'a style change created blocks');
 });
 
+check('a model plan naming a layout that does not exist is placed, not refused ("summary" is a block, not a layout)', () => {
+  const raw = { layer: 'redesign', direction: { style: 'executive' }, blocks: [{ id: 'b1', variant: 'summary', findings: ['trend:5'] }],
+    sections: [{ primitive: 'kpi_strip', visuals: [1, 2] }, { primitive: 'summary', visuals: ['b1'] }, { primitive: 'bogus', visuals: [5, 6] }] };
+  const out = validator.coerceModelPlan(raw, { grantedLayer: 'redesign', knownTileIds: [1, 2, 5, 6] });
+  const prims = out.plan.sections.map((s) => s.primitive);
+  assert(prims.join() === 'kpi_strip,full_width,two_equal', prims.join());
+  assert(out.notes.some((n) => /does not exist/.test(n)), 'the healing was not disclosed');
+});
+
+check('a reference redesign says what carried over, what was approximated and what is not supported — in words, no figures', () => {
+  const raw = { layer: 'redesign', direction: { style: 'editorial' }, sections: [{ primitive: 'full_width', visuals: [5] }],
+    referenceReport: { converted: ['serif headings', 'spacious rhythm'], approximated: ['dark header band as a dark theme'], unsupported: ['photo background', 'a 3.2x hero'] } };
+  const out = validator.coerceModelPlan(raw, { grantedLayer: 'redesign', knownTileIds: [5] });
+  const note = out.notes.find((n) => n.startsWith('From the reference'));
+  assert(note && /serif headings/.test(note) && /approximated: dark header band/.test(note) && /not supported here: photo background/.test(note), String(note));
+  assert(!/3\.2x/.test(note), 'a figure from the model reached the note');
+});
+
 // ── directions ──────────────────────────────────────────────────────────────
 
 const signature = (r) => ({

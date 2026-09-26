@@ -151,6 +151,11 @@ PLAN_SCHEMA_HINT: Dict[str, Any] = {
         {"kind": "retitle", "visual": "dashboardChartId", "title": "a clearer title in plain words, NO digits — the author must accept it"}
     ],
     "suggestions": [{"visual": "dashboardChartId", "text": "a non-presentation idea, shown not applied"}],
+    "referenceReport": {
+        "converted": ["only with a reference image: traits of its look you reproduced, in plain words, NO digits"],
+        "approximated": ["traits you could only approximate, and how"],
+        "unsupported": ["traits this report cannot reproduce (e.g. a photo band, a custom font)"],
+    },
     "rationale": "one sentence on what you changed and why",
 }
 
@@ -308,7 +313,10 @@ def build_planner_prompt(
             "light/dark mood and the accent colour — and reproduce that look with "
             "INPUT.visuals. Do NOT reproduce anything the image SAYS: its numbers, "
             "labels, words and chart types are another report's content, not this "
-            "one's. Match the presentation, never the data.\n"
+            "one's. Match the presentation, never the data. Then say honestly, in "
+            "\"referenceReport\", which traits of the reference you converted, which "
+            "you could only approximate and which this report cannot reproduce — "
+            "the author decides with that in hand.\n"
         )
     if targets:
         parts.append(
