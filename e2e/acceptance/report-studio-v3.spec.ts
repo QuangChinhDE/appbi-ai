@@ -428,8 +428,9 @@ test('S5 reference image → native live-data report', async ({ page, request })
   const opening = await page.evaluate(() => {
     const g = document.querySelector('main .react-grid-layout')?.getBoundingClientRect();
     const tiles = Array.from(document.querySelectorAll('main [data-grid-item-id]'))
-      .map((e) => ({ top: Math.round(e.getBoundingClientRect().top - (g?.top ?? 0)), headline: !!e.querySelector('[data-narrative-variant="headline"]') }))
-      .sort((a, b) => a.top - b.top);
+      .map((e) => ({ top: Math.round(e.getBoundingClientRect().top - (g?.top ?? 0)), left: Math.round(e.getBoundingClientRect().left - (g?.left ?? 0)), headline: !!e.querySelector('[data-narrative-variant="headline"]') }))
+      // Reading order: top, then left (a chart beside the headline shares its row).
+      .sort((a, b) => a.top - b.top || a.left - b.left);
     return tiles[0]?.headline ?? false;
   });
   check(r, 'the result opens with a headline, as the reference does', opening);
