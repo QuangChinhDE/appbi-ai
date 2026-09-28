@@ -471,6 +471,25 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
   return { plan, notes };
 }
 
+/**
+ * A direction grammar composes the page on its own (see `directions.ts`) and
+ * replaces the model's sections. Slicer controls the model asked for are not
+ * composition the grammar knows about, so they are carried across: the same
+ * controls, as one filter band right after the opening headline (or first,
+ * when the direction has none). Without this, "put the filters on the page"
+ * answered with a direction silently kept them in the bar.
+ */
+export function carrySlicerControls(plan: PresentationPlan, controls: PresentationPlan['slicerControls']): PresentationPlan {
+  if (!controls?.length || plan.layer !== 'redesign') return plan;
+  const ids = controls.map((c) => c.id);
+  const sections = (plan.sections ?? []).map((s) => ({ ...s, visuals: s.visuals.filter((id) => !ids.includes(id)) }))
+    .filter((s) => s.visuals.length > 0);
+  const headlineIds = new Set((plan.blocks ?? []).filter((b) => b.variant === 'headline').map((b) => b.id));
+  const at = sections.findIndex((s) => s.visuals.some((id) => headlineIds.has(id)));
+  sections.splice(at >= 0 ? at + 1 : 0, 0, { primitive: 'filter_bar', visuals: ids });
+  return { ...plan, sections, slicerControls: controls };
+}
+
 // ── Plan shape ──────────────────────────────────────────────────────────────
 
 /**

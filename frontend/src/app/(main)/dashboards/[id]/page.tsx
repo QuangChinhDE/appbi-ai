@@ -3137,6 +3137,9 @@ function DashboardDetailPageInner() {
           columns: resolvedAvailableColumns,
           usedFields: usedSlicerFieldKeys,
           interaction: defaultInteractionFor(input.column),
+          // A new date control starts OPEN ("all dates"): defaulting it to
+          // this month emptied the report the moment it was placed.
+          preset: input.column.type === 'date' ? 'custom' : undefined,
           pageScope: true,
         });
         await persistSlicerLists(draftGlobalSlicers, [...draftPageSlicers, slicer]);
@@ -3197,6 +3200,7 @@ function DashboardDetailPageInner() {
     onTreatmentChange: canEditThisPage ? handleSlicerTreatmentChange : undefined,
     onRemoveControl: canEditThisPage ? (id: number) => handleRemoveChartRef.current(id) : undefined,
     onDeleteFilter: canEditResource ? handleDeleteSlicerFilter : undefined,
+    onToggleLock: canEditThisPage ? handleToggleTileLock : undefined,
     columns: resolvedAvailableColumns,
     columnChartCount: resolvedColumnChartCount,
     distinctValues: resolvedDistinctValues,
@@ -3207,7 +3211,7 @@ function DashboardDetailPageInner() {
     activePageId,
     onUpdateSlicerScope: handleUpdateSlicerScope,
   }), [orderedSlicerChildren, slicerIsVisibleHere, slicerFiltersHere, canEditThisPage, canEditResource,
-    handleControlSlicerChange, handleSlicerTreatmentChange, handleDeleteSlicerFilter, resolvedAvailableColumns,
+    handleControlSlicerChange, handleSlicerTreatmentChange, handleDeleteSlicerFilter, handleToggleTileLock, resolvedAvailableColumns,
     resolvedColumnChartCount, resolvedDistinctValues, semanticDistinctStatus, fetchSlicerServerDistinct,
     slicerPagesForScope, activePageId, handleUpdateSlicerScope]);
   const renderBuilderSlicerControl = useCallback(
@@ -4494,8 +4498,10 @@ function DashboardDetailPageInner() {
           isOpen={pendingRemoveDashboardChartId !== undefined}
           onClose={() => setPendingRemoveDashboardChartId(undefined)}
           onConfirm={confirmRemoveChart}
-          title="Remove chart from dashboard?"
-          description="This will remove the chart tile from the dashboard. The chart itself will not be deleted."
+          // Removing a slicer CONTROL is not removing a filter: say what stays.
+          {...(slicerIdOfControl(dashboard?.dashboard_charts?.find((dc) => dc.id === pendingRemoveDashboardChartId))
+            ? { title: t('dashboards.slicerControl.removeTitle'), description: t('dashboards.slicerControl.removeBody') }
+            : { title: 'Remove chart from dashboard?', description: 'This will remove the chart tile from the dashboard. The chart itself will not be deleted.' })}
           confirmLabel="Remove"
           variant="danger"
         />

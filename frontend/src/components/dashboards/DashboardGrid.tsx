@@ -305,7 +305,20 @@ function DashboardGridInner({
       cols={DASHBOARD_GRID_COLS}
       rowHeight={gridRowHeight}
       margin={gridMargin}
-      onDragStop={(_layout, _oldItem, newItem) => { if (!isNarrow) persistItem(newItem); }}
+      onDragStop={(_layout, oldItem, newItem, _placeholder, event) => {
+        if (!isNarrow) persistItem(newItem);
+        // A press on a widget's body starts a drag, and the grid's placeholder
+        // then covers the widget, so the click never reaches it. A drag that
+        // ended where it began IS the click: it selects (Shift/Cmd/Ctrl adds).
+        if (onFocusChart && oldItem && newItem && oldItem.x === newItem.x && oldItem.y === newItem.y) {
+          const dc = dashboardCharts.find((d) => String(d.id) === newItem.i);
+          const target = (event?.target ?? null) as HTMLElement | null;
+          if (dc && dc.widget_type && dc.widget_type !== 'chart'
+            && !target?.closest?.('button, input, select, textarea, a, [role="menu"], [data-slicer-menu]')) {
+            onFocusChart(dc.id, Boolean(event?.shiftKey || event?.metaKey || event?.ctrlKey));
+          }
+        }
+      }}
       onResizeStop={(_layout, _oldItem, newItem) => { if (!isNarrow) persistItem(newItem); }}
       draggableHandle=".drag-handle"
       // Never start a drag from an interactive control or the widget's own
@@ -366,7 +379,9 @@ function DashboardGridInner({
             // A widget is selected like a chart (Shift/Cmd/Ctrl adds), so the
             // Arrange tools and the keyboard work on it too. A click on one of
             // its own controls is that control's, not a selection.
-            onClick={onFocusChart ? (event) => {
+            // Only a widget that cannot be dragged (locked, or not editable)
+            // gets a real click; a draggable one is selected from onDragStop.
+            onClick={onFocusChart && !(canEdit && onLayoutChange && !isNarrow && !(dc.layout as any)?.locked) ? (event) => {
               if ((event.target as HTMLElement).closest('button, input, select, textarea, a, [role="menu"], [data-slicer-menu]')) return;
               onFocusChart(dc.id, event.shiftKey || event.metaKey || event.ctrlKey);
             } : undefined}
@@ -374,7 +389,9 @@ function DashboardGridInner({
             {slicerControl && renderSlicerControl
               ? renderSlicerControl(dc)
               : <DashboardWidget widget={dc} params={params} onParamChange={onParamChange} editing={canEdit} />}
-            {canEdit && (
+            {/* A slicer control carries these in its own menu (one place, no
+                overlapping buttons); every other widget gets the hover cluster. */}
+            {canEdit && !slicerControl && (
               <div className="no-drag absolute right-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {onToggleLock && (
                   <button
@@ -392,7 +409,7 @@ function DashboardGridInner({
                     </svg>
                   </button>
                 )}
-                {onEditWidget && !slicerControl && (
+                {onEditWidget && (
                   <button
                     type="button"
                     onMouseDown={(e) => e.stopPropagation()}
@@ -412,8 +429,7 @@ function DashboardGridInner({
                     onClick={() => onRemoveChart(dc.id)}
                     disabled={removingChartId === dc.id}
                     className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1.5 shadow-linear-sm transition-colors hover:border-danger/40 hover:bg-danger/10 disabled:opacity-50"
-                    data-testid={slicerControl ? 'slicer-remove-control' : undefined}
-                    title={slicerControl ? t('dashboards.slicerControl.removeControl') : t('dashboards.grid.removeWidget')}
+                    title={t('dashboards.grid.removeWidget')}
                   >
                     <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-danger" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M3 3l10 10M13 3L3 13" strokeLinecap="round" />

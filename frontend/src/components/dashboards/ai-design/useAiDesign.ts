@@ -20,7 +20,7 @@ import {
 } from '@/lib/dashboard-presentation/executor';
 import { buildPresentationSnapshot, tilesOnPage } from '@/lib/dashboard-presentation/snapshot';
 import type { FieldMetaIndex } from '@/lib/dashboard-presentation/design-context';
-import { coerceModelPlan } from '@/lib/dashboard-presentation/validator';
+import { carrySlicerControls, coerceModelPlan } from '@/lib/dashboard-presentation/validator';
 import { inferDesignLayer } from '@/lib/dashboard-presentation/intent';
 import { diffPresentation, isEmptyDiff } from '@/lib/dashboard-presentation/diff';
 import type { PresentationDiff } from '@/lib/dashboard-presentation/diff';
@@ -186,12 +186,12 @@ export function useAiDesign(input: UseAiDesignInput) {
     const style = plan.direction?.style as string | undefined;
     if (plan.layer === 'redesign' && targets.length === 0 && DIRECTION_IDS.includes(style as DirectionId) && !(plan.blocks?.length)) {
       const pack = planForDirection(style as DirectionId, snapshot!, input.directionLabels);
-      plan = {
+      plan = carrySlicerControls({
         ...pack,
         themeIntent: { ...(pack.themeIntent ?? {}), ...pickPalette(plan.themeIntent) } as any,
         rationale: plan.rationale || pack.rationale,
         suggestions: plan.suggestions,
-      };
+      }, plan.slicerControls);
     }
     const built = buildPresentationMutation({
       plan,

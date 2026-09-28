@@ -14,7 +14,7 @@
  * no longer exists), an author sees why and a viewer sees nothing.
  */
 import React from 'react';
-import { EyeOff, GripVertical, SlidersHorizontal, Trash2, Unlink } from 'lucide-react';
+import { EyeOff, GripVertical, Lock, SlidersHorizontal, Trash2, Unlink, Unlock, X } from 'lucide-react';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
 import {
@@ -44,6 +44,8 @@ export interface SlicerControlBinding {
   onTreatmentChange?: (tileId: number, treatment: SlicerTreatment) => void;
   onRemoveControl?: (tileId: number) => void;
   onDeleteFilter?: (slicerId: string) => void;
+  /** Lock the control's place (the grid's own lock, through the draft). */
+  onToggleLock?: (tileId: number, next: boolean) => void;
   columns: ColumnInfo[];
   columnChartCount: Map<string, number>;
   distinctValues: Record<string, string[]>;
@@ -67,20 +69,27 @@ export function GridSlicerTile({ tile, binding }: { tile: DashboardChart; bindin
     filtersHere: binding.filtersHere,
   });
 
-  const boxRef = React.useRef<HTMLDivElement | null>(null);
+  // A callback ref, not a one-shot effect: on the public link the viewer's
+  // filters arrive after the first render, so the tile first renders without
+  // its box, and a mount-only measurement never saw the real tile (its height
+  // stayed 0 and a tall control never became a list).
+  const [box, setBox] = React.useState<HTMLDivElement | null>(null);
+  const boxRef = setBox;
   const [heightPx, setHeightPx] = React.useState(0);
   React.useLayoutEffect(() => {
-    const el = boxRef.current;
+    const el = box;
     if (!el || typeof ResizeObserver === 'undefined') return;
+    setHeightPx(Math.round(el.getBoundingClientRect().height));
     const ro = new ResizeObserver((entries) => {
       const h = Math.round(entries[0]?.contentRect?.height ?? 0);
       setHeightPx((prev) => (Math.abs(prev - h) > 1 ? h : prev));
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [box]);
 
   const [menuOpen, setMenuOpen] = React.useState(false);
+  const locked = Boolean((tile.layout as any)?.locked);
 
   if (resolution.state === 'missing' || (resolution.state === 'hidden' && !binding.editing)) {
     if (!binding.editing) return <div className="h-full w-full" data-slicer-control="absent" aria-hidden />;
@@ -159,8 +168,8 @@ export function GridSlicerTile({ tile, binding }: { tile: DashboardChart; bindin
           >
             <GripVertical className="h-3.5 w-3.5" />
           </span>
-          {(binding.onTreatmentChange || binding.onDeleteFilter) && (
-            <div className="no-drag absolute right-8 top-1 z-20 opacity-0 transition-opacity group-hover/slicer:opacity-100 focus-within:opacity-100">
+          {(binding.onTreatmentChange || binding.onDeleteFilter || binding.onRemoveControl) && (
+            <div className="no-drag absolute right-1 top-1 z-20 opacity-0 transition-opacity group-hover/slicer:opacity-100 focus-within:opacity-100">
               <button
                 type="button"
                 data-testid="slicer-control-menu"
@@ -195,6 +204,32 @@ export function GridSlicerTile({ tile, binding }: { tile: DashboardChart; bindin
                       {treatment === option && <span aria-hidden>✓</span>}
                     </button>
                   ))}
+                  {(binding.onToggleLock || binding.onRemoveControl) && <div className="my-1 border-t border-[rgb(var(--border-line))]" />}
+                  {binding.onToggleLock && (
+                    <button
+                      type="button"
+                      role="menuitemcheckbox"
+                      aria-checked={locked}
+                      data-testid="slicer-lock-toggle"
+                      onClick={() => { binding.onToggleLock?.(tile.id, !locked); setMenuOpen(false); }}
+                      className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-text-secondary hover:bg-surface-2"
+                    >
+                      {locked ? <Unlock className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+                      {locked ? t('dashboards.grid.unlock') : t('dashboards.grid.lock')}
+                    </button>
+                  )}
+                  {binding.onRemoveControl && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-testid="slicer-remove-control"
+                      onClick={() => { setMenuOpen(false); binding.onRemoveControl?.(tile.id); }}
+                      className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-text-secondary hover:bg-surface-2"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      {t('dashboards.slicerControl.removeControl')}
+                    </button>
+                  )}
                   {binding.onDeleteFilter && (
                     <>
                       <div className="my-1 border-t border-[rgb(var(--border-line))]" />

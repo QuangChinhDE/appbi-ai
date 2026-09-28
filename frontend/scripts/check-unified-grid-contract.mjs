@@ -340,6 +340,24 @@ check('a grid control searches values on the SAME resolved filter set as the bar
     'the public control search left the viewer\'s resolved context');
 });
 
+check('a direction keeps the slicer controls the model asked for (filter band after the headline)', () => {
+  const directions = load('lib/dashboard-presentation/directions.ts');
+  const tiles = [chart(1, 0, 0, 9, 6), chart(2, 9, 0, 9, 6), chart(3, 0, 6, 18, 12), chart(4, 18, 6, 18, 12)];
+  tiles[0].chart.chart_type = 'KPI'; tiles[1].chart.chart_type = 'KPI';
+  const s = { ...snap(tiles, [STATE]), findings: [{ key: 'trend:3', sentence: 'x' }] };
+  const pack = directions.planForDirection('executive', s, {});
+  const controls = [{ id: -1000, slicerId: 'gf-state', treatment: 'auto' }];
+  const plan = validator.carrySlicerControls(pack, controls);
+  assert(same(plan.slicerControls, controls), 'the controls were dropped');
+  const at = plan.sections.findIndex((x) => x.primitive === 'filter_bar');
+  const headline = (plan.blocks ?? []).find((b) => b.variant === 'headline');
+  const headAt = headline ? plan.sections.findIndex((x) => x.visuals.includes(headline.id)) : -1;
+  assert(at === headAt + 1, `the filter band is at ${at}, the headline at ${headAt}`);
+  assert(same(validator.carrySlicerControls(pack, undefined), pack), 'a plan without controls changed');
+  const src = source('components/dashboards/ai-design/useAiDesign.ts');
+  assert(/carrySlicerControls\(\{[\s\S]*?\}, plan\.slicerControls\)/.test(src), 'the direction path no longer carries the controls');
+});
+
 // ── Canvas is gone ──────────────────────────────────────────────────────────
 
 check('there is one layout engine: no Canvas component, conversion or toggle', () => {

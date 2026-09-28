@@ -171,6 +171,8 @@ def test_the_planner_is_told_which_slicers_it_may_place_and_never_their_fields()
     assert "slicerControls" in prompt
     # The system prompt says how: a filter band, or a control beside its chart.
     assert "filter_bar" in planner.SYSTEM_PROMPT and "never changes what the slicer filters" in planner.SYSTEM_PROMPT
+    # The dock moves the grouped bar; placing filters ON the page is slicerControls.
+    assert "only moves the grouped filter BAR" in planner.SYSTEM_PROMPT
     start = prompt.index('"slicers": [')
     digest = json.loads(prompt[start + len('"slicers": '): prompt.index("]", start) + 1])
     assert digest == [

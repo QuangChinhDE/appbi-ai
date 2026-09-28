@@ -1872,8 +1872,10 @@ function FilterCard({
     ? 32 + ['All', ...mergedValues.map((v: any) => String(v ?? ''))].reduce((sum, s) => sum + Math.ceil(s.length * 7.2) + 22, 0)
     : 0;
   const cardWidthStyle: React.CSSProperties = fill
-    // On the grid the TILE is the size the author chose; the card fills it.
-    ? { width: '100%', height: '100%', minWidth: 0 }
+    // On the grid the TILE is the size the author chose: the card takes its
+    // width and its own height, centred in the tile. Stretching it to the tile
+    // turned a pill-styled card into an oval on a tall tile.
+    ? { width: '100%', maxHeight: '100%', minWidth: 0 }
     : openSide
     ? { width: '100%' }
     : distributeChildren
@@ -1892,7 +1894,7 @@ function FilterCard({
   // Outer wrapper class: `inline-block` is the legacy fixed-width mode.
   // With distribute on, switch to `flex-1` so siblings share the row.
   const outerWrapperClass = fill
-    ? 'relative block h-full w-full min-w-0'
+    ? 'relative flex h-full w-full min-w-0 items-center'
     : openSide
     ? 'relative block w-full'
     : distributeChildren
