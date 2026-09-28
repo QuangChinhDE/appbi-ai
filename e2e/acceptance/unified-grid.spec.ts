@@ -1590,3 +1590,30 @@ test('R6 a control can be placed right next to the selected chart', async ({ pag
   check(r, 'the control lands in the chart\'s row, beside it — no drag', Math.abs(k[1] - c[1]) < 8 && (k[0] >= c[0] + c[2] - 4 || k[0] + k[2] <= c[0] + 4), `${k} vs ${c}`);
   await shot(page, r, 'R6-beside-1440');
 });
+
+test('R7 a link that EXCLUDES a value says so, and its numbers are the exclusion', async ({ page, request, context }) => {
+  const r = scenario('R7 exclusion stated');
+  const id = await openBaseline(page, request, r);
+  const entry = { field: 'customer_state', semanticField: 'dataset_table_3.customer_state', fieldKey: 'dataset_table_3.customer_state', datasetId: 1,
+    type: 'dropdown', value: ['SP'], publicMode: 'locked', label: 'Customer state' };
+  const only = await linkFor(request, id, [{ ...entry, operator: 'in' }]);
+  const without = await linkFor(request, id, [{ ...entry, operator: 'not_in' }]);
+
+  const served = await (await context.request.get(`/api/v1/public/dashboards/${without}`)).json();
+  const lock = (served.public_link_locked_filters ?? [])[0] ?? {};
+  check(r, 'the lock is served with its operator', lock.operator === 'not_in' && JSON.stringify(lock.value) === '["SP"]', JSON.stringify(lock));
+
+  const pubWithout = await publicView(context, without);
+  const facts = await pubWithout.locator('[data-filter-fact="locked"]').allTextContents();
+  check(r, 'the reader is told the page EXCLUDES SP — never "Customer state: SP"', facts.some((t) => /Customer state/.test(t) && /(not|trừ) SP/.test(t)), JSON.stringify(facts));
+  const kWithout = await kpis(pubWithout);
+  await shot(pubWithout, r, 'R7-excluding-link-1440');
+  await pubWithout.close();
+  const pubOnly = await publicView(context, only);
+  const onlyFacts = await pubOnly.locator('[data-filter-fact="locked"]').allTextContents();
+  check(r, 'an inclusion is stated as an inclusion', onlyFacts.some((t) => /Customer state/.test(t) && /SP/.test(t) && !/(not|trừ) SP/.test(t)), JSON.stringify(onlyFacts));
+  const kOnly = await kpis(pubOnly);
+  await pubOnly.close();
+  check(r, 'the two links show different numbers (the exclusion is enforced as an exclusion)',
+    kWithout.length > 0 && kWithout.length === kOnly.length && JSON.stringify(kWithout) !== JSON.stringify(kOnly), `${JSON.stringify(kWithout)} vs ${JSON.stringify(kOnly)}`);
+});
