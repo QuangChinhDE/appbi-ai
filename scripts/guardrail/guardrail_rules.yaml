@@ -875,3 +875,5 @@ policy:
       Any SQL-generation change must be validated on the ACTUAL warehouse dialect
       (BigQuery), not only local Postgres — PG hides correlated-subquery + implicit-cast
       failures that BQ rejects hard. Prefer a dialect-structural check.
+
+# touched
