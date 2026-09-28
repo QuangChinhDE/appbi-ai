@@ -23,7 +23,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 
@@ -42,6 +42,11 @@ from app.services.dashboard_service import is_draft_only_item
 @compiles(UUID, "sqlite")
 def _uuid_on_sqlite(_type, _compiler, **_kw):
     return "CHAR(36)"
+
+
+@compiles(JSONB, "sqlite")
+def _jsonb_on_sqlite(_type, _compiler, **_kw):
+    return "JSON"
 
 
 class _User:
@@ -96,6 +101,54 @@ def test_public_paths_are_served_published_tiles_only_and_nothing_is_written(db)
     rows = _rows(db)
     assert set(rows) == {10, 20, 30}, "serving a public copy deleted a real row"
     assert rows[10].layout.get("draftRemovedBy") == A.id, "serving a public copy rewrote the author's draft"
+
+
+def _with_draft_tile_and_pending_removal(db: Session) -> None:
+    db.add(DashboardChart(id=30, dashboard_id=1, chart_id=None, widget_type="text", widget_config={"text": "draft"},
+                          layout={"x": 0, "y": 9, "w": 12, "h": 3, "draftOnly": True, "draftOwner": A.id}))
+    row = db.get(DashboardChart, 10)
+    row.layout = {**row.layout, "draftRemoved": True, "draftRemovedBy": A.id}
+    db.commit()
+
+
+def test_the_access_bump_commit_does_not_undo_the_published_only_copy(db, monkeypatch):
+    """A commit expires the served copy (expire_on_commit); the next read of
+    dashboard_charts would reload the raw rows, draft tiles included. A capped
+    link bumps its count — and commits — on every view."""
+    from app.api import public as public_api
+    from app.models.models import DashboardPublicLink
+    DashboardPublicLink.__table__.create(db.get_bind(), checkfirst=True)
+    monkeypatch.setattr(public_api, "resolve_embed_grant", lambda *_a, **_k: None)
+    _with_draft_tile_and_pending_removal(db)
+    db.add(DashboardPublicLink(id=1, dashboard_id=1, name="capped", token="tok-capped", filters_config=[],
+                               is_active=True, max_access_count=100, access_count=0))
+    db.commit()
+    dash, *_ = public_api._get_dashboard_by_token("tok-capped", db, track_access=True, load_dashboard=True)
+    assert db.get(DashboardPublicLink, 1).access_count == 1, "the fixture did not take the committing path"
+    served = {dc.id: dc for dc in dash.dashboard_charts}
+    assert set(served) == {10, 20}, "after the access-bump commit a public viewer is served a draft tile"
+    assert "draftRemovedBy" not in served[10].layout
+
+
+def test_the_public_ai_describes_only_datasets_of_published_tiles(db):
+    """The public AI's knowledge scope (describe the model, search knowledge)
+    followed every DashboardChart row: a dataset on an editor's draft-only tile
+    was described to a public viewer before Publish."""
+    from types import SimpleNamespace
+    from app.api import public as public_api
+    from app.models.dataset import DatasetTable
+    from app.services.dashboard_ai_bot import govern_tools
+    DatasetTable.__table__.create(db.get_bind(), checkfirst=True)
+    db.add(Chart(id=501, name="published", chart_type="BAR", config={}, dataset_table_id=71))
+    db.add(Chart(id=502, name="draft", chart_type="BAR", config={}, dataset_table_id=72))
+    db.add(DashboardChart(id=41, dashboard_id=1, chart_id=501, layout={"x": 0, "y": 20, "w": 12, "h": 6}))
+    db.add(DashboardChart(id=42, dashboard_id=1, chart_id=502,
+                          layout={"x": 0, "y": 26, "w": 12, "h": 6, "draftOnly": True, "draftOwner": A.id}))
+    db.commit()
+    dash = db.query(Dashboard).filter(Dashboard.id == 1).one()
+    public_api._serve_published_only(dash)
+    tids, _dsids = govern_tools._scope(SimpleNamespace(db=db, dashboard=dash))
+    assert tids == {71}, f"the public AI scope includes a draft-only tile's dataset: {tids}"
 
 
 def _rows(db: Session) -> dict[int, DashboardChart]:

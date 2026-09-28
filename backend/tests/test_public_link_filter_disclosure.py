@@ -44,6 +44,19 @@ def test_an_exclusion_is_served_as_an_exclusion():
         {"field": "seller_state", "label": "Seller state", "value": ["SP"], "operator": "not_in"}]
 
 
+def test_a_lock_is_served_as_the_engine_enforces_it():
+    # An M2M claim stored as `in "SP"` is enforced as `in ["SP"]` — the page
+    # must be able to state it (a scalar under `in` read as "no value" and the
+    # page said nothing). `ne` / `<>` are the engine's `neq`.
+    scalar = {"field": "customer_state", "operator": "in", "value": "SP"}
+    ne = {"field": "seller_state", "operator": "<>", "value": "RJ"}
+    preset = {"field": "order_date", "operator": "between", "value": ["2026-01-01", "2026-01-31"], "datePreset": "last_30_days"}
+    shown = {e["field"]: e for e in link_filters_a_viewer_may_see([scalar, ne, preset])}
+    assert shown["customer_state"]["operator"] == "in" and shown["customer_state"]["value"] == ["SP"]
+    assert shown["seller_state"]["operator"] == "neq"
+    assert shown["order_date"]["datePreset"] == "last_30_days", "a relative-date lock is served as a frozen range"
+
+
 def test_an_entry_the_author_keeps_off_the_banner_is_not_served():
     assert link_filters_a_viewer_may_see([QUIET, LOCKED])[0]["field"] == "customer_state"
     assert "Online" not in json.dumps(link_filters_a_viewer_may_see([QUIET]))

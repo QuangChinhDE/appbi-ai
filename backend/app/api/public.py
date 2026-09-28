@@ -938,6 +938,14 @@ def _serve_published_only(dash: Dashboard) -> None:
     _set_committed(dash, "dashboard_charts", rows)
 
 
+def _reserve_after_commit(dash: Dashboard, load_dashboard: bool) -> None:
+    """A commit expires every loaded attribute (expire_on_commit), and the next
+    read of `dash.dashboard_charts` reloads the RAW rows — draft tiles and
+    draft keys included. Shape the served copy again after the access bump."""
+    if load_dashboard:
+        _serve_published_only(dash)
+
+
 def _get_dashboard_by_token(
     token: str,
     db: Session,
@@ -979,6 +987,7 @@ def _get_dashboard_by_token(
             grant_link.access_count = (grant_link.access_count or 0) + 1
             grant_link.last_accessed_at = datetime.now(timezone.utc)
             db.commit()
+            _reserve_after_commit(dash, load_dashboard)
         # Display name: the `header` the host app passed to /embed/resolve wins.
         # Without it the viewer saw the managed link's INTERNAL name
         # ("embed:71:a7fa6994") as the report title — an implementation detail in
@@ -1020,6 +1029,7 @@ def _get_dashboard_by_token(
             link.access_count = (link.access_count or 0) + 1
             link.last_accessed_at = datetime.now(timezone.utc)
             db.commit()
+            _reserve_after_commit(dash, load_dashboard)
         return dash, link.filters_config or [], link.name, link.appearance_config or {}
 
     # Fallback to legacy share_token on Dashboard model

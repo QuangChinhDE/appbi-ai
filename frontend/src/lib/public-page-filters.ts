@@ -167,6 +167,11 @@ function hasPreset(f: BaseFilter): f is BaseFilter & { datePreset: DatePreset } 
  * a filter to announce. One fact per field; a lock wins. A hidden (🚫) filter
  * never reaches this function: the server does not serve it.
  */
+// Every spelling the chart engine reads as an exclusion (chart_contracts
+// _OPERATOR_MAP): stated as "not …", never as the value alone.
+const NEGATING_OPERATORS = new Set(['not_in', 'neq', 'ne', '!=', '<>', 'not_contains', 'not_between']);
+const COMPARISON_SIGN: Record<string, string> = { gt: '>', '>': '>', gte: '≥', '>=': '≥', lt: '<', '<': '<', lte: '≤', '<=': '≤' };
+
 export function pageFilterFacts(input: {
   applied: BaseFilter[];
   pageHidden: BaseFilter[];
@@ -178,12 +183,19 @@ export function pageFilterFacts(input: {
     const key = getFilterKey(f);
     const label = getFilterDisplayLabel(f);
     if (hasPreset(f)) return { key, label, value: '', preset: f.datePreset, locked };
-    if (!isFilterValueActive(f)) return null;
-    const value = f.operator === 'between' && Array.isArray(f.value)
-      ? f.value.map((v) => (v === null || v === undefined ? '…' : String(v))).join(' – ')
+    // A lock is enforced by the server, which already decided it carries a
+    // value (a scalar "SP" under `in` is enforced as ["SP"]); only a viewer's
+    // own filter is checked for being active.
+    if (!locked && !isFilterValueActive(f)) return null;
+    const op = String(f.operator || '').toLowerCase();
+    const range = (op === 'between' || op === 'not_between') && Array.isArray(f.value);
+    const raw = range
+      ? (f.value as unknown[]).map((v) => (v === null || v === undefined ? '…' : String(v))).join(' – ')
       : formatValue(f.value);
-    if (!value) return null;
-    return { key, label, value, locked, ...(f.operator === 'not_in' || f.operator === 'neq' ? { negated: true } : {}) };
+    if (!raw) return null;
+    const sign = COMPARISON_SIGN[op];
+    const value = sign ? `${sign} ${raw}` : raw;
+    return { key, label, value, locked, ...(NEGATING_OPERATORS.has(op) ? { negated: true } : {}) };
   };
   for (const entry of input.locked) {
     const f = {

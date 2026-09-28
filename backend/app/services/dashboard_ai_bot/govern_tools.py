@@ -117,7 +117,19 @@ def _scope(ctx: ToolContext) -> tuple[set[int], set[int]]:
     if getattr(ctx, "dashboard", None) is None:
         return set(), set()
 
-    tids = set(dashboard_table_ids(ctx.db, ctx.dashboard.id))
+    # The tiles this caller was served, not every row of the dashboard: a public
+    # token's dashboard is published tiles only (public._serve_published_only),
+    # so a dataset that sits only on an editor's draft tile is not described to
+    # a public viewer. Other callers load every tile, as the query below does.
+    served = getattr(ctx.dashboard, "dashboard_charts", None)
+    if served is not None:
+        tids = {
+            dc.chart.dataset_table_id for dc in served
+            if getattr(dc, "chart_id", None) and getattr(dc, "chart", None) is not None
+            and dc.chart.dataset_table_id is not None
+        }
+    else:
+        tids = set(dashboard_table_ids(ctx.db, ctx.dashboard.id))
     dsids: set[int] = set()
     if tids:
         for table in ctx.db.query(DatasetTable).filter(DatasetTable.id.in_(tids)).all():

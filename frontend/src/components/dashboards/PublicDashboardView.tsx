@@ -611,7 +611,9 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // shown a read-only "ⓘ Đang lọc theo …" line so they understand
   // the data scope. `hidden` entries do not appear here by design —
   // see docs/filter-semantics.md §2.2/§9.
-  const lockedBannerEntries = useMemo(() => {
+  // Per page: a page's own locked filters belong to that page only (the PDF
+  // states each page's, not the active page's).
+  const lockedEntriesFor = useCallback((pageId: string) => {
     const result: { field: string; label?: string; value: any; operator?: string; datePreset?: any }[] = [];
     const collect = (entries: any[]) => {
       for (const e of entries || []) {
@@ -624,7 +626,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     };
     if (dashboard) {
       collect((dashboard as any).filters_config || []);
-      const page = dashboardPages.find((p) => p.id === activePageId);
+      const page = dashboardPages.find((p) => p.id === pageId);
       if (page) {
         collect((page as any).filters || []);
       }
@@ -632,11 +634,12 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       // so the reader is told the report is filtered. Hidden (🚫) link filters
       // are never served.
       for (const e of ((dashboard as any).public_link_locked_filters || []) as any[]) {
-        if (e && typeof e === 'object' && e.field) result.push({ field: e.field, label: e.label ?? undefined, value: e.value, operator: e.operator });
+        if (e && typeof e === 'object' && e.field) result.push({ field: e.field, label: e.label ?? undefined, value: e.value, operator: e.operator, datePreset: e.datePreset });
       }
     }
     return result;
-  }, [dashboard, dashboardPages, activePageId]);
+  }, [dashboard, dashboardPages]);
+  const lockedBannerEntries = useMemo(() => lockedEntriesFor(activePageId), [lockedEntriesFor, activePageId]);
 
   // Phase-F THẬT (PBI-parity rework) — override-allowed filters list
   // for the "Xem chi tiết" mini-pane. Entries with publicMode='visible'
@@ -1108,15 +1111,15 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // slice of data each page represents. The export passes the page's own
   // context (the one it fetched that page's data with); a page's filters are
   // not the active page's.
-  const summarizeViewerFilters = useCallback((context?: { applied: BaseFilter[]; pageHidden: BaseFilter[] }): string => pageFilterFacts({
+  const summarizeViewerFilters = useCallback((context?: { pageId: string; applied: BaseFilter[]; pageHidden: BaseFilter[] }): string => pageFilterFacts({
     applied: context?.applied ?? appliedViewerFilters,
     pageHidden: context?.pageHidden ?? pageHiddenFilters,
-    locked: lockedBannerEntries,
+    locked: context ? lockedEntriesFor(context.pageId) : lockedBannerEntries,
   }).map((f) => {
     const value = f.preset ? t(`dashboards.filterContext.preset.${f.preset}`)
       : f.negated ? t('dashboards.filterContext.excluding', { value: f.value }) : f.value;
     return `${f.locked ? '🔒 ' : ''}${f.label}: ${value}`;
-  }).join(' · '), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, t]);
+  }).join(' · '), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, lockedEntriesFor, t]);
 
   /**
    * Server-side export: hand the request to the render worker and poll.
@@ -1274,6 +1277,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           pageId,
         );
         return summarizeViewerFilters({
+          pageId,
           applied: mergeSeedWithViewerSelections(controlSeed, frozenViewerFilters),
           pageHidden: hiddenFilters,
         });

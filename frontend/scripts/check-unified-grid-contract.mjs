@@ -554,6 +554,15 @@ check('a reader can always tell what filters the page: locks, page filters and c
   assert(ops.seller_state?.negated === true && ops.seller_state.value === 'SP', `a locked exclusion is stated as an inclusion: ${JSON.stringify(ops)}`);
   assert(ops.amount?.value === '10 – 50', 'a range is not stated as a range');
   assert(ops.order_date?.preset === 'last_30_days' && ops.order_date.locked, 'a locked relative date is dropped');
+  const more = Object.fromEntries(ppf.pageFilterFacts({
+    applied: [f('s-min', 'amount', 1000, { type: 'number', operator: 'gte' })],
+    pageHidden: [],
+    locked: [{ field: 'customer_state', value: 'SP', operator: 'in' }, { field: 'channel', value: 'Online', operator: 'ne' },
+      { field: 'category', value: 'toys', operator: 'not_contains' }],
+  }).map((x) => [x.key, x]));
+  assert(more.customer_state?.value === 'SP', `a scalar lock the server enforces is not stated: ${JSON.stringify(more)}`);
+  assert(more.channel?.negated && more.category?.negated, 'an exclusion spelled ne / not_contains is stated as an inclusion');
+  assert(more.amount?.value === '≥ 1000', 'a comparison is stated as a bare value');
   const pv = source('components/dashboards/PublicDashboardView.tsx');
   assert(/public_link_locked_filters/.test(pv) && /filterContextFacts\.map/.test(pv), "the public header does not state the page's filters");
   assert(/summarizeViewerFilters = useCallback\([^)]*\): string => pageFilterFacts\(/.test(pv), 'the PDF header lists filters by name without their value');
@@ -561,6 +570,7 @@ check('a reader can always tell what filters the page: locks, page filters and c
   assert(/operator: e\.operator, datePreset: e\.datePreset/.test(pv), 'the served operator/preset is dropped before the banner');
   // Each PDF page states its own filters, not the active page's.
   assert(/filtersSummary: filtersSummaryFor\(p\.id\)/.test(pv), 'the public PDF prints the active page\'s filters on every page');
+  assert(/locked: context \? lockedEntriesFor\(context\.pageId\)/.test(pv), 'each PDF page states the active page\'s locks');
   const builder = source('app/(main)/dashboards/[id]/page.tsx');
   assert(/filtersSummary: summarizeAppliedFilters\(p\)/.test(builder) && /summarizeAppliedFilters = useCallback\([^)]*\): string => pageFilterFacts\(/.test(builder),
     'the builder PDF header ignores page filters or the operator');

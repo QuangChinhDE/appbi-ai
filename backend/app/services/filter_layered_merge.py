@@ -35,6 +35,8 @@ from app.services.chart_contracts import (
     _filter_dedupe_key,
     _record_dropped_filter,
     normalize_filter_conditions,
+    normalize_filter_operator,
+    normalize_filter_value,
 )
 
 
@@ -484,7 +486,12 @@ def link_filters_a_viewer_may_see(
     must not learn the field or the value); a 'limit' scope entry (it bounds
     the viewer's choices, it is not a filter to announce); an empty lock (it
     enforces nothing); an entry its author set `showBanner: false` on. The
-    operator travels with the value so "not RJ" is never shown as "RJ". The
+    operator travels with the value so "not RJ" is never shown as "RJ", and
+    both are served in the canonical form the chart engine enforces
+    (`normalize_filter_operator` / `normalize_filter_value`): an M2M claim
+    stored as `in "SP"` is enforced as `in ["SP"]` and must be stated so, and
+    `ne` / `<>` are the engine's `neq`. A relative-date lock carries its preset
+    (the engine resolves it per request; a frozen value would be stale). The
     data merge is unaffected — the server applies the link's filters itself
     from DashboardPublicLink.filters_config.
     """
@@ -494,9 +501,14 @@ def link_filters_a_viewer_may_see(
     for entry in locked:
         if not link_entry_has_value(entry) or entry.get("showBanner") is False:
             continue
-        item = {"field": entry.get("field"), "label": entry.get("label"), "value": entry.get("value"),
-                "operator": entry.get("operator") or "in"}
+        raw_value = entry.get("value")
+        raw_op = entry.get("operator") or ("in" if isinstance(raw_value, (list, tuple)) else "eq")
+        operator = normalize_filter_operator(raw_op)
+        item = {"field": entry.get("field"), "label": entry.get("label"),
+                "value": normalize_filter_value(operator, raw_value), "operator": operator}
         if entry.get("semanticField"):
             item["semanticField"] = entry["semanticField"]
+        if entry.get("datePreset"):
+            item["datePreset"] = entry["datePreset"]
         out.append(item)
     return out
