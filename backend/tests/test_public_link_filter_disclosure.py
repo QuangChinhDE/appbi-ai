@@ -10,7 +10,9 @@ locked link was told nothing: the numbers were filtered with no indication.
 
 Now the viewer is shown exactly the locked entries that enforce a value
 (read-only, so the page can say "filtered by …"), and nothing about a hidden
-entry, a 'limit' scope entry, or an empty lock.
+entry, a 'limit' scope entry, an empty lock, or an entry its author set
+`showBanner: false` on. The operator is served with the value: a link that
+EXCLUDES RJ must never be announced as "filtered by RJ".
 """
 from __future__ import annotations
 
@@ -25,11 +27,26 @@ HIDDEN = {"field": "tenant_id", "operator": "in", "value": ["acme-42"], "hidden"
 HIDDEN_KILL = {"field": "segment", "hidden": True}
 EMPTY_LOCK = {"field": "region", "operator": "in", "value": []}
 SCOPE = {"field": "store", "operator": "in", "value": ["RC01", "RC02"], "limit": True}
+EXCLUDES = {"field": "seller_state", "label": "Seller state", "operator": "not_in", "value": ["SP"], "publicMode": "locked"}
+QUIET = {"field": "channel", "label": "Channel", "operator": "in", "value": ["Online"], "showBanner": False}
 
 
 def test_only_locked_value_entries_are_shown_and_only_their_display_fields():
     shown = link_filters_a_viewer_may_see([LOCKED, HIDDEN, HIDDEN_KILL, EMPTY_LOCK, SCOPE])
-    assert shown == [{"field": "customer_state", "label": "Customer state", "value": ["RJ"], "semanticField": "t3.customer_state"}]
+    assert shown == [{"field": "customer_state", "label": "Customer state", "value": ["RJ"], "operator": "in",
+                      "semanticField": "t3.customer_state"}]
+
+
+def test_an_exclusion_is_served_as_an_exclusion():
+    # Without the operator the page can only say "Seller state: SP" — the
+    # opposite of what the link enforces.
+    assert link_filters_a_viewer_may_see([EXCLUDES]) == [
+        {"field": "seller_state", "label": "Seller state", "value": ["SP"], "operator": "not_in"}]
+
+
+def test_an_entry_the_author_keeps_off_the_banner_is_not_served():
+    assert link_filters_a_viewer_may_see([QUIET, LOCKED])[0]["field"] == "customer_state"
+    assert "Online" not in json.dumps(link_filters_a_viewer_may_see([QUIET]))
 
 
 def test_a_hidden_field_or_value_never_appears_in_what_is_served():

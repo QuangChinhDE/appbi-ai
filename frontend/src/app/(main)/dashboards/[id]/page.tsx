@@ -90,6 +90,7 @@ import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
 import { ArrangeBar } from '@/components/dashboards/ArrangeBar';
 import { arrangeTiles, closeVacatedBand, nudgeTiles, placeBeside, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
+import { pageFilterFacts } from '@/lib/public-page-filters';
 import { settleStoredLayout } from '@/lib/grid-settle';
 import {
   SLICER_CONTROL_SIZE,
@@ -3382,18 +3383,21 @@ function DashboardDetailPageInner() {
   // charts as images, paginated legibly, with an applied-filters header.
   // NOTE: must stay ABOVE the early returns below — hooks can't run
   // conditionally (React #310 if placed after `if (isLoadingDashboard) return`).
-  const summarizeAppliedFilters = useCallback((): string => {
-    const active = (appliedGlobalFiltersLegacy || []).filter((f: any) => {
-      const v = f?.value;
-      return Array.isArray(v) ? v.length > 0 : (v != null && v !== '');
-    });
-    return active.map((f: any) => {
-      const v = f.value;
-      const val = Array.isArray(v) ? v.slice(0, 5).join(', ') + (v.length > 5 ? ` +${v.length - 5}` : '') : String(v);
-      const label = f.label || f.semanticField || f.field || 'Filter';
-      return `${label}: ${val}`;
-    }).join('  ·  ');
-  }, [appliedGlobalFiltersLegacy]);
+  // One page's header: the all-pages filters plus THAT page's own filters,
+  // stated by the rule the public banner uses (an exclusion reads "not RJ", a
+  // range "a – b", a preset by its name).
+  const summarizeAppliedFilters = useCallback((page?: { filters?: unknown }): string => pageFilterFacts({
+    applied: [
+      ...(appliedGlobalFiltersLegacy || []),
+      ...(Array.isArray(page?.filters) ? page!.filters as BaseFilter[] : []),
+    ],
+    pageHidden: [],
+    locked: [],
+  }).map((f) => {
+    const value = f.preset ? t(`dashboards.filterContext.preset.${f.preset}`)
+      : f.negated ? t('dashboards.filterContext.excluding', { value: f.value }) : f.value;
+    return `${f.label}: ${value}`;
+  }).join('  ·  '), [appliedGlobalFiltersLegacy, t]);
 
   const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
     if (!dashboard) return;
@@ -3406,7 +3410,6 @@ function DashboardDetailPageInner() {
     try {
       const { exportDashboardPdf } = await import('@/lib/export-pdf');
       const safeName = safePdfFilename(dashboard.name, 'dashboard');
-      const filtersSummary = summarizeAppliedFilters();
       const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
       const result = await exportDashboardPdf({
         labels: {
@@ -3424,7 +3427,7 @@ function DashboardDetailPageInner() {
         onProgress: setExportProgress,
         pages: chosen.map((p) => ({
           name: p.name,
-          filtersSummary,
+          filtersSummary: summarizeAppliedFilters(p),
           getRoot: async () => {
             setCurrentPageId(p.id);
             // Let the switched-to page's tiles mount + fire their own fetches
@@ -3459,7 +3462,7 @@ function DashboardDetailPageInner() {
       setExportRenderMode(false);
       setExportProgress(null);
     }
-  }, [dashboard, dashboardPages, activePageId, summarizeAppliedFilters]);
+  }, [dashboard, dashboardPages, activePageId, summarizeAppliedFilters, t]);
 
   if (isLoadingDashboard) {
     return (

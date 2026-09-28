@@ -122,6 +122,8 @@ export interface PageFilterFact {
   value: string;
   /** A relative-date preset (resolved on the server), shown as its name. */
   preset?: DatePreset;
+  /** An exclusion ("not RJ"): shown as such, never as the value alone. */
+  negated?: boolean;
   /** Enforced by the link or the report: the reader cannot change it. */
   locked: boolean;
 }
@@ -131,6 +133,8 @@ export interface LockedFilterEntry {
   label?: string | null;
   value: unknown;
   semanticField?: string | null;
+  operator?: string | null;
+  datePreset?: DatePreset | null;
 }
 
 function formatValue(value: unknown): string {
@@ -170,25 +174,29 @@ export function pageFilterFacts(input: {
   withoutControl?: ReadonlySet<string>;
 }): PageFilterFact[] {
   const out = new Map<string, PageFilterFact>();
-  for (const entry of input.locked) {
-    const f = { field: entry.field, semanticField: entry.semanticField ?? undefined, label: entry.label ?? undefined, operator: 'in', value: entry.value } as unknown as BaseFilter;
-    const value = formatValue(entry.value);
-    if (!value) continue;
+  const fact = (f: BaseFilter, locked: boolean): PageFilterFact | null => {
     const key = getFilterKey(f);
-    if (!out.has(key)) out.set(key, { key, label: getFilterDisplayLabel(f), value, locked: true });
-  }
-  const add = (f: BaseFilter) => {
-    const key = getFilterKey(f);
-    if (out.has(key)) return;
-    if (hasPreset(f)) {
-      out.set(key, { key, label: getFilterDisplayLabel(f), value: '', preset: f.datePreset, locked: false });
-      return;
-    }
-    if (!isFilterValueActive(f)) return;
+    const label = getFilterDisplayLabel(f);
+    if (hasPreset(f)) return { key, label, value: '', preset: f.datePreset, locked };
+    if (!isFilterValueActive(f)) return null;
     const value = f.operator === 'between' && Array.isArray(f.value)
       ? f.value.map((v) => (v === null || v === undefined ? '…' : String(v))).join(' – ')
       : formatValue(f.value);
-    out.set(key, { key, label: getFilterDisplayLabel(f), value, locked: false });
+    if (!value) return null;
+    return { key, label, value, locked, ...(f.operator === 'not_in' || f.operator === 'neq' ? { negated: true } : {}) };
+  };
+  for (const entry of input.locked) {
+    const f = {
+      field: entry.field, semanticField: entry.semanticField ?? undefined, label: entry.label ?? undefined,
+      operator: entry.operator || 'in', value: entry.value, ...(entry.datePreset ? { datePreset: entry.datePreset } : {}),
+    } as unknown as BaseFilter;
+    const made = fact(f, true);
+    if (made && !out.has(made.key)) out.set(made.key, made);
+  }
+  const add = (f: BaseFilter) => {
+    if (out.has(getFilterKey(f))) return;
+    const made = fact(f, false);
+    if (made) out.set(made.key, made);
   };
   for (const f of input.pageHidden) add(f);
   for (const f of input.applied) {

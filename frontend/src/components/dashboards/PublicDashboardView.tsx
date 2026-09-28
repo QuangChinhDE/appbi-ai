@@ -612,14 +612,14 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // the data scope. `hidden` entries do not appear here by design —
   // see docs/filter-semantics.md §2.2/§9.
   const lockedBannerEntries = useMemo(() => {
-    const result: { field: string; label?: string; value: any }[] = [];
+    const result: { field: string; label?: string; value: any; operator?: string; datePreset?: any }[] = [];
     const collect = (entries: any[]) => {
       for (const e of entries || []) {
         if (!e || typeof e !== 'object') continue;
         const mode = e.publicMode ?? 'visible';
         if (mode !== 'locked') continue;
         if (e.showBanner === false) continue;
-        result.push({ field: e.field, label: e.label, value: e.value });
+        result.push({ field: e.field, label: e.label, value: e.value, operator: e.operator, datePreset: e.datePreset });
       }
     };
     if (dashboard) {
@@ -632,7 +632,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       // so the reader is told the report is filtered. Hidden (🚫) link filters
       // are never served.
       for (const e of ((dashboard as any).public_link_locked_filters || []) as any[]) {
-        if (e && typeof e === 'object' && e.field) result.push({ field: e.field, label: e.label ?? undefined, value: e.value });
+        if (e && typeof e === 'object' && e.field) result.push({ field: e.field, label: e.label ?? undefined, value: e.value, operator: e.operator });
       }
     }
     return result;
@@ -1103,15 +1103,20 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     setAuthError(null);
   }, []);
 
-  // Phase-B22 — human-readable summary of the slicers/filters the viewer has
-  // applied, baked into each PDF page header so an exported report says which
-  // slice of data it represents.
-  const summarizeViewerFilters = useCallback((): string => pageFilterFacts({
-    applied: appliedViewerFilters,
-    pageHidden: pageHiddenFilters,
+  // Phase-B22 — human-readable summary of the slicers/filters that shape a
+  // page, baked into THAT page's PDF header so an exported report says which
+  // slice of data each page represents. The export passes the page's own
+  // context (the one it fetched that page's data with); a page's filters are
+  // not the active page's.
+  const summarizeViewerFilters = useCallback((context?: { applied: BaseFilter[]; pageHidden: BaseFilter[] }): string => pageFilterFacts({
+    applied: context?.applied ?? appliedViewerFilters,
+    pageHidden: context?.pageHidden ?? pageHiddenFilters,
     locked: lockedBannerEntries,
-  }).map((f) => `${f.locked ? '🔒 ' : ''}${f.label}: ${f.preset ? t(`dashboards.filterContext.preset.${f.preset}`) : f.value}`)
-    .join(' · '), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, t]);
+  }).map((f) => {
+    const value = f.preset ? t(`dashboards.filterContext.preset.${f.preset}`)
+      : f.negated ? t('dashboards.filterContext.excluding', { value: f.value }) : f.value;
+    return `${f.locked ? '🔒 ' : ''}${f.label}: ${value}`;
+  }).join(' · '), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, t]);
 
   /**
    * Server-side export: hand the request to the render worker and poll.
@@ -1260,7 +1265,19 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     try {
       const safeName = safePdfFilename(dashboard.public_link_name || dashboard.name, 'bao-cao');
       const storedSession = getPublicSession(token) ?? undefined;
-      const filtersSummary = summarizeViewerFilters();
+      // Each page's header states the filters that page's data was fetched
+      // with — the same merge ensurePageDataLoaded uses.
+      const filtersSummaryFor = (pageId: string) => {
+        const { controlSeed, hiddenFilters } = resolvePublicPageFilterContext(
+          dashboard as unknown as Record<string, unknown>,
+          dashboardPages,
+          pageId,
+        );
+        return summarizeViewerFilters({
+          applied: mergeSeedWithViewerSelections(controlSeed, frozenViewerFilters),
+          pageHidden: hiddenFilters,
+        });
+      };
 
       // Fetch every chart of `pageId` with THAT page's filter context, retrying
       // the ones that fail; whatever is still broken is recorded as a warning.
@@ -1315,7 +1332,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
       const pageSources = (chosen.length ? chosen : [{ id: activePageId, name: '' }]).map((p) => ({
         name: p.name,
-        filtersSummary,
+        filtersSummary: filtersSummaryFor(p.id),
         getRoot: async () => {
           setCurrentPageId(p.id);
           // Keep the on-screen state coherent with the page being captured (the
@@ -2290,7 +2307,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                           >
                             {fact.locked && <span className="opacity-70" aria-hidden>🔒</span>}
                             <span className="font-medium">{fact.label}:</span>
-                            <span>{fact.preset ? t(`dashboards.filterContext.preset.${fact.preset}`) : fact.value}</span>
+                            <span>{fact.preset ? t(`dashboards.filterContext.preset.${fact.preset}`) : fact.negated ? t('dashboards.filterContext.excluding', { value: fact.value }) : fact.value}</span>
                           </span>
                         ))}
                       </>

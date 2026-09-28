@@ -545,9 +545,25 @@ check('a reader can always tell what filters the page: locks, page filters and c
   assert(by.channel?.value === 'Online' && by.order_date?.preset === 'this_month', 'a filter the page carries is not stated');
   assert(!by.customer_state, 'a slicer whose control is on the page is repeated in the header');
   assert(!by.category, 'an empty filter is announced as if it filtered');
+  // The operator is part of the fact: "not SP" is never stated as "SP".
+  const ops = Object.fromEntries(ppf.pageFilterFacts({
+    applied: [f('s-amt', 'amount', [10, 50], { type: 'number', operator: 'between' })],
+    pageHidden: [],
+    locked: [{ field: 'seller_state', value: ['SP'], operator: 'not_in' }, { field: 'order_date', value: null, datePreset: 'last_30_days' }],
+  }).map((x) => [x.key, x]));
+  assert(ops.seller_state?.negated === true && ops.seller_state.value === 'SP', `a locked exclusion is stated as an inclusion: ${JSON.stringify(ops)}`);
+  assert(ops.amount?.value === '10 – 50', 'a range is not stated as a range');
+  assert(ops.order_date?.preset === 'last_30_days' && ops.order_date.locked, 'a locked relative date is dropped');
   const pv = source('components/dashboards/PublicDashboardView.tsx');
   assert(/public_link_locked_filters/.test(pv) && /filterContextFacts\.map/.test(pv), "the public header does not state the page's filters");
-  assert(/summarizeViewerFilters = useCallback\(\(\): string => pageFilterFacts\(/.test(pv), 'the PDF header lists filters by name without their value');
+  assert(/summarizeViewerFilters = useCallback\([^)]*\): string => pageFilterFacts\(/.test(pv), 'the PDF header lists filters by name without their value');
+  assert((pv.match(/filterContext\.excluding/g) || []).length >= 2, 'the banner or the PDF drops the exclusion');
+  assert(/operator: e\.operator, datePreset: e\.datePreset/.test(pv), 'the served operator/preset is dropped before the banner');
+  // Each PDF page states its own filters, not the active page's.
+  assert(/filtersSummary: filtersSummaryFor\(p\.id\)/.test(pv), 'the public PDF prints the active page\'s filters on every page');
+  const builder = source('app/(main)/dashboards/[id]/page.tsx');
+  assert(/filtersSummary: summarizeAppliedFilters\(p\)/.test(builder) && /summarizeAppliedFilters = useCallback\([^)]*\): string => pageFilterFacts\(/.test(builder),
+    'the builder PDF header ignores page filters or the operator');
   assert(!/Đang lọc theo:|Xem chi tiết'|Bộ lọc nâng cao có sẵn/.test(pv), 'the public filter banner is hard-coded Vietnamese');
 });
 

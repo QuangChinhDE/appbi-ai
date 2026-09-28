@@ -24,7 +24,7 @@ from app.core.dependencies import ALGORITHM
 from app.core.logging import get_logger
 from app.models.models import Dashboard, DashboardChart, DashboardPublicLink
 from app.schemas import ChartDataResponse, DashboardResponse
-from app.services.dashboard_service import is_draft_only_item
+from app.services.dashboard_service import DRAFT_ROW_KEYS, is_draft_only_item, strip_draft_row_keys
 
 _PUBLIC_MEASURE_TYPES = frozenset({"count", "sum", "avg", "min", "max", "count_distinct", "percent_of_total", "formula"})
 from app.schemas.schemas import AiChatSessionSave
@@ -917,6 +917,27 @@ def _should_bump_access(last_accessed_at) -> bool:
     return (datetime.now(timezone.utc) - prev).total_seconds() >= _ACCESS_BUMP_WINDOW_SECONDS
 
 
+def _serve_published_only(dash: Dashboard) -> None:
+    """What a public token may see of a report: its PUBLISHED tiles.
+
+    A tile only in an editor's draft (draftOnly — an AI block, a control, a
+    chart added by hand) is not part of the shared report: no public path may
+    list it, fetch its data or hand it to the AI (recon, chat, explore,
+    briefing and distinct values all read `dash.dashboard_charts` from here).
+    A published tile an editor removed in their draft is still live, but the
+    draft-state keys (who removed it) are not the viewer's business.
+
+    set_committed_value shapes the served copy only — never a pending change
+    the session could flush as a delete or an update.
+    """
+    from sqlalchemy.orm.attributes import set_committed_value as _set_committed
+    rows = [dc for dc in (dash.dashboard_charts or []) if not is_draft_only_item(dc)]
+    for dc in rows:
+        if isinstance(dc.layout, dict) and any(k in dc.layout for k in DRAFT_ROW_KEYS):
+            _set_committed(dc, "layout", strip_draft_row_keys(dc.layout))
+    _set_committed(dash, "dashboard_charts", rows)
+
+
 def _get_dashboard_by_token(
     token: str,
     db: Session,
@@ -938,7 +959,10 @@ def _get_dashboard_by_token(
         q = db.query(Dashboard)
         if load_dashboard:
             q = q.options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
-        return q.filter(*filters).first()
+        dash = q.filter(*filters).first()
+        if dash is not None and load_dashboard:
+            _serve_published_only(dash)
+        return dash
     # Embed-grant tokens (from the M2M /integrations/embed/resolve endpoint)
     # resolve to a managed link WITHOUT exposing that link's own token. Purely
     # additive: normal public/share tokens never start with the grant prefix, so

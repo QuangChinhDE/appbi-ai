@@ -75,6 +75,29 @@ def db(monkeypatch):
         yield session
 
 
+def test_public_paths_are_served_published_tiles_only_and_nothing_is_written(db):
+    """Every public path (chart data, AI chat, recon, explore, briefing,
+    distinct values) reads `dash.dashboard_charts` from _get_dashboard_by_token.
+    A tile only in an editor's draft must not be in it, a pending removal's
+    draft keys must not either — and shaping the served copy must never flush
+    as a delete or an update of the real rows."""
+    from app.api import public as public_api
+    db.add(DashboardChart(id=30, dashboard_id=1, chart_id=None, widget_type="text", widget_config={"text": "draft"},
+                          layout={"x": 0, "y": 9, "w": 12, "h": 3, "draftOnly": True, "draftOwner": A.id}))
+    row = db.get(DashboardChart, 10)
+    row.layout = {**row.layout, "draftRemoved": True, "draftRemovedBy": A.id}
+    db.commit()
+    dash = db.query(Dashboard).filter(Dashboard.id == 1).one()
+    public_api._serve_published_only(dash)
+    served = {dc.id: dc for dc in dash.dashboard_charts}
+    assert set(served) == {10, 20}, "a draft-only tile is served to a public viewer"
+    assert not any(k in served[10].layout for k in ("draftRemoved", "draftRemovedBy")), "draft state is served"
+    db.commit()
+    rows = _rows(db)
+    assert set(rows) == {10, 20, 30}, "serving a public copy deleted a real row"
+    assert rows[10].layout.get("draftRemovedBy") == A.id, "serving a public copy rewrote the author's draft"
+
+
 def _rows(db: Session) -> dict[int, DashboardChart]:
     db.expire_all()
     return {r.id: r for r in db.query(DashboardChart).filter(DashboardChart.dashboard_id == 1).all()}
