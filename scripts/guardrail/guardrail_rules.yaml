@@ -283,10 +283,11 @@ features:
     required_tests: [tsc, browser_verify]
 
   - id: filter_pane_slicers
-    label: "Filter pane / slicer cluster (FE)"
+    label: "Filter pane / slicer controls on the grid (FE)"
     files:
       - frontend/src/components/dashboards/FilterPane.tsx
-      - frontend/src/components/dashboards/SlicerCluster.tsx
+      # SlicerCluster.tsx was removed (20260929_0001): a report has no filter area;
+      # its slicers are controls on the grid (GridSlicerTile below).
       - frontend/src/components/dashboards/DashboardFilterBar.tsx
       - frontend/src/hooks/use-public-filter-distinct-values.ts
       # Slicer controls on the grid draw the same entries through the same bar.

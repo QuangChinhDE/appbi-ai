@@ -170,10 +170,16 @@ function ImageWidget({ config }: { config: any }) {
     );
   }
   // Outer tile handles border + radius. Image just fills the canvas.
+  // A decoration can carry a click target (a logo that opens its site) — only
+  // an http(s) URL, opened in a new tab without access to this page.
+  const link = typeof config.link === 'string' && /^https?:\/\//i.test(config.link) ? config.link : null;
+  const img = (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={url} alt={alt} className="h-full w-full" style={{ objectFit: fit }} />
+  );
   return (
     <div className="h-full w-full overflow-hidden">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={url} alt={alt} className="h-full w-full" style={{ objectFit: fit }} />
+      {link ? <a href={link} target="_blank" rel="noopener noreferrer" className="no-drag block h-full w-full">{img}</a> : img}
     </div>
   );
 }

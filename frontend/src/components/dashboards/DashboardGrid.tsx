@@ -122,6 +122,9 @@ interface DashboardGridProps {
   /** Draws a slicer control (widget_type 'slicer') bound to the page's filter
    *  state. The grid only places it; it never sees filter state itself. */
   renderSlicerControl?: (dashboardChart: DashboardChart) => React.ReactNode;
+  /** Bumped by the page when it refuses a gesture: the grid then re-reads the
+   *  stored layout instead of keeping the tile where it was dropped. */
+  layoutRevision?: number;
 }
 
 
@@ -159,6 +162,7 @@ function DashboardGridInner({
   onParamChange,
   onBindParameter,
   renderSlicerControl,
+  layoutRevision = 0,
 }: DashboardGridProps) {
   const { t } = useI18n();
   // Convert backend layout to react-grid-layout format.
@@ -221,6 +225,9 @@ function DashboardGridInner({
       // and never displaced by a neighbour. Prevents accidental nudges.
       static: Boolean(layout.locked),
       resizeHandles: RESIZE_HANDLES,
+      // Not read by the grid: a changed value makes it re-read this layout
+      // (react-grid-layout keeps its own copy until the prop differs).
+      rev: layoutRevision,
     };
   });
 
@@ -336,7 +343,11 @@ function DashboardGridInner({
       // exactly as stored. Auto-pack (compactType="vertical") was rejected because
       // its live reflow moved tiles the user hadn't touched.
       compactType={null}
-      preventCollision={true}
+      // Editing: a tile may be carried over others and dropped there — the page
+      // then opens room where it lands (lib/grid-arrange resolveDrop), so the
+      // stored layout never overlaps. Viewing: nothing moves at all.
+      allowOverlap={!!onLayoutChange && !isNarrow}
+      preventCollision={!onLayoutChange || isNarrow}
     >
       {dashboardCharts.map((dc) => {
         const isWidget = dc.widget_type && dc.widget_type !== 'chart';

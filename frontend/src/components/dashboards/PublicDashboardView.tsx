@@ -18,7 +18,7 @@ import {
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
 import { GridSlicerTile, FilterApplyBar, type SlicerControlBinding } from '@/components/dashboards/GridSlicerTile';
-import { isSlicerControl, mergeBarChange, placedSlicerIds, replaceSlicerById } from '@/lib/slicer-placement';
+import { isSlicerControl, placedSlicerIds, replaceSlicerById } from '@/lib/slicer-placement';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
@@ -33,7 +33,6 @@ import {
 import { parsePrintRenderOptions, type PrintRenderOptions } from '@/lib/print-render';
 import { toast } from '@/lib/toast';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
-import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -60,7 +59,7 @@ import {
   REPORT_STACK_BREAKPOINT,
 } from '@/lib/dashboard-pages';
 import { resolveStyleTokens } from '@/lib/dashboard-theme-tokens';
-import { applyScopeBound, dockLayoutClasses, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
+import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
 import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
@@ -1527,10 +1526,6 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     () => placedSlicerIds(visibleDashboardCharts),
     [visibleDashboardCharts],
   );
-  const barViewerFilters = useMemo(
-    () => draftViewerFilters.filter((f) => !placedViewerSlicerIds.has(String(f.id ?? ''))),
-    [draftViewerFilters, placedViewerSlicerIds],
-  );
   const placedViewerFilters = useMemo(
     () => draftViewerFilters.filter((f) => placedViewerSlicerIds.has(String(f.id ?? ''))),
     [draftViewerFilters, placedViewerSlicerIds],
@@ -1562,28 +1557,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // read-only, already filter/permission-scoped). Admin toggle, default on.
   const dataExportEnabled = appearance.allow_data_export;
   const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
-  const showFilterControls = viewerFiltersEnabled && availableFilterColumns.length > 0
-    // The bar is optional grouping: nothing to show once every slicer on this
-    // page has its control on the grid.
-    && (barViewerFilters.length > 0 || placedViewerFilters.length === 0);
   const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
-  // The saved dock, honoured on the public link exactly as in the builder.
-  //
-  // This used to be a boolean for 'left' only, duplicated from the builder's
-  // own branch — so widening the builder to six docks would have silently left
-  // the public report on two. Both now read `dockLayoutClasses`, and a rail is
-  // left OR right rather than a hard-coded side.
-  // Same resolution as the builder: author placement first, then the theme's
-  // composition default.
-  const slicerDock = String(
-    (dashboard as any)?.slicer_cluster_layout?.position
-    ?? resolveStyleTokens(((dashboard as any)?.theme_config ?? null) as any).filterDock,
-  );
-  const slicerClusterIsRail = slicerDock === 'left' || slicerDock === 'right';
-  const slicerDockClasses = dockLayoutClasses(slicerDock);
-  // 'hidden' keeps the filter VALUES (they are merged server-side) and drops
-  // only the UI — the case a locked public link is built for.
-  const slicerDockHidden = slicerDock === 'hidden';
 
   const handleApplyFilters = useCallback(() => {
     setIsApplyingFilters(true);
@@ -1710,82 +1684,6 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   });
   const activeBreakpoint = reportBreakpointFor(gridWidth);
 
-  // Phase-G — single SlicerCluster node reused in both placements:
-  // stacked above the grid (top) or as a left column (left). Defined
-  // here so it can sit beside the grid section in left mode.
-  // Type-to-search for a public slicer, shared by the bar and the grid's
-  // controls (public endpoint only — no authed call on this surface).
-  const fetchPublicServerDistinct = async (column: ColumnInfo, search: string): Promise<string[]> => {
-    if (!column.datasetId || !column.semanticField) return [];
-    try {
-      // Cascade the search results by the viewer's other active filters
-      // + page-scope (same context the prefetch uses); self-strips this
-      // field so the dropdown never pins its own value.
-      const filterContext = getDistinctValueFilterContext(
-        [...appliedViewerFilters, ...pageHiddenFilters], column,
-      );
-      const res = await publicDashboardApi.getFilterDistinctValues(
-        token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search,
-      );
-      return res.values ?? [];
-    } catch {
-      return [];
-    }
-  };
-
-  // What a slicer control on this page's grid is bound to. Only the viewer's
-  // own seed can be shown: a field the link locks or hides was stripped by the
-  // server, and a slicer its scope keeps off this page is not in the seed — both
-  // resolve to "missing", and a viewer sees nothing there.
-  const publicSlicerBinding: SlicerControlBinding = {
-    slicers: draftViewerFilters,
-    siblingFilters: draftViewerFilters,
-    visibleHere: () => true,
-    filtersHere: () => true,
-    editing: false,
-    readOnly: !viewerFiltersEnabled,
-    onChange: (next) => setDraftViewerFilters((prev) => replaceSlicerById(prev, next)),
-    columns: availableFilterColumns,
-    columnChartCount: availableFilterChartCount,
-    distinctValues: resolvedDistinctValues,
-    distinctStatus: resolvedDistinctStatus,
-    fetchServerDistinct: fetchPublicServerDistinct,
-  };
-
-  const slicerClusterNode = showFilterControls ? (
-    <div className="[&>div]:mb-0">
-      <SlicerCluster
-        items={[
-          ...barViewerFilters,
-          ...(((dashboard as any)?.slicers_config || []).filter(
-            (c: any) => c && typeof c === 'object' && c.type === 'image',
-          )),
-        ]}
-        onChildrenChange={(next) => {
-          setDraftViewerFilters(mergeBarChange(
-            (next as any[]).filter(
-              (c) => !(c && typeof c === 'object' && (c as any).type === 'image'),
-            ) as BaseFilter[],
-            placedViewerFilters,
-          ));
-        }}
-        layout={(dashboard as any)?.slicer_cluster_layout || null}
-        columns={availableFilterColumns}
-        columnChartCount={availableFilterChartCount}
-        distinctValues={resolvedDistinctValues}
-        distinctStatus={resolvedDistinctStatus}
-        // Type-to-search over the FULL cached distinct set for high-cardinality
-        // slicers on a public/embed link. Hits the BE result cache via the
-        // public endpoint (no per-keystroke BigQuery, no authed call).
-        fetchServerDistinct={fetchPublicServerDistinct}
-        hasPendingChanges={hasPendingFilterChanges}
-        onApply={handleApplyFilters}
-        onReset={handleResetFilters}
-        isApplying={isApplyingFilters}
-        lockSlots
-      />
-    </div>
-  ) : null;
 
   /**
    * Does this surface offer PDF export?
@@ -2098,6 +1996,45 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     </div>
   ) : null;
 
+  // Type-to-search for a public slicer control (public endpoint only — no
+  // authed call on this surface).
+  const fetchPublicServerDistinct = async (column: ColumnInfo, search: string): Promise<string[]> => {
+    if (!column.datasetId || !column.semanticField) return [];
+    try {
+      // Cascade the search results by the viewer's other active filters
+      // + page-scope (same context the prefetch uses); self-strips this
+      // field so the dropdown never pins its own value.
+      const filterContext = getDistinctValueFilterContext(
+        [...appliedViewerFilters, ...pageHiddenFilters], column,
+      );
+      const res = await publicDashboardApi.getFilterDistinctValues(
+        token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search,
+      );
+      return res.values ?? [];
+    } catch {
+      return [];
+    }
+  };
+
+  // What a slicer control on this page's grid is bound to. Only the viewer's
+  // own seed can be shown: a field the link locks or hides was stripped by the
+  // server, and a slicer its scope keeps off this page is not in the seed — both
+  // resolve to "missing", and a viewer sees nothing there.
+  const publicSlicerBinding: SlicerControlBinding = {
+    slicers: draftViewerFilters,
+    siblingFilters: draftViewerFilters,
+    visibleHere: () => true,
+    filtersHere: () => true,
+    editing: false,
+    readOnly: !viewerFiltersEnabled,
+    onChange: (next) => setDraftViewerFilters((prev) => replaceSlicerById(prev, next)),
+    columns: availableFilterColumns,
+    columnChartCount: availableFilterChartCount,
+    distinctValues: resolvedDistinctValues,
+    distinctStatus: resolvedDistinctStatus,
+    fetchServerDistinct: fetchPublicServerDistinct,
+  };
+
   /**
    * One tile, rendered identically wherever it lands: inside the interactive
    * react-grid-layout canvas, or inside the static print flow below. Extracted
@@ -2207,7 +2144,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     <ExportModeContext.Provider value={exportRenderMode || (printMode ? printRenderMode : false)}>
       <section
         ref={gridSectionRef}
-        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterIsRail ? 'min-w-0 flex-1' : 'w-full'}`}
+        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} w-full`}
       >
         {visibleDashboardCharts.length === 0 ? (
           <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
@@ -2318,48 +2255,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       <main ref={publicContentRef} className={isEmbed
         ? 'w-full min-w-0 flex flex-col gap-1 px-3 pt-3 pb-0 sm:px-4'
         : 'flex-1 min-w-0 overflow-hidden flex flex-col gap-1 px-3 pt-4 pb-0 sm:px-4 lg:px-6 lg:pt-5'}>
-        {slicerClusterIsRail ? (
-          /* ── LEFT app-shell ──────────────────────────────────────────────
-             When the author placed the slicer cluster on the LEFT, the report
-             becomes a 2-column shell: the brand mark + title sit ABOVE the
-             filter rail in the left column, while the page tabs, Export, and
-             the chart grid pull to the TOP of the right column. This removes
-             the full-width header band so nothing floats with dead space above
-             the rail (user ask). The rail is sticky so filters stay in view. */
-          <div className="mx-auto flex min-h-0 w-full flex-1 flex-col gap-3 lg:flex-row lg:items-stretch">
-            {/* Left column = brand+title (top, level with the page tabs) then
-                the filter rail. gap-4 = 2× the previous title↔filter spacing.
-                This column is a fixed flex sibling so it never scrolls away. */}
-            <aside className="flex w-full flex-shrink-0 flex-col gap-4 lg:w-[280px]">
-              <div className="flex items-start gap-2.5 px-1">
-                {brandMarkEl}
-                {titleEl}
-              </div>
-              {showFilterControls && (
-                <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm">
-                  {slicerClusterNode}
-                </div>
-              )}
-            </aside>
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
-                {pageTabsEl}
-                <div className="ml-auto shrink-0">{exportButtonEl}</div>
-              </div>
-              {(filterBannerEl || filterLiveEl) && (
-                <div className="shrink-0 space-y-2">
-                  {filterBannerEl}
-                  {filterLiveEl}
-                </div>
-              )}
-              {/* Only the charts scroll. */}
-              <div className={isEmbed ? 'pb-4' : 'min-h-0 flex-1 overflow-y-auto pb-4'}>
-                {gridSectionEl}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <>
+        <>
         {/* Phase-B7 — FLUSH report header (was a bordered/elevated card on a
             gray page = "web widget" look). A report masthead is flat with just
             a hairline divider; tiles are the only cards. Removes one nesting
@@ -2446,12 +2342,10 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
             </nav>
           )}
 
-          {/* In LEFT mode the slicer cluster moves out to the side rail, so the
-              header filter block must NOT render just because showFilterControls
-              is true — otherwise it draws an empty divider + padding. Only render
-              it for the top-mode slicers, live state, or the locked/override
-              banners. */}
-          {((showFilterControls && !slicerClusterIsRail && !slicerDockHidden) || showLiveState || lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+          {/* The header carries only state (loading, cross-filter) and the
+              locked/override banners. Filter CONTROLS are elements of the report
+              grid; there is no filter area here. */}
+          {(showLiveState || lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
             <div className="mt-2 space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
 
               {/* Phase-F THẬT (PBI-parity rework) — banner for locked
@@ -2577,11 +2471,6 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                 </div>
               )}
 
-              {/* Top mode renders the slicer cluster here (stacked
-                  above charts). Left mode renders it BESIDE the grid in
-                  the flex-row wrapper below instead. */}
-              {showFilterControls && !slicerClusterIsRail && !slicerDockHidden && slicerClusterNode}
-
               {showLiveState && (
                 <div className="flex flex-col gap-3">
                   {pendingPageId && (
@@ -2667,19 +2556,14 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
 
         {/* Only the chart region scrolls; the header above stays pinned. */}
         <div className={isEmbed ? 'pb-4' : 'min-h-0 flex-1 overflow-y-auto pb-4'}>
-        <div className={`mx-auto w-full ${slicerClusterIsRail ? `flex flex-col gap-3 lg:items-start ${slicerDock === 'right' ? 'lg:flex-row-reverse' : 'lg:flex-row'}` : slicerDockClasses.wrapper}`}>
-        {slicerClusterIsRail && showFilterControls && !slicerDockHidden && (
-          <div className="w-full flex-shrink-0 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm lg:sticky lg:top-3 lg:w-[280px]">
-            {slicerClusterNode}
-          </div>
-        )}
+        <div className="mx-auto w-full">
         {/* Phase-B7 — FLUSH canvas (no card frame): tiles sit directly on the
             page background like a PBI report canvas, not inside a second
             bordered panel. */}
         <ExportModeContext.Provider value={exportRenderMode}>
         <section
           ref={gridSectionRef}
-          className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterIsRail ? 'min-w-0 flex-1' : 'w-full'}`}
+          className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} w-full`}
         >
           {visibleDashboardCharts.length === 0 ? (
             <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
@@ -2784,8 +2668,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           onReset={handleResetFilters}
         />
         </div>{/* /scroll region */}
-          </>
-        )}
+        </>
       </main>
 
       {/* Belt and braces: with export hidden on this surface the dialog must not

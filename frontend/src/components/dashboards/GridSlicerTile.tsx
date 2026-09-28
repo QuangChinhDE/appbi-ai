@@ -60,7 +60,32 @@ export interface SlicerControlBinding {
 /** Room the list treatment's header, search and "select all" row take. */
 const LIST_CHROME_PX = 112;
 
-export function GridSlicerTile({ tile, binding }: { tile: DashboardChart; binding: SlicerControlBinding }) {
+/**
+ * What every slicer control on a report reads its filter state from. A surface
+ * (the builder, the public link) wraps its grid in `SlicerControlScope` once;
+ * each control finds the binding here instead of every grid threading it
+ * through. The scope is state and behaviour only — it draws nothing, so there
+ * is no filter area outside the grid.
+ */
+const SlicerControlContext = React.createContext<SlicerControlBinding | null>(null);
+
+export function SlicerControlScope({ children, ...binding }: SlicerControlBinding & { children?: React.ReactNode }) {
+  return <SlicerControlContext.Provider value={binding}>{children}</SlicerControlContext.Provider>;
+}
+
+export function GridSlicerTile({ tile, binding: explicit }: { tile: DashboardChart; binding?: SlicerControlBinding }) {
+  const { t } = useI18n();
+  const scoped = React.useContext(SlicerControlContext);
+  const binding = explicit ?? scoped;
+  if (!binding) {
+    // A surface that owns no filter state (an import preview): show only that
+    // a control sits here, never a value.
+    return <div className="flex h-full items-center rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 text-[12px] text-text-tertiary" data-slicer-control="placeholder">{t('dashboards.addSlicer.menu')}</div>;
+  }
+  return <BoundSlicerTile tile={tile} binding={binding} />;
+}
+
+function BoundSlicerTile({ tile, binding }: { tile: DashboardChart; binding: SlicerControlBinding }) {
   const { t } = useI18n();
   const slicerId = slicerIdOfControl(tile);
   const treatment = treatmentOfControl(tile);

@@ -22,7 +22,6 @@ import {
 import { dashboardApi } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
-import { resolveStyleTokens } from '@/lib/dashboard-theme-tokens';
 import { AiDesignPanel } from '@/components/dashboards/ai-design/AiDesignPanel';
 import { planFromTemplate } from '@/lib/dashboard-presentation/templates';
 import { buildFieldMetaIndex } from '@/lib/dashboard-presentation/design-context';
@@ -55,13 +54,11 @@ import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import FilterMapModal from '@/components/dashboards/FilterMapModal';
 import { FilterPane } from '@/components/dashboards/FilterPane';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
-import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
 import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
 import type { BaseFilter, ColumnInfo, FilterType, Filter as TypedFilter } from '@/lib/filters';
 import {
   applyScopeBound,
   collectJoinKeySemanticFields,
-  dockLayoutClasses,
   fromBaseFilter,
   getColumnDisplayLabel,
   getDistinctValueFilterContext,
@@ -73,7 +70,6 @@ import {
   isSemanticDimensionFilterableForDashboard,
   resolveEffectiveFilterSet,
   toBaseFilter,
-  resolveFilterDock,
 } from '@/lib/filters';
 import { extractParamDefs, seedParamValues, paramsToFilters } from '@/lib/dashboard-params';
 import { fetchDatasetModel, fetchDatasetModelDistinctValues, SLICER_DISTINCT_PREFETCH_LIMIT, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
@@ -90,17 +86,17 @@ import {
   GRID_VERSION,
   mergeGridLayout,
 } from '@/lib/dashboard-pages';
-import { GridSlicerTile, FilterApplyBar, type SlicerControlBinding } from '@/components/dashboards/GridSlicerTile';
+import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components/dashboards/GridSlicerTile';
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
 import { ArrangeBar } from '@/components/dashboards/ArrangeBar';
-import { arrangeTiles, nudgeTiles, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
+import { arrangeTiles, closeVacatedBand, nudgeTiles, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
 import {
   SLICER_CONTROL_SIZE,
   SLICER_CONTROL_WIDGET,
-  mergeBarChange,
   nextFreeSlot,
   placedSlicerIds,
   replaceSlicerById,
+  isSlicerControl,
   slicerIdOfControl,
   type SlicerTreatment,
 } from '@/lib/slicer-placement';
@@ -437,18 +433,6 @@ function DashboardDetailPageInner() {
   // that positions the cluster beside the grid cannot disagree with the
   // cluster's own decision — the theme supplies the default composition, an
   // explicit author placement overrides it.
-  // Track the viewport so the dock can answer "is there room for a rail?".
-  // A rail on a phone takes the width the charts need, and squeezing every
-  // slicer into one horizontal row instead is not the answer either.
-  const [viewportWidth, setViewportWidth] = React.useState(
-    () => (typeof window === 'undefined' ? 1440 : window.innerWidth),
-  );
-  React.useEffect(() => {
-    const onResize = () => setViewportWidth(window.innerWidth);
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
-
   // What the page RENDERS: the draft, with an AI design under preview laid over
   // it. Staging always reads `draftSlicerClusterLayout`; only the view reads this.
   const viewSlicerClusterLayout = React.useMemo(
@@ -463,13 +447,6 @@ function DashboardDetailPageInner() {
       : dashboard?.theme_config),
     [dashboard?.theme_config, previewPresentation],
   );
-  const preferredFilterDock = React.useMemo(
-    () => viewSlicerClusterLayout?.position
-      ?? resolveStyleTokens((viewThemeConfig ?? null) as any).filterDock,
-    [viewSlicerClusterLayout?.position, viewThemeConfig],
-  );
-
-
   const dashboardDatasetIds = React.useMemo(
     () => Array.from(new Set(
       (dashboard?.dashboard_charts ?? [])
@@ -537,6 +514,11 @@ function DashboardDetailPageInner() {
      *  redo creates them again from `createdBlockSpecs` and records the new ids. */
     createdBlockIds?: number[];
     createdBlockSpecs?: { widgetType: string; widgetConfig: Record<string, unknown>; layout: Record<string, unknown> }[];
+    /** Elements this step REMOVED (a slicer control; next side only). Undo
+     *  creates them again from `removedBlockSpecs` and records the new ids; redo
+     *  removes those ids again. */
+    removedBlockIds?: number[];
+    removedBlockSpecs?: { widgetType: string; widgetConfig: Record<string, unknown>; layout: Record<string, unknown> }[];
   };
   type UndoEntry =
     | { kind: 'layout'; prev: Record<number, Record<string, any>>; next: Record<number, Record<string, any>> }
@@ -563,35 +545,13 @@ function DashboardDetailPageInner() {
   // both go through one path. It is an unsaved DRAFT edit: rendered at once
   // through the page memo (so a refetch cannot undo it), staged on Save draft,
   // published with the layout on Publish.
-  /**
-   * Apply a theme as a draft edit, and hand the filter dock back to it when the
-   * user picked a LAYOUT.
-   *
-   * `slicer_cluster_layout.position` outranks the theme's `filterDock` on
-   * purpose — an author who drags the filter rail somewhere must keep it. The
-   * trap is that `DEFAULT_LAYOUT` carries `position: 'top'` and every draft save
-   * writes the whole object, so a dashboard that has merely BEEN EDITED holds a
-   * stored 'top' that is indistinguishable from a deliberate choice. Measured on
-   * dash 67: the theme resolved `filterDock: left`, the draft held
-   * `position: 'top'`, and the rail never moved — every template's dock was
-   * silently dead on any dashboard with an edit history, which is all of them.
-   *
-   * Picking a layout template IS picking where the filters go, so applying one
-   * clears the stored position and lets the template drive. Dragging the cluster
-   * afterwards writes it back and that choice sticks until the next template.
-   */
-  const applyThemeConfig = async (theme: any, opts?: { releaseDock?: boolean }) => {
+  /** Apply a theme as a draft edit (the theme menu, AI Apply, an undo). */
+  const applyThemeConfig = async (theme: any) => {
     // A theme change is an unsaved edit: rendered now, saved with the draft,
     // published with the layout. (It used to PUT the live theme_config at once,
     // so picking a colour in the menu — or an AI "Save draft" — repainted the
     // PUBLISHED report while its layout was still the old one.)
     paintThemeDraft(theme);
-    // Picking a template releases a stored dock so the template drives it. The
-    // draft cluster layout is auto-staged; it is NOT marked applied here, or the
-    // stage would never run.
-    if (opts?.releaseDock && draftSlicerClusterLayout) {
-      setDraftSlicerClusterLayout({ ...draftSlicerClusterLayout, position: undefined, direction: undefined });
-    }
   };
   /** Render a theme as an unsaved edit. The page memo overlays it, so a refetch
    *  cannot wipe it; Save draft stages it, Discard drops it. */
@@ -665,6 +625,30 @@ function DashboardDetailPageInner() {
           }
           entry.next.createdBlockIds = ids;
         })();
+      }
+      const removedSpecs = entry.next.removedBlockSpecs ?? [];
+      if (dir === 'prev' && removedSpecs.length) {
+        // Undo of a removal puts the element back where it was (a draft-only
+        // row until the next Publish) and remembers its new id for redo.
+        void (async () => {
+          const ids: number[] = [];
+          for (const spec of removedSpecs) {
+            const before = new Set(((queryClient.getQueryData(['dashboards', dashboardId]) as any)?.dashboard_charts ?? []).map((d: any) => d.id));
+            try {
+              const updated: any = await dashboardApi.addWidget(dashboardId, spec.widgetType, { ...spec.layout, draftOnly: true } as any, spec.widgetConfig as any);
+              if (updated) queryClient.setQueryData(['dashboards', dashboardId], updated);
+              const fresh = (updated?.dashboard_charts ?? []).find((d: any) => !before.has(d.id) && d.widget_type === spec.widgetType);
+              if (fresh) ids.push(fresh.id);
+            } catch (err) {
+              console.error('Undo could not put a removed element back:', err);
+            }
+          }
+          entry.next.removedBlockIds = ids;
+        })();
+      }
+      if (dir === 'next' && (entry.next.removedBlockIds ?? []).length && removedSpecs.length) {
+        void Promise.all((entry.next.removedBlockIds ?? []).map((id) => dashboardApi.removeChart(dashboardId, id).catch(() => null)))
+          .then(() => queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] }));
       }
       setLocalLayoutOverrides(state.layout);
       if (state.slicerCluster !== undefined) {
@@ -911,22 +895,6 @@ function DashboardDetailPageInner() {
   );
   const [draftPageSlicers, setDraftPageSlicers] = useState<any[]>([]);
 
-  // The template states a preference; the content and the viewport decide
-  // whether it holds. See `resolveFilterDock` for the cases and why each one
-  // exists.
-  const filterDockDecision = React.useMemo(
-    () => resolveFilterDock({
-      preferred: preferredFilterDock,
-      // Only what the BAR shows: a slicer placed on the grid is not in it.
-      slicerCount: [...draftGlobalSlicers, ...draftPageSlicers]
-        .filter((s: any) => !placedSlicerIdsOnPage.has(String(s?.id ?? ''))).length,
-      viewportWidth,
-      canEdit: canEditResource,
-    }),
-    [preferredFilterDock, draftGlobalSlicers, draftPageSlicers, placedSlicerIdsOnPage, viewportWidth, canEditResource],
-  );
-  const effectiveFilterDock = filterDockDecision.dock;
-
   // ── AI Design ─────────────────────────────────────────────────────────────
   // The panel and everything behind it live in `components/dashboards/ai-design`
   // and `lib/dashboard-presentation`. What stays here is orchestration: which
@@ -1085,7 +1053,8 @@ function DashboardDetailPageInner() {
     pageCount: dashboardPages.length,
     localLayoutOverrides,
     slicers: [...draftGlobalSlicers, ...draftPageSlicers],
-    slicerDock: effectiveFilterDock,
+    // Filters are grid elements now; a slicer's place is its control's tile.
+    slicerDock: 'grid',
     currentTheme: dashboard?.theme_config,
     slicerClusterLayout: viewSlicerClusterLayout,
     gridGapPx: getDashboardGridMargin(dashboard?.theme_config)[1],
@@ -1380,23 +1349,6 @@ function DashboardDetailPageInner() {
     );
   }, [combinedSlicerChildren, slicerDisplayOrder]);
 
-  // ── Slicer controls on the grid ─────────────────────────────────────
-  // The bar shows what is NOT placed on this page; placed slicers are drawn by
-  // their grid controls. The bar reports its whole list on every change and no
-  // longer sees the placed ones, so they are merged back before the change is
-  // split into global/page lists — otherwise an edit in the bar would delete
-  // every placed slicer.
-  const barSlicerChildren = React.useMemo(
-    () => orderedSlicerChildren.filter((s: any) => s?.type === 'image' || !placedSlicerIdsOnPage.has(String(s?.id ?? ''))),
-    [orderedSlicerChildren, placedSlicerIdsOnPage],
-  );
-  const placedSlicerChildren = React.useMemo(
-    () => orderedSlicerChildren.filter((s: any) => s?.type !== 'image' && placedSlicerIdsOnPage.has(String(s?.id ?? ''))),
-    [orderedSlicerChildren, placedSlicerIdsOnPage],
-  );
-  const handleBarSlicerChange = React.useCallback((next: any[]) => {
-    handleSlicerChildrenChange(mergeBarChange(next, placedSlicerChildren));
-  }, [handleSlicerChildrenChange, placedSlicerChildren]);
   // A value picked in a grid control: the same entry, the same staging.
   const handleControlSlicerChange = React.useCallback((next: BaseFilter) => {
     handleSlicerChildrenChange(replaceSlicerById(orderedSlicerChildren, next));
@@ -3008,41 +2960,57 @@ function DashboardDetailPageInner() {
     return merged;
   }, [hasSemanticFilterColumns, semanticDistinctValues, distinctValues]);
 
-  // Type-to-search over the FULL cached distinct set (high-cardinality
-  // slicers) for the grid's slicer controls — the SAME resolved-set path as the
-  // filter bar's inline search below (the contract checks both). Hits the
-  // BE result cache (no per-keystroke BigQuery). Results cascade by the OTHER
-  // active slicers/filters — the same context the prefetch uses — so a searched
-  // value is narrowed consistently (getDistinctValueFilterContext self-strips).
-  const fetchSlicerServerDistinct = useCallback(async (column: ColumnInfo, search: string): Promise<string[]> => {
-    if (!column.datasetId || !column.semanticField) return [];
-    try {
-      const legacyDraftAll = draftGlobalFilters
-        .map((f) => toBaseFilter(f, { allowInactive: true }))
-        .filter((b): b is BaseFilter => b !== null);
-      const ctx = resolveEffectiveFilterSet({
-        globalFilters: legacyDraftAll,
-        pageFilters: draftPageFilters,
-        globalSlicers: draftGlobalSlicers as BaseFilter[],
-        pageSlicers: draftPageSlicers as BaseFilter[],
-        activePageId,
-        slicerFiltersPage,
-      });
-      const filterContext = getDistinctValueFilterContext(ctx, column);
-      const res = await fetchDatasetModelDistinctValues(
-        column.datasetId, column.semanticField, 500, filterContext, search,
-      );
-      return res.values ?? [];
-    } catch {
-      return [];
-    }
-  }, [draftGlobalFilters, draftPageFilters, draftGlobalSlicers, draftPageSlicers, activePageId, slicerFiltersPage]);
-
   // ── Slicer controls: add, restyle, remove, delete ──────────────────────
+  // A report has no filter area of its own: every filter a viewer can change is
+  // drawn by a control ON the grid. These are the filters that can have one.
   const [isAddSlicerOpen, setIsAddSlicerOpen] = useState(false);
   const [isPlacingSlicer, setIsPlacingSlicer] = useState(false);
   const handleRemoveChartRef = React.useRef(handleRemoveChart);
   handleRemoveChartRef.current = handleRemoveChart;
+
+  // Filter-pane filters left visible to viewers are controls too: the public
+  // link always let a viewer change them. Visibility is the stored config's;
+  // the value is the draft's.
+  const viewerPaneFilters = React.useMemo<BaseFilter[]>(() => {
+    const visibleIds = new Set(((dashboard as any)?.filters_config ?? [])
+      .filter((f: any) => f && typeof f === 'object' && (f.publicMode ?? 'visible') === 'visible')
+      .map((f: any) => String(f.id)));
+    return draftGlobalFilters
+      .filter((f) => visibleIds.has(String(f.id)))
+      .map((f) => toBaseFilter(f, { allowInactive: true }))
+      .filter((b): b is BaseFilter => b !== null);
+  }, [dashboard, draftGlobalFilters]);
+  const paneFilterIds = React.useMemo(() => new Set(viewerPaneFilters.map((f) => String(f.id))), [viewerPaneFilters]);
+  const controlFilters = React.useMemo<BaseFilter[]>(
+    () => [...(orderedSlicerChildren.filter((s: any) => s?.type !== 'image') as BaseFilter[]), ...viewerPaneFilters],
+    [orderedSlicerChildren, viewerPaneFilters],
+  );
+  // A value picked in a control is staged into the entry it shows.
+  const handleControlChange = React.useCallback((next: BaseFilter) => {
+    if (paneFilterIds.has(String(next.id))) {
+      setDraftGlobalFilters((prev) => prev.map((f) => {
+        if (String(f.id) !== String(next.id)) return f;
+        const typed = fromBaseFilter(next);
+        return typed ? ({ ...f, ...typed } as TypedFilter) : f;
+      }));
+      return;
+    }
+    handleControlSlicerChange(next);
+  }, [paneFilterIds, handleControlSlicerChange]);
+  const controlVisibleHere = React.useCallback(
+    (s: any) => paneFilterIds.has(String(s?.id)) || slicerIsVisibleHere(s),
+    [paneFilterIds, slicerIsVisibleHere],
+  );
+  const controlFiltersHere = React.useCallback(
+    (s: any) => paneFilterIds.has(String(s?.id)) || slicerFiltersHere(s),
+    [paneFilterIds, slicerFiltersHere],
+  );
+  // Filters this page shows that have no control here (a new page, a filter
+  // made in the pane, a control the author removed): the Slicer button lists them.
+  const unplacedControlFilters = React.useMemo(
+    () => controlFilters.filter((s) => controlVisibleHere(s) && !placedSlicerIdsOnPage.has(String(s.id ?? ''))),
+    [controlFilters, controlVisibleHere, placedSlicerIdsOnPage],
+  );
 
   // Save the slicer lists to the draft now. Used when a control is created for
   // a NEW filter (a reload must never find a control pointing at nothing) and
@@ -3069,57 +3037,45 @@ function DashboardDetailPageInner() {
     await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
   }, [activePageId, dashboardPages, dashboardId, queryClient]);
 
-  // A control is a draft-only grid element until Publish (like an AI block):
-  // placing one never changes the published report on its own.
-  const placeSlicerControl = useCallback(async (slicer: BaseFilter, where: 'top' | 'end' = 'end') => {
-    const size = SLICER_CONTROL_SIZE.card;
-    let slot = nextFreeSlot(visibleDashboardCharts, size);
+  // Placing controls is ONE undoable step through the same commit path as an AI
+  // design: draft-only rows until Publish, deleted by Undo or Discard. At the top
+  // of the page the content moves down by the band the controls need (room is
+  // made, nothing is shoved aside); below the content they take the free rows.
+  const placeSlicerControls = useCallback(async (slicers: BaseFilter[], where: 'top' | 'end') => {
+    if (!slicers.length) return;
+    const card = SLICER_CONTROL_SIZE.card;
+    const rows = Math.ceil(slicers.length / 4) * card.h;
+    const prev = localLayoutOverridesRef.current;
+    const overrides: Record<number, Record<string, any>> = { ...prev };
+    let y0 = nextFreeSlot(visibleDashboardCharts, card).y;
     if (where === 'top') {
-      // Room at the top is MADE, explicitly: every tile on the page moves down
-      // by the control's height, keeping the whitespace between them. It is
-      // saved to the draft at once (a reload must not find the control on top
-      // of a KPI), and Discard undoes it with the control.
-      const blocked = visibleDashboardCharts.some((dc) => (dc.layout as any)?.locked && Number(dc.layout?.y ?? 0) < size.h);
-      if (blocked) {
+      if (visibleDashboardCharts.some((dc) => (dc.layout as any)?.locked)) {
         toast.info(t('dashboards.addSlicer.topBlocked'));
       } else {
-        const shifted = visibleDashboardCharts
-          .filter((dc) => !(dc.layout as any)?.locked)
-          .map((dc) => {
-            const full = resolveDashboardChartLayout(dc.id) as Record<string, any>;
-            return { id: dc.id, layout: { ...full, y: (Number(full.y) || 0) + size.h } };
-          });
-        if (shifted.length) {
-          await updateDraftLayoutMutation.mutateAsync({ dashboardId, chartLayouts: shifted as any }, {
-            onSuccess: () => setLocalLayoutOverrides((prev) => {
-              const next = { ...prev };
-              for (const s of shifted) delete next[s.id];
-              return next;
-            }),
-          });
+        for (const dc of visibleDashboardCharts) {
+          const full = resolveDashboardChartLayout(dc.id, prev) as Record<string, any>;
+          overrides[dc.id] = { ...full, y: (Number(full.y) || 0) + rows };
         }
-        slot = { x: 0, y: 0, w: size.w, h: size.h };
+        y0 = 0;
       }
     }
-    await dashboardApi.addWidget(
-      dashboardId,
-      SLICER_CONTROL_WIDGET,
-      { ...slot, pageId: activePageId ?? undefined, gv: GRID_VERSION, draftOnly: true } as any,
-      { slicerId: String(slicer.id), treatment: 'auto', origin: 'author' },
-    );
-    await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
-    resetUndo(); // the element set changed — prior layout undo entries are stale
+    await commitPresentation({
+      layoutOverrides: overrides,
+      themePatch: null,
+      slicerClusterPatch: null,
+      createdBlocks: slicers.map((s, i) => ({
+        tempId: -(i + 1),
+        widgetType: SLICER_CONTROL_WIDGET as 'slicer',
+        widgetConfig: { slicerId: String(s.id), treatment: 'auto', origin: 'author' },
+        layout: { x: (i % 4) * card.w, y: y0 + Math.floor(i / 4) * card.h, w: card.w, h: card.h, gv: GRID_VERSION, pageId: activePageId },
+      })),
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleDashboardCharts, dashboardId, activePageId, queryClient, resolveDashboardChartLayout, t]);
+  }, [visibleDashboardCharts, activePageId, resolveDashboardChartLayout, commitPresentation, t]);
 
   const usedSlicerFieldKeys = React.useMemo(
-    () => new Set(orderedSlicerChildren.filter((s: any) => s?.type !== 'image').map((s: any) => getFilterKey(s))),
-    [orderedSlicerChildren],
-  );
-  const addSlicerExisting = React.useMemo(
-    () => orderedSlicerChildren.filter((s: any) => s?.type !== 'image'
-      && slicerIsVisibleHere(s) && !placedSlicerIdsOnPage.has(String(s?.id ?? ''))) as BaseFilter[],
-    [orderedSlicerChildren, slicerIsVisibleHere, placedSlicerIdsOnPage],
+    () => new Set(controlFilters.map((s: any) => getFilterKey(s))),
+    [controlFilters],
   );
   const addSlicerColumns = React.useMemo(
     () => resolvedAvailableColumns.filter((c) => (c.type === 'date' || (c.chartCoverage ?? 0) > 0)
@@ -3127,12 +3083,12 @@ function DashboardDetailPageInner() {
     [resolvedAvailableColumns, usedSlicerFieldKeys],
   );
 
-  const handleAddSlicer = useCallback(async (input: { existing?: BaseFilter; column?: ColumnInfo; where?: 'top' | 'end' }) => {
+  const handleAddSlicer = useCallback(async (input: { existing?: BaseFilter[]; column?: ColumnInfo; where?: 'top' | 'end' }) => {
     setIsPlacingSlicer(true);
     try {
-      let slicer = input.existing;
-      if (!slicer && input.column) {
-        slicer = createSlicerEntry({
+      let slicers = input.existing ?? [];
+      if (!slicers.length && input.column) {
+        const created = createSlicerEntry({
           column: input.column,
           columns: resolvedAvailableColumns,
           usedFields: usedSlicerFieldKeys,
@@ -3142,10 +3098,11 @@ function DashboardDetailPageInner() {
           preset: input.column.type === 'date' ? 'custom' : undefined,
           pageScope: true,
         });
-        await persistSlicerLists(draftGlobalSlicers, [...draftPageSlicers, slicer]);
+        await persistSlicerLists(draftGlobalSlicers, [...draftPageSlicers, created]);
+        slicers = [created];
       }
-      if (!slicer) return;
-      await placeSlicerControl(slicer, input.where ?? 'end');
+      if (!slicers.length) return;
+      await placeSlicerControls(slicers, input.where ?? 'end');
       setIsAddSlicerOpen(false);
       toast.success(t('dashboards.slicerControl.added'));
     } catch (err) {
@@ -3154,7 +3111,49 @@ function DashboardDetailPageInner() {
     } finally {
       setIsPlacingSlicer(false);
     }
-  }, [resolvedAvailableColumns, usedSlicerFieldKeys, persistSlicerLists, draftGlobalSlicers, draftPageSlicers, placeSlicerControl, t]);
+  }, [resolvedAvailableColumns, usedSlicerFieldKeys, persistSlicerLists, draftGlobalSlicers, draftPageSlicers, placeSlicerControls, t]);
+
+  // Remove a CONTROL (the filter stays and keeps filtering). One undoable step:
+  // Undo puts the control back where it was; a band made only for filters closes
+  // when its last control leaves it.
+  const removeSlicerControl = useCallback(async (tileId: number) => {
+    const dc = visibleDashboardCharts.find((d) => d.id === tileId);
+    if (!dc) return;
+    const prev = localLayoutOverridesRef.current;
+    const boxes: GridBox[] = visibleDashboardCharts.map((d) => ({
+      id: d.id, x: Number(d.layout?.x) || 0, y: Number(d.layout?.y) || 0,
+      w: Number(d.layout?.w) || 1, h: Number(d.layout?.h) || 1, locked: Boolean((d.layout as any)?.locked),
+    }));
+    const next: Record<number, Record<string, any>> = { ...prev };
+    delete next[tileId];
+    for (const b of closeVacatedBand(boxes, tileId)) {
+      next[b.id] = mergeGridLayout(resolveDashboardChartLayout(b.id, prev), b);
+    }
+    const spec = {
+      widgetType: String(dc.widget_type),
+      widgetConfig: { ...((dc.widget_config ?? {}) as Record<string, unknown>) },
+      layout: { ...(resolveDashboardChartLayout(tileId, prev) as unknown as Record<string, unknown>) },
+    };
+    setRemovingChartId(tileId);
+    try {
+      await removeChartMutation.mutateAsync({ dashboardId, dashboardChartId: tileId });
+      setLocalLayoutOverrides(next);
+      pushUndo({
+        kind: 'ai-presentation',
+        prev: { layout: prev, theme: undefined, slicerCluster: undefined },
+        next: { layout: next, theme: undefined, slicerCluster: undefined, removedBlockIds: [tileId], removedBlockSpecs: [spec] },
+      });
+      toast.success(t('dashboards.slicerControl.removed'));
+    } catch (error) {
+      console.error('Failed to remove slicer control:', error);
+      toast.error(t('dashboards.detail.chartRemoveFailed'));
+    } finally {
+      setRemovingChartId(undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleDashboardCharts, resolveDashboardChartLayout, dashboardId, t]);
+  const removeSlicerControlRef = React.useRef(removeSlicerControl);
+  removeSlicerControlRef.current = removeSlicerControl;
 
   // Delete the FILTER: its entry and every control for it, on every page.
   const handleDeleteSlicerFilter = useCallback(async (slicerId: string) => {
@@ -3186,38 +3185,8 @@ function DashboardDetailPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolveDashboardChartLayout]);
 
-  const slicerPagesForScope = React.useMemo(
-    () => dashboardPages.map((p) => ({ id: p.id, name: (p as any).name || p.id })),
-    [dashboardPages],
-  );
-  const builderSlicerBinding = React.useMemo<SlicerControlBinding>(() => ({
-    slicers: orderedSlicerChildren.filter((s: any) => s?.type !== 'image') as BaseFilter[],
-    siblingFilters: orderedSlicerChildren as BaseFilter[],
-    visibleHere: slicerIsVisibleHere,
-    filtersHere: slicerFiltersHere,
-    editing: canEditThisPage,
-    onChange: handleControlSlicerChange,
-    onTreatmentChange: canEditThisPage ? handleSlicerTreatmentChange : undefined,
-    onRemoveControl: canEditThisPage ? (id: number) => handleRemoveChartRef.current(id) : undefined,
-    onDeleteFilter: canEditResource ? handleDeleteSlicerFilter : undefined,
-    onToggleLock: canEditThisPage ? handleToggleTileLock : undefined,
-    columns: resolvedAvailableColumns,
-    columnChartCount: resolvedColumnChartCount,
-    distinctValues: resolvedDistinctValues,
-    distinctStatus: semanticDistinctStatus,
-    fetchServerDistinct: fetchSlicerServerDistinct,
-    showScopeToggle: canEditResource,
-    dashboardPages: slicerPagesForScope,
-    activePageId,
-    onUpdateSlicerScope: handleUpdateSlicerScope,
-  }), [orderedSlicerChildren, slicerIsVisibleHere, slicerFiltersHere, canEditThisPage, canEditResource,
-    handleControlSlicerChange, handleSlicerTreatmentChange, handleDeleteSlicerFilter, handleToggleTileLock, resolvedAvailableColumns,
-    resolvedColumnChartCount, resolvedDistinctValues, semanticDistinctStatus, fetchSlicerServerDistinct,
-    slicerPagesForScope, activePageId, handleUpdateSlicerScope]);
-  const renderBuilderSlicerControl = useCallback(
-    (dc: any) => <GridSlicerTile tile={dc} binding={builderSlicerBinding} />,
-    [builderSlicerBinding],
-  );
+  const renderBuilderSlicerControl = useCallback((dc: any) => <GridSlicerTile tile={dc} />, []);
+
   // ── Arrange tools + keyboard (manual builder) ──────────────────────────
   // Grid operations on the selection (lib/grid-arrange), committed through the
   // same path as a drag. The keyboard handler reads the latest state through a
@@ -3232,7 +3201,10 @@ function DashboardDetailPageInner() {
   }));
   const tileTitle = (id: number) => {
     const dc = visibleDashboardCharts.find((d) => d.id === id);
-    return String((dc?.layout as any)?.custom_title ?? dc?.chart?.name ?? (dc?.widget_config as any)?.title ?? dc?.widget_type ?? id);
+    // A filter control is named by its filter, never by its widget type.
+    const control = isSlicerControl(dc) ? controlFilters.find((s) => String(s.id) === slicerIdOfControl(dc)) : undefined;
+    const controlName = control ? (control.label || control.field) : undefined;
+    return String((dc?.layout as any)?.custom_title ?? dc?.chart?.name ?? controlName ?? (dc?.widget_config as any)?.title ?? dc?.widget_type ?? id);
   };
   const commitArrange = (result: ArrangeResult) => {
     if (result.status === 'blocked') {
@@ -3247,6 +3219,30 @@ function DashboardDetailPageInner() {
     if (result.skippedLocked > 0) toast.info(t('dashboards.arrange.lockedSkipped'));
   };
   const handleArrange = (op: ArrangeOp) => commitArrange(arrangeTiles(op, pageBoxes(), selectedTileIds));
+  // A drag or resize on the grid: where the tile lands, what makes room for it,
+  // and — for a filter control — whether the band it left closes
+  // (lib/grid-arrange resolveDrop). One undo step, whatever it moved.
+  const [gridRevision, setGridRevision] = useState(0);
+  const handleGridGesture = (items: Layout[]) => {
+    const item = items[0];
+    if (!item) return;
+    const id = Number(item.i);
+    const boxes = pageBoxes();
+    const was = boxes.find((b) => b.id === id);
+    if (!was) { handleLayoutChange(items); return; }
+    const dc = visibleDashboardCharts.find((d) => d.id === id);
+    const result = resolveDrop(boxes, id, { x: item.x, y: item.y, w: item.w, h: item.h }, {
+      from: { y: was.y, h: was.h },
+      closeVacatedBand: isSlicerControl(dc),
+    });
+    if (result.status === 'refused') {
+      toast.info(t(result.reason === 'locked' ? 'dashboards.arrange.lockedInWay' : 'dashboards.arrange.blocked',
+        { title: tileTitle(result.blockedBy ?? id) }));
+      setGridRevision((n) => n + 1);
+      return;
+    }
+    handleLayoutChange(result.changed.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })) as Layout[]);
+  };
   const nudgeRef = React.useRef<(d: { dx: number; dy: number }) => void>(() => {});
   nudgeRef.current = (d) => commitArrange(nudgeTiles(pageBoxes(), selectedTileIds, d));
   const keyboardArrangeOn = designMode === 'manual' && canEditThisPage && selectedTileIds.length > 0;
@@ -4017,6 +4013,15 @@ function DashboardDetailPageInner() {
                 >
                   <Filter className="h-3 w-3" />
                   <span>{t('dashboards.addSlicer.menu')}</span>
+                  {unplacedControlFilters.length > 0 && (
+                    <span
+                      data-testid="add-slicer-unplaced-count"
+                      className="rounded-full bg-brand/15 px-1.5 text-[10px] font-semibold text-brand"
+                      title={t('dashboards.addSlicer.unplacedBadge', { count: unplacedControlFilters.length })}
+                    >
+                      {unplacedControlFilters.length}
+                    </span>
+                  )}
                 </button>
               )}
               {canEditThisPage && (
@@ -4075,25 +4080,26 @@ function DashboardDetailPageInner() {
           </div>
         )}
 
-        {/* SlicerCluster and the dashboard grid share the selected dock layout. */}
-        <div
-          className={dockLayoutClasses(effectiveFilterDock).wrapper}
-          style={effectiveFilterDock === 'drawer' ? { position: 'relative' } : undefined}
-        >
-        {/* The bar is optional grouping: drawn while it has something to show
-            (or, for an author, while no slicer is placed on this page — it is
-            also where the classic "Add slicer" lives). */}
-        {(barSlicerChildren.length > 0 || (canEditResource && placedSlicerIdsOnPage.size === 0)) && (
-          <SlicerCluster
-            // Editor shows ALL slicers (incl. ones a 'custom' scope hides on
-            // this page) so the author can always open ⚙ to reconfigure; the
+        {/* The report is ONE grid. Filter controls are elements of it; this
+            scope only hands each control its filter state — it draws nothing,
+            so there is no filter area outside the grid. */}
+        <div className="relative">
+          <SlicerControlScope
+            // Editor resolves ALL slicers (incl. ones a 'custom' scope hides on
+            // this page) so the author sees why a placed control is dimmed; the
             // per-page VISIBLE hiding is applied only on the public viewer.
             // The chart PREVIEW still respects scope via effectivePageScopeFilters
             // (only slicers that filter the active page are applied).
-            items={barSlicerChildren}
-            onChildrenChange={handleBarSlicerChange}
-            layout={viewSlicerClusterLayout}
-            onLayoutChange={setDraftSlicerClusterLayout}
+            slicers={controlFilters}
+            siblingFilters={controlFilters}
+            visibleHere={controlVisibleHere}
+            filtersHere={controlFiltersHere}
+            editing={canEditThisPage}
+            onChange={handleControlChange}
+            onTreatmentChange={canEditThisPage ? handleSlicerTreatmentChange : undefined}
+            onRemoveControl={canEditThisPage ? (id: number) => { void removeSlicerControlRef.current(id); } : undefined}
+            onDeleteFilter={canEditResource ? handleDeleteSlicerFilter : undefined}
+            onToggleLock={canEditThisPage ? handleToggleTileLock : undefined}
             columns={resolvedAvailableColumns}
             columnChartCount={resolvedColumnChartCount}
             distinctValues={resolvedDistinctValues}
@@ -4132,24 +4138,11 @@ function DashboardDetailPageInner() {
             dashboardPages={dashboardPages.map((p) => ({ id: p.id, name: (p as any).name || p.id }))}
             activePageId={activePageId}
             onUpdateSlicerScope={handleUpdateSlicerScope}
-            onOpenFilterMap={canEditResource ? () => setIsFilterMapOpen(true) : undefined}
-            hasPendingChanges={hasPendingSlicerChanges}
-            onApply={canEditResource ? () => handleApplyFilters('all') : undefined}
-            onReset={canEditResource ? () => {
-              setDraftGlobalSlicers(appliedGlobalSlicers);
-              setDraftPageSlicers(activePageSlicers);
-              setDraftSlicerClusterLayout(appliedSlicerClusterLayout);
-            } : undefined}
-            isApplying={isApplyingFilters}
-            lockSlots={!canEditResource}
-          />
-        )}
+          >
 
-        {/* Dashboard Grid or Canvas. When the slicer cluster is on the
-            left, this area flexes to fill the remaining width. */}
         <div
           ref={dashboardContentRef}
-          className={dockLayoutClasses(effectiveFilterDock).content}
+          className="min-w-0"
         >
         {/* Phase-B19 — per-page co-edit banners (owner-priority + request→approve).
             Never shown during PDF export. */}
@@ -4219,7 +4212,8 @@ function DashboardDetailPageInner() {
             canEdit={canEditThisPage}
             allowAppearanceEdit={canEditThisPage}
             themeConfig={dashboard?.theme_config}
-            onLayoutChange={canEditThisPage ? handleLayoutChange : undefined}
+            onLayoutChange={canEditThisPage ? handleGridGesture : undefined}
+            layoutRevision={gridRevision}
             presenceByChart={presenceByChart}
             onRemoveChart={canEditThisPage ? handleRemoveChart : undefined}
             onEditWidget={canEditThisPage ? setEditingWidgetId : undefined}
@@ -4264,14 +4258,16 @@ function DashboardDetailPageInner() {
           }}
         />
         </div>
-        </div>{/* /Phase-G3 slicer-cluster arrangement wrapper */}
+          </SlicerControlScope>
+        </div>{/* /report grid + its filter controls */}
         <AddSlicerModal
           open={isAddSlicerOpen}
           onClose={() => setIsAddSlicerOpen(false)}
-          existing={addSlicerExisting}
+          existing={unplacedControlFilters}
           columns={addSlicerColumns}
           busy={isPlacingSlicer}
-          onPlaceExisting={(slicer, where) => { void handleAddSlicer({ existing: slicer, where }); }}
+          onPlaceExisting={(slicer, where) => { void handleAddSlicer({ existing: [slicer], where }); }}
+          onPlaceAll={(where) => { void handleAddSlicer({ existing: unplacedControlFilters, where }); }}
           onCreate={(column, where) => { void handleAddSlicer({ column, where }); }}
         />
 
@@ -4583,7 +4579,7 @@ function DashboardDetailPageInner() {
               pushUndo({ kind: 'theme', prev: dashboard?.theme_config ?? {}, next: theme });
               // A templateId in the payload means the user chose a LAYOUT, and a
               // layout owns the filter dock — so release any stored position.
-              await applyThemeConfig(theme, { releaseDock: Boolean((theme as any)?.templateId) });
+              await applyThemeConfig(theme);
             }}
             onApplyLayout={async (templateId) => {
               // The other half of picking a template. Snapshot first: this moves
@@ -4632,7 +4628,8 @@ function DashboardDetailPageInner() {
                   pageName: currentPage?.name ?? activePageId,
                   pageCount: dashboardPages.length,
                   slicers: [...draftGlobalSlicers, ...draftPageSlicers],
-                  slicerDock: effectiveFilterDock,
+                  // Filters are grid elements now; a slicer's place is its control's tile.
+    slicerDock: 'grid',
                 });
                 // Layout only. Picking a template in the modal already applies
                 // its colours through the theme path; re-applying them here

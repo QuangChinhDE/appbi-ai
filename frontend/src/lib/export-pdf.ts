@@ -4,6 +4,19 @@ import { DEJAVU_SANS_REGULAR_B64, DEJAVU_SANS_BOLD_B64 } from './pdf-fonts';
 import { tileBoxMm, type ExportLayoutPlan } from './export-layout';
 import { waitForRenderReady } from './render-ready';
 
+/**
+ * The capture engine draws a `text-overflow: ellipsis` span from its own width
+ * measurement, and a filter control's short value ("All", "SP") came out as a
+ * bare "…" in every PDF. In the CLONE it captures (never on screen), a control's
+ * text is drawn in full; its card still clips anything too long.
+ */
+const EXPORT_LEGIBLE_CSS = '.dashboard-slicer .truncate, .dashboard-slicer [class*="truncate"] { text-overflow: clip !important; overflow: visible !important; }';
+function legibleClone(doc: Document) {
+  const style = doc.createElement('style');
+  style.textContent = EXPORT_LEGIBLE_CSS;
+  doc.head.appendChild(style);
+}
+
 export { waitForRenderReady } from './render-ready';
 
 /**
@@ -573,6 +586,7 @@ async function drawTileRow(
         useCORS: true,
         logging: false,
         backgroundColor: '#ffffff',
+        onclone: legibleClone,
       });
       dataUrl = canvas.toDataURL('image/jpeg', 0.85);
     } catch {
@@ -668,6 +682,7 @@ async function drawPageSnapshot(
       useCORS: true,
       logging: false,
       backgroundColor: '#ffffff',
+      onclone: legibleClone,
       // The clone window must be as wide as the REAL page. With the element's
       // own width, a grid beside a slicer rail re-lays out narrower in the
       // clone while its tiles keep their pixel positions, and the snapshot
@@ -798,7 +813,7 @@ async function drawArrangedSheets(
         continue;
       }
       try {
-        const canvas = await html2canvas(el, { scale: 1.5, useCORS: true, logging: false, backgroundColor: '#ffffff' });
+        const canvas = await html2canvas(el, { scale: 1.5, useCORS: true, logging: false, backgroundColor: '#ffffff', onclone: legibleClone });
         const aspect = canvas.height / canvas.width;
         // Letterbox: fit inside the box, keep the shape, centre what is left.
         let w = box.w;
@@ -855,6 +870,7 @@ export async function captureTileThumbnails(
           useCORS: true,
           logging: false,
           backgroundColor: '#ffffff',
+          onclone: legibleClone,
         });
         out.set(id, canvas.toDataURL('image/jpeg', 0.7));
       } catch {

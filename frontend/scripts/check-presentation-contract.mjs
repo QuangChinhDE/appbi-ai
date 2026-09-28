@@ -1390,14 +1390,16 @@ check('a theme patch cannot carry a key outside the catalog allow-list', () => {
   }
 });
 
-check('a dock change writes the field the renderer actually reads', () => {
+check('a dock request writes no filter area — the filters are grid elements (unified grid)', () => {
   const tiles = makeTiles();
   const plan = { ...planFor(tiles), layer: 'redesign', slicerPresentation: { dock: 'left', variant: 'compact' } };
   const result = buildFor(tiles, plan);
-  // slicer_cluster_layout.position outranks theme.filterDock — writing only the
-  // theme key would look like the dock change did nothing.
-  assertEqual(result.mutation.slicerClusterPatch.position, 'left', 'cluster position not written');
-  assertEqual(result.mutation.themePatch.filterDock, 'left', 'theme dock not written');
+  // There is no slicer cluster to dock any more. A position written here would
+  // be a change the renderer never draws (and the diff would still announce
+  // "filters moved"). The control's LOOK still applies.
+  assert(!('position' in result.mutation.slicerClusterPatch), 'a cluster position was written');
+  assert(!('filterDock' in result.mutation.themePatch), 'a theme dock was written');
+  assertEqual(result.mutation.themePatch.slicerVariant, 'compact', 'the control look was dropped');
 });
 
 check('a restyle merges over the tile, it does not replace what the author set', () => {

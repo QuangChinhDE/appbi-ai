@@ -5566,6 +5566,7 @@ def build_dashboard_from_import(
         )
         db.add(dashboard_chart)
 
+    _place_slicer_controls(db, dashboard_obj)
     db.commit()
     db.refresh(dashboard_obj)
 
@@ -6381,9 +6382,20 @@ def rebuild_dashboard_from_snapshot(
                 )
             )
 
+    _place_slicer_controls(db, dashboard_obj)
     db.commit()
     db.refresh(dashboard_obj)
 
     from app.services.dashboard_service import DashboardService
 
     return DashboardService.get_by_id(db, dashboard_obj.id)
+
+
+def _place_slicer_controls(db: Session, dashboard_obj: Any) -> None:
+    """The filters an import declares get their controls on the report grid
+    (a band at the top of each page): a report has no filter area of its own."""
+    from app.services.slicer_control_service import ensure_slicer_controls
+
+    db.flush()
+    db.refresh(dashboard_obj)
+    ensure_slicer_controls(db, dashboard_obj, origin="import")

@@ -331,8 +331,9 @@ export function buildCapabilitySchema() {
       colorwayGuide: colorwayGuide(),
       templateGuide: templateGuide(),
     },
+    // Filters are controls ON the grid: a plan places them (slicerControls,
+    // filter_bar, or moving a placed control) — there is no dock to choose.
     slicer: {
-      docks: [...AI_ALLOWED_SLICER_DOCKS],
       variants: [...AI_ALLOWED_SLICER_VARIANTS],
       styles: [...AI_ALLOWED_SLICER_STYLES],
     },

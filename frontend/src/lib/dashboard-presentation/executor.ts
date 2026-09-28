@@ -154,19 +154,16 @@ export function resolveThemePatch(
   return filtered as Partial<DashboardThemeConfig>;
 }
 
-/** Slicer presentation → the fields the renderer actually reads. `slicer_cluster
- *  _layout.position` outranks the theme's `filterDock`, so a dock change has to
- *  write the cluster field or it looks like it did nothing. */
+/** Slicer presentation → the fields the renderer actually reads: how controls
+ *  look (variant, style). There is no filter area to dock any more — a control
+ *  is a grid element, and a plan's `dock` says where a DIRECTION puts the
+ *  controls on the grid (see directions.ts), so nothing here writes a position. */
 export function resolveSlicerPatch(
   intent: PresentationPlan['slicerPresentation'],
 ): { cluster: Record<string, unknown>; theme: Record<string, unknown> } {
   if (!intent) return { cluster: {}, theme: {} };
   const cluster: Record<string, unknown> = {};
   const theme: Record<string, unknown> = {};
-  if (intent.dock) {
-    cluster.position = intent.dock;
-    theme.filterDock = intent.dock;
-  }
   if (intent.variant) theme.slicerVariant = intent.variant;
   if (intent.style) theme.slicerStyle = intent.style;
   return { cluster, theme };

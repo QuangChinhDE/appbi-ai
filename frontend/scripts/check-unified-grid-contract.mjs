@@ -322,22 +322,108 @@ check('Apply creates the same slicer widget a person creates, sized as a control
   assert(state.layout.y === o1.y && state.layout.h === o1.h, `the contextual control is not in its chart's row: ${JSON.stringify(state.layout)} vs ${JSON.stringify(o1)}`);
 });
 
-check('a grid control searches values on the SAME resolved filter set as the bar (chart↔dropdown parity)', () => {
+check('a grid control searches values on the resolved filter set (chart↔dropdown parity)', () => {
   const page = source('app/(main)/dashboards/[id]/page.tsx');
-  // Both builder type-to-search paths — the bar's inline one and the grid
-  // controls' callback — collapse same-field filters with resolveEffectiveFilterSet
-  // and feed THAT to getDistinctValueFilterContext, never the raw union.
-  const shared = page.slice(page.indexOf('const fetchSlicerServerDistinct = useCallback('), page.indexOf('// ── Slicer controls: add, restyle, remove, delete'));
-  assert(shared.includes('resolveEffectiveFilterSet({') && shared.includes('getDistinctValueFilterContext(ctx, column)'), 'the grid control search left the resolved set');
-  const inline = page.slice(page.indexOf('fetchServerDistinct={async (column, search) => {'));
-  assert(inline.slice(0, 1400).includes('resolveEffectiveFilterSet({') && inline.slice(0, 1400).includes('getDistinctValueFilterContext(ctx, column)'), 'the bar search left the resolved set');
+  // The builder has ONE value search for its controls, handed to them by the
+  // controls' scope: it collapses same-field filters with resolveEffectiveFilterSet
+  // and feeds THAT to getDistinctValueFilterContext, never the raw union.
+  const scope = page.slice(page.indexOf('<SlicerControlScope'));
+  const search = scope.slice(scope.indexOf('fetchServerDistinct={async (column, search) => {'));
+  assert(search.length > 0 && search.slice(0, 1400).includes('resolveEffectiveFilterSet({')
+    && search.slice(0, 1400).includes('getDistinctValueFilterContext(ctx, column)'), 'the controls search left the resolved set');
   assert(!/getDistinctValueFilterContext\(combinedFilters/.test(page), 'a raw-union distinct context is back');
   const pub = source('components/dashboards/PublicDashboardView.tsx');
   const pubSearch = pub.slice(pub.indexOf('const fetchPublicServerDistinct'));
-  // Public: the viewer's applied filters plus the page's hidden bounds — the
-  // same context the bar's search always used on the link.
   assert(/getDistinctValueFilterContext\(\s*\[\.\.\.appliedViewerFilters, \.\.\.pageHiddenFilters\], column/.test(pubSearch.slice(0, 900)),
-    'the public control search left the viewer\'s resolved context');
+    "the public control search left the viewer's resolved context");
+});
+
+check('there is no filter area outside the grid — builder, public and embed draw filters only as grid controls', () => {
+  assert(!existsSync(resolve(SRC, 'components/dashboards/SlicerCluster.tsx')), 'SlicerCluster.tsx is back');
+  const page = source('app/(main)/dashboards/[id]/page.tsx');
+  const pub = source('components/dashboards/PublicDashboardView.tsx');
+  for (const [name, src] of [['builder', page], ['public', pub]]) {
+    assert(!/<SlicerCluster[\s>]|dockLayoutClasses\(|resolveFilterDock\(/.test(src), `${name} still docks a filter area`);
+  }
+  // Filter-pane filters left visible to viewers are controls too (the public
+  // link always let a viewer change them): the builder resolves them, and the
+  // public seed still carries them.
+  assert(/viewerPaneFilters/.test(page) && /controlFilters/.test(page), 'the builder cannot show a filter-pane filter as a control');
+  const ctx = publicPage.resolvePublicPageFilterContext({
+    slicers_config: [], filters_config: [{ id: 'f-pane', field: 'state', type: 'dropdown', operator: 'in', value: [], publicMode: 'visible' }],
+    pages_config: [{ id: 'page-1' }],
+  }, [{ id: 'page-1' }], 'page-1');
+  assert(ctx.controlSeed.some((f) => f.id === 'f-pane'), "a visible filter-pane filter left the viewer's controls");
+});
+
+check('placing and removing a control are single undoable steps on the shared commit path', () => {
+  const page = source('app/(main)/dashboards/[id]/page.tsx');
+  const place = page.slice(page.indexOf('const placeSlicerControls = useCallback('), page.indexOf('const usedSlicerFieldKeys'));
+  assert(/await commitPresentation\(\{/.test(place) && /createdBlocks: slicers\.map/.test(place), 'placing a control bypasses the undoable commit path');
+  assert(!/resetUndo\(\)/.test(place), 'placing a control wipes the undo history');
+  const remove = page.slice(page.indexOf('const removeSlicerControl = useCallback('), page.indexOf('const removeSlicerControlRef'));
+  assert(/removedBlockSpecs: \[spec\]/.test(remove) && /closeVacatedBand\(boxes, tileId\)/.test(remove) && !/resetUndo\(\)/.test(remove),
+    'removing a control is not undoable, or leaves its band behind');
+  assert(/removedBlockSpecs/.test(page.slice(page.indexOf('const applyUndoEntry'), page.indexOf('const doUndo'))), 'undo cannot put a removed control back');
+});
+
+check('a tile dropped on others opens room where it lands; a vacated filter band closes; locks hold', () => {
+  const b = (id, x, y, w, h, locked = false) => ({ id, x, y, w, h, locked });
+  // A control moved from the top band down between the KPI row and the charts.
+  const page = [b(50, 0, 0, 8, 3), b(1, 0, 3, 12, 6), b(2, 12, 3, 12, 6), b(3, 0, 9, 24, 16), b(4, 24, 9, 12, 16)];
+  const res = arrange.resolveDrop(page, 50, { x: 0, y: 9, w: 8, h: 3 }, { from: { y: 0, h: 3 }, closeVacatedBand: true });
+  assert(res.status === 'ok' && res.closedRows === 3, JSON.stringify(res));
+  const changed = Object.fromEntries(res.changed.map((x) => [x.id, x]));
+  const after = page.map((x) => ({ ...x, ...(changed[x.id] ?? {}) }));
+  const at = Object.fromEntries(after.map((x) => [x.id, x]));
+  // The band closed (KPIs up to 0), the control sits under them, the charts
+  // end where they were: up with the band, down again for the control's row.
+  assert(at[1].y === 0 && at[2].y === 0, `the band did not close: ${JSON.stringify(at)}`);
+  assert(at[50].y === 6 && at[3].y === 9 && at[4].y === 9, `no room was opened under the KPIs: ${JSON.stringify(at)}`);
+  const clash = after.some((p, i) => after.some((q, j) => j > i && p.x < q.x + q.w && q.x < p.x + p.w && p.y < q.y + q.h && q.y < p.y + p.h));
+  assert(!clash, `tiles overlap: ${JSON.stringify(after)}`);
+  // Dropped into the middle of a tall chart: it goes above that chart's row, never inside it.
+  const mid = arrange.resolveDrop(page, 50, { x: 4, y: 15, w: 8, h: 3 }, {});
+  const m = Object.fromEntries(page.map((x) => [x.id, { ...x, ...(Object.fromEntries(mid.changed.map((c) => [c.id, c]))[x.id] ?? {}) }]));
+  assert(mid.status === 'ok' && m[50].y === 9 && m[3].y === 12, `dropped inside a chart: ${JSON.stringify(mid)}`);
+  // A gap an author left elsewhere is never closed: only a filter control's band closes.
+  const moved = arrange.resolveDrop([b(1, 0, 0, 12, 6), b(2, 0, 20, 12, 6)], 2, { x: 20, y: 20, w: 12, h: 6 }, { from: { y: 20, h: 6 }, closeVacatedBand: false });
+  assert(moved.status === 'ok' && !moved.closedRows, "an author's whitespace was closed");
+  // A locked tile below the drop point: refused, and named.
+  const locked = arrange.resolveDrop([b(50, 0, 0, 8, 3), b(1, 0, 3, 12, 6, true)], 50, { x: 0, y: 3, w: 8, h: 3 }, {});
+  assert(locked.status === 'refused' && locked.blockedBy === 1 && locked.reason === 'locked', JSON.stringify(locked));
+  // …and the author is told which tile is locked, by its name.
+  const pg = source('app/(main)/dashboards/[id]/page.tsx');
+  assert(/result\.reason === 'locked' \? 'dashboards\.arrange\.lockedInWay'/.test(pg), 'a refusal by a locked tile is reported as an overlap');
+  // Removing the only control of a band closes it.
+  const closed = arrange.closeVacatedBand([b(50, 0, 0, 8, 3), b(1, 0, 3, 12, 6)], 50);
+  assert(closed.length === 1 && closed[0].y === 0, JSON.stringify(closed));
+  const src = source('components/dashboards/DashboardGrid.tsx');
+  assert(/allowOverlap=\{!!onLayoutChange && !isNarrow\}/.test(src), 'the builder grid cannot carry a tile over others');
+});
+
+check("each direction puts the page's filter controls where its reading order wants them", () => {
+  const directions = load('lib/dashboard-presentation/directions.ts');
+  const tiles = [chart(1, 0, 3, 9, 6), chart(2, 9, 3, 9, 6), chart(3, 0, 9, 24, 12), chart(4, 24, 9, 12, 12), control(50, 'gf-state', 0, 0)];
+  tiles[0].chart.chart_type = 'KPI'; tiles[1].chart.chart_type = 'KPI';
+  const s = { ...snap(tiles, [STATE]), findings: [{ key: 'trend:3', sentence: 'x' }] };
+  const bandAt = (d) => {
+    const plan = directions.planForDirection(d, s, {});
+    const heads = new Set((plan.blocks ?? []).filter((x) => x.variant === 'headline').map((x) => x.id));
+    return {
+      i: plan.sections.findIndex((x) => x.primitive === 'filter_bar' && x.visuals.includes(50)),
+      h: plan.sections.findIndex((x) => x.visuals.some((id) => heads.has(id))),
+      n: plan.sections.length, plan,
+    };
+  };
+  const exec = bandAt('executive'); const ops = bandAt('operations'); const ed = bandAt('editorial');
+  // Right under the verdict — first, when the page has nothing to state yet.
+  assert(exec.i === exec.h + 1, `executive: the filters are not right under the verdict (${exec.i}, headline ${exec.h})`);
+  assert(ops.i === 0, `operations: the filters do not come first (${ops.i})`);
+  assert(ed.i > exec.i && ed.i >= ed.n - 3, `editorial: the filters do not follow the story (${ed.i}/${ed.n})`);
+  for (const r of [exec, ops, ed]) {
+    for (const sec of r.plan.sections) assert(!(sec.visuals.includes(50) && sec.primitive !== 'filter_bar'), 'a control was paired with another element');
+  }
 });
 
 check('a direction keeps the slicer controls the model asked for (filter band after the headline)', () => {
@@ -378,6 +464,14 @@ check('whitespace is kept and presentation never re-queries: placement is geomet
   assert(same(slot, { x: 0, y: 10, w: 8, h: 3 }), JSON.stringify(slot));
   // The treatment change is a layout override (draft → publish, undoable), not a live widget write.
   assert(/slicerTreatment: treatment/.test(page) && !/updateWidget\([^)]*treatment/.test(page), 'the display is written outside the draft');
+});
+
+check("the PDF draws a control's value, not a bare ellipsis: every capture uses the legible clone", () => {
+  const exp = source('lib/export-pdf.ts');
+  const calls = exp.split('html2canvas(').slice(1).map((s) => s.slice(0, 400));
+  assert(calls.length >= 4, `expected the export's captures, found ${calls.length}`);
+  assert(calls.every((c) => /onclone: legibleClone/.test(c)), 'a capture draws controls without the legible clone');
+  assert(/\.dashboard-slicer[^']*text-overflow: clip/.test(exp), "the clone no longer stops the ellipsis on a control's text");
 });
 
 if (failures.length) {

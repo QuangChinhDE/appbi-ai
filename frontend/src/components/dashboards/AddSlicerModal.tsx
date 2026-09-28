@@ -28,6 +28,7 @@ export function AddSlicerModal({
   columns,
   onPlaceExisting,
   onCreate,
+  onPlaceAll,
   busy,
 }: {
   open: boolean;
@@ -38,6 +39,8 @@ export function AddSlicerModal({
   columns: ColumnInfo[];
   onPlaceExisting: (slicer: BaseFilter, where: SlicerPlacementTarget) => void;
   onCreate: (column: ColumnInfo, where: SlicerPlacementTarget) => void;
+  /** Place every filter of `existing` at once, as one band. */
+  onPlaceAll?: (where: SlicerPlacementTarget) => void;
   busy?: boolean;
 }) {
   const { t } = useI18n();
@@ -110,8 +113,19 @@ export function AddSlicerModal({
           <p className="mt-1.5 text-[11px] text-text-quaternary">{t('dashboards.addSlicer.scopeNote')}</p>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto py-1">
-          <div className="px-4 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">
-            {t('dashboards.addSlicer.existing')}
+          <div className="flex items-center justify-between px-4 pb-1 pt-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">{t('dashboards.addSlicer.existing')}</span>
+            {onPlaceAll && existing.length > 1 && (
+              <button
+                type="button"
+                disabled={busy}
+                data-testid="add-slicer-place-all"
+                onClick={() => onPlaceAll(where)}
+                className="rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] text-text-secondary hover:bg-surface-2 disabled:opacity-50"
+              >
+                {t('dashboards.addSlicer.placeAll', { count: existing.length })}
+              </button>
+            )}
           </div>
           {shownExisting.length === 0 ? (
             <p className="px-4 py-1.5 text-[12px] text-text-quaternary">{t('dashboards.addSlicer.noExisting')}</p>

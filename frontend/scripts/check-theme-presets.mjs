@@ -21,7 +21,7 @@
  * validated during authoring with the dataviz validator; this script prints
  * each palette so that run is a copy-paste away.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -213,7 +213,6 @@ if (colorways.every((c) => c.dataColors.length)) {
 // them is visible to a type-check.
 console.log('\n[correctness] regressions type-checking cannot see');
 const GRID = readSrc('src/components/dashboards/DashboardGrid.tsx');
-const CLUSTER = readSrc('src/components/dashboards/SlicerCluster.tsx');
 
 // (a) Hooks must precede every early return. Three of them once sat BELOW the
 //     empty-state guard, so a dashboard gaining its first chart changed the
@@ -229,29 +228,23 @@ if (!applyTpl.includes('for (const k of LEGACY_LOOK_KEYS) cleared[k] = undefined
   fail('applyTemplate does not clear LEGACY_LOOK_KEYS — a stale cardShadow / titleFontSize outranks the template just picked');
 } else pass('applyTemplate clears legacy look overrides');
 
-// (c) Dock direction must read the AUTHOR value, not the DEFAULT_LAYOUT-merged
-//     one, or a theme-supplied rail lays its slicers out in a row.
-// A rail's direction is implied, never stored: DEFAULT_LAYOUT writes
-// `direction: 'horizontal'` into every draft, so any stored value is
-// indistinguishable from a choice and contradicts the dock.
-if (/direction:\s*baseLayout\.direction/.test(CLUSTER)
-    || /direction:\s*layout\?\.direction\s*\?\?/.test(CLUSTER)) {
-  fail('SlicerCluster takes a rail direction from stored layout — a 280px column would lay its slicers out in a row');
-} else if (!/const isVertical = isRail \|\| dock === 'drawer'/.test(CLUSTER)
-  || !/direction: isVertical/.test(CLUSTER)) {
-  fail('rail/drawer direction is not derived from the dock');
-} else pass('rail + drawer direction derives from the dock, never from a stored default');
+// (c) There is no filter area to dock. Filters are controls on the report grid
+//     (unified grid, 20260929_0001); the slicer cluster — a strip above, a rail
+//     beside or a drawer — was removed, and nothing may bring it back. The
+//     rail/drawer direction checks that used to live here guarded that cluster.
+const PAGE = readSrc('src/app/(main)/dashboards/[id]/page.tsx');
+const PUBLIC = readSrc('src/components/dashboards/PublicDashboardView.tsx');
+const MODAL = readSrc('src/components/dashboards/DashboardThemeModal.tsx');
+if (existsSync(join(root, 'src/components/dashboards/SlicerCluster.tsx'))) {
+  fail('SlicerCluster.tsx is back — a filter area outside the grid');
+} else if ([PAGE, PUBLIC].some((src) => /<SlicerCluster[\s>]|components\/dashboards\/SlicerCluster'|dockLayoutClasses\(/.test(src))) {
+  fail('the builder or the public report docks a filter area again');
+} else pass('no filter area outside the grid: builder and public mount no slicer cluster');
 
-if (!/stackVertical=\{isVertical\}/.test(CLUSTER)) {
-  fail('drawer declares vertical direction but its slicer cards are still rendered as a row');
-} else if (!/verticalPopoverPlacement=\{dock === 'left' \? 'right' : 'left'\}/.test(CLUSTER)) {
-  fail('right rail/drawer popovers can open outside the viewport');
-} else pass('rails + drawer stack vertically and open popovers toward the report');
-
-// (d) A data prop called `children` shadows React's own.
-if (/^\s*children: any\[\];/m.test(CLUSTER)) {
-  fail('SlicerCluster takes a `children` data prop — shadows React children');
-} else pass('SlicerCluster takes `items`, not `children`');
+// (d) The theme menu offers only what renders: there is no filter placement.
+if (/key: 'filterDock'/.test(MODAL)) {
+  fail('the theme menu offers a filter placement that no longer renders');
+} else pass('the theme menu offers no filter dock');
 
 // (e) Both identities persist, not just the legacy single id.
 const missingIds = ['templateId', 'colorwayId'].filter((k) => !keyList.includes(k));
@@ -267,20 +260,12 @@ if (!CATALOG.includes('export function expandThemeIdentity')) {
   fail('resolveStyleTokens does not expand the theme identity');
 } else pass('a stored template/colorway identity expands into real tokens');
 
-// (g) Applying a template must release a stored filter dock. `DEFAULT_LAYOUT`
-//     writes `position: 'top'` into every draft save, so a dashboard that has
-//     merely been EDITED holds a stored dock indistinguishable from a
-//     deliberate placement — and it outranks the template's own dock. Measured
-//     on dash 67: theme resolved `filterDock: left`, draft held `'top'`, the
-//     rail never moved. Same shape as the DEFAULT_STYLE_CONFIG trap.
-const PAGE = readSrc('src/app/(main)/dashboards/[id]/page.tsx');
-if (!PAGE.includes('releaseDock')) {
-  fail('theme save never releases slicer_cluster_layout.position — a stored default outranks every template dock');
-} else if (!PAGE.includes('releaseDock: Boolean((theme as any)?.templateId)')) {
-  fail('the dock is released unconditionally — only picking a TEMPLATE should reset an author placement');
-} else if (!PAGE.includes('position: undefined, direction: undefined')) {
-  fail('template switch releases the dock but leaves a stale direction behind');
-} else pass('picking a template releases a stale stored dock and direction');
+// (g) A template never moves the filters. It used to re-dock the cluster
+//     (releasing a stored position); with the filters on the grid, picking a
+//     template changes the look only.
+if (/releaseDock/.test(PAGE)) {
+  fail('applying a template still reaches for a filter dock');
+} else pass('picking a template changes the look, never where the filters are');
 
 // ── The import layout engine ────────────────────────────────────────────────
 //

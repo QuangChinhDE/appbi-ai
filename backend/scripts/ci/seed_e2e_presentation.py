@@ -209,6 +209,13 @@ def main() -> int:
                 layout={"x": 0, "y": 6, "w": 36, "h": 3, "gv": 2, "pageId": PAGE},
             ))
 
+        # The fixture's slicer gets its control on the grid, as every report's
+        # filters do (there is no filter area outside the grid).
+        from app.services.slicer_control_service import ensure_slicer_controls
+        db.flush()
+        db.refresh(dashboard)
+        ensure_slicer_controls(db, dashboard, origin="fixture")
+
         if db.query(DashboardPublicLink).filter(DashboardPublicLink.token == TOKEN).first() is None:
             db.add(DashboardPublicLink(
                 dashboard_id=dashboard.id, name="E2E presentation fixture",

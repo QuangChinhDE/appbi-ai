@@ -80,6 +80,9 @@ interface Pools {
   others: SnapshotVisual[];
   headers: SnapshotVisual[];
   blocks: SnapshotVisual[];
+  /** The page's filter controls — grid elements the direction places as a
+   *  filter band where its reading order wants them (its `dock`). */
+  filters: SnapshotVisual[];
 }
 
 function readingOrder(a: SnapshotVisual, b: SnapshotVisual) {
@@ -87,9 +90,10 @@ function readingOrder(a: SnapshotVisual, b: SnapshotVisual) {
 }
 
 function poolsOf(visuals: SnapshotVisual[]): Pools {
-  const p: Pools = { kpis: [], temporal: [], breakdowns: [], tables: [], others: [], headers: [], blocks: [] };
+  const p: Pools = { kpis: [], temporal: [], breakdowns: [], tables: [], others: [], headers: [], blocks: [], filters: [] };
   for (const v of [...visuals].sort(readingOrder)) {
     if (v.widgetType === 'narrative') { p.blocks.push(v); continue; }
+    if (v.widgetType === 'slicer') { p.filters.push(v); continue; }
     if (v.isWidget) { p.headers.push(v); continue; }
     const kinds = new Set(v.findingKinds ?? []);
     if (v.displayRoleHint === 'kpi' || v.displayRoleHint === 'headline') p.kpis.push(v);
@@ -207,6 +211,8 @@ function executive(s: DashboardPresentationSnapshot, labels: DirectionLabels): P
   const verdict = keys(key('period_comparison', lead) ?? key('trend', lead), key('peak', lead));
   b.push('full_width', [...p.headers.filter((h) => h.widgetType === 'hero_strip').map((h) => h.dashboardChartId),
     b.block('headline', verdict, { eyebrow: s.dashboard.name || undefined })]);
+  // The brief's filters sit under its verdict, before the numbers they change.
+  b.push('filter_bar', p.filters.map((v) => v.dashboardChartId));
 
   // 2 · Why it matters: the headline numbers, then the argument chart with what
   //     moved beside it — the leader and how concentrated it is, targets met or
@@ -258,6 +264,9 @@ function executive(s: DashboardPresentationSnapshot, labels: DirectionLabels): P
 function operations(s: DashboardPresentationSnapshot, labels: DirectionLabels): PresentationPlan {
   const p = poolsOf(s.visuals);
   const b = new PlanBuilder(p.blocks, liveOf(s));
+
+  // 0 · Scope first: an operator sets the filters before reading the board.
+  b.push('filter_bar', p.filters.map((v) => v.dashboardChartId));
 
   // 1 · Current state: the numbers, then the latest complete period of each series.
   b.push('kpi_strip', p.kpis.map((v) => v.dashboardChartId));
@@ -352,6 +361,10 @@ function editorial(s: DashboardPresentationSnapshot, labels: DirectionLabels): P
     }
   });
   for (const t of p.tables) { b.prefer(t, 'table', 'low'); b.push('table_full', [t.dashboardChartId]); }
+
+  // The story is read first; the filters follow it, for a reader who wants to
+  // look at another slice.
+  b.push('filter_bar', p.filters.map((v) => v.dashboardChartId));
 
   // What to keep in mind: the caveats the evidence carries, said once, last.
   const caveats = keys(...allOf('partial_periods', story), ...allOf('concentration', story), ...allOf('attainment', p.kpis));

@@ -261,6 +261,7 @@ def _layout(kind: str, index_in_kind: int, count_in_kind: int, cursor: Dict[str,
 def build_report_starter(db: Session, *, dataset_id: int, goal: str, name: Optional[str], owner_id: Any) -> Dict[str, Any]:
     """Create a draft report of real charts for `goal`. Returns ids + a trace."""
     from app.models.models import Chart, Dashboard, DashboardChart
+    from app.services.slicer_control_service import CONTROL_H, CONTROL_W, control_row
     from app.schemas.schemas import ChartCreate
     from app.services.chart_service import ChartService
     from app.services.dataset_model_service import get_dataset_model
@@ -346,16 +347,22 @@ def build_report_starter(db: Session, *, dataset_id: int, goal: str, name: Optio
     # and the lead findings — bound by key to the charts above, computed live,
     # so no number here is written by anyone.
     headline = _headline_items(placed)
+    slicer = _slicer_for(model, kept, dataset_id)
+    # The slicer's control sits beside the headline, on the grid like any
+    # element — the report has no filter area of its own. The headline gives up
+    # the columns the control takes.
+    control_w = CONTROL_W if slicer else 0
     if headline or goal.strip():
         db.add(DashboardChart(
             dashboard_id=dash.id, chart_id=None, widget_type="narrative",
             widget_config={"variant": "headline", "items": headline, "origin": "ai",
                            **({"prose": goal.strip()[:280]} if goal.strip() else {})},
-            layout={"x": 0, "y": 0, "w": 36, "h": HEADLINE_H, "gv": 2, "pageId": PAGE},
+            layout={"x": 0, "y": 0, "w": 36 - control_w, "h": HEADLINE_H, "gv": 2, "pageId": PAGE},
         ))
-    slicer = _slicer_for(model, kept, dataset_id)
     if slicer:
         dash.slicers_config = [slicer]
+        db.add(control_row(dash.id, str(slicer["id"]), PAGE,
+                           {"x": 36 - control_w, "y": 0, "w": control_w, "h": CONTROL_H}, origin="ai"))
     db.commit()
     return {"dashboard_id": dash.id, "name": dash.name, "charts": created, "source": source,
             "candidates": len(cands), "probed": probed, "headline": [i["finding"] for i in headline],

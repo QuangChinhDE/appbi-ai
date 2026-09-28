@@ -3,9 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Report Studio V3 — Unified Grid & Slicer Freedom, scenarios S1–S14, driven as
- * an author and a viewer on a production build, with the real planner model.
- * (S15 is the V3 acceptance suite itself: acceptance/report-studio-v3.spec.ts.)
+ * Report Studio V3 — Unified Grid & Slicer Freedom, scenarios S1–S14, L, F and
+ * U, driven as an author and a viewer on a production build, with the real
+ * planner model. (S15 is the V3 acceptance suite itself: report-studio-v3.spec.ts.)
+ *
+ * A report has no filter area of its own. Every filter a viewer can change is a
+ * control ON the grid; a report saved before that (a slicer bar, rail or drawer)
+ * was migrated to controls at the top of its page. The baseline copies used
+ * below therefore arrive with their Customer-state control already placed.
  *
  * The API is used only for FIXTURES a person would not build by hand in a test
  * (a copy of the baseline, a public link, a second page). Every authoring action
@@ -20,6 +25,10 @@ const API = process.env.E2E_API_URL || 'http://localhost:8000';
 const DASH = `${API}/api/v1/dashboards`;
 const EVIDENCE = path.resolve(__dirname, '..', '..', 'docs', 'features', 'report-studio-v3', 'unified-grid', 'evidence');
 const OLIST = process.env.ACCEPT_OLIST_DASHBOARD || 'Olist commercial review';
+// A report saved with the old slicer bar (and migrated): the E2E fixture, or a
+// specific one (e.g. the report the bar was reported on) by id.
+const LEGACY = process.env.ACCEPT_LEGACY_DASHBOARD || 'E2E Presentation fixture';
+const LEGACY_ID = Number(process.env.ACCEPT_LEGACY_DASHBOARD_ID || 0) || undefined;
 const SALES_DATASET = 'E2E presentation sales';
 
 type Status = 'PASS' | 'FAIL' | 'NOT VERIFIED';
@@ -121,10 +130,12 @@ async function shot(page: Page, r: ScenarioResult, name: string) {
   const vp = page.viewportSize()!;
   const h = await page.evaluate(() => {
     const m = document.querySelector('main');
-    const inner = Array.from(document.querySelectorAll('main, div')).reduce((acc, e) => Math.max(acc, (e as HTMLElement).scrollHeight > (e as HTMLElement).clientHeight + 40 && ['auto', 'scroll'].includes(getComputedStyle(e).overflowY) ? (e as HTMLElement).scrollHeight + e.getBoundingClientRect().top : 0), 0);
+    // The page's own scroller, never a tile's (a table scrolls its rows inside
+    // its tile: counting it drew thousands of empty pixels under the report).
+    const inner = Array.from(document.querySelectorAll('main, div')).filter((e) => !e.closest('[data-grid-item-id]')).reduce((acc, e) => Math.max(acc, (e as HTMLElement).scrollHeight > (e as HTMLElement).clientHeight + 40 && ['auto', 'scroll'].includes(getComputedStyle(e).overflowY) ? (e as HTMLElement).scrollHeight + e.getBoundingClientRect().top : 0), 0);
     return Math.max(document.documentElement.scrollHeight, m ? m.scrollHeight + m.getBoundingClientRect().top : 0, inner);
   });
-  await page.setViewportSize({ width: vp.width, height: Math.min(Math.max(h, vp.height), 8000) });
+  await page.setViewportSize({ width: vp.width, height: Math.ceil(Math.min(Math.max(h, vp.height), 8000)) });
   await page.waitForTimeout(1400);
   const file = `${name}.jpg`;
   await page.screenshot({ path: path.join(EVIDENCE, file), fullPage: true, type: 'jpeg', quality: 62 });
@@ -171,6 +182,51 @@ async function chartRequestsDuring(page: Page, fn: () => Promise<void>) {
   page.on('request', onReq);
   try { await fn(); await page.waitForTimeout(1500); } finally { page.off('request', onReq); }
   return seen;
+}
+
+/**
+ * Where the report's filters are drawn. `outside`: a filter drawn anywhere but
+ * a grid element (the old bar, rail or drawer); `areas`: a filter area of its
+ * own; `controls`: the grid elements that are filter controls.
+ */
+async function filterSurfaces(page: Page) {
+  return page.evaluate(() => {
+    const outside = Array.from(document.querySelectorAll('.dashboard-slicer'))
+      .filter((e) => !e.closest('[data-grid-item-id]') && !e.closest('[role="dialog"], [data-slicer-menu]')).length;
+    const areas = document.querySelectorAll('.slicer-cluster, [data-slicer-cluster], [data-filter-dock]').length;
+    const inGrid = Array.from(document.querySelectorAll('[data-widget-type="slicer"]'))
+      .filter((e) => e.closest('.react-grid-layout [data-grid-item-id]')).length;
+    const controls = document.querySelectorAll('[data-widget-type="slicer"]').length;
+    return { outside, areas, controls, inGrid };
+  });
+}
+function checkNoFilterArea(r: ScenarioResult, where: string, s: { outside: number; areas: number; controls: number; inGrid: number }) {
+  check(r, `${where}: no filter area outside the grid`, s.outside === 0 && s.areas === 0, JSON.stringify(s));
+  check(r, `${where}: every control is an element of the grid`, s.inGrid === s.controls, JSON.stringify(s));
+}
+/** The migrated Customer-state control of a baseline copy. */
+async function stateControl(page: Page, r: ScenarioResult) {
+  const el = control(page, /Customer state/);
+  check(r, 'the baseline arrives with its Customer-state control on the grid', (await el.count()) === 1);
+  return el;
+}
+/** Switch the builder to another page through its Pages menu. */
+async function switchPage(page: Page, name: string) {
+  await page.locator('button[title="Switch page"], button[title="Chuyển trang"]').first().click();
+  await page.locator('button').filter({ has: page.locator(`span:text-is("${name}")`) }).last().click();
+  await page.waitForTimeout(1500);
+  await settle(page);
+}
+/** Remove a control through its menu (undoable, no confirmation). */
+async function removeControl(page: Page, el: Locator) {
+  const item = gridItemOf(el);
+  await item.scrollIntoViewIfNeeded();
+  await item.hover();
+  await item.getByTestId('slicer-control-menu').click();
+  const before = await controlCount(page);
+  await page.getByTestId('slicer-remove-control').click();
+  await expect.poll(() => controlCount(page), { timeout: 20_000 }).toBe(before - 1);
+  await page.waitForTimeout(900);
 }
 
 const control = (page: Page, label: string | RegExp) =>
@@ -334,6 +390,9 @@ test('S1 grid-only creation: no Canvas, whitespace kept across save and reload',
   await settle(page);
   const d = await get(request, id);
   check(r, 'the new report is a grid report', d.layout_mode === 'grid', String(d.layout_mode));
+  // A (new report): its filters are grid elements from the first render.
+  checkNoFilterArea(r, 'new report', await filterSurfaces(page));
+  check(r, 'the new report\'s filter is a control on the grid', controlsOf(d).length >= 1, `${controlsOf(d).length}`);
   // No second engine to switch to, anywhere in the builder's menus.
   await page.getByTestId('dashboard-more').click();
   await page.waitForTimeout(400);
@@ -382,7 +441,7 @@ test('S2 manual authoring: headings, callout, text, slicer; select, align, nudge
     await page.getByRole('button', { name: /^(Cancel|Close|Huỷ|Hủy|Đóng)$/ }).first().click({ timeout: 4000 }).catch(() => {});
     await page.waitForTimeout(600);
   }
-  await addSlicer(page, { existing: /Customer state/, where: 'top' });
+  await stateControl(page, r);
   const d = await get(request, id);
   const kinds = new Set(d.dashboard_charts.map((c: any) => c.widget_type === 'chart' ? c.chart?.chart_type : c.widget_type));
   for (const k of ['KPI', 'TIME_SERIES', 'BAR', 'PIE', 'TABLE', 'section_header', 'callout', 'text', 'slicer']) {
@@ -458,7 +517,17 @@ test('S2 manual authoring: headings, callout, text, slicer; select, align, nudge
 test('S3 slicer controls: add at the top and beside a chart, move, resize, restyle, survive reload', async ({ page, request }) => {
   const r = scenario('S3 slicer add/move/resize/treatment');
   const id = await openBaseline(page, request, r);
+  const migrated = await stateControl(page, r);
+  const migratedId = String(await idOfItem(migrated));
+  const withBand = await rects(page);
+  // Remove the control: its band closes, nothing else moves relative to the rest.
+  await removeControl(page, migrated);
   const beforeTop = await rects(page);
+  const bandRows = withBand[migratedId][3] + 16;
+  check(r, 'removing the only control of a band closes the band', Object.keys(beforeTop).every((k) => withBand[k][1] - beforeTop[k][1] === bandRows),
+    `band ${bandRows}px`);
+  checkNoFilterArea(r, 'control removed', await filterSurfaces(page));
+  check(r, 'the Slicer button says one filter has no control here', ((await page.getByTestId('add-slicer-unplaced-count').textContent()) ?? '').trim() === '1');
   await addSlicer(page, { existing: /Customer state/, where: 'top' });
   await settle(page);
   const state = control(page, /Customer state/);
@@ -470,7 +539,19 @@ test('S3 slicer controls: add at the top and beside a chart, move, resize, resty
   check(r, 'the control sits at the top of the page', afterTop[String(stateId)][1] === topY, `${afterTop[String(stateId)]} (top ${topY})`);
   const shift = afterTop[kpiIds[0]][1] - beforeTop[kpiIds[0]][1];
   check(r, 'the page moved down by one band to make room, keeping every gap', shift > 0 && Object.keys(beforeTop).every((k) => afterTop[k][1] - beforeTop[k][1] === shift), `shift ${shift}px`);
-  check(r, 'the filter bar no longer repeats the placed slicer', (await page.locator('main .dashboard-slicer').count()) === 1);
+  checkNoFilterArea(r, 'control placed at the top', await filterSurfaces(page));
+  // Placing at the top is one undoable step: Undo gives the page back exactly, Redo repeats it.
+  await undo(page);
+  await expect.poll(() => controlCount(page), { timeout: 20_000 }).toBe(0);
+  await page.waitForTimeout(900);
+  check(r, 'Undo of a top placement removes the control and gives the band back', JSON.stringify(await rects(page)) === JSON.stringify(beforeTop));
+  await redo(page);
+  await expect.poll(() => controlCount(page), { timeout: 20_000 }).toBe(1);
+  await page.waitForTimeout(900);
+  const redone = await rects(page);
+  const redoneState = String(await idOfItem(control(page, /Customer state/)));
+  check(r, 'Redo places it at the top again, the page moved down by the same band',
+    redone[redoneState][1] === topY && Object.keys(beforeTop).every((k) => redone[k][1] - beforeTop[k][1] === shift));
   // A second, NEW filter on a field, placed below the content.
   await addSlicer(page, { search: 'category', field: /category/i, where: 'end' });
   const cat = page.locator('main [data-widget-type="slicer"]').filter({ hasNotText: /Customer state/ }).first();
@@ -524,8 +605,7 @@ test('S3 slicer controls: add at the top and beside a chart, move, resize, resty
 test('S4 filter parity: numbers and filter context identical before and after moving, resizing, restyling', async ({ page, request }) => {
   const r = scenario('S4 filter parity');
   const id = await openBaseline(page, request, r);
-  await addSlicer(page, { existing: /Customer state/, where: 'top' });
-  const state = control(page, /Customer state/);
+  const state = await stateControl(page, r);
   const unfiltered = await kpis(page);
   await pickInControl(page, state, ['SP']);
   const t0 = Date.now();
@@ -581,8 +661,7 @@ test('S4 filter parity: numbers and filter context identical before and after mo
 test('S5 scope: a control placed where its scope hides it filters silently; page 2 shows it', async ({ page, request }) => {
   const r = scenario('S5 scope + visibility');
   const id = await openBaseline(page, request, r);
-  await addSlicer(page, { existing: /Customer state/, where: 'top' });
-  const state = control(page, /Customer state/);
+  const state = await stateControl(page, r);
   await pickInControl(page, state, ['SP']);
   await applyFilters(page);
   const filtered = await kpis(page);
@@ -604,11 +683,25 @@ test('S5 scope: a control placed where its scope hides it filters silently; page
   const offered = await page.getByTestId('add-slicer-modal').locator('[data-testid^="add-slicer-field-"]').filter({ hasText: /^Customer State/i }).count();
   check(r, 'the same field cannot get a second slicer by accident', offered === 0, `${offered}`);
   await page.keyboard.press('Escape');
+  // Page 2 (the scope shows the filter there): it has no control yet, the Slicer
+  // button says so, and the author places one — on page 2 only.
+  await switchPage(page, 'Detail');
+  check(r, 'page 2: the filter the scope shows here is listed as having no control', ((await page.getByTestId('add-slicer-unplaced-count').textContent().catch(() => '')) ?? '').trim() === '1');
+  await addSlicer(page, { existing: /Customer state/, where: 'top' });
+  check(r, 'page 2: its control is placed on the grid', (await controlCount(page)) === 1);
+  checkNoFilterArea(r, 'page 2', await filterSurfaces(page));
+  const p2 = control(page, /Customer state/).locator('[data-slicer-control]');
+  check(r, 'page 2: the control is live (the scope shows it here)', (await p2.getAttribute('data-slicer-control')) === 'ok');
+  check(r, 'page 2: it carries the same value as page 1 (one filter, two controls)', /SP/.test((await control(page, /Customer state/).textContent()) ?? ''));
+  await switchPage(page, 'Overview');
+  check(r, 'back on page 1: its control is still the hidden one', (await page.locator('main [data-widget-type="slicer"] [data-slicer-control]').first().getAttribute('data-slicer-control')) === 'hidden');
+  check(r, 'back on page 1: the numbers are unchanged by the page switch', JSON.stringify(await kpis(page)) === JSON.stringify(filtered));
   await publish(page, request, id, r);
   const token = await linkFor(request, id);
   const pub = await page.context().newPage();
   await pub.goto(`/d/${token}`);
   await settle(pub);
+  checkNoFilterArea(r, 'public page 1', await filterSurfaces(pub));
   check(r, 'public page 1: no control for the hidden slicer', (await pub.locator('[data-widget-type="slicer"] [data-slicer-control="ok"]').count()) === 0);
   check(r, 'public page 1: its value still applies silently', JSON.stringify(await kpis(pub)) === JSON.stringify(filtered));
   await shot(pub, r, 's5-public-page1-1440');
@@ -620,8 +713,7 @@ test('S5 scope: a control placed where its scope hides it filters silently; page
 test('S6 a link that locks the field: the control disappears and the viewer cannot escape the lock', async ({ page, request }) => {
   const r = scenario('S6 public locked filters');
   const id = await openBaseline(page, request, r);
-  await addSlicer(page, { existing: /Customer state/, where: 'top' });
-  await publish(page, request, id, r);
+  await stateControl(page, r);
   const locked = [{ field: 'customer_state', semanticField: 'dataset_table_3.customer_state', fieldKey: 'dataset_table_3.customer_state', datasetId: 1,
     type: 'dropdown', operator: 'in', value: ['RJ'], publicMode: 'locked', label: 'Customer state' }];
   const token = await linkFor(request, id, locked);
@@ -691,12 +783,11 @@ test('S7 AI Design (real model) composes the page with slicer controls; no inven
   await item.hover();
   await item.getByTestId('slicer-control-menu').click();
   await page.getByTestId('slicer-remove-control').click();
-  await page.getByRole('button', { name: /^(Remove|Xoá|Xóa|Delete|Gỡ|Confirm)/ }).last().click().catch(() => {});
   await expect.poll(async () => controlsOf(await get(request, id)).length, { timeout: 20_000 }).toBe(controls.length - 1);
   const dd = await get(request, id);
-  check(r9, 'removing a control keeps the filter (it returns to the filter bar)', (dd.slicers_config ?? []).length === (d.slicers_config ?? []).length);
+  check(r9, 'removing a control keeps the filter', (dd.slicers_config ?? []).length === (d.slicers_config ?? []).length);
   await settle(page);
-  check(r9, 'the filter bar draws the slicer again', (await page.locator('main .dashboard-slicer').count()) >= 1);
+  checkNoFilterArea(r9, 'after removing an AI control', await filterSurfaces(page));
   await shot(page, r9, 's9-ai-then-manual-1440');
   persist();
 });
@@ -706,7 +797,7 @@ test('S7 AI Design (real model) composes the page with slicer controls; no inven
 test('S8 a style-only AI change keeps every rectangle, slicer controls included', async ({ page, request }) => {
   const r = scenario('S8 style-only keeps geometry');
   await openBaseline(page, request, r);
-  await addSlicer(page, { existing: /Customer state/, where: 'top' });
+  await stateControl(page, r);
   await saveDraft(page);
   await settle(page);
   const geometry = await rects(page);
@@ -729,13 +820,14 @@ test('S10 a control\'s changes are undoable, saved, and published — not before
   const r = scenario('S10 save/reload/undo/redo/publish');
   const id = await openBaseline(page, request, r);
   const token = await linkFor(request, id);
-  await addSlicer(page, { existing: /Customer state/, where: 'end' });
+  await stateControl(page, r);
+  await addSlicer(page, { search: 'category', field: /category/i, where: 'end' });
   const pub = await page.context().newPage();
   await pub.goto(`/d/${token}`);
   await settle(pub);
-  check(r, 'before Publish the public report has no control yet (draft only)', (await pub.locator('[data-widget-type="slicer"]').count()) === 0);
-  check(r, 'before Publish the public filter bar still has the slicer', (await pub.locator('.dashboard-slicer').count()) >= 1);
-  const ctl = control(page, /Customer state/);
+  check(r, 'before Publish the public report has only the published control (the new one is draft only)', (await pub.locator('[data-widget-type="slicer"]').count()) === 1);
+  checkNoFilterArea(r, 'public before Publish', await filterSurfaces(pub));
+  const ctl = page.locator('main [data-widget-type="slicer"]').filter({ hasNotText: /Customer state/ }).first();
   const ctlId = String(await idOfItem(ctl));
   const item = page.locator(`main [data-grid-item-id="${ctlId}"]`);
   const treat = () => item.locator('[data-slicer-control]').getAttribute('data-slicer-treatment');
@@ -751,7 +843,8 @@ test('S10 a control\'s changes are undoable, saved, and published — not before
   await page.waitForTimeout(500);
   check(r, 'Redo restores the change', (await treat()) === 'compact');
   // Undo while a filter is active changes presentation only.
-  await pickInControl(page, ctl, ['SP']);
+  const stateCtl = control(page, /Customer state/);
+  await pickInControl(page, stateCtl, ['SP']);
   await applyFilters(page);
   const f = await kpis(page);
   const g = await rects(page);
@@ -766,8 +859,10 @@ test('S10 a control\'s changes are undoable, saved, and published — not before
   await publish(page, request, id, r);
   await pub.goto(`/d/${token}`);
   await settle(pub);
-  check(r, 'after Publish the public report draws the control where the author put it', (await pub.locator('[data-widget-type="slicer"] [data-slicer-control="ok"]').count()) === 1);
-  check(r, 'and the public report draws it with the author\'s display', (await pub.locator('[data-widget-type="slicer"] [data-slicer-control]').getAttribute('data-slicer-treatment')) === 'compact');
+  check(r, 'after Publish the public report draws both controls', (await pub.locator('[data-widget-type="slicer"] [data-slicer-control="ok"]').count()) === 2);
+  const pubNew = pub.locator('[data-widget-type="slicer"]').filter({ hasNotText: /Customer state/ }).first();
+  check(r, 'and draws the new one with the author\'s display', (await pubNew.locator('[data-slicer-control]').getAttribute('data-slicer-treatment')) === 'compact');
+  checkNoFilterArea(r, 'public after Publish', await filterSurfaces(pub));
   await pub.close();
 });
 
@@ -776,8 +871,7 @@ test('S10 a control\'s changes are undoable, saved, and published — not before
 test('S11 builder, /d, /embed and the PDF show the same controls and numbers', async ({ page, request, context }) => {
   const r = scenario('S11 builder/public/embed/PDF parity');
   const id = await openBaseline(page, request, r);
-  await addSlicer(page, { existing: /Customer state/, where: 'top' });
-  await pickInControl(page, control(page, /Customer state/), ['SP']);
+  await pickInControl(page, await stateControl(page, r), ['SP']);
   await applyFilters(page);
   await publish(page, request, id, r);
   await settle(page);
@@ -791,6 +885,7 @@ test('S11 builder, /d, /embed and the PDF show the same controls and numbers', a
     await settle(p);
     check(r, `/${surface}: same element count as the builder`, (await p.locator('[data-grid-item-id]').count()) === builderTiles);
     check(r, `/${surface}: the control is drawn`, (await p.locator('[data-widget-type="slicer"] [data-slicer-control="ok"]').count()) === 1);
+    checkNoFilterArea(r, `/${surface}`, await filterSurfaces(p));
     const nums = await kpis(p);
     check(r, `/${surface}: same numbers as the builder`, JSON.stringify(nums) === JSON.stringify(builderNums), `${builderNums} vs ${nums}`);
     await p.setViewportSize({ width: 1440, height: 900 });
@@ -816,16 +911,40 @@ test('S11 builder, /d, /embed and the PDF show the same controls and numbers', a
 
 // ── S12 · legacy and migration ─────────────────────────────────────────────
 
-test('S12 legacy: an untouched report keeps its filter bar; a migrated Canvas report opens on the grid', async ({ page, request }) => {
+test('S12 legacy: every report saved with a slicer bar opens with its filters as grid controls; a migrated Canvas report opens on the grid', async ({ page, request }) => {
   const r = scenario('S12 legacy + migration');
+  // Every migrated report on this environment: no filter area outside the grid,
+  // a control for each filter the bar drew, nothing overlapping.
+  const all = await dashboards(request);
+  const migratedBars: any[] = [];
+  for (const row of all) {
+    const d = await get(request, row.id);
+    if (d.slicer_cluster_layout?.migratedToGrid) migratedBars.push(d);
+  }
+  r.metrics.migrated_bar_reports = migratedBars.map((d) => d.id);
+  need(r, migratedBars.length > 0 ? true : undefined, 'a report migrated from the slicer bar');
+  for (const d of migratedBars.slice(0, 12)) {
+    const marker = d.slicer_cluster_layout.migratedToGrid;
+    const ids = new Set(d.dashboard_charts.map((c: any) => c.id));
+    const kept = (marker.created ?? []).filter((x: number) => ids.has(x)).length;
+    await page.setViewportSize({ width: 1440, height: 2600 });
+    await page.goto(`/dashboards/${d.id}`);
+    await settle(page);
+    const s = await filterSurfaces(page);
+    checkNoFilterArea(r, `report ${d.id}`, s);
+    if (!marker.hidden) check(r, `report ${d.id}: the controls the migration made are on the grid`, s.controls >= Math.min(1, kept), `${s.controls} drawn, ${kept} made`);
+    const a = await audit(page);
+    check(r, `report ${d.id}: no tile overlaps`, !(a?.findings ?? []).some((f) => f.code === 'tile.overlap'));
+  }
   const id = await openBaseline(page, request, r);
-  check(r, 'an untouched report keeps its filter bar', (await page.locator('main .dashboard-slicer').count()) === 1);
-  check(r, 'and has no grid control', (await controlCount(page)) === 0);
+  checkNoFilterArea(r, 'baseline copy (builder)', await filterSurfaces(page));
+  await stateControl(page, r);
   const token = await linkFor(request, id);
   const pub = await page.context().newPage();
   await pub.goto(`/d/${token}`);
   await settle(pub);
-  check(r, 'its public link still draws the slicer in the bar', (await pub.locator('.dashboard-slicer').count()) === 1);
+  checkNoFilterArea(r, 'baseline copy (public)', await filterSurfaces(pub));
+  check(r, 'its public link draws the Customer-state control on the grid', (await pub.locator('[data-widget-type="slicer"] [data-slicer-control="ok"]').count()) === 1);
   await pub.close();
   const migrated = (await dashboards(request)).find((d) => d.canvas_config?.migratedFromCanvas);
   if (!migrated) {
@@ -848,7 +967,7 @@ test('S12 legacy: an untouched report keeps its filter bar; a migrated Canvas re
 test('S13 responsive: controls stay usable at 1440 / 820 / 390 and keep the selection', async ({ page, request, context }) => {
   const r = scenario('S13 responsive');
   const id = await openBaseline(page, request, r);
-  await addSlicer(page, { existing: /Customer state/, where: 'top' });
+  await stateControl(page, r);
   await addSlicer(page, { search: 'category', field: /category/i, where: 'top' });
   await publish(page, request, id, r);
   const token = await linkFor(request, id);
@@ -883,8 +1002,7 @@ test('S13 responsive: controls stay usable at 1440 / 820 / 390 and keep the sele
 test('S14 performance: presentation edits never query data; timings recorded', async ({ page, request }) => {
   const r = scenario('S14 performance');
   const id = await openBaseline(page, request, r);
-  await addSlicer(page, { existing: /Customer state/, where: 'end' });
-  const ctl = control(page, /Customer state/);
+  const ctl = await stateControl(page, r);
   const ctlId = String(await idOfItem(ctl));
   const moves: number[] = [];
   let queries = 0;
@@ -935,15 +1053,48 @@ test('L slicer benchmark: global date at the top, category and region beside the
   await page.waitForTimeout(3000);
   await page.getByTestId('design-mode-manual').click();
   await settle(page);
-  // Global date range and the category list, both as a band at the top.
+  // What the page SAYS before any control moves: numbers, narrative, findings.
   const numbersBefore = await kpis(page);
+  const narrative = () => page.evaluate(() => Array.from(document.querySelectorAll('.dashboard-narrative__item')).map((e) => (e.textContent ?? '').replace(/\s+/g, ' ').trim()));
+  const findingsOf = async () => ((await audit(page))?.findings ?? []).map((f) => `${f.code}@${f.tileId}`).sort();
+  const sentencesBefore = await narrative();
+  const findingsBefore = await findingsOf();
+  r.metrics.narrative_before = sentencesBefore;
   await addSlicer(page, { search: 'purchase', field: /purchase/i, where: 'top' });
   const numbersAfter = await kpis(page);
   check(r, 'placing a NEW date control leaves the numbers as they were (it starts at all dates)', JSON.stringify(numbersAfter) === JSON.stringify(numbersBefore), `${numbersBefore} vs ${numbersAfter}`);
   check(r, 'every KPI still has data', numbersAfter.length > 0 && numbersAfter.every((v) => !/^R?\$?0(\.0%)?$/.test(v)), `${numbersAfter}`);
-  await addSlicer(page, { existing: /Customer state/, where: 'end' });
   await addSlicer(page, { search: 'category', field: /category/i, where: 'end' });
   await settle(page);
+  // The date control beside the headline: narrow the headline, drop the date in the gap.
+  {
+    const g = await rects(page);
+    const date = control(page, /purchase/i);
+    const dateId = String(await idOfItem(date));
+    const headId = Object.keys(g).filter((k) => k !== dateId && g[k][1] > g[dateId][1] && !(g[k][2] < 400)).sort((a, b) => g[a][1] - g[b][1])[0];
+    const head = page.locator(`main [data-grid-item-id="${headId}"]`);
+    await resize(page, head, 'e', -330, 0);
+    const g1 = await rects(page);
+    const hr = g1[headId]; const dr = g1[dateId];
+    await drag(page, date.locator('.dashboard-slicer'), (hr[0] + hr[2] + 24) - dr[0], (hr[1] + 6) - dr[1], { x: 20, y: 8 });
+    await page.waitForTimeout(900);
+    const g2 = await rects(page);
+    check(r, 'the date control sits beside the headline, in its row', Math.abs(g2[dateId][1] - g2[headId][1]) < 24 && g2[dateId][0] >= g2[headId][0] + g2[headId][2] - 4, `${g2[dateId]} vs ${g2[headId]}`);
+    check(r, 'the date control\'s band closed behind it (the headline is at the top)', Math.min(...Object.values(g2).map((v) => v[1])) === g2[headId][1], `${g2[headId]}`);
+  }
+  // The category control above the KPIs: dropped on the KPI row, it opens a row there.
+  {
+    const g = await rects(page);
+    const kpiTop = Math.min(...(await Promise.all(Object.keys(g).map(async (k) => ((await page.locator(`main [data-grid-item-id="${k}"] .dashboard-kpi-value`).count()) ? g[k][1] : Infinity)))));
+    const cat = control(page, /categor/i);
+    const catId = String(await idOfItem(cat));
+    const cr = g[catId];
+    await drag(page, cat.locator('.dashboard-slicer'), 0 - cr[0] + 4, (kpiTop + 6) - cr[1], { x: 20, y: 8 });
+    await page.waitForTimeout(900);
+    const g2 = await rects(page);
+    const kpiTop2 = Math.min(...(await Promise.all(Object.keys(g2).map(async (k) => ((await page.locator(`main [data-grid-item-id="${k}"] .dashboard-kpi-value`).count()) ? g2[k][1] : Infinity)))));
+    check(r, 'the category control sits right above the KPIs', g2[catId][1] < kpiTop2 && kpiTop2 - (g2[catId][1] + g2[catId][3]) <= 24, `control ${g2[catId]}, KPIs at ${kpiTop2}`);
+  }
   // Region control beside "Revenue by state": narrow the chart, drop the control in the gap.
   const placeBeside = async (chartTitle: string, ctlLabel: RegExp) => {
     const chart = page.locator('main [data-grid-item-id]').filter({ hasText: chartTitle }).first();
@@ -961,11 +1112,17 @@ test('L slicer benchmark: global date at the top, category and region beside the
     return ctlId;
   };
   const regionId = await placeBeside('Revenue by state', /Customer state/);
-  const categoryId = await placeBeside('Revenue by category', /categor/i);
   await saveDraft(page);
   await settle(page);
   const treat = async (tileId: string) => page.locator(`main [data-grid-item-id="${tileId}"] [data-slicer-control]`).getAttribute('data-slicer-treatment');
-  check(r, 'a contextual control beside its chart lists its values', (await treat(regionId)) === 'list' && (await treat(categoryId)) === 'list', `${await treat(regionId)} / ${await treat(categoryId)}`);
+  check(r, 'a contextual control beside its chart lists its values', (await treat(regionId)) === 'list', `${await treat(regionId)}`);
+  checkNoFilterArea(r, 'benchmark builder', await filterSurfaces(page));
+  // Moving controls changed where they are, not what the page says.
+  check(r, 'the numbers are unchanged by every move', JSON.stringify(await kpis(page)) === JSON.stringify(numbersBefore), `${numbersBefore} vs ${await kpis(page)}`);
+  check(r, 'the narrative says the same sentences', JSON.stringify(await narrative()) === JSON.stringify(sentencesBefore), JSON.stringify(await narrative()).slice(0, 300));
+  const findingsAfter = await findingsOf();
+  const newFindings = findingsAfter.filter((f) => !findingsBefore.includes(f));
+  check(r, 'the render review finds nothing it did not find before', newFindings.length === 0, newFindings.join(','));
   const a = await audit(page);
   const hard = (a?.findings ?? []).filter((f) => HARD.includes(f.code));
   check(r, 'the benchmark has no render defect in the builder', hard.length === 0, hard.map((f) => `${f.code}@${f.tileId}`).join(','));
@@ -987,7 +1144,7 @@ test('F clear a value, remove a control, delete a filter — each does only what
   const r = scenario('F clear / remove control / delete filter');
   const id = await openBaseline(page, request, r);
   const unfiltered = await kpis(page);
-  await addSlicer(page, { existing: /Customer state/, where: 'top' });
+  await stateControl(page, r);
   const ctl = () => control(page, /Customer state/);
   await pickInControl(page, ctl(), ['SP']);
   await applyFilters(page);
@@ -1000,16 +1157,12 @@ test('F clear a value, remove a control, delete a filter — each does only what
   check(r, 'and keeps the control', (await controlCount(page)) === 1);
   const d0 = await get(request, id);
   const before = [...(d0.draft_snapshot?.slicers_config ?? d0.slicers_config ?? [])].map((s: any) => s.id);
-  // Remove the CONTROL: the filter stays and returns to the bar.
-  const item = gridItemOf(ctl());
-  await item.hover();
-  await item.getByTestId('slicer-control-menu').click();
-  await page.getByTestId('slicer-remove-control').click();
-  await page.getByRole('button', { name: /^Remove$/ }).last().click();
-  await expect.poll(() => controlCount(page), { timeout: 20_000 }).toBe(0);
+  // Remove the CONTROL: the filter stays (the Slicer button lists it), no filter area appears.
+  await removeControl(page, ctl());
   const d1 = await get(request, id);
   check(r, 'removing the control keeps the filter entry', JSON.stringify([...(d1.draft_snapshot?.slicers_config ?? d1.slicers_config ?? [])].map((s: any) => s.id)) === JSON.stringify(before));
-  check(r, 'the filter bar draws it again', (await page.locator('main .dashboard-slicer').count()) === 1);
+  check(r, 'the Slicer button lists the filter as having no control', ((await page.getByTestId('add-slicer-unplaced-count').textContent()) ?? '').trim() === '1');
+  checkNoFilterArea(r, 'control removed', await filterSurfaces(page));
   // Place it again, then DELETE the filter: entry and every control go.
   await addSlicer(page, { existing: /Customer state/, where: 'end' });
   page.once('dialog', (dlg) => dlg.accept());
@@ -1026,4 +1179,173 @@ test('F clear a value, remove a control, delete a filter — each does only what
   await settle(page);
   check(r, 'after reload nothing points at the deleted filter', (await controlCount(page)) === 0 && (await page.locator('main .dashboard-slicer').filter({ hasText: /Customer state/ }).count()) === 0);
   check(r, 'and the report is unfiltered', JSON.stringify(await kpis(page)) === JSON.stringify(unfiltered));
+});
+
+// ── U · a legacy report: controls are elements among the visuals ───────────
+
+/** Every grid element's rectangle, on any surface (builder, /d, /embed). */
+const gridRects = (page: Page) => page.evaluate(() => {
+  const g = document.querySelector('.react-grid-layout')?.getBoundingClientRect();
+  return Object.fromEntries(Array.from(document.querySelectorAll('.react-grid-layout [data-grid-item-id]')).map((e) => {
+    const b = e.getBoundingClientRect();
+    return [e.getAttribute('data-grid-item-id'), [Math.round(b.x - (g?.x ?? 0)), Math.round(b.y - (g?.y ?? 0)), Math.round(b.width), Math.round(b.height)]];
+  }));
+}) as Promise<Record<string, number[]>>;
+const kpiTileIds = (page: Page) => page.evaluate(() => Array.from(document.querySelectorAll('[data-grid-item-id]'))
+  .filter((e) => e.querySelector('.dashboard-kpi-value')).map((e) => e.getAttribute('data-grid-item-id')!)) as Promise<string[]>;
+const slicerTileIds = (page: Page) => page.evaluate(() => Array.from(document.querySelectorAll('[data-grid-item-id]'))
+  .filter((e) => e.querySelector('[data-widget-type="slicer"]')).map((e) => e.getAttribute('data-grid-item-id')!)) as Promise<string[]>;
+
+test('U legacy report: controls move between the KPIs and the charts, no band is left behind, every surface agrees', async ({ page, request, context }) => {
+  const r = scenario('U unified grid on a legacy report');
+  const src = LEGACY_ID ?? await idOf(request, LEGACY);
+  const id = await copyOf(request, need(r, src, `legacy report "${LEGACY_ID ?? LEGACY}"`));
+  r.metrics.legacy_source = src;
+  await page.setViewportSize({ width: 1440, height: 2600 });
+  await page.goto(`/dashboards/${id}`);
+  await settle(page);
+  checkNoFilterArea(r, 'legacy report (builder)', await filterSurfaces(page));
+  const ctlIds = await slicerTileIds(page);
+  need(r, ctlIds.length >= 2 ? ctlIds.length : undefined, 'a legacy report with at least two filter controls');
+  await shot(page, r, 'U-legacy-opened-1440');
+  const g0 = await gridRects(page);
+  const kpiIds = await kpiTileIds(page);
+  need(r, kpiIds.length ? kpiIds.length : undefined, 'KPI tiles on the legacy report');
+  const [c0, c1] = [...ctlIds].sort((a, b) => g0[a][0] - g0[b][0]);
+  const kpiTop = Math.min(...kpiIds.map((k) => g0[k][1]));
+  const kpiBottom = Math.max(...kpiIds.map((k) => g0[k][1] + g0[k][3]));
+  check(r, 'the migrated controls start at the top, above the KPIs', g0[c0][1] < kpiTop && g0[c1][1] < kpiTop, `${g0[c0]} / ${g0[c1]}, KPIs at ${kpiTop}`);
+  const nextId = Object.keys(g0).filter((k) => g0[k][1] >= kpiBottom).sort((a, b) => g0[a][1] - g0[b][1] || g0[a][0] - g0[b][0])[0];
+  const nums0 = await kpis(page);
+  const table0 = await tableText(page);
+  r.metrics.kpis = nums0;
+
+  // 1 · the first control dropped on the row under the KPIs: it opens a row there.
+  const ctl = (tileId: string) => page.locator(`main [data-grid-item-id="${tileId}"] .dashboard-slicer`).first();
+  const reqs1 = await chartRequestsDuring(page, async () => {
+    r.metrics.drag1_ms = await drag(page, ctl(c0), g0[nextId][0] - g0[c0][0], (g0[nextId][1] + 6) - g0[c0][1], { x: 20, y: 8 });
+    await page.waitForTimeout(900);
+  });
+  const g1 = await gridRects(page);
+  check(r, 'the first control lands between the KPIs and the next row', g1[c0][1] >= Math.max(...kpiIds.map((k) => g1[k][1] + g1[k][3]))
+    && g1[nextId][1] >= g1[c0][1] + g1[c0][3], `control ${g1[c0]}, next ${g1[nextId]}`);
+  // 2 · the second one beside it: the top band is now empty and closes.
+  const reqs2 = await chartRequestsDuring(page, async () => {
+    r.metrics.drag2_ms = await drag(page, ctl(c1), (g1[c0][0] + g1[c0][2] + 16) - g1[c1][0], (g1[c0][1] + 6) - g1[c1][1], { x: 20, y: 8 });
+    await page.waitForTimeout(900);
+  });
+  const g2 = await gridRects(page);
+  const top2 = Math.min(...Object.values(g2).map((v) => v[1]));
+  const kpiEnd2 = Math.max(...kpiIds.map((k) => g2[k][1] + g2[k][3]));
+  check(r, 'both controls share the row under the KPIs', g2[c1][1] === g2[c0][1] && g2[c1][0] > g2[c0][0], `${g2[c0]} / ${g2[c1]}`);
+  check(r, 'the emptied top band closed: the KPIs are the first row again', kpiIds.every((k) => g2[k][1] === top2), `KPIs ${kpiIds.map((k) => g2[k][1])}, top ${top2}`);
+  check(r, 'no whitespace is kept around the controls', g2[nextId][1] - (g2[c0][1] + g2[c0][3]) <= 24 && g2[c0][1] - kpiEnd2 <= 24,
+    `KPIs end ${kpiEnd2}, controls ${g2[c0]}, next ${g2[nextId]}`);
+  check(r, 'the rest of the page is where it was (above the controls up by the band, below unchanged)', Object.keys(g0).filter((k) => !ctlIds.includes(k)).every((k) => {
+    const band = g0[c0][3] + 16;
+    return g0[k][1] >= kpiBottom ? g2[k][1] === g0[k][1] : g2[k][1] === g0[k][1] - band;
+  }), JSON.stringify(Object.fromEntries(Object.keys(g0).map((k) => [k, [g0[k][1], g2[k][1]]]))));
+  check(r, 'a control keeps its size (never inflated into a tall card)', ctlIds.every((k) => g2[k][3] === g0[k][3] && g2[k][3] <= 120), ctlIds.map((k) => g2[k][3]).join(','));
+  check(r, 'moving controls queried no chart data', reqs1.length + reqs2.length === 0, `${reqs1.length + reqs2.length}`);
+  check(r, 'every KPI is identical after the moves', JSON.stringify(await kpis(page)) === JSON.stringify(nums0));
+  check(r, 'the table is identical after the moves', (await tableText(page)) === table0);
+  checkNoFilterArea(r, 'after the moves', await filterSurfaces(page));
+  // A click on the value opens its menu, over the charts, and moves nothing.
+  const pre = await gridRects(page);
+  await ctl(c0).locator('button[aria-expanded][aria-label]').first().click();
+  const menu = page.locator('[data-slicer-menu]');
+  await menu.waitFor({ timeout: 15_000 });
+  const mb = (await menu.boundingBox())!;
+  const onTop = await menu.evaluate((m) => {
+    const b = m.getBoundingClientRect();
+    const hit = document.elementFromPoint(b.x + b.width / 2, b.y + Math.min(b.height - 4, 40));
+    return !!hit && m.contains(hit);
+  });
+  check(r, 'the value menu opens on top of the page, not clipped by the grid', onTop && mb.height > 60, JSON.stringify(mb));
+  check(r, 'clicking a value is not a drag', JSON.stringify(await gridRects(page)) === JSON.stringify(pre));
+  await shot(page, r, 'U-menu-open-1440');
+  await page.keyboard.press('Escape');
+  await page.mouse.click(8, 300);
+  await shot(page, r, 'U-moved-builder-1440');
+  // Undo and Redo walk the two moves exactly.
+  await undo(page); await page.waitForTimeout(700);
+  check(r, 'Undo returns the second control (and reopens the band)', JSON.stringify(await gridRects(page)) === JSON.stringify(g1));
+  await undo(page); await page.waitForTimeout(700);
+  check(r, 'Undo again returns the page exactly as it opened', JSON.stringify(await gridRects(page)) === JSON.stringify(g0));
+  await redo(page); await page.waitForTimeout(700);
+  await redo(page); await page.waitForTimeout(700);
+  check(r, 'Redo twice repeats both moves exactly', JSON.stringify(await gridRects(page)) === JSON.stringify(g2));
+  await saveDraft(page);
+  await page.reload();
+  await settle(page);
+  check(r, 'every position survives save and reload', JSON.stringify(await gridRects(page)) === JSON.stringify(g2));
+
+  // Studio Preview draws the same native controls in both frames.
+  await openAi(page);
+  await page.getByTestId('ai-design-direction-executive').click();
+  const preview = await page.getByTestId('ai-design-apply').waitFor({ timeout: 90_000 }).then(() => true).catch(() => false);
+  if (!preview) r.notes.push('Studio Preview: the Executive direction produced no preview within 90s — NOT VERIFIED');
+  else {
+    await page.getByTestId('ai-design-preview-full').click();
+    await page.getByTestId('studio-view-compare').click();
+    const settled = await expect.poll(() => page.locator('[data-studio-frame][data-studio-settled="true"]').count(), { timeout: 60_000 }).toBe(2).then(() => true).catch(() => false);
+    check(r, 'both Studio frames settled', settled);
+    const frames = page.frames().filter((f) => /studio=preview/.test(f.url()));
+    check(r, 'the Studio shows two frames', frames.length === 2, `${frames.length}`);
+    for (const f of frames) {
+      const s = await f.evaluate(() => ({
+        outside: Array.from(document.querySelectorAll('.dashboard-slicer')).filter((e) => !e.closest('[data-grid-item-id]')).length,
+        areas: document.querySelectorAll('.slicer-cluster, [data-slicer-cluster], [data-filter-dock]').length,
+        controls: document.querySelectorAll('[data-widget-type="slicer"]').length,
+        inGrid: Array.from(document.querySelectorAll('[data-widget-type="slicer"]')).filter((e) => e.closest('.react-grid-layout [data-grid-item-id]')).length,
+      }));
+      const frame = new URL(f.url()).searchParams.get('frame') ?? '?';
+      checkNoFilterArea(r, `Studio frame "${frame}"`, s);
+      check(r, `Studio frame "${frame}" draws the controls natively`, s.controls >= 2, JSON.stringify(s));
+    }
+    await page.screenshot({ path: path.join(EVIDENCE, 'U-studio-compare-1440.jpg'), type: 'jpeg', quality: 62 });
+    r.evidence.push('U-studio-compare-1440.jpg');
+    await page.getByTestId('studio-close').click();
+    await page.getByTestId('ai-design-discard').click({ timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(1500);
+    check(r, "discarding the preview leaves the author's layout", JSON.stringify(await gridRects(page)) === JSON.stringify(g2));
+  }
+
+  await page.getByTestId('design-mode-manual').click().catch(() => {});
+  await publish(page, request, id, r);
+  const token = await linkFor(request, id);
+  for (const surface of ['d', 'embed'] as const) {
+    const p = await context.newPage();
+    await p.setViewportSize({ width: 1440, height: 2600 });
+    await p.goto(`/${surface}/${token}`);
+    await settle(p);
+    checkNoFilterArea(r, `/${surface}`, await filterSurfaces(p));
+    const pg = await gridRects(p);
+    const pk = await kpiTileIds(p);
+    const pc = await slicerTileIds(p);
+    const pkBottom = Math.max(...pk.map((k) => pg[k][1] + pg[k][3]));
+    check(r, `/${surface}: the controls are drawn between the KPIs and the charts, as published`,
+      pc.length === ctlIds.length && pc.every((k) => pg[k][1] >= pkBottom && pg[k][1] < pg[nextId][1]), JSON.stringify(pc.map((k) => pg[k])));
+    check(r, `/${surface}: the same numbers as the builder`, JSON.stringify(await kpis(p)) === JSON.stringify(nums0));
+    await p.close();
+  }
+  await publicShots(context, `/d/${token}`, r, 'U-public');
+  await publicShots(context, `/embed/${token}`, r, 'U-embed');
+  // The PDF: no gap where the old bar was (its pages are rendered next to it for review).
+  const p = await context.newPage();
+  await p.setViewportSize({ width: 1440, height: 900 });
+  await p.goto(`/d/${token}`);
+  await settle(p);
+  const download = p.waitForEvent('download', { timeout: 240_000 });
+  await p.getByRole('button', { name: /^Export PDF$/ }).first().click();
+  await p.getByRole('button', { name: /^Export PDF$/ }).last().click();
+  const file = await download;
+  const bytes = fs.readFileSync((await file.path())!);
+  check(r, 'the export is a PDF', bytes.subarray(0, 4).toString() === '%PDF');
+  const outcome = await p.evaluate(() => (window as any).__APPBI_LAST_EXPORT__ ?? null);
+  r.metrics.export = outcome;
+  check(r, 'the export has nothing missing', !!outcome && outcome.warnings.filter((w: any) => w.kind === 'incomplete').length === 0, JSON.stringify(outcome?.warnings ?? []));
+  fs.writeFileSync(path.join(EVIDENCE, 'U-export.pdf'), bytes);
+  r.evidence.push('U-export.pdf');
+  await p.close();
 });
