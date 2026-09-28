@@ -516,7 +516,6 @@ test('S3 slicer controls: add at the top and beside a chart, move, resize, resty
   await shot(page, r, 's3-slicers-builder-1440');
   await publish(page, request, id, r);
   const token = await linkFor(request, id);
-  r.metrics.token = token;
   await publicShots(page.context(), `/d/${token}`, r, 's3-public');
 });
 
@@ -980,4 +979,51 @@ test('L slicer benchmark: global date at the top, category and region beside the
   const token = await linkFor(request, id);
   await publicShots(context, `/d/${token}`, r, 'L-benchmark-public');
   await publicShots(context, `/embed/${token}`, r, 'L-benchmark-embed');
+});
+
+// ── F · clear value / remove control / delete filter are different acts ─────
+
+test('F clear a value, remove a control, delete a filter — each does only what it says', async ({ page, request }) => {
+  const r = scenario('F clear / remove control / delete filter');
+  const id = await openBaseline(page, request, r);
+  const unfiltered = await kpis(page);
+  await addSlicer(page, { existing: /Customer state/, where: 'top' });
+  const ctl = () => control(page, /Customer state/);
+  await pickInControl(page, ctl(), ['SP']);
+  await applyFilters(page);
+  const sp = await kpis(page);
+  check(r, 'SP is applied', JSON.stringify(sp) !== JSON.stringify(unfiltered));
+  // Clear the VALUE: the filter and its control stay, the report is unfiltered.
+  await pickInControl(page, ctl(), ['SP']);
+  await applyFilters(page);
+  check(r, 'clearing the value unfilters the report', JSON.stringify(await kpis(page)) === JSON.stringify(unfiltered));
+  check(r, 'and keeps the control', (await controlCount(page)) === 1);
+  const d0 = await get(request, id);
+  const before = [...(d0.draft_snapshot?.slicers_config ?? d0.slicers_config ?? [])].map((s: any) => s.id);
+  // Remove the CONTROL: the filter stays and returns to the bar.
+  const item = gridItemOf(ctl());
+  await item.hover();
+  await item.getByTestId('slicer-control-menu').click();
+  await page.getByTestId('slicer-remove-control').click();
+  await page.getByRole('button', { name: /^Remove$/ }).last().click();
+  await expect.poll(() => controlCount(page), { timeout: 20_000 }).toBe(0);
+  const d1 = await get(request, id);
+  check(r, 'removing the control keeps the filter entry', JSON.stringify([...(d1.draft_snapshot?.slicers_config ?? d1.slicers_config ?? [])].map((s: any) => s.id)) === JSON.stringify(before));
+  check(r, 'the filter bar draws it again', (await page.locator('main .dashboard-slicer').count()) === 1);
+  // Place it again, then DELETE the filter: entry and every control go.
+  await addSlicer(page, { existing: /Customer state/, where: 'end' });
+  page.once('dialog', (dlg) => dlg.accept());
+  const item2 = gridItemOf(ctl());
+  await item2.hover();
+  await item2.getByTestId('slicer-control-menu').click();
+  await page.getByTestId('slicer-delete-filter').click();
+  await expect.poll(async () => controlsOf(await get(request, id)).length, { timeout: 20_000 }).toBe(0);
+  const d2 = await get(request, id);
+  const left = [...(d2.draft_snapshot?.slicers_config ?? d2.slicers_config ?? [])].map((s: any) => s.id);
+  check(r, 'deleting the filter removes its entry', !left.includes('slicer-state'), JSON.stringify(left));
+  check(r, 'and every control for it', controlsOf(d2).length === 0);
+  await page.reload();
+  await settle(page);
+  check(r, 'after reload nothing points at the deleted filter', (await controlCount(page)) === 0 && (await page.locator('main .dashboard-slicer').filter({ hasText: /Customer state/ }).count()) === 0);
+  check(r, 'and the report is unfiltered', JSON.stringify(await kpis(page)) === JSON.stringify(unfiltered));
 });

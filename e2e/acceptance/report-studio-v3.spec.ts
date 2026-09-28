@@ -12,7 +12,11 @@ import path from 'node:path';
 
 const API = process.env.E2E_API_URL || 'http://localhost:8000';
 const DASH = `${API}/api/v1/dashboards`;
-const EVIDENCE = path.resolve(__dirname, '..', '..', 'docs', 'features', 'report-studio-v3', 'evidence');
+// ACCEPT_EVIDENCE_DIR re-runs the suite as a REGRESSION without overwriting
+// the release-candidate evidence it produced for its own head.
+const EVIDENCE = process.env.ACCEPT_EVIDENCE_DIR
+  ? path.resolve(process.env.ACCEPT_EVIDENCE_DIR)
+  : path.resolve(__dirname, '..', '..', 'docs', 'features', 'report-studio-v3', 'evidence');
 const OLIST = process.env.ACCEPT_OLIST_DASHBOARD || 'Olist commercial review';
 const OLIST_DATASET = 'Olist E-Commerce';
 const SALES_DATASET = 'E2E presentation sales';

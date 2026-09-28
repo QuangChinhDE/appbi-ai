@@ -1,0 +1,410 @@
+{
+  "sha": "f5d0a883651710f90130034e300db71a7e95f3e0",
+  "ranAt": "2026-09-28T05:48:32.221Z",
+  "results": {
+    "S1 grid-only creation": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the new report is a grid report (grid)",
+        "PASS — no Canvas mode is offered",
+        "PASS — a write asking for Canvas is stored as grid (status 200, stored grid)",
+        "PASS — the tile moved down, leaving a gap above it (16,1264,1278,432 → 16,1456,1278,432)",
+        "PASS — after save and reload the gap is still there (no auto-pack, no jump) (16,1456,1278,432 vs 16,1456,1278,432)",
+        "PASS — no other tile moved"
+      ],
+      "metrics": {
+        "create_ms": 7830
+      },
+      "evidence": [
+        "s1-grid-only-builder-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S2 manual authoring": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the page holds a KPI",
+        "PASS — the page holds a TIME_SERIES",
+        "PASS — the page holds a BAR",
+        "PASS — the page holds a PIE",
+        "PASS — the page holds a TABLE",
+        "PASS — the page holds a section_header",
+        "PASS — the page holds a callout",
+        "PASS — the page holds a text",
+        "PASS — the page holds a slicer",
+        "PASS — selecting two elements shows the Arrange tools",
+        "PASS — align left lines them up — or refuses and names the tile in the way (16,1968,1278,80 / 196,2064,415,176 → 16,1968,1278,80 / 16,2064,415,176)",
+        "PASS — Arrow key nudges the selected element (16,2064,415,176 → 52,2064,415,176)",
+        "PASS — Undo returns it exactly",
+        "PASS — Redo repeats it exactly",
+        "PASS — a nudge either moves into free space or is refused with the tile named — never overlaps",
+        "PASS — a locked element stays put",
+        "PASS — no coordinates or JSON are shown to the author"
+      ],
+      "metrics": {},
+      "evidence": [
+        "s2-elements-1440.jpg",
+        "s2-arranged-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S3 slicer add/move/resize/treatment": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the control sits at the top of the page (16,16,272,80 (top 16))",
+        "PASS — the page moved down by one band to make room, keeping every gap (shift 96px)",
+        "PASS — the filter bar no longer repeats the placed slicer",
+        "PASS — the new filter exists as a slicer entry (semantics), the control only names it ([{\"slicerId\":\"slicer-state\",\"treatment\":\"auto\",\"origin\":\"author\"},{\"slicerId\":\"gf-1790572274772\",\"treatment\":\"auto\",\"origin\":\"author\"}])",
+        "PASS — the control now sits beside the chart it is read with (16,1968,272,80 → 340,752,272,80 (chart 16,752,308,432))",
+        "PASS — a tall control shows its values as a list",
+        "PASS — the author can choose the control's display",
+        "PASS — every position survives save and reload",
+        "PASS — the display choice survives reload",
+        "PASS — s3-public at 1440px: no render defect",
+        "PASS — s3-public at 1440px: no sideways scroll",
+        "PASS — s3-public at 1440px: no control takes more than half the screen ([80,304])",
+        "PASS — s3-public at 1440px: every control is at least a usable size ([[284,80],[284,304]])",
+        "PASS — s3-public at 820px: no render defect",
+        "PASS — s3-public at 820px: no sideways scroll",
+        "PASS — s3-public at 820px: no control takes more than half the screen ([80,304])",
+        "PASS — s3-public at 820px: every control is at least a usable size ([[273,80],[273,304]])",
+        "PASS — s3-public at 390px: no render defect",
+        "PASS — s3-public at 390px: no sideways scroll",
+        "PASS — s3-public at 390px: no control takes more than half the screen ([72,277])",
+        "PASS — s3-public at 390px: every control is at least a usable size ([[310,72],[310,277]])"
+      ],
+      "metrics": {
+        "new_filter_label": "Product Category NameAll",
+        "slicer_entries": [
+          "Customer state",
+          "Product Category Name"
+        ],
+        "drag_gesture_ms": 455,
+        "publish_ms": 552
+      },
+      "evidence": [
+        "s3-slicers-builder-1440.jpg",
+        "s3-public-1440.jpg",
+        "s3-public-820.jpg",
+        "s3-public-390.jpg"
+      ],
+      "notes": []
+    },
+    "S4 filter parity": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the control filters the report (KPIs change) (R$13.6M,98.7K,R$137.8,91.9%,4.1 → R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — move to the right: no chart data was re-queried (0 request(s))",
+        "PASS — move to the right: every KPI is identical (R$5.2M,41.4K,R$125.8,94.1%,4.2 vs R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — resize wider: no chart data was re-queried (0 request(s))",
+        "PASS — resize wider: every KPI is identical (R$5.2M,41.4K,R$125.8,94.1%,4.2 vs R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — restyle as buttons: no chart data was re-queried (0 request(s))",
+        "PASS — restyle as buttons: every KPI is identical (R$5.2M,41.4K,R$125.8,94.1%,4.2 vs R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — the table is identical after all three",
+        "PASS — every chart is queried with the same state filter (SP), nothing else ([{\"field\":\"customer_state\",\"operator\":\"in\",\"value\":[\"SP\"],\"semanticField\":\"dataset_table_3.customer_state\",\"datasetId\":1}])",
+        "PASS — after reload the numbers are the same",
+        "PASS — the published report at 1440px shows the same numbers (R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — the published report at 390px shows the same numbers (R$5.2M,41.4K,R$125.8,94.1%,4.2)"
+      ],
+      "metrics": {
+        "filter_apply_to_numbers_ms": 4229,
+        "filter_context_after": [
+          "[{\"field\":\"customer_state\",\"operator\":\"in\",\"value\":[\"SP\"],\"semanticField\":\"dataset_table_3.customer_state\",\"datasetId\":1}]"
+        ],
+        "publish_ms": 473,
+        "kpis": {
+          "unfiltered": [
+            "R$13.6M",
+            "98.7K",
+            "R$137.8",
+            "91.9%",
+            "4.1"
+          ],
+          "filtered": [
+            "R$5.2M",
+            "41.4K",
+            "R$125.8",
+            "94.1%",
+            "4.2"
+          ]
+        }
+      },
+      "evidence": [],
+      "notes": []
+    },
+    "S5 scope + visibility": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — builder: the control is shown to the author as hidden here",
+        "PASS — builder: it says it still filters this page",
+        "PASS — builder: the numbers are still filtered (scope, not placement, decides)",
+        "PASS — the same field cannot get a second slicer by accident (0)",
+        "PASS — public page 1: no control for the hidden slicer",
+        "PASS — public page 1: its value still applies silently"
+      ],
+      "metrics": {
+        "publish_ms": 471
+      },
+      "evidence": [
+        "s5-public-page1-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S6 public locked filters": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the open link shows the control",
+        "PASS — the locked link shows no control for the locked field",
+        "PASS — the locked link's numbers are the locked value (RJ), not all (R$13.6M,98.7K,R$137.8,91.9%,4.1 vs R$1.8M,12.8K,R$142.9,86.5%,3.9)",
+        "PASS — no editable control for the locked field anywhere on the page"
+      ],
+      "metrics": {
+        "publish_ms": 465,
+        "probe": {
+          "sess": 0
+        }
+      },
+      "evidence": [
+        "s6-locked-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S7 AI redesign with slicers": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the design placed the filter on the page as a control (1)",
+        "PASS — every AI control is draft-only until Publish",
+        "PASS — an AI control names a slicer the report has, nothing else ([{\"slicerId\":\"slicer-state\",\"treatment\":\"auto\",\"origin\":\"ai\"}])",
+        "PASS — the numbers are unchanged by the redesign (R$13.6M,98.7K,R$137.8,91.9%,4.1 vs R$13.6M,98.7K,R$137.8,91.9%,4.1)",
+        "PASS — any text the AI added is bound to findings, never typed numbers ([])",
+        "PASS — no render defect after Apply"
+      ],
+      "metrics": {
+        "s7_preview_ms": 4004,
+        "panel": "AI Design\n\nDescribe the look you want. Your layout stays as you built it unless you ask to rearrange; charts and data never change.\n\nWhole page (Overview). Style-only unless you ask to move things — select visuals to narrow it.\n\nRedesign the whole page for a regional sales review: put the report's filters on the page as a filter band at the top, then the headline numbers, then the charts. Keep every number live.\n\nReorganized the page to prioritize regional sales review with filters at the top, followed by key performance indicators and supporting charts.\n\nPage recomposed\n\nMoved 12 visuals\nResized 12 visuals\nRestyled 11 visuals\nAdded 5 text block(s) bound to live findings\nFilters moved\nTheme updated\n\nNEEDS YOUR APPROVAL\n\nThese change what a chart says, so they are applied only if you accept. Accepted changes are saved with the draft and recorded.\n\nSort this ranking by value, largest first\n\n1, 3, 5, 2→5, 4, 1, 3\n\nAccept\nReject\n\nPreviewing — nothing is saved yet\n\nPreview full report\nDiscard\nApply design"
+      },
+      "evidence": [
+        "s7-ai-builder-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S8 style-only keeps geometry": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the preview moves or resizes nothing",
+        "PASS — after Apply every rectangle is unchanged, the control's too"
+      ],
+      "metrics": {
+        "s8_preview_ms": 4005
+      },
+      "evidence": [
+        "s8-style-applied-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S10 save/reload/undo/redo/publish": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — before Publish the public report has no control yet (draft only)",
+        "PASS — before Publish the public filter bar still has the slicer",
+        "PASS — restyle applies",
+        "PASS — Undo restores the display (theme)",
+        "PASS — Redo restores the change",
+        "PASS — Undo of a move while a filter is active restores the place, not the filter",
+        "PASS — after reload the display is kept",
+        "PASS — after Publish the public report draws the control where the author put it",
+        "PASS — and the public report draws it with the author's display"
+      ],
+      "metrics": {
+        "publish_ms": 447
+      },
+      "evidence": [],
+      "notes": []
+    },
+    "S11 builder/public/embed/PDF parity": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — /d: same element count as the builder",
+        "PASS — /d: the control is drawn",
+        "PASS — /d: same numbers as the builder (R$5.2M,41.4K,R$125.8,94.1%,4.2 vs R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — the export is a PDF",
+        "PASS — the export has nothing missing ([])",
+        "PASS — /embed: same element count as the builder",
+        "PASS — /embed: the control is drawn",
+        "PASS — /embed: same numbers as the builder (R$5.2M,41.4K,R$125.8,94.1%,4.2 vs R$5.2M,41.4K,R$125.8,94.1%,4.2)"
+      ],
+      "metrics": {
+        "publish_ms": 869,
+        "export_ms": 2436,
+        "export": {
+          "pages": 3,
+          "minPrintScale": 0.7521665486903157,
+          "warnings": []
+        }
+      },
+      "evidence": [
+        "s11-d-1440.jpg",
+        "s11-export.pdf",
+        "s11-embed-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S12 legacy + migration": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — an untouched report keeps its filter bar",
+        "PASS — and has no grid control",
+        "PASS — its public link still draws the slicer in the bar",
+        "PASS — the migrated report is a grid report",
+        "PASS — the migrated report's tiles do not overlap",
+        "PASS — every tile has a grid cell"
+      ],
+      "metrics": {},
+      "evidence": [
+        "s12-migrated-builder-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S13 responsive": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — s13-public at 1440px: no render defect",
+        "PASS — s13-public at 1440px: no sideways scroll",
+        "PASS — s13-public at 1440px: no control takes more than half the screen ([80,80])",
+        "PASS — s13-public at 1440px: every control is at least a usable size ([[284,80],[284,80]])",
+        "PASS — s13-public at 820px: no render defect",
+        "PASS — s13-public at 820px: no sideways scroll",
+        "PASS — s13-public at 820px: no control takes more than half the screen ([80,80])",
+        "PASS — s13-public at 820px: every control is at least a usable size ([[253,80],[253,80]])",
+        "PASS — s13-public at 390px: no render defect",
+        "PASS — s13-public at 390px: no sideways scroll",
+        "PASS — s13-public at 390px: no control takes more than half the screen ([72,72])",
+        "PASS — s13-public at 390px: every control is at least a usable size ([[310,72],[310,72]])",
+        "PASS — narrowing to a phone keeps the viewer's selection",
+        "PASS — and the same numbers",
+        "PASS — the value menu fits a 390px screen ({\"x\":40,\"y\":244,\"width\":310,\"height\":339.5})"
+      ],
+      "metrics": {
+        "publish_ms": 450
+      },
+      "evidence": [
+        "s13-public-1440.jpg",
+        "s13-public-820.jpg",
+        "s13-public-390.jpg",
+        "s13-menu-390.jpg"
+      ],
+      "notes": []
+    },
+    "S14 performance": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — moving a control 4 times queried no chart data (0)",
+        "PASS — publish finished within the V3 range (≤ 5 s) (917 ms)",
+        "PASS — a move settles quickly (median ≤ 1500 ms including the gesture) (510,465,536,522)"
+      ],
+      "metrics": {
+        "drag_to_settled_ms": [
+          510,
+          465,
+          536,
+          522
+        ],
+        "longtask_probe": {
+          "po": true,
+          "tasks": []
+        },
+        "filter_apply_ms": 4611,
+        "publish_ms": 917,
+        "layout_after": [
+          16,
+          1872,
+          272,
+          80
+        ]
+      },
+      "evidence": [],
+      "notes": []
+    },
+    "S9 AI report stays manually editable": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the AI-created control moves like any element (8,8,318,80 → 442,8,318,80)",
+        "PASS — the author can restyle an AI control",
+        "PASS — removing a control keeps the filter (it returns to the filter bar)",
+        "PASS — the filter bar draws the slicer again"
+      ],
+      "metrics": {},
+      "evidence": [
+        "s9-ai-then-manual-1440.jpg"
+      ],
+      "notes": []
+    },
+    "L slicer benchmark": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — placing a NEW date control leaves the numbers as they were (it starts at all dates) (R$13.6M,98.7K,R$137.8,91.9%,4.1 vs R$13.6M,98.7K,R$137.8,91.9%,4.1)",
+        "PASS — every KPI still has data (R$13.6M,98.7K,R$137.8,91.9%,4.1)",
+        "PASS — the /Customer state/ control sits beside \"Revenue by state\" (346,1792,262,323 vs 24,1792,298,427)",
+        "PASS — the /categor/i control sits beside \"Revenue by category\" (989,1341,262,323 vs 667,1341,298,427)",
+        "PASS — a contextual control beside its chart lists its values (list / list)",
+        "PASS — the benchmark has no render defect in the builder",
+        "PASS — L-benchmark-public at 1440px: no render defect",
+        "PASS — L-benchmark-public at 1440px: no sideways scroll",
+        "PASS — L-benchmark-public at 1440px: no control takes more than half the screen ([80,323,323])",
+        "PASS — L-benchmark-public at 1440px: every control is at least a usable size ([[274,80],[274,323],[274,323]])",
+        "PASS — L-benchmark-public at 820px: no render defect",
+        "PASS — L-benchmark-public at 820px: no sideways scroll",
+        "PASS — L-benchmark-public at 820px: no control takes more than half the screen ([80,323,323])",
+        "PASS — L-benchmark-public at 820px: every control is at least a usable size ([[712,80],[262,323],[262,323]])",
+        "PASS — L-benchmark-public at 390px: no render defect",
+        "PASS — L-benchmark-public at 390px: no sideways scroll",
+        "PASS — L-benchmark-public at 390px: no control takes more than half the screen ([72,296,296])",
+        "PASS — L-benchmark-public at 390px: every control is at least a usable size ([[294,72],[294,296],[294,296]])",
+        "PASS — L-benchmark-embed at 1440px: no render defect",
+        "PASS — L-benchmark-embed at 1440px: no sideways scroll",
+        "PASS — L-benchmark-embed at 1440px: no control takes more than half the screen ([80,323,323])",
+        "PASS — L-benchmark-embed at 1440px: every control is at least a usable size ([[277,80],[277,323],[277,323]])",
+        "PASS — L-benchmark-embed at 820px: no render defect",
+        "PASS — L-benchmark-embed at 820px: no sideways scroll",
+        "PASS — L-benchmark-embed at 820px: no control takes more than half the screen ([80,323,323])",
+        "PASS — L-benchmark-embed at 820px: every control is at least a usable size ([[712,80],[262,323],[262,323]])",
+        "PASS — L-benchmark-embed at 390px: no render defect",
+        "PASS — L-benchmark-embed at 390px: no sideways scroll",
+        "PASS — L-benchmark-embed at 390px: no control takes more than half the screen ([72,296,296])",
+        "PASS — L-benchmark-embed at 390px: every control is at least a usable size ([[294,72],[294,296],[294,296]])"
+      ],
+      "metrics": {
+        "publish_ms": 632
+      },
+      "evidence": [
+        "L-benchmark-builder-1440.jpg",
+        "L-benchmark-builder-820.jpg",
+        "L-benchmark-builder-390.jpg",
+        "L-benchmark-public-1440.jpg",
+        "L-benchmark-public-820.jpg",
+        "L-benchmark-public-390.jpg",
+        "L-benchmark-embed-1440.jpg",
+        "L-benchmark-embed-820.jpg",
+        "L-benchmark-embed-390.jpg"
+      ],
+      "notes": []
+    },
+    "F clear / remove control / delete filter": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — SP is applied",
+        "PASS — clearing the value unfilters the report",
+        "PASS — and keeps the control",
+        "PASS — removing the control keeps the filter entry",
+        "PASS — the filter bar draws it again",
+        "PASS — deleting the filter removes its entry ([])",
+        "PASS — and every control for it",
+        "PASS — after reload nothing points at the deleted filter",
+        "PASS — and the report is unfiltered"
+      ],
+      "metrics": {},
+      "evidence": [],
+      "notes": []
+    }
+  }
+}
