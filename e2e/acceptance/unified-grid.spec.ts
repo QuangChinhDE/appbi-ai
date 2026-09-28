@@ -767,7 +767,8 @@ test('S7 AI Design (real model) composes the page with slicer controls; no inven
   const after = await kpis(page);
   check(r, 'the numbers are unchanged by the redesign', JSON.stringify([...after].sort()) === JSON.stringify([...before].sort()), `${before} vs ${after}`);
   const narr = d.dashboard_charts.filter((c: any) => c.widget_type === 'narrative');
-  const typed = narr.map((n: any) => `${n.widget_config?.title ?? ''} ${n.widget_config?.eyebrow ?? ''}`.trim()).filter((s: string) => /\d/.test(s));
+  // The report's own name (a copy is "… (Copy) (10)") is not a figure the AI typed.
+  const typed = narr.map((n: any) => `${n.widget_config?.title ?? ''} ${n.widget_config?.eyebrow ?? ''}`.split(d.name || '\u0000').join(' ').trim()).filter((s: string) => /\d/.test(s));
   check(r, 'any text the AI added is bound to findings, never typed numbers', typed.length === 0, JSON.stringify(typed).slice(0, 300));
   const a = await audit(page);
   const hard = (a?.findings ?? []).filter((f) => HARD.includes(f.code));

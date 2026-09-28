@@ -272,6 +272,10 @@ function DashboardGridInner({
     if (changed) onLayoutChange([item]);
   };
 
+  // A narrative's evidence mounts with the page (see citedTilesOf). Every hook
+  // runs before the empty-page return below: switching to a page with no
+  // element rendered fewer hooks and crashed the builder (React #300).
+  const citedTileIds = React.useMemo(() => citedTilesOf(dashboardCharts), [dashboardCharts]);
 
   if (dashboardCharts.length === 0) {
     return (
@@ -293,8 +297,6 @@ function DashboardGridInner({
 
   // Finer grid: 36 cols + a row height coupled to the theme gap so ×3-migrated
   // tiles keep their exact pixel size (see dashboardRowHeight). Margin unchanged.
-  // A narrative's evidence mounts with the page (see citedTilesOf).
-  const citedTileIds = React.useMemo(() => citedTilesOf(dashboardCharts), [dashboardCharts]);
   const gridMargin = getDashboardGridMargin(themeConfig);
   const gridRowHeight = dashboardRowHeight(gridMargin[1]);
   return (

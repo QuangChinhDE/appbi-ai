@@ -491,6 +491,16 @@ check('the builder draws a stored overlap the way viewers see it (settled), and 
   assert(/const pageBoxes = \(\): GridBox\[\] => settleStoredLayout\(/.test(page), 'drops are computed on the stored overlap, not on what the author sees');
 });
 
+check('the grid runs every hook before it returns for an empty page (switching to an empty page must not crash)', () => {
+  const grid = source('components/dashboards/DashboardGrid.tsx');
+  const body = grid.slice(grid.indexOf('function DashboardGridInner('), grid.indexOf('export function DashboardGrid('));
+  const early = body.indexOf('if (dashboardCharts.length === 0) {');
+  assert(early > 0, 'the empty-page return moved; re-check the hook order by hand');
+  const end = body.indexOf('\n}\n', early);
+  const after = body.slice(early, end > 0 ? end : undefined);
+  assert(!/\b(React\.)?use(State|Memo|Effect|Callback|Ref|LayoutEffect|Context)\(/.test(after), 'a hook runs after the empty-page return');
+});
+
 if (failures.length) {
   for (const { name, error } of failures) console.error(`FAIL  ${name}\n      ${error.message}`);
   console.error(`\n${failures.length} failed, ${passed} passed`);
