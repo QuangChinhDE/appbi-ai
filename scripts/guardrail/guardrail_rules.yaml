@@ -1,4 +1,6 @@
 version: 2
-protected: []
+protected:
+  - id: s
+    required_tests: [a, b]
 invariants: []
 tests: {}
