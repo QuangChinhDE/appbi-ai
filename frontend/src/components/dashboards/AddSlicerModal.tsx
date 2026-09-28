@@ -19,7 +19,7 @@ const TYPE_ICON = { date: Calendar, number: Hash, dropdown: List, text: List } a
 /** Where the new control goes. `top` makes room by moving the page's content
  *  down (an explicit, undoable-by-Discard action — the grid never shoves tiles
  *  on its own); `end` takes the first free row under the content. */
-export type SlicerPlacementTarget = 'top' | 'end';
+export type SlicerPlacementTarget = 'top' | 'end' | 'beside';
 
 export function AddSlicerModal({
   open,
@@ -30,6 +30,7 @@ export function AddSlicerModal({
   onCreate,
   onPlaceAll,
   busy,
+  besideName,
 }: {
   open: boolean;
   onClose: () => void;
@@ -42,10 +43,14 @@ export function AddSlicerModal({
   /** Place every filter of `existing` at once, as one band. */
   onPlaceAll?: (where: SlicerPlacementTarget) => void;
   busy?: boolean;
+  /** The selected element's name: the control can be placed right next to it. */
+  besideName?: string | null;
 }) {
   const { t } = useI18n();
   const [search, setSearch] = React.useState('');
-  const [where, setWhere] = React.useState<SlicerPlacementTarget>('top');
+  const [where, setWhere] = React.useState<SlicerPlacementTarget>(besideName ? 'beside' : 'top');
+  // Opening with an element selected means "put it by this": offer that first.
+  React.useEffect(() => { if (open) setWhere(besideName ? 'beside' : 'top'); }, [open, besideName]);
   const inputRef = React.useRef<HTMLInputElement>(null);
   React.useEffect(() => {
     if (!open) { setSearch(''); return; }
@@ -96,7 +101,7 @@ export function AddSlicerModal({
           </label>
           <div className="mt-2 flex items-center gap-1 text-[11px]" role="radiogroup" aria-label={t('dashboards.addSlicer.where')}>
             <span className="mr-1 text-text-tertiary">{t('dashboards.addSlicer.where')}</span>
-            {(['top', 'end'] as const).map((w) => (
+            {((besideName ? ['beside', 'top', 'end'] : ['top', 'end']) as SlicerPlacementTarget[]).map((w) => (
               <button
                 key={w}
                 type="button"
@@ -106,7 +111,7 @@ export function AddSlicerModal({
                 onClick={() => setWhere(w)}
                 className={`rounded-full border px-2 py-0.5 ${where === w ? 'border-brand bg-brand/10 text-brand' : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'}`}
               >
-                {t(`dashboards.addSlicer.where.${w}`)}
+                {w === 'beside' ? t('dashboards.addSlicer.where.beside', { name: besideName ?? '' }) : t(`dashboards.addSlicer.where.${w}`)}
               </button>
             ))}
           </div>

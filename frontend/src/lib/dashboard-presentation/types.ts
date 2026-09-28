@@ -265,6 +265,10 @@ export interface SnapshotVisual {
   findingKinds?: string[];
   /** For a narrative block already on the page: its role and who made it. */
   block?: { variant: BlockVariant; origin?: 'ai' | 'author'; draftOnly?: boolean; findings: string[] };
+  /** For a section heading already on the page: who wrote it. An author's
+   *  heading always stays above the content it introduces; an AI heading can
+   *  be reused by a later redesign instead of adding a second one. */
+  heading?: { origin?: 'ai' | 'author' };
 }
 
 /**

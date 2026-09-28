@@ -4,6 +4,7 @@ CRUD service for dashboards.
 import re
 from typing import List, Optional
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError
 
 from app.models import Dashboard, DashboardChart
@@ -103,7 +104,8 @@ _FINDING_KEY_RE = re.compile(r"^([a-z_]+):(-?\d+)$")
 
 
 def is_draft_only_item(item) -> bool:
-    """A grid item AI Design created in a draft that has not been published.
+    """A grid item added in a draft that has not been published (by AI Design,
+    a slicer control, or a manual Add).
 
     Such items exist as real rows (so the editor can move, resize and lock them
     like any tile) but are invisible to public/embed until Publish, and are
@@ -111,6 +113,65 @@ def is_draft_only_item(item) -> bool:
     """
     layout = getattr(item, "layout", None)
     return isinstance(layout, dict) and bool(layout.get("draftOnly"))
+
+
+# A tile's draft state lives in its layout and is stamped by the server only:
+#   draftOnly + draftOwner        — added in someone's draft, not published yet;
+#   draftRemoved + draftRemovedBy — published, removed in someone's draft.
+# Publish by that author applies it; Discard by that author reverts it; no other
+# author's view changes. A client never sets these keys: every layout a client
+# sends has them stripped (strip_draft_row_keys).
+DRAFT_ROW_KEYS = ("draftOnly", "draftOwner", "draftRemoved", "draftRemovedBy")
+
+
+def strip_draft_row_keys(layout: Optional[dict]) -> dict:
+    return {k: v for k, v in (layout or {}).items() if k not in DRAFT_ROW_KEYS}
+
+
+def is_draft_only_by(item, user_key: str) -> bool:
+    """Added in THIS author's draft (an unowned legacy draft row counts as theirs)."""
+    layout = getattr(item, "layout", None)
+    return (isinstance(layout, dict) and bool(layout.get("draftOnly"))
+            and str(layout.get("draftOwner") or user_key) == user_key)
+
+
+def is_draft_removed_by(item, user_key: str) -> bool:
+    """Published, and removed in THIS author's draft."""
+    layout = getattr(item, "layout", None)
+    return (isinstance(layout, dict) and bool(layout.get("draftRemoved"))
+            and str(layout.get("draftRemovedBy") or "") == user_key)
+
+
+def remove_tile_in_draft(db: Session, row, user_key: str) -> str:
+    """Remove a tile the way a draft edit does. No commit: the caller commits,
+    so several removals (a filter and every control for it) are one transaction.
+
+    * added in this author's draft → deleted (it was never published);
+    * added in ANOTHER author's draft → refused: it is their unpublished work;
+    * published → marked removed in this author's draft. It stays live — the
+      public link and embed keep it — until this author publishes. Discard or
+      Undo clears the mark: the same row, the same id, still published.
+    """
+    if is_draft_only_item(row):
+        if not is_draft_only_by(row, user_key):
+            raise PermissionError("This element belongs to another author's unpublished draft.")
+        db.delete(row)
+        return "deleted"
+    layout = dict(row.layout or {})
+    layout["draftRemoved"] = True
+    layout["draftRemovedBy"] = user_key
+    row.layout = layout
+    flag_modified(row, "layout")
+    return "marked"
+
+
+def restore_tile_in_draft(row, user_key: str) -> bool:
+    """Undo this author's draft removal. No commit."""
+    if not is_draft_removed_by(row, user_key):
+        return False
+    row.layout = {k: v for k, v in (row.layout or {}).items() if k not in ("draftRemoved", "draftRemovedBy")}
+    flag_modified(row, "layout")
+    return True
 
 
 def normalize_narrative_config(config: dict) -> dict:

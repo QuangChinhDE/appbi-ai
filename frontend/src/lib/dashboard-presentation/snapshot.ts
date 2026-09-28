@@ -267,6 +267,7 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
         ),
       } : {}),
       ...(widgetType === 'narrative' ? { block: blockOf(tile) } : {}),
+      ...(widgetType === 'section_header' ? { heading: headingOf(tile) } : {}),
     };
   });
 
@@ -305,6 +306,11 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
     },
     capabilities: buildCapabilitySchema(),
   };
+}
+
+function headingOf(tile: DashboardChart): NonNullable<SnapshotVisual['heading']> {
+  const origin = ((tile as any).widget_config ?? {}).origin;
+  return origin === 'ai' || origin === 'author' ? { origin } : {};
 }
 
 function blockOf(tile: DashboardChart): NonNullable<SnapshotVisual['block']> {

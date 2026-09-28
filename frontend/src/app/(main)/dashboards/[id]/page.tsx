@@ -53,7 +53,6 @@ import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import FilterMapModal from '@/components/dashboards/FilterMapModal';
 import { FilterPane } from '@/components/dashboards/FilterPane';
-import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
 import type { BaseFilter, ColumnInfo, FilterType, Filter as TypedFilter } from '@/lib/filters';
 import {
@@ -90,7 +89,7 @@ import {
 import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components/dashboards/GridSlicerTile';
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
 import { ArrangeBar } from '@/components/dashboards/ArrangeBar';
-import { arrangeTiles, closeVacatedBand, nudgeTiles, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
+import { arrangeTiles, closeVacatedBand, nudgeTiles, placeBeside, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
 import { settleStoredLayout } from '@/lib/grid-settle';
 import {
   SLICER_CONTROL_SIZE,
@@ -516,16 +515,32 @@ function DashboardDetailPageInner() {
      *  redo creates them again from `createdBlockSpecs` and records the new ids. */
     createdBlockIds?: number[];
     createdBlockSpecs?: { widgetType: string; widgetConfig: Record<string, unknown>; layout: Record<string, unknown> }[];
-    /** Elements this step REMOVED (a slicer control; next side only). Undo
-     *  creates them again from `removedBlockSpecs` and records the new ids; redo
-     *  removes those ids again. */
-    removedBlockIds?: number[];
-    removedBlockSpecs?: { widgetType: string; widgetConfig: Record<string, unknown>; layout: Record<string, unknown> }[];
+  };
+  /** An element removed in the draft that was never published: Undo creates
+   *  it again (draft-only) from this. */
+  type RemovedDraftSpec = {
+    widgetType: string;
+    chartId: number | null;
+    widgetConfig: Record<string, unknown>;
+    layout: Record<string, unknown>;
+    parameters?: Record<string, unknown>;
   };
   type UndoEntry =
     | { kind: 'layout'; prev: Record<number, Record<string, any>>; next: Record<number, Record<string, any>> }
     | { kind: 'theme'; prev: any; next: any }
-    | { kind: 'ai-presentation'; prev: PresentationState; next: PresentationState };
+    | { kind: 'ai-presentation'; prev: PresentationState; next: PresentationState }
+    // Removing elements. A PUBLISHED one is only marked removed in the draft, so
+    // Undo restores that same row (still published) and Redo marks it again. One
+    // added in this draft was deleted: Undo creates it again and records the new
+    // id for Redo. `prev`/`next` are the layout around it (a band that closed).
+    | {
+      kind: 'removal';
+      published: number[];
+      drafts: RemovedDraftSpec[];
+      draftIds: number[];
+      prev: Record<number, Record<string, any>>;
+      next: Record<number, Record<string, any>>;
+    };
   const undoRef = React.useRef<UndoEntry[]>([]);
   const redoRef = React.useRef<UndoEntry[]>([]);
   const [, setHistoryTick] = React.useState(0);
@@ -628,30 +643,6 @@ function DashboardDetailPageInner() {
           entry.next.createdBlockIds = ids;
         })();
       }
-      const removedSpecs = entry.next.removedBlockSpecs ?? [];
-      if (dir === 'prev' && removedSpecs.length) {
-        // Undo of a removal puts the element back where it was (a draft-only
-        // row until the next Publish) and remembers its new id for redo.
-        void (async () => {
-          const ids: number[] = [];
-          for (const spec of removedSpecs) {
-            const before = new Set(((queryClient.getQueryData(['dashboards', dashboardId]) as any)?.dashboard_charts ?? []).map((d: any) => d.id));
-            try {
-              const updated: any = await dashboardApi.addWidget(dashboardId, spec.widgetType, { ...spec.layout, draftOnly: true } as any, spec.widgetConfig as any);
-              if (updated) queryClient.setQueryData(['dashboards', dashboardId], updated);
-              const fresh = (updated?.dashboard_charts ?? []).find((d: any) => !before.has(d.id) && d.widget_type === spec.widgetType);
-              if (fresh) ids.push(fresh.id);
-            } catch (err) {
-              console.error('Undo could not put a removed element back:', err);
-            }
-          }
-          entry.next.removedBlockIds = ids;
-        })();
-      }
-      if (dir === 'next' && (entry.next.removedBlockIds ?? []).length && removedSpecs.length) {
-        void Promise.all((entry.next.removedBlockIds ?? []).map((id) => dashboardApi.removeChart(dashboardId, id).catch(() => null)))
-          .then(() => queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] }));
-      }
       setLocalLayoutOverrides(state.layout);
       if (state.slicerCluster !== undefined) {
         // Draft only: the auto-stage sees draft ≠ applied and writes it, so an
@@ -662,6 +653,36 @@ function DashboardDetailPageInner() {
       // without persisting, the same way Apply did, so a stray Ctrl+Z can never
       // write the live report.
       if (state.theme !== undefined) paintThemeDraft(state.theme);
+      return;
+    }
+    if (entry.kind === 'removal') {
+      void (async () => {
+        try {
+          if (dir === 'prev') {
+            // A published element comes back as ITSELF (same id, still
+            // published); one added in this draft is created again.
+            for (const id of entry.published) await dashboardApi.restoreChart(dashboardId, id);
+            const ids: number[] = [];
+            for (const spec of entry.drafts) {
+              const before = new Set(((queryClient.getQueryData(['dashboards', dashboardId]) as any)?.dashboard_charts ?? []).map((d: any) => d.id));
+              const layout = { ...spec.layout, draftOnly: true } as any;
+              const updated: any = spec.widgetType === 'chart' && spec.chartId
+                ? await dashboardApi.addChart(dashboardId, spec.chartId, layout, spec.parameters as any)
+                : await dashboardApi.addWidget(dashboardId, spec.widgetType, layout, spec.widgetConfig as any);
+              const fresh = (updated?.dashboard_charts ?? []).find((d: any) => !before.has(d.id));
+              if (fresh) ids.push(fresh.id);
+            }
+            entry.draftIds = ids;
+          } else {
+            for (const id of [...entry.published, ...entry.draftIds]) await dashboardApi.removeChart(dashboardId, id);
+          }
+        } catch (err) {
+          console.error('Undo/redo of a removal failed:', err);
+          toast.error(t('dashboards.detail.chartRemoveFailed'));
+        }
+        await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+      })();
+      setLocalLayoutOverrides(dir === 'prev' ? entry.prev : entry.next);
       return;
     }
     void applyThemeConfig(value);
@@ -1913,6 +1934,9 @@ function DashboardDetailPageInner() {
             h: size.h,
             pageId: activePageId ?? undefined,
             gv: GRID_VERSION, // sizeByType is already finer (36-col) — mark so it's not re-scaled on read
+            // An addition is a draft change like any other: the public link
+            // gets it on Publish, Discard deletes it.
+            draftOnly: true,
           } as any,
           defaults[widgetType],
         );
@@ -1983,7 +2007,9 @@ function DashboardDetailPageInner() {
           ...layout,
           pageId: activePageId,
           gv: GRID_VERSION, // AddChartModal packs on the finer 36-col grid — tag so read doesn't re-scale
-        },
+          // A draft addition: public/embed get it on Publish; Discard deletes it.
+          draftOnly: true,
+        } as DashboardChartLayout,
         parameters,
       });
       resetUndo(); // chart set changed — prior layout undo entries are stale
@@ -2017,11 +2043,9 @@ function DashboardDetailPageInner() {
     setRemovingChartId(pendingRemoveDashboardChartId);
     setPendingRemoveDashboardChartId(undefined);
     try {
-      await removeChartMutation.mutateAsync({
-        dashboardId,
-        dashboardChartId: dashboardChart.id,
-      });
-      resetUndo(); // chart set changed — prior layout undo entries are stale
+      const next = { ...localLayoutOverridesRef.current };
+      delete next[dashboardChart.id];
+      await removeElementsInDraftRef.current([dashboardChart.id], next);
       toast.success(t('dashboards.detail.chartRemoved'));
     } catch (error) {
       console.error('Failed to remove chart:', error);
@@ -3018,11 +3042,18 @@ function DashboardDetailPageInner() {
   // a NEW filter (a reload must never find a control pointing at nothing) and
   // when a filter is deleted with its controls. It stores what Apply stores:
   // any other staged slicer edit is saved with it.
-  const persistSlicerLists = useCallback(async (nextGlobal: any[], nextPage: any[]) => {
+  const persistSlicerLists = useCallback(async (
+    nextGlobal: any[],
+    nextPage: any[],
+    extra: { filters_config?: BaseFilter[]; remove_tile_ids?: number[] } = {},
+  ) => {
     setDraftGlobalSlicers(nextGlobal);
     setAppliedGlobalSlicers(nextGlobal);
     setDraftPageSlicers(nextPage);
-    const body: { slicers_config: any[]; pages_config?: any[] } = { slicers_config: nextGlobal };
+    const body: { slicers_config: any[]; pages_config?: any[]; filters_config?: BaseFilter[]; remove_tile_ids?: number[] } = {
+      slicers_config: nextGlobal,
+      ...extra,
+    };
     if (activePageId) {
       const nextPages = dashboardPages.map((p) => {
         if (p.id !== activePageId) return p;
@@ -3043,13 +3074,48 @@ function DashboardDetailPageInner() {
   // design: draft-only rows until Publish, deleted by Undo or Discard. At the top
   // of the page the content moves down by the band the controls need (room is
   // made, nothing is shoved aside); below the content they take the free rows.
-  const placeSlicerControls = useCallback(async (slicers: BaseFilter[], where: 'top' | 'end') => {
+  const placeSlicerControls = useCallback(async (slicers: BaseFilter[], requested: 'top' | 'end' | 'beside') => {
     if (!slicers.length) return;
     const card = SLICER_CONTROL_SIZE.card;
     const rows = Math.ceil(slicers.length / 4) * card.h;
     const prev = localLayoutOverridesRef.current;
     const overrides: Record<number, Record<string, any>> = { ...prev };
     let y0 = nextFreeSlot(visibleDashboardCharts, card).y;
+    let where = requested;
+    // Next to the selected element: in free space in its rows (nothing moves),
+    // else directly above it (the rows from there down make room). Each
+    // control is placed against the page as the previous one left it.
+    const targetId = selectedTileIds.length === 1 ? selectedTileIds[0] : null;
+    const besideCells: { x: number; y: number; w: number; h: number }[] = [];
+    if (where === 'beside' && targetId !== null) {
+      let boxes: GridBox[] = settleStoredLayout(visibleDashboardCharts.map((dc) => {
+        const l = resolveDashboardChartLayout(dc.id, prev) as Record<string, any>;
+        return { i: String(dc.id), id: dc.id, x: Number(l.x) || 0, y: Number(l.y) || 0, w: Number(l.w) || 1, h: Number(l.h) || 1,
+          static: Boolean(l.locked), locked: Boolean(l.locked) };
+      }), DASHBOARD_GRID_COLS).map(({ i: _i, static: _s, ...box }) => box);
+      let fits = true;
+      for (let n = 0; n < slicers.length; n += 1) {
+        const spot = placeBeside(boxes, targetId, card);
+        if (!spot) { fits = false; break; }
+        const moved = new Map(spot.changed.map((b) => [b.id, b]));
+        boxes = [...boxes.map((b) => moved.get(b.id) ?? b), { id: -(n + 1), ...spot.rect }];
+        besideCells.push(spot.rect);
+      }
+      if (fits) {
+        for (const b of boxes) {
+          if (b.id < 0) continue;
+          const was = visibleDashboardCharts.find((dc) => dc.id === b.id);
+          const full = resolveDashboardChartLayout(b.id, prev) as Record<string, any>;
+          if (was && (Number(full.y) !== b.y || Number(full.x) !== b.x)) overrides[b.id] = { ...full, x: b.x, y: b.y };
+        }
+      } else {
+        besideCells.length = 0;
+        toast.info(t('dashboards.addSlicer.besideBlocked'));
+        where = 'end';
+      }
+    } else if (where === 'beside') {
+      where = 'end';
+    }
     if (where === 'top') {
       if (visibleDashboardCharts.some((dc) => (dc.layout as any)?.locked)) {
         toast.info(t('dashboards.addSlicer.topBlocked'));
@@ -3069,11 +3135,13 @@ function DashboardDetailPageInner() {
         tempId: -(i + 1),
         widgetType: SLICER_CONTROL_WIDGET as 'slicer',
         widgetConfig: { slicerId: String(s.id), treatment: 'auto', origin: 'author' },
-        layout: { x: (i % 4) * card.w, y: y0 + Math.floor(i / 4) * card.h, w: card.w, h: card.h, gv: GRID_VERSION, pageId: activePageId },
+        layout: besideCells[i]
+          ? { ...besideCells[i], gv: GRID_VERSION, pageId: activePageId }
+          : { x: (i % 4) * card.w, y: y0 + Math.floor(i / 4) * card.h, w: card.w, h: card.h, gv: GRID_VERSION, pageId: activePageId },
       })),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleDashboardCharts, activePageId, resolveDashboardChartLayout, commitPresentation, t]);
+  }, [visibleDashboardCharts, activePageId, resolveDashboardChartLayout, commitPresentation, selectedTileIds, t]);
 
   const usedSlicerFieldKeys = React.useMemo(
     () => new Set(controlFilters.map((s: any) => getFilterKey(s))),
@@ -3085,7 +3153,7 @@ function DashboardDetailPageInner() {
     [resolvedAvailableColumns, usedSlicerFieldKeys],
   );
 
-  const handleAddSlicer = useCallback(async (input: { existing?: BaseFilter[]; column?: ColumnInfo; where?: 'top' | 'end' }) => {
+  const handleAddSlicer = useCallback(async (input: { existing?: BaseFilter[]; column?: ColumnInfo; where?: 'top' | 'end' | 'beside' }) => {
     setIsPlacingSlicer(true);
     try {
       let slicers = input.existing ?? [];
@@ -3115,6 +3183,40 @@ function DashboardDetailPageInner() {
     }
   }, [resolvedAvailableColumns, usedSlicerFieldKeys, persistSlicerLists, draftGlobalSlicers, draftPageSlicers, placeSlicerControls, t]);
 
+  // Remove elements in the draft — ONE undoable step for any kind of element.
+  // A published one stays on the public link until Publish and comes back as
+  // itself on Undo or Discard; one added in this draft is deleted (Undo creates
+  // it again). `next` is the layout after the removal (e.g. a closed band).
+  const removeElementsInDraft = useCallback(async (tileIds: number[], next: Record<number, Record<string, any>>) => {
+    const prev = localLayoutOverridesRef.current;
+    const rows = serverDashboard?.dashboard_charts ?? [];
+    const published: number[] = [];
+    const drafts: RemovedDraftSpec[] = [];
+    for (const id of tileIds) {
+      const dc = rows.find((d) => d.id === id);
+      if (!dc) continue;
+      if ((dc.layout as any)?.draftOnly) {
+        const { draftOnly: _o, draftOwner: _w, ...layout } = resolveDashboardChartLayout(id, prev) as unknown as Record<string, unknown>;
+        drafts.push({
+          widgetType: String(dc.widget_type || 'chart'),
+          chartId: (dc as any).chart_id ?? null,
+          widgetConfig: { ...((dc.widget_config ?? {}) as Record<string, unknown>) },
+          layout,
+          parameters: ((dc as any).parameters ?? undefined) as Record<string, unknown> | undefined,
+        });
+      } else {
+        published.push(id);
+      }
+    }
+    for (const id of tileIds) await dashboardApi.removeChart(dashboardId, id);
+    await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    setLocalLayoutOverrides(next);
+    pushUndo({ kind: 'removal', published, drafts, draftIds: [], prev, next });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverDashboard, resolveDashboardChartLayout, dashboardId, queryClient]);
+  const removeElementsInDraftRef = React.useRef(removeElementsInDraft);
+  removeElementsInDraftRef.current = removeElementsInDraft;
+
   // Remove a CONTROL (the filter stays and keeps filtering). One undoable step:
   // Undo puts the control back where it was; a band made only for filters closes
   // when its last control leaves it.
@@ -3131,20 +3233,9 @@ function DashboardDetailPageInner() {
     for (const b of closeVacatedBand(boxes, tileId)) {
       next[b.id] = mergeGridLayout(resolveDashboardChartLayout(b.id, prev), b);
     }
-    const spec = {
-      widgetType: String(dc.widget_type),
-      widgetConfig: { ...((dc.widget_config ?? {}) as Record<string, unknown>) },
-      layout: { ...(resolveDashboardChartLayout(tileId, prev) as unknown as Record<string, unknown>) },
-    };
     setRemovingChartId(tileId);
     try {
-      await removeChartMutation.mutateAsync({ dashboardId, dashboardChartId: tileId });
-      setLocalLayoutOverrides(next);
-      pushUndo({
-        kind: 'ai-presentation',
-        prev: { layout: prev, theme: undefined, slicerCluster: undefined },
-        next: { layout: next, theme: undefined, slicerCluster: undefined, removedBlockIds: [tileId], removedBlockSpecs: [spec] },
-      });
+      await removeElementsInDraft([tileId], next);
       toast.success(t('dashboards.slicerControl.removed'));
     } catch (error) {
       console.error('Failed to remove slicer control:', error);
@@ -3153,27 +3244,40 @@ function DashboardDetailPageInner() {
       setRemovingChartId(undefined);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleDashboardCharts, resolveDashboardChartLayout, dashboardId, t]);
+  }, [visibleDashboardCharts, resolveDashboardChartLayout, removeElementsInDraft, t]);
   const removeSlicerControlRef = React.useRef(removeSlicerControl);
   removeSlicerControlRef.current = removeSlicerControl;
 
-  // Delete the FILTER: its entry and every control for it, on every page.
+  // Delete the FILTER: its entry — a slicer, a page slicer or a filter-pane
+  // filter — and every control for it on every page, as ONE draft change (one
+  // request, one transaction): all of it or nothing. The public link keeps the
+  // filter and its controls until Publish; Discard brings both back.
   const handleDeleteSlicerFilter = useCallback(async (slicerId: string) => {
     try {
+      const controls = (serverDashboard?.dashboard_charts ?? []).filter((dc) => slicerIdOfControl(dc) === slicerId);
+      const extra: { filters_config?: BaseFilter[]; remove_tile_ids?: number[] } = { remove_tile_ids: controls.map((dc) => dc.id) };
+      if (paneFilterIds.has(slicerId)) {
+        extra.filters_config = draftGlobalFilters
+          .filter((f) => String(f.id) !== slicerId)
+          .map((f) => toBaseFilter(f, { allowInactive: true }))
+          .filter((b): b is BaseFilter => b !== null);
+      }
       await persistSlicerLists(
         draftGlobalSlicers.filter((s: any) => String(s?.id ?? '') !== slicerId),
         draftPageSlicers.filter((s: any) => String(s?.id ?? '') !== slicerId),
+        extra,
       );
-      const controls = (serverDashboard?.dashboard_charts ?? []).filter((dc) => slicerIdOfControl(dc) === slicerId);
-      for (const dc of controls) await dashboardApi.removeChart(dashboardId, dc.id);
-      await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+      if (extra.filters_config) {
+        setDraftGlobalFilters((prev) => prev.filter((f) => String(f.id) !== slicerId));
+        setAppliedGlobalFilters((prev) => prev.filter((f) => String(f.id) !== slicerId));
+      }
       resetUndo();
     } catch (err) {
       console.error('Failed to delete slicer filter:', err);
       toast.error(t('dashboards.detail.filterSaveFailed'));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [persistSlicerLists, draftGlobalSlicers, draftPageSlicers, serverDashboard, dashboardId, queryClient, t]);
+  }, [persistSlicerLists, draftGlobalSlicers, draftPageSlicers, draftGlobalFilters, paneFilterIds, serverDashboard, t]);
 
   // Display is layout: local edit → draft → publish, undoable like a drag.
   const handleSlicerTreatmentChange = useCallback((tileId: number, treatment: SlicerTreatment) => {
@@ -3305,6 +3409,12 @@ function DashboardDetailPageInner() {
       const filtersSummary = summarizeAppliedFilters();
       const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
       const result = await exportDashboardPdf({
+        labels: {
+          filters: t('dashboards.pdf.filters'),
+          exportedAt: t('dashboards.pdf.exportedAt'),
+          dataAsOf: t('dashboards.pdf.dataAsOf'),
+          snapshotNote: t('dashboards.pdf.snapshotNote'),
+        },
         previewWindow,
         filename: `${safeName}.pdf`,
         title: dashboard.name || 'Dashboard',
@@ -4275,6 +4385,7 @@ function DashboardDetailPageInner() {
           onPlaceExisting={(slicer, where) => { void handleAddSlicer({ existing: [slicer], where }); }}
           onPlaceAll={(where) => { void handleAddSlicer({ existing: unplacedControlFilters, where }); }}
           onCreate={(column, where) => { void handleAddSlicer({ column, where }); }}
+          besideName={selectedTileIds.length === 1 ? tileTitle(selectedTileIds[0]) : null}
         />
 
         {/* Hidden off-screen ChartTiles for non-active pages — pre-warm React Query cache.
@@ -4583,8 +4694,8 @@ function DashboardDetailPageInner() {
               // Use {} (→ server defaults) not null: normalize_dashboard_theme_config
               // does dict(x) and would throw on a null restore.
               pushUndo({ kind: 'theme', prev: dashboard?.theme_config ?? {}, next: theme });
-              // A templateId in the payload means the user chose a LAYOUT, and a
-              // layout owns the filter dock — so release any stored position.
+              // The theme is presentation only: filters are controls on the grid,
+              // so there is no filter position for a template to change.
               await applyThemeConfig(theme);
             }}
             onApplyLayout={async (templateId) => {

@@ -471,3 +471,29 @@ def link_managed_field_keys(
         if link_entry_has_value(entry) or bool(entry.get("hidden")):
             keys.add(key)
     return keys
+
+
+def link_filters_a_viewer_may_see(
+    link_filters_config: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """The link's filters a public viewer is SHOWN (read-only): locked (🔒)
+    entries that enforce a value — field, label, value, semanticField, nothing
+    else — so the reader knows the report is filtered and by what.
+
+    Never included: a hidden (🚫) entry, with or without a value (the reader
+    must not learn the field or the value); a 'limit' scope entry (it bounds
+    the viewer's choices, it is not a filter to announce); an empty lock (it
+    enforces nothing). The data merge is unaffected — the server applies the
+    link's filters itself from DashboardPublicLink.filters_config.
+    """
+    entries = [e for e in (link_filters_config or []) if isinstance(e, dict) and not link_entry_is_scope(e)]
+    locked, _hidden = split_link_filters_locked_vs_hidden(entries)
+    out: List[Dict[str, Any]] = []
+    for entry in locked:
+        if not link_entry_has_value(entry):
+            continue
+        item = {"field": entry.get("field"), "label": entry.get("label"), "value": entry.get("value")}
+        if entry.get("semanticField"):
+            item["semanticField"] = entry["semanticField"]
+        out.append(item)
+    return out

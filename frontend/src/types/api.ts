@@ -783,6 +783,9 @@ export interface Dashboard {
    *  FE merges them silently into every chart-data request alongside
    *  top-bar filters. */
   public_link_hidden_filters?: any[];
+  /** The link's LOCKED (🔒) filters that enforce a value — field, label, value
+   *  only — shown read-only so a reader knows the report is filtered. */
+  public_link_locked_filters?: Array<{ field: string; label?: string | null; value: unknown; semanticField?: string }>;
   pages_config?: DashboardPageConfig[];
   available_filter_fields?: DashboardFilterField[];
   public_link_name?: string | null;

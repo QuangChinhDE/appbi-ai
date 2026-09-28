@@ -2028,7 +2028,8 @@ function ExploreChartInner({
   // alignment is the conventional spot for a per-visual drill toggle and keeps
   // it clear of the plot.
   const DrillBar = canDrill ? (
-    <div className="flex items-center justify-end gap-1 px-1 mb-1">
+    // An interactive control: never printed (the PDF capture hides it).
+    <div className="flex items-center justify-end gap-1 px-1 mb-1" data-export-hide="">
       {drillActive ? (
         <>
           <span className="mr-0.5 text-[10px] font-medium text-text-tertiary" title={t('explore.dateDrill.activeHint')}>

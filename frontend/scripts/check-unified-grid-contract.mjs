@@ -362,9 +362,38 @@ check('placing and removing a control are single undoable steps on the shared co
   assert(/await commitPresentation\(\{/.test(place) && /createdBlocks: slicers\.map/.test(place), 'placing a control bypasses the undoable commit path');
   assert(!/resetUndo\(\)/.test(place), 'placing a control wipes the undo history');
   const remove = page.slice(page.indexOf('const removeSlicerControl = useCallback('), page.indexOf('const removeSlicerControlRef'));
-  assert(/removedBlockSpecs: \[spec\]/.test(remove) && /closeVacatedBand\(boxes, tileId\)/.test(remove) && !/resetUndo\(\)/.test(remove),
-    'removing a control is not undoable, or leaves its band behind');
-  assert(/removedBlockSpecs/.test(page.slice(page.indexOf('const applyUndoEntry'), page.indexOf('const doUndo'))), 'undo cannot put a removed control back');
+  assert(/await removeElementsInDraft\(\[tileId\], next\)/.test(remove) && /closeVacatedBand\(boxes, tileId\)/.test(remove) && !/resetUndo\(\)/.test(remove),
+    'removing a control is not a draft removal, is not undoable, or leaves its band behind');
+});
+
+check('removing ANY element is a draft edit: the public link keeps it until Publish; Undo and Discard bring back the same element', () => {
+  const page = source('app/(main)/dashboards/[id]/page.tsx');
+  const api = source('lib/api/dashboards.ts');
+  // The builder never deletes a live row: every removal goes through the draft.
+  assert(/removeChart: async[\s\S]{0,260}params: \{ draft: true \}/.test(api), 'the builder deletes a published element outright');
+  assert(/restoreChart: async[\s\S]{0,200}\/restore`/.test(api), 'there is no way to take a draft removal back');
+  // Editing a published widget's content (text, section title) is a draft edit too.
+  assert(/updateWidget: async[\s\S]{0,800}params: \{ draft: true \}/.test(api), "editing a published widget's content publishes it at once");
+  const shared = page.slice(page.indexOf('const removeElementsInDraft = useCallback('), page.indexOf('const removeElementsInDraftRef'));
+  assert(/kind: 'removal', published, drafts/.test(shared), 'a removal is not one undoable step');
+  // Undo of a published element restores THAT row — it never re-creates it as a
+  // new draft-only row (which a Discard then deleted: a published control lost).
+  const undo = page.slice(page.indexOf('const applyUndoEntry'), page.indexOf('const doUndo'));
+  assert(/entry\.kind === 'removal'/.test(undo) && /for \(const id of entry\.published\) await dashboardApi\.restoreChart/.test(undo),
+    'Undo of a published element does not restore it in place');
+  assert(!/removedBlockSpecs/.test(page), 'a removal is still re-created as a new draft-only element on Undo');
+  // Removing a chart or widget is a draft removal and undoable too.
+  const confirm = page.slice(page.indexOf('const confirmRemoveChart = async'), page.indexOf('const confirmRemoveChart = async') + 1400);
+  assert(/removeElementsInDraftRef\.current\(\[dashboardChart\.id\]/.test(confirm) && !/resetUndo\(\)/.test(confirm), 'removing a chart is not a draft removal, or not undoable');
+  // Adding by hand is a draft addition (invisible to /d and /embed until Publish).
+  const addWidget = page.slice(page.indexOf('const handleAddWidget'), page.indexOf('const handleCrossFilterChange'));
+  assert(/draftOnly: true/.test(addWidget), 'a widget added by hand is published at once');
+  const addChart = page.slice(page.indexOf('const handleAddChart = async'), page.indexOf('const handleAddChart = async') + 900);
+  assert(/draftOnly: true/.test(addChart), 'a chart added by hand is published at once');
+  // Delete filter: the entry and every control in ONE request.
+  const del = page.slice(page.indexOf('const handleDeleteSlicerFilter = useCallback('), page.indexOf('const handleSlicerTreatmentChange'));
+  assert(/remove_tile_ids: controls\.map/.test(del) && !/dashboardApi\.removeChart/.test(del), 'Delete filter removes its controls in separate requests');
+  assert(/paneFilterIds\.has\(slicerId\)/.test(del) && /filters_config/.test(del), 'Delete filter leaves a filter-pane entry behind');
 });
 
 check('a tile dropped on others opens room where it lands; a vacated filter band closes; locks hold', () => {
@@ -499,6 +528,128 @@ check('the grid runs every hook before it returns for an empty page (switching t
   const end = body.indexOf('\n}\n', early);
   const after = body.slice(early, end > 0 ? end : undefined);
   assert(!/\b(React\.)?use(State|Memo|Effect|Callback|Ref|LayoutEffect|Context)\(/.test(after), 'a hook runs after the empty-page return');
+});
+
+check('a reader can always tell what filters the page: locks, page filters and control-less slicers are stated; nothing empty is', () => {
+  const ppf = load('lib/public-page-filters.ts');
+  const f = (id, field, value, extra = {}) => ({ id, field, type: 'dropdown', operator: 'in', value, ...extra });
+  const facts = ppf.pageFilterFacts({
+    applied: [f('s-state', 'customer_state', ['SP']), f('s-region', 'region', ['North', 'South']), f('s-empty', 'category', [])],
+    pageHidden: [f('p-cat', 'channel', ['Online']), f('p-date', 'order_date', [], { type: 'date', datePreset: 'this_month' })],
+    locked: [{ field: 'seller_state', label: 'Seller state', value: ['RJ'] }, { field: 'region', value: ['North'] }],
+    withoutControl: new Set(['s-region', 's-empty']),
+  });
+  const by = Object.fromEntries(facts.map((x) => [x.key, x]));
+  assert(by.seller_state?.locked && by.seller_state.value === 'RJ', `a link lock is not stated: ${JSON.stringify(facts)}`);
+  assert(by.region?.locked && by.region.value === 'North', 'a lock does not win over a same-field slicer');
+  assert(by.channel?.value === 'Online' && by.order_date?.preset === 'this_month', 'a filter the page carries is not stated');
+  assert(!by.customer_state, 'a slicer whose control is on the page is repeated in the header');
+  assert(!by.category, 'an empty filter is announced as if it filtered');
+  const pv = source('components/dashboards/PublicDashboardView.tsx');
+  assert(/public_link_locked_filters/.test(pv) && /filterContextFacts\.map/.test(pv), "the public header does not state the page's filters");
+  assert(/summarizeViewerFilters = useCallback\(\(\): string => pageFilterFacts\(/.test(pv), 'the PDF header lists filters by name without their value');
+  assert(!/Đang lọc theo:|Xem chi tiết'|Bộ lọc nâng cao có sẵn/.test(pv), 'the public filter banner is hard-coded Vietnamese');
+});
+
+check('a control that draws nothing for a viewer leaves no blank band — and moves nothing locked', () => {
+  const arrange = load('lib/grid-arrange.ts');
+  const b = (id, x, y, w, h, locked = false) => ({ id, x, y, w, h, locked });
+  // A stripped control alone in its band above the KPIs: the band closes.
+  const top = arrange.withoutAbsentControls([b(50, 0, 0, 8, 3), b(1, 0, 3, 12, 6), b(2, 0, 9, 36, 12)], new Set([50]));
+  assert(top.length === 2 && top.find((x) => x.id === 1).y === 0 && top.find((x) => x.id === 2).y === 6, JSON.stringify(top));
+  // Beside a chart in its row: the chart stays where it is.
+  const beside = arrange.withoutAbsentControls([b(1, 0, 0, 24, 12), b(50, 24, 0, 8, 3), b(2, 0, 12, 36, 6)], new Set([50]));
+  assert(beside.find((x) => x.id === 2).y === 12 && beside.find((x) => x.id === 1).y === 0, JSON.stringify(beside));
+  // A locked tile below: the band stays open rather than move it.
+  const locked = arrange.withoutAbsentControls([b(50, 0, 0, 8, 3), b(1, 0, 3, 12, 6, true)], new Set([50]));
+  assert(locked.find((x) => x.id === 1).y === 3, 'a locked tile moved');
+  const pv = source('components/dashboards/PublicDashboardView.tsx');
+  assert(/withoutAbsentControls\(/.test(pv) && /\{gridDashboardCharts\.map\(renderTileNode\)\}/.test(pv) && /const absentControlIds = filtersSeeded/.test(pv),
+    'the public grid still draws blank cells for absent controls, or decides before the filters are seeded');
+});
+
+check('a section heading stays above the content it introduces, at heading height, under every direction and a plan that forgets it', () => {
+  const directions = load('lib/dashboard-presentation/directions.ts');
+  const compiler = load('lib/dashboard-presentation/compiler.ts');
+  const typed = (tile, type) => ({ ...tile, chart: { ...tile.chart, chart_type: type } });
+  const header = (id, title, origin, y) => ({ id, chart_id: null, widget_type: 'section_header',
+    widget_config: { title, origin }, layout: { x: 0, y, w: 36, h: 3, gv: 2, pageId: 'page-1' } });
+  const tiles = [
+    typed(chart(1, 0, 0, 12, 6), 'KPI'), typed(chart(2, 12, 0, 12, 6), 'KPI'),
+    header(60, 'Performance', 'author', 6),
+    typed(chart(3, 0, 9, 18, 10), 'BAR'), typed(chart(4, 18, 9, 18, 10), 'PIE'),
+    header(61, 'Detail', 'ai', 19),
+    typed(chart(5, 0, 22, 36, 12), 'TABLE'),
+  ];
+  const s = snap(tiles, []);
+  const firstBelow = (o, id) => {
+    const h = o[id];
+    const below = Object.entries(o).filter(([, r]) => r.y >= h.y + h.h).sort((a, b) => a[1].y - b[1].y || a[1].x - b[1].x);
+    return Number(below[0]?.[0]);
+  };
+  const run = (label, plan) => {
+    const o = compiler.compilePresentationPlan({ plan, snapshot: s, pageId: 'page-1' }).mutation.layoutOverrides;
+    assert(o[60] && [3, 4].includes(firstBelow(o, 60)), `${label}: "Performance" does not introduce its charts (${JSON.stringify(o)})`);
+    assert(o[60].w === 36 && o[60].h <= 3, `${label}: the heading is not a thin full-width band (${JSON.stringify(o[60])})`);
+    return { o, plan };
+  };
+  for (const d of ['executive', 'operations', 'editorial']) {
+    const { plan } = run(d, directions.planForDirection(d, s, {}));
+    const newHeadings = (plan.blocks ?? []).filter((b) => b.heading && b.title === 'Detail');
+    assert(newHeadings.length === 0, `${d}: a second "Detail" heading was created instead of reusing the page's`);
+  }
+  // A model plan that leaves both headings out.
+  const { o } = run('model plan', { layer: 'redesign', direction: { style: 'x', density: 'balanced' },
+    sections: [{ primitive: 'kpi_strip', visuals: [1, 2] }, { primitive: 'two_equal', visuals: [3, 4] }, { primitive: 'table_full', visuals: [5] }] });
+  assert(firstBelow(o, 61) === 5, `model plan: an unplaced "Detail" heading is not above its table (${JSON.stringify(o)})`);
+});
+
+check('a control can be put right next to the selected element: free space first, else just above it; never by moving a lock', () => {
+  const arrange = load('lib/grid-arrange.ts');
+  const b = (id, x, y, w, h, locked = false) => ({ id, x, y, w, h, locked });
+  const card = { w: 8, h: 3 };
+  // Room to the right of the chart in its rows: nothing moves.
+  const right = arrange.placeBeside([b(1, 0, 0, 24, 12), b(2, 0, 12, 36, 6)], 1, card);
+  assert(right && right.rect.x === 24 && right.rect.y === 0 && right.changed.length === 0, JSON.stringify(right));
+  // The row is full: directly above the chart, and the page below makes room.
+  const full = arrange.placeBeside([b(1, 0, 6, 18, 12), b(2, 18, 6, 18, 12), b(3, 0, 18, 36, 6), b(4, 0, 0, 36, 6)], 2, card);
+  const moved = Object.fromEntries((full?.changed ?? []).map((x) => [x.id, x]));
+  assert(full && full.rect.y === 6 && full.rect.x === 18 && moved[1]?.y === 9 && moved[2]?.y === 9 && moved[3]?.y === 21 && !moved[4],
+    `not placed just above the chart: ${JSON.stringify(full)}`);
+  // A locked tile would have to move: refused, the author is told.
+  const locked = arrange.placeBeside([b(1, 0, 0, 36, 12), b(2, 0, 12, 36, 6, true)], 1, card);
+  assert(locked === null, 'a lock was moved to make room');
+  const page = source('app/(main)/dashboards/[id]/page.tsx');
+  assert(/besideName=\{selectedTileIds\.length === 1 \? tileTitle\(selectedTileIds\[0\]\) : null\}/.test(page) && /placeBeside\(boxes, targetId, card\)/.test(page),
+    'the Slicer picker does not offer "next to the selected element"');
+  assert(/besideBlocked/.test(page), 'a placement that cannot fit is not explained');
+});
+
+check('the PDF is a document, not a screenshot of the UI: no drill toggles or chevrons, labels in the reader\'s language', () => {
+  const exp = source('lib/export-pdf.ts');
+  assert(/\[data-export-hide\] \{ display: none !important; \}/.test(exp) && /lucide-chevron-down \{ display: none/.test(exp), 'interactive chrome is printed');
+  assert(/\[data-tile-kind="widget"\] \.truncate \{ text-overflow: clip/.test(exp), 'a short widget title prints with a false ellipsis');
+  assert(/opts\.labels\?\.filters/.test(exp) && /opts\.labels\?\.exportedAt/.test(exp) && /opts\.labels\?\.snapshotNote/.test(exp), 'the page words are fixed Vietnamese');
+  const chart = source('components/explore/ExploreChart.tsx');
+  assert(/const DrillBar = canDrill \? \(\s*\/\/[^\n]*\n\s*<div [^>]*data-export-hide/.test(chart), 'the drill toggle bar is not marked as screen-only');
+  for (const [name, file] of [['builder', 'app/(main)/dashboards/[id]/page.tsx'], ['public', 'components/dashboards/PublicDashboardView.tsx']]) {
+    const src = source(file);
+    const call = src.slice(src.indexOf('await exportDashboardPdf({'), src.indexOf('await exportDashboardPdf({') + 500);
+    assert(/labels: \{\s*filters: t\('dashboards\.pdf\.filters'\)/.test(call), `${name}: the PDF is not told the reader's language`);
+  }
+});
+
+check('a headline an earlier design wrote keeps headline height when a redesign reuses it', () => {
+  const compiler = load('lib/dashboard-presentation/compiler.ts');
+  const typed = (tile, type) => ({ ...tile, chart: { ...tile.chart, chart_type: type } });
+  const narrative = { id: 70, chart_id: null, widget_type: 'narrative', widget_config: { variant: 'headline', origin: 'ai', items: [{ finding: 'trend:3' }] },
+    layout: { x: 0, y: 0, w: 36, h: 6, gv: 2, pageId: 'page-1' } };
+  const s = snap([narrative, typed(chart(3, 0, 6, 36, 10), 'BAR')], []);
+  const base = { layer: 'redesign', direction: { style: 'x', density: 'spacious' } };
+  const reused = compiler.compilePresentationPlan({ plan: { ...base, sections: [{ primitive: 'full_width', visuals: [70] }, { primitive: 'full_width', visuals: [3] }] }, snapshot: s, pageId: 'page-1' }).mutation.layoutOverrides;
+  const fresh = compiler.compilePresentationPlan({ plan: { ...base, blocks: [{ id: -1, variant: 'headline', findings: ['trend:3'] }],
+    sections: [{ primitive: 'full_width', visuals: [-1] }, { primitive: 'full_width', visuals: [70, 3] }] }, snapshot: s, pageId: 'page-1' }).mutation.layoutOverrides;
+  assert(reused[70].h === fresh[-1].h, `a reused headline is ${reused[70].h} rows, a new one ${fresh[-1].h}`);
 });
 
 if (failures.length) {

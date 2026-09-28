@@ -138,8 +138,18 @@ export const dashboardApi = {
     return response.data;
   },
 
+  /** Remove an element IN THE CALLER'S DRAFT. A published element stays live
+   *  (the public link and embed keep it) until Publish; `restoreChart` (Undo)
+   *  or Discard brings the same row back. An element added in this draft is
+   *  deleted — it was never published. */
   removeChart: async (dashboardId: number, dashboardChartId: number): Promise<Dashboard> => {
-    const response = await apiClient.delete(`/dashboards/${dashboardId}/charts/${dashboardChartId}`);
+    const response = await apiClient.delete(`/dashboards/${dashboardId}/charts/${dashboardChartId}`, { params: { draft: true } });
+    return response.data;
+  },
+
+  /** Undo a draft removal: the same element, the same id, back in the draft. */
+  restoreChart: async (dashboardId: number, dashboardChartId: number): Promise<Dashboard> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/charts/${dashboardChartId}/restore`);
     return response.data;
   },
 
@@ -174,6 +184,9 @@ export const dashboardApi = {
     const response = await apiClient.patch(
       `/dashboards/${dashboardId}/widgets/${dashboardChartId}`,
       { widget_config: widgetConfig },
+      // A draft edit: a published widget keeps its published content on the
+      // public link until Publish; Discard drops the edit.
+      { params: { draft: true } },
     );
     return response.data;
   },
@@ -231,6 +244,9 @@ export const dashboardApi = {
       /** The report theme, staged with the rest of the presentation and
        *  published by POST /publish in the same transaction. */
       theme_config?: Record<string, any>;
+      /** Elements removed in the SAME draft change (a deleted filter's
+       *  controls): all of them and the filter entry, or nothing. */
+      remove_tile_ids?: number[];
     }
   ): Promise<Dashboard> => {
     const response = await apiClient.put(`/dashboards/${dashboardId}/draft-filters`, body);

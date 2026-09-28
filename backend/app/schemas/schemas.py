@@ -666,6 +666,10 @@ class DashboardResponse(DashboardBase):
     # filters_config here). FE merges them silently into chart-data
     # requests but never renders them in the top-bar slicer.
     public_link_hidden_filters: Optional[List[Dict[str, Any]]] = None
+    # The link's LOCKED (🔒) filters that enforce a value — field, label, value
+    # only — so a reader is told the report is filtered and by what. Read-only;
+    # the server applies them. Hidden (🚫) link filters are never listed.
+    public_link_locked_filters: Optional[List[Dict[str, Any]]] = None
     available_filter_fields: Optional[List[Dict[str, Any]]] = None
     public_link_name: Optional[str] = None
     public_link_appearance: Optional[Dict[str, Any]] = None
@@ -824,6 +828,11 @@ class DashboardUpdateDraftFiltersRequest(BaseModel):
     # dashboard is never published half-old, half-new.
     theme_config: Optional[Dict[str, Any]] = None
     pages_config: Optional[List[Dict[str, Any]]] = None
+    # Tiles removed in the SAME draft change and the same transaction — the
+    # controls of a filter being deleted. A published tile is marked removed in
+    # the caller's draft (it stays live until Publish); a tile only in the
+    # caller's draft is deleted. Nothing is applied if any id is refused.
+    remove_tile_ids: Optional[List[int]] = None
 
 
 # Query Execution Schemas

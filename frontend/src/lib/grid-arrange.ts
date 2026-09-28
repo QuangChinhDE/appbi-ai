@@ -253,6 +253,59 @@ export function resolveDrop(
   return { status: 'ok', changed, ...(closedRows ? { closedRows } : {}) };
 }
 
+/**
+ * The page a VIEWER sees when some filter controls draw nothing for them (a
+ * field the link locks or hides, a slicer whose scope does not show it on this
+ * page). Those cells are taken out and each band left empty closes — the same
+ * rule as removing the control in the builder — so no blank strip remains.
+ * A PROJECTION for rendering: the saved layout is never changed, and a band
+ * above a locked tile stays open (a locked tile never moves).
+ */
+export function withoutAbsentControls(page: GridBox[], absentIds: ReadonlySet<number>): GridBox[] {
+  let boxes = page.map((b) => ({ ...b }));
+  const order = boxes.filter((b) => absentIds.has(b.id)).sort((a, b) => b.y - a.y);
+  for (const gone of order) {
+    const moved = new Map(closeVacatedBand(boxes, gone.id).map((b) => [b.id, b]));
+    boxes = boxes.filter((b) => b.id !== gone.id).map((b) => moved.get(b.id) ?? b);
+  }
+  return boxes;
+}
+
+/**
+ * Where a new element of `size` goes to sit WITH `targetId` (a control by the
+ * chart it is read with):
+ *   1. free space in the target's rows — right of it, then left of it — so
+ *      nothing moves at all;
+ *   2. otherwise directly above the target: the rows from there down move by
+ *      its height, the same insert as dropping a tile there (resolveDrop).
+ * null when that would move a locked tile. Pure; `changed` are the tiles that
+ * moved, `rect` is the new element's cell.
+ */
+export function placeBeside(
+  page: GridBox[],
+  targetId: number,
+  size: { w: number; h: number },
+  cols: number = DASHBOARD_GRID_COLS,
+): { rect: { x: number; y: number; w: number; h: number }; changed: GridBox[] } | null {
+  const target = page.find((b) => b.id === targetId);
+  if (!target) return null;
+  const w = Math.min(size.w, cols);
+  const free = (x: number) => {
+    const r = { id: -1, x, y: target.y, w, h: size.h };
+    return x >= 0 && x + w <= cols && !page.some((b) => overlaps(r, b));
+  };
+  for (let x = target.x + target.w; x + w <= cols; x += 1) if (free(x)) return { rect: { x, y: target.y, w, h: size.h }, changed: [] };
+  for (let x = target.x - w; x >= 0; x -= 1) if (free(x)) return { rect: { x, y: target.y, w, h: size.h }, changed: [] };
+  const NEW = -999_999;
+  const bottom = page.reduce((m, b) => Math.max(m, b.y + b.h), 0);
+  const drop = resolveDrop([...page, { id: NEW, x: 0, y: bottom, w, h: size.h }], NEW,
+    { x: Math.min(target.x, cols - w), y: target.y, w, h: size.h });
+  if (drop.status !== 'ok') return null;
+  const placed = drop.changed.find((b) => b.id === NEW);
+  if (!placed) return null;
+  return { rect: { x: placed.x, y: placed.y, w, h: size.h }, changed: drop.changed.filter((b) => b.id !== NEW) };
+}
+
 /** Removing a tile from a filter band closes the band when it is now empty. */
 export function closeVacatedBand(page: GridBox[], removedId: number): GridBox[] {
   const removed = page.find((b) => b.id === removedId);

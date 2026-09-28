@@ -18,7 +18,8 @@ import {
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
 import { GridSlicerTile, FilterApplyBar, type SlicerControlBinding } from '@/components/dashboards/GridSlicerTile';
-import { isSlicerControl, placedSlicerIds, replaceSlicerById } from '@/lib/slicer-placement';
+import { isSlicerControl, placedSlicerIds, replaceSlicerById, slicerIdOfControl } from '@/lib/slicer-placement';
+import { withoutAbsentControls } from '@/lib/grid-arrange';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
@@ -32,7 +33,6 @@ import {
 } from '@/lib/export-mode';
 import { parsePrintRenderOptions, type PrintRenderOptions } from '@/lib/print-render';
 import { toast } from '@/lib/toast';
-import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -63,7 +63,8 @@ import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilter
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
 import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
-import { mergeSeedWithViewerSelections, resolvePublicPageFilterContext } from '@/lib/public-page-filters';
+import { mergeSeedWithViewerSelections, pageFilterFacts, resolvePublicPageFilterContext, type PageFilterFact } from '@/lib/public-page-filters';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 import { citedTilesOf } from '@/lib/report-evidence';
 import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
@@ -364,6 +365,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // full-viewport app-shell the standalone /d page uses.
   const isEmbed = variant === 'embed';
   useParentResize(isEmbed);
+  const { t } = useI18n();
 
   const [mounted, setMounted] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -625,6 +627,12 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       const page = dashboardPages.find((p) => p.id === activePageId);
       if (page) {
         collect((page as any).filters || []);
+      }
+      // The link's locked (🔒) filters: enforced by the server, served read-only
+      // so the reader is told the report is filtered. Hidden (🚫) link filters
+      // are never served.
+      for (const e of ((dashboard as any).public_link_locked_filters || []) as any[]) {
+        if (e && typeof e === 'object' && e.field) result.push({ field: e.field, label: e.label ?? undefined, value: e.value });
       }
     }
     return result;
@@ -1098,17 +1106,12 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // Phase-B22 — human-readable summary of the slicers/filters the viewer has
   // applied, baked into each PDF page header so an exported report says which
   // slice of data it represents.
-  const summarizeViewerFilters = useCallback((): string => {
-    if (!appliedViewerFilters.length) return '';
-    return appliedViewerFilters
-      .map((f) => {
-        const label = getFilterDisplayLabel(f);
-        const val = formatFilterValue((f as { value?: unknown }).value);
-        return val ? `${label}: ${val}` : label;
-      })
-      .filter(Boolean)
-      .join(' · ');
-  }, [appliedViewerFilters]);
+  const summarizeViewerFilters = useCallback((): string => pageFilterFacts({
+    applied: appliedViewerFilters,
+    pageHidden: pageHiddenFilters,
+    locked: lockedBannerEntries,
+  }).map((f) => `${f.locked ? '🔒 ' : ''}${f.label}: ${f.preset ? t(`dashboards.filterContext.preset.${f.preset}`) : f.value}`)
+    .join(' · '), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, t]);
 
   /**
    * Server-side export: hand the request to the render worker and poll.
@@ -1336,6 +1339,12 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
 
       const { exportDashboardPdf } = await import('@/lib/export-pdf');
       const result = await exportDashboardPdf({
+        labels: {
+          filters: t('dashboards.pdf.filters'),
+          exportedAt: t('dashboards.pdf.exportedAt'),
+          dataAsOf: t('dashboards.pdf.dataAsOf'),
+          snapshotNote: t('dashboards.pdf.snapshotNote'),
+        },
         filename: `${safeName}.pdf`,
         title: reportTitle,
         orientation: choices.orientation,
@@ -1530,6 +1539,16 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     () => draftViewerFilters.filter((f) => placedViewerSlicerIds.has(String(f.id ?? ''))),
     [draftViewerFilters, placedViewerSlicerIds],
   );
+  // What constrains this page that no control on it shows: a link or report
+  // lock, a filter the page carries, a slicer scoped to filter here without a
+  // control, or a slicer with no control on this page. A filtered page must
+  // never read as unfiltered.
+  const filterContextFacts = useMemo<PageFilterFact[]>(() => pageFilterFacts({
+    applied: appliedViewerFilters,
+    pageHidden: pageHiddenFilters,
+    locked: lockedBannerEntries,
+    withoutControl: new Set(appliedViewerFilters.map((f) => String(f.id ?? '')).filter((id) => !placedViewerSlicerIds.has(id))),
+  }), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, placedViewerSlicerIds]);
   const publicTheme = useMemo(
     () => buildPublicLinkTheme(dashboard?.public_link_appearance),
     [dashboard?.public_link_appearance],
@@ -1660,16 +1679,31 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // Render at STORED coordinates — NO liftLayoutToTop. The public report must be
   // pixel-WYSIWYG with the builder desktop: an intentional top gap the DA left is
   // preserved, not normalized away.
-  const layouts: Layout[] = visibleDashboardCharts.map((dashboardChart) => {
-    const layout = dashboardChart.layout;
-    return {
-      i: dashboardChart.id.toString(),
-      x: layout.x || 0,
-      y: layout.y || 0,
-      w: layout.w || 4,
-      h: layout.h || 4,
-    };
-  });
+  //
+  // One exception: a filter control that draws NOTHING for this viewer (its
+  // field is locked or hidden by the link, or its slicer's scope does not show
+  // it on this page) leaves no blank cell — its band closes, the builder's rule
+  // for a removed control (lib/grid-arrange withoutAbsentControls). Decided only
+  // once the viewer's filters are seeded, so the page never jumps. The filter
+  // itself still applies; the header says so (filterContextFacts).
+  const viewerSlicerIds = new Set(draftViewerFilters.map((f) => String(f.id ?? '')));
+  const absentControlIds = filtersSeeded
+    ? new Set(visibleDashboardCharts
+      .filter((dc) => isSlicerControl(dc) && !viewerSlicerIds.has(slicerIdOfControl(dc) ?? ''))
+      .map((dc) => dc.id))
+    : new Set<number>();
+  const gridDashboardCharts = absentControlIds.size
+    ? visibleDashboardCharts.filter((dc) => !absentControlIds.has(dc.id))
+    : visibleDashboardCharts;
+  const projectedBoxes = withoutAbsentControls(visibleDashboardCharts.map((dc) => ({
+    id: dc.id,
+    x: dc.layout.x || 0,
+    y: dc.layout.y || 0,
+    w: dc.layout.w || 4,
+    h: dc.layout.h || 4,
+    locked: Boolean((dc.layout as any)?.locked),
+  })), absentControlIds);
+  const layouts: Layout[] = projectedBoxes.map((b) => ({ i: b.id.toString(), x: b.x, y: b.y, w: b.w, h: b.h }));
 
   // Desktop is authored; tablet and phone are derived from it by the same rules
   // the builder's narrow projection uses (lib/dashboard-pages).
@@ -1798,123 +1832,6 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     </nav>
   ) : null;
 
-  const filterBannerEl = (lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) ? (
-    <div
-      className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary"
-      style={publicTheme.neutralPillStyle}
-      data-public-locked-banner
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        {lockedBannerEntries.length > 0 ? (
-          <>
-            <span className="font-medium text-text-tertiary">ⓘ Đang lọc theo:</span>
-            {lockedBannerEntries.map((entry, i) => (
-              <span key={`${entry.field}-${i}`} className="inline-flex items-center gap-1">
-                <span className="opacity-70">🔒</span>
-                <span className="font-medium">{entry.label ?? entry.field}</span>
-                <span className="text-text-quaternary">=</span>
-                <span className="font-mono">
-                  {Array.isArray(entry.value)
-                    ? entry.value.slice(0, 3).join(', ') + (entry.value.length > 3 ? `, +${entry.value.length - 3}` : '')
-                    : String(entry.value ?? '')}
-                </span>
-              </span>
-            ))}
-          </>
-        ) : (
-          <span className="text-text-tertiary">Bộ lọc nâng cao có sẵn.</span>
-        )}
-        <button
-          type="button"
-          onClick={() => setIsMiniPaneOpen((v) => !v)}
-          className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
-        >
-          {isMiniPaneOpen ? 'Đóng' : 'Xem chi tiết'}
-        </button>
-      </div>
-      {isMiniPaneOpen && (
-        <div className="mt-3 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-          {lockedBannerEntries.length > 0 && (
-            <div className="space-y-1.5">
-              <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                Bộ lọc cố định (do người chia sẻ link cấu hình)
-              </div>
-              {lockedBannerEntries.map((entry, i) => (
-                <div key={`lock-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
-                  <span>🔒</span>
-                  <span className="font-medium">{entry.label ?? entry.field}</span>
-                  <span className="text-text-quaternary">=</span>
-                  <span className="font-mono text-text-secondary">
-                    {Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
-                  </span>
-                  <span className="ml-auto text-tiny text-text-quaternary">Read-only</span>
-                </div>
-              ))}
-            </div>
-          )}
-          {overridableFilterEntries.length > 0 && (
-            <div className={`${lockedBannerEntries.length > 0 ? 'mt-3 border-t border-[rgb(var(--border-line))] pt-3' : ''} space-y-1.5`}>
-              <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                Bộ lọc có thể chỉnh
-              </div>
-              {overridableFilterEntries.map((entry, i) => {
-                const currentDraft = draftViewerFilters.find(
-                  (f) => f.field === entry.field || f.semanticField === entry.semanticField,
-                );
-                const displayValue = currentDraft?.value ?? entry.value;
-                return (
-                  <div key={`ov-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
-                    <span>👁</span>
-                    <span className="font-medium">{entry.label ?? entry.field}</span>
-                    <span className="text-text-quaternary">=</span>
-                    <input
-                      type="text"
-                      value={Array.isArray(displayValue) ? displayValue.join(', ') : String(displayValue ?? '')}
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        const nextValue = raw.includes(',')
-                          ? raw.split(',').map((s) => s.trim()).filter(Boolean)
-                          : raw;
-                        setDraftViewerFilters((prev) => {
-                          const others = prev.filter(
-                            (f) => f.field !== entry.field && f.semanticField !== entry.semanticField,
-                          );
-                          return [
-                            ...others,
-                            {
-                              ...(currentDraft ?? {}),
-                              id: currentDraft?.id ?? `override-${entry.field}`,
-                              field: entry.field,
-                              semanticField: entry.semanticField,
-                              type: (currentDraft?.type ?? entry.type ?? 'dropdown') as any,
-                              operator: (currentDraft?.operator ?? 'in') as any,
-                              value: nextValue,
-                            } as any,
-                          ];
-                        });
-                      }}
-                      placeholder={Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
-                      className="ml-auto w-48 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-tiny outline-none focus:ring-1 focus:ring-brand"
-                    />
-                  </div>
-                );
-              })}
-              <div className="mt-2 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleApplyFilters()}
-                  disabled={!hasPendingFilterChanges}
-                  className="rounded border border-brand bg-brand px-3 py-1 text-tiny font-emphasis text-text-inverse transition-opacity disabled:opacity-50"
-                >
-                  Apply
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  ) : null;
 
   const filterLiveEl = showLiveState ? (
     <div className="flex flex-col gap-3">
@@ -2159,7 +2076,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
             {activeBreakpoint !== 'xs' && gridWidth ? (
               <SectionBands
                 layouts={responsiveLayouts[activeBreakpoint]}
-                dashboardCharts={visibleDashboardCharts}
+                dashboardCharts={gridDashboardCharts}
                 cols={REPORT_COLS[activeBreakpoint]}
                 rowH={reportRowHeight}
                 margin={getDashboardGridMargin(dashboard?.theme_config)}
@@ -2178,7 +2095,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
               compactType={null}
               preventCollision={true}
             >
-              {visibleDashboardCharts.map(renderTileNode)}
+              {gridDashboardCharts.map(renderTileNode)}
             </ResponsiveReportGrid>
             </div>
           </div>
@@ -2345,7 +2262,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           {/* The header carries only state (loading, cross-filter) and the
               locked/override banners. Filter CONTROLS are elements of the report
               grid; there is no filter area here. */}
-          {(showLiveState || lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+          {(showLiveState || filterContextFacts.length > 0 || overridableFilterEntries.length > 0) && (
             <div className="mt-2 space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
 
               {/* Phase-F THẬT (PBI-parity rework) — banner for locked
@@ -2353,46 +2270,49 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                   with locked entries (read-only, 🔒) plus override-allowed
                   entries (editable). See docs/filter-semantics.md §9 +
                   user-approved wireframe. */}
-              {(lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+              {(filterContextFacts.length > 0 || overridableFilterEntries.length > 0) && (
                 <div
                   className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary"
                   style={publicTheme.neutralPillStyle}
                   data-public-locked-banner
+                  data-filter-context
                 >
-                  <div className="flex flex-wrap items-center gap-2">
-                    {lockedBannerEntries.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    {filterContextFacts.length > 0 ? (
                       <>
-                        <span className="font-medium text-text-tertiary">ⓘ Đang lọc theo:</span>
-                        {lockedBannerEntries.map((entry, i) => (
-                          <span key={`${entry.field}-${i}`} className="inline-flex items-center gap-1">
-                            <span className="opacity-70">🔒</span>
-                            <span className="font-medium">{entry.label ?? entry.field}</span>
-                            <span className="text-text-quaternary">=</span>
-                            <span className="font-mono">
-                              {Array.isArray(entry.value)
-                                ? entry.value.slice(0, 3).join(', ') + (entry.value.length > 3 ? `, +${entry.value.length - 3}` : '')
-                                : String(entry.value ?? '')}
-                            </span>
+                        <span className="font-medium text-text-tertiary">{t('dashboards.filterContext.filteredBy')}</span>
+                        {filterContextFacts.map((fact) => (
+                          <span
+                            key={fact.key}
+                            className="inline-flex items-center gap-1"
+                            data-filter-fact={fact.locked ? 'locked' : 'applied'}
+                            title={fact.locked ? t('dashboards.filterContext.lockedTitle') : t('dashboards.filterContext.appliedTitle')}
+                          >
+                            {fact.locked && <span className="opacity-70" aria-hidden>🔒</span>}
+                            <span className="font-medium">{fact.label}:</span>
+                            <span>{fact.preset ? t(`dashboards.filterContext.preset.${fact.preset}`) : fact.value}</span>
                           </span>
                         ))}
                       </>
                     ) : (
-                      <span className="text-text-tertiary">Bộ lọc nâng cao có sẵn.</span>
+                      <span className="text-text-tertiary">{t('dashboards.filterContext.adjustable')}</span>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => setIsMiniPaneOpen((v) => !v)}
-                      className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
-                    >
-                      {isMiniPaneOpen ? 'Đóng' : 'Xem chi tiết'}
-                    </button>
+                    {(lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => setIsMiniPaneOpen((v) => !v)}
+                        className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
+                      >
+                        {isMiniPaneOpen ? t('dashboards.filterContext.close') : t('dashboards.filterContext.details')}
+                      </button>
+                    )}
                   </div>
                   {isMiniPaneOpen && (
                     <div className="mt-3 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-3">
                       {lockedBannerEntries.length > 0 && (
                         <div className="space-y-1.5">
                           <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                            Bộ lọc cố định (do người chia sẻ link cấu hình)
+                            {t('dashboards.filterContext.lockedHeading')}
                           </div>
                           {lockedBannerEntries.map((entry, i) => (
                             <div key={`lock-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
@@ -2402,7 +2322,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                               <span className="font-mono text-text-secondary">
                                 {Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
                               </span>
-                              <span className="ml-auto text-tiny text-text-quaternary">Read-only</span>
+                              <span className="ml-auto text-tiny text-text-quaternary">{t('dashboards.filterContext.readOnly')}</span>
                             </div>
                           ))}
                         </div>
@@ -2410,7 +2330,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                       {overridableFilterEntries.length > 0 && (
                         <div className={`${lockedBannerEntries.length > 0 ? 'mt-3 border-t border-[rgb(var(--border-line))] pt-3' : ''} space-y-1.5`}>
                           <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                            Bộ lọc có thể chỉnh
+                            {t('dashboards.filterContext.adjustableHeading')}
                           </div>
                           {overridableFilterEntries.map((entry, i) => {
                             const currentDraft = draftViewerFilters.find(
@@ -2578,7 +2498,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
               {activeBreakpoint !== 'xs' && gridWidth ? (
                 <SectionBands
                   layouts={responsiveLayouts[activeBreakpoint]}
-                  dashboardCharts={visibleDashboardCharts}
+                  dashboardCharts={gridDashboardCharts}
                   cols={REPORT_COLS[activeBreakpoint]}
                   rowH={reportRowHeight}
                   margin={getDashboardGridMargin(dashboard?.theme_config)}
@@ -2597,7 +2517,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                 compactType={null}
                 preventCollision={true}
               >
-                {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
+                {gridDashboardCharts.map((dashboardChart: DashboardChart) => {
                   // Non-chart widgets (text/image/countdown/shape/parameter_switcher)
                   // skip the chart-fetch path and render via the shared DashboardWidget.
                   const isWidget = Boolean(

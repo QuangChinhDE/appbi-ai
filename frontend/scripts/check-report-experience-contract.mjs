@@ -478,7 +478,12 @@ check('an existing AI block is reused in its slot, not duplicated', () => {
   const existing = { id: 500, chart_id: null, widget_type: 'narrative', widget_config: headline.widgetConfig, layout: { ...headline.layout, draftOnly: true }, chart: null };
   const second = build('executive', [...olistTiles(), existing]);
   assert(!second.built.mutation.createdBlocks.some((b) => b.widgetConfig.variant === 'headline'), 'a second headline was created');
-  assert(second.built.mutation.layoutOverrides[500], 'the existing headline was not placed');
+  // It keeps the headline's slot: moved there, or already there (an unchanged
+  // rectangle writes no override). It used to come back twice as tall — sized
+  // as a "supporting" chart — so it always moved.
+  const slot = second.built.mutation.layoutOverrides[500] ?? existing.layout;
+  assert(slot.y === headline.layout.y && slot.x === headline.layout.x && slot.w === headline.layout.w && slot.h === headline.layout.h,
+    `the existing headline did not keep the headline slot (${JSON.stringify(slot)} vs ${JSON.stringify(headline.layout)})`);
 });
 
 // ── content proposals ───────────────────────────────────────────────────────

@@ -345,6 +345,64 @@ function normalizeSections(
   return { sections: out, notes };
 }
 
+/**
+ * A section heading introduces the tiles under it — that is what a reader takes
+ * it to mean, and what SectionBands draws. Nothing stores that membership, so a
+ * redesign that regrouped the content used to leave the heading wherever the
+ * plan (or the fallback) put it: "Performance" alone at the end of the page,
+ * introducing nothing, and the band before it stretched over unrelated tiles.
+ *
+ * Membership is read here the way the renderer draws it — from a heading down
+ * to the next heading, on the snapshot's current layout — and each anchored
+ * heading is placed, full width, directly above the first section that holds
+ * any of its tiles. Anchored: every heading an author wrote, and an AI heading
+ * the plan did not place (one the plan did place is the plan's own structure).
+ * A heading whose tiles are all gone from the plan (locked, or it introduced
+ * nothing) keeps the position the plan gave it, or goes last if it had none.
+ * Pure.
+ */
+export function anchorSectionHeadings(
+  sections: PresentationSection[],
+  snapshot: DashboardPresentationSnapshot,
+  fixed: ReadonlySet<VisualId> = new Set(),
+): { sections: PresentationSection[]; notes: string[] } {
+  const visuals = snapshot.visuals;
+  const planned = new Set(sections.flatMap((s) => s.visuals ?? []));
+  const anchored = visuals.filter((v) => v.widgetType === 'section_header' && !fixed.has(v.dashboardChartId)
+    && (v.heading?.origin !== 'ai' || !planned.has(v.dashboardChartId)));
+  if (!anchored.length) return { sections, notes: [] };
+  const byPos = [...visuals].sort((a, b) => a.currentLayout.y - b.currentLayout.y || a.currentLayout.x - b.currentLayout.x);
+  const heads = byPos.filter((v) => v.widgetType === 'section_header');
+  const membersOf = new Map<VisualId, Set<VisualId>>();
+  heads.forEach((h, i) => {
+    const next = heads[i + 1];
+    membersOf.set(h.dashboardChartId, new Set(byPos
+      .filter((v) => v.widgetType !== 'section_header' && v.currentLayout.y >= h.currentLayout.y
+        && (!next || v.currentLayout.y < next.currentLayout.y))
+      .map((v) => v.dashboardChartId)));
+  });
+  const anchoredIds = new Set(anchored.map((h) => h.dashboardChartId));
+  const planIndex = new Map<VisualId, number>();
+  sections.forEach((s, i) => (s.visuals ?? []).forEach((id) => {
+    if (anchoredIds.has(id) && !planIndex.has(id)) planIndex.set(id, i);
+  }));
+  const out = sections
+    .map((s) => ({ ...s, visuals: (s.visuals ?? []).filter((id) => !anchoredIds.has(id)) }))
+    .filter((s) => s.visuals.length > 0);
+  let kept = 0;
+  for (const h of [...anchored].sort((a, b) => a.readingOrder - b.readingOrder)) {
+    const members = membersOf.get(h.dashboardChartId) ?? new Set<VisualId>();
+    let at = out.findIndex((s) => s.visuals.some((id) => members.has(id)));
+    if (at < 0) at = planIndex.has(h.dashboardChartId) ? Math.min(planIndex.get(h.dashboardChartId)!, out.length) : out.length;
+    else kept += 1;
+    out.splice(at, 0, { primitive: 'full_width', visuals: [h.dashboardChartId] });
+  }
+  return {
+    sections: out,
+    notes: kept ? ['Kept each section heading above the content it introduces.'] : [],
+  };
+}
+
 export function compilePresentationPlan(input: CompileInput): CompileResult {
   const { plan, snapshot, pageId } = input;
   const notes: string[] = [];
@@ -382,6 +440,17 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
       const block = blockById.get(id);
       if (block) return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, blockTargetPx(block) * heightScale), gapPx);
       const visual = byId.get(id);
+      // A heading is a thin band, never a chart-height block (it was sized as a
+      // 260px "supporting" tile, leaving a large empty card).
+      if (visual?.widgetType === 'section_header') {
+        return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, TARGET_HEIGHT_PX.section_header), gapPx);
+      }
+      // A text block already on the page (a headline an earlier design wrote,
+      // reused by this one) is sized as that block, like a new one — not as a
+      // 260px "supporting" chart: a reused headline came out twice as tall.
+      if (visual?.block) {
+        return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, BLOCK_TARGET_PX[visual.block.variant] * heightScale), gapPx);
+      }
       const pref = plan.visualPreferences?.[String(id)];
       const role = pref?.role ?? visual?.displayRoleHint ?? 'supporting';
       const scaled = (TARGET_HEIGHT_PX[role] ?? TARGET_HEIGHT_PX.supporting)
@@ -477,6 +546,9 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
     plan.visualPreferences?.[String(id)]?.role ?? byId.get(id)?.displayRoleHint ?? 'supporting';
   const normalized = normalizeSections(plan.sections ?? [], roleOf);
   notes.push(...normalized.notes);
+  const withHeadings = anchorSectionHeadings(normalized.sections, snapshot, fixed);
+  normalized.sections = withHeadings.sections;
+  notes.push(...withHeadings.notes);
 
   // A report's opening headline the plan forgot is not an orphan to append at
   // the END: it is the page's first line. Everything the plan did place follows.
@@ -560,7 +632,7 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
   // be exhaustive — and says so, because a silently appended chart is a plan
   // the user should know was incomplete.
   const orphanIds: VisualId[] = [];
-  for (const visual of snapshot.visuals) {
+  for (const visual of [...snapshot.visuals].sort((a, b) => a.readingOrder - b.readingOrder)) {
     if (placed.has(visual.dashboardChartId) || fixed.has(visual.dashboardChartId)) continue;
     orphanIds.push(visual.dashboardChartId);
   }

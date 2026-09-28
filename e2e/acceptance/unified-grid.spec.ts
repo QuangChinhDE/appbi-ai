@@ -1364,3 +1364,229 @@ test('U legacy report: controls move between the KPIs and the charts, no band is
   r.evidence.push('U-export.pdf');
   await p.close();
 });
+
+// ── R · product review round: lifecycle, filter context, structure, placement ──
+//
+// Each scenario reads the PUBLIC link at every boundary, because the defect it
+// guards is one a reader sees: an edit that reached the link before Publish,
+// a filter the page applied without saying so, a heading introducing nothing.
+
+async function publicView(context: BrowserContext, token: string) {
+  const p = await context.newPage();
+  await p.setViewportSize({ width: 1440, height: 2600 });
+  await p.goto(`/d/${token}`);
+  await settle(p);
+  return p;
+}
+const has = async (p: Page, tileId: string) => (await p.locator(`[data-grid-item-id="${tileId}"]`).count()) === 1;
+async function removeChartTile(page: Page, tileId: string) {
+  const item = page.locator(`main [data-grid-item-id="${tileId}"]`);
+  await item.scrollIntoViewIfNeeded();
+  await item.hover();
+  await item.locator('button[title="Remove chart"]').click();
+  await page.getByRole('button', { name: /^Remove$/ }).last().click();
+  await expect.poll(() => page.locator(`main [data-grid-item-id="${tileId}"]`).count(), { timeout: 20_000 }).toBe(0);
+}
+async function discard(page: Page) {
+  await page.getByTestId('dashboard-discard').click();
+  await page.getByRole('button', { name: /^Discard changes$/ }).click();
+  await page.waitForTimeout(2500);
+  await settle(page);
+}
+const firstKpiTile = (page: Page) => page.evaluate(() => Array.from(document.querySelectorAll('main [data-grid-item-id]'))
+  .find((e) => e.querySelector('.dashboard-kpi-value'))?.getAttribute('data-grid-item-id') ?? '') as Promise<string>;
+
+test('R1 removing a published element is a draft edit: the link keeps it until Publish; Undo and Discard bring back the same element', async ({ page, request, context }) => {
+  const r = scenario('R1 removal is a draft edit');
+  const id = await openBaseline(page, request, r);
+  const token = await linkFor(request, id);
+  const state = await stateControl(page, r);
+  const ctlId = String(await idOfItem(state));
+  const kpiId = await firstKpiTile(page);
+  need(r, kpiId || undefined, 'a KPI tile on the baseline');
+
+  await removeControl(page, state);
+  await removeChartTile(page, kpiId);
+  check(r, 'the builder no longer shows the removed control and chart', !(await has(page, ctlId)) && !(await has(page, kpiId)));
+  check(r, 'the draft bar offers Publish and Discard', await page.getByTestId('dashboard-discard').isVisible());
+  let pub = await publicView(context, token);
+  check(r, 'before Publish the public link still has the control and the chart', (await has(pub, ctlId)) && (await has(pub, kpiId)));
+  await shot(pub, r, 'R1-public-before-publish-1440');
+  await pub.close();
+
+  await undo(page); await page.waitForTimeout(1500);
+  await undo(page); await page.waitForTimeout(2500);
+  await settle(page);
+  check(r, 'Undo brings back THE SAME control and chart (same ids)', (await has(page, ctlId)) && (await has(page, kpiId)));
+
+  await removeControl(page, control(page, /Customer state/));
+  await removeChartTile(page, kpiId);
+  await discard(page);
+  check(r, 'Discard brings back the removed control and chart', (await has(page, ctlId)) && (await has(page, kpiId)));
+
+  // The defect this round found: remove → Undo → Discard deleted a PUBLISHED control.
+  await removeControl(page, control(page, /Customer state/));
+  await undo(page); await page.waitForTimeout(2500);
+  // Undo restores the SAME published row, so nothing is left in the draft —
+  // there is nothing to Discard (the old Undo left a draft-only copy behind).
+  check(r, 'after remove → Undo nothing is left to publish', !(await page.getByTestId('dashboard-discard').isVisible().catch(() => false)));
+  if (await page.getByTestId('dashboard-discard').isVisible().catch(() => false)) await discard(page);
+  const d = await get(request, id);
+  const row = (d.dashboard_charts ?? []).find((c: any) => String(c.id) === ctlId);
+  check(r, 'remove → Undo → Discard keeps the published control, still published', !!row && !row.layout?.draftOnly, JSON.stringify(row?.layout ?? null));
+  pub = await publicView(context, token);
+  check(r, 'and the public link still has it', await has(pub, ctlId));
+  const publicNumbers = await kpis(pub);
+  await pub.close();
+
+  await removeControl(page, control(page, /Customer state/));
+  await publish(page, request, id, r);
+  pub = await publicView(context, token);
+  check(r, 'after Publish the public link no longer has the control', !(await has(pub, ctlId)));
+  check(r, 'the filter itself still applies — only its control went', JSON.stringify(await kpis(pub)) === JSON.stringify(publicNumbers), `${publicNumbers} vs ${await kpis(pub)}`);
+  await shot(pub, r, 'R1-public-after-publish-1440');
+  await pub.close();
+});
+
+test('R2 an element added by hand is a draft until Publish; Discard deletes it', async ({ page, request, context }) => {
+  const r = scenario('R2 manual additions are drafts');
+  const id = await openBaseline(page, request, r);
+  const token = await linkFor(request, id);
+  const before = (await get(request, id)).dashboard_charts.map((c: any) => c.id);
+  await page.getByTestId('dashboard-more').click();
+  await page.getByRole('button', { name: /^Add widget$/ }).click();
+  await page.getByRole('button', { name: /^Text \/ Markdown$/ }).click();
+  await page.waitForTimeout(1500);
+  await page.getByRole('button', { name: /^(Cancel|Close|Huỷ|Hủy|Đóng)$/ }).first().click({ timeout: 4000 }).catch(() => {});
+  const d = await get(request, id);
+  const added = (d.dashboard_charts ?? []).find((c: any) => !before.includes(c.id));
+  check(r, 'the widget is added as a draft-only element', !!added && added.layout?.draftOnly === true, JSON.stringify(added?.layout ?? null));
+  let pub = await publicView(context, token);
+  check(r, 'the public link does not show it before Publish', !(await has(pub, String(added?.id))));
+  await pub.close();
+  await discard(page);
+  check(r, 'Discard deletes it', !((await get(request, id)).dashboard_charts ?? []).some((c: any) => c.id === added?.id));
+});
+
+test('R3 Delete filter is one draft change: the link keeps the filter and its control until Publish; Discard restores both', async ({ page, request, context }) => {
+  const r = scenario('R3 delete filter is one draft change');
+  const id = await openBaseline(page, request, r);
+  const token = await linkFor(request, id);
+  const state = await stateControl(page, r);
+  const ctlId = String(await idOfItem(state));
+  page.once('dialog', (dlg) => dlg.accept());
+  const item = gridItemOf(state);
+  await item.hover();
+  await item.getByTestId('slicer-control-menu').click();
+  await page.getByTestId('slicer-delete-filter').click();
+  await expect.poll(() => controlCount(page), { timeout: 20_000 }).toBe(0);
+  const d = await get(request, id);
+  const draftSlicers = (d.slicers_config ?? []).map((s: any) => s.id);
+  check(r, 'the builder draft no longer has the filter', !draftSlicers.includes('slicer-state'), JSON.stringify(draftSlicers));
+  const pub = await publicView(context, token);
+  check(r, 'the public link keeps the filter control until Publish', await has(pub, ctlId));
+  await pub.close();
+  await discard(page);
+  check(r, 'Discard restores the filter and its control', (await has(page, ctlId)) && ((await get(request, id)).slicers_config ?? []).some((s: any) => s.id === 'slicer-state'));
+});
+
+test('R4 a reader is told what filters the page; a locked field leaves no blank band; a hidden field is never served', async ({ page, request, context }) => {
+  const r = scenario('R4 filter context');
+  const id = await openBaseline(page, request, r);
+  await stateControl(page, r);
+  const lockedEntry = { field: 'customer_state', semanticField: 'dataset_table_3.customer_state', fieldKey: 'dataset_table_3.customer_state', datasetId: 1,
+    type: 'dropdown', operator: 'in', value: ['RJ'], publicMode: 'locked', label: 'Customer state' };
+  const locked = await linkFor(request, id, [lockedEntry]);
+  const hidden = await linkFor(request, id, [{ ...lockedEntry, hidden: true }]);
+
+  const pub = await publicView(context, locked);
+  const facts = await pub.locator('[data-filter-fact="locked"]').allTextContents();
+  check(r, 'the locked link says it is filtered, and by what', facts.some((t) => /Customer state/.test(t) && /RJ/.test(t)), JSON.stringify(facts));
+  const grid = await pub.evaluate(() => {
+    const g = document.querySelector('.react-grid-layout')?.getBoundingClientRect();
+    const tops = Array.from(document.querySelectorAll('.react-grid-layout [data-grid-item-id]')).map((e) => Math.round(e.getBoundingClientRect().top - (g?.top ?? 0)));
+    return { minTop: Math.min(...tops), absent: document.querySelectorAll('[data-slicer-control="absent"]').length };
+  });
+  check(r, 'the stripped control leaves no blank band above the report', grid.absent === 0 && grid.minTop <= 24, JSON.stringify(grid));
+  await shot(pub, r, 'R4-locked-link-1440');
+
+  const res = await pub.request.get(`/api/v1/public/dashboards/${hidden}`);
+  const body = await res.text();
+  const served = JSON.parse(body);
+  check(r, "the hidden link's field and value are not in the served structure", !/"RJ"/.test(body) && (served.public_link_hidden_filters ?? []).length === 0
+    && (served.public_link_locked_filters ?? []).length === 0, `${(served.public_link_hidden_filters ?? []).length} hidden, ${(served.public_link_locked_filters ?? []).length} locked entries served`);
+  await pub.goto(`/d/${hidden}`);
+  await settle(pub);
+  const hiddenFacts = await pub.locator('[data-filter-context]').allTextContents();
+  check(r, 'the hidden link names no hidden filter', !hiddenFacts.some((t) => /RJ|Customer state/.test(t)), JSON.stringify(hiddenFacts));
+  await pub.close();
+});
+
+test('R5 a section heading stays above what it introduces when AI Design regroups the page; re-running adds no second heading', async ({ page, request }) => {
+  const r = scenario('R5 headings keep their content');
+  const src = LEGACY_ID ?? await idOf(request, LEGACY);
+  const id = await copyOf(request, need(r, src, `legacy report "${LEGACY_ID ?? LEGACY}"`));
+  await page.setViewportSize({ width: 1440, height: 2600 });
+  await page.goto(`/dashboards/${id}`);
+  await settle(page);
+  const headerBefore = await page.evaluate(() => Array.from(document.querySelectorAll('main [data-grid-item-id]'))
+    .find((e) => e.querySelector('[data-widget-type="section_header"]'))?.getAttribute('data-grid-item-id') ?? '');
+  need(r, headerBefore || undefined, 'a section heading on the legacy report');
+  for (const round of [1, 2]) {
+    // A new design starts in a fresh panel (the directions are offered before
+    // the first turn).
+    if (round === 2) { await page.reload(); await settle(page); }
+    await openAi(page);
+    await page.getByTestId('ai-design-direction-executive').click();
+    const ready = await page.getByTestId('ai-design-apply').waitFor({ timeout: 90_000 }).then(() => true).catch(() => false);
+    need(r, ready || undefined, 'an Executive preview');
+    await page.getByTestId('ai-design-apply').click();
+    await page.waitForTimeout(3000);
+    await page.getByTestId('design-mode-manual').click().catch(() => {});
+    await settle(page);
+    const layout = await page.evaluate((hid) => {
+      const g = document.querySelector('main .react-grid-layout')?.getBoundingClientRect();
+      const items = Array.from(document.querySelectorAll('main [data-grid-item-id]')).map((e) => {
+        const b = e.getBoundingClientRect();
+        return { id: e.getAttribute('data-grid-item-id'), top: b.top - (g?.top ?? 0), bottom: b.bottom - (g?.top ?? 0), h: b.height,
+          kind: e.querySelector('[data-widget-type="section_header"]') ? 'heading' : e.querySelector('[data-tile-kind="chart"], [data-tile-kind="table"]') ? 'data' : 'other',
+          text: (e.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 30) };
+      });
+      const h = items.find((x) => x.id === hid);
+      const next = items.filter((x) => h && x.top >= h.bottom - 2).sort((a, b) => a.top - b.top)[0];
+      return { heading: h, next, headings: items.filter((x) => x.kind === 'heading').map((x) => x.text) };
+    }, headerBefore);
+    r.metrics[`round${round}`] = layout;
+    check(r, `round ${round}: "Performance" sits directly above a chart it introduces`, layout.next?.kind === 'data', JSON.stringify(layout.next));
+    check(r, `round ${round}: the heading is a thin band, not a chart-sized block`, (layout.heading?.h ?? 999) <= 90, `${layout.heading?.h}px`);
+    check(r, `round ${round}: no heading is repeated`, new Set(layout.headings).size === layout.headings.length, JSON.stringify(layout.headings));
+  }
+  await shot(page, r, 'R5-executive-applied-twice-1440');
+});
+
+test('R6 a control can be placed right next to the selected chart', async ({ page, request }) => {
+  const r = scenario('R6 place beside the selected element');
+  await openBaseline(page, request, r);
+  const chart = page.locator('main [data-grid-item-id]').filter({ hasText: 'Revenue by category' }).first();
+  const chartId = String(await chart.getAttribute('data-grid-item-id'));
+  await resize(page, chart, 'e', -330, 0);
+  await chart.locator('[data-tile-kind]').first().click({ position: { x: 120, y: 60 } });
+  await page.waitForTimeout(500);
+  const t0 = Date.now();
+  await page.getByTestId('add-slicer-open').click();
+  const modal = page.getByTestId('add-slicer-modal');
+  await modal.waitFor();
+  const beside = page.getByTestId('add-slicer-where-beside');
+  check(r, 'with a chart selected, the picker offers "Next to" it', await beside.isVisible(), (await beside.textContent().catch(() => '')) ?? '');
+  await beside.click();
+  await page.getByTestId('add-slicer-search').fill('category');
+  await modal.locator('[data-testid^="add-slicer-field-"]').filter({ hasText: /category/i }).first().click();
+  await expect.poll(() => page.locator('main [data-widget-type="slicer"]').filter({ hasText: /categor/i }).count(), { timeout: 30_000 }).toBe(1);
+  r.metrics.place_beside_ms = Date.now() - t0;
+  await page.waitForTimeout(1200);
+  const g = await rects(page);
+  const ctlId = String(await idOfItem(control(page, /categor/i)));
+  const c = g[chartId]; const k = g[ctlId];
+  check(r, 'the control lands in the chart\'s row, beside it — no drag', Math.abs(k[1] - c[1]) < 8 && (k[0] >= c[0] + c[2] - 4 || k[0] + k[2] <= c[0] + 4), `${k} vs ${c}`);
+  await shot(page, r, 'R6-beside-1440');
+});

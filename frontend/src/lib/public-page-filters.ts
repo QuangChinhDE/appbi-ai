@@ -1,4 +1,4 @@
-import type { BaseFilter } from './filters';
+import { getFilterDisplayLabel, getFilterKey, isFilterValueActive, type BaseFilter, type DatePreset } from './filters';
 import type { DashboardPageConfig } from '@/types/api';
 
 /**
@@ -111,4 +111,89 @@ export function mergeSeedWithViewerSelections(
     merged.push(existingByKey.get(key) ?? seedFilter);
   }
   return merged;
+}
+
+
+/** One filter that constrains a page's data, as a reader is told it. */
+export interface PageFilterFact {
+  key: string;
+  label: string;
+  /** Selected values, already formatted (empty for a relative-date preset). */
+  value: string;
+  /** A relative-date preset (resolved on the server), shown as its name. */
+  preset?: DatePreset;
+  /** Enforced by the link or the report: the reader cannot change it. */
+  locked: boolean;
+}
+
+export interface LockedFilterEntry {
+  field: string;
+  label?: string | null;
+  value: unknown;
+  semanticField?: string | null;
+}
+
+function formatValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    const items = value.filter((v) => v !== null && v !== undefined && String(v) !== '').map(String);
+    return items.length > 3 ? `${items.slice(0, 3).join(', ')}, +${items.length - 3}` : items.join(', ');
+  }
+  return value === null || value === undefined ? '' : String(value);
+}
+
+function hasPreset(f: BaseFilter): f is BaseFilter & { datePreset: DatePreset } {
+  const preset = (f as { datePreset?: DatePreset }).datePreset;
+  return !!preset && preset !== 'custom';
+}
+
+/**
+ * What constrains THIS page's data, as a reader must be told it: a filtered
+ * page must never read as unfiltered.
+ *
+ *   - `locked`: the link's locked (🔒) filters and the report's own locked
+ *     filters — enforced, read-only;
+ *   - `pageHidden`: filters that apply here without a control ("filters on
+ *     this page", and slicers whose scope filters this page but does not show
+ *     a control on it);
+ *   - `applied`: the viewer's controls' filters. With `withoutControl`, only
+ *     those whose id is in that set are kept — the ones no control on this
+ *     page draws (a control already says its own value).
+ *
+ * An entry that constrains nothing (no value, no relative-date preset) is not
+ * a filter to announce. One fact per field; a lock wins. A hidden (🚫) filter
+ * never reaches this function: the server does not serve it.
+ */
+export function pageFilterFacts(input: {
+  applied: BaseFilter[];
+  pageHidden: BaseFilter[];
+  locked: LockedFilterEntry[];
+  withoutControl?: ReadonlySet<string>;
+}): PageFilterFact[] {
+  const out = new Map<string, PageFilterFact>();
+  for (const entry of input.locked) {
+    const f = { field: entry.field, semanticField: entry.semanticField ?? undefined, label: entry.label ?? undefined, operator: 'in', value: entry.value } as unknown as BaseFilter;
+    const value = formatValue(entry.value);
+    if (!value) continue;
+    const key = getFilterKey(f);
+    if (!out.has(key)) out.set(key, { key, label: getFilterDisplayLabel(f), value, locked: true });
+  }
+  const add = (f: BaseFilter) => {
+    const key = getFilterKey(f);
+    if (out.has(key)) return;
+    if (hasPreset(f)) {
+      out.set(key, { key, label: getFilterDisplayLabel(f), value: '', preset: f.datePreset, locked: false });
+      return;
+    }
+    if (!isFilterValueActive(f)) return;
+    const value = f.operator === 'between' && Array.isArray(f.value)
+      ? f.value.map((v) => (v === null || v === undefined ? '…' : String(v))).join(' – ')
+      : formatValue(f.value);
+    out.set(key, { key, label: getFilterDisplayLabel(f), value, locked: false });
+  };
+  for (const f of input.pageHidden) add(f);
+  for (const f of input.applied) {
+    if (input.withoutControl && !input.withoutControl.has(String(f.id ?? ''))) continue;
+    add(f);
+  }
+  return [...out.values()];
 }

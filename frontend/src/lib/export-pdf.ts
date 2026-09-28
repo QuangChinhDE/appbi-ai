@@ -10,7 +10,15 @@ import { waitForRenderReady } from './render-ready';
  * bare "…" in every PDF. In the CLONE it captures (never on screen), a control's
  * text is drawn in full; its card still clips anything too long.
  */
-const EXPORT_LEGIBLE_CSS = '.dashboard-slicer .truncate, .dashboard-slicer [class*="truncate"] { text-overflow: clip !important; overflow: visible !important; }';
+const EXPORT_LEGIBLE_CSS = [
+  '.dashboard-slicer .truncate, .dashboard-slicer [class*="truncate"] { text-overflow: clip !important; overflow: visible !important; }',
+  // A short widget title ("Performance") came out as "Performan…" the same way.
+  '[data-tile-kind="widget"] .truncate { text-overflow: clip !important; }',
+  // Paper is not interactive: no drill toggles ("Group by Y Q M W D"), no
+  // dropdown chevrons. A control prints as its label and value.
+  '[data-export-hide] { display: none !important; }',
+  '.dashboard-slicer .lucide-chevron-down { display: none !important; }',
+].join('\n');
 function legibleClone(doc: Document) {
   const style = doc.createElement('style');
   style.textContent = EXPORT_LEGIBLE_CSS;
@@ -98,6 +106,9 @@ export interface PdfExportOptions {
   plan?: ExportLayoutPlan;
   /** Progress reporter so the UI can show what's happening + how far along. */
   onProgress?: (p: PdfProgress) => void;
+  /** The words printed on every page, in the reader's language. Each defaults
+   *  to the previous Vietnamese text. */
+  labels?: { filters?: string; exportedAt?: string; dataAsOf?: string; snapshotNote?: string };
   /**
    * A tab the caller opened SYNCHRONOUSLY inside the export click (so it isn't
    * popup-blocked). When given, the finished PDF is shown in this tab. Export
@@ -224,19 +235,19 @@ function drawPageHeader(pdf: jsPDF, opts: PdfExportOptions, page: PdfPageSource,
   pdf.setTextColor(100, 116, 139);
   if (page.name) pdf.text(page.name, MARGIN, MARGIN + 9);
   if (page.filtersSummary) {
-    const lines = pdf.splitTextToSize(`Bộ lọc: ${page.filtersSummary}`, g.usableW - 50);
+    const lines = pdf.splitTextToSize(`${opts.labels?.filters ?? 'Bộ lọc'}: ${page.filtersSummary}`, g.usableW - 50);
     pdf.text(lines.slice(0, 1), MARGIN, MARGIN + 13.5);
   }
   // Right rail: provenance. A report screenshot with no "as of" is unusable in a
   // meeting — the reader can't tell whether it's today's numbers or last week's.
   pdf.setFontSize(8);
   pdf.setTextColor(148, 163, 184);
-  const exportedAt = `Xuất lúc ${formatStamp(new Date())}`;
+  const exportedAt = `${opts.labels?.exportedAt ?? 'Xuất lúc'} ${formatStamp(new Date())}`;
   pdf.text(exportedAt, g.pw - MARGIN, MARGIN + 4, { align: 'right' });
   if (opts.dataAsOf) {
     const asOf = new Date(opts.dataAsOf);
     const asOfText = Number.isNaN(asOf.getTime()) ? String(opts.dataAsOf) : formatStamp(asOf);
-    pdf.text(`Dữ liệu tính đến ${asOfText}`, g.pw - MARGIN, MARGIN + 9, { align: 'right' });
+    pdf.text(`${opts.labels?.dataAsOf ?? 'Dữ liệu tính đến'} ${asOfText}`, g.pw - MARGIN, MARGIN + 9, { align: 'right' });
   }
   pdf.setDrawColor(226, 232, 240);
   pdf.setLineWidth(0.3);
@@ -1079,7 +1090,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
     opts.title,
     // A snapshot prints what the report shows, so a long table is truncated by
     // design. Stamping it means the reader can tell without asking.
-    (opts.layout ?? 'snapshot') === 'snapshot' ? 'Ảnh trang — bảng in theo dữ liệu đang hiển thị' : undefined,
+    (opts.layout ?? 'snapshot') === 'snapshot' ? (opts.labels?.snapshotNote ?? 'Ảnh trang — bảng in theo dữ liệu đang hiển thị') : undefined,
   );
   const result = downloadPdf(pdf, opts.filename, opts.previewWindow);
   report({

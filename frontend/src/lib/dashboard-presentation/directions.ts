@@ -135,9 +135,14 @@ class PlanBuilder {
   /** The findings the report supports right now. */
   private live: ReadonlySet<string>;
 
-  constructor(existingBlocks: SnapshotVisual[], live: ReadonlySet<string>) {
+  /** AI section headings already on the page: a re-run reuses one with the
+   *  same title instead of adding another ("Detail", "Detail", …). */
+  private headings: SnapshotVisual[];
+
+  constructor(existingBlocks: SnapshotVisual[], live: ReadonlySet<string>, existingHeadings: SnapshotVisual[] = []) {
     this.reusable = existingBlocks;
     this.live = live;
+    this.headings = existingHeadings.filter((h) => h.widgetType === 'section_header' && h.heading?.origin === 'ai');
   }
 
   /**
@@ -165,6 +170,10 @@ class PlanBuilder {
     const { heading, ...shown } = extra;
     const findings = this.fresh(requested);
     if (findings.length === 0 && !(heading && shown.title)) return null;
+    if (heading && findings.length === 0) {
+      const again = this.headings.find((h) => !this.used.has(h.dashboardChartId) && h.title.trim() === String(shown.title).trim());
+      if (again) { this.used.add(again.dashboardChartId); return again.dashboardChartId; }
+    }
     for (const k of findings) this.said.add(k);
     const reuse = this.reusable.find((b) => !this.used.has(b.dashboardChartId) && b.block?.origin === 'ai' && b.block.variant === variant
       && JSON.stringify(b.block.findings) === JSON.stringify(findings));
@@ -179,7 +188,9 @@ class PlanBuilder {
     if (list.length) this.sections.push({ primitive, visuals: list });
   }
 
-  pairs(list: SnapshotVisual[], primitive: PresentationSection['primitive'] = 'two_equal') {
+  pairs(all: SnapshotVisual[], primitive: PresentationSection['primitive'] = 'two_equal') {
+    // An element this plan already placed (a reused heading) is not placed twice.
+    const list = all.filter((v) => !this.used.has(v.dashboardChartId));
     for (let i = 0; i < list.length; i += 2) {
       const slice = list.slice(i, i + 2);
       this.push(slice.length === 2 ? primitive : 'full_width', slice.map((v) => v.dashboardChartId));
@@ -203,7 +214,7 @@ class PlanBuilder {
 
 function executive(s: DashboardPresentationSnapshot, labels: DirectionLabels): PresentationPlan {
   const p = poolsOf(s.visuals);
-  const b = new PlanBuilder(p.blocks, liveOf(s));
+  const b = new PlanBuilder(p.blocks, liveOf(s), p.headers);
   const lead = p.temporal[0];
   const firstBreakdown = p.breakdowns[0];
 
@@ -263,7 +274,7 @@ function executive(s: DashboardPresentationSnapshot, labels: DirectionLabels): P
 
 function operations(s: DashboardPresentationSnapshot, labels: DirectionLabels): PresentationPlan {
   const p = poolsOf(s.visuals);
-  const b = new PlanBuilder(p.blocks, liveOf(s));
+  const b = new PlanBuilder(p.blocks, liveOf(s), p.headers);
 
   // 0 · Scope first: an operator sets the filters before reading the board.
   b.push('filter_bar', p.filters.map((v) => v.dashboardChartId));
@@ -330,7 +341,7 @@ function operations(s: DashboardPresentationSnapshot, labels: DirectionLabels): 
 
 function editorial(s: DashboardPresentationSnapshot, labels: DirectionLabels): PresentationPlan {
   const p = poolsOf(s.visuals);
-  const b = new PlanBuilder(p.blocks, liveOf(s));
+  const b = new PlanBuilder(p.blocks, liveOf(s), p.headers);
   const lead = p.temporal[0] ?? p.breakdowns[0];
 
   // Thesis.

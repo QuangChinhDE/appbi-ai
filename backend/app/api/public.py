@@ -51,6 +51,7 @@ from app.services.filter_layered_merge import (
     apply_link_scope_bounds,
     link_entry_has_value,
     link_entry_is_scope,
+    link_filters_a_viewer_may_see,
     link_managed_field_keys,
     make_public_layers,
     merge_layered_filters,
@@ -1233,10 +1234,16 @@ def get_public_dashboard(
         dash.public_dataset_models = _models
     except Exception:
         dash.public_dataset_models = {}
-    # New: pass link's hidden filters as a separate field for the FE viewer
-    # to merge silently into every chart-data request. Empty list when the
-    # legacy share_token path is used (legacy never had per-link filters).
-    dash.public_link_hidden_filters = list(link_hidden_filters or [])
+    # The link's own filters are applied SERVER-SIDE (_build_public_chart_filters
+    # reads DashboardPublicLink.filters_config); the viewer never re-sends them.
+    # So the viewer is given only what it may SEE: a locked (🔒) entry that
+    # enforces a value, shown read-only so the reader knows the report is
+    # filtered. A hidden (🚫) entry — field and value — is never served; neither
+    # is a 'limit' scope entry (it bounds the viewer's choices, see
+    # apply_link_scope_bounds). This used to ship the link's WHOLE filters_config,
+    # hidden values included, to anonymous viewers who had no use for it.
+    dash.public_link_locked_filters = link_filters_a_viewer_may_see(link_hidden_filters)
+    dash.public_link_hidden_filters = []
     dash.public_link_name = link_name
     # Strip the admin-only ai_bot_key before sending to public viewers.
     # Replace it with a safe boolean so the AI bot UI can skip key entry.
@@ -3020,15 +3027,18 @@ def get_public_chart_data(
         track_access=False,
     )
 
-    # Confirm the chart belongs to this dashboard
-    link = (
-        db.query(DashboardChart)
+    # Confirm the chart belongs to this dashboard AS PUBLISHED: a tile only in an
+    # editor's draft (draftOnly) is not part of the shared report, so its data is
+    # not served to the link. (A chart may sit on the report twice.)
+    link = next((
+        dc for dc in db.query(DashboardChart)
         .filter(
             DashboardChart.dashboard_id == dash.id,
             DashboardChart.chart_id == chart_id,
         )
-        .first()
-    )
+        .all()
+        if not is_draft_only_item(dc)
+    ), None)
     if not link:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -3123,7 +3133,7 @@ def get_public_charts_data_batch(
         token, db, session_token=x_public_session, track_access=False,
     )
     ttl = _resolve_public_snapshot_ttl(_chart_appearance)
-    valid_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}
+    valid_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id and not is_draft_only_item(dc)}
 
     items: list[dict] = []
     not_found: list[int] = []
@@ -4034,7 +4044,7 @@ async def chat_dashboard_ai_agent(
 
     # Sanitize: strip any tool/assistant turns referencing chart_ids outside
     # this dashboard (defensive â€” clients shouldn't send these but we guard).
-    allowed_chart_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}
+    allowed_chart_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id and not is_draft_only_item(dc)}
     safe_messages: list[dict] = []
     for msg in messages:
         if not isinstance(msg, dict):
