@@ -84,12 +84,14 @@ import {
   compactPageUp,
   normalizeDashboardGridForRender,
   GRID_VERSION,
+  DASHBOARD_GRID_COLS,
   mergeGridLayout,
 } from '@/lib/dashboard-pages';
 import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components/dashboards/GridSlicerTile';
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
 import { ArrangeBar } from '@/components/dashboards/ArrangeBar';
 import { arrangeTiles, closeVacatedBand, nudgeTiles, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
+import { settleStoredLayout } from '@/lib/grid-settle';
 import {
   SLICER_CONTROL_SIZE,
   SLICER_CONTROL_WIDGET,
@@ -3191,14 +3193,18 @@ function DashboardDetailPageInner() {
   // Grid operations on the selection (lib/grid-arrange), committed through the
   // same path as a drag. The keyboard handler reads the latest state through a
   // ref: it is bound once, and a stale closure would nudge an old layout.
-  const pageBoxes = (): GridBox[] => visibleDashboardCharts.map((dc) => ({
+  // The page as the grid draws it (a stored overlap settled, as for viewers):
+  // arrange and drop rules work on what the author sees.
+  const pageBoxes = (): GridBox[] => settleStoredLayout(visibleDashboardCharts.map((dc) => ({
+    i: String(dc.id),
     id: dc.id,
     x: Number(dc.layout?.x) || 0,
     y: Number(dc.layout?.y) || 0,
     w: Number(dc.layout?.w) || 1,
     h: Number(dc.layout?.h) || 1,
+    static: Boolean((dc.layout as any)?.locked),
     locked: Boolean((dc.layout as any)?.locked),
-  }));
+  })), DASHBOARD_GRID_COLS).map(({ i: _i, static: _s, ...box }) => box);
   const tileTitle = (id: number) => {
     const dc = visibleDashboardCharts.find((d) => d.id === id);
     // A filter control is named by its filter, never by its widget type.

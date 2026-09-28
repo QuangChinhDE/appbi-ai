@@ -474,6 +474,23 @@ check("the PDF draws a control's value, not a bare ellipsis: every capture uses 
   assert(/\.dashboard-slicer[^']*text-overflow: clip/.test(exp), "the clone no longer stops the ellipsis on a control's text");
 });
 
+check('the builder draws a stored overlap the way viewers see it (settled), and drops work on that', () => {
+  const settle = load('lib/grid-settle.ts');
+  // Report 445: a legacy 12-column tile (×3) beside a newer cell, overlapping in storage.
+  const stored = [{ i: '4537', x: 0, y: 2, w: 18, h: 8 }, { i: '4538', x: 9, y: 0, w: 18, h: 12 }];
+  const out = settle.settleStoredLayout(stored, 36);
+  const [a, b] = out;
+  const clash = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  assert(!clash, `still overlapping: ${JSON.stringify(out)}`);
+  assert(a.y === 2 && b.y === 10, `not the library's settling (the first stays, the next moves below it): ${JSON.stringify(out)}`);
+  const clean = [{ i: '1', x: 0, y: 0, w: 12, h: 6 }, { i: '2', x: 12, y: 20, w: 12, h: 6 }];
+  assert(settle.settleStoredLayout(clean, 36) === clean, "a layout without overlap is not returned untouched (an author's gaps moved)");
+  const grid = source('components/dashboards/DashboardGrid.tsx');
+  assert(/onLayoutChange && !isNarrow \? settleStoredLayout\(storedLayouts, DASHBOARD_GRID_COLS\)/.test(grid), 'the builder draws stored overlaps unsettled');
+  const page = source('app/(main)/dashboards/[id]/page.tsx');
+  assert(/const pageBoxes = \(\): GridBox\[\] => settleStoredLayout\(/.test(page), 'drops are computed on the stored overlap, not on what the author sees');
+});
+
 if (failures.length) {
   for (const { name, error } of failures) console.error(`FAIL  ${name}\n      ${error.message}`);
   console.error(`\n${failures.length} failed, ${passed} passed`);

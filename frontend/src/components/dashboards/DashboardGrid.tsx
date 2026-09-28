@@ -14,6 +14,7 @@ import type { BaseFilter } from '@/lib/filters';
 import { Loader2, LayoutDashboard } from 'lucide-react';
 import { getDashboardGridMargin } from './DashboardThemeProvider';
 import { DASHBOARD_GRID_COLS, REPORT_STACK_BREAKPOINT, dashboardRowHeight, deriveStackedLayout } from '@/lib/dashboard-pages';
+import { settleStoredLayout } from '@/lib/grid-settle';
 import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { useExportMode } from '@/lib/export-mode';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -207,7 +208,7 @@ function DashboardGridInner({
   // the published report, so narrowing the builder previews the phone view.
   const isNarrow = gridWidth > 0 && gridWidth < REPORT_STACK_BREAKPOINT;
 
-  const authoredLayouts = dashboardCharts.map((dc) => {
+  const storedLayouts = dashboardCharts.map((dc) => {
     const layout = dc.layout;
     const isWidget = Boolean(dc.widget_type && dc.widget_type !== 'chart');
     return {
@@ -230,6 +231,10 @@ function DashboardGridInner({
       rev: layoutRevision,
     };
   });
+  // Editing lets a dragged tile pass over others (allowOverlap), which also stops
+  // the grid settling a stored overlap the way the public report does. Settle it
+  // here with the library's own rule, so the author sees what viewers see.
+  const authoredLayouts = onLayoutChange && !isNarrow ? settleStoredLayout(storedLayouts, DASHBOARD_GRID_COLS) : storedLayouts;
 
   /**
    * The same tiles, stacked, for a viewport too narrow to hold the grid.

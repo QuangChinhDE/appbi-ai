@@ -23,7 +23,15 @@ hid its filter UI (dock 'hidden') keeps it hidden and gets no control.
 
 The report records ``slicer_cluster_layout.migratedToGrid`` with everything it
 created and moved; the downgrade deletes exactly those elements and moves exactly
-those tiles back. Idempotent: a report already carrying the marker is skipped.
+those tiles back, and only rows of that report: a copy made after the upgrade
+carries its source's marker and must never delete or move the source's rows.
+Idempotent: a report already carrying the marker is skipped.
+
+The downgrade is a rollback for before authors use the controls: a control an
+author restyled is deleted with the rest (the filter it drew is untouched and the
+bar draws it again); a tile an author moved goes back by the recorded shift from
+where it is now, never above row 0 — and not at all when something placed after
+the upgrade now stands there (a gap is left, never an overlap).
 
 Revision ID: 20260929_0001
 Revises: 20260928_0001
@@ -61,6 +69,7 @@ _tiles = sa.table(
     sa.column("widget_type", sa.String),
     sa.column("widget_config", sa.JSON),
     sa.column("layout", sa.JSON),
+    sa.column("parameters", sa.JSON),
 )
 
 
@@ -115,6 +124,17 @@ def _hidden(row):
     return str(dock or "") == "hidden"
 
 
+def _cell(layout):
+    """A tile's cell in finer-grid units (a legacy 12-column tile is ×3)."""
+    gv = layout.get("gv")
+    k = 1 if isinstance(gv, (int, float)) and not isinstance(gv, bool) and gv >= _GV else 3
+    return tuple(int(layout.get(key) or 0) * k for key in ("x", "y", "w", "h"))
+
+
+def _overlap(a, b):
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
 def _dy(layout, rows):
     gv = layout.get("gv")
     legacy = not (isinstance(gv, (int, float)) and not isinstance(gv, bool) and gv >= _GV)
@@ -143,7 +163,9 @@ def upgrade() -> None:
                 on_page = [t for t in tiles if _page_of(_json(t.layout) or {}) == page_id]
                 placed = {str((_json(t.widget_config) or {}).get("slicerId") or "") for t in on_page if t.widget_type == "slicer"}
                 missing = [e for e in _entries_for_page(row, page_id, pages) if str(e["id"]) not in placed]
-                count = len(missing) + len(images)
+                have_images = {str((_json(t.widget_config) or {}).get("url") or "") for t in on_page if t.widget_type == "image"}
+                new_images = [e for e in images if str(e["src"]) not in have_images]
+                count = len(missing) + len(new_images)
                 if count == 0:
                     continue
                 band = ((count + _PER_ROW - 1) // _PER_ROW) * _H
@@ -173,17 +195,17 @@ def upgrade() -> None:
                     res = bind.execute(_tiles.insert().values(
                         dashboard_id=row.id, chart_id=None, widget_type="slicer",
                         widget_config={"slicerId": str(entry["id"]), "treatment": "auto", "origin": "migration"},
-                        layout={**cell, "gv": _GV, "pageId": page_id},
+                        layout={**cell, "gv": _GV, "pageId": page_id}, parameters={},
                     ).returning(_tiles.c.id))
                     marker["created"].append(int(res.scalar_one()))
-                for entry, cell in zip(images, cells[len(missing):]):
+                for entry, cell in zip(new_images, cells[len(missing):]):
                     res = bind.execute(_tiles.insert().values(
                         dashboard_id=row.id, chart_id=None, widget_type="image",
                         widget_config={"url": str(entry["src"]), "fit": entry.get("fit") or "contain",
                                        **({"alt": entry["alt"]} if entry.get("alt") else {}),
                                        **({"link": entry["link"]} if entry.get("link") else {}),
                                        "transparentBackground": True, "origin": "migration"},
-                        layout={**cell, "gv": _GV, "pageId": page_id},
+                        layout={**cell, "gv": _GV, "pageId": page_id}, parameters={},
                     ).returning(_tiles.c.id))
                     marker["created"].append(int(res.scalar_one()))
             if snapshot is not None and marker["draftShift"]:
@@ -201,13 +223,24 @@ def downgrade() -> None:
         marker = cluster.get("migratedToGrid") if isinstance(cluster, dict) else None
         if not isinstance(marker, dict):
             continue
+        # Only this report's rows: a copy carries its source's marker.
+        own = _tiles.c.dashboard_id == row.id
         for tile_id in marker.get("created") or []:
-            bind.execute(_tiles.delete().where(_tiles.c.id == int(tile_id)))
-        for tile_id, dy in (marker.get("shift") or {}).items():
-            layout = _json(bind.execute(sa.select(_tiles.c.layout).where(_tiles.c.id == int(tile_id))).scalar())
-            if isinstance(layout, dict):
-                bind.execute(_tiles.update().where(_tiles.c.id == int(tile_id))
-                             .values(layout={**layout, "y": int(layout.get("y") or 0) - int(dy)}))
+            bind.execute(_tiles.delete().where(own, _tiles.c.id == int(tile_id)))
+        # Move each shifted tile back up, top first — unless something an author
+        # placed after the upgrade now stands there: then it stays (a gap, never
+        # an overlap).
+        current = {r.id: dict(_json(r.layout) or {}) for r in bind.execute(sa.select(_tiles.c.id, _tiles.c.layout).where(own)).fetchall()}
+        shifts = [(int(t), int(dy)) for t, dy in (marker.get("shift") or {}).items() if int(t) in current]
+        for tile_id, dy in sorted(shifts, key=lambda s: int(current[s[0]].get("y") or 0)):
+            layout = current[tile_id]
+            moved = {**layout, "y": max(0, int(layout.get("y") or 0) - dy)}
+            page = str(layout.get("pageId") or _DEFAULT_PAGE)
+            others = [l for i, l in current.items() if i != tile_id and str(l.get("pageId") or _DEFAULT_PAGE) == page]
+            if any(_overlap(_cell(moved), _cell(o)) for o in others):
+                continue
+            current[tile_id] = moved
+            bind.execute(_tiles.update().where(own, _tiles.c.id == tile_id).values(layout=moved))
         if marker.get("draftShift"):
             snapshot = _json(row.draft_snapshot)
             if isinstance(snapshot, dict):
@@ -218,7 +251,7 @@ def downgrade() -> None:
                     for tile_id, dy in moves.items():
                         entry = m.get(tile_id)
                         if isinstance(entry, dict) and isinstance(entry.get("y"), (int, float)):
-                            m[tile_id] = {**entry, "y": int(entry["y"]) - int(dy)}
+                            m[tile_id] = {**entry, "y": max(0, int(entry["y"]) - int(dy))}
                 bind.execute(_dashboards.update().where(_dashboards.c.id == row.id).values(draft_snapshot=snapshot))
         rest = {k: v for k, v in cluster.items() if k != "migratedToGrid"}
         bind.execute(_dashboards.update().where(_dashboards.c.id == row.id).values(slicer_cluster_layout=rest or None))

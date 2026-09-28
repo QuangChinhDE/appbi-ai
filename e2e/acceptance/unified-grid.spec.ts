@@ -214,8 +214,10 @@ async function stateControl(page: Page, r: ScenarioResult) {
 async function switchPage(page: Page, name: string) {
   await page.locator('button[title="Switch page"], button[title="Chuyển trang"]').first().click();
   await page.locator('button').filter({ has: page.locator(`span:text-is("${name}")`) }).last().click();
+  await expect(page.locator('button[title="Switch page"], button[title="Chuyển trang"]').first()).toContainText(name, { timeout: 15_000 });
   await page.waitForTimeout(1500);
-  await settle(page);
+  // A page may have no element yet: wait for its tiles only when it has some.
+  if (await page.locator('main [data-grid-item-id]').count()) await settle(page);
 }
 /** Remove a control through its menu (undoable, no confirmation). */
 async function removeControl(page: Page, el: Locator) {
@@ -745,6 +747,7 @@ test('S7 AI Design (real model) composes the page with slicer controls; no inven
   const r = scenario('S7 AI redesign with slicers');
   const id = await openBaseline(page, request, r);
   const before = await kpis(page);
+  const controlsBefore = new Set(controlsOf(await get(request, id)).map((c: any) => c.id));
   const ok = await askAi(page, r, 'Redesign the whole page for a regional sales review: put the report\'s filters on the page as a filter band at the top, then the headline numbers, then the charts. Keep every number live.', 's7');
   if (!ok) return;
   const text = await panelText(page);
@@ -755,7 +758,11 @@ test('S7 AI Design (real model) composes the page with slicer controls; no inven
   const d = await get(request, id);
   const controls = controlsOf(d);
   check(r, 'the design placed the filter on the page as a control', controls.length > 0, `${controls.length}`);
-  check(r, 'every AI control is draft-only until Publish', controls.every((c: any) => c.layout?.draftOnly === true));
+  const made = controls.filter((c: any) => !controlsBefore.has(c.id));
+  r.metrics.controls = { before: [...controlsBefore], after: controls.map((c: any) => ({ id: c.id, draftOnly: !!c.layout?.draftOnly })) };
+  check(r, 'every control the AI made is draft-only until Publish', made.every((c: any) => c.layout?.draftOnly === true), JSON.stringify(r.metrics.controls));
+  check(r, 'the published control the report already had is kept, not duplicated', [...controlsBefore].every((cid) => controls.some((c: any) => c.id === cid))
+    && new Set(controls.map((c: any) => c.widget_config.slicerId)).size === controls.length, JSON.stringify(controls.map((c: any) => c.widget_config.slicerId)));
   check(r, 'an AI control names a slicer the report has, nothing else', controls.every((c: any) => (d.slicers_config ?? []).some((s: any) => s.id === c.widget_config.slicerId) && Object.keys(c.widget_config).every((k) => ['slicerId', 'treatment', 'origin'].includes(k))), JSON.stringify(controls.map((c: any) => c.widget_config)));
   const after = await kpis(page);
   check(r, 'the numbers are unchanged by the redesign', JSON.stringify([...after].sort()) === JSON.stringify([...before].sort()), `${before} vs ${after}`);
@@ -1066,6 +1073,9 @@ test('L slicer benchmark: global date at the top, category and region beside the
   check(r, 'every KPI still has data', numbersAfter.length > 0 && numbersAfter.every((v) => !/^R?\$?0(\.0%)?$/.test(v)), `${numbersAfter}`);
   await addSlicer(page, { search: 'category', field: /category/i, where: 'end' });
   await settle(page);
+  const reportH = await page.evaluate(() => Math.ceil((document.querySelector('main .react-grid-layout')?.getBoundingClientRect().bottom ?? 2600) + 200));
+  await page.setViewportSize({ width: 1440, height: Math.min(Math.max(reportH, 2600), 5000) });
+  await page.waitForTimeout(800);
   // The date control beside the headline: narrow the headline, drop the date in the gap.
   {
     const g = await rects(page);
@@ -1093,6 +1103,7 @@ test('L slicer benchmark: global date at the top, category and region beside the
     await page.waitForTimeout(900);
     const g2 = await rects(page);
     const kpiTop2 = Math.min(...(await Promise.all(Object.keys(g2).map(async (k) => ((await page.locator(`main [data-grid-item-id="${k}"] .dashboard-kpi-value`).count()) ? g2[k][1] : Infinity)))));
+    r.metrics.category_above_kpis = { catId, before: g, after: g2, kpiTop, kpiTop2 };
     check(r, 'the category control sits right above the KPIs', g2[catId][1] < kpiTop2 && kpiTop2 - (g2[catId][1] + g2[catId][3]) <= 24, `control ${g2[catId]}, KPIs at ${kpiTop2}`);
   }
   // Region control beside "Revenue by state": narrow the chart, drop the control in the gap.
@@ -1106,9 +1117,12 @@ test('L slicer benchmark: global date at the top, category and region beside the
     const cr = g[chartId!]; const kr = g[ctlId];
     await drag(page, ctl.locator('.dashboard-slicer'), (cr[0] + cr[2] + 24) - kr[0], cr[1] - kr[1], { x: 20, y: 8 });
     await page.waitForTimeout(800);
+    const gDrop = await rects(page);
     await resize(page, page.locator(`main [data-grid-item-id="${ctlId}"]`), 's', 0, 240);
     const g2 = await rects(page);
-    check(r, `the ${ctlLabel} control sits beside "${chartTitle}"`, Math.abs(g2[ctlId][1] - cr[1]) < 24, `${g2[ctlId]} vs ${cr}`);
+    r.metrics[`beside_${chartTitle}`] = { chartId, ctlId, beforeDrag: g, afterDrop: gDrop, afterResize: g2 };
+    const cn = g2[chartId!];
+    check(r, `the ${ctlLabel} control sits beside "${chartTitle}"`, Math.abs(g2[ctlId][1] - cn[1]) < 24 && g2[ctlId][0] >= cn[0] + cn[2] - 4, `${g2[ctlId]} vs ${cn}`);
     return ctlId;
   };
   const regionId = await placeBeside('Revenue by state', /Customer state/);

@@ -157,7 +157,7 @@ def ensure_slicer_controls(db: Session, dash: Dashboard, *, origin: str = "autho
                 widget_config={"url": str(entry.get("src")), "fit": entry.get("fit") or "contain",
                                **({"alt": entry["alt"]} if entry.get("alt") else {}),
                                **({"link": entry["link"]} if entry.get("link") else {}),
-                               "transparentBackground": True},
+                               "transparentBackground": True, "origin": origin},
                 layout={**cell, "gv": GRID_VERSION, "pageId": page_id},
             )
             db.add(row)

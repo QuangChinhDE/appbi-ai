@@ -206,7 +206,7 @@ def _bar_db():
     sa.Table("dashboard_charts", meta,
              sa.Column("id", sa.Integer, primary_key=True, autoincrement=True), sa.Column("dashboard_id", sa.Integer),
              sa.Column("chart_id", sa.Integer), sa.Column("widget_type", sa.String), sa.Column("widget_config", sa.JSON),
-             sa.Column("layout", sa.JSON))
+             sa.Column("layout", sa.JSON), sa.Column("parameters", sa.JSON))
     meta.create_all(engine)
     return engine, meta
 
@@ -261,15 +261,71 @@ def test_every_viewer_filter_gets_a_control_on_the_pages_that_show_it_and_the_do
     assert d1["draft_snapshot"]["user_layouts"]["u1"]["10"]["y"] == 3  # the pending draft moved too
     assert d1["slicers_config"] == slicers and d1["filters_config"] == pane  # meaning untouched
     assert _rows(engine, meta, 2) == before2 and d2["slicer_cluster_layout"]["migratedToGrid"]["hidden"] is True
+    assert all(r["parameters"] == {} for r in rows.values() if r["widget_type"] in ("slicer", "image"))
     # Idempotent.
     _run(engine, mig.upgrade)
     assert _rows(engine, meta, 1) == rows
+    # A copy made after the upgrade carries report 1's marker (a duplicate copies
+    # slicer_cluster_layout): its downgrade must never touch report 1's rows.
+    with engine.begin() as conn:
+        d1 = conn.execute(sa.select(dashboards).where(dashboards.c.id == 1)).mappings().one()
+        conn.execute(dashboards.insert(), [{**dict(d1), "id": 3, "draft_snapshot": None}])
+        conn.execute(tiles.insert(), [{**{k: v for k, v in r.items() if k != "id"}, "id": 300 + i, "dashboard_id": 3}
+                                      for i, r in enumerate(rows.values())])
+    copy_rows = _rows(engine, meta, 3)
+    # An author moves a shifted tile after the upgrade: the downgrade moves it
+    # back by the recorded shift from where it is now.
+    with engine.begin() as conn:
+        conn.execute(tiles.update().where(tiles.c.id == 10).values(layout={**rows[10]["layout"], "y": rows[10]["layout"]["y"] + 5}))
     # The downgrade removes exactly what it made and moves back exactly what it moved.
     _run(engine, mig.downgrade)
-    assert _rows(engine, meta, 1) == before1
+    after1 = _rows(engine, meta, 1)
+    assert after1[10]["layout"]["y"] == before1[10]["layout"]["y"] + 5
+    after1[10] = {**after1[10], "layout": {**after1[10]["layout"], "y": before1[10]["layout"]["y"]}}
+    assert after1 == before1
+    assert _rows(engine, meta, 3) == copy_rows  # the copy's rows are not report 1's to undo
     with engine.connect() as conn:
         d1 = conn.execute(sa.select(dashboards).where(dashboards.c.id == 1)).mappings().one()
     assert d1["draft_snapshot"] == draft and d1["slicer_cluster_layout"] == {"position": "left"}
+
+
+def test_the_downgrade_never_moves_a_tile_onto_something_an_author_placed_after_the_upgrade():
+    engine, meta = _bar_db()
+    dashboards, tiles = meta.tables["dashboards"], meta.tables["dashboard_charts"]
+    with engine.begin() as conn:
+        conn.execute(dashboards.insert(), [{"id": 1, "slicers_config": [{"id": "s-a", "field": "region"}], "filters_config": [],
+                                            "public_filters_config": [], "pages_config": [], "slicer_cluster_layout": None,
+                                            "theme_config": {}, "draft_snapshot": None}])
+        conn.execute(tiles.insert(), [{"id": 10, "dashboard_id": 1, "widget_type": "chart", "layout": {"x": 0, "y": 0, "w": 12, "h": 6, "gv": 2}},
+                                      {"id": 11, "dashboard_id": 1, "widget_type": "chart", "layout": {"x": 24, "y": 0, "w": 12, "h": 6, "gv": 2}}])
+    mig = _bar_migration()
+    _run(engine, mig.upgrade)
+    # After the upgrade an author places a second control in the band, above tile 10.
+    with engine.begin() as conn:
+        conn.execute(tiles.insert(), [{"id": 50, "dashboard_id": 1, "widget_type": "slicer", "widget_config": {"slicerId": "s-b"},
+                                       "layout": {"x": 8, "y": 0, "w": 8, "h": 3, "gv": 2}}])
+    _run(engine, mig.downgrade)
+    rows = _rows(engine, meta, 1)
+    assert rows[11]["layout"]["y"] == 0  # free above it: back where it was
+    assert rows[10]["layout"]["y"] == 3  # the author's control stands where it would go: it stays
+    cells = [(r["layout"]["x"], r["layout"]["y"], r["layout"]["w"], r["layout"]["h"]) for r in rows.values()]
+    assert not any(a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+                   for i, a in enumerate(cells) for b in cells[i + 1:])
+
+
+def test_a_decoration_already_on_the_page_as_an_image_is_not_added_twice():
+    engine, meta = _bar_db()
+    dashboards, tiles = meta.tables["dashboards"], meta.tables["dashboard_charts"]
+    logo = "https://example.com/logo.png"
+    with engine.begin() as conn:
+        conn.execute(dashboards.insert(), [{"id": 1, "slicers_config": [{"id": "logo", "type": "image", "src": logo}],
+                                            "filters_config": [], "public_filters_config": [], "pages_config": [],
+                                            "slicer_cluster_layout": None, "theme_config": {}, "draft_snapshot": None}])
+        conn.execute(tiles.insert(), [{"id": 10, "dashboard_id": 1, "widget_type": "image", "widget_config": {"url": logo},
+                                       "layout": {"x": 0, "y": 0, "w": 8, "h": 3, "gv": 2}}])
+    before = _rows(engine, meta, 1)
+    _run(engine, _bar_migration().upgrade)
+    assert _rows(engine, meta, 1) == before
 
 
 def test_the_service_places_missing_controls_once_and_never_touches_what_a_filter_means():
