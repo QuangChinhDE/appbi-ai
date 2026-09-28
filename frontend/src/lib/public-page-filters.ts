@@ -124,6 +124,8 @@ export interface PageFilterFact {
   preset?: DatePreset;
   /** An exclusion ("not RJ"): shown as such, never as the value alone. */
   negated?: boolean;
+  /** How the value reads when it is not plain equality (see statePageFilterFact). */
+  kind?: 'excluding' | 'contains' | 'notContains' | 'startsWith' | 'isEmpty' | 'hasValue';
   /** Enforced by the link or the report: the reader cannot change it. */
   locked: boolean;
 }
@@ -167,10 +169,45 @@ function hasPreset(f: BaseFilter): f is BaseFilter & { datePreset: DatePreset } 
  * a filter to announce. One fact per field; a lock wins. A hidden (🚫) filter
  * never reaches this function: the server does not serve it.
  */
-// Every spelling the chart engine reads as an exclusion (chart_contracts
-// _OPERATOR_MAP): stated as "not …", never as the value alone.
-const NEGATING_OPERATORS = new Set(['not_in', 'neq', 'ne', '!=', '<>', 'not_contains', 'not_between']);
-const COMPARISON_SIGN: Record<string, string> = { gt: '>', '>': '>', gte: '≥', '>=': '≥', lt: '<', '<': '<', lte: '≤', '<=': '≤' };
+// The chart engine's operator aliases (chart_contracts._OPERATOR_MAP) and value
+// normalisation (normalize_filter_value), mirrored so a statement reads what the
+// engine enforces.
+const OPERATOR_ALIASES: Record<string, string> = {
+  '=': 'eq', '==': 'eq', '!=': 'neq', '<>': 'neq', ne: 'neq',
+  '>': 'gt', '>=': 'gte', '<': 'lt', '<=': 'lte',
+};
+function canonicalCondition(operator: unknown, value: unknown): { operator: string; value: unknown } {
+  const raw = String(operator ?? 'eq').trim().toLowerCase() || 'eq';
+  const op = OPERATOR_ALIASES[raw] ?? raw;
+  if ((op === 'in' || op === 'not_in') && typeof value === 'string') {
+    return { operator: op, value: value.split(',').map((s) => s.trim()).filter(Boolean) };
+  }
+  if ((op === 'between' || op === 'not_between') && Array.isArray(value)) return { operator: op, value: value.slice(0, 2) };
+  if (op === 'between' && typeof value === 'string') {
+    const sep = value.includes('..') ? '..' : ',';
+    return { operator: op, value: value.split(sep).map((s) => s.trim()).filter(Boolean).slice(0, 2) };
+  }
+  return { operator: op, value };
+}
+// Every operator the engine reads as an exclusion: stated as "not …", never as
+// the value alone.
+const NEGATING_OPERATORS = new Set(['not_in', 'neq', 'not_contains', 'not_between']);
+const COMPARISON_SIGN: Record<string, string> = { gt: '>', gte: '≥', lt: '<', lte: '≤' };
+
+/** The value half of "Label: value", in the UI language — one wording for the
+ * banner and both PDF headers. */
+export function statePageFilterFact(fact: PageFilterFact, t: (key: string, params?: Record<string, string | number>) => string): string {
+  if (fact.preset) return t(`dashboards.filterContext.preset.${fact.preset}`);
+  switch (fact.kind) {
+    case 'isEmpty': return t('dashboards.filterContext.isEmpty');
+    case 'hasValue': return t('dashboards.filterContext.hasValue');
+    case 'contains': return t('dashboards.filterContext.contains', { value: fact.value });
+    case 'notContains': return t('dashboards.filterContext.notContains', { value: fact.value });
+    case 'startsWith': return t('dashboards.filterContext.startsWith', { value: fact.value });
+    case 'excluding': return t('dashboards.filterContext.excluding', { value: fact.value });
+    default: return fact.value;
+  }
+}
 
 export function pageFilterFacts(input: {
   applied: BaseFilter[];
@@ -183,19 +220,30 @@ export function pageFilterFacts(input: {
     const key = getFilterKey(f);
     const label = getFilterDisplayLabel(f);
     if (hasPreset(f)) return { key, label, value: '', preset: f.datePreset, locked };
-    // A lock is enforced by the server, which already decided it carries a
-    // value (a scalar "SP" under `in` is enforced as ["SP"]); only a viewer's
-    // own filter is checked for being active.
-    if (!locked && !isFilterValueActive(f)) return null;
-    const op = String(f.operator || '').toLowerCase();
-    const range = (op === 'between' || op === 'not_between') && Array.isArray(f.value);
-    const raw = range
-      ? (f.value as unknown[]).map((v) => (v === null || v === undefined ? '…' : String(v))).join(' – ')
-      : formatValue(f.value);
-    if (!raw) return null;
-    const sign = COMPARISON_SIGN[op];
-    const value = sign ? `${sign} ${raw}` : raw;
-    return { key, label, value, locked, ...(NEGATING_OPERATORS.has(op) ? { negated: true } : {}) };
+    // Stated as the chart engine enforces it: its canonical operator, its
+    // value normalisation (a scalar "SP" under `in` is ["SP"]) and its rule for
+    // "does this constrain anything" (is_filter_condition_active) — for a lock
+    // too, so a lock the engine drops is never announced.
+    const { operator: op, value: v } = canonicalCondition(f.operator, f.value);
+    if (!isFilterValueActive({ operator: op, value: v } as Pick<BaseFilter, 'operator' | 'value'>)) return null;
+    if (op === 'is_null') return { key, label, value: '', kind: 'isEmpty', locked };
+    if (op === 'is_not_null') return { key, label, value: '', kind: 'hasValue', locked };
+    let value: string;
+    if (op === 'between' || op === 'not_between') {
+      const [lo, hi] = Array.isArray(v) ? v : [];
+      const has = (x: unknown) => x !== null && x !== undefined && String(x) !== '';
+      value = has(lo) && has(hi) ? `${lo} – ${hi}` : has(lo) ? `≥ ${lo}` : `≤ ${hi}`;
+    } else {
+      value = formatValue(v);
+      if (!value) return null;
+      const sign = COMPARISON_SIGN[op];
+      if (sign) value = `${sign} ${value}`;
+    }
+    const kind = op === 'contains' || op === 'like' ? 'contains'
+      : op === 'not_contains' ? 'notContains'
+        : op === 'starts_with' ? 'startsWith'
+          : NEGATING_OPERATORS.has(op) ? 'excluding' : undefined;
+    return { key, label, value, locked, ...(kind ? { kind } : {}), ...(NEGATING_OPERATORS.has(op) ? { negated: true } : {}) };
   };
   for (const entry of input.locked) {
     const f = {

@@ -35,8 +35,6 @@ from app.services.chart_contracts import (
     _filter_dedupe_key,
     _record_dropped_filter,
     normalize_filter_conditions,
-    normalize_filter_operator,
-    normalize_filter_value,
 )
 
 
@@ -485,27 +483,30 @@ def link_filters_a_viewer_may_see(
     Never included: a hidden (🚫) entry, with or without a value (the reader
     must not learn the field or the value); a 'limit' scope entry (it bounds
     the viewer's choices, it is not a filter to announce); an empty lock (it
-    enforces nothing); an entry its author set `showBanner: false` on. The
-    operator travels with the value so "not RJ" is never shown as "RJ", and
-    both are served in the canonical form the chart engine enforces
-    (`normalize_filter_operator` / `normalize_filter_value`): an M2M claim
-    stored as `in "SP"` is enforced as `in ["SP"]` and must be stated so, and
-    `ne` / `<>` are the engine's `neq`. A relative-date lock carries its preset
-    (the engine resolves it per request; a frozen value would be stale). The
-    data merge is unaffected — the server applies the link's filters itself
-    from DashboardPublicLink.filters_config.
+    enforces nothing); an entry its author set `showBanner: false` on.
+
+    What is served is decided by the engine's own chokepoint,
+    `normalize_filter_conditions`: an entry is served only if the engine keeps
+    it, with the operator and value the engine enforces. So an M2M claim stored
+    as `in "SP"` reads `in ["SP"]`; `ne` / `<>` read `neq` ("not RJ" is never
+    shown as "RJ"); an `is_null` lock is stated although it has no value; a
+    relative-date lock is stated by its preset (resolved per request); and a
+    lock the engine drops (`between 5`, `in 5`) is never announced. The data
+    merge is unaffected — the server applies the link's filters itself from
+    DashboardPublicLink.filters_config.
     """
     entries = [e for e in (link_filters_config or []) if isinstance(e, dict) and not link_entry_is_scope(e)]
     locked, _hidden = split_link_filters_locked_vs_hidden(entries)
     out: List[Dict[str, Any]] = []
     for entry in locked:
-        if not link_entry_has_value(entry) or entry.get("showBanner") is False:
+        if entry.get("showBanner") is False:
             continue
-        raw_value = entry.get("value")
-        raw_op = entry.get("operator") or ("in" if isinstance(raw_value, (list, tuple)) else "eq")
-        operator = normalize_filter_operator(raw_op)
-        item = {"field": entry.get("field"), "label": entry.get("label"),
-                "value": normalize_filter_value(operator, raw_value), "operator": operator}
+        enforced = normalize_filter_conditions([entry])
+        if not enforced:
+            continue
+        kept = enforced[0]
+        item = {"field": kept.get("field"), "label": entry.get("label"),
+                "value": kept.get("value"), "operator": kept.get("operator")}
         if entry.get("semanticField"):
             item["semanticField"] = entry["semanticField"]
         if entry.get("datePreset"):

@@ -133,10 +133,12 @@ def test_the_access_bump_commit_does_not_undo_the_published_only_copy(db, monkey
 def test_the_public_ai_describes_only_datasets_of_published_tiles(db):
     """The public AI's knowledge scope (describe the model, search knowledge)
     followed every DashboardChart row: a dataset on an editor's draft-only tile
-    was described to a public viewer before Publish."""
-    from types import SimpleNamespace
+    was described to a public viewer before Publish. Reading the live
+    relationship instead is not enough: retrieval logging commits the request
+    session mid-turn, and the next read reloads the raw rows."""
     from app.api import public as public_api
     from app.models.dataset import DatasetTable
+    from app.services.agent_flows.tools.context import ToolContext
     from app.services.dashboard_ai_bot import govern_tools
     DatasetTable.__table__.create(db.get_bind(), checkfirst=True)
     db.add(Chart(id=501, name="published", chart_type="BAR", config={}, dataset_table_id=71))
@@ -147,7 +149,9 @@ def test_the_public_ai_describes_only_datasets_of_published_tiles(db):
     db.commit()
     dash = db.query(Dashboard).filter(Dashboard.id == 1).one()
     public_api._serve_published_only(dash)
-    tids, _dsids = govern_tools._scope(SimpleNamespace(db=db, dashboard=dash))
+    ctx = ToolContext.from_dashboard(db, dash, [])
+    db.commit()  # what retrieve_doc_chunks / log_retrieval do during a turn
+    tids, _dsids = govern_tools._scope(ctx)
     assert tids == {71}, f"the public AI scope includes a draft-only tile's dataset: {tids}"
 
 

@@ -563,10 +563,28 @@ check('a reader can always tell what filters the page: locks, page filters and c
   assert(more.customer_state?.value === 'SP', `a scalar lock the server enforces is not stated: ${JSON.stringify(more)}`);
   assert(more.channel?.negated && more.category?.negated, 'an exclusion spelled ne / not_contains is stated as an inclusion');
   assert(more.amount?.value === '≥ 1000', 'a comparison is stated as a bare value');
+  // As the engine enforces: a dropped lock is not announced; is_null is; a
+  // one-sided range reads as one; a pattern is not equality.
+  const eng = Object.fromEntries(ppf.pageFilterFacts({
+    applied: [], pageHidden: [],
+    locked: [{ field: 'store', value: 5, operator: 'in' }, { field: 'order_date', value: [null, null], operator: 'between' },
+      { field: 'closed_at', value: null, operator: 'is_null' }, { field: 'price', value: ['10'], operator: 'between' },
+      { field: 'name', value: 'abc', operator: 'contains' }],
+  }).map((x) => [x.key, x]));
+  assert(!eng.store && !eng.order_date, `a lock the engine drops is announced: ${JSON.stringify(eng)}`);
+  assert(eng.closed_at?.kind === 'isEmpty', 'an is_null lock is silent');
+  assert(eng.price?.value === '≥ 10', 'a one-sided range reads as equality');
+  assert(eng.name?.kind === 'contains', 'a pattern reads as equality');
+  const builderSrc = source('app/(main)/dashboards/[id]/page.tsx');
+  assert(/statePageFilterFact\(f, t\)/.test(builderSrc), 'the builder PDF words a filter on its own');
   const pv = source('components/dashboards/PublicDashboardView.tsx');
   assert(/public_link_locked_filters/.test(pv) && /filterContextFacts\.map/.test(pv), "the public header does not state the page's filters");
   assert(/summarizeViewerFilters = useCallback\([^)]*\): string => pageFilterFacts\(/.test(pv), 'the PDF header lists filters by name without their value');
-  assert((pv.match(/filterContext\.excluding/g) || []).length >= 2, 'the banner or the PDF drops the exclusion');
+  // One wording for the banner and both PDF headers.
+  assert((pv.match(/statePageFilterFact\(f(act)?, t\)/g) || []).length >= 2, 'the banner or the public PDF words a filter on its own');
+  const st = (kind, value = 'x') => ppf.statePageFilterFact({ key: 'k', label: 'L', value, locked: true, kind }, (k, p) => `${k}|${p?.value ?? ''}`);
+  assert(st('excluding', 'SP') === 'dashboards.filterContext.excluding|SP' && st('isEmpty') === 'dashboards.filterContext.isEmpty|'
+    && st('contains', 'ab') === 'dashboards.filterContext.contains|ab', 'a kind of fact has no wording');
   assert(/operator: e\.operator, datePreset: e\.datePreset/.test(pv), 'the served operator/preset is dropped before the banner');
   // Each PDF page states its own filters, not the active page's.
   assert(/filtersSummary: filtersSummaryFor\(p\.id\)/.test(pv), 'the public PDF prints the active page\'s filters on every page');

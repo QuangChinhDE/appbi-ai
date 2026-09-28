@@ -262,6 +262,12 @@ class ToolContext:
     # column never reaches ANY tool — filtering only the prompt's field list
     # (the pre-P0-05 behaviour) left the raw values readable via get_chart_data.
     excluded_columns: set[str] = field(default_factory=set)
+    #: dataset_table_ids of the tiles this context was built from, recorded once
+    #: by `from_dashboard`. A public token is served published tiles only, and a
+    #: commit during the turn (retrieval logging commits the request session)
+    #: expires the dashboard — re-reading `dashboard.dashboard_charts` then
+    #: reloads every raw row, draft tiles included. None: not built from tiles.
+    served_table_ids: set[int] | None = None
     #: The CURRENT step's knowledge scope, set per step by the flow engine:
     #: ``{"doc_ids": [...], "metric_names": [...]}``. Empty/absent means the step
     #: may reach everything the report is entitled to.
@@ -317,6 +323,7 @@ class ToolContext:
         actor_ref: str | None = None,
     ) -> "ToolContext":
         allowed: set[int] = set()
+        served_tables: set[int] = set()
         meta: dict[int, dict[str, Any]] = {}
         # chart_id → ordered list of page ids it appears on (from tile layout).
         page_charts: dict[str, list[int]] = {}
@@ -324,6 +331,8 @@ class ToolContext:
             if not dc.chart_id or not dc.chart:
                 continue
             allowed.add(dc.chart_id)
+            if getattr(dc.chart, "dataset_table_id", None) is not None:
+                served_tables.add(dc.chart.dataset_table_id)
             layout = dc.layout if isinstance(dc.layout, dict) else {}
             _pid = layout.get("page") or layout.get("pageId")
             if _pid:
@@ -380,6 +389,7 @@ class ToolContext:
             actor_type=actor_type,
             actor_ref=actor_ref,
             excluded_columns=_resolve_excluded_columns(db, dashboard),
+            served_table_ids=served_tables,
         )
 
     def adopt_scope(self, chart_ids: set[int], dataset_ids: list[int]) -> None:

@@ -57,6 +57,16 @@ def test_a_lock_is_served_as_the_engine_enforces_it():
     assert shown["order_date"]["datePreset"] == "last_30_days", "a relative-date lock is served as a frozen range"
 
 
+def test_what_is_served_is_what_the_engine_keeps():
+    # A lock the engine drops (empty_value) must not be announced; a lock with
+    # no value that the engine enforces (is_null) must be.
+    dropped = [{"field": "amount", "operator": "between", "value": 5},
+               {"field": "store", "operator": "in", "value": 5}]
+    assert link_filters_a_viewer_may_see(dropped) == [], "a lock the engine drops is announced"
+    [null_lock] = link_filters_a_viewer_may_see([{"field": "closed_at", "operator": "is_null", "value": None}])
+    assert null_lock["operator"] == "is_null", "an enforced is_null lock is silent"
+
+
 def test_an_entry_the_author_keeps_off_the_banner_is_not_served():
     assert link_filters_a_viewer_may_see([QUIET, LOCKED])[0]["field"] == "customer_state"
     assert "Online" not in json.dumps(link_filters_a_viewer_may_see([QUIET]))

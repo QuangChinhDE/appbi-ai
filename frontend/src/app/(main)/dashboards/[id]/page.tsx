@@ -90,7 +90,7 @@ import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
 import { ArrangeBar } from '@/components/dashboards/ArrangeBar';
 import { arrangeTiles, closeVacatedBand, nudgeTiles, placeBeside, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
-import { pageFilterFacts } from '@/lib/public-page-filters';
+import { pageFilterFacts, statePageFilterFact } from '@/lib/public-page-filters';
 import { settleStoredLayout } from '@/lib/grid-settle';
 import {
   SLICER_CONTROL_SIZE,
@@ -3393,11 +3393,7 @@ function DashboardDetailPageInner() {
     ],
     pageHidden: [],
     locked: [],
-  }).map((f) => {
-    const value = f.preset ? t(`dashboards.filterContext.preset.${f.preset}`)
-      : f.negated ? t('dashboards.filterContext.excluding', { value: f.value }) : f.value;
-    return `${f.label}: ${value}`;
-  }).join('  ·  '), [appliedGlobalFiltersLegacy, t]);
+  }).map((f) => `${f.label}: ${statePageFilterFact(f, t)}`).join('  ·  '), [appliedGlobalFiltersLegacy, t]);
 
   const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
     if (!dashboard) return;

@@ -63,7 +63,7 @@ import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilter
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
 import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
-import { mergeSeedWithViewerSelections, pageFilterFacts, resolvePublicPageFilterContext, type PageFilterFact } from '@/lib/public-page-filters';
+import { mergeSeedWithViewerSelections, pageFilterFacts, resolvePublicPageFilterContext, statePageFilterFact, type PageFilterFact } from '@/lib/public-page-filters';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 import { citedTilesOf } from '@/lib/report-evidence';
@@ -1115,11 +1115,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     applied: context?.applied ?? appliedViewerFilters,
     pageHidden: context?.pageHidden ?? pageHiddenFilters,
     locked: context ? lockedEntriesFor(context.pageId) : lockedBannerEntries,
-  }).map((f) => {
-    const value = f.preset ? t(`dashboards.filterContext.preset.${f.preset}`)
-      : f.negated ? t('dashboards.filterContext.excluding', { value: f.value }) : f.value;
-    return `${f.locked ? '🔒 ' : ''}${f.label}: ${value}`;
-  }).join(' · '), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, lockedEntriesFor, t]);
+  }).map((f) => `${f.locked ? '🔒 ' : ''}${f.label}: ${statePageFilterFact(f, t)}`).join(' · '), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, lockedEntriesFor, t]);
 
   /**
    * Server-side export: hand the request to the render worker and poll.
@@ -2311,7 +2307,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                           >
                             {fact.locked && <span className="opacity-70" aria-hidden>🔒</span>}
                             <span className="font-medium">{fact.label}:</span>
-                            <span>{fact.preset ? t(`dashboards.filterContext.preset.${fact.preset}`) : fact.negated ? t('dashboards.filterContext.excluding', { value: fact.value }) : fact.value}</span>
+                            <span>{statePageFilterFact(fact, t)}</span>
                           </span>
                         ))}
                       </>
