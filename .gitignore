@@ -347,3 +347,4 @@ backend/tests/.testdata/
 !backend/tests/test_unified_grid_contract.py
 !backend/tests/test_dashboard_draft_removal_lifecycle.py
 !backend/tests/test_public_link_filter_disclosure.py
+!backend/tests/test_embed_link_claim_operator.py

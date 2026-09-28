@@ -190,7 +190,8 @@ jobs:
             tests/test_report_starter.py \
             tests/test_unified_grid_contract.py \
             tests/test_dashboard_draft_removal_lifecycle.py \
-            tests/test_public_link_filter_disclosure.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
+            tests/test_public_link_filter_disclosure.py \
+            tests/test_embed_link_claim_operator.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
       # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
       #
       # The step below reports failures. Nothing reported SUCCESS, so a

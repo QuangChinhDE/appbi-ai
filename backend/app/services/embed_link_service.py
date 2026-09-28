@@ -157,7 +157,9 @@ def validate_and_lock_filters(db: Session, dash: Dashboard, filters: list[dict])
             "field": match.get("field") or match.get("semanticField"),
             "semanticField": match.get("semanticField"),
             "datasetId": match.get("datasetId"),
-            "operator": "in" if isinstance(value, (list, tuple)) and op in ("in", "not_in", "eq") else op,
+            # A list under eq means "one of these"; an exclusion stays an exclusion
+            # (not_in was rewritten to in, so a claim excluding X showed only X).
+            "operator": "in" if isinstance(value, (list, tuple)) and op in ("in", "eq") else op,
             "value": list(value) if isinstance(value, (list, tuple)) else value,
             # value-bearing + not hidden => locked (link_managed_field_keys strips
             # the interactive slicer; _build_public_chart_filters enforces it).
