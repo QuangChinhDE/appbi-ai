@@ -249,11 +249,16 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
     if (unplaced.length) notes.push(`${unplaced.length} text block(s) the design wrote but did not place were placed by their role.`);
   }
 
-  // A control the plan created but did not place goes where filters are read:
-  // right after the opening headline, as one filter band.
-  if (slicerControls.length) {
+  // A control the plan created — or a control already on the page — that the
+  // plan did not place goes where filters are read: right after the opening
+  // headline, as one filter band. Left to the compiler it was appended at the
+  // very end of the report, the one place a reader never looks for a filter.
+  const existingControls = layer === 'redesign' && sections.length > 0 && targets.length === 0
+    ? (options.slicers ?? []).map((s) => s.placedTileId).filter((id): id is number => typeof id === 'number' && Number.isFinite(id))
+    : [];
+  if (slicerControls.length || existingControls.length) {
     const placedIds = new Set(sections.flatMap((s) => s.visuals));
-    const unplaced = slicerControls.filter((c) => !placedIds.has(c.id)).map((c) => c.id);
+    const unplaced = [...existingControls, ...slicerControls.map((c) => c.id)].filter((id) => !placedIds.has(id));
     if (unplaced.length) {
       const headlineIds = new Set(coercedBlocks.blocks.filter((b) => b.variant === 'headline').map((b) => b.id));
       const at = sections.findIndex((s) => s.visuals.some((id: number) => headlineIds.has(id)));
@@ -283,6 +288,18 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
         findings.forEach((f) => said.add(f));
         sections.unshift({ primitive: 'full_width', visuals: [id] });
         notes.push('The reference opens with a headline; so does the report, stated from its own findings.');
+      }
+    } else if (refStructure.headline === true) {
+      // The model wrote the headline but opened with something else: the
+      // reference's structure is that the page OPENS with it.
+      const headlineIds = new Set(coercedBlocks.blocks.filter((b) => b.variant === 'headline').map((b) => b.id));
+      const at = sections.findIndex((s) => s.visuals.some((id: number) => headlineIds.has(id)));
+      if (at > 0) {
+        // Its filter band (placed right after it) comes with it.
+        const take = sections[at + 1]?.primitive === 'filter_bar' ? 2 : 1;
+        const opening = sections.splice(at, take);
+        sections.unshift(...opening);
+        notes.push('The reference opens with a headline; the headline was moved to open the report.');
       }
     }
     if (refStructure.summary === true && !coercedBlocks.blocks.some((b) => b.variant === 'summary')) {

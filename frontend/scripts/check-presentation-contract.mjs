@@ -2247,6 +2247,38 @@ check('no catalog string uses single-brace interpolation', () => {
   assertEqual(offenders, [], 'single-brace placeholders will render literally');
 });
 
+check('a redesign that forgets a control already on the page puts it in the filter band, never at the end of the report', () => {
+  const reply = { layer: 'redesign', direction: { style: 'x', density: 'y' },
+    sections: [{ primitive: 'three_equal', visuals: [1, 2, 3] }, { primitive: 'two_equal', visuals: [4, 5] }] };
+  const slicers = [{ id: 'slicer-state', placedTileId: 50, visibleHere: true }];
+  const { plan } = validator.coerceModelPlan(reply, { grantedLayer: 'redesign', slicers });
+  const band = plan.sections.findIndex((s) => s.primitive === 'filter_bar' && s.visuals.includes(50));
+  assert(band === 0, `the page's control was left to be appended at the end (${JSON.stringify(plan.sections)})`);
+  assert(plan.sections.filter((s) => s.visuals.includes(50)).length === 1, 'the control was placed twice');
+  // A redesign the user scoped to selected visuals never pulls the control in.
+  const scoped = validator.coerceModelPlan(reply, { grantedLayer: 'redesign', slicers, targets: [4, 5] }).plan;
+  assert(!scoped.sections.some((s) => s.visuals.includes(50)), 'a scoped redesign moved a control outside the selection');
+  // A plan that placed it keeps it where the plan put it.
+  const placed = validator.coerceModelPlan({ ...reply, sections: [...reply.sections, { primitive: 'filter_bar', visuals: [50] }] }, { grantedLayer: 'redesign', slicers }).plan;
+  assert(placed.sections.findIndex((s) => s.visuals.includes(50)) === 2, 'a control the plan placed was moved');
+});
+
+check('a reference that opens with a headline opens the result with it, even when the model put it second', () => {
+  const reply = { layer: 'redesign', direction: { style: 'x', density: 'y' }, referenceStructure: { headline: true },
+    blocks: [{ id: 'h', variant: 'headline', findings: ['trend:3'] }],
+    sections: [{ primitive: 'three_equal', visuals: [1, 2, 3] }, { primitive: 'full_width', visuals: ['h'] }, { primitive: 'two_equal', visuals: [4, 5] }] };
+  const { plan, notes } = validator.coerceModelPlan(reply, { grantedLayer: 'redesign', liveFindings: ['trend:3'], knownTileIds: [1, 2, 3, 4, 5] });
+  const head = (plan.blocks ?? []).find((b) => b.variant === 'headline');
+  assert(head && plan.sections[0].visuals.includes(head.id), `the result does not open with the headline: ${JSON.stringify(plan.sections)}`);
+  assert(plan.sections.length === 3 && plan.sections[1].visuals.join() === '1,2,3', `the rest of the order changed: ${JSON.stringify(plan.sections)}`);
+  assert(notes.some((n) => /moved to open the report/.test(n)), 'the move was not disclosed');
+  // With a control the plan forgot: headline, then its filter band, then the rest.
+  const withControl = validator.coerceModelPlan(reply, { grantedLayer: 'redesign', liveFindings: ['trend:3'], knownTileIds: [1, 2, 3, 4, 5],
+    slicers: [{ id: 'slicer-state', placedTileId: 50, visibleHere: true }] }).plan;
+  assert(withControl.sections[1]?.primitive === 'filter_bar' && withControl.sections[1].visuals.join() === '50',
+    `the filter band did not follow the headline: ${JSON.stringify(withControl.sections)}`);
+});
+
 // ── Report ──────────────────────────────────────────────────────────────────
 
 if (failures.length > 0) {
