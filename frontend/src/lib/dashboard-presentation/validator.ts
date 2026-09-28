@@ -130,7 +130,15 @@ export interface CoerceOptions {
   /** Finding keys the report supports right now — what a block the boundary
    *  adds for a reference's structure may state. */
   liveFindings?: string[];
+  /** The report's slicers as the snapshot saw them — what a slicer control a
+   *  redesign places may show. */
+  slicers?: Array<{ id: string; placedTileId?: number | null; visibleHere?: boolean }>;
 }
+
+const CONTROL_TREATMENTS = ['auto', 'dropdown', 'list', 'buttons', 'compact'] as const;
+/** Controls take ids far below any block's, so the two never collide. */
+const CONTROL_ID_BASE = -1000;
+const MAX_CONTROLS = 8;
 
 /**
  * Coerce a model's reply into the plan shape before anything looks at it.
@@ -173,6 +181,34 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
     notes.push("New text blocks come with a redesign; this change kept the page's content as it is.");
   }
 
+  // Slicer controls (redesign only), before sections, so a section can place
+  // one by the id the model used ("s1"). A control may only show a slicer the
+  // report HAS, whose scope shows it on this page, and that has no control here
+  // yet. It names the slicer and a look — nothing it could carry changes what
+  // the slicer filters.
+  const slicerControls: NonNullable<PresentationPlan['slicerControls']> = [];
+  if (layer === 'redesign' && Array.isArray(source.slicerControls)) {
+    const known = new Map((options.slicers ?? []).map((s) => [String(s.id), s]));
+    let refused = 0;
+    for (const entry of source.slicerControls.slice(0, MAX_CONTROLS)) {
+      const slicerId = String(entry?.slicer ?? entry?.slicerId ?? '').trim();
+      const slicer = known.get(slicerId);
+      if (!slicer || slicer.visibleHere === false || slicer.placedTileId != null
+        || slicerControls.some((c) => c.slicerId === slicerId)) {
+        refused += 1;
+        continue;
+      }
+      const id = CONTROL_ID_BASE - slicerControls.length;
+      const treatment = (CONTROL_TREATMENTS as readonly string[]).includes(entry?.treatment) ? entry.treatment : 'auto';
+      slicerControls.push({ id, slicerId, treatment });
+      if (entry?.id != null) coercedBlocks.idMap.set(String(entry.id), id);
+      coercedBlocks.idMap.set(String(id), id);
+    }
+    if (refused > 0) notes.push(`${refused} slicer control(s) were not added: the slicer is not on this page, is already placed, or does not exist.`);
+  } else if (layer !== 'redesign' && Array.isArray(source.slicerControls) && source.slicerControls.length > 0) {
+    notes.push('Slicers are placed on the page in a redesign; this change kept the filters where they are.');
+  }
+
   let healedPrimitives = 0;
   let sections = Array.isArray(source.sections)
     ? source.sections.map((section: any) => {
@@ -211,6 +247,18 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
       sections.unshift({ primitive: 'full_width', visuals: [b.id] });
     }
     if (unplaced.length) notes.push(`${unplaced.length} text block(s) the design wrote but did not place were placed by their role.`);
+  }
+
+  // A control the plan created but did not place goes where filters are read:
+  // right after the opening headline, as one filter band.
+  if (slicerControls.length) {
+    const placedIds = new Set(sections.flatMap((s) => s.visuals));
+    const unplaced = slicerControls.filter((c) => !placedIds.has(c.id)).map((c) => c.id);
+    if (unplaced.length) {
+      const headlineIds = new Set(coercedBlocks.blocks.filter((b) => b.variant === 'headline').map((b) => b.id));
+      const at = sections.findIndex((s) => s.visuals.some((id: number) => headlineIds.has(id)));
+      sections.splice(at >= 0 ? at + 1 : 0, 0, { primitive: 'filter_bar', visuals: unplaced });
+    }
   }
 
   // A reference that opens with a headline, or explains itself in a paragraph,
@@ -417,6 +465,7 @@ export function coerceModelPlan(raw: unknown, options: CoerceOptions): CoercedPl
     ...(suggestions.length ? { suggestions } : {}),
     ...(typeof source.rationale === 'string' ? { rationale: source.rationale } : {}),
     ...(coercedBlocks.blocks.length ? { blocks: coercedBlocks.blocks } : {}),
+    ...(slicerControls.length ? { slicerControls } : {}),
   };
 
   return { plan, notes };

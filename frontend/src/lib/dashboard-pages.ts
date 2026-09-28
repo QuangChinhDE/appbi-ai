@@ -274,17 +274,17 @@ export function defaultSizeForChartType(chartType: string | null | undefined): {
 }
 
 /** What a tile is, for responsive sizing rules. */
-export type ResponsiveTileKind = 'kpi' | 'chart' | 'table' | 'widget';
+export type ResponsiveTileKind = 'kpi' | 'chart' | 'table' | 'widget' | 'slicer';
 
 /** Narrowest a tile stays readable at, in pixels — the same floors the render
  *  audit enforces, so a derived layout never produces what the gate rejects. */
 export const RESPONSIVE_MIN_WIDTH_PX: Record<ResponsiveTileKind, number> = {
-  kpi: 150, chart: 260, table: 320, widget: 0,
+  kpi: 150, chart: 260, table: 320, widget: 0, slicer: 200,
 };
 /** Shortest a tile may be in the phone stack (px), so a KPI authored as a slim
  *  strip or a chart authored short still reads when it becomes full-width. */
 export const STACK_MIN_HEIGHT_PX: Record<ResponsiveTileKind, number> = {
-  kpi: 96, chart: 220, table: 260, widget: 0,
+  kpi: 96, chart: 220, table: 260, widget: 0, slicer: 56,
 };
 
 /**
@@ -329,8 +329,11 @@ export function deriveStackedLayout<T extends { i?: string; x: number; y: number
   for (let i = 0; i < sorted.length; i += 1) {
     const item = sorted[i];
     const next = sorted[i + 1];
-    const pairable = cols >= 2 && opts?.kindOf
-      && opts.kindOf(item) === 'kpi' && next && opts.kindOf(next) === 'kpi' && next.y === item.y;
+    // Two slicer controls side by side stay side by side too: a phone needs
+    // the page's filters in one band, not one full-width card per filter.
+    const pairKind = opts?.kindOf ? opts.kindOf(item) : null;
+    const pairable = cols >= 2 && opts?.kindOf && (pairKind === 'kpi' || pairKind === 'slicer')
+      && next && opts.kindOf(next) === pairKind && next.y === item.y;
     if (pairable) {
       const half = Math.floor(cols / 2);
       const h = Math.max(heightOf(item), heightOf(next));
@@ -603,4 +606,12 @@ export function reportBreakpointFor(width: number | null | undefined): 'lg' | 'm
   const w = Number(width) || 0;
   if (w <= 0 || w >= REPORT_TABLET_BREAKPOINT) return 'lg';
   return w >= REPORT_STACK_BREAKPOINT ? 'md' : 'xs';
+}
+
+/** A tile's layout with a new grid cell; everything else on it is kept. */
+export function mergeGridLayout<T extends Record<string, any>>(
+  base: T,
+  patch: { x: number; y: number; w: number; h: number },
+): T {
+  return { ...base, x: patch.x, y: patch.y, w: patch.w, h: patch.h };
 }

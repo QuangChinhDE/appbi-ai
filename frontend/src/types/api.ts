@@ -230,7 +230,10 @@ export type DashboardWidgetType =
   // sanitized static HTML instead of dropped.
   | 'html_fragment'
   // Words bound to findings computed from the report's own tiles (no stored numbers).
-  | 'narrative';
+  | 'narrative'
+  // A slicer's control on the grid: {slicerId, treatment}. Presentation only —
+  // the filter lives in slicers_config / pages_config[].slicers.
+  | 'slicer';
 
 export interface DashboardThemeConfig {
   mode?: 'light' | 'dark';

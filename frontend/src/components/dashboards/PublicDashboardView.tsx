@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
+import { GridSlicerTile, FilterApplyBar, type SlicerControlBinding } from '@/components/dashboards/GridSlicerTile';
+import { isSlicerControl, mergeBarChange, placedSlicerIds, replaceSlicerById } from '@/lib/slicer-placement';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
@@ -1518,6 +1520,21 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     () => JSON.stringify(draftViewerFilters) !== JSON.stringify(appliedViewerFilters),
     [appliedViewerFilters, draftViewerFilters],
   );
+  // Slicer controls placed on this page's grid (lib/slicer-placement) draw
+  // their slicer there; the filter bar shows the rest. The viewer's filters are
+  // the only state either one edits — the same staged list, the same Apply.
+  const placedViewerSlicerIds = useMemo(
+    () => placedSlicerIds(visibleDashboardCharts),
+    [visibleDashboardCharts],
+  );
+  const barViewerFilters = useMemo(
+    () => draftViewerFilters.filter((f) => !placedViewerSlicerIds.has(String(f.id ?? ''))),
+    [draftViewerFilters, placedViewerSlicerIds],
+  );
+  const placedViewerFilters = useMemo(
+    () => draftViewerFilters.filter((f) => placedViewerSlicerIds.has(String(f.id ?? ''))),
+    [draftViewerFilters, placedViewerSlicerIds],
+  );
   const publicTheme = useMemo(
     () => buildPublicLinkTheme(dashboard?.public_link_appearance),
     [dashboard?.public_link_appearance],
@@ -1545,7 +1562,10 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // read-only, already filter/permission-scoped). Admin toggle, default on.
   const dataExportEnabled = appearance.allow_data_export;
   const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
-  const showFilterControls = viewerFiltersEnabled && availableFilterColumns.length > 0;
+  const showFilterControls = viewerFiltersEnabled && availableFilterColumns.length > 0
+    // The bar is optional grouping: nothing to show once every slicer on this
+    // page has its control on the grid.
+    && (barViewerFilters.length > 0 || placedViewerFilters.length === 0);
   const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
   // The saved dock, honoured on the public link exactly as in the builder.
   //
@@ -1693,21 +1713,61 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // Phase-G — single SlicerCluster node reused in both placements:
   // stacked above the grid (top) or as a left column (left). Defined
   // here so it can sit beside the grid section in left mode.
+  // Type-to-search for a public slicer, shared by the bar and the grid's
+  // controls (public endpoint only — no authed call on this surface).
+  const fetchPublicServerDistinct = async (column: ColumnInfo, search: string): Promise<string[]> => {
+    if (!column.datasetId || !column.semanticField) return [];
+    try {
+      // Cascade the search results by the viewer's other active filters
+      // + page-scope (same context the prefetch uses); self-strips this
+      // field so the dropdown never pins its own value.
+      const filterContext = getDistinctValueFilterContext(
+        [...appliedViewerFilters, ...pageHiddenFilters], column,
+      );
+      const res = await publicDashboardApi.getFilterDistinctValues(
+        token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search,
+      );
+      return res.values ?? [];
+    } catch {
+      return [];
+    }
+  };
+
+  // What a slicer control on this page's grid is bound to. Only the viewer's
+  // own seed can be shown: a field the link locks or hides was stripped by the
+  // server, and a slicer its scope keeps off this page is not in the seed — both
+  // resolve to "missing", and a viewer sees nothing there.
+  const publicSlicerBinding: SlicerControlBinding = {
+    slicers: draftViewerFilters,
+    siblingFilters: draftViewerFilters,
+    visibleHere: () => true,
+    filtersHere: () => true,
+    editing: false,
+    readOnly: !viewerFiltersEnabled,
+    onChange: (next) => setDraftViewerFilters((prev) => replaceSlicerById(prev, next)),
+    columns: availableFilterColumns,
+    columnChartCount: availableFilterChartCount,
+    distinctValues: resolvedDistinctValues,
+    distinctStatus: resolvedDistinctStatus,
+    fetchServerDistinct: fetchPublicServerDistinct,
+  };
+
   const slicerClusterNode = showFilterControls ? (
     <div className="[&>div]:mb-0">
       <SlicerCluster
         items={[
-          ...draftViewerFilters,
+          ...barViewerFilters,
           ...(((dashboard as any)?.slicers_config || []).filter(
             (c: any) => c && typeof c === 'object' && c.type === 'image',
           )),
         ]}
         onChildrenChange={(next) => {
-          setDraftViewerFilters(
+          setDraftViewerFilters(mergeBarChange(
             (next as any[]).filter(
               (c) => !(c && typeof c === 'object' && (c as any).type === 'image'),
-            ),
-          );
+            ) as BaseFilter[],
+            placedViewerFilters,
+          ));
         }}
         layout={(dashboard as any)?.slicer_cluster_layout || null}
         columns={availableFilterColumns}
@@ -1717,23 +1777,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         // Type-to-search over the FULL cached distinct set for high-cardinality
         // slicers on a public/embed link. Hits the BE result cache via the
         // public endpoint (no per-keystroke BigQuery, no authed call).
-        fetchServerDistinct={async (column, search) => {
-          if (!column.datasetId || !column.semanticField) return [];
-          try {
-            // Cascade the search results by the viewer's other active filters
-            // + page-scope (same context the prefetch uses); self-strips this
-            // field so the dropdown never pins its own value.
-            const filterContext = getDistinctValueFilterContext(
-              [...appliedViewerFilters, ...pageHiddenFilters], column,
-            );
-            const res = await publicDashboardApi.getFilterDistinctValues(
-              token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search,
-            );
-            return res.values ?? [];
-          } catch {
-            return [];
-          }
-        }}
+        fetchServerDistinct={fetchPublicServerDistinct}
         hasPendingChanges={hasPendingFilterChanges}
         onApply={handleApplyFilters}
         onReset={handleResetFilters}
@@ -2073,13 +2117,15 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     // the self-framed parameter switcher already take.
     const transparentWidget = ((dashboardChart.widget_config ?? {}) as Record<string, any>).transparentBackground === true;
     // Decorative "element" widgets draw their own styling → frameless (no card).
-    const selfStyled = wtype === 'section_header' || wtype === 'callout' || wtype === 'hero_strip';
+    const selfStyled = wtype === 'section_header' || wtype === 'callout' || wtype === 'hero_strip' || wtype === 'slicer';
     const frameless = wtype === 'shape' || wtype === 'parameter_switcher' || selfStyled || transparentWidget;
     return (
       <div key={dashboardChart.id.toString()} data-grid-item-id={dashboardChart.id} className="h-full">
         {frameless ? (
-          <div className="h-full w-full" data-tile-id={dashboardChart.id} data-tile-kind="widget">
-            <DashboardWidget widget={dashboardChart} />
+          <div className="h-full w-full" data-tile-id={dashboardChart.id} data-tile-kind="widget" data-widget-type={wtype ?? undefined}>
+            {isSlicerControl(dashboardChart)
+              ? <GridSlicerTile tile={dashboardChart} binding={publicSlicerBinding} />
+              : <DashboardWidget widget={dashboardChart} />}
           </div>
         ) : (
           <div
@@ -2729,6 +2775,14 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         </section>
         </ExportModeContext.Provider>
         </div>{/* /Phase-G left-vs-top slicer arrangement wrapper */}
+        {/* Controls placed on the grid stage their choice like the bar; this is
+            the one Apply for all of them. */}
+        <FilterApplyBar
+          visible={placedViewerFilters.length > 0 && viewerFiltersEnabled && hasPendingFilterChanges && !exportInProgressRef.current}
+          isApplying={isApplyingFilters}
+          onApply={handleApplyFilters}
+          onReset={handleResetFilters}
+        />
         </div>{/* /scroll region */}
           </>
         )}

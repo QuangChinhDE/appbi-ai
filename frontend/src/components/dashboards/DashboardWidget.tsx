@@ -52,6 +52,15 @@ export function DashboardWidget({ widget, params = {}, onParamChange, editing = 
       return <NarrativeWidget config={cfg} editing={editing} />;
     case 'html_fragment':
       return <HtmlFragmentWidget config={cfg} />;
+    case 'slicer':
+      // Drawn by the surface that owns filter state (GridSlicerTile). A surface
+      // without one — an import preview, a thumbnail — shows only that a
+      // control sits here, never a value.
+      return (
+        <div className="flex h-full items-center rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 text-[12px] text-text-tertiary" data-slicer-control="placeholder">
+          {t('dashboards.addSlicer.menu')}
+        </div>
+      );
     default:
       return (
         <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 text-xs text-text-tertiary">

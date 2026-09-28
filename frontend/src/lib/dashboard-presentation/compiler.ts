@@ -73,6 +73,13 @@ const DENSITY_HEIGHT_SCALE: Record<PresentationDensity, number> = {
  */
 const MIN_DATA_VISUAL_PX = 150;
 const MIN_DECORATIVE_PX = 56;
+/** A slicer control's card: a label and a value, one band. In a row beside a
+ *  chart it takes the row's height instead (and then shows its values). */
+const SLICER_CONTROL_PX = 72;
+/** Width of one control in a `filter_bar`: room for a label and a value, not a
+ *  share of the page. Four fit a row; the rest of the band stays empty. */
+const FILTER_BAR_SPAN = 9;
+const FILTER_BAR_PER_ROW = 4;
 /** A KPI is a number and a label, not an axis — it reads fine well below the
  *  chart floor, and holding it to the chart floor left a strip of tall cards
  *  with a lot of empty space under each number (§ KPI-too-tall). */
@@ -129,6 +136,8 @@ const PRIMITIVE_SPANS: Record<LayoutPrimitive, number[] | null> = {
   // Self-sizing, like the KPI strip: the hero and the rail do not share a row,
   // so a single span table cannot describe them. `placeRail` owns the geometry.
   hero_with_rail: null,
+  // Self-sizing too: each control is FILTER_BAR_SPAN wide, whatever the count.
+  filter_bar: null,
 };
 
 /** The hero/rail split, in columns. A rail tile at 12 of 36 sits exactly on the
@@ -350,6 +359,10 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
   // height comes from what they are, not from a chart role.
   const blockById = new Map<VisualId, PlanBlock>();
   for (const block of plan.blocks ?? []) blockById.set(block.id, block);
+  // Slicer controls the plan creates (negative ids), and those already on the
+  // page, are sized as controls — never as a 'supporting' chart.
+  const controlIds = new Set<VisualId>((plan.slicerControls ?? []).map((c) => c.id));
+  const isControl = (id: VisualId) => controlIds.has(id) || byId.get(id)?.widgetType === 'slicer';
 
   const density = plan.direction?.density ?? 'balanced';
   const heightScale = DENSITY_HEIGHT_SCALE[density] ?? 1;
@@ -365,6 +378,7 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
     // 109px / 109px / 51px, which reads as a rendering fault rather than a
     // design. A row is a band; the tallest thing in it sets the band.
     const heights = ids.map((id) => {
+      if (isControl(id)) return rowsAtLeast(SLICER_CONTROL_PX, gapPx);
       const block = blockById.get(id);
       if (block) return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, blockTargetPx(block) * heightScale), gapPx);
       const visual = byId.get(id);
@@ -404,6 +418,7 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
   // deliberately gives every tile in its row the SAME height — the rail is the
   // one place tiles that are NOT in a shared row get sized individually.
   const rowsForRole = (id: VisualId, extraScale: number): number => {
+    if (isControl(id)) return rowsAtLeast(SLICER_CONTROL_PX, gapPx);
     const block = blockById.get(id);
     if (block) return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, blockTargetPx(block) * heightScale * extraScale), gapPx);
     const visual = byId.get(id);
@@ -482,9 +497,17 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
         notes.push(`Visual ${id} appeared more than once in the plan; kept the first placement.`);
         return false;
       }
-      return byId.has(id) || blockById.has(id);
+      return byId.has(id) || blockById.has(id) || controlIds.has(id);
     });
     if (ids.length === 0) continue;
+
+    if (section.primitive === 'filter_bar') {
+      for (let i = 0; i < ids.length; i += FILTER_BAR_PER_ROW) {
+        const slice = ids.slice(i, i + FILTER_BAR_PER_ROW);
+        placeRow(slice, slice.map(() => FILTER_BAR_SPAN));
+      }
+      continue;
+    }
 
     if (section.primitive === 'kpi_strip') {
       const perRow = spansForSection({ ...section, visuals: ids }).length;

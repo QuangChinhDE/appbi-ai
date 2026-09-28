@@ -87,6 +87,8 @@ WHAT THE REPORT SAYS. `INPUT.findings` lists facts the page's charts support rig
 
 BLOCKS (redesign only). A report is more than tiles: you may add `blocks` — a `headline` (the verdict, one or two findings), a `summary` beside the hero ("what moved", up to four findings), a `chapter` before a chart (a heading and the findings that chart shows), a `takeaway` card (the latest period of one series). A block cites findings BY KEY and never contains a number: every figure is filled in from live data and changes with the filters. Headings are plain words with no digits. Place blocks in `sections` by their id ("b1"). Do not repeat a block that `visuals[].block` shows is already there.
 
+SLICERS ON THE PAGE (redesign only). A report's filters can sit on the grid, not only in the filter bar: `slicerControls` places a control for a slicer listed in `INPUT.slicers` whose `visibleHere` is true and `placed` is false — give it an id ("s1") and place it in `sections` like a visual. Use primitive "filter_bar" for a band of filters (a date range and a category at the top), or put one control in a row beside the chart it is read with. A control shows the slicer; it never changes what the slicer filters, and you cannot choose a field. A slicer already `placed` is a visual in `visuals` (type "SLICER") — move it like any visual. `treatment`: auto | dropdown | list | buttons | compact.
+
 DIRECTIONS. `direction.style` "executive", "operations" or "editorial" names a reading experience AppBI composes for you — verdict-first brief; status, exceptions and density; or a chaptered story. Choose one when the request is about who reads the report; you may leave `sections` and `blocks` empty and AppBI builds the composition, keeping your palette choices.
 
 HONESTY: claim in `rationale` only what the plan actually does. If the user \
@@ -146,6 +148,9 @@ PLAN_SCHEMA_HINT: Dict[str, Any] = {
             "title": "optional heading in plain words, NO digits",
             "findings": ["finding keys from INPUT.findings / visuals[].findingKinds, e.g. trend:12"],
         }
+    ],
+    "slicerControls": [
+        {"id": "s1 (redesign only — place it in a section like a visual: \"s1\")", "slicer": "id from INPUT.slicers (visibleHere true, placed false)", "treatment": "auto | dropdown | list | buttons | compact"}
     ],
     "proposals": [
         {"kind": "retitle", "visual": "dashboardChartId", "title": "a clearer title in plain words, NO digits — the author must accept it"}
@@ -270,7 +275,13 @@ def build_planner_prompt(
         "visuals": _visual_digest(snapshot),
         "findings": _findings_digest(snapshot),
         "slicers": [
-            {"id": s.get("id"), "label": s.get("displayLabel"), "position": s.get("currentPosition")}
+            {
+                "id": s.get("id"),
+                "label": s.get("displayLabel"),
+                "position": s.get("currentPosition"),
+                "placed": s.get("placedTileId") is not None,
+                "visibleHere": s.get("visibleHere") is not False,
+            }
             for s in (snapshot.get("slicers") or [])
         ],
         "currentTheme": snapshot.get("theme") or {},
@@ -289,7 +300,7 @@ def build_planner_prompt(
             'Your entire reply must be one JSON object whose top-level keys are '
             '"layer" and "direction", plus whichever of "themeIntent", '
             '"tileStyles", "slicerPresentation", "structure", "sections", '
-            '"visualPreferences", "blocks", "suggestions", "rationale" the layer allows. '
+            '"visualPreferences", "blocks", "slicerControls", "suggestions", "rationale" the layer allows. '
             'Do not echo the input. Do not wrap the object in another object. '
             'Start your reply with {"layer":'
         ),

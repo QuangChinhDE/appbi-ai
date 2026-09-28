@@ -173,6 +173,7 @@ export function useAiDesign(input: UseAiDesignInput) {
     const coerced = coerceModelPlan(rawPlan, {
       grantedLayer, targets, knownTileIds: baselineTiles.map((t) => t.id),
       liveFindings: (snapshot?.findings ?? []).map((f) => f.key),
+      slicers: (snapshot?.slicers ?? []).map((s) => ({ id: s.id, placedTileId: s.placedTileId ?? null, visibleHere: s.visibleHere })),
     });
     // Content proposals travel beside the design, never inside it: they wait
     // for a person's Accept.

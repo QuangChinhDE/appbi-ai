@@ -131,7 +131,10 @@ export const TILE_TITLE_CLASS = 'dashboard-tile-title min-w-0 flex-1 line-clamp-
 // the header shares ~150px with its actions, and "R…" is not a label.
 export const TILE_KPI_LABEL_CLASS = 'dashboard-kpi-label min-w-0 flex-1 line-clamp-3 break-normal hyphens-auto text-[13px] leading-snug font-medium text-text-secondary';
 
-export function tileKindOf(chartType: string | null | undefined, widgetType?: string | null): 'kpi' | 'table' | 'chart' | 'widget' {
+export function tileKindOf(chartType: string | null | undefined, widgetType?: string | null): 'kpi' | 'table' | 'chart' | 'widget' | 'slicer' {
+  // A slicer control is a control, not decoration: it keeps a usable height on
+  // a phone and pairs up like KPIs instead of growing like a headline.
+  if (widgetType === 'slicer') return 'slicer';
   if (widgetType && widgetType !== 'chart') return 'widget';
   const type = String(chartType ?? '').toUpperCase();
   if (type === 'KPI' || type === 'CARD' || type === 'BIG_NUMBER') return 'kpi';

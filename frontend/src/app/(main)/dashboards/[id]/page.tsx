@@ -31,8 +31,7 @@ import { buildPresentationSnapshot, tilesOnPage } from '@/lib/dashboard-presenta
 import { buildPresentationMutation, tilesWithLocalEdits, toLocalLayoutOverrides } from '@/lib/dashboard-presentation/executor';
 import { useAiDesign } from '@/components/dashboards/ai-design/useAiDesign';
 import { DashboardThemeModal } from '@/components/dashboards/DashboardThemeModal';
-import { DashboardCanvas } from '@/components/dashboards/DashboardCanvas';
-import { Palette, Move, Undo2, Redo2, ArrowUpToLine, Eye } from 'lucide-react';
+import { Palette, Undo2, Redo2, ArrowUpToLine, Eye } from 'lucide-react';
 import { ChartTile } from '@/components/dashboards/ChartTile';
 import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
@@ -89,13 +88,23 @@ import {
   compactPageUp,
   normalizeDashboardGridForRender,
   GRID_VERSION,
-} from '@/lib/dashboard-pages';
-import {
-  ensureCanvasLayout,
-  hasCanvasCoords,
-  mergeCanvasLayout,
   mergeGridLayout,
-} from '@/lib/dashboard-layout-convert';
+} from '@/lib/dashboard-pages';
+import { GridSlicerTile, FilterApplyBar, type SlicerControlBinding } from '@/components/dashboards/GridSlicerTile';
+import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
+import { ArrangeBar } from '@/components/dashboards/ArrangeBar';
+import { arrangeTiles, nudgeTiles, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
+import {
+  SLICER_CONTROL_SIZE,
+  SLICER_CONTROL_WIDGET,
+  mergeBarChange,
+  nextFreeSlot,
+  placedSlicerIds,
+  replaceSlicerById,
+  slicerIdOfControl,
+  type SlicerTreatment,
+} from '@/lib/slicer-placement';
+import { createSlicerEntry, defaultInteractionFor } from '@/lib/slicer-entry';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 import { ReportEvidenceProvider, useReportFindings } from '@/lib/report-evidence';
@@ -713,6 +722,12 @@ function DashboardDetailPageInner() {
     () => getDashboardChartsForPage(dashboard?.dashboard_charts, activePageId),
     [dashboard?.dashboard_charts, activePageId],
   );
+  // Slicers whose control sits on THIS page's grid (lib/slicer-placement). The
+  // filter bar does not repeat them; nothing about what they filter changes.
+  const placedSlicerIdsOnPage = React.useMemo(
+    () => placedSlicerIds(visibleDashboardCharts),
+    [visibleDashboardCharts],
+  );
   const resolveDashboardChartLayout = useCallback((
     dashboardChartId: number,
     localSnapshot: Record<number, Record<string, any>> = localLayoutOverrides,
@@ -902,11 +917,13 @@ function DashboardDetailPageInner() {
   const filterDockDecision = React.useMemo(
     () => resolveFilterDock({
       preferred: preferredFilterDock,
-      slicerCount: draftGlobalSlicers.length + draftPageSlicers.length,
+      // Only what the BAR shows: a slicer placed on the grid is not in it.
+      slicerCount: [...draftGlobalSlicers, ...draftPageSlicers]
+        .filter((s: any) => !placedSlicerIdsOnPage.has(String(s?.id ?? ''))).length,
       viewportWidth,
       canEdit: canEditResource,
     }),
-    [preferredFilterDock, draftGlobalSlicers.length, draftPageSlicers.length, viewportWidth, canEditResource],
+    [preferredFilterDock, draftGlobalSlicers, draftPageSlicers, placedSlicerIdsOnPage, viewportWidth, canEditResource],
   );
   const effectiveFilterDock = filterDockDecision.dock;
 
@@ -1363,6 +1380,36 @@ function DashboardDetailPageInner() {
     );
   }, [combinedSlicerChildren, slicerDisplayOrder]);
 
+  // ── Slicer controls on the grid ─────────────────────────────────────
+  // The bar shows what is NOT placed on this page; placed slicers are drawn by
+  // their grid controls. The bar reports its whole list on every change and no
+  // longer sees the placed ones, so they are merged back before the change is
+  // split into global/page lists — otherwise an edit in the bar would delete
+  // every placed slicer.
+  const barSlicerChildren = React.useMemo(
+    () => orderedSlicerChildren.filter((s: any) => s?.type === 'image' || !placedSlicerIdsOnPage.has(String(s?.id ?? ''))),
+    [orderedSlicerChildren, placedSlicerIdsOnPage],
+  );
+  const placedSlicerChildren = React.useMemo(
+    () => orderedSlicerChildren.filter((s: any) => s?.type !== 'image' && placedSlicerIdsOnPage.has(String(s?.id ?? ''))),
+    [orderedSlicerChildren, placedSlicerIdsOnPage],
+  );
+  const handleBarSlicerChange = React.useCallback((next: any[]) => {
+    handleSlicerChildrenChange(mergeBarChange(next, placedSlicerChildren));
+  }, [handleSlicerChildrenChange, placedSlicerChildren]);
+  // A value picked in a grid control: the same entry, the same staging.
+  const handleControlSlicerChange = React.useCallback((next: BaseFilter) => {
+    handleSlicerChildrenChange(replaceSlicerById(orderedSlicerChildren, next));
+  }, [handleSlicerChildrenChange, orderedSlicerChildren]);
+  const slicerIsVisibleHere = React.useCallback(
+    (s: any) => (s?.scope === 'page' ? true : slicerVisibleOnPage(s, activePageId)),
+    [slicerVisibleOnPage, activePageId],
+  );
+  const slicerFiltersHere = React.useCallback(
+    (s: any) => (s?.scope === 'page' ? true : slicerFiltersPage(s, activePageId)),
+    [slicerFiltersPage, activePageId],
+  );
+
   // Phase-15.81 v11 — pending flag must light up for BOTH scopes so
   // the Apply button surfaces when a DA edits page filters too.
   // Phase-C THẬT — slicer drafts also count toward pending.
@@ -1532,8 +1579,18 @@ function DashboardDetailPageInner() {
       const atBaseline =
         baseline.x === item.x && baseline.y === item.y
         && baseline.w === item.w && baseline.h === item.h;
-      if (atBaseline) {
+      // Back at its baseline cell: the override goes only if NOTHING else in it
+      // differs — a lock or a slicer's display set before the drag must not be
+      // thrown away because the tile returned to where it was.
+      const candidate = mergeGridLayout(resolveDashboardChartLayout(id, prevOverrides), item) as Record<string, any>;
+      const onlyGeometry = Object.keys(candidate).every(
+        (k) => JSON.stringify(candidate[k]) === JSON.stringify((baseline as any)[k]),
+      );
+      if (atBaseline && onlyGeometry) {
         if (id in nextOverrides) { delete nextOverrides[id]; changed = true; }
+      } else if (atBaseline) {
+        nextOverrides[id] = candidate;
+        changed = true;
       } else {
         nextOverrides[id] = mergeGridLayout(resolveDashboardChartLayout(id), item);
         changed = true;
@@ -1641,24 +1698,6 @@ function DashboardDetailPageInner() {
     toast.success(t('dashboards.detail.compactUpDone'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboard, activePageId, resolveDashboardChartLayout, t]);
-
-  // Canvas-mode layout updates: same pattern — local state only.
-  const handleCanvasLayoutChange = useCallback(
-    (
-      updates: Array<{ id: number; xPx: number; yPx: number; wPx: number; hPx: number; z: number }>,
-    ) => {
-      if (!serverDashboard) return;
-      const prevOverrides = localLayoutOverridesRef.current;
-      const merged = { ...prevOverrides };
-      for (const u of updates) {
-        merged[u.id] = mergeCanvasLayout(resolveDashboardChartLayout(u.id, prevOverrides), u);
-      }
-      pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
-      setLocalLayoutOverrides(merged);
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [serverDashboard, resolveDashboardChartLayout],
-  );
 
   // Flush helpers — used by Save draft / Save & Publish buttons.
   const flushLocalLayoutsToDraft = async () => {
@@ -1878,63 +1917,36 @@ function DashboardDetailPageInner() {
 
       // Default footprint per widget type — picked so the widget is visible
       // immediately after dropping (a 4×2 grid cell is too short for text/countdown).
-      const sizeByType: Record<string, { w: number; h: number; wPx: number; hPx: number }> = {
+      const sizeByType: Record<string, { w: number; h: number }> = {
         // Text/heading widgets are almost always a one-line section header, so
         // default to a slim band (1 grid row) instead of a 2-row box that leaves
         // a big empty gap under the text. The DA can still stretch it for a
         // multi-line note.
-        // Grid w/h are in the finer 36-col grid (×3 of the old 12-col sizes so a
-        // widget keeps the same default footprint); wPx/hPx are canvas pixels
-        // (unchanged — independent of grid resolution).
-        text: { w: 12, h: 3, wPx: 360, hPx: 64 },
-        countdown: { w: 12, h: 9, wPx: 360, hPx: 200 },
-        image: { w: 12, h: 12, wPx: 360, hPx: 240 },
-        shape: { w: 12, h: 3, wPx: 360, hPx: 80 },
-        parameter_switcher: { w: 12, h: 6, wPx: 360, hPx: 120 },
+        // In the finer 36-col grid (×3 of the old 12-col sizes so a widget keeps
+        // the same default footprint).
+        text: { w: 12, h: 3 },
+        countdown: { w: 12, h: 9 },
+        image: { w: 12, h: 12 },
+        shape: { w: 12, h: 3 },
+        parameter_switcher: { w: 12, h: 6 },
         // Section header + hero span full width (36); callout is a small note.
-        section_header: { w: 36, h: 3, wPx: 1080, hPx: 56 },
-        hero_strip: { w: 36, h: 6, wPx: 1080, hPx: 120 },
-        callout: { w: 12, h: 6, wPx: 360, hPx: 110 },
+        section_header: { w: 36, h: 3 },
+        hero_strip: { w: 36, h: 6 },
+        callout: { w: 12, h: 6 },
       };
       const size = sizeByType[widgetType];
 
-      // Compute next non-overlapping position on the active page.
-      const sameMode = (dashboard.layout_mode ?? 'grid') === 'canvas' ? 'canvas' : 'grid';
+      // Next free row on the active page. Whitespace the author left is kept:
+      // the widget goes below everything, never into a gap.
       const charts = (dashboard.dashboard_charts ?? []).filter((dc) => {
         const dcPage = (dc.layout as any)?.pageId ?? null;
         return activePageId ? dcPage === activePageId : true;
       });
-
-      let x = 0;
-      let y = 0;
-      let xPx = 24;
-      let yPx = 24;
-      let z = 100;
-
-      if (sameMode === 'canvas' && charts.length > 0) {
-        const maxBottom = charts.reduce((acc, dc) => {
-          const l = dc.layout as any;
-          const top = Number(l?.yPx ?? 0);
-          const h = Number(l?.hPx ?? 240);
-          return Math.max(acc, top + h);
-        }, 0);
-        const maxZ = charts.reduce((acc, dc) => {
-          const lz = Number((dc.layout as any)?.z ?? 0);
-          return Math.max(acc, lz);
-        }, 0);
-        xPx = 24;
-        yPx = maxBottom + 16;
-        z = maxZ + 1;
-      } else if (sameMode === 'grid' && charts.length > 0) {
-        const maxBottom = charts.reduce((acc, dc) => {
-          const l = dc.layout as any;
-          const top = Number(l?.y ?? 0);
-          const h = Number(l?.h ?? 4);
-          return Math.max(acc, top + h);
-        }, 0);
-        x = 0;
-        y = maxBottom;
-      }
+      const y = charts.reduce((acc, dc) => {
+        const l = dc.layout as any;
+        return Math.max(acc, Number(l?.y ?? 0) + Number(l?.h ?? 4));
+      }, 0);
+      const x = 0;
 
       try {
         const updated = await dashboardApi.addWidget(
@@ -1945,11 +1957,6 @@ function DashboardDetailPageInner() {
             y,
             w: size.w,
             h: size.h,
-            xPx,
-            yPx,
-            wPx: size.wPx,
-            hPx: size.hPx,
-            z,
             pageId: activePageId ?? undefined,
             gv: GRID_VERSION, // sizeByType is already finer (36-col) — mark so it's not re-scaled on read
           } as any,
@@ -1978,37 +1985,6 @@ function DashboardDetailPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [dashboard, dashboardId, activePageId, queryClient],
   );
-
-  const handleToggleLayoutMode = useCallback(async () => {
-    if (!dashboard) return;
-    // Grid (x/y cells) ↔ canvas (px) use different coordinate spaces, so undo
-    // entries captured in one mode can't be replayed in the other.
-    resetUndo();
-    const next = (dashboard.layout_mode ?? 'grid') === 'grid' ? 'canvas' : 'grid';
-    if (next === 'canvas') {
-      const canvasWidth = Number((dashboard.canvas_config as any)?.width ?? 1440);
-      setLocalLayoutOverrides((prev) => {
-        const bootstrapped: Record<number, Record<string, any>> = {};
-        for (const [index, dc] of (dashboard.dashboard_charts ?? []).entries()) {
-          const baseline = resolveDashboardChartLayout(dc.id, prev);
-          if (!hasCanvasCoords(baseline)) {
-            bootstrapped[dc.id] = ensureCanvasLayout(baseline, canvasWidth, Number(baseline.z ?? index + 1));
-          }
-        }
-        return Object.keys(bootstrapped).length > 0 ? { ...prev, ...bootstrapped } : prev;
-      });
-    }
-    try {
-      await dashboardApi.update(dashboardId, { layout_mode: next });
-      await updateDashboardMutation.mutateAsync({
-        id: dashboardId,
-        data: { layout_mode: next },
-      }).catch(() => {});
-    } catch (err) {
-      console.error('Failed to toggle layout mode:', err);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dashboard, dashboardId, resolveDashboardChartLayout, updateDashboardMutation]);
 
   const handleCrossFilterChange = useCallback((sourceChartId: number, filter: BaseFilter | null) => {
     // One selection drives the whole dashboard (PBI parity): the SOURCE chart
@@ -3032,6 +3008,266 @@ function DashboardDetailPageInner() {
     return merged;
   }, [hasSemanticFilterColumns, semanticDistinctValues, distinctValues]);
 
+  // Type-to-search over the FULL cached distinct set (high-cardinality
+  // slicers) for the grid's slicer controls — the SAME resolved-set path as the
+  // filter bar's inline search below (the contract checks both). Hits the
+  // BE result cache (no per-keystroke BigQuery). Results cascade by the OTHER
+  // active slicers/filters — the same context the prefetch uses — so a searched
+  // value is narrowed consistently (getDistinctValueFilterContext self-strips).
+  const fetchSlicerServerDistinct = useCallback(async (column: ColumnInfo, search: string): Promise<string[]> => {
+    if (!column.datasetId || !column.semanticField) return [];
+    try {
+      const legacyDraftAll = draftGlobalFilters
+        .map((f) => toBaseFilter(f, { allowInactive: true }))
+        .filter((b): b is BaseFilter => b !== null);
+      const ctx = resolveEffectiveFilterSet({
+        globalFilters: legacyDraftAll,
+        pageFilters: draftPageFilters,
+        globalSlicers: draftGlobalSlicers as BaseFilter[],
+        pageSlicers: draftPageSlicers as BaseFilter[],
+        activePageId,
+        slicerFiltersPage,
+      });
+      const filterContext = getDistinctValueFilterContext(ctx, column);
+      const res = await fetchDatasetModelDistinctValues(
+        column.datasetId, column.semanticField, 500, filterContext, search,
+      );
+      return res.values ?? [];
+    } catch {
+      return [];
+    }
+  }, [draftGlobalFilters, draftPageFilters, draftGlobalSlicers, draftPageSlicers, activePageId, slicerFiltersPage]);
+
+  // ── Slicer controls: add, restyle, remove, delete ──────────────────────
+  const [isAddSlicerOpen, setIsAddSlicerOpen] = useState(false);
+  const [isPlacingSlicer, setIsPlacingSlicer] = useState(false);
+  const handleRemoveChartRef = React.useRef(handleRemoveChart);
+  handleRemoveChartRef.current = handleRemoveChart;
+
+  // Save the slicer lists to the draft now. Used when a control is created for
+  // a NEW filter (a reload must never find a control pointing at nothing) and
+  // when a filter is deleted with its controls. It stores what Apply stores:
+  // any other staged slicer edit is saved with it.
+  const persistSlicerLists = useCallback(async (nextGlobal: any[], nextPage: any[]) => {
+    setDraftGlobalSlicers(nextGlobal);
+    setAppliedGlobalSlicers(nextGlobal);
+    setDraftPageSlicers(nextPage);
+    const body: { slicers_config: any[]; pages_config?: any[] } = { slicers_config: nextGlobal };
+    if (activePageId) {
+      const nextPages = dashboardPages.map((p) => {
+        if (p.id !== activePageId) return p;
+        const next: any = { ...p };
+        const pageSlicers = nextPage.filter((s) => !(s && typeof s === 'object' && (s as any).type === 'image'));
+        if (pageSlicers.length > 0) next.slicers = pageSlicers;
+        else delete next.slicers;
+        return next;
+      });
+      body.pages_config = nextPages;
+      setLocalPagesConfig(nextPages);
+    }
+    await dashboardApi.updateDraftFilters(dashboardId, body);
+    await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+  }, [activePageId, dashboardPages, dashboardId, queryClient]);
+
+  // A control is a draft-only grid element until Publish (like an AI block):
+  // placing one never changes the published report on its own.
+  const placeSlicerControl = useCallback(async (slicer: BaseFilter, where: 'top' | 'end' = 'end') => {
+    const size = SLICER_CONTROL_SIZE.card;
+    let slot = nextFreeSlot(visibleDashboardCharts, size);
+    if (where === 'top') {
+      // Room at the top is MADE, explicitly: every tile on the page moves down
+      // by the control's height, keeping the whitespace between them. It is
+      // saved to the draft at once (a reload must not find the control on top
+      // of a KPI), and Discard undoes it with the control.
+      const blocked = visibleDashboardCharts.some((dc) => (dc.layout as any)?.locked && Number(dc.layout?.y ?? 0) < size.h);
+      if (blocked) {
+        toast.info(t('dashboards.addSlicer.topBlocked'));
+      } else {
+        const shifted = visibleDashboardCharts
+          .filter((dc) => !(dc.layout as any)?.locked)
+          .map((dc) => {
+            const full = resolveDashboardChartLayout(dc.id) as Record<string, any>;
+            return { id: dc.id, layout: { ...full, y: (Number(full.y) || 0) + size.h } };
+          });
+        if (shifted.length) {
+          await updateDraftLayoutMutation.mutateAsync({ dashboardId, chartLayouts: shifted as any }, {
+            onSuccess: () => setLocalLayoutOverrides((prev) => {
+              const next = { ...prev };
+              for (const s of shifted) delete next[s.id];
+              return next;
+            }),
+          });
+        }
+        slot = { x: 0, y: 0, w: size.w, h: size.h };
+      }
+    }
+    await dashboardApi.addWidget(
+      dashboardId,
+      SLICER_CONTROL_WIDGET,
+      { ...slot, pageId: activePageId ?? undefined, gv: GRID_VERSION, draftOnly: true } as any,
+      { slicerId: String(slicer.id), treatment: 'auto', origin: 'author' },
+    );
+    await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    resetUndo(); // the element set changed — prior layout undo entries are stale
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleDashboardCharts, dashboardId, activePageId, queryClient, resolveDashboardChartLayout, t]);
+
+  const usedSlicerFieldKeys = React.useMemo(
+    () => new Set(orderedSlicerChildren.filter((s: any) => s?.type !== 'image').map((s: any) => getFilterKey(s))),
+    [orderedSlicerChildren],
+  );
+  const addSlicerExisting = React.useMemo(
+    () => orderedSlicerChildren.filter((s: any) => s?.type !== 'image'
+      && slicerIsVisibleHere(s) && !placedSlicerIdsOnPage.has(String(s?.id ?? ''))) as BaseFilter[],
+    [orderedSlicerChildren, slicerIsVisibleHere, placedSlicerIdsOnPage],
+  );
+  const addSlicerColumns = React.useMemo(
+    () => resolvedAvailableColumns.filter((c) => (c.type === 'date' || (c.chartCoverage ?? 0) > 0)
+      && !usedSlicerFieldKeys.has(getColumnKey(c))),
+    [resolvedAvailableColumns, usedSlicerFieldKeys],
+  );
+
+  const handleAddSlicer = useCallback(async (input: { existing?: BaseFilter; column?: ColumnInfo; where?: 'top' | 'end' }) => {
+    setIsPlacingSlicer(true);
+    try {
+      let slicer = input.existing;
+      if (!slicer && input.column) {
+        slicer = createSlicerEntry({
+          column: input.column,
+          columns: resolvedAvailableColumns,
+          usedFields: usedSlicerFieldKeys,
+          interaction: defaultInteractionFor(input.column),
+          pageScope: true,
+        });
+        await persistSlicerLists(draftGlobalSlicers, [...draftPageSlicers, slicer]);
+      }
+      if (!slicer) return;
+      await placeSlicerControl(slicer, input.where ?? 'end');
+      setIsAddSlicerOpen(false);
+      toast.success(t('dashboards.slicerControl.added'));
+    } catch (err) {
+      console.error('Failed to place slicer:', err);
+      toast.error(t('dashboards.slicerControl.addFailed'));
+    } finally {
+      setIsPlacingSlicer(false);
+    }
+  }, [resolvedAvailableColumns, usedSlicerFieldKeys, persistSlicerLists, draftGlobalSlicers, draftPageSlicers, placeSlicerControl, t]);
+
+  // Delete the FILTER: its entry and every control for it, on every page.
+  const handleDeleteSlicerFilter = useCallback(async (slicerId: string) => {
+    try {
+      await persistSlicerLists(
+        draftGlobalSlicers.filter((s: any) => String(s?.id ?? '') !== slicerId),
+        draftPageSlicers.filter((s: any) => String(s?.id ?? '') !== slicerId),
+      );
+      const controls = (serverDashboard?.dashboard_charts ?? []).filter((dc) => slicerIdOfControl(dc) === slicerId);
+      for (const dc of controls) await dashboardApi.removeChart(dashboardId, dc.id);
+      await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+      resetUndo();
+    } catch (err) {
+      console.error('Failed to delete slicer filter:', err);
+      toast.error(t('dashboards.detail.filterSaveFailed'));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persistSlicerLists, draftGlobalSlicers, draftPageSlicers, serverDashboard, dashboardId, queryClient, t]);
+
+  // Display is layout: local edit → draft → publish, undoable like a drag.
+  const handleSlicerTreatmentChange = useCallback((tileId: number, treatment: SlicerTreatment) => {
+    const prevOverrides = localLayoutOverridesRef.current;
+    const next = {
+      ...prevOverrides,
+      [tileId]: { ...resolveDashboardChartLayout(tileId, prevOverrides), slicerTreatment: treatment },
+    };
+    pushUndo({ kind: 'layout', prev: prevOverrides, next });
+    setLocalLayoutOverrides(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolveDashboardChartLayout]);
+
+  const slicerPagesForScope = React.useMemo(
+    () => dashboardPages.map((p) => ({ id: p.id, name: (p as any).name || p.id })),
+    [dashboardPages],
+  );
+  const builderSlicerBinding = React.useMemo<SlicerControlBinding>(() => ({
+    slicers: orderedSlicerChildren.filter((s: any) => s?.type !== 'image') as BaseFilter[],
+    siblingFilters: orderedSlicerChildren as BaseFilter[],
+    visibleHere: slicerIsVisibleHere,
+    filtersHere: slicerFiltersHere,
+    editing: canEditThisPage,
+    onChange: handleControlSlicerChange,
+    onTreatmentChange: canEditThisPage ? handleSlicerTreatmentChange : undefined,
+    onRemoveControl: canEditThisPage ? (id: number) => handleRemoveChartRef.current(id) : undefined,
+    onDeleteFilter: canEditResource ? handleDeleteSlicerFilter : undefined,
+    columns: resolvedAvailableColumns,
+    columnChartCount: resolvedColumnChartCount,
+    distinctValues: resolvedDistinctValues,
+    distinctStatus: semanticDistinctStatus,
+    fetchServerDistinct: fetchSlicerServerDistinct,
+    showScopeToggle: canEditResource,
+    dashboardPages: slicerPagesForScope,
+    activePageId,
+    onUpdateSlicerScope: handleUpdateSlicerScope,
+  }), [orderedSlicerChildren, slicerIsVisibleHere, slicerFiltersHere, canEditThisPage, canEditResource,
+    handleControlSlicerChange, handleSlicerTreatmentChange, handleDeleteSlicerFilter, resolvedAvailableColumns,
+    resolvedColumnChartCount, resolvedDistinctValues, semanticDistinctStatus, fetchSlicerServerDistinct,
+    slicerPagesForScope, activePageId, handleUpdateSlicerScope]);
+  const renderBuilderSlicerControl = useCallback(
+    (dc: any) => <GridSlicerTile tile={dc} binding={builderSlicerBinding} />,
+    [builderSlicerBinding],
+  );
+  // ── Arrange tools + keyboard (manual builder) ──────────────────────────
+  // Grid operations on the selection (lib/grid-arrange), committed through the
+  // same path as a drag. The keyboard handler reads the latest state through a
+  // ref: it is bound once, and a stale closure would nudge an old layout.
+  const pageBoxes = (): GridBox[] => visibleDashboardCharts.map((dc) => ({
+    id: dc.id,
+    x: Number(dc.layout?.x) || 0,
+    y: Number(dc.layout?.y) || 0,
+    w: Number(dc.layout?.w) || 1,
+    h: Number(dc.layout?.h) || 1,
+    locked: Boolean((dc.layout as any)?.locked),
+  }));
+  const tileTitle = (id: number) => {
+    const dc = visibleDashboardCharts.find((d) => d.id === id);
+    return String((dc?.layout as any)?.custom_title ?? dc?.chart?.name ?? (dc?.widget_config as any)?.title ?? dc?.widget_type ?? id);
+  };
+  const commitArrange = (result: ArrangeResult) => {
+    if (result.status === 'blocked') {
+      toast.info(t('dashboards.arrange.blocked', { title: tileTitle(result.blockedBy) }));
+      return;
+    }
+    if (result.status === 'noop') {
+      if (result.skippedLocked > 0) toast.info(t('dashboards.arrange.lockedSkipped'));
+      return;
+    }
+    handleLayoutChange(result.moved.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })) as Layout[]);
+    if (result.skippedLocked > 0) toast.info(t('dashboards.arrange.lockedSkipped'));
+  };
+  const handleArrange = (op: ArrangeOp) => commitArrange(arrangeTiles(op, pageBoxes(), selectedTileIds));
+  const nudgeRef = React.useRef<(d: { dx: number; dy: number }) => void>(() => {});
+  nudgeRef.current = (d) => commitArrange(nudgeTiles(pageBoxes(), selectedTileIds, d));
+  const keyboardArrangeOn = designMode === 'manual' && canEditThisPage && selectedTileIds.length > 0;
+  React.useEffect(() => {
+    if (!keyboardArrangeOn) return;
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"]')) return;
+      const step = e.shiftKey ? 4 : 1;
+      const delta = e.key === 'ArrowLeft' ? { dx: -step, dy: 0 }
+        : e.key === 'ArrowRight' ? { dx: step, dy: 0 }
+          : e.key === 'ArrowUp' ? { dx: 0, dy: -step }
+            : e.key === 'ArrowDown' ? { dx: 0, dy: step }
+              : null;
+      if (delta) { e.preventDefault(); nudgeRef.current(delta); return; }
+      if (e.key === 'Escape') clearTileSelection();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [keyboardArrangeOn, clearTileSelection]);
+
+  const hasPendingSlicerChanges = JSON.stringify(draftGlobalSlicers) !== JSON.stringify(appliedGlobalSlicers)
+    || JSON.stringify(draftPageSlicers) !== JSON.stringify(activePageSlicers)
+    || JSON.stringify(draftSlicerClusterLayout) !== JSON.stringify(appliedSlicerClusterLayout);
+
   // Phase-B22 — hybrid export: tables as real text+links (all rows), other
   // charts as images, paginated legibly, with an applied-filters header.
   // NOTE: must stay ABOVE the early returns below — hooks can't run
@@ -3556,6 +3792,7 @@ function DashboardDetailPageInner() {
               {/* More menu — gathers Export, Share, Public links, Theme, Switch layout, Manage, Import, Widgets */}
               <div className="relative">
                 <button
+                  data-testid="dashboard-more"
                   onClick={() => { setIsMoreMenuOpen((v) => !v); setIsFilterPopoverOpen(false); setIsPagesMenuOpen(false); setIsWidgetSubmenuOpen(false); }}
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)]"
                   title={t('dashboards.detail.moreOptions')}
@@ -3618,36 +3855,7 @@ function DashboardDetailPageInner() {
 
                           <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
 
-                          {/* Canvas is LOCKED for now — Grid (tiled) is the standard editor.
-                              "Switch to Canvas" is disabled so nobody starts a canvas layout
-                              the public report can't yet render WYSIWYG. "Switch to Grid" stays
-                              enabled so any dashboard already in canvas can move back to Grid. */}
-                          <button
-                            onClick={() => { handleToggleLayoutMode(); setIsMoreMenuOpen(false); }}
-                            disabled={(dashboard?.layout_mode ?? 'grid') === 'grid'}
-                            className={`flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] transition-colors ${
-                              (dashboard?.layout_mode ?? 'grid') === 'grid'
-                                ? 'cursor-not-allowed text-text-quaternary opacity-60'
-                                : 'text-text-secondary hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary'
-                            }`}
-                            title={(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.canvasLocked') : t('dashboards.detail.switchToGridMode')}
-                          >
-                            {(dashboard?.layout_mode ?? 'grid') === 'grid' ? (
-                              <Move className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                            ) : (
-                              <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                            )}
-                            <span className="flex-1 text-left">
-                              {(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.switchToCanvas') : t('dashboards.detail.switchToGrid')}
-                            </span>
-                            {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
-                              <span className="rounded bg-[rgba(255,255,255,0.06)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-quaternary">
-                                {t('dashboards.detail.canvasOffBadge')}
-                              </span>
-                            )}
-                          </button>
-
-                          {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
+                          {(
                             <button
                               onClick={() => { handleTidyLayout(); setIsMoreMenuOpen(false); }}
                               className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
@@ -3658,7 +3866,7 @@ function DashboardDetailPageInner() {
                             </button>
                           )}
 
-                          {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
+                          {(
                             <button
                               onClick={() => { handleCompactUp(); setIsMoreMenuOpen(false); }}
                               className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
@@ -3726,6 +3934,13 @@ function DashboardDetailPageInner() {
                                   {label}
                                 </button>
                               ))}
+                              <button
+                                type="button"
+                                onClick={() => { setIsAddSlicerOpen(true); setIsMoreMenuOpen(false); setIsWidgetSubmenuOpen(false); }}
+                                className="flex w-full items-center gap-2.5 px-6 py-1.5 text-[12px] font-[510] text-text-tertiary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              >
+                                {t('dashboards.addSlicer.menu')}
+                              </button>
                             </div>
                           )}
                         </>
@@ -3740,7 +3955,7 @@ function DashboardDetailPageInner() {
                   and a person needs to see which mode they are in without
                   opening anything. Grid only — a canvas dashboard has no grid
                   for a composition to compile onto. */}
-              {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
+              {(
                 <button
                   type="button"
                   data-testid="studio-preview-open"
@@ -3752,7 +3967,7 @@ function DashboardDetailPageInner() {
                   {t('dashboards.studio.open')}
                 </button>
               )}
-              {canEditThisPage && (dashboard?.layout_mode ?? 'grid') === 'grid' && (
+              {canEditThisPage && (
                 <div
                   className="inline-flex h-7 items-center rounded-md border border-[rgb(var(--border-line))] p-0.5"
                   role="radiogroup"
@@ -3788,6 +4003,18 @@ function DashboardDetailPageInner() {
                 </div>
               )}
 
+              {canEditThisPage && (
+                <button
+                  type="button"
+                  data-testid="add-slicer-open"
+                  onClick={() => setIsAddSlicerOpen(true)}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary"
+                  title={t('dashboards.addSlicer.title')}
+                >
+                  <Filter className="h-3 w-3" />
+                  <span>{t('dashboards.addSlicer.menu')}</span>
+                </button>
+              )}
               {canEditThisPage && (
                 <button
                   onClick={() => setIsAddChartModalOpen(true)}
@@ -3849,15 +4076,18 @@ function DashboardDetailPageInner() {
           className={dockLayoutClasses(effectiveFilterDock).wrapper}
           style={effectiveFilterDock === 'drawer' ? { position: 'relative' } : undefined}
         >
-        {(draftGlobalSlicers.length > 0 || draftPageSlicers.length > 0 || canEditResource) && (
+        {/* The bar is optional grouping: drawn while it has something to show
+            (or, for an author, while no slicer is placed on this page — it is
+            also where the classic "Add slicer" lives). */}
+        {(barSlicerChildren.length > 0 || (canEditResource && placedSlicerIdsOnPage.size === 0)) && (
           <SlicerCluster
             // Editor shows ALL slicers (incl. ones a 'custom' scope hides on
             // this page) so the author can always open ⚙ to reconfigure; the
             // per-page VISIBLE hiding is applied only on the public viewer.
             // The chart PREVIEW still respects scope via effectivePageScopeFilters
             // (only slicers that filter the active page are applied).
-            items={orderedSlicerChildren}
-            onChildrenChange={handleSlicerChildrenChange}
+            items={barSlicerChildren}
+            onChildrenChange={handleBarSlicerChange}
             layout={viewSlicerClusterLayout}
             onLayoutChange={setDraftSlicerClusterLayout}
             columns={resolvedAvailableColumns}
@@ -3899,9 +4129,7 @@ function DashboardDetailPageInner() {
             activePageId={activePageId}
             onUpdateSlicerScope={handleUpdateSlicerScope}
             onOpenFilterMap={canEditResource ? () => setIsFilterMapOpen(true) : undefined}
-            hasPendingChanges={JSON.stringify(draftGlobalSlicers) !== JSON.stringify(appliedGlobalSlicers)
-              || JSON.stringify(draftPageSlicers) !== JSON.stringify(activePageSlicers)
-              || JSON.stringify(draftSlicerClusterLayout) !== JSON.stringify(appliedSlicerClusterLayout)}
+            hasPendingChanges={hasPendingSlicerChanges}
             onApply={canEditResource ? () => handleApplyFilters('all') : undefined}
             onReset={canEditResource ? () => {
               setDraftGlobalSlicers(appliedGlobalSlicers);
@@ -3971,36 +4199,11 @@ function DashboardDetailPageInner() {
           </div>
         )}
         <ExportModeContext.Provider value={exportRenderMode}>
+        {designMode === 'manual' && canEditThisPage && !isExportingPdf && (
+          <ArrangeBar count={selectedTileIds.length} onArrange={handleArrange} onClear={clearTileSelection} />
+        )}
         <div ref={canvasRootRef} data-dashboard-canvas-root="builder">
-        {(dashboard?.layout_mode ?? 'grid') === 'canvas' ? (
-          <DashboardCanvas
-            dashboardId={dashboardId}
-            dashboardCharts={visibleDashboardCharts}
-            canvasConfig={dashboard?.canvas_config}
-            canEdit={canEditThisPage}
-            allowAppearanceEdit={canEditThisPage}
-            onLayoutChange={canEditThisPage ? handleCanvasLayoutChange : undefined}
-            onRemoveChart={canEditThisPage ? handleRemoveChart : undefined}
-            onEditWidget={canEditThisPage ? setEditingWidgetId : undefined}
-            removingChartId={removingChartId}
-            filtersReady={filtersReady}
-            globalFilters={effectiveFiltersWithParams}
-            crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
-            crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
-            highlightFilter={activeHighlight}
-            highlightSourceChartId={highlightSourceChartId}
-            onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
-            onSelectCrossFilter={handleCrossFilterChange}
-            availablePages={dashboardPages}
-            onMoveChartToPage={canEditThisPage ? handleMoveChartToPage : undefined}
-            emptyMessage={emptyPageMessage}
-            focusedDashboardChartId={focusedTileId}
-            onFocusChart={setFocusedTileId}
-            params={paramValues}
-            onParamChange={handleParamChange}
-            onBindParameter={canEditThisPage ? setBindingChartId : undefined}
-          />
-        ) : (
+        {(
           <DashboardGrid
             dashboardId={dashboardId}
             dashboardCharts={visibleDashboardCharts}
@@ -4029,8 +4232,11 @@ function DashboardDetailPageInner() {
             onMoveChartToPage={canEditThisPage ? handleMoveChartToPage : undefined}
             emptyMessage={emptyPageMessage}
             focusedDashboardChartId={focusedTileId}
-            selectedDashboardChartIds={designMode === 'ai' ? selectedTileIds : undefined}
+            // One selection model for both modes: AI Design scopes to it, the
+            // manual Arrange tools and the keyboard act on it.
+            selectedDashboardChartIds={selectedTileIds}
             onFocusChart={handleTileFocus}
+            renderSlicerControl={renderBuilderSlicerControl}
             aiDesignMode={designMode === 'ai'}
             onToggleLock={canEditThisPage ? handleToggleTileLock : undefined}
             getPersistedLayout={getPersistedLayout}
@@ -4041,8 +4247,29 @@ function DashboardDetailPageInner() {
         )}
         </div>
         </ExportModeContext.Provider>
+        {/* Controls placed on the grid stage their choice exactly like the bar;
+            this is the one Apply for all of them. */}
+        <FilterApplyBar
+          visible={placedSlicerIdsOnPage.size > 0 && hasPendingSlicerChanges && !isExportingPdf && !studioPreview}
+          isApplying={isApplyingFilters}
+          onApply={() => handleApplyFilters('all')}
+          onReset={() => {
+            setDraftGlobalSlicers(appliedGlobalSlicers);
+            setDraftPageSlicers(activePageSlicers);
+            setDraftSlicerClusterLayout(appliedSlicerClusterLayout);
+          }}
+        />
         </div>
         </div>{/* /Phase-G3 slicer-cluster arrangement wrapper */}
+        <AddSlicerModal
+          open={isAddSlicerOpen}
+          onClose={() => setIsAddSlicerOpen(false)}
+          existing={addSlicerExisting}
+          columns={addSlicerColumns}
+          busy={isPlacingSlicer}
+          onPlaceExisting={(slicer, where) => { void handleAddSlicer({ existing: slicer, where }); }}
+          onCreate={(column, where) => { void handleAddSlicer({ column, where }); }}
+        />
 
         {/* Hidden off-screen ChartTiles for non-active pages — pre-warm React Query cache.
             Renders only ChartTile (no grid layout) to avoid WidthProvider / layout interference. */}

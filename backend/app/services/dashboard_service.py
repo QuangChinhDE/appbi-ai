@@ -143,6 +143,10 @@ def normalize_narrative_config(config: dict) -> dict:
     return out
 
 
+# How a slicer control may be drawn (see frontend lib/slicer-placement.ts).
+SLICER_CONTROL_TREATMENTS = {"auto", "dropdown", "list", "buttons", "compact"}
+
+
 def normalize_dashboard_widget_config(widget_type: str | None, widget_config: Optional[dict]) -> dict:
     """Normalize MCP/spec widget aliases to the runtime config keys."""
     config = dict(widget_config or {})
@@ -221,6 +225,23 @@ def normalize_dashboard_widget_config(widget_type: str | None, widget_config: Op
                 notes.append(note)
         if notes:
             config["degraded"] = notes[:8]
+
+    elif wt == "slicer":
+        # A slicer CONTROL is presentation: which slicer it shows and how it
+        # looks. The filter itself (field, operator, value, scope) lives in
+        # slicers_config / pages_config[].slicers and is untouched by moving or
+        # restyling its control. So the stored config is rebuilt from an
+        # allow-list, never copied: a control that arrived carrying a field or
+        # a value would otherwise be a second, unguarded place a predicate
+        # could live.
+        slicer_id = str(config.get("slicerId") or "").strip()[:80]
+        treatment = str(config.get("treatment") or "auto").strip().lower()
+        if treatment not in SLICER_CONTROL_TREATMENTS:
+            treatment = "auto"
+        origin = config.get("origin")
+        config = {"slicerId": slicer_id, "treatment": treatment}
+        if origin in ("ai", "author"):
+            config["origin"] = origin
 
     elif wt == "shape":
         kind_value = config.get("kind")

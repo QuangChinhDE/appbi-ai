@@ -96,12 +96,15 @@ export type LayoutPrimitive =
   // Unlike every other primitive it is not one row: the hero spans the full
   // height of the rail, so `visuals[0]` is the hero and the rest stack beside
   // it. The compiler special-cases it exactly as it does `kpi_strip` (§9).
-  | 'hero_with_rail';
+  | 'hero_with_rail'
+  // A band of slicer controls, each as wide as a control needs (not the grid's
+  // width split N ways): the page's filters in one row, whitespace after them.
+  | 'filter_bar';
 
 export const LAYOUT_PRIMITIVES: LayoutPrimitive[] = [
   'kpi_strip', 'hero_metric', 'full_width', 'two_equal', 'two_one', 'one_two',
   'three_equal', 'bento_primary', 'bento_secondary', 'table_full',
-  'analysis_with_sidebar', 'hero_with_rail',
+  'analysis_with_sidebar', 'hero_with_rail', 'filter_bar',
 ];
 
 export type CompositionStyle =
@@ -199,6 +202,9 @@ export interface PresentationPlan {
    *  takeaway). Sections place them by their (negative) id like a visual.
    *  They carry finding KEYS, never numbers. */
   blocks?: PlanBlock[];
+  /** REDESIGN only — a control on the grid for a slicer the report already
+   *  has. It names the slicer; it cannot say what the slicer filters. */
+  slicerControls?: PlanSlicerControl[];
 }
 
 // ── Snapshot: what the planner is allowed to SEE ────────────────────────────
@@ -281,11 +287,23 @@ export interface VisualMeaning {
   goodDirection?: 'up' | 'down';
 }
 
+/** A slicer control a redesign places. Negative id, placed by `sections` like
+ *  a block; created as a draft-only `slicer` widget on Apply. */
+export interface PlanSlicerControl {
+  id: VisualId;
+  slicerId: string;
+  treatment: 'auto' | 'dropdown' | 'list' | 'buttons' | 'compact';
+}
+
 export interface SnapshotSlicer {
   id: string;
   displayLabel: string;
   presentationType: string;
   currentPosition: string;
+  /** Its control's tile on this page's grid, when it has one. */
+  placedTileId?: number | null;
+  /** Whether its scope shows a control on this page at all. */
+  visibleHere?: boolean;
 }
 
 export interface DashboardPresentationSnapshot {
@@ -334,7 +352,7 @@ export interface PresentationMutation {
  *  narrative references findings by key, a heading carries words. */
 export interface CreatedBlock {
   tempId: VisualId;
-  widgetType: 'narrative' | 'section_header';
+  widgetType: 'narrative' | 'section_header' | 'slicer';
   widgetConfig: Record<string, unknown>;
   layout: Partial<DashboardChartLayout> & { x: number; y: number; w: number; h: number; pageId?: string };
 }

@@ -26,6 +26,7 @@ import { buildVisualMeaning, EMPTY_MEANING } from './design-context';
 import type { FieldMetaIndex } from './design-context';
 import { inferPresentationRole, isDataVisual } from './roles';
 import { possibleFindingKinds } from '@/lib/report-findings';
+import { slicerIdOfControl } from '@/lib/slicer-placement';
 import { BLOCK_VARIANTS } from './types';
 import type {
   DashboardPresentationSnapshot,
@@ -195,6 +196,16 @@ function currentStyleOf(tile: DashboardChart): Record<string, unknown> {
 export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardPresentationSnapshot {
   const { dashboard, tiles, pageId, pageName, pageCount, slicers, slicerDock } = input;
   const theme = (dashboard.theme_config ?? {}) as Record<string, any>;
+  // A slicer control is named by the slicer it shows, and a slicer knows where
+  // its control is. The field is never sent: the planner cannot change it.
+  const slicerLabelById = new Map((slicers ?? []).map((s, i) => [
+    String(s?.id ?? `slicer-${i + 1}`), String(s?.label ?? s?.name ?? `Filter ${i + 1}`),
+  ]));
+  const controlTileBySlicer = new Map<string, number>();
+  for (const tile of tiles) {
+    const sid = slicerIdOfControl(tile as any);
+    if (sid && !controlTileBySlicer.has(sid)) controlTileBySlicer.set(sid, tile.id);
+  }
 
   // Reading order: top to bottom, left to right, in the coordinates the renderer
   // actually draws (legacy 12-col tiles upscaled first).
@@ -228,10 +239,11 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
           fieldMeta: input.fieldMeta,
         })
       : EMPTY_MEANING;
+    const controlOf = widgetType === 'slicer' ? slicerIdOfControl(tile as any) : null;
     return {
       dashboardChartId: tile.id,
       chartType: chartType || (widgetType === 'chart' ? 'UNKNOWN' : widgetType.toUpperCase()),
-      title: titleOf(tile),
+      title: controlOf ? (slicerLabelById.get(controlOf) ?? 'Filter') : titleOf(tile),
       currentLayout: { x, y, w, h },
       displayRoleHint: inferPresentationRole({
         chartType, widgetType, w, y, gridColumns: DASHBOARD_GRID_COLS,
@@ -264,7 +276,12 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
     // the planner has no use for it and no way to change it.
     displayLabel: String(slicer?.label ?? slicer?.name ?? `Filter ${index + 1}`),
     presentationType: String(slicer?.type ?? 'dropdown'),
-    currentPosition: slicerDock,
+    currentPosition: controlTileBySlicer.has(String(slicer?.id ?? `slicer-${index + 1}`)) ? 'grid' : slicerDock,
+    placedTileId: controlTileBySlicer.get(String(slicer?.id ?? `slicer-${index + 1}`)) ?? null,
+    // The same page rule the builder and the public link use: a 'custom' scope
+    // shows a control only where its matrix says so; anything else shows.
+    visibleHere: String(slicer?.scope ?? 'all') !== 'custom'
+      || Boolean(slicer?.pageScope?.[pageId]?.visible),
   }));
 
   return {

@@ -100,13 +100,6 @@ const baseEn: MessageCatalog = {
   'overview.explore.updated': 'Updated 7d',
   'overview.explore.updatedHelper': 'Charts touched in the last seven days',
   'module.dashboards.title': 'Dashboards',
-  'dashboards.canvas.emptyMessage': 'No charts in this dashboard. Click "Add Chart" to get started.',
-  'dashboards.canvas.dragToMove': 'Drag to move',
-  'dashboards.canvas.editWidget': 'Edit widget',
-  'dashboards.canvas.removeWidget': 'Remove widget',
-  'dashboards.canvas.dragToResize': 'Drag to resize',
-  'dashboards.canvas.bringToFront': 'Bring to front',
-  'dashboards.canvas.sendToBack': 'Send to back',
   'dashboards.addChart.modalTitle': 'Add Chart to Dashboard',
   'dashboards.addChart.allChartTypes': 'All chart types',
   'dashboards.addChart.chooseExisting': 'Choose Existing',
@@ -261,13 +254,6 @@ const baseVi: MessageCatalog = {
   'overview.explore.updated': 'Cập nhật 7 ngày',
   'overview.explore.updatedHelper': 'Chart được chạm tới trong 7 ngày gần đây',
   'module.dashboards.title': 'Dashboards',
-  'dashboards.canvas.emptyMessage': 'Chưa có biểu đồ nào trong dashboard này. Bấm "Thêm biểu đồ" để bắt đầu.',
-  'dashboards.canvas.dragToMove': 'Kéo để di chuyển',
-  'dashboards.canvas.editWidget': 'Sửa widget',
-  'dashboards.canvas.removeWidget': 'Xóa widget',
-  'dashboards.canvas.dragToResize': 'Kéo để thay đổi kích thước',
-  'dashboards.canvas.bringToFront': 'Đưa lên trước',
-  'dashboards.canvas.sendToBack': 'Đưa ra sau',
   'dashboards.addChart.modalTitle': 'Thêm biểu đồ vào Dashboard',
   'dashboards.addChart.allChartTypes': 'Tất cả loại biểu đồ',
   'dashboards.addChart.chooseExisting': 'Chọn có sẵn',
@@ -338,6 +324,7 @@ import { dashboardsModalsCatalog } from './catalog/dashboards-modals';
 import { dashboardsAiBotCatalog } from './catalog/dashboards-aibot';
 import { dashboardsThemeCatalog } from './catalog/dashboards-theme';
 import { dashboardsAiDesignCatalog } from './catalog/dashboards-ai-design';
+import { dashboardsGridCatalog } from './catalog/dashboards-grid';
 import { reportExperienceCatalog } from './catalog/report-experience';
 import { datasetsCatalog } from './catalog/datasets';
 import { exploreCatalog } from './catalog/explore';
@@ -357,6 +344,7 @@ const moduleCatalogs: ModuleCatalog[] = [
   dashboardsAiBotCatalog,
   dashboardsThemeCatalog,
   dashboardsAiDesignCatalog,
+  dashboardsGridCatalog,
   reportExperienceCatalog,
   datasetsCatalog,
   exploreCatalog,

@@ -18,6 +18,7 @@ import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { useExportMode } from '@/lib/export-mode';
 import { useI18n } from '@/providers/LanguageProvider';
 import { ReportEvidenceProvider, citedTilesOf } from '@/lib/report-evidence';
+import { isSlicerControl } from '@/lib/slicer-placement';
 
 // Non-responsive grid: a single 12-column layout that simply scales cell
 // width with the container. Avoiding ResponsiveGridLayout means opening
@@ -118,6 +119,9 @@ interface DashboardGridProps {
   onParamChange?: (paramName: string, value: any) => void;
   /** Open the what-if parameter bind modal for a chart tile (editor only). */
   onBindParameter?: (dashboardChartId: number) => void;
+  /** Draws a slicer control (widget_type 'slicer') bound to the page's filter
+   *  state. The grid only places it; it never sees filter state itself. */
+  renderSlicerControl?: (dashboardChart: DashboardChart) => React.ReactNode;
 }
 
 
@@ -154,6 +158,7 @@ function DashboardGridInner({
   params = {},
   onParamChange,
   onBindParameter,
+  renderSlicerControl,
 }: DashboardGridProps) {
   const { t } = useI18n();
   // Convert backend layout to react-grid-layout format.
@@ -210,8 +215,8 @@ function DashboardGridInner({
       // Finer-grid minimums (36-col / small-row): smaller than the old 2×1 so a
       // DA can "thu vào bé hơn", while charts keep a legible floor (4 cols ≈ 11%
       // width, 3 rows) and widgets can go tiny.
-      minW: isWidget ? 2 : 4,
-      minH: isWidget ? 1 : 3,
+      minW: isWidget ? (isSlicerControl(dc) ? 3 : 2) : 4,
+      minH: isWidget ? (isSlicerControl(dc) ? 2 : 1) : 3,
       // Locked tile → react-grid-layout `static`: not draggable, not resizable,
       // and never displaced by a neighbour. Prevents accidental nudges.
       static: Boolean(layout.locked),
@@ -305,7 +310,7 @@ function DashboardGridInner({
       draggableHandle=".drag-handle"
       // Never start a drag from an interactive control or the widget's own
       // edit/delete cluster (whole widget bodies are now drag handles).
-      draggableCancel=".no-drag, button, select, input, textarea, a"
+      draggableCancel=".no-drag, button, select, input, textarea, a, label"
       isDraggable={!!onLayoutChange && !isNarrow}
       isResizable={!!onLayoutChange && !isNarrow}
       // Grid arrange model = FREE-FORM / WYSIWYG (matches the published report,
@@ -326,8 +331,10 @@ function DashboardGridInner({
         // as solid blocks without a card frame — wrapping them in
         // `dashboard-tile bi-card-hover` would defeat the purpose
         // (Shape becomes a coloured pill inside a white frame).
+        const slicerControl = isSlicerControl(dc);
         const isVisualWidget = isWidget && (
-          dc.widget_type === 'shape'
+          slicerControl
+          || dc.widget_type === 'shape'
           || dc.widget_type === 'section_header'
           || dc.widget_type === 'callout'
           || dc.widget_type === 'hero_strip'
@@ -337,6 +344,9 @@ function DashboardGridInner({
         const transparentWidget = isWidget
           && ((dc.widget_config ?? {}) as Record<string, any>).transparentBackground === true;
         const framelessWidget = isVisualWidget || transparentWidget;
+        const widgetSelected = isWidget && (selectedDashboardChartIds
+          ? selectedDashboardChartIds.includes(dc.id)
+          : focusedDashboardChartId === dc.id);
         const tile = isWidget ? (
           // The WHOLE widget body is the drag handle (a widget is a visual
           // add-on you move like a shape, not a chart with a header). The thin
@@ -346,17 +356,43 @@ function DashboardGridInner({
           <div
             data-tile-id={dc.id}
             data-tile-kind="widget"
-            className={`group relative h-full w-full ${canEdit && !(dc.layout as any)?.locked ? 'drag-handle cursor-move' : ''} ${
+            data-widget-type={dc.widget_type ?? undefined}
+            className={`group relative h-full w-full ${canEdit && !(dc.layout as any)?.locked ? `drag-handle ${slicerControl ? '' : 'cursor-move'}` : ''} ${
               framelessWidget
                 ? ''
                 : 'dashboard-tile bi-card-hover rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 overflow-hidden'
-            }`}
-            title={canEdit ? t('dashboards.grid.dragToMove') : undefined}
+            } ${widgetSelected ? 'rounded-lg ring-2 ring-brand ring-offset-1 ring-offset-transparent' : ''}`}
+            title={canEdit && !slicerControl ? t('dashboards.grid.dragToMove') : undefined}
+            // A widget is selected like a chart (Shift/Cmd/Ctrl adds), so the
+            // Arrange tools and the keyboard work on it too. A click on one of
+            // its own controls is that control's, not a selection.
+            onClick={onFocusChart ? (event) => {
+              if ((event.target as HTMLElement).closest('button, input, select, textarea, a, [role="menu"], [data-slicer-menu]')) return;
+              onFocusChart(dc.id, event.shiftKey || event.metaKey || event.ctrlKey);
+            } : undefined}
           >
-            <DashboardWidget widget={dc} params={params} onParamChange={onParamChange} editing={canEdit} />
+            {slicerControl && renderSlicerControl
+              ? renderSlicerControl(dc)
+              : <DashboardWidget widget={dc} params={params} onParamChange={onParamChange} editing={canEdit} />}
             {canEdit && (
               <div className="no-drag absolute right-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                {onEditWidget && (
+                {onToggleLock && (
+                  <button
+                    type="button"
+                    data-testid="widget-lock-toggle"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={() => onToggleLock(dc.id, !(dc.layout as any)?.locked)}
+                    aria-pressed={Boolean((dc.layout as any)?.locked)}
+                    className={`rounded-md border bg-surface-1 p-1.5 shadow-linear-sm transition-colors ${(dc.layout as any)?.locked ? 'border-brand/50 text-brand' : 'border-[rgb(var(--border-strong))] hover:border-brand/40 hover:text-brand'}`}
+                    title={(dc.layout as any)?.locked ? t('dashboards.grid.unlock') : t('dashboards.grid.lock')}
+                  >
+                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <rect x="3" y="7" width="10" height="7" rx="1.5" />
+                      <path d={(dc.layout as any)?.locked ? 'M5.5 7V5a2.5 2.5 0 015 0v2' : 'M5.5 7V5a2.5 2.5 0 014.9-.7'} strokeLinecap="round" />
+                    </svg>
+                  </button>
+                )}
+                {onEditWidget && !slicerControl && (
                   <button
                     type="button"
                     onMouseDown={(e) => e.stopPropagation()}
@@ -376,7 +412,8 @@ function DashboardGridInner({
                     onClick={() => onRemoveChart(dc.id)}
                     disabled={removingChartId === dc.id}
                     className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1.5 shadow-linear-sm transition-colors hover:border-danger/40 hover:bg-danger/10 disabled:opacity-50"
-                    title={t('dashboards.grid.removeWidget')}
+                    data-testid={slicerControl ? 'slicer-remove-control' : undefined}
+                    title={slicerControl ? t('dashboards.slicerControl.removeControl') : t('dashboards.grid.removeWidget')}
                   >
                     <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-danger" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M3 3l10 10M13 3L3 13" strokeLinecap="round" />

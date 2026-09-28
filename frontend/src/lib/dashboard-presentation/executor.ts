@@ -250,7 +250,9 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
 
   const planValidation = validatePresentationPlan(
     plan,
-    [...tiles.map((t) => t.id), ...(layer === 'redesign' ? (plan.blocks ?? []).map((b) => b.id) : [])],
+    [...tiles.map((t) => t.id), ...(layer === 'redesign'
+      ? [...(plan.blocks ?? []).map((b) => b.id), ...(plan.slicerControls ?? []).map((c) => c.id)]
+      : [])],
   );
   if (!planValidation.ok && !planValidation.repairable) {
     return {
@@ -302,11 +304,22 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
     // Blocks (negative ids) leave the tile geometry here and become rows to
     // create; the validator below only ever sees tiles that exist.
     const blocks = new Map((plan.blocks ?? []).map((b) => [b.id, b]));
+    const controls = new Map((plan.slicerControls ?? []).map((c) => [c.id, c]));
     const created: CreatedBlock[] = [];
     const tileRects = new Map<VisualId, Rect>();
     for (const [id, rect] of routed) {
       const block = blocks.get(id);
-      if (block) {
+      const control = controls.get(id);
+      if (control) {
+        // A control is presentation of a slicer that already exists: it names
+        // the slicer and a look (see lib/slicer-placement), nothing else.
+        created.push({
+          tempId: id,
+          widgetType: 'slicer',
+          widgetConfig: { slicerId: control.slicerId, treatment: control.treatment, origin: 'ai' },
+          layout: { x: rect.x, y: rect.y, w: rect.w, h: rect.h, gv: GRID_VERSION, pageId },
+        });
+      } else if (block) {
         created.push({
           tempId: id,
           widgetType: blockWidgetType(block),
