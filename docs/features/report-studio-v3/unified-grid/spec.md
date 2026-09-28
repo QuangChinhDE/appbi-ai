@@ -1,16 +1,20 @@
 # Unified Grid & Slicer Freedom — spec
 
+> **Superseded in part.** This spec was written when a legacy filter bar still drew unplaced slicers. There is no filter
+> area any more: every filter a viewer can change is a control on the grid (migration `20260929_0001`), and a filter
+> with no control on a page still filters it and is listed on the Slicer button. The lines below are updated to that;
+> the lifecycle (draft additions, removals and widget edits) is in [`product-review.md`](product-review.md) §3 and §6.
+
 ## Behaviour
 
 ### A slicer on the grid
 
 1. In the builder, **Add element → Slicer** opens a picker with two lists:
    - **Place a filter already on this report.** These are the report's slicers not yet placed on this page.
-   - **New filter.** A field picker using the same rule as the cluster's "Add slicer": columns a chart on the report
-     can apply, plus dates.
-2. Choosing one creates a **slicer control**: a grid element at the first free row of the active page. It is draft
-   only until Publish, like every AI-created block.
-3. A new filter is created with the exact entry the cluster creates (same `createSlicerEntry`, `scope: 'page'`). It is
+   - **New filter.** A field picker: columns a chart on the report can apply, plus dates.
+2. Choosing one creates a **slicer control** at the top of the page, below the content, or — with an element
+   selected — next to that element. It is draft only until Publish, like every addition.
+3. A new filter is created with `createSlicerEntry` (`scope: 'page'`). It is
    saved to the draft immediately, so a reload never leaves a control pointing at nothing.
 4. The control can be dragged, resized, locked, nudged, aligned and deleted like any element. Its presentation menu
    offers:
@@ -20,10 +24,11 @@
      - *List*
      - *Buttons* — a segmented control when the values fit, otherwise a dropdown.
      - *Compact*
-   - **Remove control.** The filter stays and its control returns to the filter bar.
-   - **Delete filter.** The logical filter and every control for it go, after a confirmation.
-5. Values chosen in a control are **staged**, exactly as in the filter bar. One **Apply** bar is shown while
-   something is pending, and the choice applies on Apply.
+   - **Remove control.** The filter stays and keeps filtering; the Slicer button lists it as having no control here.
+     A draft removal: the public link keeps the control until Publish; Undo and Discard bring it back.
+   - **Delete filter.** The logical filter and every control for it go, after a confirmation, in one draft change.
+5. Values chosen in a control are **staged**. One **Apply** bar is shown while something is pending, and the choice
+   applies on Apply.
 
 ### What decides where a control appears (one rule, builder and public)
 
@@ -31,15 +36,14 @@ For page P and slicer S:
 
 | S's scope on P | Control for S on P's grid | Rendered |
 |---|---|---|
-| visible | yes | the grid control(s); S is **not** repeated in the filter bar |
-| visible | no | in the filter bar (the legacy cluster), exactly as before |
-| filter-only (visible=false) | yes | builder: control dimmed, "Hidden on this page — still filters". Public: nothing |
-| not applicable here | yes | builder: dimmed, "Does not filter this page". Public: nothing |
-| S missing (deleted, or stripped by a link lock/hide) | yes | builder: "This filter was removed" + Remove control. Public: nothing |
+| visible | yes | the grid control(s) |
+| visible | no | no control; S still filters P. Builder: counted on the Slicer button. Public: stated in "Filtered by" when it has a value |
+| filter-only (visible=false) | yes | builder: control dimmed, "Hidden on this page — still filters". Public: no cell (its band closes); the value is stated in "Filtered by" |
+| not applicable here | yes | builder: dimmed, "Does not filter this page". Public: no cell |
+| S missing (deleted, or stripped by a link lock/hide) | yes | builder: "This filter was removed" + Remove control. Public: no cell; a link lock is stated as "🔒 field: value", a hide is never shown |
 
 Placement never changes whether S filters P. That is S's scope, set in the same ⚙ scope matrix as before.
 
-The filter bar is optional grouping. When every visible slicer on a page is placed, the bar is not drawn.
 
 ### Filter semantics — unchanged
 
