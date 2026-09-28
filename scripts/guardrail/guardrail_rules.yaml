@@ -275,7 +275,9 @@ features:
       - frontend/src/app/(main)/dashboards/[id]/page.tsx
       - frontend/src/components/dashboards/ChartTile.tsx
       - frontend/src/components/dashboards/DashboardGrid.tsx
-      - frontend/src/components/dashboards/DashboardCanvas.tsx
+      # DashboardCanvas.tsx was removed (unified grid, 20260928_0001): the grid
+      # is the only layout. The grid's arrange tools are the builder's now.
+      - frontend/src/lib/grid-arrange.ts
     keywords: [dashboard, tile, tiles, chart render, "build screen", "khong align", "không align", flash, unfiltered, slicer default, draft, publish]
     invariants: [tile_fetch_seed_gate]
     required_tests: [tsc, browser_verify]
@@ -287,6 +289,10 @@ features:
       - frontend/src/components/dashboards/SlicerCluster.tsx
       - frontend/src/components/dashboards/DashboardFilterBar.tsx
       - frontend/src/hooks/use-public-filter-distinct-values.ts
+      # Slicer controls on the grid draw the same entries through the same bar.
+      - frontend/src/components/dashboards/GridSlicerTile.tsx
+      - frontend/src/lib/slicer-placement.ts
+      - frontend/src/lib/slicer-entry.ts
     keywords: [slicer, filter pane, "filters on this page", scope, "trang nay", distinctStatus]
     invariants: [fe_be_limit_pair]
     required_tests: [tsc, browser_verify]
