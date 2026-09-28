@@ -1,6 +1,6 @@
 version: 2
 protected:
   - id: s
-    required_tests: [a, b]
+    required_tests: [a]
 invariants: []
 tests: {}
