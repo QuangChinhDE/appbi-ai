@@ -443,6 +443,37 @@ def heuristic(state: Any, ctx: Any, question: str) -> dict:
     return out
 
 
+#: Words that ask for a BREAKDOWN ("which state", "by category", "each month",
+#: "top", "highest"). Without one, a dimension the model attached to a single-figure
+#: question ("Tổng phí vận chuyển là bao nhiêu?" -> customer_state) is not asked.
+_BREAKDOWN_CUES = ("theo", "nao", "tung", "moi", "cac", "xep hang", "cao nhat", "thap nhat",
+                   "nhieu nhat", "it nhat", "lon nhat", "nho nhat", "dan dau", "by", "which",
+                   "each", "per", "across", "top", "highest", "lowest", "most", "least", "rank",
+                   "compare", "so sanh", "phan bo", "breakdown")
+#: Words that make a period RELATIVE ("gần nhất", "tháng trước", "latest").
+_RELATIVE_CUES = ("gan nhat", "moi nhat", "hien tai", "thang nay", "thang truoc", "quy truoc",
+                  "nam truoc", "ky truoc", "vua qua", "latest", "most recent", "recent", "last month",
+                  "previous", "this month", "current", "prior")
+
+
+def _has_cue(text: str, cues) -> bool:
+    folded = " " + " ".join(_words(text)) + " "
+    return any(f" {c} " in folded for c in cues)
+
+
+def asks_breakdown(question: str, previous: str, intent: dict) -> bool:
+    """Whether the question (or, for a follow-up, the one before) asks for a
+    breakdown — a grouping word, or a member of one named."""
+    if intent.get("members"):
+        return True
+    return _has_cue(question, _BREAKDOWN_CUES) or (
+        bool(intent.get("followup")) and _has_cue(previous or "", _BREAKDOWN_CUES))
+
+
+def asks_relative_period(question: str, previous: str) -> bool:
+    return _has_cue(question, _RELATIVE_CUES) or _has_cue(previous or "", _RELATIVE_CUES)
+
+
 def merge(model: dict, floor: dict, question: str) -> dict:
     """Model fields where valid, heuristic fields otherwise. Periods the question
     names explicitly always stand; the model's are used when it names none."""
@@ -490,12 +521,24 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
         model["notes"].append(f"measure by the question's own words: {better} "
                               f"(model chose {model.get('measures')})")
         model["measures"], model["absent"] = [better], None
+    # A BREAKDOWN NOT ASKED IS NOT ASSERTED. Live ccf8af44 (main set): with the
+    # resolved intent stated to the answering step, "Tổng phí vận chuyển là bao
+    # nhiêu?" resolved to customer_state was answered "the report has no freight by
+    # state". The model's dimension stands only when the question asks for one.
+    if model.get("dimension") and not asks_breakdown(question, previous, model):
+        model["notes"].append(f"dimension not asked: {model['dimension']}")
+        model["dimension"] = None
     out = merge(model, floor, question)
+    if not model.get("dimension") and out.get("dimension") and not asks_breakdown(question, previous, out):
+        out["dimension"] = None
     try:
         out["charts"] = charts_for(out, vocab)
     except Exception:                                           # noqa: BLE001
         out["charts"] = []
-    if vocab.get("coverage"):
+    # The report's time range is stated only when the question's period is RELATIVE
+    # ("gần nhất", "tháng trước"): stated on every turn, "'latest' is 2018-09" was
+    # read as the question being about 2018-09 (live ccf8af44, "cho kỳ 2018-09").
+    if vocab.get("coverage") and asks_relative_period(question, previous):
         out["coverage"] = {k: list(v) for k, v in vocab["coverage"].items()}
     return out
 

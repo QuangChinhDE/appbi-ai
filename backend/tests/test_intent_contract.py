@@ -315,3 +315,16 @@ def test_the_intent_names_the_charts_that_carry_what_was_asked():
     assert whole[0]["chart_id"] == 679
     text = I.describe_for_prompt(_model_intent(measures=["distinct_sellers"], charts=one))
     assert "700" in text and "không đoán" in text
+
+
+def test_a_breakdown_or_range_not_asked_is_not_asserted():
+    """Live ccf8af44 main set (regression 55 -> 49/71): single-figure questions were
+    answered "the report has no freight by state / no review score by month" and
+    "cho kỳ 2018-09" — the model attached a dimension nobody asked for, and the data
+    range was stated on every turn and read as the asked period."""
+    assert not I.asks_breakdown("Tổng phí vận chuyển là bao nhiêu?", "", {})
+    assert I.asks_breakdown("Bang nào có doanh thu cao nhất?", "", {})
+    assert I.asks_breakdown("SP chiếm bao nhiêu phần trăm doanh thu?", "",
+                            {"members": [{"said": "SP", "code": "SP"}]})
+    assert not I.asks_relative_period("Tỷ lệ giao đúng hẹn tháng 3/2018 là bao nhiêu?", "")
+    assert I.asks_relative_period("GMV tháng gần nhất so với tháng trước thay đổi thế nào?", "")
