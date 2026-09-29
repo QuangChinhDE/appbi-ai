@@ -341,6 +341,17 @@ def _given_to_other_than_asked(sentence: str, asked: list[str] | None) -> bool:
     return False
 
 
+def _given_a_meaning(sentence: str, question: str, asked: list[str] | None) -> bool:
+    """Does the sentence tie its figure to a period, or the member, the question
+    asked about? Then "read somewhere" is not enough — see `check`."""
+    if not sentence:
+        return False
+    if _periods(sentence) & _periods(question):
+        return True
+    return bool(asked) and any((_names(sentence, c) if len(c) <= 3 else c in _squash(sentence))
+                               for c in asked)
+
+
 def _misattributed(support: list[dict], asked: list[str] | None, sentence: str) -> str | None:
     """THE SENTENCE SAYS WHOSE FIGURE IT IS. Acceptance, published: SP's revenue
     as Minas Gerais's (run 4245), health_beauty's as bed_bath_table's (4200), the
@@ -504,6 +515,12 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                 if not any(_close(value, float(e["value"])) for e in ledger if e.get("ratio")):
                     pending.append((value, pct))
             elif not in_evidence(value) and (abs(value) >= 1000 or value != int(value)):
+                pending.append((value, pct))
+            elif _given_a_meaning(_sentence_of(text, value), question, asked_member):
+                # A MEANING-UNKNOWN FIGURE CANNOT BE GIVEN A MEANING. Acceptance:
+                # "GMV tháng 12/2017 là 19.62" (run 4216) and "GMV tháng 10/2017 là
+                # 56808.84" (4368) — each number was read SOMEWHERE, but no described
+                # figure of that period (or member) supports it.
                 pending.append((value, pct))
             continue
         if pct:

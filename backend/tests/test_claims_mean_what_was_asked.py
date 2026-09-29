@@ -723,3 +723,23 @@ def test_the_asked_member_phrase_is_read_from_the_question():
     t = {"dimension": "product_category_name_english"}
     got = CC._asked_member(ctx, t, "Danh mục đồ giường và phòng tắm (bed bath table) có doanh thu bao nhiêu?")
     assert got == ["dogiuongvaphongtam", "bedbathtable"]
+
+
+def test_a_stray_figure_given_a_named_period_is_withheld(world):
+    """Acceptance runs 4216 / 4368: "GMV tháng 12/2017 là 19.62" — 19.62 was read
+    somewhere (a tool with no claim adapter), never as December's GMV."""
+    ctx, state = world("GMV tháng 1/2018 so với tháng 12/2017 thay đổi bao nhiêu phần trăm?", asked=("gmv",))
+    _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
+    state.add_evidence({"score": 19.62})         # READ, but described by no claim adapter
+    assert 19.62 in (getattr(state, "evidence", None) or []), "fixture: the figure is in evidence"
+    assert (19.62, "unsupported") in _why(state, ctx, "GMV của tháng 12/2017 là 19.62.")
+    assert _why(state, ctx, "Một chỉ số phụ trong dữ liệu là 19.62.") == [],         "no period or member given: still 'read, meaning unknown'"
+
+
+def test_the_same_periods_real_figure_is_published(world):
+    ctx, state = world("GMV tháng 1/2018 so với tháng 12/2017 thay đổi bao nhiêu phần trăm?", asked=("gmv",))
+    res = _compare(1107301.89, 863547.23, 28.23)
+    res["data"]["current"]["label"], res["data"]["baseline"]["label"] = "2018-01", "2017-12"
+    _rec(state, "compare_periods", res, {"chart_id": MONTHLY})
+    state.add_evidence({"score": 19.62})
+    assert _why(state, ctx, "GMV tháng 12/2017 là 863,547.23, tháng 1/2018 là 1,107,301.89: tăng 28.23%.") == []
