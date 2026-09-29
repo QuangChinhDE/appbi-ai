@@ -28,7 +28,14 @@ Additive only: four nullable columns on `agent_brain_versions`, one nullable
 JSONB column on `agent_flow_run_steps`. NULL on every existing row means exactly
 what those rows are: active versions, steps recorded before ledgers existed.
 
-Revision ID: 20260926_0001
+REVISION ID CHANGED FROM 20260926_0001. The Dashboard stream (PR #5) shipped an
+unrelated migration under the same ID (auditaction values for AI Design content
+proposals, parent 20260914_0002). Two payloads under one ID cannot share a graph,
+so this one moved. A database that applied it under the OLD ID is re-labelled by
+`alembic/env.py:_reconcile_revision_ids` from its schema, never guessed; and the
+upgrade below skips columns that already exist.
+
+Revision ID: 20260926_0101
 Revises: 20260925_0001
 """
 from __future__ import annotations
@@ -39,24 +46,28 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "20260926_0001"
+revision: str = "20260926_0101"
 down_revision: Union[str, None] = "20260925_0001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("agent_brain_versions", sa.Column("lifecycle", sa.String(length=16), nullable=True))
-    op.add_column("agent_brain_versions", sa.Column("lifecycle_reason", sa.Text(), nullable=True))
-    op.add_column("agent_brain_versions", sa.Column("lifecycle_by", sa.String(length=255), nullable=True))
-    op.add_column(
-        "agent_brain_versions",
-        sa.Column("lifecycle_at", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.add_column(
-        "agent_flow_run_steps",
-        sa.Column("budget", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    )
+    have = {
+        (t, c["name"])
+        for t in ("agent_brain_versions", "agent_flow_run_steps")
+        for c in sa.inspect(op.get_bind()).get_columns(t)
+    }
+
+    def add(table: str, column: sa.Column) -> None:
+        if (table, column.name) not in have:
+            op.add_column(table, column)
+
+    add("agent_brain_versions", sa.Column("lifecycle", sa.String(length=16), nullable=True))
+    add("agent_brain_versions", sa.Column("lifecycle_reason", sa.Text(), nullable=True))
+    add("agent_brain_versions", sa.Column("lifecycle_by", sa.String(length=255), nullable=True))
+    add("agent_brain_versions", sa.Column("lifecycle_at", sa.DateTime(timezone=True), nullable=True))
+    add("agent_flow_run_steps", sa.Column("budget", postgresql.JSONB(astext_type=sa.Text()), nullable=True))
 
 
 def downgrade() -> None:
