@@ -157,10 +157,13 @@ The Agent Flow migrations are additive. The Report Studio ones rewrite layouts, 
   - The `galaxy_golden` and `distinct_cascade_bq` harnesses are declared `missing` in `guardrail_rules.yaml`: they have never been committed.
   - No BigQuery result is claimed.
 - **Fixed in code, not yet executed on BigQuery:** text filters (contains, not_contains, starts_with, ends_with).
-  - Every builder used `LIKE … ESCAPE '\'`, which GoogleSQL rejects: report filters, measure filters, live queries and the dropdown's distinct-value search.
-  - BigQuery now gets `STRPOS` / `STARTS_WITH` / `ENDS_WITH` from one helper, `app/services/sql_pattern.py`.
+  - The report WHERE clause, the live-query path and the distinct-value cascade used `LIKE … ESCAPE '\'`, which GoogleSQL rejects.
+  - BigQuery now gets `STRPOS` / `STARTS_WITH` / `ENDS_WITH` from one helper, `app/services/sql_pattern.py`. An empty value is stated explicitly, so both engines agree.
   - Postgres SQL is byte-for-byte unchanged, locked by `test_dialect_structural.py`.
-  - Measure filters also treat a typed `%` or `_` literally now, and apply `not_contains`.
+- **Known and deliberately unchanged** (changing these would move saved numbers during release closure):
+  - A measure's own text filter (`LIKE '%' || 'x' || '%'`, valid GoogleSQL) treats `%` and `_` in the value as wildcards, and drops a `not_contains` filter.
+  - A backslash in a pattern value is not escaped, so `ends_with 'a\'` errors on Postgres.
+  - `ESCAPE '\'` on MySQL is not verified.
 - **Open finding, not changed:** string literals are escaped by doubling the quote (`'O''Brien'`) on every dialect, and `test_dialect_structural.py::test_quote_escaping_is_dialect_independent` locks that for BigQuery. GoogleSQL is documented to use `\'` instead. If a BigQuery run confirms this, that test is wrong and the literal helpers need a dialect branch. Per repository rules, the test is reported here rather than changed without that proof.
 - **Production-size data:** not verified. The rehearsal ran on the rig database (58 reports); a production copy has not been migrated.
 - **Human product acceptance:** pending. It is the owner's decision, not an assistant's.
