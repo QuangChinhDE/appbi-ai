@@ -73,6 +73,7 @@ from app.services.dashboard_service import (
     remove_tile_in_draft,
     restore_tile_in_draft,
     strip_draft_row_keys,
+    draft_layout_dump,
 )
 from app.services.dashboard_html_import_service import (
     _build_ai_fix_source_profiles,
@@ -2675,7 +2676,7 @@ def update_dashboard_draft_layout(
     require_edit_access(db, current_user, dash, "dashboards")
     layouts_map: Dict[str, Dict[str, Any]] = {}
     for entry in request.chart_layouts:
-        layouts_map[str(int(entry.id))] = strip_draft_row_keys(entry.layout.model_dump(exclude_none=True))
+        layouts_map[str(int(entry.id))] = strip_draft_row_keys(draft_layout_dump(entry.layout))
     snapshot = dict(dash.draft_snapshot or {})
     # Per-user bucket, MERGED (legacy-aware so a pre-B17 shared draft migrates).
     user_layouts = dict(snapshot.get("user_layouts") or {})

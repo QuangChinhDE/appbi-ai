@@ -128,6 +128,25 @@ def strip_draft_row_keys(layout: Optional[dict]) -> dict:
     return {k: v for k, v in (layout or {}).items() if k not in DRAFT_ROW_KEYS}
 
 
+# Layout keys whose explicit null is a statement, not an absence: a tile whose
+# `sectionId` is null belongs to NO section; one without the key has its section
+# read from where it sits (a legacy report). Dropping the null turned "no
+# section" into "infer", and a chart that sat under a heading silently joined it
+# once the draft was saved.
+LAYOUT_NULL_MEANINGFUL_KEYS = frozenset({"sectionId"})
+
+
+def draft_layout_dump(layout) -> dict:
+    """A layout for the draft snapshot: unset optional fields dropped (as before),
+    but an explicit null kept where null has a meaning."""
+    out = layout.model_dump(exclude_none=True)
+    extra = getattr(layout, "model_extra", None) or {}
+    for key in LAYOUT_NULL_MEANINGFUL_KEYS:
+        if key in extra and extra[key] is None:
+            out[key] = None
+    return out
+
+
 def is_draft_only_by(item, user_key: str) -> bool:
     """Added in THIS author's draft (an unowned legacy draft row counts as theirs)."""
     layout = getattr(item, "layout", None)

@@ -459,14 +459,14 @@ export function SectionHeaderForm({ config, set }: { config: any; set: (k: strin
   const { t } = useI18n();
   return (
     <>
-      <Field label={t('dashboards.widgetEdit.eyebrow')} hint={t('dashboards.widgetEdit.eyebrowHint')}>
-        <input className={inputClass} value={config.eyebrow ?? ''} onChange={(e) => set('eyebrow', e.target.value)} />
-      </Field>
       <Field label={t('dashboards.widgetEdit.headingTitle')}>
-        <input className={inputClass} value={config.title ?? ''} onChange={(e) => set('title', e.target.value)} />
+        <input className={inputClass} data-testid="section-title" value={config.title ?? ''} onChange={(e) => set('title', e.target.value)} />
       </Field>
       <Field label={t('dashboards.widgetEdit.subtitle')}>
         <input className={inputClass} value={config.subtitle ?? ''} onChange={(e) => set('subtitle', e.target.value)} />
+      </Field>
+      <Field label={t('dashboards.widgetEdit.eyebrow')} hint={t('dashboards.widgetEdit.eyebrowHint')}>
+        <input className={inputClass} value={config.eyebrow ?? ''} onChange={(e) => set('eyebrow', e.target.value)} />
       </Field>
     </>
   );

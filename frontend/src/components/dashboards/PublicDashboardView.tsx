@@ -1246,7 +1246,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     // silently exporting an empty tile.
     const failures: PdfExportWarning[] = [];
     try {
-      const safeName = safePdfFilename(dashboard.public_link_name || dashboard.name, 'bao-cao');
+      const safeName = safePdfFilename(appearance.headline || dashboard.name || dashboard.public_link_name, 'bao-cao');
       const storedSession = getPublicSession(token) ?? undefined;
       // Each page's header states the filters that page's data was fetched
       // with — the same merge ensurePageDataLoaded uses.
@@ -1307,12 +1307,14 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           failures.push({
             page: pageName,
             chart: chartNameById.get(id) || `Biểu đồ #${id}`,
-            reason: chartErrorsRef.current[id] || 'Không tải được dữ liệu',
+            reason: chartErrorsRef.current[id] || t('dashboards.readonlyChartTile.failedToLoad'),
           });
         }
       };
 
-      const reportTitle = dashboard.public_link_name || dashboard.name || 'Dashboard';
+      // The sheets carry the report's name (a headline the publisher set on the
+      // link wins); the link's own name is an internal label.
+      const reportTitle = appearance.headline || dashboard.name || dashboard.public_link_name || 'Dashboard';
       const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
       const pageSources = (chosen.length ? chosen : [{ id: activePageId, name: '' }]).map((p) => ({
         name: p.name,
@@ -1994,7 +1996,9 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     if (c.paramName && first !== undefined && publicParams[c.paramName] === undefined) publicParams[c.paramName] = first;
   }
   const reportMeta = {
-    name: presentationTitle,
+    // The report's own name; a headline the publisher set on the link wins. The
+    // link's name is an internal label, never the report's title.
+    name: appearance.headline ?? dashboard?.name ?? presentationTitle,
     description: dashboard?.description ?? null,
     filterFacts: pageFilterFacts({ applied: appliedViewerFilters, pageHidden: pageHiddenFilters, locked: lockedBannerEntries })
       .map((f) => `${f.locked ? '🔒 ' : ''}${f.label}: ${statePageFilterFact(f, t)}`),

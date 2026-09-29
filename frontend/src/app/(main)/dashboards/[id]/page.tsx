@@ -99,7 +99,7 @@ import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
 import { ArrangeBar, type TileFrame } from '@/components/dashboards/ArrangeBar';
 import { arrangeTiles, closeVacatedBand, nudgeTiles, placeBeside, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
-import { moveSection, resolveStructure, sectionForPosition, structureIssues, insertionFor, toStructTiles } from '@/lib/report-structure';
+import { adoptableUnder, moveSection, resolveStructure, sectionForPosition, structureIssues, insertionFor, toStructTiles, type StructTile } from '@/lib/report-structure';
 import { pageFilterFacts, statePageFilterFact } from '@/lib/public-page-filters';
 import { settleStoredLayout } from '@/lib/grid-settle';
 import {
@@ -2060,6 +2060,17 @@ function DashboardDetailPageInner() {
           }
           return acc;
         }, null);
+        // A heading introduces what sits under it: the elements below it, down
+        // to the next heading, that belong to no section join it.
+        if (newest !== null && widgetType === 'section_header') {
+          const pushedById = new Map(pushed.map((bx) => [bx.id, bx]));
+          const after: StructTile[] = [
+            ...structTiles.map((st) => ({ ...st, ...(pushedById.has(st.id) ? { y: pushedById.get(st.id)!.y } : {}) })),
+            { id: newest, ...rect, kind: 'section' as const, sectionId: null },
+          ];
+          const adopt = adoptableUnder(after, newest);
+          if (adopt.length > 0) handleLayoutChange([], Object.fromEntries(adopt.map((tid) => [tid, { sectionId: newest }])));
+        }
         if (newest !== null) {
           setSelectedTileIds([newest]);
           setFocusedTileId(newest);
@@ -4925,6 +4936,9 @@ function DashboardDetailPageInner() {
           activePageId={activePageId}
           isAdding={addChartMutation.isPending}
           currentPageName={currentPage?.name}
+          placementNote={isAddChartModalOpen && insertBatchRef.current
+            ? t('dashboards.addElement.insertAfter', { title: tileTitle(insertBatchRef.current.anchorId) })
+            : undefined}
         />
 
         {isHtmlImportOpen && (

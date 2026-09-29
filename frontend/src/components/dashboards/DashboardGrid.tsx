@@ -300,6 +300,8 @@ function DashboardGridInner({
   // and "16.0M" rendered as "1"). The SAME threshold and the SAME stack rule as
   // the published report, so narrowing the builder previews the phone view.
   const isNarrow = gridWidth > 0 && gridWidth < REPORT_STACK_BREAKPOINT;
+  // The last press on a drag handle that did not move (see onDragStop: double-click).
+  const lastStillPressRef = React.useRef<{ id: string; at: number } | null>(null);
 
   const storedLayouts = dashboardCharts.map((dc) => {
     const layout = dc.layout;
@@ -446,6 +448,21 @@ function DashboardGridInner({
             && !target?.closest?.('button, input, select, textarea, a, [role="menu"], [data-slicer-menu]')) {
             onFocusChart(dc.id, Boolean(event?.shiftKey || event?.metaKey || event?.ctrlKey));
           }
+        }
+        // The same holds for a double-click on a drag handle (a widget's body, a
+        // chart's title row): two presses that did not move, on one tile, close
+        // together, are the double-click — it opens the Inspector.
+        if (onOpenInspector && oldItem && newItem && oldItem.x === newItem.x && oldItem.y === newItem.y) {
+          const now = Date.now();
+          const last = lastStillPressRef.current;
+          if (last && last.id === newItem.i && now - last.at < 450) {
+            lastStillPressRef.current = null;
+            onOpenInspector(Number(newItem.i));
+          } else {
+            lastStillPressRef.current = { id: newItem.i, at: now };
+          }
+        } else {
+          lastStillPressRef.current = null;
         }
       }}
       onResizeStop={(_layout, _oldItem, newItem) => { autoScroll.stop(); if (!isNarrow) persistItem(newItem); }}

@@ -159,6 +159,26 @@ check('an element added after the selection lands under it, joins its section, p
   assert(underHeader.sectionId === 20 && underHeader.rect.y === 26, 'under a heading it is not the start of that section');
 });
 
+check('a heading placed above content in no section introduces it, down to the next heading', () => {
+  // The palette stated these charts "no section"; a heading is then added above them.
+  const tiles = S([
+    tile(1, 'hero_strip', 0, 0, 36, 6),
+    tile(2, 'chart', 0, 6, 12, 6, { sectionId: null }),
+    tile(30, 'section_header', 0, 12, 36, 3),
+    tile(31, 'chart', 0, 15, 18, 8, { sectionId: null }),
+    tile(32, 'narrative', 18, 15, 18, 8),
+    tile(33, 'chart', 0, 23, 18, 8, { sectionId: 40 }),
+    tile(40, 'section_header', 0, 31, 36, 3),
+    tile(41, 'chart', 0, 34, 36, 8, { sectionId: null }),
+  ]);
+  assert(same(structure.adoptableUnder(tiles, 30), [31, 32]), `adopted ${structure.adoptableUnder(tiles, 30)}`);
+  assert(structure.adoptableUnder(tiles, 1).length === 0, 'the report header adopted content');
+  const s = structure.resolveStructure(tiles.map((t) => ([31, 32].includes(t.id) ? { ...t, sectionId: 30 } : t)));
+  assert(same(s.sections.find((x) => x.headerId === 30).members, [31, 32]), 'the adopted tiles are not members');
+  assert(s.sectionOf.get(33) === 40, 'a tile stated into another section was taken');
+  assert(/adoptableUnder\(after, newest\)/.test(source('app/(main)/dashboards/[id]/page.tsx')), 'the builder never adopts on adding a heading');
+});
+
 check('reading order keeps a heading with its members whatever the coordinates', () => {
   // Section B's member is stated into A although it sits lower.
   const tiles = S(REPORT.map((t) => (t.id === 21 ? { ...t, layout: { ...t.layout, sectionId: 10 } } : t)));
@@ -325,6 +345,28 @@ check('the PDF prints in the reader language: no Vietnamese literal outside the 
   for (const f of ['app/(main)/dashboards/[id]/page.tsx', 'components/dashboards/PublicDashboardView.tsx']) {
     assert(/exportDashboardPdf\(\{[\s\S]{0,200}locale,/.test(source(f)), `${f} does not pass the reader locale`);
   }
+});
+
+check('the chart picker keeps every pick across searches, and states where the charts go', () => {
+  const src = source('components/dashboards/AddChartModal.tsx');
+  const prune = src.slice(src.indexOf('// Prune staged charts'), src.indexOf('// After "create + add"'));
+  assert(prune.length > 0 && /currentPageChartIds\.has\(id\)/.test(prune) && !/availableCharts\.some/.test(prune),
+    'picks are pruned against the current search results: searching for the next chart drops the earlier ones');
+  assert(/pickedChartsRef\.current\.set\(id, picked\)/.test(src) && /const c = chartById\(id\)/.test(src), 'a pick made under an earlier search cannot be added');
+  assert(/placementNote/.test(src) && /placementNote=\{/.test(source('app/(main)/dashboards/[id]/page.tsx')), 'the picker says "at the top" when the charts go under the selection');
+});
+
+check('a selection alone in its rows fills the page width; one beside other elements keeps its columns', () => {
+  const alone = [{ id: 1, x: 0, y: 0, w: 12, h: 6 }, { id: 2, x: 12, y: 0, w: 18, h: 8 }, { id: 3, x: 0, y: 8, w: 36, h: 6 }];
+  const r = patterns.applyLayoutPattern('leadSupport', alone, [2, 1], { leadId: 2 });
+  const after = apply(alone, r.moved).filter((b) => b.id <= 2);
+  assert(after.reduce((s, b) => s + b.w, 0) === 36 && Math.min(...after.map((b) => b.x)) === 0, `did not fill the row: ${JSON.stringify(after)}`);
+  const beside = [...alone, { id: 4, x: 30, y: 0, w: 6, h: 6 }];
+  const r2 = patterns.applyLayoutPattern('leadSupport', beside, [2, 1], { leadId: 2 });
+  const after2 = apply(beside, r2.moved);
+  assert(after2.filter((b) => b.id <= 2).every((b) => b.x + b.w <= 30), 'a selection beside another element took its columns');
+  const bad = noOverlap(after2);
+  assert(!bad, bad);
 });
 
 check('emphasis is a closed vocabulary', () => {

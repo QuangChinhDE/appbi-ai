@@ -86,6 +86,7 @@ export function SectionBands({
         <div
           key={b.key}
           className="dashboard-section-band absolute"
+          data-section-band={b.key}
           style={{ left: b.left, top: b.top, width: b.width, height: b.height }}
         />
       ))}

@@ -69,8 +69,14 @@ export function applyLayoutPattern(
   let x0 = Math.min(...selected.map((b) => b.x));
   let span = Math.max(...selected.map((b) => b.x + b.w)) - x0;
   // A selection stacked in one narrow column has no room to sit side by side
-  // in its own span: it takes the page width.
-  if (span < selected.length * READABLE_W) { x0 = 0; span = cols; }
+  // in its own span, and a selection alone in its rows (nothing else sits
+  // beside it) is a row of the page: both take the page width. A selection
+  // sharing its rows with other elements keeps its columns.
+  const top = y0;
+  const bottom = Math.max(...selected.map((b) => b.y + b.h));
+  const ids0 = new Set(selected.map((b) => b.id));
+  const aloneInRows = !page.some((b) => !ids0.has(b.id) && b.y < bottom && b.y + b.h > top);
+  if (span < selected.length * READABLE_W || aloneInRows) { x0 = 0; span = cols; }
 
   let placed: GridBox[];
   let blockH: number;

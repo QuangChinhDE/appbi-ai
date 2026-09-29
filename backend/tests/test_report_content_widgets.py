@@ -43,3 +43,25 @@ def test_a_header_keeps_only_known_variants_and_finding_kinds():
     assert normalize("hero_strip", {"finding": "made_up:12"})["finding"] == ""
     assert normalize("hero_strip", {"showPeriod": 0, "showContext": "yes"}) | {} == {
         "variant": "banner", "showPeriod": False, "showContext": True}
+
+
+# ── Section membership survives the draft save ──────────────────────────────
+# `sectionId: null` means "in no section"; an absent key means "read it from
+# where the tile sits". The draft save dropped every None, so a chart stated
+# into no section joined the heading above it as soon as the draft was saved
+# (the published band then covered the KPIs under a moved section).
+
+def test_draft_save_keeps_an_explicit_no_section():
+    from app.schemas.chart_config import DashboardChartLayout
+    from app.services.dashboard_service import draft_layout_dump
+
+    none = draft_layout_dump(DashboardChartLayout(x=0, y=6, w=12, h=6, sectionId=None))
+    assert "sectionId" in none and none["sectionId"] is None
+    stated = draft_layout_dump(DashboardChartLayout(x=0, y=6, w=12, h=6, sectionId=42))
+    assert stated["sectionId"] == 42
+    legacy = draft_layout_dump(DashboardChartLayout(x=0, y=6, w=12, h=6))
+    assert "sectionId" not in legacy, "an unstated tile must stay unstated (legacy inference)"
+    # Other unset optionals are still dropped, as before.
+    assert "minW" not in none and "pageId" not in none
+    # A null with no meaning is still dropped.
+    assert "custom_title" not in draft_layout_dump(DashboardChartLayout(x=0, y=0, w=1, h=1, custom_title=None))

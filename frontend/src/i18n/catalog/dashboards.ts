@@ -4,6 +4,11 @@ import type { ModuleCatalog } from '../messages';
 // modal, AI bot, export dialog, public-links manager, calculated fields).
 export const dashboardsCatalog: ModuleCatalog = {
   en: {
+    'dashboards.create.title': 'New report',
+    'dashboards.create.name': 'Name',
+    'dashboards.create.description': 'What is it for?',
+    'dashboards.create.descriptionHint': 'One sentence. The report header states it to every reader.',
+    'dashboards.create.submit': 'Create',
     'dashboards.chartManager.title': 'Manage Dashboard Charts',
     'dashboards.chartManager.help': 'Remove broken tiles here without relying on the chart tile itself to render successfully.',
     'dashboards.chartManager.empty': 'This dashboard does not contain any charts.',
@@ -747,6 +752,11 @@ export const dashboardsCatalog: ModuleCatalog = {
     'dashboards.themeModal.save': 'Save appearance',
   },
   vi: {
+    'dashboards.create.title': 'Báo cáo mới',
+    'dashboards.create.name': 'Tên',
+    'dashboards.create.description': 'Báo cáo dùng để làm gì?',
+    'dashboards.create.descriptionHint': 'Một câu. Phần mở đầu báo cáo sẽ nói điều này với mọi người đọc.',
+    'dashboards.create.submit': 'Tạo',
     'dashboards.chartManager.title': 'Quản lý biểu đồ Dashboard',
     'dashboards.chartManager.help': 'Xóa các tile lỗi tại đây mà không cần tile biểu đồ tự render thành công.',
     'dashboards.chartManager.empty': 'Dashboard này chưa có biểu đồ nào.',

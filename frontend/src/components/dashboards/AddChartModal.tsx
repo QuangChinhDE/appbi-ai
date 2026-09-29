@@ -31,6 +31,8 @@ interface AddChartModalProps {
   activePageId: string;
   isAdding: boolean;
   currentPageName?: string;
+  /** Where the charts will go, when the caller places them (e.g. under the selection). */
+  placementNote?: string;
 }
 
 type AddChartModalMode = 'existing' | 'create';
@@ -130,6 +132,7 @@ export function AddChartModal({
   activePageId,
   isAdding,
   currentPageName,
+  placementNote,
 }: AddChartModalProps) {
   const { t } = useI18n();
   const [mode, setMode] = useState<AddChartModalMode>('existing');
@@ -208,17 +211,23 @@ export function AddChartModal({
     [charts, currentPageChartIds],
   );
 
-  // Prune staged charts that disappear from the catalog (e.g. just added to the page).
+  // Every chart the author picked, kept by id: the catalog is searched on the
+  // server, so the list only holds the current search's matches, and a pick
+  // made under an earlier search must survive the next one.
+  const pickedChartsRef = React.useRef<Map<number, (typeof availableCharts)[number]>>(new Map());
+  const chartById = (id: number) => availableCharts.find((candidate) => candidate.id === id) ?? pickedChartsRef.current.get(id);
+
+  // Prune staged charts that are now ON the page (just added). Not the ones a
+  // new search does not list — pruning against the search results dropped every
+  // earlier pick as soon as the author searched for the next chart.
   useEffect(() => {
     if (selectedChartIds.size === 0 || pendingSelectionChartId != null) return;
-    const stillValid = Array.from(selectedChartIds).filter((id) =>
-      availableCharts.some((chart) => chart.id === id),
-    );
+    const stillValid = Array.from(selectedChartIds).filter((id) => !currentPageChartIds.has(id));
     if (stillValid.length !== selectedChartIds.size) {
       setSelectedChartIds(new Set(stillValid));
       setParamValues({});
     }
-  }, [availableCharts, pendingSelectionChartId, selectedChartIds]);
+  }, [currentPageChartIds, pendingSelectionChartId, selectedChartIds]);
 
   // After "create + add", focus the freshly-created chart (single selection).
   useEffect(() => {
@@ -310,6 +319,8 @@ export function AddChartModal({
   }, [activePageId, availableCharts, dashboardDatasetIds, pageIdsByChartId, t]);
 
   const handleChartChange = (id: number) => {
+    const picked = availableCharts.find((candidate) => candidate.id === id);
+    if (picked) pickedChartsRef.current.set(id, picked);
     setPendingSelectionChartId(null);
     setSelectedChartIds((prev) => {
       const next = new Set(prev);
@@ -340,14 +351,14 @@ export function AddChartModal({
     // Per-chart size: by TYPE unless the DA manually set W/H (then uniform).
     const sizes = ids.map((id) => {
       if (sizeTouched) return { w: width, h: height };
-      const c = availableCharts.find((candidate) => candidate.id === id);
+      const c = chartById(id);
       return defaultSizeForChartType(c?.chart_type);
     });
     const slots = packNewGridTiles(occupied, sizes);
 
     for (let index = 0; index < ids.length; index++) {
       const id = ids[index];
-      const chart = availableCharts.find((candidate) => candidate.id === id);
+      const chart = chartById(id);
       const thisChartParams = chart?.parameters ?? [];
       const parameters: Record<string, unknown> = {};
       for (const param of thisChartParams) {
@@ -792,9 +803,10 @@ export function AddChartModal({
               )}
 
               <div className="rounded-[20px] border border-brand/25 bg-brand/8 px-4 py-3 text-sm text-brand">
-                {currentPageName
-                  ? t('dashboards.addChart.addNoticeWithPage', { name: currentPageName })
-                  : t('dashboards.addChart.addNotice')}
+                {placementNote
+                  ?? (currentPageName
+                    ? t('dashboards.addChart.addNoticeWithPage', { name: currentPageName })
+                    : t('dashboards.addChart.addNotice'))}
               </div>
             </div>
           </div>

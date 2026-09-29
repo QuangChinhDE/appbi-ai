@@ -106,6 +106,29 @@ export function sectionForPosition(tiles: StructTile[], y: number, excludeId?: n
   return headerAbove(headers, y)?.id ?? null;
 }
 
+/**
+ * What a heading just placed at `headerId` introduces: every element below it,
+ * down to the next heading, that belongs to no section (stated "none", never
+ * stated, or pointing at a heading that is gone). An element already stated
+ * into another section keeps it. Without this, a heading added above charts the
+ * palette had placed in no section introduced nothing: no band, no phone
+ * grouping, and an "empty section" in the outline.
+ */
+export function adoptableUnder(tiles: StructTile[], headerId: number): number[] {
+  const header = tiles.find((t) => t.id === headerId);
+  if (!header || header.kind !== 'section') return [];
+  const headerIds = new Set(tiles.filter((t) => t.kind === 'section').map((t) => t.id));
+  const next = tiles
+    .filter((t) => t.kind === 'section' && t.id !== headerId && t.y >= header.y + header.h)
+    .reduce<number>((m, t) => Math.min(m, t.y), Infinity);
+  return tiles
+    .filter((t) => (t.kind === 'content' || t.kind === 'narrative')
+      && t.y >= header.y + header.h && t.y < next
+      && (t.sectionId == null || !headerIds.has(t.sectionId)))
+    .sort(byReading)
+    .map((t) => t.id);
+}
+
 export type StructureIssue =
   | { kind: 'empty_section'; headerId: number }
   | { kind: 'member_above_heading'; headerId: number; tileId: number }
