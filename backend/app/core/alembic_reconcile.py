@@ -31,6 +31,11 @@ def reconcile_revision_ids(connection) -> None:
         for old, (new, (table, column)) in _RENAMED_REVISIONS.items():
             if old not in recorded or not insp.has_table(table):
                 continue
+            if new in recorded:
+                # One migration cannot be recorded under both IDs, so the old-ID row
+                # is the other stream's (both lines applied, their merge not yet) —
+                # re-labelling it would collide with `new` on the primary key.
+                continue
             if column not in {c["name"] for c in insp.get_columns(table)}:
                 continue            # the other stream's migration under this ID — leave it
             connection.execute(

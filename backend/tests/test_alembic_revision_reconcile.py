@@ -50,6 +50,22 @@ def test_the_dashboard_migration_under_that_id_is_left_alone():
     assert _version(eng) == {"20260926_0001"}
 
 
+def test_both_lines_recorded_before_their_merge_are_left_alone():
+    """Agent Flow's line (0101) and the Dashboard line (0001) both applied, their
+    merge revision not yet: the 0001 row is Dashboard's. Re-labelling it would
+    collide with 0101 on alembic_version's primary key and stop startup."""
+    eng = sa.create_engine("sqlite://")
+    with eng.begin() as c:
+        c.execute(sa.text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL, "
+                          "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"))
+        c.execute(sa.text("INSERT INTO alembic_version VALUES ('20260926_0101'), ('20260926_0001')"))
+        c.execute(sa.text("CREATE TABLE agent_brain_versions (id INTEGER, lifecycle VARCHAR(16))"))
+    with eng.connect() as c:
+        reconcile_revision_ids(c)
+        assert not c.in_transaction()
+    assert _version(eng) == {"20260926_0101", "20260926_0001"}
+
+
 def test_unrelated_versions_and_fresh_databases_are_untouched():
     eng = _db("20260929_0001", lifecycle=True)
     with eng.connect() as c:

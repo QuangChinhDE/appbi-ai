@@ -158,14 +158,15 @@ class Settings(BaseSettings):
     # the full list still fits, so by default it engages only once a grant
     # outgrows what can sensibly be sent in full — Skills and future packs.
     AGENT_FLOW_VISIBLE_CAPABILITIES: int = 40
-    # AGENT FLOW V3 FOR READERS — OFF until the pilot's analytical gates pass.
-    #
-    # Merged into demo in "pilot disabled" mode: a published flow that uses a V3
-    # capability (a Skill step or a `skill:` grant) is refused on every READER path
-    # (public-link chat, Direct Chat threads) with a plain notice, and the refusal
-    # is recorded. Authors still run it in Studio Test. Flows without V3
-    # capabilities behave exactly as before. Set true to open the pilot.
-    AGENT_FLOW_V3_ENABLED: bool = False
+    # AGENT FLOW READER ROLLOUT (services/agent_flows/pilot.py). Every reader path
+    # — public-link chat and Direct Chat — asks this ONE policy; Studio Test does not.
+    #   off    kill switch: no reader is answered
+    #   pilot  only the cohort below (default; an empty cohort serves nobody)
+    #   all    every reader
+    # An unknown value fails closed (off). Refusals are recorded as blocked runs.
+    AGENT_FLOW_READER_MODE: str = "pilot"
+    AGENT_FLOW_PILOT_LINK_IDS: str = ""   # comma-separated public-link ids
+    AGENT_FLOW_PILOT_USERS: str = ""      # comma-separated Direct Chat emails
     # How many CHARACTERS of capability schema a routed step is shown per round
     # (runtime/capabilities.py). A grant whose schemas fit is shown whole — the V1
     # starter's ten tools are ~8.5k. A larger grant is shown the core (every way in
