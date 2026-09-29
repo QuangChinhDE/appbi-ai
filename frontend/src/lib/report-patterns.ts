@@ -10,8 +10,9 @@
  * placed as one block with the grid's single placement rule (resolveDrop): what
  * the block would cover moves down to make room, whitespace elsewhere is left
  * alone, and a locked tile is never moved — a pattern that needs to move one is
- * refused and names it. Pure; the page commits the result like a drag (one
- * undo step, a draft change).
+ * refused and names it. Rows the selection itself leaves empty (it came from
+ * further down the page) close up, so a pattern never leaves a hole behind.
+ * Pure; the page commits the result like a drag (one undo step, a draft change).
  */
 import { resolveDrop, type ArrangeResult, type GridBox } from './grid-arrange';
 
@@ -20,6 +21,25 @@ export const LAYOUT_PATTERNS: LayoutPattern[] = ['equalRow', 'kpiStrip', 'leadSu
 
 const MIN_W = 3;
 const MIN_H = 3;
+// The narrowest a tile in a pattern reads well at (a KPI card, a small chart).
+const READABLE_W = 8;
+
+/**
+ * Close every row a selected tile covered before that nothing covers now: the
+ * tiles below move up. A row stays open when a locked tile would have to move.
+ */
+function closeVacatedRows(after: Map<number, GridBox>, selectedBefore: GridBox[]): void {
+  const covered = (row: number) => [...after.values()].some((b) => b.y <= row && row < b.y + b.h);
+  const rows = new Set<number>();
+  for (const b of selectedBefore) for (let r = b.y; r < b.y + b.h; r += 1) rows.add(r);
+  // Bottom-up, one row at a time, each measured on the page as it now is.
+  for (const row of [...rows].sort((a, b) => b - a)) {
+    if (covered(row)) continue;
+    const below = [...after.values()].filter((b) => b.y > row);
+    if (below.length === 0 || below.some((b) => b.locked)) continue;
+    for (const b of below) after.set(b.id, { ...b, y: b.y - 1 });
+  }
+}
 
 function split(total: number, parts: number): number[] {
   const base = Math.floor(total / parts);
@@ -50,7 +70,7 @@ export function applyLayoutPattern(
   let span = Math.max(...selected.map((b) => b.x + b.w)) - x0;
   // A selection stacked in one narrow column has no room to sit side by side
   // in its own span: it takes the page width.
-  if (span < selected.length * MIN_W * (pattern === 'leadSupport' ? 1.5 : 1)) { x0 = 0; span = cols; }
+  if (span < selected.length * READABLE_W) { x0 = 0; span = cols; }
 
   let placed: GridBox[];
   let blockH: number;
@@ -81,10 +101,11 @@ export function applyLayoutPattern(
   if (drop.status !== 'ok') return { status: 'blocked', blockedBy: drop.blockedBy ?? selected[0].id };
   const landed = drop.changed.find((b) => b.id === GROUP);
   const shift = landed ? landed.y - y0 : 0;
-  const moved = [
-    ...placed.map((b) => ({ ...b, y: b.y + shift })),
-    ...drop.changed.filter((b) => b.id !== GROUP),
-  ].filter((b) => {
+  const after = new Map<number, GridBox>(rest.map((b) => [b.id, { ...b }]));
+  for (const b of drop.changed.filter((c) => c.id !== GROUP)) after.set(b.id, { ...b });
+  for (const b of placed) after.set(b.id, { ...b, y: b.y + shift });
+  closeVacatedRows(after, selected);
+  const moved = [...after.values()].filter((b) => {
     const was = byId.get(b.id)!;
     return was.x !== b.x || was.y !== b.y || was.w !== b.w || was.h !== b.h;
   });

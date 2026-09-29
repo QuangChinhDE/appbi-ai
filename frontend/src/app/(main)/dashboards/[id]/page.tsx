@@ -3741,6 +3741,8 @@ function DashboardDetailPageInner() {
       const safeName = safePdfFilename(dashboard.name, 'dashboard');
       const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
       const result = await exportDashboardPdf({
+        description: dashboard.description ?? null,
+        locale,
         labels: {
           filters: t('dashboards.pdf.filters'),
           exportedAt: t('dashboards.pdf.exportedAt'),
@@ -3861,7 +3863,10 @@ function DashboardDetailPageInner() {
       <div className="sticky top-0 z-20 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8">
         <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-surface-1 shadow-linear-sm overflow-visible">
 
-          <div className="flex h-11 items-center gap-2 px-3">
+          {/* One row when it fits; when the draft actions and the tools do not
+              fit beside the name, the tools wrap to a second row instead of
+              drawing over each other. */}
+          <div className="flex min-h-11 flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-1.5">
             {/* Back */}
             <Link
               href="/dashboards"
@@ -3874,7 +3879,7 @@ function DashboardDetailPageInner() {
             <div className="h-4 w-px bg-[rgba(255,255,255,0.08)]" />
 
             {/* Title (inline edit) */}
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div className="flex min-w-fit flex-1 items-center gap-2">
               {isEditingName ? (
                 <div className="flex min-w-0 flex-1 items-center gap-1">
                   <input
@@ -4063,7 +4068,7 @@ function DashboardDetailPageInner() {
                       <span className="hidden text-text-quaternary 2xl:inline">·</span>
                       {/* Wide screens only: the description is edited in the Inspector
                           and stated by the report header, not squeezed in here. */}
-                      <span className="hidden min-w-0 truncate text-[13px] font-[400] text-text-tertiary 2xl:inline" title={dashboard.description}>
+                      <span className="hidden min-w-0 max-w-[22rem] truncate text-[13px] font-[400] text-text-tertiary 2xl:inline" title={dashboard.description}>
                         {dashboard.description}
                       </span>
                     </>
@@ -4187,7 +4192,7 @@ function DashboardDetailPageInner() {
             </div>
 
             {/* Primary actions — collapsed to [Filter] [⋯] [+ Add] */}
-            <div className="flex shrink-0 items-center gap-1">
+            <div className="ml-auto flex shrink-0 items-center gap-1">
               {/* Data freshness — READ-ONLY. The dashboard reads the dataset's
                   refreshed data; refresh itself now happens IN THE DATASET
                   (scheduled or manual Sync & Publish, with history), so the old

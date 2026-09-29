@@ -349,7 +349,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // full-viewport app-shell the standalone /d page uses.
   const isEmbed = variant === 'embed';
   useParentResize(isEmbed);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
 
   const [mounted, setMounted] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -1340,6 +1340,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
 
       const { exportDashboardPdf } = await import('@/lib/export-pdf');
       const result = await exportDashboardPdf({
+        description: dashboard?.description ?? null,
+        locale,
         labels: {
           filters: t('dashboards.pdf.filters'),
           exportedAt: t('dashboards.pdf.exportedAt'),

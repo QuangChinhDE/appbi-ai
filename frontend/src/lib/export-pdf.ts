@@ -88,7 +88,7 @@ export interface PdfProgress {
   phase: 'prepare' | 'page' | 'capture' | 'finalize' | 'done';
   /** 0..1 overall progress. */
   ratio: number;
-  /** Human message for the UI (Vietnamese). */
+  /** Human message for the UI, in the export's locale. */
   message: string;
 }
 
@@ -108,6 +108,10 @@ export interface PdfExportWarning {
 export interface PdfExportOptions {
   filename: string;
   title: string;
+  /** The reader's language for the words the exporter prints ('en' / 'vi'). */
+  locale?: string;
+  /** What the report is for — stated under the title on every sheet. */
+  description?: string | null;
   orientation: PdfOrientation;
   format: PdfPageSize;
   /** Tile placement — see PdfLayoutMode. Defaults to 'snapshot'. */
@@ -249,21 +253,27 @@ function drawPageHeader(pdf: jsPDF, opts: PdfExportOptions, page: PdfPageSource,
   pdf.setFont(FONT, 'normal');
   pdf.setFontSize(9);
   pdf.setTextColor(100, 116, 139);
-  if (page.name) pdf.text(page.name, MARGIN, MARGIN + 9);
+  // Line 2: what the report is for, then the page. One line, never wrapped
+  // into the filter line below it.
+  const second = [String(opts.description ?? '').replace(/\s+/g, ' ').trim(), page.name ?? ''].filter(Boolean).join('  ·  ');
+  if (second) {
+    const fit = pdf.splitTextToSize(second, g.usableW - 60) as string[];
+    pdf.text(fit.length > 1 ? `${fit[0].replace(/.{1}$/, '')}…` : fit[0], MARGIN, MARGIN + 9);
+  }
   if (page.filtersSummary) {
-    const lines = pdf.splitTextToSize(`${opts.labels?.filters ?? 'Bộ lọc'}: ${page.filtersSummary}`, g.usableW - 50);
+    const lines = pdf.splitTextToSize(`${opts.labels?.filters ?? TX.filters}: ${page.filtersSummary}`, g.usableW - 50);
     pdf.text(lines.slice(0, 1), MARGIN, MARGIN + 13.5);
   }
   // Right rail: provenance. A report screenshot with no "as of" is unusable in a
   // meeting — the reader can't tell whether it's today's numbers or last week's.
   pdf.setFontSize(8);
   pdf.setTextColor(148, 163, 184);
-  const exportedAt = `${opts.labels?.exportedAt ?? 'Xuất lúc'} ${formatStamp(new Date())}`;
+  const exportedAt = `${opts.labels?.exportedAt ?? TX.exportedAt} ${formatStamp(new Date())}`;
   pdf.text(exportedAt, g.pw - MARGIN, MARGIN + 4, { align: 'right' });
   if (opts.dataAsOf) {
     const asOf = new Date(opts.dataAsOf);
     const asOfText = Number.isNaN(asOf.getTime()) ? String(opts.dataAsOf) : formatStamp(asOf);
-    pdf.text(`${opts.labels?.dataAsOf ?? 'Dữ liệu tính đến'} ${asOfText}`, g.pw - MARGIN, MARGIN + 9, { align: 'right' });
+    pdf.text(`${opts.labels?.dataAsOf ?? TX.dataAsOf} ${asOfText}`, g.pw - MARGIN, MARGIN + 9, { align: 'right' });
   }
   pdf.setDrawColor(226, 232, 240);
   pdf.setLineWidth(0.3);
@@ -305,22 +315,93 @@ function formatStamp(d: Date): string {
  * way to know a number is missing rather than zero.
  */
 /**
+ * Every word the exporter itself prints on paper, in the reader's language.
+ * Vietnamese stays the default so an older caller prints what it always did;
+ * `labels` still overrides the three header words.
+ */
+const PDF_TEXT = {
+  vi: {
+    filters: 'Bộ lọc', exportedAt: 'Xuất lúc', dataAsOf: 'Dữ liệu tính đến',
+    warnIncompleteTitle: 'Cảnh báo: báo cáo xuất thiếu dữ liệu',
+    warnIncompleteSummary: (n: number) => `${n} biểu đồ/trang không có đủ dữ liệu tại thời điểm xuất file. Số liệu trong báo cáo này chưa đầy đủ.`,
+    notesTitle: 'Ghi chú khi xuất file',
+    notesSummary: 'Báo cáo đầy đủ dữ liệu; các ghi chú dưới đây chỉ về cách trình bày trên giấy.',
+    unknownReason: 'Không rõ nguyên nhân',
+    tileUnrenderable: '(không hiển thị được)',
+    pageUncaptured: '(không chụp được trang này)',
+    sheet: (n: number) => `Tờ ${n}`,
+    chartN: (id: number | string) => `Biểu đồ #${id}`,
+    chart: 'Biểu đồ',
+    notFoundOnReport: 'Không tìm thấy biểu đồ này trên báo cáo khi xuất.',
+    captureRefused: 'Không chụp được hình biểu đồ này (trình duyệt từ chối render).',
+    arrangedNote: 'Bố cục tự sắp',
+    wholePage: '(toàn trang)',
+    pageNotReady: (s: number) => `Trang chưa vẽ xong sau ${s}s — một số ô có thể bị thiếu.`,
+    pageNotCaptured: 'Không chụp được trang này.',
+    pageScaled: (pct: number) => `Trang bị thu nhỏ còn ${pct}% để vừa một tờ — chọn khổ A3 hoặc hướng ngang để dễ đọc hơn.`,
+    snapshotNote: 'Ảnh trang — bảng in theo dữ liệu đang hiển thị',
+    pPreparing: 'Đang chuẩn bị…',
+    pSheetTile: (s: number, S: number, i: number, n: number) => `Tờ ${s}/${S}: đang xử lý ô ${i}/${n}…`,
+    pLoadingPage: (i: number, n: number, name?: string) => `Đang tải trang ${i}/${n}${name ? ` — ${name}` : ''}…`,
+    pWaitingPage: (i: number, n: number, s: number) => `Đang chờ trang ${i}/${n} vẽ xong (${s}s)…`,
+    pCapturingPage: (i: number, n: number, name?: string) => `Đang chụp trang ${i}/${n}${name ? ` — ${name}` : ''}…`,
+    pPageTile: (p: number, P: number, i: number, n: number, label?: string) => `Trang ${p}/${P}: đang xử lý ô ${i}/${n}${label ? ` — ${label}` : ''}…`,
+    pMaking: 'Đang tạo file PDF…',
+    pDoneSaved: 'Hoàn tất — đã tải PDF về máy.',
+    pDoneOpened: 'Hoàn tất — đã mở PDF ở tab mới + tải về máy.',
+  },
+  en: {
+    filters: 'Filters', exportedAt: 'Exported', dataAsOf: 'Data as of',
+    warnIncompleteTitle: 'Warning: this export is missing data',
+    warnIncompleteSummary: (n: number) => `${n} chart(s) or page(s) had no complete data when the file was made. The figures in this report are incomplete.`,
+    notesTitle: 'Notes on this export',
+    notesSummary: 'The report is complete; the notes below are only about how it is laid out on paper.',
+    unknownReason: 'Unknown reason',
+    tileUnrenderable: '(could not be drawn)',
+    pageUncaptured: '(this page could not be captured)',
+    sheet: (n: number) => `Sheet ${n}`,
+    chartN: (id: number | string) => `Chart #${id}`,
+    chart: 'Chart',
+    notFoundOnReport: 'This chart was not found on the report at export time.',
+    captureRefused: 'This chart could not be captured (the browser refused to render it).',
+    arrangedNote: 'Custom layout',
+    wholePage: '(whole page)',
+    pageNotReady: (s: number) => `The page had not finished drawing after ${s}s; some tiles may be missing.`,
+    pageNotCaptured: 'This page could not be captured.',
+    pageScaled: (pct: number) => `The page was scaled to ${pct}% to fit one sheet; choose A3 or landscape for easier reading.`,
+    snapshotNote: 'Page image: tables print the rows on screen',
+    pPreparing: 'Preparing…',
+    pSheetTile: (s: number, S: number, i: number, n: number) => `Sheet ${s}/${S}: tile ${i}/${n}…`,
+    pLoadingPage: (i: number, n: number, name?: string) => `Loading page ${i}/${n}${name ? ` — ${name}` : ''}…`,
+    pWaitingPage: (i: number, n: number, s: number) => `Waiting for page ${i}/${n} to finish drawing (${s}s)…`,
+    pCapturingPage: (i: number, n: number, name?: string) => `Capturing page ${i}/${n}${name ? ` — ${name}` : ''}…`,
+    pPageTile: (p: number, P: number, i: number, n: number, label?: string) => `Page ${p}/${P}: tile ${i}/${n}${label ? ` — ${label}` : ''}…`,
+    pMaking: 'Making the PDF…',
+    pDoneSaved: 'Done: the PDF was downloaded.',
+    pDoneOpened: 'Done: the PDF opened in a new tab and was downloaded.',
+  },
+};
+type PdfText = typeof PDF_TEXT.vi;
+let TX: PdfText = PDF_TEXT.vi;
+
+/**
  * The warnings page's headline. Only what is really missing may be announced
  * as missing: a layout note (a page printed small) is not data the report lacks.
  */
-export function exportWarningHeadline(warnings: PdfExportWarning[]): { title: string; summary: string; incomplete: number } | null {
+export function exportWarningHeadline(warnings: PdfExportWarning[], locale?: string): { title: string; summary: string; incomplete: number } | null {
   if (!warnings.length) return null;
+  const tx = locale ? (locale.startsWith('en') ? PDF_TEXT.en : PDF_TEXT.vi) : TX;
   const incomplete = warnings.filter((w) => (w.kind ?? 'incomplete') === 'incomplete').length;
   return incomplete > 0
     ? {
         incomplete,
-        title: 'Cảnh báo: báo cáo xuất thiếu dữ liệu',
-        summary: `${incomplete} biểu đồ/trang không có đủ dữ liệu tại thời điểm xuất file. Số liệu trong báo cáo này chưa đầy đủ.`,
+        title: tx.warnIncompleteTitle,
+        summary: tx.warnIncompleteSummary(incomplete),
       }
     : {
         incomplete: 0,
-        title: 'Ghi chú khi xuất file',
-        summary: 'Báo cáo đầy đủ dữ liệu; các ghi chú dưới đây chỉ về cách trình bày trên giấy.',
+        title: tx.notesTitle,
+        summary: tx.notesSummary,
       };
 }
 
@@ -347,7 +428,7 @@ function drawWarnings(pdf: jsPDF, opts: PdfExportOptions, warnings: PdfExportWar
     pdf.text(head, MARGIN, y, { maxWidth: g.usableW });
     pdf.setFont(FONT, 'normal');
     pdf.setTextColor(148, 163, 184);
-    const reason = pdf.splitTextToSize(w.reason || 'Không rõ nguyên nhân', g.usableW - 4) as string[];
+    const reason = pdf.splitTextToSize(w.reason || TX.unknownReason, g.usableW - 4) as string[];
     pdf.text(reason.slice(0, 2), MARGIN + 2, y + 4);
     y += 4 + Math.min(2, reason.length) * 4 + 2;
   }
@@ -629,7 +710,7 @@ async function drawTileRow(
       pdf.setFont(FONT, 'normal');
       pdf.setFontSize(7.5);
       pdf.setTextColor(148, 163, 184);
-      pdf.text('(không hiển thị được)', x + 2, y + 6, { maxWidth: w - 4 });
+      pdf.text(TX.tileUnrenderable, x + 2, y + 6, { maxWidth: w - 4 });
       pdf.setTextColor(15, 23, 42);
     }
     x += w + TILE_GAP_X;
@@ -747,7 +828,7 @@ async function drawPageSnapshot(
     pdf.setFont(FONT, 'normal');
     pdf.setFontSize(9);
     pdf.setTextColor(148, 163, 184);
-    pdf.text('(không chụp được trang này)', MARGIN + 3, startContentY() + 10);
+    pdf.text(TX.pageUncaptured, MARGIN + 3, startContentY() + 10);
     pdf.setTextColor(15, 23, 42);
     return { scale: 0, failed: true };
   }
@@ -839,7 +920,7 @@ async function drawArrangedSheets(
     drawPageHeader(
       pdf,
       opts,
-      { name: sheet.title || `Tờ ${si + 1}`, getRoot: async () => null },
+      { name: sheet.title || TX.sheet(si + 1), getRoot: async () => null },
       si + 1,
       plan.sheets.length,
     );
@@ -853,14 +934,14 @@ async function drawArrangedSheets(
       report({
         phase: 'capture',
         ratio: 0.05 + 0.9 * (placed / totalTiles),
-        message: `Tờ ${si + 1}/${plan.sheets.length}: đang xử lý ô ${placed}/${totalTiles}…`,
+        message: TX.pSheetTile(si + 1, plan.sheets.length, placed, totalTiles),
       });
 
       if (!el) {
         warnings.push({
-          page: sheet.title || `Tờ ${si + 1}`,
-          chart: `Biểu đồ #${tile.chartId}`,
-          reason: 'Không tìm thấy biểu đồ này trên báo cáo khi xuất.',
+          page: sheet.title || TX.sheet(si + 1),
+          chart: TX.chartN(tile.chartId),
+          reason: TX.notFoundOnReport,
         });
         continue;
       }
@@ -881,9 +962,9 @@ async function drawArrangedSheets(
         );
       } catch {
         warnings.push({
-          page: sheet.title || `Tờ ${si + 1}`,
-          chart: tileTitle(el) || `Biểu đồ #${tile.chartId}`,
-          reason: 'Không chụp được hình biểu đồ này (trình duyệt từ chối render).',
+          page: sheet.title || TX.sheet(si + 1),
+          chart: tileTitle(el) || TX.chartN(tile.chartId),
+          reason: TX.captureRefused,
         });
       }
     }
@@ -938,6 +1019,7 @@ export async function captureTileThumbnails(
 
 export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opened' | 'saved'> {
   if (opts.pages.length === 0) return 'saved';
+  TX = String(opts.locale ?? '').startsWith('en') ? PDF_TEXT.en : PDF_TEXT.vi;
   const report = opts.onProgress ?? (() => {});
   // compress: true → deflate content streams. Without it jsPDF writes the whole
   // document (every table cell's text operators) UNCOMPRESSED → a 16MB file that
@@ -949,7 +1031,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
   // Caller-supplied failures (charts whose data never loaded) + anything the
   // exporter itself can't render. Both end up in the closing warning section.
   const warnings: PdfExportWarning[] = [...(opts.warnings ?? [])];
-  report({ phase: 'prepare', ratio: 0.02, message: 'Đang chuẩn bị…' });
+  report({ phase: 'prepare', ratio: 0.02, message: TX.pPreparing });
 
   // 'custom' walks every selected page ONCE to collect the tile elements the plan
   // refers to (a plan may mix charts from several pages onto one sheet), then
@@ -961,7 +1043,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
       report({
         phase: 'page',
         ratio: 0.02 + 0.03 * (i / Math.max(1, opts.pages.length)),
-        message: `Đang tải trang ${i + 1}/${opts.pages.length}${page.name ? ` — ${page.name}` : ''}…`,
+        message: TX.pLoadingPage(i + 1, opts.pages.length, page.name),
       });
       const root = await page.getRoot();
       if (!root) continue;
@@ -980,11 +1062,11 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
       });
     }
     await drawArrangedSheets(pdf, opts, tilesByChartId, report, warnings);
-    report({ phase: 'finalize', ratio: 0.96, message: 'Đang tạo file PDF…' });
+    report({ phase: 'finalize', ratio: 0.96, message: TX.pMaking });
     drawWarnings(pdf, opts, warnings);
-    stampFooters(pdf, opts.title, 'Bố cục tự sắp');
+    stampFooters(pdf, opts.title, TX.arrangedNote);
     const done = downloadPdf(pdf, opts.filename, opts.previewWindow);
-    report({ phase: 'done', ratio: 1, message: 'Hoàn tất — đã tải PDF về máy.' });
+    report({ phase: 'done', ratio: 1, message: TX.pDoneSaved });
     return done;
   }
 
@@ -997,7 +1079,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
     let y = startContentY();
 
     const pageBase = i / total;
-    report({ phase: 'page', ratio: 0.05 + 0.9 * pageBase, message: `Đang tải trang ${i + 1}/${total}${page.name ? ` — ${page.name}` : ''}…` });
+    report({ phase: 'page', ratio: 0.05 + 0.9 * pageBase, message: TX.pLoadingPage(i + 1, total, page.name) });
     const root = await page.getRoot();
     if (!root) continue;
 
@@ -1008,7 +1090,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
           report({
             phase: 'page',
             ratio: 0.05 + 0.9 * pageBase,
-            message: `Đang chờ trang ${i + 1}/${total} vẽ xong (${Math.round(elapsed / 1000)}s)…`,
+            message: TX.pWaitingPage(i + 1, total, Math.round(elapsed / 1000)),
           });
         }
       },
@@ -1018,8 +1100,8 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
       // incomplete rather than pretending everything rendered.
       warnings.push({
         page: page.name || `Trang ${i + 1}`,
-        chart: '(toàn trang)',
-        reason: `Trang chưa vẽ xong sau ${Math.round(ready.waitedMs / 1000)}s — một số ô có thể bị thiếu.`,
+        chart: TX.wholePage,
+        reason: TX.pageNotReady(Math.round(ready.waitedMs / 1000)),
       });
     }
 
@@ -1029,23 +1111,23 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
       report({
         phase: 'capture',
         ratio: 0.05 + 0.9 * (pageBase + 0.5 / total),
-        message: `Đang chụp trang ${i + 1}/${total}${page.name ? ` — ${page.name}` : ''}…`,
+        message: TX.pCapturingPage(i + 1, total, page.name),
       });
       const shot = await drawPageSnapshot(pdf, root, opts, page, { pageNo, total });
       minPrintScale = Math.min(minPrintScale, shot.failed ? 0 : shot.scale);
       if (shot.failed) {
         warnings.push({
           page: page.name || `Trang ${i + 1}`,
-          chart: '(toàn trang)',
-          reason: 'Không chụp được trang này.',
+          chart: TX.wholePage,
+          reason: TX.pageNotCaptured,
         });
       } else if (shot.scale > 0 && shot.scale < SNAPSHOT_SMALL_SCALE) {
         // Say it rather than shipping a sheet nobody can read.
         warnings.push({
           page: page.name || `Trang ${i + 1}`,
-          chart: '(toàn trang)',
+          chart: TX.wholePage,
           kind: 'note',
-          reason: `Trang bị thu nhỏ còn ${Math.round(shot.scale * 100)}% để vừa một tờ — chọn khổ A3 hoặc hướng ngang để dễ đọc hơn.`,
+          reason: TX.pageScaled(Math.round(shot.scale * 100)),
         });
       }
       continue;
@@ -1075,7 +1157,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
       report({
         phase: 'capture',
         ratio: 0.05 + 0.9 * (pageBase + (1 / total) * (doneTiles / Math.max(1, tiles.length))),
-        message: `Trang ${i + 1}/${total}: đang xử lý ô ${Math.min(doneTiles + 1, tiles.length)}/${tiles.length}${label ? ` — ${label}` : ''}…`,
+        message: TX.pPageTile(i + 1, total, Math.min(doneTiles + 1, tiles.length), tiles.length, label),
       });
     };
 
@@ -1109,8 +1191,8 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
         for (const t of res.failed) {
           warnings.push({
             page: page.name || `Trang ${i + 1}`,
-            chart: tileTitle(t) || 'Biểu đồ',
-            reason: 'Không chụp được hình biểu đồ này (trình duyệt từ chối render).',
+            chart: tileTitle(t) || TX.chart,
+            reason: TX.captureRefused,
           });
         }
         doneTiles += imageTiles.length;
@@ -1137,7 +1219,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
     }
   }
 
-  report({ phase: 'finalize', ratio: 0.96, message: 'Đang tạo file PDF…' });
+  report({ phase: 'finalize', ratio: 0.96, message: TX.pMaking });
   // What the file IS, for the e2e gate (as __APPBI_RENDER_AUDIT__ is for
   // the page): sheets, the smallest print scale (screen size = 1), warnings.
   try {
@@ -1153,13 +1235,13 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
     opts.title,
     // A snapshot prints what the report shows, so a long table is truncated by
     // design. Stamping it means the reader can tell without asking.
-    (opts.layout ?? 'snapshot') === 'snapshot' ? (opts.labels?.snapshotNote ?? 'Ảnh trang — bảng in theo dữ liệu đang hiển thị') : undefined,
+    (opts.layout ?? 'snapshot') === 'snapshot' ? (opts.labels?.snapshotNote ?? TX.snapshotNote) : undefined,
   );
   const result = downloadPdf(pdf, opts.filename, opts.previewWindow);
   report({
     phase: 'done',
     ratio: 1,
-    message: result === 'opened' ? 'Hoàn tất — đã mở PDF ở tab mới + tải về máy.' : 'Hoàn tất — đã tải PDF về máy.',
+    message: result === 'opened' ? TX.pDoneOpened : TX.pDoneSaved,
   });
   return result;
 }

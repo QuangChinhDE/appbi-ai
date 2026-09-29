@@ -290,6 +290,43 @@ check('an AI redesign states the membership of what it moves, including under a 
   assert(/realIdOf\.set\(block\.tempId, fresh\.id\)/.test(src) && /sectionId: swap\(s\)/.test(src), 'a created heading is never swapped for its real id');
 });
 
+check('a pattern never leaves a hole where the selection came from; a narrow stack takes the page width', () => {
+  const stack = [
+    { id: 1, x: 0, y: 0, w: 12, h: 6 }, { id: 2, x: 0, y: 6, w: 12, h: 6 }, { id: 3, x: 0, y: 12, w: 12, h: 6 },
+    { id: 4, x: 0, y: 18, w: 36, h: 6 },
+  ];
+  const r = patterns.applyLayoutPattern('equalRow', stack, [1, 2, 3]);
+  assert(r.status === 'ok', `status ${r.status}`);
+  const after = apply(stack, r.moved);
+  const row = after.filter((b) => b.id <= 3);
+  assert(row.every((b) => b.y === 0 && b.w === 12), `the stack did not become a page-wide row: ${JSON.stringify(row)}`);
+  assert(after.find((b) => b.id === 4).y === 6, `the rows the stack left are still empty: tile 4 at ${after.find((b) => b.id === 4).y}`);
+  const bad = noOverlap(after);
+  assert(!bad, bad);
+  // A locked tile below keeps the hole open rather than move.
+  const locked = stack.map((b) => (b.id === 4 ? { ...b, locked: true } : b));
+  const kept = apply(locked, patterns.applyLayoutPattern('equalRow', locked, [1, 2, 3]).moved);
+  assert(kept.find((b) => b.id === 4).y === 18, 'a locked tile was moved to close a gap');
+});
+
+check('the PDF prints in the reader language: no Vietnamese literal outside the exporter text table', () => {
+  const src = source('lib/export-pdf.ts').replace(/\r\n/g, '\n');
+  const start = src.indexOf('const PDF_TEXT = {');
+  const end = src.indexOf('type PdfText = typeof PDF_TEXT.vi;');
+  assert(start > 0 && end > start, 'the exporter has no text table');
+  const outside = (src.slice(0, start) + src.slice(end))
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+  const literals = [...outside.matchAll(/'([^'\n]*)'|`([^`]*)`/g)].map((m) => m[1] ?? m[2]);
+  const vietnamese = literals.filter((s) => /[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i.test(s));
+  assert(vietnamese.length === 0, `hardcoded: ${vietnamese.slice(0, 3).join(' | ')}`);
+  const table = src.slice(start, end);
+  assert(/\n  en: \{/.test(table) && /pDoneSaved/.test(table.split('\n  en: {')[1] ?? ''), 'no English text for the exporter');
+  for (const f of ['app/(main)/dashboards/[id]/page.tsx', 'components/dashboards/PublicDashboardView.tsx']) {
+    assert(/exportDashboardPdf\(\{[\s\S]{0,200}locale,/.test(source(f)), `${f} does not pass the reader locale`);
+  }
+});
+
 check('emphasis is a closed vocabulary', () => {
   assert(emphasis.emphasisOf({ emphasis: 'lead' }) === 'lead' && emphasis.emphasisOf({ emphasis: 'quiet' }) === 'quiet', 'known values lost');
   assert(emphasis.emphasisOf({ emphasis: 'LOUD' }) === 'normal' && emphasis.emphasisOf(null) === 'normal', 'an unknown value was kept');

@@ -619,6 +619,9 @@ function DashboardGridInner({
           <div
             key={dc.id.toString()}
             data-grid-item-id={dc.id}
+            // Editing: Shift-click adds to the selection; it must not select the
+            // text of every tile between the clicks.
+            className={onLayoutChange && !isNarrow ? 'select-none' : undefined}
             onDoubleClick={onOpenInspector && !isNarrow ? (event) => {
               // A double-click inside a control (a slicer, an input, a menu) is that control's.
               if ((event.target as HTMLElement).closest('input, textarea, select, [role="menu"], [data-slicer-menu], [contenteditable="true"]')) return;
