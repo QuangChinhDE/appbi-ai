@@ -36,7 +36,7 @@
   "status": "ok",
   "step_outputs": {
     "answer": "ok :: Doanh thu thế nào?",
-    "dieu_phoi": "{\"picked\": [], \"considered\": [\"cg_a\", \"cg_b\"]}",
+    "dieu_phoi": "{\"picked\": [], \"considered\": [\"cg_a\", \"cg_b\"], \"why\": {}, \"max_specialists\": 3, \"planner_said\": \"ok :: Doanh thu thế nào?\"}",
     "dieu_phoi__planner": "ok :: Doanh thu thế nào?"
   },
   "tool_calls": []

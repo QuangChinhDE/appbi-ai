@@ -725,3 +725,132 @@ def test_a_gap_with_no_label_still_reads_as_words():
 
     assert G.dimension_label(Bare(), "dataset_table_441.customer_state") \
         == "customer state"
+
+
+def test_the_requested_dimension_is_resolved_per_question(undeclared):
+    """Found by review: a Skill's child context is a shallow copy of its caller's
+    and shared the cache, so a child asked "Tổng doanh thu là bao nhiêu?" was gated
+    by its parent's breakdown."""
+    import copy as _copy
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    parent = undeclared([684, 685, 686, 687], "Bang nào có doanh thu cao nhất?")
+    assert G.requested_dimension(parent) == "dataset_table_441.customer_state"
+    child = _copy.copy(parent)
+    child.question = "Tổng doanh thu là bao nhiêu?"
+    assert G.requested_dimension(child) is None
+    res = _run(child, "rank_values", chart_id=CATEGORY_CHART)
+    assert res.get("error_code") != "dimension_mismatch", res
+    assert G.requested_dimension(parent) == "dataset_table_441.customer_state"
+
+
+
+# ── acceptance: the refusal names the way out ────────────────────────────────
+
+def test_a_dimension_refusal_names_the_authorised_charts_that_answer_it():
+    """Live, report 67 (70 charts): the model tried six wrong charts and never
+    called the resolver the refusal pointed to. The refusal now carries the ids."""
+    ctx = _Ctx([684, 685, 686, 687, 701], question="Bang nào có doanh thu cao nhất?")
+    res = R.execute(ctx, "rank_values", {"chart_id": CATEGORY_CHART})
+    assert res["error_code"] == "dimension_mismatch"
+    assert res["detail"]["charts_with_dimension"] == [STATE_REVENUE_CHART, STATE_ORDERS_CHART], \
+        "the chart with the refused chart's measure (revenue) comes first"
+    assert "701" in res["recovery"] and "686" not in res["recovery"]
+
+
+def test_a_dimension_refusal_with_no_matching_chart_says_so():
+    ctx = _Ctx([684, 685, 686], question="Bang nào có doanh thu cao nhất?")
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    res = G.refusal(ctx, "rank_values", {"chart_id": CATEGORY_CHART})
+    if res is not None:          # no state chart at all: the gate may have no dimension to hold
+        assert res["detail"]["charts_with_dimension"] == []
+        assert "Không biểu đồ nào" in res["recovery"]
+
+
+# ── acceptance: an all-period figure is not a period's figure ────────────────
+
+def _with_kpi(ctx):
+    CHARTS.setdefault(906, ("Olist · GMV (hàng + ship)", _config("", "dataset_table_438.gmv")))
+    ctx.allowed_chart_ids.add(906)
+    ctx.chart_meta[906] = {"name": CHARTS[906][0], "fields": {
+        "measures": [{"field": "dataset_table_438.gmv"}], "dimensions": []}}
+    return ctx
+
+
+def test_a_named_month_refuses_the_all_time_tile_and_names_the_monthly_chart():
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    ctx = _with_kpi(_Ctx([684, 686], question="GMV tháng 11/2017 là bao nhiêu?"))
+    res = G.period_refusal(ctx, "total_measure", {"chart_id": 906})
+    assert res["error_code"] == "period_not_in_chart"
+    assert res["detail"]["charts_by_period"] == [684] and "684" in res["recovery"]
+
+
+def test_no_named_period_or_no_period_chart_leaves_the_tile_alone():
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    assert G.period_refusal(_with_kpi(_Ctx([684], question="Tổng GMV là bao nhiêu?")),
+                            "total_measure", {"chart_id": 906}) is None
+    assert G.period_refusal(_with_kpi(_Ctx([686], question="GMV tháng 11/2017?")),
+                            "total_measure", {"chart_id": 906}) is None, "no chart gives GMV by month"
+    assert G.period_refusal(_with_kpi(_Ctx([684], question="GMV tháng 11/2017?")),
+                            "total_measure", {"chart_id": 684}) is None, "the monthly chart itself"
+
+
+def test_an_automatic_comparison_is_refused_when_the_question_names_the_periods():
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    ctx = _Ctx([684], question="GMV tháng 1/2018 so với tháng 12/2017 thay đổi bao nhiêu phần trăm?")
+    res = G.period_refusal(ctx, "compare_periods", {"chart_id": 684})
+    assert res["error_code"] == "period_not_in_chart"
+    assert res["detail"] == {"period_a": "2018-01", "period_b": "2017-12"}
+    assert G.period_refusal(ctx, "compare_periods", {"chart_id": 684, "mode": "custom",
+                                                     "period_a": "2018-01", "period_b": "2017-12"}) is None
+    one = _Ctx([684], question="Tỷ lệ giao đúng hẹn tháng 3/2018 so với tháng trước?")
+    assert G.period_refusal(one, "compare_periods", {"chart_id": 684})["detail"] == {
+        "period_a": "2018-03", "period_b": "2018-02"}
+    assert G.period_refusal(_Ctx([684], question="GMV tháng này so với tháng trước?"),
+                            "compare_periods", {"chart_id": 684}) is None, "no named period: auto is right"
+
+
+def test_reading_the_all_time_tile_as_rows_is_refused_too_when_a_period_is_named():
+    """Live: asked on-time for 3/2018, the agent read three all-period tiles through
+    get_chart_data, never the monthly chart."""
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    ctx = _with_kpi(_Ctx([684], question="GMV tháng 11/2017 là bao nhiêu?"))
+    assert G.period_refusal(ctx, "get_chart_data", {"chart_id": 906})["detail"]["charts_by_period"] == [684]
+    assert G.period_refusal(ctx, "get_chart_data", {"chart_id": 684}) is None
+
+
+def test_a_parenthesised_title_word_does_not_name_a_breakdown():
+    """Acceptance g1_payment: "Tổng số tiền khách đã thanh toán" matched the
+    "(khách)" of "Số đơn theo bang (khách)" and became a by-state question."""
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    assert G.requested_dimension(_Ctx([687, 701], question="Tổng số tiền khách đã thanh toán là bao nhiêu?")) is None
+    assert G.requested_dimension(_Ctx([687, 701], question="Bang nào có nhiều đơn nhất?")) is not None
+
+
+def test_a_custom_comparison_with_the_current_period_first_in_time_is_refused():
+    """Acceptance run 4176: period_a=2017-Q3, period_b=2017-Q4 measured the change backwards."""
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    ctx = _Ctx([684], question="Doanh thu quý 4/2017 so với quý 3/2017 tăng hay giảm?")
+    res = G.period_refusal(ctx, "compare_periods", {"chart_id": 684, "mode": "custom",
+                                                    "period_a": "2017-Q3", "period_b": "2017-Q4"})
+    assert res["error_code"] == "period_not_in_chart"
+    assert res["detail"] == {"period_a": "2017-Q4", "period_b": "2017-Q3"}
+    assert G.period_refusal(ctx, "compare_periods", {"chart_id": 684, "mode": "custom",
+                                                     "period_a": "2017-Q4", "period_b": "2017-Q3"}) is None
+
+
+def test_a_plain_word_in_an_accented_question_does_not_fold_onto_an_accented_title():
+    """Acceptance 4207/4419: "trang tổng quan" (a page) folded onto "trạng thái"."""
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    ctx = _Ctx([684, 685, 686], question="Doanh thu trên trang tổng quan và trang sản phẩm có khác nhau không?")
+    assert G.requested_dimension(ctx) is None
+    ascii_ctx = _Ctx([684, 685, 686], question="don theo trang thai nao nhieu nhat")
+    assert G.requested_dimension(ascii_ctx) is not None, "a question typed without accents still folds"

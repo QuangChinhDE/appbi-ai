@@ -464,6 +464,7 @@ export default function DashboardsPage() {
                       dashboards={pageItems}
                       onDelete={canEdit ? handleDelete : undefined}
                       onShare={(dashboard) => setShareDash(dashboard)}
+                      onPublicLinks={canEdit ? (dashboard) => setPublicShareDash(dashboard) : undefined}
                       onDuplicate={canEdit ? handleDuplicate : undefined}
                       onExport={handleExport}
                       deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}

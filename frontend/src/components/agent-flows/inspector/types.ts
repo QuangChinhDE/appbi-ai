@@ -3,7 +3,7 @@
  *  One shape for all fourteen, so the shell does not have to know which editor
  *  wants what — and so adding a field is one change rather than fourteen. */
 import type {
-  Attachable, FlowNode, FlowType, NodeSpec, ProviderGroup, ToolPack,
+  Attachable, FlowNode, FlowType, NodeSpec, ProviderGroup, SkillSummary, ToolPack,
 } from '@/lib/agentFlows';
 
 export interface NodeEditorProps {
@@ -13,6 +13,8 @@ export interface NodeEditorProps {
   set: (patch: Partial<FlowNode>) => void;
   spec?: NodeSpec;
   toolPacks: ToolPack[];
+  /** Published Skills this author may attach. */
+  skills: SkillSummary[];
   providers: ProviderGroup[];
   attachable: Attachable | null;
   flowType: FlowType;

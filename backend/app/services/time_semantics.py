@@ -273,3 +273,64 @@ def accept_as_time_axis(name: str | None, values: Iterable[Any] | None = None) -
     if verdict == "none":
         return False
     return values is not None and values_look_like_time(values)
+
+
+def named_periods(text: str) -> set[tuple]:
+    """Explicit calendar periods named in `text`: ("m", y, m), ("q", y, q), ("y", y)."""
+    import unicodedata
+
+    t = unicodedata.normalize("NFKD", text or "")
+    t = "".join(c for c in t if not unicodedata.combining(c)).lower().replace("đ", "d")
+    out: set[tuple] = set()
+    for m in re.finditer(r"((?:19|20)\d{2})\s*-\s*(\d{1,2})(?!\d)", t):
+        if 1 <= int(m.group(2)) <= 12:
+            out.add(("m", int(m.group(1)), int(m.group(2))))
+    for m in re.finditer(r"(?:thang|thg|month)\s*(\d{1,2})\s*(?:/|-|\.|nam|of|,)?\s*((?:19|20)\d{2})", t):
+        if 1 <= int(m.group(1)) <= 12:
+            out.add(("m", int(m.group(2)), int(m.group(1))))
+    for m in re.finditer(r"(?<![\d/])(\d{1,2})/((?:19|20)\d{2})", t):
+        if re.search(r"(?:quy|q|quarter)\s*$", t[max(0, m.start() - 9):m.start()]):
+            continue                      # "quý 4/2017" is a quarter, not April
+        if 1 <= int(m.group(1)) <= 12:
+            out.add(("m", int(m.group(2)), int(m.group(1))))
+    for m in re.finditer(r"(?:quy|q|quarter)\s*([1-4])\s*(?:/|-|nam|of|,)?\s*((?:19|20)\d{2})", t):
+        out.add(("q", int(m.group(2)), int(m.group(1))))
+    for m in re.finditer(r"((?:19|20)\d{2})\s*-?\s*q([1-4])", t):
+        out.add(("q", int(m.group(1)), int(m.group(2))))
+    # "tháng 3 và tháng 4 năm 2018", "Q4 2017 vs Q3": a bare month/quarter takes
+    # the one year the text names (review: the first period was dropped).
+    years = {int(y) for y in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", t)}
+    if len(years) == 1:
+        (year,) = years
+        # `(?!\d)` first: without it "tháng 10/2017" backtracked to "tháng 1" and
+        # also named January (found by the follow-up regression).
+        for m in re.finditer(r"(?:thang|thg)\s*(\d{1,2})(?!\d)(?!\s*(?:/|-)\s*\d)", t):
+            if 1 <= int(m.group(1)) <= 12:
+                out.add(("m", year, int(m.group(1))))
+        for m in re.finditer(r"(?:quy|(?<![a-z])q)\s*([1-4])(?!\s*(?:/|-)?\s*\d)", t):
+            out.add(("q", year, int(m.group(1))))
+    if not out:
+        for m in re.finditer(r"(?<!viet )(?<!\w)nam\s*((?:19|20)\d{2})|(?<!\w)(?:in|year)\s+((?:19|20)\d{2})", t):
+            out.add(("y", int(m.group(1) or m.group(2))))
+    return out
+
+
+_YOY_WORDS = ("cung ky", "nam truoc", "nam ngoai", "yoy", "year over year", "year-over-year",
+              "same period last year", "last year")
+
+
+def comparison_baseline(text: str, period: tuple) -> tuple | None:
+    """The period one named period is compared WITH: the same period a year
+    earlier when the text says so ("cùng kỳ năm trước"), else the one before."""
+    import unicodedata
+
+    t = unicodedata.normalize("NFKD", text or "")
+    t = "".join(c for c in t if not unicodedata.combining(c)).lower().replace("đ", "d")
+    g, y = period[0], period[1]
+    if g == "y":
+        return ("y", y - 1)
+    n = period[2]
+    if any(w in t for w in _YOY_WORDS):
+        return (g, y - 1, n)
+    size = 12 if g == "m" else 4
+    return (g, y - 1, size) if n == 1 else (g, y, n - 1)

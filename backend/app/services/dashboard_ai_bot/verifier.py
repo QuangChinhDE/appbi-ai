@@ -69,6 +69,14 @@ _STRIP_SPANS = [
     re.compile(r"\[(?:DESC|DIAG|PRED|PRESC|HIGH|MED|LOW|WEB)\]", re.IGNORECASE),
     re.compile(r"https?://\S+"),
     re.compile(r"`[^`]*`"),               # inline code / ids
+    # A PERIOD IS A LABEL: "2018-08", "08/2018", "2018/08/31" name a time, not a
+    # figure. Found in the browser: a correct month-on-month answer read "2018-08"
+    # as a claim of 8 (and "-07" as 7) and was flagged "4 figures do not match".
+    re.compile(r"(?<![\d.,])\d{4}[-/.]\d{1,2}(?:[-/.]\d{1,2})?(?![\d])"),
+    re.compile(r"(?<![\d.,])\d{1,2}/\d{4}(?![\d])"),
+    # "tháng 7", "quý 4", "month 8" name a period too (browser, run 3775: "so với
+    # tháng 7, GMV tháng 8 …" was read as figures 7 and 8 beside a correct −5.23%).
+    re.compile(r"(?:th[áa]ng|thg|qu[ýy]|month|quarter)\s+\d{1,2}(?![\d/]|[.,]\d)", re.IGNORECASE),
     # A QUOTED NAME IS A LABEL — which is what this list already says about
     # citations. Answers cite their source by name, and report names carry digits:
     # `"Olist · Điểm đánh giá TB · page-1"` yielded a claim of 1, that matched no
@@ -83,6 +91,10 @@ _STRIP_SPANS = [
     # quote names; they do not quote numbers.
     re.compile(r"[\"“][^\"”]*[A-Za-zÀ-ỹ][^\"”]*[\"”]"),
 ]
+
+#: "100 phần trăm" is a percentage as surely as "100%" (found by review: the
+#: words form escaped the percentage rules entirely).
+_PCT_WORDS = re.compile(r"(?<=\d)\s*(?:phần\s*trăm|phan\s*tram|percent)(?!\w)", re.IGNORECASE)
 
 # Bare integers in this range read as years far more often than as figures.
 _YEAR_MIN, _YEAR_MAX = 1900, 2100
@@ -228,14 +240,21 @@ def _claim_alternates(answer: str) -> dict[float, tuple[float, ...]]:
 
 def extract_answer_numbers(answer: str) -> list[float]:
     """Every figure the answer actually CLAIMS, in order of appearance."""
-    text = answer or ""
+    return [v for v, _pct in extract_answer_claims(answer)]
+
+
+def extract_answer_claims(answer: str) -> list[tuple[float, bool]]:
+    """`extract_answer_numbers`, with whether each figure was written as a
+    percentage (a `%` sign, or the words "phần trăm"/"percent") — one parser, so
+    the two can never disagree about a figure."""
+    text = _PCT_WORDS.sub("%", answer or "")
     for pattern in _STRIP_SPANS:
         text = pattern.sub(" ", text)
 
     ordinals = {m.group(1) for m in _ORDINAL_RE.finditer(text)}
     text = _ORDINAL_RE.sub(" ", text)
 
-    out: list[float] = []
+    out: list[tuple[float, bool]] = []
     for m in _NUMBER_RE.finditer(text):
         raw = m.group("num")
         value = parse_number(raw)
@@ -261,7 +280,7 @@ def extract_answer_numbers(answer: str) -> list[float]:
                 continue
             if raw in ordinals and value <= 20:
                 continue
-        out.append(value)
+        out.append((value, is_pct))
     return out
 
 
@@ -273,6 +292,9 @@ def _matches(value: float, evidence: list[float], tolerance: float) -> bool:
         if scale == 0:
             continue
         if abs(ev - value) / scale <= tolerance:
+            return True
+        # "giảm 5,23%" states the MAGNITUDE of -5.23 with the direction in words.
+        if abs(abs(ev) - abs(value)) / scale <= tolerance:
             return True
         # A percentage may be written as 12,5 while evidence holds 0.125 (or
         # the reverse). Accept both readings rather than flagging a formatting

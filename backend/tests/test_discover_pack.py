@@ -272,13 +272,19 @@ def test_a_term_result_carries_the_retriever_s_keys_not_the_table_s():
     mod._metrics_in_scope = lambda *_a, **_k: []
     import sys
 
+    # RESTORED, not deleted: deleting left later tests patching a re-imported
+    # copy of the module while the code under test read the original.
+    saved = sys.modules.get("app.services.dashboard_ai_bot.govern_tools")
     sys.modules["app.services.dashboard_ai_bot.govern_tools"] = mod
     try:
         # `_Once` memoises the metric scope for one search — the finders share
         # it, so they take it rather than each resolving the scope again.
         out = D._terms(ctx, "danh mục", D._terms_of("danh mục"), D._Once(ctx, "danh mục"))
     finally:
-        del sys.modules["app.services.dashboard_ai_bot.govern_tools"]
+        if saved is not None:
+            sys.modules["app.services.dashboard_ai_bot.govern_tools"] = saved
+        else:
+            del sys.modules["app.services.dashboard_ai_bot.govern_tools"]
         assert original_scope is None or True
 
     assert out and out[0]["name"] == "Danh mục sản phẩm"
@@ -308,6 +314,7 @@ def test_the_metric_scope_is_resolved_once_per_search(monkeypatch):
 
     import sys
 
+    saved = sys.modules.get("app.services.dashboard_ai_bot.govern_tools")
     sys.modules["app.services.dashboard_ai_bot.govern_tools"] = _FakeGT
     try:
         ctx = _FakeCtx([], set())
@@ -315,7 +322,10 @@ def test_the_metric_scope_is_resolved_once_per_search(monkeypatch):
         D._metrics(ctx, "doanh thu", D._terms_of("doanh thu"), once)
         D._terms(ctx, "doanh thu", D._terms_of("doanh thu"), once)
     finally:
-        del sys.modules["app.services.dashboard_ai_bot.govern_tools"]
+        if saved is not None:
+            sys.modules["app.services.dashboard_ai_bot.govern_tools"] = saved
+        else:
+            del sys.modules["app.services.dashboard_ai_bot.govern_tools"]
 
     assert calls == ["doanh thu"], "the metric scope must be resolved exactly once"
 
@@ -329,3 +339,18 @@ def test_the_memo_does_not_outlive_one_search():
     """
     ctx = _FakeCtx([], set())
     assert D._Once(ctx, "a") is not D._Once(ctx, "a")
+
+
+def test_a_metric_only_search_that_finds_nothing_looks_at_the_charts(monkeypatch):
+    """Live efaa3873 runs 7291/7262/7260: `types: ["metric"]` for distinct_sellers /
+    total_freight / late_orders found no governed metric and the model concluded
+    the report had none — each is on a chart in scope."""
+    for kind in D._KINDS:
+        monkeypatch.setitem(D._FINDERS, kind, lambda *_a, **_k: [])
+    monkeypatch.setitem(D._FINDERS, "chart", lambda *_a, **_k: [
+        {"type": "chart", "id": 700, "name": "Số người bán hoạt động"}])
+    out = D.tool_search_business_assets(_FakeCtx([], set()), {"query": "distinct_sellers",
+                                                            "types": ["metric"]})
+    data = out["data"]
+    assert [r["id"] for r in data["results"]] == [700]
+    assert "chart" in data["coverage"]["searched"] and "CHARTS carry it" in data["coverage"]["note"]

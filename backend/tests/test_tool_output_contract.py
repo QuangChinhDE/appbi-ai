@@ -209,6 +209,28 @@ VERIFIED_AGAINST_REPORT_67 = frozenset({
 })
 
 
+#: Schemas CI verifies on EVERY run against real results — possible when a tool
+#: needs no warehouse. Each names the test file that does it; the check below
+#: makes sure that file exists, runs in CI, and actually exercises the tool.
+VERIFIED_IN_CI = {
+    # Pure: every result shape (certified, tainted, literal-only, step-referenced)
+    # is produced and validated against the declared schema, key by key and type
+    # by type, with `tools.schema_check`.
+    "compute": "tests/test_compute_typed_contract.py",
+}
+
+
+def test_a_ci_verifier_exists_runs_and_exercises_its_tool():
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    workflow = (root.parent / ".github" / "workflows" / "backend-contract-tests.yml").read_text(encoding="utf-8")
+    for tool, path in VERIFIED_IN_CI.items():
+        src = (root / path).read_text(encoding="utf-8")
+        assert tool in src and "schema_check" in src, f"{path} does not validate {tool}"
+        assert path in workflow, f"{path} verifies {tool} but CI never runs it"
+
+
 def test_no_schema_ships_without_having_been_verified_somewhere():
     """A schema nobody checked is worse than no schema: ToolNode would wire a
     variable that never arrives and the failure would land in front of a viewer.
@@ -218,7 +240,7 @@ def test_no_schema_ships_without_having_been_verified_somewhere():
     the failure this test exists to make loud.
     """
     declared = {n for n, _ in WITH_SCHEMA}
-    unverified = declared - VERIFIED_AGAINST_REPORT_67
+    unverified = declared - VERIFIED_AGAINST_REPORT_67 - set(VERIFIED_IN_CI)
 
     assert not unverified, (
         f"{sorted(unverified)} declare an output_schema that was never checked "
