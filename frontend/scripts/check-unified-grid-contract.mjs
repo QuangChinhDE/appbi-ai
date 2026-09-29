@@ -608,8 +608,19 @@ check('a control that draws nothing for a viewer leaves no blank band — and mo
   const locked = arrange.withoutAbsentControls([b(50, 0, 0, 8, 3), b(1, 0, 3, 12, 6, true)], new Set([50]));
   assert(locked.find((x) => x.id === 1).y === 3, 'a locked tile moved');
   const pv = source('components/dashboards/PublicDashboardView.tsx');
-  assert(/withoutAbsentControls\(/.test(pv) && /\{gridDashboardCharts\.map\(renderTileNode\)\}/.test(pv) && /const absentControlIds = filtersSeeded/.test(pv),
-    'the public grid still draws blank cells for absent controls, or decides before the filters are seeded');
+  // The LIVE grid — the one report grid the page renders — draws only the
+  // controls a viewer has, on the geometry that closed the absent ones' bands.
+  // (This used to match `gridDashboardCharts.map(renderTileNode)` inside a
+  // `gridSectionEl` block that was never rendered, so it verified dead code.)
+  const grids = pv.match(/<ResponsiveReportGrid\b[\s\S]*?<\/ResponsiveReportGrid>/g) || [];
+  assert(grids.length === 1, `expected exactly one public report grid, found ${grids.length}`);
+  assert(/^<ResponsiveReportGrid\b[^>]*?\blayouts=\{responsiveLayouts\}[\s\S]*?>\s*\{gridDashboardCharts\.map\(/.test(grids[0]),
+    'the public grid does not draw gridDashboardCharts on responsiveLayouts');
+  assert(/const layouts: Layout\[\] = projectedBoxes\.map\(/.test(pv) && /const projectedBoxes = withoutAbsentControls\(/.test(pv)
+      && /const responsiveLayouts = buildResponsiveReportLayouts\(layouts\b/.test(pv),
+    'the public grid geometry is not the absent-control projection');
+  assert(/const absentControlIds = filtersSeeded/.test(pv),
+    'the public grid decides which controls are absent before the filters are seeded');
 });
 
 check('a section heading stays above the content it introduces, at heading height, under every direction and a plan that forgets it', () => {
