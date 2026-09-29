@@ -429,7 +429,11 @@ def test_a_correct_month_on_month_with_period_labels_and_a_worded_sign(world):
     assert [v for v, _ in extract_answer_claims(text)] == [1003308.47, 1058728.03, 5.23]
     assert verify_answer(text, [1003308.47, 1058728.03, -5.23]).unmatched == []
     ctx, state = world(MOM_Q, asked=("gmv",))
-    _rec(state, "compare_periods", _compare(1003308.47, 1058728.03, -5.23), {"chart_id": MONTHLY})
+    res = _compare(1003308.47, 1058728.03, -5.23)
+    # FIXTURE DATA FIX (declared): 1,003,308.47 is 2018-08 and 1,058,728.03 is
+    # 2018-07, as the text says; the helper's default labels were a month off.
+    res["data"]["current"]["label"], res["data"]["baseline"]["label"] = "2018-08", "2018-07"
+    _rec(state, "compare_periods", res, {"chart_id": MONTHLY})
     assert _why(state, ctx, text) == []
 
 
@@ -855,3 +859,45 @@ def test_a_seller_states_figure_is_not_the_customer_states(world):
     [row] = [e for e in claim_scope.describe("get_chart_summary", summary, chart_dims=state.chart_dims)
              if e["value"] == 1011564.74]
     assert row["member"] == "MG" and row["dimension"] == "seller_state", "a summary row keeps its member"
+
+
+# ── live at 94e1db2d: relabelled member, shared cue word, follow-up period ───
+
+def test_a_member_relabelled_as_the_asked_one_is_withheld(world):
+    """Live runs 4901/4943: "Doanh thu bang Minas Gerais (SP) là 8,753,396.21"."""
+    ctx, state = world("Bang Minas Gerais có bao nhiêu đơn hàng?", asked=("order_count",))
+    _states(ctx, state)
+    assert (41746.0, "other_member") in _why(state, ctx, "Bang Minas Gerais (SP) có 41,746 đơn hàng.")
+    assert _why(state, ctx, "Bang Minas Gerais (MG) có 11,635 đơn hàng.") == []
+
+
+def test_another_period_row_in_a_follow_up_is_withheld(world):
+    """Live runs 4849/4874: follow-up "Còn tháng trước đó thì sao?" →
+    "GMV tháng 10/2017 là 56808.84", a figure of ANOTHER month's row."""
+    ctx, state = world("Còn tháng trước đó thì sao?", asked=("gmv",))
+    _rec(state, "get_chart_data", {"ok": True, "kind": "table", "data": {
+        "chart_id": MONTHLY, "columns": ["year_month", "gmv"],
+        "rows": [["2017-01", 56808.84], ["2017-10", 769312.37], ["2017-11", 1179143.77]]}},
+        {"chart_id": MONTHLY})
+    assert (56808.84, "wrong_period") in _why(state, ctx, "GMV tháng 10/2017 là 56808.84.")
+    assert _why(state, ctx, "GMV tháng 1/2017 là 56808.84.") == []
+    assert _why(state, ctx, "GMV tháng 10/2017 là 769,312.37.") == []
+
+
+def test_a_breakdown_is_named_by_what_distinguishes_it(world):
+    """Live run 4907: "bang" names both the customer- and the seller-state chart."""
+    from app.services.agent_flows.runtime import claim_check
+
+    ctx, _state = world("Doanh thu của bang Minas Gerais là bao nhiêu?")
+    ctx.allowed_chart_ids.add(703)
+    ctx.chart_meta[703] = {"name": "Olist · Doanh thu theo bang (người bán) · page-3", "fields": {
+        "measures": [{"field": "dataset_table_438.total_revenue"}],
+        "dimensions": [{"field": "dataset_table_443.seller_state"}]}}
+    assert not claim_check._names_dimension(ctx, "seller_state", "customer_state")
+    ctx.question = "Doanh thu của người bán ở bang Minas Gerais là bao nhiêu?"
+    assert claim_check._names_dimension(ctx, "seller_state", "customer_state")
+
+
+def test_a_two_digit_month_is_not_also_january():
+    assert CC._periods("GMV tháng 10/2017 là 56808.84.") == {("m", 2017, 10)}
+    assert CC._periods("tháng 10 và tháng 11 năm 2017") == {("m", 2017, 10), ("m", 2017, 11)}

@@ -172,10 +172,43 @@ def _confirmed(ctx: Any, dim: str | None) -> bool:
     return bool(folded - measure_words)
 
 
-def _names_dimension(ctx: Any, dim: str) -> bool:
+def _title_words_of(ctx: Any, dim: str) -> set[str]:
+    """Every folded word of the titles of charts grouped by `dim`, parentheses
+    included — "(khách)" and "(người bán)" are what tell two state charts apart."""
+    import re
+
+    from app.services.agent_flows.tools.dimension_gate import field_key
+
+    out: set[str] = set()
+    for meta in (getattr(ctx, "chart_meta", None) or {}).values():
+        dims = [d.get("field") if isinstance(d, dict) else d
+                for d in (((meta or {}).get("fields") or {}).get("dimensions") or [])]
+        if any(field_key(str(d)) == dim for d in dims if d):
+            out |= set(re.findall(r"[^\W\d_]+", _fold(str((meta or {}).get("name") or ""))))
+    return out
+
+
+def _names_dimension(ctx: Any, dim: str, requested: str | None = None) -> bool:
+    import re
+
     from app.services.agent_flows.tools.dimension_gate import (
         _chart_dimension_vocabulary, _dimension_terms, field_key, title_hits,
     )
+
+    # TWO BREAKDOWNS WITH ONE CUE WORD. "bang" names both the customer-state and
+    # the seller-state chart, so a seller-state figure passed as the answer to a
+    # customer-state question (live run 4907). When another breakdown was asked,
+    # only a word that DISTINGUISHES this one's titles from it counts.
+    if requested and requested != dim:
+        distinct = _title_words_of(ctx, dim) - _title_words_of(ctx, requested)
+        if distinct:
+            # The question's words MINUS its measure words (the gate's own split):
+            # "doanh thu" is in a category title and not in a state title, and in
+            # the question because it is the measure — it names no breakdown.
+            not_measure, _raw = _dimension_terms(ctx, str(getattr(ctx, "question", "") or ""))
+            asked = {w for w in not_measure} & set(re.findall(r"[^\W\d_]+", _fold(
+                str(getattr(ctx, "question", "") or ""))))
+            return bool(distinct & asked)
 
     wanted, raw = _dimension_terms(ctx, str(getattr(ctx, "question", "") or ""))
     for ref, field_words, title_words in _chart_dimension_vocabulary(ctx):
@@ -294,10 +327,14 @@ def _asked_member_by_cue(ctx: Any, t: dict, question: str) -> list[str] | None:
         from app.services.agent_flows.tools.dimension_gate import chart_dimension_words, field_key
 
         cues: set[str] = set()
+        others: set[str] = set()
         for rows in chart_dimension_words(ctx).values():
             for ref, _fw, title_words in rows:
-                if field_key(ref) == dim:
-                    cues |= {_fold(w) for w in title_words}
+                (cues if field_key(ref) == dim else others).update(_fold(w) for w in title_words)
+        # A CUE NAMES THIS BREAKDOWN: "bang" is in state titles only; "đơn", "số",
+        # "theo" are in every breakdown's titles ("Số đơn theo bang"), and "hủy đơn
+        # của bang SP" read "của" as the asked member (found by the regression suite).
+        cues -= others
     except Exception:                                           # noqa: BLE001
         return None
     words = re.findall(r"\(|\)|[^\W_]+", _fold(question))
@@ -317,6 +354,9 @@ def _asked_member_by_cue(ctx: Any, t: dict, question: str) -> list[str] | None:
         outside = _squash(re.sub(r"\([^)]*\)", " ", text.replace(" ( ", " (").replace(" ) ", ") ")))
         inside = [_squash(m) for m in re.findall(r"\(([^)]*)\)", text.replace(" ( ", " (").replace(" ) ", ") "))]
         cands = [c for c in (outside, *inside) if len(c) >= 2]
+        words_out = re.sub(r"\([^)]*\)", " ", text.replace(" ( ", " (").replace(" ) ", ") ")).split()
+        if cands and _initials(words_out):
+            cands.append(_initials(words_out))
         if cands:
             return cands
     return None
@@ -364,6 +404,8 @@ def _asked_member(ctx: Any, t: dict, question: str) -> list[str] | None:
             continue
         if phrase:
             cands.append(_squash(" ".join(phrase)))
+            if _initials(phrase):
+                cands.append(_initials(phrase))
             phrase = []
     for m in re.finditer(r"(?<![\d.,/])(\d{1,3})\s+([^\W\d_]+)", _fold(question)):
         # Only a qualifier the REPORT uses ("5 sao" in "Tỷ lệ 5 sao (%)"): "Top 3
@@ -430,6 +472,13 @@ def _given_a_meaning(sentence: str, question: str, asked: list[str] | None) -> b
                                for c in asked)
 
 
+def _initials(words: list[str]) -> str | None:
+    """"Minas Gerais" -> "mg": the code a multi-word name is usually stored as.
+    Only for two or three words, so a long phrase never acts as a code."""
+    ws = [_squash(w) for w in words if _squash(w)]
+    return "".join(w[0] for w in ws) if 2 <= len(ws) <= 3 else None
+
+
 def _misattributed(support: list[dict], asked: list[str] | None, sentence: str) -> str | None:
     """THE SENTENCE SAYS WHOSE FIGURE IT IS. Acceptance, published: SP's revenue
     as Minas Gerais's (run 4245), health_beauty's as bed_bath_table's (4200), the
@@ -442,9 +491,18 @@ def _misattributed(support: list[dict], asked: list[str] | None, sentence: str) 
         return None                      # the sentence does not give it to the asked member
     members = [e for e in support if e.get("member") and not _is_time(e.get("dimension"))]
     if members:
-        if any(_names(sentence, e["member"]) or _squash(e["member"]) in asked for e in members):
-            return None
-        return "other_member"
+        named = [e for e in members if _names(sentence, e["member"]) or _squash(e["member"]) in asked]
+        if not named:
+            return "other_member"
+        # "Minas Gerais (SP)": the sentence names BOTH the asked member and the
+        # figure's member, relabelling one as the other (live runs 4901, 4943).
+        # The question's own code (the initials of "Minas Gerais" → MG) differs
+        # from the code-like member the figure belongs to.
+        codes = {c for c in asked if len(c) <= 3}
+        if codes and all(len(_squash(e["member"])) <= 3 and _squash(e["member"]) not in codes
+                         for e in named):
+            return "other_member"
+        return None
     if all(not e.get("dimension") and not e.get("member") for e in support):
         return "whole_as_member"
     return None
@@ -527,7 +585,7 @@ def _names_measure(ctx: Any, measure: str) -> bool:
 def _contradiction(e: dict, t: dict, ctx: Any) -> str | None:
     dim = e.get("dimension")
     if dim and not _is_time(dim) and t["dimension"] and dim != t["dimension"] \
-            and not _names_dimension(ctx, dim):
+            and not _names_dimension(ctx, dim, t["dimension"]):
         return "other_dimension"
     meas = e.get("measure")
     if meas and t["measures"] and meas not in t["measures"] and not _names_measure(ctx, meas):
@@ -616,7 +674,14 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                 flagged.append({"value": value, "pct": pct, "why": "wrong_direction",
                                 "of": {"measure": signed[0].get("measure"), "dimension": None, "member": None}})
                 continue
+        # A follow-up names no period; its sentence may ("GMV tháng 10/2017 là
+        # 56808.84" — another month's row, live runs 4849/4874).
+        # Only for a figure that IS one period's row: whole totals and changes keep
+        # the question's own periods (the sentence's dates would misjudge them).
         asked_periods = _periods(question)
+        if not asked_periods and support and all(
+                _is_time(e.get("dimension")) and e.get("member") for e in support):
+            asked_periods = _periods(_sentence_of(text, value))
         if asked_periods and _wrong_period(support, asked_periods, _sentence_of(text, value), question):
             flagged.append({"value": value, "pct": pct, "why": "wrong_period",
                             "of": {"measure": support[0].get("measure"), "dimension": None,

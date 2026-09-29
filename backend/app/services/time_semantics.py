@@ -302,7 +302,9 @@ def named_periods(text: str) -> set[tuple]:
     years = {int(y) for y in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", t)}
     if len(years) == 1:
         (year,) = years
-        for m in re.finditer(r"(?:thang|thg)\s*(\d{1,2})(?!\s*(?:/|-)\s*\d)", t):
+        # `(?!\d)` first: without it "tháng 10/2017" backtracked to "tháng 1" and
+        # also named January (found by the follow-up regression).
+        for m in re.finditer(r"(?:thang|thg)\s*(\d{1,2})(?!\d)(?!\s*(?:/|-)\s*\d)", t):
             if 1 <= int(m.group(1)) <= 12:
                 out.add(("m", year, int(m.group(1))))
         for m in re.finditer(r"(?:quy|(?<![a-z])q)\s*([1-4])(?!\s*(?:/|-)?\s*\d)", t):
