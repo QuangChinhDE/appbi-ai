@@ -539,6 +539,13 @@ def _cache_key(ctx: Any, name: str, args: dict) -> str | None:
                 # A result read under one page scope never answers another.
                 sorted((str(k), v) for k, v in (getattr(ctx, "page_scope_by_chart", None) or {}).items()),
                 _authorization_identity(ctx),
+                # WHAT THE TURN RESOLVED CHANGES WHAT A BODY RETURNS. With no
+                # `measure` argument, a row tool measures the turn's asked measure,
+                # and a member written in words filters by the code it resolved to.
+                # Keyed on args alone, one question's revenue comparison of chart 692
+                # would answer the next question's orders comparison.
+                sorted(str(m) for m in (getattr(ctx, "asked_measures", None) or [])),
+                sorted((getattr(ctx, "member_aliases", None) or {}).items()),
                 name,
                 args,
             ],

@@ -605,3 +605,24 @@ def test_a_two_measure_chart_compares_the_measure_asked(stub, monkeypatch):
     assert abs(got["pct_change"] - (-26.36)) < 0.01, got
     named = ok(ADV.tool_compare_periods(Ctx(), {**args, "measure": "orders_with_items"}))
     assert abs(named["pct_change"] - (-24.52)) < 0.01, named
+
+
+def test_the_cross_run_cache_keys_on_what_the_turn_resolved():
+    """Integration review (Agent Flow x Dashboard): with no `measure` argument a row
+    tool measures ctx.asked_measures, and a member in words filters by
+    ctx.member_aliases; a process-wide cache keyed without them would serve one
+    question's revenue comparison to another's orders comparison."""
+    from types import SimpleNamespace
+
+    from app.services.agent_flows.tools import registry as REG
+
+    def ctx(**kw):
+        return SimpleNamespace(dashboard=SimpleNamespace(id=67), public_filters=[],
+                               allowed_chart_ids={692}, excluded_columns=set(), knowledge_scope={},
+                               actor_type="public_session", actor_ref=None, **kw)
+    args = {"chart_id": 692, "mode": "custom", "period_a": "2017-12", "period_b": "2017-11"}
+    rev = REG._cache_key(ctx(asked_measures=["total_revenue"], member_aliases={}), "compare_periods", args)
+    orders = REG._cache_key(ctx(asked_measures=["orders_with_items"], member_aliases={}), "compare_periods", args)
+    rj = REG._cache_key(ctx(asked_measures=[], member_aliases={"rio de janeiro": "RJ"}), "smart_drilldown", args)
+    none = REG._cache_key(ctx(asked_measures=[], member_aliases={}), "smart_drilldown", args)
+    assert rev != orders and rj != none
