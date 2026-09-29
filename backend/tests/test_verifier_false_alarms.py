@@ -104,3 +104,24 @@ def test_a_bare_month_name_is_a_label_not_a_figure():
     got = [v for v, _ in extract_answer_claims(
         "So với tháng 7, GMV tháng 8 đã giảm 55,419.56, tức -5.23%. Có 12 tháng dữ liệu.")]
     assert got == [55419.56, -5.23, 12.0]
+
+
+@pytest.mark.parametrize("answer", [
+    "Cả Olist · Doanh thu sản phẩm · page-1, page-2 đều ghi nhận 13.591.643,7.",
+    "Các biểu đồ KPI trên trang 1 và trang 2 đều là 13.591.643,7.",
+    "Không lấy được nội dung từ chart_id 692 nên chưa có số tháng 12/2025.",
+    "Tổng là 13.591.643,7.\n[FOLLOWUP] Bạn muốn xem top 5 hay top 10 danh mục không?",
+])
+def test_pages_chart_ids_and_top_n_are_labels(answer):
+    """Live e7ced37d (browser, link 39): correct answers carried "N con số không
+    khớp" for an unquoted chart name's page, a chart id and the "top 5" of a
+    follow-up question — each a count or an id, never a figure the answer claims."""
+    assert verify_answer(answer, [13591643.7]).unmatched == []
+
+
+def test_a_figure_beside_those_labels_is_still_checked():
+    """The labels are stripped, not the sentence: an invented figure next to them
+    is still reported, in the prose and in a follow-up question alike."""
+    out = verify_answer("Top 5 danh mục (page-1) đạt 9.999.999.\n[FOLLOWUP] Doanh thu 7.777.777 có ổn không?",
+                        [13591643.7])
+    assert sorted(out.unmatched) == [7777777.0, 9999999.0]

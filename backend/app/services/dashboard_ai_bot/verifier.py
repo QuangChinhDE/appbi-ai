@@ -90,6 +90,14 @@ _STRIP_SPANS = [
     # A letter is required inside, so a quoted FIGURE is still checked. Models
     # quote names; they do not quote numbers.
     re.compile(r"[\"“][^\"”]*[A-Za-zÀ-ỹ][^\"”]*[\"”]"),
+    # THE SAME NAMES, UNQUOTED, AND THE OTHER LABELS AN ANSWER CARRIES. Live e7ced37d
+    # (browser, link 39): correct answers shipped under "N con số không khớp" for
+    # "page-1, page-2" (a chart's own name, written without quotes), "chart_id 692"
+    # (a reference) and "top 5" / "top 10" (how many to show, in a follow-up
+    # question). None is a figure the answer claims; each is a count or an id.
+    re.compile(r"(?<![\w])(?:page|trang)[\s-]*\d{1,3}(?!\d|[.,]\d|\s*%)", re.IGNORECASE),
+    re.compile(r"(?<![\w])chart[_\s-]?id\s*[:#=]?\s*\d+", re.IGNORECASE),
+    re.compile(r"(?<![\w])top[\s-]*\d{1,3}(?!\d|[.,]\d|\s*%)", re.IGNORECASE),
 ]
 
 #: "100 phần trăm" is a percentage as surely as "100%" (found by review: the
