@@ -205,6 +205,19 @@ async def run_flow(
                 provider=inp.runtime.provider, api_key=api_key, model=inp.runtime.model)
         except Exception:                                       # noqa: BLE001
             logger.warning("[flow] intent resolution failed", exc_info=True)
+        try:
+            # THE TOOLS FILTER BY WHAT WAS RESOLVED, not by the reader's words: a
+            # drilldown on "Rio de Janeiro" over rows that say "RJ" matched nothing
+            # and was published as a revenue of 0 (smoke run at e98d1b8d).
+            from app.services.agent_flows.tools.context import value_key
+
+            ctx.member_aliases = {
+                value_key(m["said"]): m["code"]
+                for m in ((getattr(state, "intent", None) or {}).get("members") or [])
+                if m.get("said") and m.get("code")
+            }
+        except Exception:                                       # noqa: BLE001
+            pass
         if getattr(state, "intent", None):
             # On the ANSWERING step's trace — the one the Runs inspector shows the
             # author next to the claim verdict it drives.

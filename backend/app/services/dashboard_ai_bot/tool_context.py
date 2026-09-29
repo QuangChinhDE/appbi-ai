@@ -39,6 +39,7 @@ from app.services.agent_flows.tools.context import (  # noqa: F401
     fold_column,
     resolve_column,
     resolve_field_label,
+    resolve_value,
 )
 
 __all__ = [
@@ -51,5 +52,6 @@ __all__ = [
     "fields_block",
     "fold_column",
     "resolve_column",
+    "resolve_value",
     "resolve_field_label",
 ]

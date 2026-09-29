@@ -42,7 +42,7 @@ from app.services.dashboard_ai_bot.thinking.tools import (
     _err,
     _round,
 )
-from app.services.dashboard_ai_bot.tool_context import resolve_column
+from app.services.dashboard_ai_bot.tool_context import resolve_column, resolve_value
 
 logger = logging.getLogger(__name__)
 
@@ -1199,6 +1199,19 @@ def _changepoint(points: list[tuple[str, float]], measure: str, chart_id: int) -
 # layered on top of the existing chart filters.
 
 
+def _no_match_note(column: str, match: Any, values: list[Any]) -> str:
+    """What a filter that matched nothing means — NOT that the value is zero."""
+    shown: list[str] = []
+    for v in values:
+        if v is not None and str(v) not in shown:
+            shown.append(str(v))
+        if len(shown) >= 30:
+            break
+    return (f"No row has {column} = {match!r}. This is NOT a zero value: the data "
+            f"writes this column as {', '.join(shown)}. Retry with one of these values, "
+            "or say the report has no row for it — never report 0.")
+
+
 def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
     chart_id = args.get("chart_id")
     column = args.get("column")
@@ -1237,6 +1250,8 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
     if column not in columns:
         return _err(f"column '{column}' not in chart columns {columns}", code="bad_argument")
     col_idx = columns.index(column)
+    if op in ("eq", "ne"):
+        match = resolve_value(ctx, match, [r[col_idx] for r in rows if col_idx < len(r)])
 
     def _matches(v: Any) -> bool:
         if v is None:
@@ -1268,6 +1283,7 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
             "n_rows_matching": 0,
             "rows": [],
             "totals": None,
+            "note": _no_match_note(column, match, [r[col_idx] for r in rows if col_idx < len(r)]),
         })
 
     measure_idx = _detect_measure_idx(columns, filtered)
@@ -1537,17 +1553,35 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
         parsed_aggs.append({"op": op, "col_idx": col_idx, "out": out_name, "src": col})
 
     # Apply pre-filters (the agent can reuse the same filter dict shape)
+    no_match = ""
     pre_filters = args.get("filters") or []
     if not isinstance(pre_filters, list):
         return _err("filters must be a list of {column, op, value} dicts")
     if pre_filters:
-        rows = [
+        resolved = []
+        for f in pre_filters:
+            if isinstance(f, dict) and str(f.get("op") or "eq").lower() in ("eq", "neq", "ne"):
+                c = resolve_column(f.get("column"), columns)
+                if c is not None:
+                    i = columns.index(c)
+                    f = {**f, "value": resolve_value(ctx, f.get("value"), [r[i] for r in rows if i < len(r)])}
+            resolved.append(f)
+        pre_filters = resolved
+        kept = [
             r for r in rows
             if all(_row_passes_filter(r, columns, f) for f in pre_filters if isinstance(f, dict))
         ]
+        if not kept:
+            first = next((f for f in pre_filters if isinstance(f, dict)), {})
+            c = resolve_column(first.get("column"), columns)
+            if c is not None:
+                i = columns.index(c)
+                no_match = _no_match_note(c, first.get("value"), [r[i] for r in rows if i < len(r)])
+        rows = kept
 
     if not rows:
         return _ok({
+            **({"note": no_match} if no_match else {}),
             "chart_id": chart_id,
             "group_by": group_by,
             "aggregations": [{"op": a["op"], "column": a["src"], "as": a["out"]} for a in parsed_aggs],

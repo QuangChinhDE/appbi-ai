@@ -502,6 +502,35 @@ def resolve_column(name: Any, columns: list[str]) -> str | None:
     return hits[0] if len(hits) == 1 else None
 
 
+def value_key(x: Any) -> str:
+    """How two spellings of one value compare: case, accents and `_` aside."""
+    return fold_column(str(x)).replace("_", " ").strip()
+
+
+def resolve_value(ctx: Any, value: Any, values: list[Any]) -> Any:
+    """The column value a caller means when filtering on `value`.
+
+    Smoke run at e98d1b8d: the intent had resolved "Rio de Janeiro" to RJ and
+    "sports leisure" to sports_leisure, but the drilldown filtered on the words the
+    reader used, matched nothing, and the reader was told the revenue was 0. Exact
+    value first; then the one value equal up to case, accents and `_`; then the
+    member the runtime resolved for this turn (`ctx.member_aliases`). Never guessed.
+    """
+    if value is None or not isinstance(value, (str, int, float)):
+        return value
+    present = {str(v) for v in values if v is not None}
+    if str(value) in present:
+        return value
+    want = value_key(value)
+    hits = [v for v in present if value_key(v) == want]
+    if len(hits) == 1:
+        return hits[0]
+    code = (getattr(ctx, "member_aliases", None) or {}).get(want)
+    if code is not None and str(code) in present:
+        return code
+    return value
+
+
 def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:
     """Columns GovernAIScope hides from the AI, for the datasets behind this
     dashboard's charts. Best-effort: a resolve failure must never break a turn,

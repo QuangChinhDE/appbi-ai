@@ -540,3 +540,35 @@ def test_a_custom_period_written_as_the_question_wrote_it_is_compared(stub):
                                                       "period_a": "12/2031", "period_b": "2024-11"}),
                      kind="comparison")
     assert miss["error_code"] == "period_not_in_chart", miss
+
+
+def test_a_member_filters_by_the_value_the_rows_carry(stub):
+    """Smoke run at e98d1b8d: intent resolved "Rio de Janeiro" to RJ, but the
+    drilldown filtered on the reader's words, matched nothing, and 0 was published."""
+    stub([("SP", 5000.0), ("RJ", 1800.0), ("sports_leisure", 900.0)], dim="dataset_table_441.customer_state")
+    ctx = Ctx()
+    ctx.member_aliases = {"rio de janeiro": "RJ"}
+    drill = ok(ADV.tool_smart_drilldown(ctx, {"chart_id": 1, "column": "customer_state",
+                                             "match": "Rio de Janeiro"}))
+    assert drill["n_rows_matching"] == 1 and drill["totals"]["sum"] == 1800.0, drill
+    spelled = ok(ADV.tool_smart_drilldown(Ctx(), {"chart_id": 1, "column": "customer_state",
+                                                 "match": "Sports Leisure"}))
+    assert spelled["n_rows_matching"] == 1, spelled
+    agg = ok(ADV.tool_aggregate_chart_data(ctx, {
+        "chart_id": 1, "group_by": ["customer_state"],
+        "aggregations": [{"column": "revenue", "op": "sum"}],
+        "filters": [{"column": "customer_state", "op": "eq", "value": "Rio de Janeiro"}]}))
+    assert agg["n_groups"] == 1, agg
+
+
+def test_a_filter_that_matches_nothing_says_it_is_not_zero(stub):
+    stub([("SP", 5000.0), ("RJ", 1800.0)], dim="dataset_table_441.customer_state")
+    drill = ok(ADV.tool_smart_drilldown(Ctx(), {"chart_id": 1, "column": "customer_state",
+                                               "match": "Curitiba"}))
+    assert drill["n_rows_matching"] == 0 and "NOT a zero value" in drill["note"], drill
+    assert "SP" in drill["note"] and "RJ" in drill["note"]
+    agg = ok(ADV.tool_aggregate_chart_data(Ctx(), {
+        "chart_id": 1, "group_by": ["customer_state"],
+        "aggregations": [{"column": "revenue", "op": "sum"}],
+        "filters": [{"column": "customer_state", "op": "eq", "value": "Curitiba"}]}))
+    assert "NOT a zero value" in agg.get("note", ""), agg
