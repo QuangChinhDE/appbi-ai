@@ -244,6 +244,10 @@ export function packNewGridTiles(
  */
 export function defaultSizeForChartType(chartType: string | null | undefined): { w: number; h: number } {
   const t = String(chartType || '').toLowerCase();
+  // A KPI card is a label, a figure and at most a context line: about 190px,
+  // not the 3 old rows (~270px) that left a band of empty space under every new
+  // KPI. Set on the finer grid directly (7 rows).
+  if (t === 'kpi' || t === 'card') return { w: 4 * GRID_FINER, h: 7 };
   // Sizes are authored in the OLD 12-col / 80px-row units (so this table stays
   // readable) and scaled to the finer grid by GRID_FINER at the end — a KPI is
   // still "3 per row", a table still wide+tall, spatial charts still roomy.

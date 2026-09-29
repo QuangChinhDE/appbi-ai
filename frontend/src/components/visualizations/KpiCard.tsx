@@ -511,7 +511,12 @@ export function KpiCard({
   // share so it FILLS the card; the width clamp below still guarantees it never
   // overflows or wraps. Cards WITH panels keep a smaller share (the panels need
   // the room). A context line, when present, also wants breathing room.
-  const valueHeightShare = (panelsPresent && !dropPanels) ? 0.24 : (contextText ? 0.4 : 0.52);
+  // A LEAD figure is what the page is about: it takes a larger share of its
+  // card (a quiet one a smaller); capped by the same width clamp, so it never
+  // wraps. Without this a lead KPI in a compact card was barely larger than its
+  // neighbours — the emphasis scaled a ceiling the height never reached.
+  const emphasisShare = tileEmphasis === 'lead' ? 1.25 : tileEmphasis === 'quiet' ? 0.85 : 1;
+  const valueHeightShare = ((panelsPresent && !dropPanels) ? 0.24 : (contextText ? 0.4 : 0.52)) * emphasisShare;
   const heightFont = boxH * valueHeightShare;
   // Width budget — the fix. A long full-format number (e.g. "3,907,698,730",
   // 13 chars) at a height-derived 56px is far WIDER than a narrow tile, so the

@@ -185,7 +185,7 @@ function FindingPicker({
         )}
         {[...byTile.entries()].map(([tileId, list]) => (
           <div key={tileId}>
-            <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-text-quaternary">
+            <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-text-tertiary">
               {context?.tileTitle?.(tileId) ?? `#${tileId}`}
             </div>
             {list.map((it) => (
@@ -252,11 +252,30 @@ export function NarrativeForm({ config, set, context }: { config: any; set: (k: 
 }
 
 export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  // The label names its control for assistive technology: a single input,
+  // textarea or select gets the label's id (and the hint as its description);
+  // anything else (a radio group, a picker) is a group named by the label.
+  const id = React.useId();
+  const hintId = hint ? `${id}-hint` : undefined;
+  const single = React.isValidElement(children) && typeof children.type === 'string'
+    && ['input', 'textarea', 'select'].includes(children.type);
+  const control = single
+    ? React.cloneElement(children as React.ReactElement<any>, {
+      id: (children as React.ReactElement<any>).props.id ?? `${id}-control`,
+      'aria-describedby': (children as React.ReactElement<any>).props['aria-describedby'] ?? hintId,
+    })
+    : children;
   return (
-    <div>
-      <label className="mb-1 block text-[12px] font-[510] text-text-secondary">{label}</label>
-      {children}
-      {hint && <p className="mt-1 text-[11px] text-text-tertiary">{hint}</p>}
+    <div role={single ? undefined : 'group'} aria-labelledby={single ? undefined : `${id}-label`}>
+      <label
+        id={`${id}-label`}
+        htmlFor={single ? ((children as React.ReactElement<any>).props.id ?? `${id}-control`) : undefined}
+        className="mb-1 block text-[12px] font-[510] text-text-secondary"
+      >
+        {label}
+      </label>
+      {control}
+      {hint && <p id={hintId} className="mt-1 text-[11px] text-text-tertiary">{hint}</p>}
     </div>
   );
 }
@@ -603,7 +622,7 @@ export function ParameterSwitcherForm({
               <button
                 type="button"
                 onClick={() => removeOption(i)}
-                className="rounded-md p-1.5 text-text-quaternary hover:bg-danger/10 hover:text-danger"
+                className="rounded-md p-1.5 text-text-tertiary hover:bg-danger/10 hover:text-danger"
                 title={t('dashboards.widgetEdit.removeOption')}
               >
                 <Trash2 className="h-3.5 w-3.5" />

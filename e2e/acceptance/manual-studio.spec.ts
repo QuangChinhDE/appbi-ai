@@ -16,7 +16,9 @@ import path from 'node:path';
  *   M3  improve a migrated report (574 or its copy): the outline names what is
  *       there, a section is moved, a header is added, filters keep working.
  *   M4  two independent datasets in one report: each section reads its own data,
- *       the header states the period both cover, insights from both.
+ *       the header states each dataset's own period.
+ *   M5  an Inspector edit and the lifecycle: Publish right after typing ships it,
+ *       Discard right after typing never has it written back.
  *
  * Every mutation goes through the builder UI (palette, Inspector, grid drags,
  * toolbar). The API is used only to read state back, create a share link and
@@ -289,12 +291,35 @@ async function publicAt(ctx: BrowserContext, url: string, r: Result, prefix: str
         order: order.map((o) => o.id),
         kinds: order.map((o) => o.kind),
         kpis: Array.from(document.querySelectorAll('.dashboard-kpi-value')).map((e) => ({ text: (e.textContent ?? '').trim(), size: parseFloat(getComputedStyle(e).fontSize) })),
+        // The last x tick of every chart must sit inside its chart (it was cut to "Oct 1").
+        clippedTicks: Array.from(document.querySelectorAll('svg.recharts-surface')).flatMap((svg) => {
+          const box = svg.getBoundingClientRect();
+          return Array.from(svg.querySelectorAll('.recharts-xAxis .recharts-cartesian-axis-tick text')).filter((tx) => {
+            const b = (tx as SVGGraphicsElement).getBoundingClientRect();
+            return b.width > 0 && (b.right > box.right + 1 || b.left < box.left - 1);
+          }).map((tx) => (tx.textContent ?? '').trim());
+        }),
+        // A short legend shows every label (a scroll strip hid the second one on a phone).
+        clippedLegends: Array.from(document.querySelectorAll('.recharts-legend-wrapper ul')).filter((ul) => {
+          const el = ul as HTMLElement;
+          return el.children.length <= 6 && el.scrollWidth > el.clientWidth + 1;
+        }).map((ul) => (ul.textContent ?? '').trim().slice(0, 60)),
+        // Header, text and KPI cards show all they say (the phone split header was cut off).
+        clippedContent: Array.from(document.querySelectorAll('[data-grid-item-id]')).flatMap((item) => {
+          const tile = item.querySelector('[data-widget-type="hero_strip"], [data-widget-type="text"], [data-widget-type="narrative"], [data-tile-kind="kpi"]') as HTMLElement | null;
+          if (!tile) return [];
+          const inner = tile.querySelector('.dashboard-report-header, .dashboard-narrative') as HTMLElement | null ?? tile;
+          return inner.scrollHeight > inner.clientHeight + 3 ? [item.getAttribute('data-grid-item-id')] : [];
+        }),
       };
     });
     const a = await audit(p);
     const hard = (a?.findings ?? []).filter((f) => HARD.includes(f.code));
     check(r, `${prefix} public ${w}px: no render defect`, hard.length === 0, hard.map((f) => `${f.code}@${f.tileId}`).join(','));
     check(r, `${prefix} public ${w}px: no sideways scroll`, !info.overflowX);
+    check(r, `${prefix} public ${w}px: no chart cuts its last axis label`, info.clippedTicks.length === 0, info.clippedTicks.join(','));
+    check(r, `${prefix} public ${w}px: headers, text and KPI cards show all they say`, info.clippedContent.length === 0, info.clippedContent.join(','));
+    check(r, `${prefix} public ${w}px: every short legend shows all its labels`, info.clippedLegends.length === 0, info.clippedLegends.join(' | '));
     out[w] = info;
     await shot(p, r, `${prefix}-public-${w}`);
     await p.close();
@@ -558,7 +583,7 @@ test('M2 an existing report of charts becomes a composed report', async ({ page,
   await shot(page, r, 'M2-02-composed');
 
   await saveAndPublish(page, request, id, r);
-  const token = await linkFor(request, id);
+  const token = await linkFor(request, id, 'Olist commercial review — partners');
   const pub = await publicAt(context, `/d/${token}`, r, 'M2');
   check(r, 'public: the header headline is stated', !!pub[1440].headerTitle);
   const kSizes = pub[1440].kpis.map((k: any) => k.size);
@@ -616,6 +641,122 @@ test('M3 a migrated report is improved: outline, header, section move, filters i
   check(r, 'public: the band of the moved section holds only its section (KPIs and controls outside stay outside)', intrudersM3.length === 0, intrudersM3.join(','));
   const miss = headingKeepsMembers(pub[390].order, [{ header: secId, members: ol.sections[0].members }]);
   check(r, 'public phone: the moved section keeps its members together', !miss, miss ?? '');
+});
+
+// ── M5 · an Inspector edit and the publication lifecycle ───────────────────
+
+test('M5 an Inspector edit is in what Publish ships and never lands after Discard', async ({ page, request, context }) => {
+  test.setTimeout(600_000);
+  const r = scenario('M5 Inspector edit lifecycle');
+  const src = need(r, await idOf(request, OLIST), `report "${OLIST}"`);
+  const id = await copyOf(request, src);
+  const token = await linkFor(request, id);
+  const publicText = async () => {
+    const d = await (await context.request.get(`/api/v1/public/dashboards/${token}`)).json();
+    return (d.dashboard_charts ?? []).filter((c: any) => c.widget_type === 'text').map((c: any) => String(c.widget_config?.template ?? ''));
+  };
+  await page.setViewportSize({ width: 1440, height: 1600 });
+  await page.goto(`/dashboards/${id}`);
+  await settle(page);
+
+  // A text element, typed into and published IMMEDIATELY (no pause for the
+  // debounce): Publish must wait for the edit, never ship the empty default.
+  await page.keyboard.press('Escape');
+  await addElement(page, 'text');
+  const field = page.getByTestId('report-inspector').locator('textarea').first();
+  const a = `Lifecycle A ${Date.now().toString(36)}`;
+  await field.fill(a);
+  await page.getByTestId('dashboard-publish').click();
+  await expect.poll(async () => (await publicText()).some((s) => s.includes(a)), { timeout: 30_000 }).toBe(true);
+  check(r, 'Publish right after typing ships the edit', (await publicText()).some((s) => s.includes(a)), JSON.stringify(await publicText()));
+
+  // Typed, then Discard IMMEDIATELY: the edit must not be written back after it.
+  const textTile = page.locator('main [data-grid-item-id]').filter({ has: page.locator('[data-widget-type="text"]') }).first();
+  await textTile.dblclick({ position: { x: 40, y: 20 } });
+  const field2 = page.getByTestId('report-inspector').locator('textarea').first();
+  await field2.waitFor();
+  const b = `Lifecycle B ${Date.now().toString(36)}`;
+  await field2.fill(b);
+  await page.getByTestId('dashboard-discard').click();
+  await page.getByRole('button', { name: /^(Discard changes|Bỏ thay đổi)$/ }).click();
+  await page.waitForTimeout(3000);
+  const draft = await get(request, id);
+  const draftTexts = (draft.dashboard_charts ?? []).filter((c: any) => c.widget_type === 'text').map((c: any) => String(c.widget_config?.template ?? ''));
+  check(r, 'after Discard the builder holds the published text, not the discarded one',
+    draftTexts.some((s: string) => s.includes(a)) && !draftTexts.some((s: string) => s.includes(b)), JSON.stringify(draftTexts));
+  check(r, 'the public report never saw the discarded text', !(await publicText()).some((s) => s.includes(b)));
+  await page.reload();
+  await settle(page);
+  const shown = await page.locator('main [data-widget-type="text"]').allInnerTexts();
+  check(r, 'after a reload the canvas shows the published text only', shown.some((s) => s.includes(a)) && !shown.some((s) => s.includes(b)), JSON.stringify(shown));
+});
+
+// ── A11Y · accessibility audit of the report-building surfaces ─────────────
+
+const AXE = path.resolve(__dirname, '..', '..', 'frontend', 'node_modules', 'axe-core', 'axe.min.js');
+async function axeRun(page: Page, include: string[] | null) {
+  if (!(await page.evaluate(() => !!(window as any).axe))) await page.addScriptTag({ path: AXE });
+  return page.evaluate(async (sel) => {
+    const axe = (window as any).axe;
+    const ctx = sel && sel.length ? { include: sel.map((s) => [s]) } : document;
+    const res = await axe.run(ctx, { resultTypes: ['violations'] });
+    return res.violations.map((v: any) => ({ id: v.id, impact: v.impact, nodes: v.nodes.length, sample: v.nodes[0]?.target?.join(' ') ?? '' }));
+  }, include);
+}
+const severe = (list: Array<{ impact: string }>) => list.filter((v) => v.impact === 'critical' || v.impact === 'serious');
+
+test('A11Y the palette, Inspector, report header, sections and insights pass axe (no serious or critical issue)', async ({ page, request, context }) => {
+  test.setTimeout(600_000);
+  const r = scenario('A11Y report building surfaces');
+  if (!fs.existsSync(AXE)) { need(r, null, 'axe-core (frontend/node_modules/axe-core)'); }
+  const src = need(r, await idOf(request, OLIST), `report "${OLIST}"`);
+  const id = await copyOf(request, src);
+  await page.setViewportSize({ width: 1440, height: 1400 });
+  await page.goto(`/dashboards/${id}`);
+  await settle(page);
+  await page.keyboard.press('Escape');
+  await addElement(page, 'hero_strip');
+  await addElement(page, 'section_header');
+  await addElement(page, 'narrative');
+  const opts = page.getByTestId('report-inspector').locator('[data-finding-option]');
+  await expect.poll(() => opts.count(), { timeout: 30_000 }).toBeGreaterThan(0);
+  await opts.first().check();
+  await page.waitForTimeout(2500);
+
+  // Builder: the Inspector with an element, then the palette open.
+  const inspector = await axeRun(page, ['[data-testid="report-inspector"]']);
+  await openAdd(page);
+  const palette = await axeRun(page, ['[data-testid="add-element-menu"]']);
+  await page.keyboard.press('Escape');
+  // Keyboard: the palette opens from the toolbar button and closes on Escape.
+  await page.getByTestId('add-element-open').focus();
+  await page.keyboard.press('Enter');
+  const opened = await page.getByTestId('add-element-menu').isVisible();
+  await page.keyboard.press('Escape');
+  const closed = !(await page.getByTestId('add-element-menu').isVisible().catch(() => false));
+  check(r, 'the Add palette opens from the keyboard and closes on Escape', opened && closed);
+  const builderContent = await axeRun(page, ['[data-report-header]', '[data-widget-type="section_header"]', '.dashboard-narrative']);
+  const builderPage = await axeRun(page, null);
+  r.metrics.builder_page_violations = builderPage.map((v) => `${v.impact}:${v.id}×${v.nodes}`);
+  check(r, 'Inspector: no serious or critical accessibility issue', severe(inspector).length === 0, JSON.stringify(severe(inspector)));
+  check(r, 'Add palette: no serious or critical accessibility issue', severe(palette).length === 0, JSON.stringify(severe(palette)));
+  check(r, 'report header, sections, insights in the builder: no serious or critical issue', severe(builderContent).length === 0, JSON.stringify(severe(builderContent)));
+
+  // Published report at desktop and phone.
+  await saveAndPublish(page, request, id, r);
+  const token = await linkFor(request, id);
+  for (const [w, h] of [[1440, 900], [390, 844]] as const) {
+    const p = await context.newPage();
+    await p.setViewportSize({ width: w, height: h });
+    await p.goto(`/d/${token}`);
+    await settle(p);
+    const content = await axeRun(p, ['[data-report-header]', '[data-widget-type="section_header"]', '.dashboard-narrative']);
+    const whole = await axeRun(p, null);
+    r.metrics[`public_${w}_page_violations`] = whole.map((v) => `${v.impact}:${v.id}×${v.nodes}`);
+    check(r, `public ${w}px: report header, sections, insights have no serious or critical issue`, severe(content).length === 0, JSON.stringify(severe(content)));
+    await p.close();
+  }
+  r.notes.push('Whole-page violations are recorded (metrics), not asserted: they include surfaces outside this change (charts, app chrome). The asserted scope is what this round built.');
 });
 
 // ── M4 · two independent datasets ───────────────────────────────────────────
@@ -689,9 +830,11 @@ test('M4 one report over two independent datasets', async ({ page, request, cont
   await shot(page, r, 'M4-01-builder');
 
   await saveAndPublish(page, request, id, r);
-  const token = await linkFor(request, id);
+  const token = await linkFor(request, id, name);
   const pub = await publicAt(context, `/d/${token}`, r, 'M4');
-  check(r, 'public: the header states the period the data covers', !!pub[1440].headerPeriod, String(pub[1440].headerPeriod));
+  // Two independent datasets: each section's own period, never their union.
+  const period = String(pub[1440].headerPeriod ?? '');
+  check(r, 'public: the header states each dataset’s own period, named by its section', /Marketplace: .*2016.*2018/.test(period) && /Sales: .*2024.*2025/.test(period), period);
   const miss = headingKeepsMembers(pub[390].order, [
     { header: secA, members: a?.members ?? [] },
     { header: secB, members: b?.members ?? [] },

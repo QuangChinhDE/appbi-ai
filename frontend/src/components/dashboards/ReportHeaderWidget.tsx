@@ -48,7 +48,7 @@ export function ReportHeaderWidget({ config, editing = false }: { config: Report
   const variant = config.variant ?? 'banner';
   const title = String(config.headline ?? config.title ?? '').trim() || meta.name || '';
   const description = String(config.subhead ?? config.description ?? config.subtitle ?? '').trim() || String(meta.description ?? '').trim();
-  const period = config.showPeriod === false ? null : reportPeriodLabel(evidence, locale);
+  const period = config.showPeriod === false ? null : reportPeriodLabel(evidence, locale, meta.sectionTitleOf);
   const facts = config.showContext === false ? [] : (meta.filterFacts ?? []);
 
   const key = String(config.finding ?? '');
@@ -85,7 +85,11 @@ export function ReportHeaderWidget({ config, editing = false }: { config: Report
     </div>
   ) : null;
 
+  // The wrapper is the size container: a container query styles what is INSIDE
+  // the container, never the container itself, so the header could not stack
+  // its split layout on a phone while it was its own container.
   return (
+    <div className="dashboard-report-header-wrap">
     <header
       className={`dashboard-report-header is-${variant}`}
       data-report-header
@@ -104,5 +108,6 @@ export function ReportHeaderWidget({ config, editing = false }: { config: Report
         <div className="dashboard-report-header__aside">{headline}{staticMetric}</div>
       ) : staticMetric}
     </header>
+    </div>
   );
 }

@@ -1,5 +1,6 @@
 'use client';
 
+import { fitLayoutToContent, useMeasuredContentRows } from '@/lib/responsive-fit';
 import React, { useRef, useState, useEffect } from 'react';
 import GridLayout, { WidthProvider, Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
@@ -366,7 +367,17 @@ function DashboardGridInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabletPreview, gridWidth, JSON.stringify(authoredLayouts), dashboardCharts]);
 
-  const layouts = isNarrow ? narrowLayouts : tabletPreview ? tabletLayouts : authoredLayouts;
+  // Phone and tablet previews size headers, text and KPI cards to what they say
+  // at that width, exactly as the published report does (lib/responsive-fit).
+  const fitGap = getDashboardGridMargin(themeConfig)[1];
+  const measuredContentRows = useMeasuredContentRows(
+    gridWrapRef,
+    { enabled: isNarrow || tabletPreview, rowHeight: dashboardRowHeight(fitGap), gapY: fitGap },
+    [gridWidth, dashboardCharts],
+  );
+  const layouts = isNarrow
+    ? fitLayoutToContent(narrowLayouts, measuredContentRows, 'stack')
+    : tabletPreview ? fitLayoutToContent(tabletLayouts, measuredContentRows, 'grow') : authoredLayouts;
 
   // Persist ONLY the tile the user just finished manipulating. react-grid-layout
   // hands the moved item as the 3rd onDragStop/onResizeStop arg; we forward JUST

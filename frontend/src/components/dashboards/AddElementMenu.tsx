@@ -94,7 +94,7 @@ export function AddElementMenu({
       <div className="max-h-[70vh] overflow-y-auto py-1.5">
         {groups.map((g) => (
           <div key={g.title} className="px-1.5 pb-1">
-            <div className="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-quaternary">{g.title}</div>
+            <div className="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">{g.title}</div>
             {g.items.map((it) => {
               const descId = `add-element-desc-${it.kind}`;
               const Icon = it.icon;

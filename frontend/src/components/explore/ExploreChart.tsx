@@ -356,6 +356,10 @@ function CustomLegend({
     seenKeys.add(bk);
     return true;
   });
+  // A short legend (a few series) wraps instead of scrolling: on a phone and on
+  // paper a scroll strip hides the second label ("Revenue (incomplete pe…").
+  // Many series keep the single scrolling row (it would otherwise eat the plot).
+  wrap = wrap || dedupedPayload.length <= 6;
   return (
     <ul
       style={{
@@ -2524,10 +2528,19 @@ function ExploreChartInner({
       return Math.max(m, s.length);
     }, 0);
     const { angle } = buildXAxisProps(categoricalData.length, fontSize, xAxisLabel, maxChars, responsive.maxXBand);
-    if (angle !== 0) return CHART_BASE_MARGIN;
-    // CustomAxisTick caps horizontal labels at 12 chars; ~0.6em per char, half overflows.
-    const halfLabel = Math.ceil((Math.min(maxChars, 12) * fontSize * 0.6) / 2);
-    return { ...CHART_BASE_MARGIN, right: Math.max(CHART_BASE_MARGIN.right, halfLabel + 4) };
+    // A date axis is always drawn horizontal (renderXAxis thins its ticks to fit
+    // instead of rotating them), so its last label overflows exactly as a short
+    // horizontal one does — the rotation computed here does not apply to it.
+    // Keyed on the angle alone, a monthly axis (25 points -> -30°) kept the base
+    // 12px margin and cut its last label to "Oct 1".
+    if (angle !== 0 && !xAxisIsDateLike) return CHART_BASE_MARGIN;
+    // CustomAxisTick caps horizontal labels at 12 chars and centres each on its
+    // tick, so the LAST label overflows the plot by half its width. 0.6em per
+    // char under-measured proportional digits/capitals ("Oct 18" at 11px is
+    // ~38px, not 33): a last tick sitting on the plot's right edge was cut to
+    // "Oct 1". Measure generously and keep a few pixels of air.
+    const halfLabel = Math.ceil((Math.min(maxChars, 12) * fontSize * 0.7) / 2);
+    return { ...CHART_BASE_MARGIN, right: Math.max(CHART_BASE_MARGIN.right, halfLabel + 8) };
   }, [categoricalData, data, xField, xAxisIsDateLike, fontSize, xAxisLabel, responsive.maxXBand]);
   const renderYAxis = (seriesKeyOverride?: string, widthOverride?: number) => {
     // Phase-16.x — when the chart plots a SINGLE metric, format the value axis

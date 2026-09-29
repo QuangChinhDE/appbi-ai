@@ -385,6 +385,62 @@ check('the builder overlays sit below the header as it is, never over its second
   assert(/ref=\{builderHeaderRef\}/.test(src) && /style=\{\{ top: builderHeaderH \}\}/.test(src) && /top: builderHeaderH \+ 8/.test(src), 'the overlays are not placed from the measured header height');
 });
 
+check('a section with a locked member moves whole or not at all, and names the member', () => {
+  const tiles = S(REPORT.map((t) => (t.id === 21 ? { ...t, layout: { ...t.layout, locked: true } } : t)));
+  assert(structure.moveSection(tiles, 20, { x: 0, y: 6 }) === null, 'the section moved and left its locked member behind');
+  assert(structure.lockedMemberOf(tiles, 20) === 21, 'the refusal does not name the locked member');
+  assert(structure.lockedMemberOf(S(REPORT), 20) === null, 'an unlocked section is reported as locked');
+  assert(/lockedMemberOf\(structTiles, id, structure\)/.test(source('app/(main)/dashboards/[id]/page.tsx')), 'the builder does not say which member is locked');
+});
+
+check('a report over independent periods states each period, named by its section', () => {
+  const meta = load('lib/report-meta.tsx');
+  const ev = (tileId, months) => ({ tileId, timeField: 'm', grain: 'month', rows: months.map((m) => ({ m })) });
+  const olist = ev(1, ['2016-09-01', '2017-06-01', '2018-09-01']);
+  const olist2 = ev(2, ['2017-01-01', '2018-08-01']);
+  const sales = ev(3, ['2024-01-01', '2025-12-01']);
+  const one = meta.reportPeriodLabel([olist, olist2], 'en');
+  assert(one && !one.includes('·') && /2016/.test(one) && /2018/.test(one), `overlapping series became several periods: ${one}`);
+  const titles = (id) => (id === 3 ? 'Sales' : 'Marketplace');
+  const two = meta.reportPeriodLabel([olist, olist2, sales], 'en', titles);
+  assert(two && two.split(' · ').length === 2 && /^Marketplace: /.test(two) && / · Sales: /.test(two), `two datasets stated as one union: ${two}`);
+  assert(!/2016.*2025/.test(two.split(' · ')[0]), 'a period spans both datasets');
+  assert(/reportPeriodLabel\(evidence, locale, meta\.sectionTitleOf\)/.test(source('components/dashboards/ReportHeaderWidget.tsx')), 'the header ignores sections for its period');
+});
+
+check('an Inspector edit is settled before Save, Publish and a page switch, and cannot land after Discard', () => {
+  const src = source('app/(main)/dashboards/[id]/page.tsx').replace(/\r\n/g, '\n');
+  const body = (name) => src.slice(src.indexOf(`const ${name} = `), src.indexOf(`const ${name} = `) + 400);
+  for (const h of ['handleSaveDraft', 'handlePublish', 'handleForcePublish']) {
+    assert(/await settleContentEdits\('flush'\)/.test(body(h)), `${h} can go out without the last Inspector edit`);
+  }
+  assert(/await settleContentEdits\('flush'\)/.test(src.slice(src.indexOf('const handleSwitchPage = '), src.indexOf('const handleSwitchPage = ') + 200)), 'a page switch drops the edit');
+  assert(/await settleContentEdits\('cancel'\)/.test(body('handleDiscardAll')), 'an edit can be written back after Discard');
+  assert(/inflightContentSavesRef\.current\.add\(run\)/.test(src), 'a save sent by an element that has since closed is not awaited');
+  assert(/beforeunload/.test(src), 'leaving the page with an unsent edit does not ask');
+  const insp = source('components/dashboards/ReportInspector.tsx');
+  assert(/pendingSave\.current = handle/.test(insp) && /if \(inflight\.current\) await inflight\.current\.catch/.test(insp), 'the Inspector exposes no settle handle');
+});
+
+check('paper has no motion: a chart fade-in is never captured half-way', () => {
+  const pdf = source('lib/export-pdf.ts');
+  assert(/animation: none !important; transition: none !important;/.test(pdf), 'the PDF clone keeps animations (charts printed washed out)');
+});
+
+check('clicking a selected element keeps it selected; empty canvas and Escape clear', () => {
+  const src = source('app/(main)/dashboards/[id]/page.tsx');
+  assert(/current\.length === 1 && current\[0\] === id \? current : \[id\]/.test(src), 'a second click deselects the element (a new chart then lands at the end of the page)');
+  assert(/data-dashboard-canvas-root="builder"[\s\S]{0,400}clearTileSelection\(\)/.test(src), 'no way to clear the selection by clicking empty canvas');
+});
+
+check('every Inspector field names its control for assistive technology; small labels meet contrast', () => {
+  const forms = source('components/dashboards/widget-forms.tsx');
+  assert(/htmlFor=\{single \?/.test(forms) && /React\.useId\(\)/.test(forms), 'field labels are not associated with their inputs');
+  for (const f of ['components/dashboards/ReportInspector.tsx', 'components/dashboards/AddElementMenu.tsx', 'components/dashboards/widget-forms.tsx']) {
+    assert(!/text-text-quaternary/.test(source(f)), `${f} uses the quaternary text colour (3.3:1 on white, below AA)`);
+  }
+});
+
 check('emphasis is a closed vocabulary', () => {
   assert(emphasis.emphasisOf({ emphasis: 'lead' }) === 'lead' && emphasis.emphasisOf({ emphasis: 'quiet' }) === 'quiet', 'known values lost');
   assert(emphasis.emphasisOf({ emphasis: 'LOUD' }) === 'normal' && emphasis.emphasisOf(null) === 'normal', 'an unknown value was kept');

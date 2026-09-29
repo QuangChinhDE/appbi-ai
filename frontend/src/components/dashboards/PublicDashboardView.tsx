@@ -1,5 +1,7 @@
 ﻿'use client';
 
+import { sectionTitlesOf } from '@/lib/report-meta';
+import { fitLayoutToContent, useMeasuredContentRows } from '@/lib/responsive-fit';
 import { extractParamDefs } from '@/lib/dashboard-params';
 import { groupIntoPrintBands } from '@/lib/print-bands';
 import { planKeyForElement, PRINTABLE_ELEMENT_TYPES } from '@/lib/export-layout';
@@ -74,7 +76,7 @@ import { citedTilesOf } from '@/lib/report-evidence';
 import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { auditRenderedTiles } from '@/lib/dashboard-presentation/render-audit';
 import { SectionBands } from './SectionBands';
-import { readingOrder, toStructTiles } from '@/lib/report-structure';
+import { readingOrder, resolveStructure, toStructTiles } from '@/lib/report-structure';
 import { ReportMetaProvider } from '@/lib/report-meta';
 import { ReportEvidenceProvider } from '@/lib/report-evidence';
 
@@ -474,6 +476,19 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // Finer grid: row height couples to the theme gap so the ×3-migrated layout
   // renders pixel-identical to the builder (see dashboardRowHeight).
   const reportRowHeight = computeReportRowHeight(gridWidth, getDashboardGridMargin(dashboard?.theme_config)[1]);
+  // Tablet and phone: headers, text and KPI cards take the height of what they
+  // say at that width (lib/responsive-fit) — a derived layout, never saved.
+  const fitRootRef = useRef<HTMLDivElement | null>(null);
+  const fitBreakpoint = reportBreakpointFor(gridWidth);
+  const measuredContentRows = useMeasuredContentRows(
+    fitRootRef,
+    {
+      enabled: !printMode && (gridWidth ?? 0) > 0 && fitBreakpoint !== 'lg',
+      rowHeight: reportRowHeight,
+      gapY: getDashboardGridMargin(dashboard?.theme_config)[1],
+    },
+    [gridWidth, currentPageId, chartData, dashboard?.dashboard_charts],
+  );
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
@@ -1733,6 +1748,11 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     }))).map(String),
   });
   const activeBreakpoint = reportBreakpointFor(gridWidth);
+  if (activeBreakpoint !== 'lg') {
+    responsiveLayouts[activeBreakpoint] = fitLayoutToContent(
+      responsiveLayouts[activeBreakpoint], measuredContentRows, activeBreakpoint === 'xs' ? 'stack' : 'grow',
+    );
+  }
 
 
   /**
@@ -2011,6 +2031,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     description: dashboard?.description ?? null,
     filterFacts: pageFilterFacts({ applied: appliedViewerFilters, pageHidden: pageHiddenFilters, locked: lockedBannerEntries })
       .map((f) => `${f.locked ? '🔒 ' : ''}${f.label}: ${statePageFilterFact(f, t)}`),
+    sectionTitleOf: sectionTitlesOf(visibleDashboardCharts, resolveStructure(toStructTiles(visibleDashboardCharts)).sectionOf),
   };
   function renderWidgetNode(dashboardChart: DashboardChart) {
     const wtype = dashboardChart.widget_type;
@@ -2130,7 +2151,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
             ref={gridMeasureRef}
             className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
           >
-            <div className="relative">
+            <div className="relative" ref={fitRootRef}>
             {activeBreakpoint !== 'xs' && gridWidth ? (
               <SectionBands
                 layouts={responsiveLayouts[activeBreakpoint]}
@@ -2563,7 +2584,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         <ExportModeContext.Provider value={exportRenderMode}>
         <section
           ref={gridSectionRef}
-          className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} w-full`}
+        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} w-full`}
         >
           {visibleDashboardCharts.length === 0 ? (
             <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">

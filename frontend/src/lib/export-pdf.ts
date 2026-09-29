@@ -29,6 +29,12 @@ const EXPORT_LEGIBLE_CSS = [
   // left its side edges on the next sheet. On paper the heading marks the
   // section.
   '[data-section-bands] { display: none !important; }',
+  // html2canvas captures a CLONE of the page, and in the clone every CSS
+  // animation starts again from its first frame. The charts' 220ms fade-in
+  // (opacity 0 -> 1) was therefore captured part-way: every chart and KPI printed
+  // washed out (grey figures, pale bars) while headings, outside the fade, were
+  // black. Paper has no motion.
+  '*, *::before, *::after { animation: none !important; transition: none !important; }',
 ].join('\n');
 
 /** A grid item that is a section heading: it belongs with what follows it. */

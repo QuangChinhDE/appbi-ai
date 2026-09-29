@@ -177,10 +177,20 @@ export function readingOrder(tiles: StructTile[], structure: Structure = resolve
 /**
  * Move a section as a whole: its header lands at `to`, and every member keeps
  * its place relative to the header. Room is made the way a single drop makes
- * it (resolveDrop over the section's bounding box). Locked members stay where
- * they are (the author pinned them). Returns every tile that changes, or null
- * when a locked tile outside the section would have to move.
+ * it (resolveDrop over the section's bounding box). Returns every tile that
+ * changes, or null when it cannot move as a whole: a member is locked (the
+ * author pinned it — moving the rest would leave it behind while still calling
+ * it part of the section), or a locked tile outside the section is in the way.
+ * `lockedMemberOf` names the member for the refusal.
  */
+export function lockedMemberOf(tiles: StructTile[], headerId: number, structure: Structure = resolveStructure(tiles)): number | null {
+  const section = structure.sections.find((s) => s.headerId === headerId);
+  const header = tiles.find((t) => t.id === headerId);
+  if (header?.locked) return header.id;
+  const locked = (section?.members ?? []).find((m) => tiles.find((t) => t.id === m)?.locked);
+  return locked ?? null;
+}
+
 export function moveSection(
   tiles: StructTile[],
   headerId: number,
@@ -190,7 +200,8 @@ export function moveSection(
   const header = tiles.find((t) => t.id === headerId);
   const section = structure.sections.find((s) => s.headerId === headerId);
   if (!header || !section) return null;
-  const moving = [header, ...section.members.map((m) => tiles.find((t) => t.id === m)!).filter((t) => !t.locked)];
+  if (lockedMemberOf(tiles, headerId, structure) != null) return null;
+  const moving = [header, ...section.members.map((m) => tiles.find((t) => t.id === m)!)];
   const movingIds = new Set(moving.map((t) => t.id));
   const dy = to.y - header.y;
   if (dy === 0 && to.x === header.x) return [];

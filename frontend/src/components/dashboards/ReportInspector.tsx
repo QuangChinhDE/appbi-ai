@@ -49,6 +49,22 @@ export interface ReportInspectorProps {
   onFitToContent: (id: number) => void;
   onFrame: (frame: TileFrame) => void;
   frame: TileFrame | null;
+  /** Where the page finds the element's unsaved content edit, so Save, Publish,
+   *  Discard, a page switch and leaving the page each settle it first. */
+  pendingSave?: React.MutableRefObject<PendingContentSave | null>;
+}
+
+/**
+ * An element's content edit that has not reached the draft yet.
+ *   flush  — send it now and wait: true when the draft holds it (or there was
+ *            nothing to send), false when the save failed (the caller stops).
+ *   cancel — drop what was not sent, and wait for a save already in flight, so
+ *            nothing lands in the draft after an intentional Discard.
+ */
+export interface PendingContentSave {
+  hasPending: () => boolean;
+  flush: () => Promise<boolean>;
+  cancel: () => Promise<void>;
 }
 
 const panelClass =
@@ -57,7 +73,7 @@ const panelClass =
 function Section({ title, children, testId }: { title: string; children: React.ReactNode; testId?: string }) {
   return (
     <section className="border-b border-[rgb(var(--border-line))] px-4 py-3.5" data-testid={testId}>
-      <h3 className="mb-2.5 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-quaternary">{title}</h3>
+      <h3 className="mb-2.5 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">{title}</h3>
       <div className="space-y-3">{children}</div>
     </section>
   );
@@ -131,7 +147,7 @@ export function ReportInspector(props: ReportInspectorProps) {
     <div className={panelClass} data-testid="report-inspector" role="complementary" aria-label={t('dashboards.inspector.title')}>
       <div className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] px-4 py-3">
         <div className="min-w-0 flex-1">
-          <div className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-quaternary">{t('dashboards.inspector.title')}</div>
+          <div className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">{t('dashboards.inspector.title')}</div>
           <div className="truncate text-[13.5px] font-semibold" data-testid="inspector-heading">{heading}</div>
         </div>
         <button
@@ -213,8 +229,8 @@ function ElementPanel(props: ReportInspectorProps & { tile: InspectedTile }) {
           <GeometryInput label={t('dashboards.inspector.width')} testId="inspector-w" value={rect.w} min={1} max={36 - rect.x} onCommit={(w) => props.onGeometry(tile.id, { ...rect, w })} />
           <GeometryInput label={t('dashboards.inspector.height')} testId="inspector-h" value={rect.h} min={1} onCommit={(h) => props.onGeometry(tile.id, { ...rect, h })} />
         </div>
-        <p className="text-[11px] leading-snug text-text-quaternary">{t('dashboards.inspector.gridHint')}</p>
-        {FIT_TO_CONTENT_TYPES.has(String(tile.widget_type)) && (
+        <p className="text-[11px] leading-snug text-text-tertiary">{t('dashboards.inspector.gridHint')}</p>
+        {(FIT_TO_CONTENT_TYPES.has(String(tile.widget_type)) || String((tile.chart as any)?.chart_type ?? '').toUpperCase() === 'KPI') && (
           <button
             type="button"
             data-testid="inspector-fit"
@@ -311,8 +327,10 @@ function ChartContent({ tile, onPatchLayout }: ReportInspectorProps & { tile: In
 type SaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'failed';
 
 /** A widget's content, saved to the draft as the author types (debounced), so
- *  the canvas shows the edit without a Save step inside the panel. */
-function WidgetContent({ tile, report, titleOf, onSaveWidgetConfig }: ReportInspectorProps & { tile: InspectedTile }) {
+ *  the canvas shows the edit without a Save step inside the panel. The page can
+ *  settle it at any moment (pendingSave): Publish never goes out without the
+ *  last keystroke, and Discard never has an edit arrive after it. */
+function WidgetContent({ tile, report, titleOf, onSaveWidgetConfig, pendingSave }: ReportInspectorProps & { tile: InspectedTile }) {
   const { t } = useI18n();
   const [config, setConfig] = useState<Record<string, any>>(() => ({ ...(tile.widget_config ?? {}) }));
   const [state, setState] = useState<SaveState>('idle');
@@ -321,25 +339,62 @@ function WidgetContent({ tile, report, titleOf, onSaveWidgetConfig }: ReportInsp
   latest.current = config;
   const save = useRef(onSaveWidgetConfig);
   save.current = onSaveWidgetConfig;
+  const timer = useRef<number | null>(null);
+  const inflight = useRef<Promise<boolean> | null>(null);
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+  const setSafe = (s: SaveState) => { if (alive.current) setState(s); };
 
-  const flush = React.useCallback(async () => {
-    if (!dirty.current) return;
+  const flush = React.useCallback(async (): Promise<boolean> => {
+    if (timer.current != null) { window.clearTimeout(timer.current); timer.current = null; }
+    if (inflight.current) await inflight.current;
+    if (!dirty.current) return true;
     dirty.current = false;
-    setState('saving');
-    try {
-      await save.current(tile.id, latest.current);
-      setState('saved');
-    } catch {
-      dirty.current = true;
-      setState('failed');
-    }
+    setSafe('saving');
+    const run = (async () => {
+      try {
+        await save.current(tile.id, latest.current);
+        setSafe('saved');
+        return true;
+      } catch {
+        dirty.current = true;
+        setSafe('failed');
+        return false;
+      }
+    })();
+    inflight.current = run;
+    const ok = await run;
+    if (inflight.current === run) inflight.current = null;
+    return ok;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tile.id]);
+
+  const cancel = React.useCallback(async () => {
+    if (timer.current != null) { window.clearTimeout(timer.current); timer.current = null; }
+    dirty.current = false;
+    if (inflight.current) await inflight.current.catch(() => false);
+    setSafe('idle');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The page's handle on this element's edit, for as long as it is open.
+  useEffect(() => {
+    if (!pendingSave) return;
+    const handle: PendingContentSave = {
+      hasPending: () => dirty.current || inflight.current != null || timer.current != null,
+      flush,
+      cancel,
+    };
+    pendingSave.current = handle;
+    return () => { if (pendingSave.current === handle) pendingSave.current = null; };
+  }, [pendingSave, flush, cancel]);
 
   useEffect(() => {
     if (!dirty.current) return;
-    setState('pending');
-    const id = window.setTimeout(() => { void flush(); }, 650);
-    return () => window.clearTimeout(id);
+    setSafe('pending');
+    timer.current = window.setTimeout(() => { timer.current = null; void flush(); }, 650);
+    return () => { if (timer.current != null) { window.clearTimeout(timer.current); timer.current = null; } };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, flush]);
   // Leaving the element (another selection, closing the panel) never drops an edit.
   useEffect(() => () => { void flush(); }, [flush]);
@@ -359,7 +414,7 @@ function WidgetContent({ tile, report, titleOf, onSaveWidgetConfig }: ReportInsp
         setConfig={setAll}
         context={{ reportName: report.name, reportDescription: report.description, tileTitle: titleOf }}
       />
-      <div className="text-[11px] text-text-quaternary" data-testid="inspector-save-state" data-state={state} aria-live="polite">
+      <div className="text-[11px] text-text-tertiary" data-testid="inspector-save-state" data-state={state} aria-live="polite">
         {state === 'saving' || state === 'pending' ? t('dashboards.inspector.saving')
           : state === 'saved' ? t('dashboards.inspector.savedDraft')
             : state === 'failed' ? (

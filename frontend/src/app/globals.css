@@ -1778,7 +1778,8 @@
 /* ── The report header (opening) ────────────────────────────────────────────
    Title on the report's largest type role, description as body text, the
    period and filters as quiet meta — three layouts over the same accent. */
-.dashboard-report-header { position: relative; display: flex; gap: 28px; height: 100%; width: 100%; padding: 18px 22px; color: inherit; container-type: inline-size; overflow: hidden; }
+.dashboard-report-header-wrap { height: 100%; width: 100%; container-type: inline-size; }
+.dashboard-report-header { position: relative; display: flex; gap: 28px; height: 100%; width: 100%; padding: 18px 22px; color: inherit; overflow: hidden; }
 .dashboard-report-header__main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 6px; }
 .dashboard-report-header__eyebrow { font-size: var(--dash-font-meta, 11px); font-weight: 650; letter-spacing: .12em; text-transform: uppercase; color: var(--dashboard-accent, currentColor); }
 .dashboard-report-header__title { margin: 0; font-size: var(--dash-font-reportTitle, 30px); font-weight: var(--dash-weight-reportTitle, 700); line-height: 1.12; letter-spacing: -.015em; text-wrap: balance; }

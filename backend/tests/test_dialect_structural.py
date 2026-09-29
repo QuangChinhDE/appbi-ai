@@ -169,3 +169,80 @@ def test_superseded_engine_flags_stay_off():
     from app.core.config import settings
     assert settings.FEATURE_PROPAGATION_ENGINE_V2 is False
     assert settings.FEATURE_PER_MEASURE_ISOLATION is False
+
+
+# ── Text-pattern filters: BigQuery has no LIKE … ESCAPE ───────────────────
+# `x LIKE '%a\%%' ESCAPE '\'` is a GoogleSQL syntax error, so every text filter
+# (contains / starts_with / …) on a BigQuery dataset failed: report filters, the
+# dropdown's value search and the distinct cascade. One helper decides the shape
+# for every builder (app/services/sql_pattern). Shape only — as the module
+# docstring says, executing on a real warehouse is still the full proof.
+PATTERN_OPERATORS = ["contains", "not_contains", "starts_with", "ends_with"]
+BQ_SHAPES = {
+    "contains": "STRPOS(revenue.status, '50%_off') > 0",
+    "not_contains": "STRPOS(revenue.status, '50%_off') = 0",
+    "starts_with": "STARTS_WITH(revenue.status, '50%_off')",
+    "ends_with": "ENDS_WITH(revenue.status, '50%_off')",
+}
+PG_SHAPES = {
+    "contains": r"revenue.status LIKE '%50\%\_off%' ESCAPE '\'",
+    "not_contains": r"revenue.status NOT LIKE '%50\%\_off%' ESCAPE '\'",
+    "starts_with": r"revenue.status LIKE '50\%\_off%' ESCAPE '\'",
+    "ends_with": r"revenue.status LIKE '%50\%\_off' ESCAPE '\'",
+}
+
+
+def _where_sql(dialect, operator, value="50%_off"):
+    engine = _engine([], dialect)
+    return engine._build_where_clause({"revenue.status": {"operator": operator, "value": value}}, {})
+
+
+def _measure_filter_sql(dialect, operator, value="50%_off"):
+    measure = {
+        "name": "a", "type": "sum", "sql": "amount",
+        "filters": [{"field": "status", "operator": operator, "value": value}],
+    }
+    return _engine([measure], dialect)._render_measure("revenue.a")
+
+
+@pytest.mark.parametrize("operator", PATTERN_OPERATORS)
+def test_bigquery_report_filter_uses_string_functions_not_like_escape(operator):
+    sql = _where_sql("bigquery", operator)
+    assert BQ_SHAPES[operator] in sql, sql
+    assert "ESCAPE" not in sql and " LIKE " not in sql, sql
+
+
+@pytest.mark.parametrize("operator", PATTERN_OPERATORS)
+def test_postgres_report_filter_is_byte_for_byte_unchanged(operator):
+    sql = _where_sql("postgresql", operator)
+    assert PG_SHAPES[operator] in sql, sql
+    assert "STRPOS" not in sql and "STARTS_WITH" not in sql
+
+
+@pytest.mark.parametrize("operator", PATTERN_OPERATORS)
+def test_measure_filter_uses_the_same_shapes(operator):
+    """A measure's own filter used `LIKE '%' || 'x' || '%'`: the value's % and _
+    were wildcards and not_contains was silently dropped. Same helper now."""
+    bq = _measure_filter_sql("bigquery", operator)
+    assert BQ_SHAPES[operator] in bq, bq
+    pg = _measure_filter_sql("postgresql", operator)
+    assert PG_SHAPES[operator] in pg, pg
+
+
+def test_live_query_and_distinct_paths_use_the_same_pattern_shapes():
+    """The live-query WHERE and the dropdown's distinct-values search emit the
+    same shapes as the semantic engine (one helper), on both dialects."""
+    from app.services.live_query_service import _build_where_clause
+    from app.services.sql_pattern import pattern_predicate
+
+    bq = _build_where_clause([{"field": "status", "operator": "contains", "value": "a%b"}], "bigquery")
+    assert "STRPOS(`status`, 'a%b') > 0" in bq and "ESCAPE" not in bq, bq
+    pg = _build_where_clause([{"field": "status", "operator": "starts_with", "value": "a%b"}], "postgresql")
+    assert r"""LIKE 'a\%b%' ESCAPE '\'""" in pg, pg
+    src = (Path(__file__).resolve().parents[1] / "app" / "services" / "dataset_model_service.py").read_text(encoding="utf-8")
+    assert "pattern_predicate(field_expression, op, raw_value, _d," in src, "the dropdown search builds its own LIKE"
+    assert "ESCAPE '" not in src, "a builder still writes LIKE … ESCAPE itself"
+    quote = lambda s: "'" + s + "'"  # noqa: E731
+    assert pattern_predicate("c", "like", "x", "BIGQUERY", quote) == "STRPOS(c, 'x') > 0"
+    with pytest.raises(ValueError):
+        pattern_predicate("c", "eq", "x", "bigquery", quote)

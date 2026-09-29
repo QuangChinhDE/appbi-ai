@@ -1,5 +1,6 @@
 'use client';
 
+import { sectionTitlesOf } from '@/lib/report-meta';
 import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
@@ -36,7 +37,7 @@ import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
 import { AddElementMenu } from '@/components/dashboards/AddElementMenu';
-import { ReportInspector } from '@/components/dashboards/ReportInspector';
+import { ReportInspector, type PendingContentSave } from '@/components/dashboards/ReportInspector';
 import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-style';
 import { resolveTileFrame } from '@/lib/dashboard-presentation/tile-frame';
 import { applyLayoutPattern, type LayoutPattern } from '@/lib/report-patterns';
@@ -99,7 +100,7 @@ import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
 import { ArrangeBar, type TileFrame } from '@/components/dashboards/ArrangeBar';
 import { arrangeTiles, closeVacatedBand, nudgeTiles, placeBeside, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
-import { adoptableUnder, moveSection, resolveStructure, sectionForPosition, structureIssues, insertionFor, toStructTiles, type StructTile } from '@/lib/report-structure';
+import { adoptableUnder, lockedMemberOf, moveSection, resolveStructure, sectionForPosition, structureIssues, insertionFor, toStructTiles, type StructTile } from '@/lib/report-structure';
 import { pageFilterFacts, statePageFilterFact } from '@/lib/public-page-filters';
 import { settleStoredLayout } from '@/lib/grid-settle';
 import {
@@ -1061,14 +1062,16 @@ function DashboardDetailPageInner() {
   // (click-chart-to-edit), so the hook needs to read it.
   const [focusedTileId, setFocusedTileId] = useState<number | null>(null);
   // AI Design scope = what is selected on the canvas. Click selects one visual,
-  // Shift/Ctrl/⌘+click adds or removes one; clicking the only selected visual
-  // again clears it. Outside AI mode selection is the single focus highlight.
+  // Shift/Ctrl/⌘+click adds or removes one. Clicking a selected element keeps
+  // it selected (as in any design tool): it used to toggle it off, so a second
+  // click to "make sure" silently deselected the heading a new chart was meant
+  // to go under. Escape, or a click on empty canvas, clears the selection.
   const [selectedTileIds, setSelectedTileIds] = useState<number[]>([]);
   const handleTileFocus = React.useCallback((id: number, additive?: boolean) => {
     setFocusedTileId(id);
     setSelectedTileIds((current) => {
       if (additive) return current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
-      return current.length === 1 && current[0] === id ? [] : [id];
+      return current.length === 1 && current[0] === id ? current : [id];
     });
   }, []);
   const clearTileSelection = React.useCallback(() => {
@@ -1078,6 +1081,36 @@ function DashboardDetailPageInner() {
   // A selection belongs to the page it was made on.
   React.useEffect(() => { setSelectedTileIds([]); }, [activePageId]);
   const canvasRootRef = React.useRef<HTMLDivElement | null>(null);
+  // A content edit typed in the Inspector reaches the draft a moment later.
+  // Save, Publish and a page switch wait for it (and stop if it failed);
+  // Discard drops what was not sent and waits for what was, so no edit lands
+  // after it. Saves already sent by an element that has since closed are
+  // tracked here too.
+  const pendingContentSaveRef = React.useRef<PendingContentSave | null>(null);
+  const inflightContentSavesRef = React.useRef(new Set<Promise<void>>());
+  const settleContentEdits = React.useCallback(async (mode: 'flush' | 'cancel'): Promise<boolean> => {
+    const handle = pendingContentSaveRef.current;
+    let ok = true;
+    if (handle) {
+      if (mode === 'flush') ok = await handle.flush();
+      else await handle.cancel();
+    }
+    await Promise.allSettled(Array.from(inflightContentSavesRef.current));
+    if (!ok) toast.error(t('dashboards.inspector.saveBeforeLeaving'));
+    return ok;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Leaving the page with an unsent edit asks first.
+  React.useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (pendingContentSaveRef.current?.hasPending() || inflightContentSavesRef.current.size > 0) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
   // The builder header's real height. It wraps to a second row when a draft's
   // actions and the tools do not fit on one; the overlays (AI Design, the
   // Inspector) sit below it, never over its second row.
@@ -1810,6 +1843,7 @@ function DashboardDetailPageInner() {
 
   const handleSaveDraft = async () => {
     if (committingPresentationRef.current) return;
+    if (!(await settleContentEdits('flush'))) return;
     const { ok } = await stageAllToDraft();
     if (ok) {
       // Save flushes local overrides → the pre-save snapshots in the undo stack
@@ -1829,6 +1863,7 @@ function DashboardDetailPageInner() {
   // edits in local state, not lost). The PDF-export loop sets currentPageId
   // directly (not via this), so it isn't affected.
   const handleSwitchPage = useCallback(async (pageId: string) => {
+    await settleContentEdits('flush');
     if (pageId === activePageId) { setIsPagesMenuOpen(false); return; }
     setIsPagesMenuOpen(false);
     // Silent auto-save (like Google Docs) — the "DRAFT" badge reflects state;
@@ -1902,6 +1937,8 @@ function DashboardDetailPageInner() {
 
   const handlePublish = async () => {
     if (committingPresentationRef.current) return;
+    // The last content edit is in the draft before the snapshot is published.
+    if (!(await settleContentEdits('flush'))) return;
     // Capture base versions BEFORE the flush clears local overrides.
     const tileBaseV = buildTileBaseV();
     // Everything is staged first; Publish runs only if ALL of it was accepted.
@@ -1933,6 +1970,7 @@ function DashboardDetailPageInner() {
 
   // Phase-B17 — user chose "overwrite" in the conflict dialog: republish with force.
   const handleForcePublish = async () => {
+    if (!(await settleContentEdits('flush'))) return;
     setPublishConflict(null);
     try {
       await publishDashboardMutation.mutateAsync({ dashboardId, force: true });
@@ -1943,6 +1981,9 @@ function DashboardDetailPageInner() {
   };
 
   const handleDiscardAll = async () => {
+    // Drop the Inspector's unsent edit and wait for one already sent, so the
+    // discard is the last word (nothing is written back into the draft after it).
+    await settleContentEdits('cancel');
     setLocalLayoutOverrides({});
     // An unsaved theme lives only in page state — dropping it reverts colour.
     // A STAGED theme is in the server draft and goes with discard-draft below.
@@ -3111,7 +3152,10 @@ function DashboardDetailPageInner() {
     description: dashboard?.description ?? null,
     filterFacts: pageFilterFacts({ applied: effectivePageScopeFilters, pageHidden: [], locked: [] })
       .map((f) => `${f.label}: ${statePageFilterFact(f, t)}`),
-  }), [dashboard?.name, dashboard?.description, effectivePageScopeFilters, t]);
+    // Which section a tile's period belongs to (a report over independent
+    // datasets states each dataset's own coverage).
+    sectionTitleOf: sectionTitlesOf(visibleDashboardCharts, resolveStructure(toStructTiles(visibleDashboardCharts)).sectionOf),
+  }), [dashboard?.name, dashboard?.description, effectivePageScopeFilters, t, visibleDashboardCharts]);
   const effectiveFiltersWithParams = React.useMemo<BaseFilter[]>(
     () =>
       paramFilters.length
@@ -3555,7 +3599,12 @@ function DashboardDetailPageInner() {
       // A section moves as a whole: its members keep their place under it.
       const group = moveSection(structTiles, id, { x: item.x, y: item.y }, structure);
       if (!group) {
-        toast.info(t('dashboards.arrange.lockedInWay', { title: tileTitle(id) }));
+        // A section moves whole or not at all: a locked member is named, never
+        // left behind while still counted as part of the section.
+        const lockedMember = lockedMemberOf(structTiles, id, structure);
+        toast.info(lockedMember != null
+          ? t('dashboards.arrange.sectionLocked', { title: tileTitle(lockedMember) })
+          : t('dashboards.arrange.lockedInWay', { title: tileTitle(id) }));
         setGridRevision((n) => n + 1);
         return;
       }
@@ -3697,8 +3746,12 @@ function DashboardDetailPageInner() {
     commitArrange(applyLayoutPattern(pattern, pageBoxes(), selectedTileIds, { leadId }));
   };
   const handleSaveWidgetConfig = async (id: number, config: Record<string, any>) => {
-    await dashboardApi.updateWidget(dashboardId, id, config);
-    await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    const run = (async () => {
+      await dashboardApi.updateWidget(dashboardId, id, config);
+      await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    })();
+    inflightContentSavesRef.current.add(run);
+    try { await run; } finally { inflightContentSavesRef.current.delete(run); }
   };
   const handleSaveReportDetails = async (patch: { name: string; description: string | null }) => {
     try {
@@ -4690,7 +4743,16 @@ function DashboardDetailPageInner() {
             frame={selectedFrame}
           />
         )}
-        <div ref={canvasRootRef} data-dashboard-canvas-root="builder">
+        <div
+          ref={canvasRootRef}
+          data-dashboard-canvas-root="builder"
+          // A click on empty canvas (not on an element, a control or a menu) clears the selection.
+          onClick={(e) => {
+            const target = e.target as HTMLElement;
+            if (selectedTileIds.length === 0 || target.closest('[data-grid-item-id], button, input, select, textarea, a, [role="menu"], [role="dialog"]')) return;
+            clearTileSelection();
+          }}
+        >
         {(
           <ReportMetaProvider value={reportMeta}>
           <DashboardGrid
@@ -4903,6 +4965,7 @@ function DashboardDetailPageInner() {
               onFitToContent={handleFitToContent}
               onFrame={handleFrame}
               frame={selectedFrame}
+              pendingSave={pendingContentSaveRef}
             />
           </aside>
         )}
@@ -5120,10 +5183,10 @@ function DashboardDetailPageInner() {
           isOpen={isDiscardConfirmOpen}
           onClose={() => setIsDiscardConfirmOpen(false)}
           onConfirm={handleDiscardAll}
-          title="Discard layout changes?"
-          description="All changes (local edits + saved draft) will be discarded. The dashboard reverts to the last published layout. This cannot be undone."
-          confirmLabel="Discard changes"
-          cancelLabel="Keep editing"
+          title={t('dashboards.detail.discardConfirmTitle')}
+          description={t('dashboards.detail.discardConfirmBody')}
+          confirmLabel={t('dashboards.detail.discardConfirmOk')}
+          cancelLabel={t('dashboards.detail.discardConfirmCancel')}
           variant="warning"
         />
 

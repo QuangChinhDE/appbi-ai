@@ -104,6 +104,22 @@ The full stack was rehearsed on a copy of the rig database (`CREATE DATABASE …
 - **Before any author uses the new controls:** run `alembic downgrade 20260914_0002` with the *new* image (it holds the downgrade code), then deploy the old code. This is a clean return.
 - **After authors have edited:** restore the pre-upgrade backup for an exact state; edits made since are lost. Alternatively, downgrade and clean up with the query above, accepting the layout drift described in item 2.
 
+**Combined with Agent Flow.** Both streams branch off `20260914_0002`:
+
+- Agent Flow V3: `20260925_0001` → `20260926_0101`.
+- Report Studio: `20260926_0001` → `20260928_0001` → `20260929_0001`.
+
+The stack that lands in `demo` second adds one no-op merge revision, `20260930_0001`, with `down_revision = ("20260926_0101", "20260929_0001")`. That gives a single head. The Agent Flow owner rehearsed the merge on copies of both lineages.
+
+Agent Flow originally shipped its migration under `20260926_0001`, the same ID Report Studio uses. A database that applied Agent Flow's under that old ID is re-labelled to `20260926_0101` by `app/core/alembic_reconcile.py`, which reads the schema to decide.
+
+At the merge point, `alembic downgrade -1` is ambiguous. Name the target instead:
+
+- to undo only Report Studio, `alembic downgrade 20260926_0101`;
+- to go below both streams, `alembic downgrade 20260914_0002`.
+
+The Agent Flow migrations are additive. The Report Studio ones rewrite layouts, so the limits above still apply to them.
+
 ## 5. Post-deploy checks
 
 - `SELECT version_num FROM alembic_version` returns `20260929_0001`.
@@ -136,6 +152,15 @@ The full stack was rehearsed on a copy of the rig database (`CREATE DATABASE …
 
 ## 7. Not verified here
 
-- **BigQuery-backed gates:** BLOCKED. There are no warehouse credentials on the rig, and no result is claimed.
+- **BigQuery-backed gates:** BLOCKED.
+  - This machine has no warehouse credentials. The `GCP_SERVICE_ACCOUNT_*` variables are empty, there is no gcloud application-default credential, and the BigQuery connector is not authorized.
+  - The `galaxy_golden` and `distinct_cascade_bq` harnesses are declared `missing` in `guardrail_rules.yaml`: they have never been committed.
+  - No BigQuery result is claimed.
+- **Fixed in code, not yet executed on BigQuery:** text filters (contains, not_contains, starts_with, ends_with).
+  - Every builder used `LIKE … ESCAPE '\'`, which GoogleSQL rejects: report filters, measure filters, live queries and the dropdown's distinct-value search.
+  - BigQuery now gets `STRPOS` / `STARTS_WITH` / `ENDS_WITH` from one helper, `app/services/sql_pattern.py`.
+  - Postgres SQL is byte-for-byte unchanged, locked by `test_dialect_structural.py`.
+  - Measure filters also treat a typed `%` or `_` literally now, and apply `not_contains`.
+- **Open finding, not changed:** string literals are escaped by doubling the quote (`'O''Brien'`) on every dialect, and `test_dialect_structural.py::test_quote_escaping_is_dialect_independent` locks that for BigQuery. GoogleSQL is documented to use `\'` instead. If a BigQuery run confirms this, that test is wrong and the literal helpers need a dialect branch. Per repository rules, the test is reported here rather than changed without that proof.
 - **Production-size data:** not verified. The rehearsal ran on the rig database (58 reports); a production copy has not been migrated.
 - **Human product acceptance:** pending. It is the owner's decision, not an assistant's.

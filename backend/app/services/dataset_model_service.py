@@ -3415,12 +3415,10 @@ def _distinct_values_full(
             keyword = "IN" if op == "in" else "NOT IN"
             return f"{_numcast(field_expression, *present_vals)} {keyword} ({vals})"
         if op in {"like", "contains", "not_contains", "starts_with"} and raw_value is not None:
-            esc = str(raw_value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
-            if op == "not_contains":
-                return f"{field_expression} NOT LIKE '%{esc}%' ESCAPE '\\'"
-            if op == "starts_with":
-                return f"{field_expression} LIKE '{esc}%' ESCAPE '\\'"
-            return f"{field_expression} LIKE '%{esc}%' ESCAPE '\\'"
+            # One shape per dialect (app/services/sql_pattern): BigQuery has no
+            # LIKE … ESCAPE — the dropdown's search failed on every BigQuery field.
+            from app.services.sql_pattern import pattern_predicate
+            return pattern_predicate(field_expression, op, raw_value, _d, lambda s: _sql_literal(s))
         if op == "is_null":
             return f"{field_expression} IS NULL"
         if op == "is_not_null":
