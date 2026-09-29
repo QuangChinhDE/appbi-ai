@@ -41,16 +41,20 @@ def vocabulary(ctx: Any) -> dict:
     dimensions: dict[str, list[str]] = {}
     by_dim: dict[str, list[str]] = {}
     names: dict[str, list[str]] = {}
-    for meta in (getattr(ctx, "chart_meta", None) or {}).values():
+    carriers: dict[str, list[tuple[int, list[str], str]]] = {}
+    for cid, meta in (getattr(ctx, "chart_meta", None) or {}).items():
         fields = (meta or {}).get("fields") or {}
         labels = fields.get("label_by_field") or {}
         title = str((meta or {}).get("name") or "")
         chart_measures = []
+        chart_dims = [field_key(str(d.get("field") if isinstance(d, dict) else d))
+                      for d in (fields.get("dimensions") or []) if d]
         for m in fields.get("measures") or []:
             ref = m.get("field") if isinstance(m, dict) else m
             if ref:
                 k = field_key(str(ref))
                 chart_measures.append(k)
+                carriers.setdefault(k, []).append((int(cid), chart_dims, title))
                 seen = names.setdefault(k, [])
                 for n in (title, str(ref), str((m.get("label") if isinstance(m, dict) else "") or "")):
                     if n and n not in seen:
@@ -66,7 +70,36 @@ def vocabulary(ctx: Any) -> dict:
                 pair = by_dim.setdefault(k, [])
                 pair.extend(m for m in chart_measures if m not in pair)
     return {"measures": measures, "dimensions": dimensions, "measures_by_dimension": by_dim,
-            "measure_names": names}
+            "measure_names": names, "carriers": carriers}
+
+
+def charts_for(intent: dict, vocab: dict, limit: int = 3) -> list[dict]:
+    """The in-scope charts that carry what the turn asks for — the chart ids the
+    answering step should measure with, instead of guessing one.
+
+    Live efaa3873 runs 7291/7260: the measure was resolved (distinct_sellers,
+    late_orders) and the model still called total_measure on chart_id 2 and 1. A
+    breakdown asked prefers a chart grouped by exactly that breakdown; a single
+    figure asked prefers a chart with no breakdown. Only charts already in scope
+    (`ctx.chart_meta`) are named, so nothing is widened."""
+    from app.services.time_semantics import looks_like_time_name
+
+    dim = intent.get("dimension")
+    out: list[dict] = []
+    for m in intent.get("measures") or []:
+        rows = (vocab.get("carriers") or {}).get(m) or []
+
+        def rank(r):
+            cid, dims, _title = r
+            if dim:
+                return 0 if dims == [dim] else 1 if dim in dims else 3
+            if intent.get("periods"):
+                return 0 if any(looks_like_time_name(d) for d in dims) and len(dims) == 1 else 2
+            return 0 if not dims else 2
+        for cid, dims, title in sorted(rows, key=rank)[:limit]:
+            if rank((cid, dims, title)) < 3:
+                out.append({"chart_id": cid, "measure": m, "by": dims, "title": title})
+    return out[: limit * 2]
 
 
 #: Words that say HOW a quantity is counted, not WHICH quantity it is. Sharing
@@ -121,12 +154,42 @@ def titled_measure(question: str, chosen: list[str], vocab: dict) -> str | None:
             owners.setdefault(t, set()).add(k)
     asked = _terms(question, singles=False)
     hits = {k for t in asked for k in owners.get(t, ()) if len(owners[t]) == 1}
-    if len(hits) != 1:
+    if len(hits) == 1:
+        best = next(iter(hits))
+        if best not in chosen and not any(asked & terms.get(c, set()) for c in chosen):
+            return best
+    # THE AGGREGATION THE QUESTION ASKS FOR. Live efaa3873 run 7329: "Trung bình mỗi
+    # lần thanh toán trả góp bao nhiêu kỳ?" resolved to payment_count; "trả góp" is
+    # in both installment titles, so no word pair decided. Of the measures the
+    # question's words DO reach, exactly one is an average — that one is asked.
+    kind = _asked_aggregation(question)
+    if not kind:
         return None
-    best = next(iter(hits))
-    if best in chosen or any(asked & terms.get(c, set()) for c in chosen):
-        return None
-    return best
+    reached = {k for t in asked for k in owners.get(t, ())}
+    fitting = [k for k in reached if _aggregation_of(k) == kind]
+    if len(fitting) == 1 and fitting[0] not in chosen \
+            and not any(_aggregation_of(c) == kind for c in chosen):
+        return fitting[0]
+    return None
+
+
+_AGG_WORDS = {"avg": ("trung binh", "average", "avg", "mean", "binh quan"),
+              "rate": ("ty le", "rate", "phan tram", "percent", "percentage")}
+
+
+def _asked_aggregation(question: str) -> str | None:
+    folded = " ".join(_words(question))
+    kinds = [k for k, ws in _AGG_WORDS.items() if any(f" {w} " in f" {folded} " for w in ws)]
+    return kinds[0] if len(kinds) == 1 else None
+
+
+def _aggregation_of(measure_key: str) -> str | None:
+    k = f"_{str(measure_key).lower()}_"
+    if any(f"_{w}_" in k for w in ("avg", "average", "mean")):
+        return "avg"
+    if any(f"_{w}_" in k for w in ("rate", "pct", "ratio", "share")):
+        return "rate"
+    return None
 
 
 def absent_is_real(absent: str, vocab: dict) -> bool:
@@ -156,9 +219,14 @@ MEMBER_VALUES_PER_DIMENSION = 80
 MEMBER_READ_SECONDS = 3.0
 
 
-def member_values(ctx: Any, dimensions: dict) -> dict[str, list[str]]:
+def member_values(ctx: Any, dimensions: dict, coverage: dict | None = None) -> dict[str, list[str]]:
     """{dimension key: [its values as the rows carry them]} for the non-time
-    breakdowns in scope, read from one chart grouped by each alone. Never raises."""
+    breakdowns in scope, read from one chart grouped by each alone. Never raises.
+
+    When `coverage` is given, a TIME breakdown's first and last period (as the rows
+    label them) is recorded in it — what "tháng gần nhất" / "latest month" means in
+    THIS report. Live efaa3873 (g4_mom, g6): the model resolved "the latest month" to
+    2023-10 from its own clock; the report ends in 2018."""
     import time
 
     from app.services.agent_flows.tools.context import _fetch_chart_data
@@ -169,7 +237,8 @@ def member_values(ctx: Any, dimensions: dict) -> dict[str, list[str]]:
     started = time.monotonic()
     metas = getattr(ctx, "chart_meta", None) or {}
     for dim in dimensions:
-        if looks_like_time_name(dim) or time.monotonic() - started > MEMBER_READ_SECONDS:
+        timed = looks_like_time_name(dim)
+        if (timed and coverage is None) or time.monotonic() - started > MEMBER_READ_SECONDS:
             continue
         for cid, meta in metas.items():
             dims = [field_key(str(d.get("field") if isinstance(d, dict) else d))
@@ -189,7 +258,11 @@ def member_values(ctx: Any, dimensions: dict) -> dict[str, list[str]]:
                 v = r[i] if i < len(r) else None
                 if v is not None and str(v) not in seen:
                     seen.append(str(v))
-            if len(seen) <= MEMBER_VALUES_PER_DIMENSION:
+            if timed:
+                labels = sorted(v for v in seen if v)
+                if labels:
+                    coverage[dim] = (labels[0], labels[-1])
+            elif len(seen) <= MEMBER_VALUES_PER_DIMENSION:
                 out[dim] = seen
             break
     return out
@@ -215,7 +288,9 @@ _SYSTEM = (
     "different quantity is NOT the asked quantity: use \"absent\" instead. A member is one "
     "value of a breakdown (a state, a category, a payment type), never a measure, a period "
     "or a breakdown's own name; its code is the MEMBERS value it denotes (a state's name is "
-    "its state code). For a follow-up, carry over the previous question's measure/member and "
+    "its state code). Relative periods (\"gần nhất\", \"latest\", \"this month\", \"last month\") are relative "
+    "to DATA_PERIODS.last — the report's own last period — never to today's date. "
+    "For a follow-up, carry over the previous question's measure/member and "
     "resolve relative periods (\"tháng trước\", \"previous month\") to concrete ones. Do "
     "not invent periods."
 )
@@ -227,6 +302,7 @@ def _prompt(question: str, previous: str, vocab: dict) -> str:
         "DIMENSIONS": vocab["dimensions"],
         "MEASURES_BY_DIMENSION": vocab.get("measures_by_dimension") or {},
         "MEMBERS": vocab.get("members") or {},
+        "DATA_PERIODS": {k: {"first": a, "last": b} for k, (a, b) in (vocab.get("coverage") or {}).items()},
         "PREVIOUS_QUESTION": previous or None,
         "QUESTION": question,
     }, ensure_ascii=False)
@@ -395,7 +471,8 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
     if not vocab["measures"]:
         return floor
     try:
-        vocab["members"] = member_values(ctx, vocab["dimensions"])
+        vocab["coverage"] = {}
+        vocab["members"] = member_values(ctx, vocab["dimensions"], vocab["coverage"])
     except Exception:                                           # noqa: BLE001
         vocab["members"] = {}
     try:
@@ -413,7 +490,14 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
         model["notes"].append(f"measure by the question's own words: {better} "
                               f"(model chose {model.get('measures')})")
         model["measures"], model["absent"] = [better], None
-    return merge(model, floor, question)
+    out = merge(model, floor, question)
+    try:
+        out["charts"] = charts_for(out, vocab)
+    except Exception:                                           # noqa: BLE001
+        out["charts"] = []
+    if vocab.get("coverage"):
+        out["coverage"] = {k: list(v) for k, v in vocab["coverage"].items()}
+    return out
 
 
 def describe_for_prompt(intent: dict, locale: str = "vi") -> str:
@@ -436,6 +520,14 @@ def describe_for_prompt(intent: dict, locale: str = "vi") -> str:
         parts.append("kỳ: " + ", ".join(_label(p) for p in intent["periods"]))
     if intent.get("baseline"):
         parts.append("so với: " + _label(intent["baseline"]))
+    if intent.get("charts"):
+        parts.append("biểu đồ đo đúng điều này (dùng chart_id này, không đoán): " + "; ".join(
+            f"{c['chart_id']} = {c['title'] or c['measure']}" for c in intent["charts"][:4]))
+    for dim, (first, last) in (intent.get("coverage") or {}).items():
+        # "Gần nhất" is the REPORT's last period, not today's (live efaa3873: the
+        # answering step compared 2023-10 with 2023-09 on a report that ends in 2018).
+        parts.append(f"dữ liệu theo {dim} có từ {first} đến {last} — \"gần nhất\"/\"latest\" "
+                     f"là {last}, không phải theo ngày hôm nay")
     if not parts:
         return ""
     return "CÂU HỎI ĐANG HỎI (runtime đã xác định): " + "; ".join(parts) + "."

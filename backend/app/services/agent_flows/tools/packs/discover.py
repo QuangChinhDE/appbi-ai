@@ -354,6 +354,20 @@ def tool_search_business_assets(ctx: Any, args: dict) -> dict:
             logger.warning("[discover] %s search failed", kind, exc_info=True)
             failed.append(kind)
 
+    widened = False
+    if not results and "chart" in _KINDS and "chart" not in searched:
+        # A NARROWED SEARCH THAT FOUND NOTHING LOOKS AT THE CHARTS. Live efaa3873 runs
+        # 7291/7262/7260: `types: ["metric"]` for distinct_sellers / total_freight /
+        # late_orders found no governed metric, and the model concluded the report
+        # had none — every one of them is on a chart in scope.
+        try:
+            results.extend(_FINDERS["chart"](ctx, query, wanted, once) or [])
+            searched.append("chart")
+            widened = True
+        except Exception:  # noqa: BLE001
+            logger.warning("[discover] chart fallback failed", exc_info=True)
+            failed.append("chart")
+
     by_kind: dict[str, int] = {}
     for r in results:
         by_kind[r["type"]] = by_kind.get(r["type"], 0) + 1
@@ -369,6 +383,10 @@ def tool_search_business_assets(ctx: Any, args: dict) -> dict:
     }
     if failed:
         out["coverage"]["unavailable"] = failed
+    if widened and results:
+        out["coverage"]["note"] = (
+            f"No {'/'.join(k for k in searched if k != 'chart')} is named like '{query}'; "
+            "these CHARTS carry it — measure it with one of their ids.")
     if not results:
         # SAY WHICH WAY IT IS EMPTY. "No results" reads to a model as "this
         # business does not track that", and it answers accordingly. The honest
