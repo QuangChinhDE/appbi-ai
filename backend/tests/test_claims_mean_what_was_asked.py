@@ -778,3 +778,56 @@ def test_a_rate_measures_member_value_is_a_proportion(world):
         "items": [{"label": "2018-03", "value": 78.6377}, {"label": "2018-02", "value": 84.0}]}},
         {"chart_id": 712})
     assert _why(state, ctx, "Tỷ lệ giao đúng hẹn tháng 3/2018 là 78.64%.") == []
+
+
+# ── live at df54303b: the asked member without a cue word ────────────────────
+
+def test_a_proper_noun_in_the_question_is_the_asked_member(world):
+    """Live runs 4707/4742/4770: the delivered count and the report total
+    published as São Paulo's for "São Paulo có bao nhiêu đơn hàng?"."""
+    ctx, state = world("São Paulo có bao nhiêu đơn hàng?", asked=("order_count",))
+    _value(state, 99441.0, "dataset_table_437.order_count")
+    assert (99441.0, "whole_as_member") in _why(state, ctx, "Số đơn hàng tại São Paulo là 99,441.")
+    assert _why(state, ctx, "Báo cáo không tách theo bang; tổng số đơn là 99,441.") == []
+
+
+def test_a_report_word_in_title_case_is_not_a_member(world):
+    ctx, state = world("Doanh thu của Olist là bao nhiêu?")
+    _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
+    assert _why(state, ctx, "Doanh thu của Olist là 13,591,643.70.") == []
+
+
+def test_a_qualifier_the_report_uses_is_the_asked_member(world):
+    """Live runs 4608/4627/4676: total reviews 99,224 published as 5-star reviews."""
+    ctx, state = world("Có bao nhiêu lượt đánh giá 5 sao?", asked=("review_count",))
+    ctx.chart_meta[717] = {"name": "Olist · Tỷ lệ 5 sao (%) · page-5",
+                           "fields": {"measures": [{"field": "dataset_table_440.pct_five_star"}], "dimensions": []}}
+    _value(state, 99224.0, "dataset_table_440.review_count")
+    assert (99224.0, "whole_as_member") in _why(state, ctx, "Có 99,224 lượt đánh giá 5 sao.")
+    assert _why(state, ctx, "Có tổng cộng 99,224 lượt đánh giá (mọi mức sao).") == []
+
+
+def test_a_follow_up_figure_given_a_period_needs_that_periods_support(world):
+    """Live runs 4756/4765: "Còn tháng trước đó thì sao?" → "GMV tháng 10/2017 là 56808.84"."""
+    ctx, state = world("Còn tháng trước đó thì sao?", asked=("gmv",))
+    _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
+    state.add_evidence({"x": 56808.84})
+    assert (56808.84, "unsupported") in _why(state, ctx, "GMV tháng 10/2017 là 56808.84.")
+
+
+def test_a_metric_resolves_to_the_field_it_is_bound_to_by_its_name(monkeypatch):
+    """Live df54303b: "Doanh thu sản phẩm trung bình mỗi đơn" resolved the metric
+    gia_tri_don_trung_binh, but only its IDENTIFIER went to `_vocabulary`, which
+    keeps identifiers as they are — so the chart field `aov` never became an asked
+    measure and a correct 137.75 was withheld."""
+    from types import SimpleNamespace
+
+    from app.services.agent_flows.tools.packs import discover as D
+
+    monkeypatch.setattr(D, "tool_search_business_assets", lambda ctx, a: {"ok": True, "data": {"results": [
+        {"type": "metric", "id": "gia_tri_don_trung_binh", "name": "Giá trị đơn trung bình",
+         "detail": "Doanh thu sản phẩm chia cho số đơn có hàng."}]}})
+    bound = {"Giá trị đơn trung bình": ["aov"]}
+    monkeypatch.setattr(D, "_vocabulary", lambda ctx, phrase, kind: [phrase] + bound.get(phrase, []))
+    ctx = SimpleNamespace(question="Doanh thu sản phẩm trung bình mỗi đơn là bao nhiêu?")
+    assert "aov" in CC._question_measures(ctx, ctx.question)

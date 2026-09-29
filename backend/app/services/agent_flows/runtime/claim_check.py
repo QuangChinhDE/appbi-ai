@@ -98,7 +98,14 @@ def _question_measures(ctx: Any, question: str) -> set[str]:
             # run 4183 withheld a correct 137.75); four shared terms, never the three
             # generic ones of "Nó chiếm bao nhiêu phần trăm?".
             if ident and (named or strength >= 4) and (strength >= 2 or (strength and strength == len(terms))):
-                for alias in _vocabulary(ctx, str(ident), "measure") or [ident]:
+                # The IDENTIFIER stays itself in `_vocabulary`; the NAME is what the
+                # governed vocabulary translates into the fields the metric is bound
+                # to. Without it "Giá trị đơn trung bình" never became `aov`, and a
+                # correct AOV was withheld as another measure (live, df54303b).
+                aliases = set(_vocabulary(ctx, str(ident), "measure") or [ident])
+                if asset.get("name"):
+                    aliases |= set(_vocabulary(ctx, str(asset["name"]), "measure") or [])
+                for alias in aliases:
                     measures.add(field_key(str(alias)))
                 _MEASURE_WORDS.setdefault(id(ctx), set()).update(
                     _terms_of(" ".join(str(asset.get(k) or "") for k in ("id", "name"))))
@@ -273,7 +280,7 @@ _PHRASE_STOP = {"la", "co", "chiem", "thi", "bao", "nao", "dat", "duoc", "trong"
                 "tang", "giam", "nhieu", "nhat", "cao", "thap", "bang", "danh", "muc"}
 
 
-def _asked_member(ctx: Any, t: dict, question: str) -> list[str] | None:
+def _asked_member_by_cue(ctx: Any, t: dict, question: str) -> list[str] | None:
     """The member the question names, as WRITTEN: the words after the requested
     breakdown's own cue word in the report's chart titles ("bang Minas Gerais",
     "danh mục đồ giường và phòng tắm (bed bath table)"). Returned as squashed
@@ -313,6 +320,60 @@ def _asked_member(ctx: Any, t: dict, question: str) -> list[str] | None:
         if cands:
             return cands
     return None
+
+
+_TIME_WORDS = {"thang", "nam", "quy", "ngay", "tuan", "month", "months", "year", "years",
+               "quarter", "day", "days", "week", "weeks", "q"}
+
+
+def _report_vocabulary(ctx: Any) -> set[str]:
+    """Words the report itself uses — chart titles, field names and labels. A
+    proper noun in the question that is one of these ("Olist", "GMV", "AOV")
+    names the report or a measure, never a member being asked about."""
+    words: set[str] = set()
+    for meta in (getattr(ctx, "chart_meta", None) or {}).values():
+        words |= {_squash(w) for w in str((meta or {}).get("name") or "").split()}
+        for group in ((meta or {}).get("fields") or {}).values():
+            for f in group or []:
+                if isinstance(f, dict):
+                    for k in ("field", "label", "name"):
+                        words |= {_squash(w) for w in str(f.get(k) or "").replace(".", " ").replace("_", " ").split()}
+    words |= set(_MEASURE_WORDS.get(id(ctx), set()))
+    return {w for w in words if w}
+
+
+def _asked_member(ctx: Any, t: dict, question: str) -> list[str] | None:
+    """The member the question names — after the breakdown's cue word, or else as
+    a proper noun / code ("São Paulo", "SP") or a numeric qualifier ("5 sao")
+    that is not the report's own vocabulary. Live, df54303b: "São Paulo có bao
+    nhiêu đơn hàng?" has no cue word, and the delivered count and the report
+    total were both published as São Paulo's; total reviews as 5-star reviews."""
+    import re
+
+    found = _asked_member_by_cue(ctx, t, question)
+    if found:
+        return found
+    vocab = _report_vocabulary(ctx)
+    cands: list[str] = []
+    tokens = re.findall(r"[^\W\d_][^\W_]*|\d+", question or "")
+    phrase: list[str] = []
+    for i, tok in enumerate(tokens + [""]):
+        proper = bool(tok) and i > 0 and (tok[:1].isupper() or (tok.isupper() and len(tok) >= 2))
+        if proper and _squash(tok) not in vocab:
+            phrase.append(tok)
+            continue
+        if phrase:
+            cands.append(_squash(" ".join(phrase)))
+            phrase = []
+    for m in re.finditer(r"(?<![\d.,/])(\d{1,3})\s+([^\W\d_]+)", _fold(question)):
+        # Only a qualifier the REPORT uses ("5 sao" in "Tỷ lệ 5 sao (%)"): "Top 3
+        # danh mục" is a ranking, not a member.
+        q = m.group(1) + _squash(m.group(2))
+        if m.group(2) not in _TIME_WORDS and any(q in _squash(str((meta or {}).get("name") or ""))
+                                               for meta in (getattr(ctx, "chart_meta", None) or {}).values()):
+            cands.append(q)
+    cands = [c for c in dict.fromkeys(cands) if len(c) >= 2]
+    return cands or None
 
 
 def _names(sentence: str, label: str) -> bool:
@@ -360,7 +421,10 @@ def _given_a_meaning(sentence: str, question: str, asked: list[str] | None) -> b
     asked about? Then "read somewhere" is not enough — see `check`."""
     if not sentence:
         return False
-    if _periods(sentence) & _periods(question):
+    # ANY explicit period: a follow-up ("Còn tháng trước đó thì sao?") names none,
+    # yet "GMV tháng 10/2017 là 56808.84" still gives the figure a period
+    # (live, df54303b, runs 4756/4765).
+    if _periods(sentence):
         return True
     return bool(asked) and any((_names(sentence, c) if len(c) <= 3 else c in _squash(sentence))
                                for c in asked)
