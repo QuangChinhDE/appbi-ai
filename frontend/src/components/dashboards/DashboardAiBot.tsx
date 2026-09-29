@@ -1870,6 +1870,18 @@ function MessageBubble({
     () => (isUser || streaming ? { body: message.content, suggestions: [] } : extractFollowups(message.content)),
     [message.content, isUser, streaming],
   );
+  // A BLOCK ANSWER'S FOLLOW-UPS ARE ITS TEXT BLOCKS' [FOLLOWUP] LINES. e4154b11 stopped
+  // scraping the prose on top of blocks (each question showed twice) and with it the
+  // chips: live 11fd7f21 (browser, link 39) the three questions rendered as plain
+  // text. They are taken out of the text block and shown once, as chips — unless the
+  // envelope carries its own `followups` block, which AnswerBlocks renders.
+  const hasBlocks = !isUser && !!message.blocks?.length;
+  const blockSuggestions = useMemo(() => {
+    if (!hasBlocks || streaming || message.blocks!.some((b) => b.type === 'followups')) return [];
+    return message.blocks!
+      .flatMap((b) => (b.type === 'text' ? extractFollowups(b.markdown).suggestions : []))
+      .slice(0, 5);
+  }, [hasBlocks, streaming, message.blocks]);
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
@@ -1914,7 +1926,8 @@ function MessageBubble({
         {!isUser && message.blocks && message.blocks.length > 0 ? (
           <AnswerBlocks
             blocks={message.blocks}
-            renderMarkdown={(md: string) => <RichMarkdown text={md} />}
+            onAskFollowup={onPickSuggestion}
+            renderMarkdown={(md: string) => <RichMarkdown text={streaming ? md : extractFollowups(md).body} />}
           />
         ) : (
           <RichMarkdown text={body} />
@@ -2003,9 +2016,9 @@ function MessageBubble({
             where it shows each question twice. Pre-existing here; found while fixing
             the same line in the Studio test panel, which renders through the same
             component. */}
-        {!isUser && !message.blocks?.length && suggestions.length > 0 && onPickSuggestion && (
+        {!isUser && (message.blocks?.length ? blockSuggestions : suggestions).length > 0 && onPickSuggestion && (
           <div className="mt-2 flex flex-wrap gap-1.5 border-t border-[rgb(var(--border-line))]/40 pt-2">
-            {suggestions.map((q, i) => (
+            {(message.blocks?.length ? blockSuggestions : suggestions).map((q, i) => (
               <button
                 key={i}
                 type="button"

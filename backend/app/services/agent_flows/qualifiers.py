@@ -49,12 +49,19 @@ _CURRENCY = {
     "$": re.compile(r"\$"),
     "USD": re.compile(r"\bUSD\b", re.IGNORECASE),
     "VND": re.compile(r"\bVN[ĐD]\b", re.IGNORECASE),
-    "đồng": re.compile(r"\bđồng\b", re.IGNORECASE),
+    # "đồng" is a currency only AFTER AN AMOUNT ("1.000 đồng", "5 triệu đồng"). Bare,
+    # it is half of ordinary words — đồng nhất, đồng thời, hợp đồng, cộng đồng: live
+    # 11fd7f21 (browser, link 39) "các số liệu đều đồng nhất" was told it asserted a
+    # currency, on a correct answer that named none.
+    "đồng": re.compile(r"(?:\d|\b(?:nghìn|ngàn|triệu|tỷ|tỉ))\s*đồng\b", re.IGNORECASE),
     "EUR": re.compile(r"\bEUR\b|€", re.IGNORECASE),
     "GBP": re.compile(r"\bGBP\b|£", re.IGNORECASE),
     "BRL": re.compile(r"\bBRL\b|R\$", re.IGNORECASE),
     "₫": re.compile(r"₫"),
 }
+
+#: In the EVIDENCE a currency may be named without an amount ("đơn vị: đồng").
+_CURRENCY_IN_EVIDENCE = {"đồng": re.compile(r"\bđồng\b", re.IGNORECASE)}
 
 #: "the data runs from X to Y" — a claim about the whole dataset's extent, which is
 #: exactly what a truncated row sample cannot establish. Narrow on purpose: a range
@@ -231,7 +238,7 @@ def check_qualifiers(text: str, results: list[Any], tools_called: list[str]
     # picked one, differently on two runs, over data from a third country.
     if not _unit_is_declared(blob):
         for name, rx in _CURRENCY.items():
-            if rx.search(text) and not rx.search(blob):
+            if rx.search(text) and not _CURRENCY_IN_EVIDENCE.get(name, rx).search(blob):
                 found.append({
                     "kind": "unit",
                     "claim": name,
