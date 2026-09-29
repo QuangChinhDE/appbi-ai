@@ -118,7 +118,7 @@ I opened every screenshot and read every PDF page at `933ab8b2`. These are a rev
 | Acceptance: unified grid | `933ab8b2` | **24/24 PASS** |
 | Acceptance: Report Studio V3 S1–S8 | `933ab8b2` | **9/9 PASS** (including setup), with the real model |
 | CI e2e (Playwright, full stack) | `933ab8b2` | 79 passed, 0 failed. 11 skipped: Agent Flow runtime tests (author/reader golden, run inspector, surfaces) that need a link with a flow binding, which this rig's database has none of. **NOT VERIFIED** here; not this stack's area. |
-| Remote CI | `35f78a6e`, `fa180520`, `8816979c` | 5/5 success on each. REMOTE_FINAL |
+| Remote CI | `35f78a6e`, `fa180520`, `8816979c`, `6b0635be` | 5/5 success on each (backend semantic-contract tests, change guardrail, E2E full stack, preflight, product gate). `6b0635be` is the product at `933ab8b2` plus this document and its evidence. |
 | BigQuery gates (`galaxy_golden`, `distinct_cascade_bq`, and a BigQuery run of the text filters) | none | **BLOCKED**: not run |
 
 **Declared changes to tests, gates and CI in this round:**
