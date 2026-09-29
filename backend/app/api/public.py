@@ -420,6 +420,8 @@ def _build_public_filter_fields(
     db: Session,
     dash: Dashboard,
     public_filters: list[dict] | None = None,
+    *,
+    legacy_scan: bool = True,
 ) -> list[dict]:
     """Public-link filter columns.
 
@@ -436,6 +438,12 @@ def _build_public_filter_fields(
         return _augment_with_slicer_fields(
             db, dash, _build_filter_fields_from_public_filters(db, dash, public_filters)
         )
+    if not legacy_scan:
+        # A VIEWER's inventory is what the report exposes. The legacy scan below
+        # offered every reachable dimension of every chart — an anonymous viewer
+        # of a report with no controls could list any dimension's values. The
+        # link manager and embed-claim validation still use it (legacy_scan=True).
+        return _augment_with_slicer_fields(db, dash, [])
 
     dataset_models: dict[int, dict] = {}
     dataset_join_key_fields: dict[int, set[str]] = {}
@@ -678,6 +686,7 @@ def _build_public_chart_filters(
     chart_dataset_id: Any = None,
     context_for_log: str = "public_chart",
     hard_bounds_out: list[dict] | None = None,
+    viewer_allowed: tuple[set[str], set[str]] | None = None,
 ) -> list[dict]:
     """Phase-B (PBI-parity rework) — single layered merge for every
     public endpoint that fetches chart data.
@@ -717,6 +726,13 @@ def _build_public_chart_filters(
     # publish time regardless of a fresh token. Re-attach the stored token here
     # so `normalize_filter_conditions` recomputes it to the current window. A
     # filter that already carries a token (explicit viewer choice) is untouched.
+    if viewer_filters:
+        allowed, bare_allowed = viewer_allowed or _viewer_allowed(dash, link_filters_config)
+        kept = [f for f in viewer_filters if _viewer_may_filter(f, allowed, bare_allowed)]
+        if len(kept) != len(viewer_filters):
+            logger.info("filter_merge context=%s dropped=%s", context_for_log,
+                        ["viewer_field_not_exposed"] * (len(viewer_filters) - len(kept)))
+        viewer_filters = kept
     viewer_filters = _reattach_authoritative_date_presets(
         viewer_filters, _authoritative_date_presets(dash),
     )
@@ -1062,31 +1078,188 @@ def _shape_public_structure(dash: Dashboard, link_filters_config: list[dict] | N
     _set_committed(dash, "pages_config", pages)
 
 
+#: Where a chart config names the fields it READS (not its titles or styling).
+_CHART_FIELD_KEYS = ("roleConfig", "generatedRoleConfig", "customRoleConfig", "filters", "baseFilters")
+#: Keys whose values are field names inside a filter or control entry.
+_ENTRY_FIELD_KEYS = ("semanticField", "fieldKey", "field")
+
+
+def _norm_ref(v: Any) -> str:
+    return str(v or "").strip().lower()
+
+
+def _strings_in(obj: Any, out: list[str]) -> None:
+    if isinstance(obj, str):
+        if obj.strip():
+            out.append(_norm_ref(obj))
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _strings_in(v, out)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _strings_in(v, out)
+
+
+def _chart_base_view(dc: Any, cfg: dict) -> str:
+    """The view a chart's bare field names are on: its binding's base view, or —
+    for a chart saved without a binding — the stable ``dataset_table_<id>``."""
+    sb = cfg.get("semanticBinding") if isinstance(cfg.get("semanticBinding"), dict) else {}
+    base = _norm_ref(sb.get("baseViewName"))
+    if base:
+        return base
+    table_id = getattr(getattr(dc, "chart", None), "dataset_table_id", None) or cfg.get("dataset_table_id")
+    return f"dataset_table_{table_id}" if table_id else ""
+
+
 def _public_field_refs(dash: Any) -> set[str]:
-    """Every string the SERVED report carries: its tiles' configs and its served
-    controls/filters (already shaped — 🚫 entries are gone). A field is part of
-    the public model only if one of these names it: the model used to list every
-    view's every field, so a hidden field's EXISTENCE (and label) reached an
-    anonymous viewer although nothing on the page uses it. A field a served chart
-    reads is already visible in that chart's config."""
+    """The fields the SERVED report exposes, as normalised names: qualified refs
+    (``view.field``) and, without a dot, bare names.
+
+    - its served controls and filters (already shaped — 🚫 entries are gone),
+      their ``linkedFields`` included;
+    - the fields its PUBLISHED charts read — every string under the role and
+      filter configs, a bare one also qualified by the chart's base view; the
+      binding's ``fieldMap`` targets and the calendar mappings of those fields.
+
+    Names are taken VERBATIM (a field name is a raw column header: "Khu vực",
+    "ID KH" are real). Not the binding's catalogs (every field of the explore)
+    and not titles or styling. This set decides what a public model lists, what
+    a served binding keeps, and which fields a viewer's own filter may name.
+    """
+    from app.services.dashboard_service import is_draft_only_item
     refs: set[str] = set()
 
-    def _collect(obj: Any) -> None:
-        if isinstance(obj, str):
-            refs.add(obj.strip().lower())
-        elif isinstance(obj, dict):
-            for v in obj.values():
-                _collect(v)
-        elif isinstance(obj, (list, tuple)):
-            for v in obj:
-                _collect(v)
+    def _entry(e: Any) -> None:
+        if not isinstance(e, dict):
+            return
+        for k in _ENTRY_FIELD_KEYS:
+            if e.get(k):
+                refs.add(_norm_ref(e.get(k)))
+        for lf in e.get("linkedFields") or []:
+            if isinstance(lf, str) and lf.strip():
+                refs.add(_norm_ref(lf))
 
+    for e in (getattr(dash, "slicers_config", None) or []):
+        _entry(e)
+    for e in (getattr(dash, "filters_config", None) or []):
+        _entry(e)
+    for page in (getattr(dash, "pages_config", None) or []):
+        if isinstance(page, dict):
+            for e in [*(page.get("filters") or []), *(page.get("slicers") or [])]:
+                _entry(e)
     for dc in getattr(dash, "dashboard_charts", None) or []:
-        _collect((dc.chart.config if getattr(dc, "chart", None) else None) or {})
-    _collect(list(getattr(dash, "slicers_config", None) or []))
-    _collect(list(getattr(dash, "filters_config", None) or []))
-    _collect(list(getattr(dash, "pages_config", None) or []))
+        if is_draft_only_item(dc):
+            continue
+        cfg = (dc.chart.config if getattr(dc, "chart", None) else None) or {}
+        if not isinstance(cfg, dict):
+            continue
+        sb = cfg.get("semanticBinding") if isinstance(cfg.get("semanticBinding"), dict) else {}
+        base = _chart_base_view(dc, cfg)
+        strings: list[str] = []
+        for key in _CHART_FIELD_KEYS:
+            _strings_in(cfg.get(key), strings)
+        used_bare: set[str] = set()
+        for s in strings:
+            refs.add(s)
+            if "." in s:
+                used_bare.add(s.rsplit(".", 1)[-1])
+            else:
+                used_bare.add(s)
+                if base:
+                    refs.add(f"{base}.{s}")
+        field_map = sb.get("fieldMap") if isinstance(sb.get("fieldMap"), dict) else {}
+        for src, target in field_map.items():
+            if _norm_ref(src) in used_bare and target:
+                refs.add(_norm_ref(target))
+        for m in sb.get("calendarFieldMappings") or []:
+            if isinstance(m, dict) and _norm_ref(m.get("sourceField")) in used_bare and m.get("semanticField"):
+                refs.add(_norm_ref(m.get("semanticField")))
     return refs
+
+
+def _field_is_referenced(ref: Any, refs: set[str]) -> bool:
+    """For what is SHOWN (labels, served catalogs): a qualified name, or a bare
+    use of its name (a chart saved with bare refs still needs its labels)."""
+    name = _norm_ref(ref)
+    return bool(name) and (name in refs or name.rsplit(".", 1)[-1] in refs)
+
+
+#: The semantic binding's field catalogs: every field of the chart's explore
+#: (and of every view it can join).
+_BINDING_CATALOG_KEYS = ("dimensionFields", "measureFields", "reachableFields",
+                         "reachableDimensionFields", "reachableMeasureFields")
+
+
+def _trim_served_binding_catalogs(dash: Any, refs: set[str]) -> None:
+    """Each served chart's binding lists every field of its explore and of every
+    view it can join — the whole dataset's field names reached an anonymous
+    viewer in the chart config. The public tiles use these lists only to resolve
+    fields the report uses (cross-filter, which slicer reaches which chart), so
+    they are trimmed to those; ``reachableViews`` to the views those fields are
+    on. The served copy only (``set_committed_value``): never written back."""
+    from sqlalchemy.orm.attributes import set_committed_value as _set_committed
+    for dc in getattr(dash, "dashboard_charts", None) or []:
+        chart = getattr(dc, "chart", None)
+        cfg = getattr(chart, "config", None)
+        sb = cfg.get("semanticBinding") if isinstance(cfg, dict) else None
+        if not isinstance(sb, dict):
+            continue
+        trimmed = dict(sb)
+        kept_views: set[str] = {str(sb.get("baseViewName") or "").lower()}
+        for key in _BINDING_CATALOG_KEYS:
+            if isinstance(sb.get(key), list):
+                trimmed[key] = [f for f in sb[key] if isinstance(f, str) and _field_is_referenced(f, refs)]
+                kept_views.update(f.split(".", 1)[0].lower() for f in trimmed[key])
+        if isinstance(sb.get("reachableViews"), list):
+            trimmed["reachableViews"] = [v for v in sb["reachableViews"]
+                                         if str(v.get("name") if isinstance(v, dict) else v).lower() in kept_views]
+        _set_committed(chart, "config", {**cfg, "semanticBinding": trimmed})
+
+
+def _viewer_filterable_refs(dash: Any, link_filters_config: list[dict] | None) -> set[str]:
+    """The fields a public viewer's own filter may name: those the SERVED report
+    exposes (``_public_field_refs`` over the shaped configuration)."""
+    from types import SimpleNamespace as _NS
+    _s, _f, _p = _shaped_public_config(dash, link_filters_config)
+    return _public_field_refs(_NS(slicers_config=_s, filters_config=_f, pages_config=_p,
+                                  dashboard_charts=getattr(dash, "dashboard_charts", None) or []))
+
+
+def _viewer_ref_allowed(ref: str, allowed: set[str], bare_allowed: set[str]) -> bool:
+    if "." in ref:
+        if ref in allowed:
+            return True
+        # A calendar attribute of a date axis ("<view>__date_dim.month"): the
+        # served binding can map a used date field to a calendar the stored one
+        # predates. Only a date's calendar parts, never a field of a data view.
+        return ref.split(".", 1)[0].endswith("__date_dim")
+    return ref in bare_allowed or ref in allowed
+
+
+def _viewer_may_filter(entry: Any, allowed: set[str], bare_allowed: set[str]) -> bool:
+    """A viewer filter is kept only if EVERY field name it carries is exposed —
+    semanticField, fieldKey, field and each linkedFields entry (the engine reads
+    semanticField, then fieldKey, then field, and the dropdown falls back to a
+    linked field: a harmless name beside a crafted one must not pass it). A name
+    without a dot is judged as a bare name (a slicer's fieldKey can be bare)."""
+    if not isinstance(entry, dict):
+        return False
+    names = [_norm_ref(entry.get(k)) for k in _ENTRY_FIELD_KEYS if entry.get(k)]
+    names += [_norm_ref(lf) for lf in (entry.get("linkedFields") or []) if isinstance(lf, str) and lf.strip()]
+    return bool(names) and all(_viewer_ref_allowed(n, allowed, bare_allowed) for n in names)
+
+
+def _viewer_allowed(dash: Any, link_filters_config: list[dict] | None) -> tuple[set[str], set[str]]:
+    """(exposed qualified refs, bare field names of served controls) — computed
+    once per request by callers that merge many charts (the batch endpoint)."""
+    return _viewer_filterable_refs(dash, link_filters_config), _viewer_bare_fields(dash, link_filters_config)
+
+
+def _viewer_bare_fields(dash: Any, link_filters_config: list[dict] | None) -> set[str]:
+    _s, _f, _p = _shaped_public_config(dash, link_filters_config)
+    entries = [*_s, *_f, *[e for page in _p if isinstance(page, dict) for e in [*(page.get("filters") or []), *(page.get("slicers") or [])]]]
+    return {_norm_ref(e.get(k)) for e in entries if isinstance(e, dict)
+            for k in ("field", "fieldKey") if e.get(k) and "." not in str(e.get(k))}
 
 
 def _trim_model_for_public(m: dict, refs: set[str]) -> dict:
@@ -1096,8 +1269,7 @@ def _trim_model_for_public(m: dict, refs: set[str]) -> dict:
     view/field internals — anonymous viewers must not see the dataset's
     structure/logic, only what's needed to label the charts already shown."""
     def _referenced(view_name: Any, field_name: Any) -> bool:
-        name = str(field_name or "").strip().lower()
-        return bool(name) and (f"{str(view_name or '').strip().lower()}.{name}" in refs or name in refs)
+        return bool(_norm_ref(field_name)) and _field_is_referenced(f"{_norm_ref(view_name)}.{_norm_ref(field_name)}", refs)
 
     views_out = []
     for v in (m.get("views") or []):
@@ -1484,7 +1656,7 @@ def get_public_dashboard(
     # effect handles activation by page). available_filter_fields,
     # however, is the picker inventory and MUST cover both scopes.
     dash.public_filters_config = top_bar_filters
-    dash.available_filter_fields = _build_public_filter_fields(db, dash, field_inventory)
+    dash.available_filter_fields = _build_public_filter_fields(db, dash, field_inventory, legacy_scan=False)
     # Phase-B19 — attach the dataset semantic models for every chart's dataset so
     # a LOGGED-OUT public viewer's tiles can build label/format maps WITHOUT the
     # authed GET /datasets/{id}/model call. That call 401'd for anonymous viewers
@@ -1509,6 +1681,7 @@ def get_public_dashboard(
                     pass
         _models: dict = {}
         _refs = _public_field_refs(dash)
+        _trim_served_binding_catalogs(dash, _refs)
         for ds_id in _ds_ids:
             try:
                 m = get_dataset_model(db, ds_id)
@@ -3193,6 +3366,7 @@ def get_public_filter_distinct_values(
         db,
         dash_for_inventory,
         _public_viewer_filter_inventory(dash_for_inventory),
+        legacy_scan=False,
     )
     allowed_field = next(
         (
@@ -3463,6 +3637,8 @@ def get_public_charts_data_batch(
     not_found: list[int] = []
     build_errors: list[dict] = []
     seen: set[int] = set()
+    # What a viewer's filter may name: computed once for the whole page.
+    viewer_allowed = _viewer_allowed(dash, public_filters)
     for it in body.items:
         cid = int(it.chart_id)
         if cid in seen:
@@ -3489,6 +3665,7 @@ def get_public_charts_data_batch(
                 page_ids=chart_pages,
                 chart_dataset_id=_chart_dataset_id(dash, cid),
                 context_for_log=f"chart_data_batch:{token}:{cid}",
+                viewer_allowed=viewer_allowed,
             )
         except Exception:
             logger.exception("chart_data_batch: filter build failed for chart=%s", cid)

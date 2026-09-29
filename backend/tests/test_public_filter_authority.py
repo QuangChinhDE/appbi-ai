@@ -432,9 +432,13 @@ def test_the_public_model_names_only_fields_the_served_report_uses():
         ]},
         {"name": "staff", "dimensions": [{"name": "salary_band", "label": "Salary band"}], "measures": []},
     ]}
+    # A real chart config: the fields it reads are in roleConfig (a bare name is
+    # qualified by its binding's base view); its binding lists the whole explore.
     dash = SimpleNamespace(
-        dashboard_charts=[SimpleNamespace(chart=SimpleNamespace(config={
-            "dimensions": ["orders.region"], "metrics": [{"field": "revenue", "agg": "sum"}]}))],
+        dashboard_charts=[SimpleNamespace(layout={}, chart=SimpleNamespace(config={
+            "roleConfig": {"dimension": "orders.region", "metrics": [{"field": "revenue", "agg": "sum"}]},
+            "semanticBinding": {"baseViewName": "orders", "dimensionFields": ["orders.region", "orders.tenant"],
+                                "measureFields": ["orders.revenue", "orders.margin_secret"]}}))],
         slicers_config=[], filters_config=[], pages_config=[])
     trimmed = public_api._trim_model_for_public(model, public_api._public_field_refs(dash))
     assert trimmed == {"views": [{"name": "orders",
@@ -442,6 +446,130 @@ def test_the_public_model_names_only_fields_the_served_report_uses():
                                   "measures": [{"name": "revenue", "label": "Revenue",
                                                 "format": {"kind": "currency", "currency": "BRL", "decimals": None},
                                                 "type": "sum"}]}]}, trimmed
+
+
+def test_a_served_chart_binding_names_only_the_fields_the_report_uses():
+    # The binding listed EVERY field of the explore; served as-is, an anonymous
+    # viewer read the whole dataset's field names from any chart config.
+    engine = create_engine("sqlite://", future=True)
+    Base.metadata.create_all(engine, tables=[Chart.__table__, Dashboard.__table__, DashboardChart.__table__])
+    binding = {"datasetId": 1, "baseViewName": "t1", "dimensionFields": ["t1.region", "t1.salary", "t1.tenant"],
+               "measureFields": ["t1.revenue", "t1.margin_secret"], "reachableFields": ["t1.region", "t1.salary"],
+               "reachableDimensionFields": ["t1.region", "t1.salary", "t2.secret_dim"],
+               "reachableMeasureFields": ["t1.revenue", "t2.secret_measure"],
+               "reachableViews": [{"name": "t1"}, {"name": "t2"}]}
+    stored = {"roleConfig": {"dimension": "t1.region", "metrics": [{"field": "t1.revenue", "agg": "sum"}]}, "semanticBinding": binding}
+    with Session(engine) as db:
+        db.add(Chart(id=7, name="c", chart_type="BAR", config=stored))
+        db.add(Dashboard(id=1, name="R", pages_config=[]))
+        db.add(DashboardChart(id=70, dashboard_id=1, chart_id=7, layout={}))
+        db.commit()
+        dash = db.get(Dashboard, 1)
+        refs = public_api._public_field_refs(dash)
+        assert "t1.salary" not in refs, "the binding's own catalog counted as a use"
+        public_api._trim_served_binding_catalogs(dash, refs)
+        served = dash.dashboard_charts[0].chart.config["semanticBinding"]
+        assert served["dimensionFields"] == ["t1.region"] and served["measureFields"] == ["t1.revenue"]
+        assert served["reachableFields"] == ["t1.region"]
+        assert served["reachableDimensionFields"] == ["t1.region"] and served["reachableMeasureFields"] == ["t1.revenue"]
+        assert served["reachableViews"] == [{"name": "t1"}], "a joinable view's name is served although no field on it is used"
+        db.commit()
+        db.expire_all()
+        assert db.get(Chart, 7).config["semanticBinding"]["dimensionFields"] == ["t1.region", "t1.salary", "t1.tenant"],             "trimming the served copy rewrote the chart"
+
+
+def test_a_viewer_filter_may_name_only_fields_the_served_report_exposes():
+    charts = [SimpleNamespace(chart_id=7, layout={"pageId": "p1"},
+                              chart=SimpleNamespace(config={"roleConfig": {"dimension": "t1.channel"}}))]
+    dash = _dash(pages_config=PAGES)
+    dash.dashboard_charts = charts
+    viewer = [{**REGION, "operator": "in", "value": ["North"]},                                        # a page filter: exposed
+              {"field": "channel", "semanticField": "t1.channel", "operator": "in", "value": ["Web"]},  # a chart dimension (cross-filter)
+              {"field": "salary", "semanticField": "t1.salary", "operator": "gt", "value": 9000},        # nothing exposes it
+              {"field": "tenant", "semanticField": "t1.tenant", "operator": "in", "value": ["acme-42"]}] # only a HIDDEN filter uses it
+    merged = public_api._build_public_chart_filters(dash, [], viewer, page_ids=["p1"])
+    fields = {f.get("semanticField") for f in merged}
+    assert "t1.channel" in fields and "t1.region" in fields
+    assert "t1.salary" not in fields, "a viewer sliced the data by a field the report never shows"
+    viewer_tenant = [f for f in merged if f.get("semanticField") == "t1.tenant" and f.get("_layer_source") != "page_scope"]
+    assert viewer_tenant == [], "a viewer probed the field of a hidden constraint"
+
+
+@pytest.mark.parametrize("crafted", [
+    {"field": "region", "semanticField": "t1.salary", "operator": "gt", "value": 9000},     # harmless field, crafted semanticField
+    {"fieldKey": "t1.region", "semanticField": "t1.salary", "operator": "gt", "value": 9000},
+    {"field": "region", "semanticField": "customers.region", "operator": "in", "value": ["x"]},  # same bare name, other view
+    {"semanticField": "t1.status", "operator": "in", "value": ["x"]},                         # only a TITLE says "Status"
+])
+def test_a_crafted_viewer_filter_cannot_borrow_an_exposed_name(crafted):
+    charts = [SimpleNamespace(chart_id=7, layout={"pageId": "p1"},
+                              chart=SimpleNamespace(config={"roleConfig": {"dimension": "t1.channel"},
+                                                            "styleConfig": {"chartTitle": "Status"}}))]
+    dash = _dash(pages_config=PAGES)
+    dash.dashboard_charts = charts
+    merged = public_api._build_public_chart_filters(dash, [], [crafted], page_ids=["p1"])
+    assert not any(f.get("semanticField") == crafted["semanticField"] for f in merged), merged
+
+
+@pytest.mark.parametrize("name", ["Khu vực", "ID KH", "2024_sales"])
+def test_a_slicer_on_a_raw_column_header_is_kept_and_labelled(name):
+    # Field names are raw headers (Sheets): the gate must not judge them by an
+    # identifier pattern, or the slicer is silently ignored (unfiltered numbers).
+    slicer = {"id": "s1", "field": name, "semanticField": f"dataset_table_12.{name}", "datasetId": 1, "operator": "in", "value": []}
+    dash = _dash(pages_config=[], slicers_config=[slicer])
+    dash.dashboard_charts = [SimpleNamespace(chart_id=7, layout={}, chart=SimpleNamespace(dataset_table_id=12, config={
+        "roleConfig": {"dimension": name, "metrics": [{"field": "Doanh thu (VND)", "agg": "sum"}]}}))]
+    pick = {**slicer, "value": ["HN"]}
+    merged = public_api._build_public_chart_filters(dash, [], [pick])
+    assert any(f.get("value") == ["HN"] for f in merged), f"a viewer pick on {name!r} was dropped"
+    model = {"views": [{"name": "dataset_table_12", "dimensions": [{"name": name, "label": name}],
+                        "measures": [{"name": "Doanh thu (VND)", "label": "Doanh thu", "format": {"kind": "currency", "currency": "VND"}}]}]}
+    trimmed = public_api._trim_model_for_public(model, public_api._public_field_refs(dash))
+    assert trimmed["views"] and trimmed["views"][0]["measures"], "a measure with a non-identifier name lost its label/format"
+
+
+def test_a_bare_fieldkey_slicer_is_kept_and_a_smuggled_linked_field_is_not():
+    slicer = {"id": "s1", "field": "region", "fieldKey": "region", "operator": "in", "value": []}
+    dash = _dash(pages_config=[], slicers_config=[slicer])
+    merged = public_api._build_public_chart_filters(dash, [], [{**slicer, "value": ["North"]}])
+    assert any(f.get("value") == ["North"] for f in merged), "a slicer whose fieldKey has no dot was dropped"
+    smuggled = {**REGION, "operator": "in", "value": ["North"], "linkedFields": ["t9.order_status"]}
+    dash = _dash()
+    merged = public_api._build_public_chart_filters(dash, [], [smuggled], page_ids=["p1"])
+    assert not any(f.get("linkedFields") for f in merged), "an unexposed linked field rode along an exposed one"
+
+
+def test_a_chart_saved_without_a_binding_still_exposes_its_bare_fields():
+    dash = _dash(pages_config=[])
+    dash.dashboard_charts = [SimpleNamespace(chart_id=7, layout={}, chart=SimpleNamespace(dataset_table_id=3, config={
+        "roleConfig": {"dimension": "customer_state"}}))]
+    click = {"field": "customer_state", "semanticField": "dataset_table_3.customer_state", "operator": "in", "value": ["SP"]}
+    merged = public_api._build_public_chart_filters(dash, [], [click])
+    assert any(f.get("value") == ["SP"] for f in merged), "a cross-filter from a binding-less chart was dropped"
+
+
+def test_a_calendar_cross_filter_survives_the_viewer_gate():
+    # A date axis mapped to the calendar: a click sends the calendar field.
+    charts = [SimpleNamespace(chart_id=7, layout={"pageId": "p1"}, chart=SimpleNamespace(config={
+        "roleConfig": {"dimension": "order_date"},
+        "semanticBinding": {"baseViewName": "t1", "fieldMap": {"order_date": "cal_t1.date"},
+                            "calendarFieldMappings": [{"sourceField": "order_date", "calendarField": "date", "semanticField": "cal_t1.date"},
+                                                      {"sourceField": "ship_date", "calendarField": "date", "semanticField": "cal_t1_ship.date"}]}}))]
+    dash = _dash(pages_config=[])
+    dash.dashboard_charts = charts
+    click = {"field": "order_date", "semanticField": "cal_t1.date", "operator": "in", "value": ["2018-01-01"]}
+    other = {"field": "ship_date", "semanticField": "cal_t1_ship.date", "operator": "in", "value": ["2018-01-01"]}
+    merged = public_api._build_public_chart_filters(dash, [], [click, other])
+    fields = {f.get("semanticField") for f in merged}
+    assert "cal_t1.date" in fields, "a calendar cross-filter click was dropped"
+    assert "cal_t1_ship.date" not in fields, "a calendar mapping of a field no chart uses was exposed"
+
+
+def test_a_viewer_inventory_never_falls_back_to_every_reachable_dimension(monkeypatch):
+    calls = []
+    monkeypatch.setattr(public_api, "_augment_with_slicer_fields", lambda _db, _d, fields: calls.append(fields) or fields)
+    assert public_api._build_public_filter_fields(None, _dash(), [], legacy_scan=False) == []
+    assert calls == [[]]
 
 
 def test_the_ai_is_not_handed_a_hidden_constraint():

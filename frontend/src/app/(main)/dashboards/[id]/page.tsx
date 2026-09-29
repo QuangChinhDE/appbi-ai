@@ -4697,7 +4697,7 @@ function DashboardDetailPageInner() {
 
         {/* Phase-B17 — publish conflict: someone else published since load. */}
         {publishConflict && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" data-testid="publish-conflict">
             <div className="w-full max-w-sm rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-lg">
               <h2 className="text-sm font-semibold text-text-primary">{t('dashboards.detail.publishConflictTitle')}</h2>
               <p className="mt-1.5 text-[13px] leading-5 text-text-secondary">

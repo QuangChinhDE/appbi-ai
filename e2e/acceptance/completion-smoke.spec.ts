@@ -334,7 +334,8 @@ test('C public and lifecycle: the page scope is the server\'s, a hidden filter i
   // still includes SP, so the page reads as SP): applied, never served.
   const hidden = { ...STATE_SP, id: 'pf-hidden', value: ['SP', 'RJ', 'MG'], publicMode: 'hidden', label: 'Hidden scope marker' };
   const scoped = pages.map((p: any, i: number) => (i === 0 ? { ...p, filters: [{ ...STATE_SP, id: 'pf-sp' }, hidden] } : p));
-  const stage = await request.put(`${DASH}/${id}/draft-filters`, { data: { pages_config: scoped } });
+  // The API requires the revision the editor loaded (a write without one is refused).
+  const stage = await request.put(`${DASH}/${id}/draft-filters`, { data: { pages_config: scoped, base_rev: d.shared_draft?.rev } });
   check(r, 'the page filters are staged', stage.status() < 400, await stage.text().then((t) => t.slice(0, 160)));
   const pubRes = await request.post(`${DASH}/${id}/publish`, { data: { force: true } });
   check(r, 'the page filters are published', pubRes.status() < 400, String(pubRes.status()));

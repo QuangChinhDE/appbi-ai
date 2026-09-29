@@ -2886,12 +2886,16 @@ def publish_dashboard_draft(
                     name = None
                 conflicted.append(name or f"Biểu đồ #{row.id}")
         if conflicted:
-            others = dashboard_presence.heartbeat(
+            presence = dashboard_presence.heartbeat(
                 dashboard_id, user_key,
                 getattr(current_user, "full_name", None) or current_user.email,
                 current_user.email,
             )
-            last_editor = others[0]["name"] if others else None
+            # heartbeat returns {editors, lock, page_holders}; reading it as the
+            # list of editors raised KeyError here — every same-tile publish
+            # conflict was a 500 instead of the "someone published this" choice.
+            others = (presence.get("editors") if isinstance(presence, dict) else presence) or []
+            last_editor = others[0].get("name") if others and isinstance(others[0], dict) else None
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={

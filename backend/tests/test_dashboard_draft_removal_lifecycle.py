@@ -572,6 +572,25 @@ def test_a_stale_copy_of_the_shared_draft_cannot_overwrite_a_colleagues_edit(db)
     assert _rev(db, B)["other_authors"] and _rev(db, A)["other_authors"]
 
 
+def test_publishing_a_tile_a_colleague_just_published_is_a_409_naming_them(db, monkeypatch):
+    # The real presence service (the fixture stubs it with a list; it returns a
+    # dict, and reading it as a list turned this conflict into a 500).
+    import importlib
+    from app.services import dashboard_presence
+    real = importlib.reload(dashboard_presence).heartbeat  # the fixture's stub is on the same module
+    monkeypatch.setattr(api.dashboard_presence, "heartbeat", real)
+    real(1, B.id, "Bea", "bea@example.com")
+    live_v = db.get(DashboardChart, 10).layout["_v"]
+    for user, x in ((A, 3), (B, 6)):
+        api.update_dashboard_draft_layout(1, DashboardUpdateLayoutRequest(chart_layouts=[
+            {"id": 10, "layout": {"x": x, "y": 3, "w": 12, "h": 6}}]), db, user)
+    api.publish_dashboard_draft(1, api.PublishRequest(tile_base_v={"10": live_v}), db, A)
+    with pytest.raises(HTTPException) as exc:
+        api.publish_dashboard_draft(1, api.PublishRequest(tile_base_v={"10": live_v}), db, B)
+    assert exc.value.status_code == 409 and exc.value.detail["tiles"], exc.value.detail
+    assert db.get(DashboardChart, 10).layout["x"] == 3, "B's stale publish overwrote A's"
+
+
 def test_a_shared_draft_write_that_names_no_revision_is_refused(db):
     # Before, an omitted base_rev skipped the check: an old cached editor or a
     # script overwrote a colleague's pending filters/pages/theme without a word.

@@ -47,7 +47,7 @@ function scrollParentOf(el: HTMLElement | null): HTMLElement | null {
  * the pointer; each step re-sends the pointer so the dragged tile follows.
  */
 function useEdgeAutoScroll(anchor: React.RefObject<HTMLElement>) {
-  const state = React.useRef<{ raf: number | null; x: number; y: number; box: HTMLElement | null } | null>(null);
+  const state = React.useRef<{ raf: number | null; x: number; y: number; box: HTMLElement | null; maxTop: number } | null>(null);
   // The pointer is tracked from the document itself while a drag is on: the
   // grid's own drag callback did not report every move (measured: the loop ran
   // but kept the position the drag started at), so it could never reach an edge.
@@ -70,7 +70,11 @@ function useEdgeAutoScroll(anchor: React.RefObject<HTMLElement>) {
     else if (s.y > rect.bottom - EDGE) dy = Math.ceil((s.y - (rect.bottom - EDGE)) / 3);
     if (dy) {
       const before = s.box.scrollTop;
-      s.box.scrollTop = before + Math.max(-28, Math.min(28, dy));
+      // Down only as far as the report's end plus half a screen: room to drop
+      // under the last row, never an endless scroll into empty space (the
+      // free-form grid would drop the element thousands of pixels below).
+      const next = before + Math.max(-28, Math.min(28, dy));
+      s.box.scrollTop = dy > 0 ? Math.min(next, Math.max(before, s.maxTop)) : next;
       if (s.box.scrollTop !== before) {
         document.dispatchEvent(new MouseEvent('mousemove', { clientX: s.x, clientY: s.y, bubbles: true }));
       }
@@ -79,7 +83,17 @@ function useEdgeAutoScroll(anchor: React.RefObject<HTMLElement>) {
   }, []);
   const start = React.useCallback((event?: MouseEvent) => {
     stop();
-    state.current = { raf: null, x: event?.clientX ?? 0, y: event?.clientY ?? 0, box: scrollParentOf(anchor.current) };
+    const box = scrollParentOf(anchor.current);
+    let maxTop = Number.POSITIVE_INFINITY;
+    if (box && anchor.current) {
+      const isRoot = box === document.scrollingElement;
+      const boxTop = isRoot ? 0 : box.getBoundingClientRect().top;
+      const viewH = isRoot ? window.innerHeight : box.clientHeight;
+      const items = Array.from(anchor.current.querySelectorAll<HTMLElement>('.react-grid-item:not(.react-grid-placeholder)'));
+      const contentBottom = items.reduce((mx, el) => Math.max(mx, el.getBoundingClientRect().bottom - boxTop + box.scrollTop), 0);
+      maxTop = Math.max(0, contentBottom + viewH / 2 - viewH);
+    }
+    state.current = { raf: null, x: event?.clientX ?? 0, y: event?.clientY ?? 0, box, maxTop };
     document.addEventListener('mousemove', onPointer, true);
     state.current.raf = requestAnimationFrame(tick);
   }, [anchor, onPointer, stop, tick]);

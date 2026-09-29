@@ -673,7 +673,9 @@ test('S5 scope: a control placed where its scope hides it filters silently; page
   const pages = [...(d.draft_snapshot?.pages_config ?? d.pages_config ?? [{ id: 'page-1', name: 'Overview' }]), { id: 'page-2', name: 'Detail' }];
   const slicers = (d.draft_snapshot?.slicers_config ?? d.slicers_config).map((s: any) => (s.id === 'slicer-state'
     ? { ...s, scope: 'custom', pageScope: { 'page-1': { filter: true, visible: false }, 'page-2': { filter: true, visible: true } } } : s));
-  await request.put(`${DASH}/${id}/draft-filters`, { data: { slicers_config: slicers, pages_config: pages } });
+  // The API requires the revision the editor loaded (a write without one is refused).
+  const rev = (await (await request.get(`${DASH}/${id}`)).json()).shared_draft?.rev;
+  await request.put(`${DASH}/${id}/draft-filters`, { data: { slicers_config: slicers, pages_config: pages, base_rev: rev } });
   await page.reload();
   await settle(page);
   const s = page.locator('main [data-widget-type="slicer"] [data-slicer-control]').first();
