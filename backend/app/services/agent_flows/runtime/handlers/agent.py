@@ -450,7 +450,7 @@ async def run(
             fixed = await _retry_language(
                 node, state, system, messages, text,
                 provider=provider, api_key=api_key, model=model,
-                locale=_locale_of(rctx), rt=rt,
+                locale=_answer_language(rctx), rt=rt,
             )
             # Only if the second attempt is actually better. A restatement that
             # still reads as the wrong language is not worth losing the first
@@ -516,6 +516,38 @@ def _locale_of(rctx: Any) -> str:
     return (getattr(_req, "locale", "") or "vi").lower().split("-")[0]
 
 
+#: Words only an English sentence is made of. Two of them, and no Vietnamese
+#: diacritic anywhere, make an English question; "doanh thu la bao nhieu" typed
+#: without accents has none of them and falls through to the locale.
+_EN_MARKERS = frozenset(
+    "what which who how many much is are was were the of and in by does do did show "
+    "give tell me total share rate compared than there".split())
+
+
+def question_language(question: str, locale: str) -> str:
+    """The language the ANSWER must be written in: the question's, else the locale.
+
+    Browser run at ce6d6313: "What share of payment value was paid by boleto?" and
+    "What is the customer churn rate?" were answered in Vietnamese on an English UI.
+    The check below only knew one direction (a Vietnamese question answered in
+    English), and the reminder asked for "the question's language" in Vietnamese —
+    a principle, which a Vietnamese system prompt out-voted.
+    """
+    q = question or ""
+    if any(ch in _VI_DIACRITICS for ch in q):
+        return "vi"
+    words = [w.lower() for w in _ASCII_WORD.findall(q)]
+    if sum(w in _EN_MARKERS for w in words) >= 2:
+        return "en"
+    return locale or "vi"
+
+
+def _answer_language(rctx: Any) -> str:
+    asked = getattr(getattr(rctx, "inp", None), "question", None)
+    text = asked.text() if hasattr(asked, "text") else ""
+    return question_language(text, _locale_of(rctx))
+
+
 def _segment_is_wrong_language(segment: str, locale: str) -> bool:
     """Is this ONE passage in the wrong language?
 
@@ -550,11 +582,17 @@ def _looks_wrong_language(text: str, locale: str, question: str = "") -> bool:
     prose supplied the diacritics that made the chips look fine. The chips are the
     part a reader is invited to CLICK, so they are judged on their own.
     """
-    if locale != "vi" or not text:
+    if not text:
+        return False
+    target = question_language(question, locale)
+    if target == "en":
+        return _reads_vietnamese(text)
+    if target != "vi":
         return False
     # The viewer wrote Vietnamese, or there is nothing to enforce.
     if not any(ch in _VI_DIACRITICS for ch in question or ""):
         return False
+    locale = "vi"
     body: list[str] = []
     follow: list[str] = []
     for line in text.split("\n"):
@@ -563,6 +601,19 @@ def _looks_wrong_language(text: str, locale: str, question: str = "") -> bool:
         _segment_is_wrong_language("\n".join(body), locale)
         or _segment_is_wrong_language("\n".join(follow), locale)
     )
+
+
+def _reads_vietnamese(text: str) -> bool:
+    """An answer an English reader asked for, written in Vietnamese: most of its
+    words carry diacritics. A quoted chart title ("Tổng phí vận chuyển") is a few
+    words, not most of them."""
+    for part in ("\n".join(l for l in text.split("\n") if "[FOLLOWUP]" not in l.upper()),
+                 "\n".join(l for l in text.split("\n") if "[FOLLOWUP]" in l.upper())):
+        words = re.findall(r"[^\W\d_]+", part)
+        if len(words) >= _MIN_WORDS_TO_JUDGE and \
+                sum(any(ch in _VI_DIACRITICS for ch in w) for w in words) > 0.3 * len(words):
+            return True
+    return False
 
 
 #: LaTeX a chat bubble cannot render. Narrow on purpose — these are the forms a
@@ -1082,6 +1133,12 @@ def _language_reminder(rctx: Any) -> str:
     a paragraph here would push the payload further from the model's focus while
     saying nothing the system prompt has not already said.
     """
+    target = _answer_language(rctx)
+    if target == "en":
+        # Said in the language it asks for: a Vietnamese sentence asking for English
+        # is the instruction a Vietnamese system prompt out-voted.
+        return ("(Reminder: the reader asked in English. Write the whole answer, "
+                "including every [FOLLOWUP] line, in English.)")
     _req = getattr(getattr(rctx, "inp", None), "request", None)
     locale = (getattr(_req, "locale", "") or "vi").lower()
     lang = _LANGUAGE_NAMES.get(locale.split("-")[0], locale)

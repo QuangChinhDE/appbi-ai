@@ -230,6 +230,21 @@ def _describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None
                       ratio=k in _RATIO_FIELDS)
                for k in ("value", "share_pct") if (n := _num(data.get(k))) is not None]
         return out + _whole(data, measure, ("total", "group_count"))
+    if name == "smart_drilldown" or ("filter" in data and "n_rows_matching" in data):
+        # THE DRILLDOWN'S FIGURES BELONG TO THE MEMBER IT FILTERED ON. Its rows are
+        # column-keyed and its totals a dict, so the generic branch below described
+        # neither: the correct 1,824,092.67 for RJ (run 6080) had no described
+        # support and was withheld as unsupported.
+        flt = data.get("filter") if isinstance(data.get("filter"), dict) else {}
+        totals = data.get("totals") if isinstance(data.get("totals"), dict) else {}
+        col, of = flt.get("column"), totals.get("measure") or measure
+        member = flt.get("match") if str(flt.get("op") or "eq").lower() == "eq" else None
+        out = _member_list(data, "rows", of, col)
+        for k in ("sum", "avg", "min", "max"):
+            n = _num(totals.get(k))
+            if n is not None:
+                out.append(_entry(n, measure=of, dimension=col, member=member))
+        return out
     if name == "rank_values":
         return _member_list(data, "items", measure, dimension) + _whole(data, measure, ("total", "group_count"))
     if name in ("compare_periods",) or ("current" in data and "baseline" in data):

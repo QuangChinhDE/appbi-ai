@@ -195,3 +195,19 @@ def test_the_author_trace_names_each_calls_arguments():
     made = step.capabilities["evidence"]
     assert '"match": "RJ"' in made[0]["args"] and '"chart_id": 701' in made[0]["args"], made
     assert len(args_summary({"q": "x" * 1000})) <= 240
+
+
+def test_an_english_question_is_answered_in_english():
+    """Browser run at ce6d6313: English questions on an English UI were answered in
+    Vietnamese; the check only knew the other direction."""
+    from app.services.agent_flows.runtime.handlers import agent as A
+
+    assert A.question_language("What is the customer churn rate?", "vi") == "en"
+    assert A.question_language("Doanh thu tháng 3 là bao nhiêu?", "en") == "vi"
+    assert A.question_language("doanh thu la bao nhieu", "vi") == "vi", "unaccented VI falls to the locale"
+    vi_answer = "Xin lỗi, nhưng báo cáo không có dữ liệu về tỷ lệ rời bỏ của khách hàng trong kỳ này."
+    assert A._looks_wrong_language(vi_answer, "vi", "What is the customer churn rate?")
+    en_answer = "The report has no customer churn rate; it measures the on-time rate (Tổng phí vận chuyển)."
+    assert not A._looks_wrong_language(en_answer, "vi", "What is the customer churn rate?")
+    assert A._looks_wrong_language("GMV of the month is high and rising fast overall", "vi",
+                                   "GMV tháng này là bao nhiêu?"), "the old direction still holds"

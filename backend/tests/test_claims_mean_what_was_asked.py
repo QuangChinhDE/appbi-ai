@@ -932,3 +932,36 @@ def test_a_month_outside_the_asked_year_is_the_wrong_period(world):
         {"chart_id": MONTHLY})
     assert (19.62, "wrong_period") in _why(state, ctx, "GMV thấp nhất là 19.62.")
     assert _why(state, ctx, "Tháng 1/2017 có GMV thấp nhất: 56,808.84.") == []
+
+
+def _drill(state, match, value):
+    from app.services.agent_flows.tools.result import normalise
+
+    res = normalise({"ok": True, "data": {
+        "chart_id": 701, "filter": {"column": "dataset_table_441.customer_state", "op": "eq", "match": match},
+        "n_rows_total": 27, "n_rows_matching": 1,
+        "rows": [{"dataset_table_441.customer_state": match, "dataset_table_438.total_revenue": value}],
+        "totals": {"measure": "dataset_table_438.total_revenue", "sum": value, "avg": value,
+                   "min": value, "max": value, "n": 1}}}, kind="table")
+    state.record_evidence(res, tool="smart_drilldown",
+                          args={"chart_id": 701, "column": "customer_state", "match": match})
+
+
+def test_a_drilldowns_figure_is_its_members(world):
+    """Browser run 6080 (ce6d6313): the correct 1,824,092.67 for RJ was withheld as
+    unsupported — the ledger never described a drilldown's rows or totals. The
+    same figure given to the member it was NOT filtered on is still caught."""
+    from app.services.agent_flows.runtime import intent as I
+
+    ctx, state = world("Doanh thu của khách hàng ở Rio de Janeiro là bao nhiêu?", asked=("total_revenue",))
+    state.intent = {**I.empty_intent(), "source": "model", "measures": ["total_revenue"],
+                    "dimension": "customer_state", "members": [{"said": "Rio de Janeiro", "code": "RJ"}]}
+    _drill(state, "RJ", 1824092.67)
+    assert _why(state, ctx, "Doanh thu của khách hàng ở Rio de Janeiro (RJ) là 1,824,092.67.") == []
+
+    ctx, state = world("Doanh thu của khách hàng ở Rio de Janeiro là bao nhiêu?", asked=("total_revenue",))
+    state.intent = {**I.empty_intent(), "source": "model", "measures": ["total_revenue"],
+                    "dimension": "customer_state", "members": [{"said": "Rio de Janeiro", "code": "RJ"}]}
+    _drill(state, "SP", 5202955.05)
+    assert _why(state, ctx, "Doanh thu của khách hàng ở Rio de Janeiro (RJ) là 5,202,955.05."), \
+        "SP's figure published as RJ's"

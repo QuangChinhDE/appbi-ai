@@ -178,3 +178,30 @@ def test_a_session_owned_by_another_link_is_neither_moved_nor_written():
                          flow=SimpleNamespace(all_nodes=lambda: []))
     assert row.token == "link-a" and row.flow_state is None and not Db.committed
     assert row.messages == ["A's secret"]
+
+
+def test_a_withheld_figure_is_not_in_the_readers_notice():
+    """Security re-test at ce6d6313 (F1 residual): the answer showed "[đã ẩn]" while
+    the reader notice claims_unverified carried facts.flagged[].value = 41746 —
+    live and in a stored chat thread. The recorded run keeps it for the author."""
+    import json
+
+    from app.services.agent_flows.envelope import FlowOutput, Notice, reader_notice_dict, text_answer
+
+    n = Notice(code="claims_unverified", audience="reader", text="1 con số đã bị ẩn",
+               facts={"flagged": [{"value": 41746.0, "why": "wrong_period"}],
+                      "candidates": [{"chart_id": 701}]})
+    out = FlowOutput(run_id="r", answer=text_answer("Tổng số đơn là [đã ẩn: chưa kiểm chứng]."), notices=[n])
+    wire = json.dumps(out.to_reader_dict(), ensure_ascii=False)
+    assert "41746" not in wire and "candidates" in wire, wire
+    assert "41746" in json.dumps(out.to_dict(), ensure_ascii=False), "the author's record keeps it"
+    stored = reader_notice_dict(n.model_dump(mode="json"))
+    assert "41746" not in json.dumps(stored), "a replayed stored turn is a reader copy too"
+
+
+def test_the_stored_thread_replay_scrubs_notice_facts():
+    import inspect
+
+    from app.services.agent_flows import direct_chat
+
+    assert "reader_notice_dict(n)" in inspect.getsource(direct_chat)
