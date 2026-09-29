@@ -496,12 +496,14 @@ def test_periods_are_read_as_written():
 
 def test_a_change_worked_out_from_two_stated_figures_is_checked_by_arithmetic(world):
     """A correct percentage the model computed from two figures it states and the
-    tools read is not "invented"; a wrong one still is."""
+    tools read is not "invented"; a wrong one still is.
+
+    DECLARED FIXTURE CHANGE (lineage, not numeric match): the two figures are now
+    the two MONTHS' rows. They used to be two whole-report `total_measure` values
+    with no period — whose difference arithmetic cannot prove is between the two
+    months asked; that shape is the negative control below."""
     ctx, state = world(MOM_Q, asked=("gmv",))
-    _rec(state, "total_measure", {"ok": True, "kind": "value", "data": {
-        "chart_id": MONTHLY, "value": 1107301.89, "measure": "dataset_table_438.gmv"}}, {"chart_id": MONTHLY})
-    _rec(state, "total_measure", {"ok": True, "kind": "value", "data": {
-        "chart_id": MONTHLY, "value": 863547.10, "measure": "dataset_table_438.gmv"}}, {"chart_id": MONTHLY})
+    _months(state)
     good = "GMV tháng 1/2018 là 1,107,301.89, tháng 12/2017 là 863,547.10: tăng 28.23%."
     assert _why(state, ctx, good) == []
     bad = "GMV tháng 1/2018 là 1,107,301.89, tháng 12/2017 là 863,547.10: tăng 31.5%."
@@ -614,8 +616,7 @@ def test_a_share_of_withheld_figures_is_withheld(world):
 
 def test_a_worked_out_change_in_the_wrong_direction_is_withheld(world):
     ctx, state = world(MOM_Q, asked=("gmv",))
-    _value(state, 1107301.89, "dataset_table_438.gmv")
-    _value(state, 863547.10, "dataset_table_438.gmv")
+    _months(state)                       # declared fixture change: rows, not unscoped values
     assert (28.23, "unsupported") in _why(state, ctx, "Tháng này 1,107,301.89, tháng trước 863,547.10: giảm 28.23%.")
     assert _why(state, ctx, "Tháng này 1,107,301.89, tháng trước 863,547.10: tăng 28.23%.") == []
 
@@ -965,3 +966,78 @@ def test_a_drilldowns_figure_is_its_members(world):
     _drill(state, "SP", 5202955.05)
     assert _why(state, ctx, "Doanh thu của khách hàng ở Rio de Janeiro (RJ) là 5,202,955.05."), \
         "SP's figure published as RJ's"
+
+
+
+def _months(state):
+    _rec(state, "get_chart_data", {"ok": True, "kind": "table", "data": {
+        "chart_id": MONTHLY, "columns": ["year_month", "gmv"],
+        "rows": [["2017-12", 863547.10], ["2018-01", 1107301.89]]}}, {"chart_id": MONTHLY})
+
+
+def test_a_change_between_two_unscoped_figures_is_not_proven(world):
+    """Negative control for lineage: two whole-report values of one measure differ
+    only by a scope the ledger cannot see — arithmetic alone does not make their
+    change the change between the periods the answer names."""
+    ctx, state = world(MOM_Q, asked=("gmv",))
+    _value(state, 1107301.89, "dataset_table_438.gmv")
+    _value(state, 863547.10, "dataset_table_438.gmv")
+    assert (28.23, "unsupported") in _why(
+        state, ctx, "Tháng này 1,107,301.89, tháng trước 863,547.10: tăng 28.23%.")
+
+
+def test_a_count_of_rows_is_never_the_denominator_of_a_measure(world):
+    """Live a2d2e68b g3_rev_per_order: "13,591,643.70 trong 72 đơn hàng" = 188,772.83
+    — 72 was the CATEGORY count of the ranking, described as a revenue figure."""
+    ctx, state = world("Doanh thu trung bình mỗi đơn hàng là bao nhiêu?", asked=("total_revenue",))
+    _rec(state, "rank_values", {"ok": True, "kind": "ranking", "data": {
+        "chart_id": CATEGORY_CHART, "measure": "dataset_table_438.total_revenue",
+        "dimension": "product_category_name_english", "total": 13591643.70, "group_count": 72,
+        "items": [{"label": "health_beauty", "value": 1258681.34}]}}, {"chart_id": CATEGORY_CHART})
+    bad = "Doanh thu trung bình mỗi đơn hàng là 188,772.83, từ tổng 13,591,643.70 trong 72 đơn hàng."
+    assert (188772.83, "unsupported") in _why(state, ctx, bad)
+
+
+def test_a_share_is_a_members_value_over_its_whole(world):
+    """Positive and negative control for a worked-out share: SP over the report total
+    in one measure stands; a label ("1" of "1 sao") over a total does not."""
+    ctx, state = world(STATE_Q, asked=("order_count",))
+    _states(ctx, state)
+    _value(state, 99441.0, "dataset_table_437.order_count")
+    assert _why(state, ctx, "SP có 41,746 trên tổng 99,441 đơn, tức 41.98%.") == []
+    ctx, state = world("Tỷ lệ đánh giá 1 sao là bao nhiêu?", asked=("review_count",))
+    _value(state, 99224.0, "dataset_table_440.review_count")
+    assert (0.00101, "unsupported") in [(round(v, 5), w) for v, w in _why(
+        state, ctx, "Tỷ lệ đánh giá 1 sao là 1/99,224, tức 0.00101%.")]
+
+
+def test_a_formula_over_a_count_is_not_a_measures_figure(world):
+    """Point B of the pilot brief: a formula over REFERENCED inputs is not thereby
+    meaningful. revenue / the ranking's category count (72) was certified as a
+    revenue figure — the count input was skipped and the other input's measure
+    inherited. The same formula over two measures (revenue / orders) stands."""
+    ctx, state = world("Doanh thu trung bình mỗi đơn hàng là bao nhiêu?", asked=("total_revenue",))
+    _rec(state, "rank_values", {"ok": True, "kind": "ranking", "data": {
+        "chart_id": CATEGORY_CHART, "measure": "dataset_table_438.total_revenue",
+        "dimension": "product_category_name_english", "total": 13591643.70, "group_count": 72,
+        "items": [{"label": "health_beauty", "value": 1258681.34}]}}, {"chart_id": CATEGORY_CHART})
+    ref = state.claim_ledger[-1]["ref"]
+    ctx.evidence_store = state.evidence_store
+    bad = compute_tool.tool_compute(ctx, {"expression": "a / b", "vars": {
+        "a": {"ref": ref, "path": "total"}, "b": {"ref": ref, "path": "group_count"}}})
+    assert bad.get("ok"), bad
+    _rec(state, "compute", bad, {})
+    assert (188772.83, "invalid_lineage") in _why(state, ctx, "Doanh thu trung bình mỗi đơn là 188,772.83.")
+
+    ctx, state = world("Doanh thu trung bình mỗi đơn hàng là bao nhiêu?", asked=("total_revenue",))
+    _rec(state, "total_measure", {"ok": True, "kind": "value", "data": {
+        "chart_id": KPI, "measure": "dataset_table_438.total_revenue", "value": 13591643.70}}, {"chart_id": KPI})
+    ref_a = state.claim_ledger[-1]["ref"]
+    _rec(state, "total_measure", {"ok": True, "kind": "value", "data": {
+        "chart_id": KPI, "measure": "dataset_table_437.order_count", "value": 99441}}, {"chart_id": KPI})
+    ref_b = state.claim_ledger[-1]["ref"]
+    ctx.evidence_store = state.evidence_store
+    good = compute_tool.tool_compute(ctx, {"expression": "a / b", "vars": {
+        "a": {"ref": ref_a, "path": "value"}, "b": {"ref": ref_b, "path": "value"}}})
+    _rec(state, "compute", good, {})
+    assert _why(state, ctx, "Doanh thu trung bình mỗi đơn là 136.68.") == []

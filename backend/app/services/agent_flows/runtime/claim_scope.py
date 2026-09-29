@@ -75,12 +75,24 @@ def _entry(value: float, *, measure=None, dimension=None, member=None, ratio=Fal
             "member": (str(member).strip() if member not in (None, "") else None), "ratio": ratio}
 
 
+#: Fields that COUNT rows or groups. A count of 72 categories is not 72 of the
+#: measure: described as the measure, it became the denominator of "revenue per
+#: order = 13,591,643.70 / 72" (live, a2d2e68b g3_rev_per_order). A count carries no
+#: measure and is marked, so arithmetic never uses it as the measure's figure.
+_COUNT_FIELDS = frozenset({"group_count", "rows_counted", "n_rows_total", "n_rows_matching",
+                           "row_count", "n_groups"})
+
+
 def _whole(data: dict, measure: Any, keys: tuple[str, ...]) -> list[dict]:
     ratio_measure = bool(isinstance(measure, str) and _RATIO_MEASURE.search(_key(measure) or ""))
     out = []
     for k in keys:
         n = _num(data.get(k))
-        if n is not None:
+        if n is None:
+            continue
+        if k in _COUNT_FIELDS:
+            out.append({**_entry(n), "count": True})
+        else:
             out.append(_entry(n, measure=measure, ratio=ratio_measure or k in _RATIO_FIELDS))
     return out
 
@@ -307,6 +319,9 @@ def _describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None
         n = _num(v)
         if n is None or k in ("chart_id",):
             continue
+        if k in _COUNT_FIELDS:
+            out.append({**_entry(n), "count": True})
+            continue
         out.append(_entry(n, measure=measure, dimension=analysed, ratio=_is_ratio_name(k)
                           or bool(measure and _RATIO_MEASURE.search(_key(measure) or ""))))
     return out + _ratio_fields(data, measure=measure, dimension=analysed)
@@ -326,5 +341,13 @@ def _inherit(inputs: list, ledger: list[dict]) -> dict:
             scopes.append(match[0])
     member = next((s for s in scopes if s.get("member") or s.get("dimension")), None)
     measures = {s.get("measure") for s in scopes if s.get("measure")}
-    return {"measure": measures.pop() if len(measures) == 1 else None,
-            "dimension": (member or {}).get("dimension"), "member": (member or {}).get("member")}
+    out = {"measure": measures.pop() if len(measures) == 1 else None,
+           "dimension": (member or {}).get("dimension"), "member": (member or {}).get("member")}
+    # A FORMULA IS ONLY AS MEANINGFUL AS EVERY INPUT. An input the ledger cannot
+    # describe as a measure's figure — a row/group count, an undescribed value — was
+    # simply skipped, and the result inherited the OTHER input's measure: revenue /
+    # category-count became a certified revenue figure. Referenced is not meaningful.
+    refs = [i for i in inputs if isinstance(i, dict)]
+    if not refs or len(scopes) != len(refs) or any(s.get("count") or not s.get("measure") for s in scopes):
+        out["invalid_lineage"] = True
+    return out

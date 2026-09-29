@@ -600,16 +600,49 @@ def _misattributed(support: list[dict], asked: list[str] | None, sentence: str) 
     return None
 
 
+#: Phrases that, right BEFORE a figure, make it the denominator population, not a
+#: member's value: "SP có 41,746 trên tổng 99,441 đơn". Bare "tổng" is NOT one —
+#: "Tổng doanh thu của SP là 13,591,643.70" is the whole-as-member error itself.
+_OUT_OF = ("tren tong", "trong tong so", "tren tong so", "tren toan bo", "out of", "of the total",
+           "of total", "of all")
+
+
+def _framed_as_population(sentence: str, value: float) -> bool:
+    import re
+
+    from app.services.dashboard_ai_bot.verifier import extract_answer_claims
+
+    for m in re.finditer(r"\d[\d.,]*\d|\d", sentence or ""):
+        if any(_close(value, v) for v, _ in extract_answer_claims(m.group(0))):
+            before = _fold(sentence[max(0, m.start() - 24):m.start()])
+            return any(re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", before) for w in _OUT_OF)
+    return False
+
+
 _MAX_OPERANDS = 6
 
 
-def _resolve_derived(pending, claims, flagged, in_evidence, text, changes=()) -> list[dict]:
-    """Flags for figures only arithmetic could support. Operands: figures the
-    answer states, a tool read, and that were NOT themselves flagged; at most
-    `_MAX_OPERANDS`, so pair combinations stay too few to match by chance."""
+def _resolve_derived(pending, claims, flagged, in_evidence, text, changes=(), ledger=(),
+                     labels=()) -> list[dict]:
+    """Flags for figures only arithmetic could support.
+
+    LINEAGE, NOT NUMERIC MATCH. An operand is a figure the answer states, a tool
+    read, that was not itself flagged — AND that the claim ledger DESCRIBES as a
+    measure's figure (not a row/group count, not a label). And the operation must be
+    one those two meanings allow: a share is a member's value over its whole, a
+    change is one measure across two periods or members, a quotient divides two
+    measures of one scope. Live at a2d2e68b: "13,591,643.70 / 72 đơn" (72 was the
+    CATEGORY count) and "1/99224" (the 1 of "1 sao") were both arithmetically exact.
+    """
     bad = [float(f["value"]) for f in flagged]
-    operands = [v for v, p in claims if not p and v and in_evidence(v)
-                and not any(_close(v, b) for b in bad)]
+    operands = []
+    for v, p in claims:
+        if p or not v or v in labels or not in_evidence(v) or any(_close(v, b) for b in bad):
+            continue
+        meanings = [e for e in ledger if _close(v, float(e["value"]))
+                    and e.get("measure") and not e.get("count")]
+        if meanings:
+            operands.append((v, meanings))
     if len(operands) > _MAX_OPERANDS:
         operands = []
     rates = [v for v, p in claims if p and 0 < v < 100 and not any(_close(v, b) for b in bad)
@@ -632,37 +665,74 @@ def _resolve_derived(pending, claims, flagged, in_evidence, text, changes=()) ->
     return out
 
 
-def _derived(value: float, operands: list[float], text: str = "") -> bool:
-    """Is this percentage the change or the share between two figures the answer
-    states and the evidence holds? Checked by arithmetic, to 0.05 points — a
-    correct "(1,107,301.89 - 863,547.10) / 863,547.10 = 28.23%" is not invented."""
+def _same_scope(a: dict, b: dict) -> bool:
+    return (a.get("member"), a.get("dimension")) == (b.get("member"), b.get("dimension"))
+
+
+def _share_ok(part: dict, whole: dict) -> bool:
+    """A member's value over the whole it belongs to, in one measure."""
+    return (part.get("measure") == whole.get("measure") and not part.get("ratio")
+            and not whole.get("ratio") and bool(part.get("member")) and not whole.get("member")
+            and whole.get("dimension") in (None, part.get("dimension")))
+
+
+def _change_ok(a: dict, b: dict) -> bool:
+    """One measure across two periods, or two members of one breakdown."""
+    return (a.get("measure") == b.get("measure") and a.get("dimension") == b.get("dimension")
+            and bool(a.get("member")) and bool(b.get("member")) and a.get("member") != b.get("member"))
+
+
+def _sum_ok(a: dict, b: dict) -> bool:
+    """Two figures of one scope (GMV − revenue), or two members of one measure."""
+    if a.get("ratio") or b.get("ratio"):
+        return False
+    return _same_scope(a, b) or (a.get("measure") == b.get("measure")
+                                 and a.get("dimension") == b.get("dimension"))
+
+
+def _quotient_ok(a: dict, b: dict) -> bool:
+    """Two measures of one scope (revenue per order), or one measure of two members."""
+    if b.get("ratio"):
+        return False
+    return (_same_scope(a, b) and a.get("measure") != b.get("measure")) or _change_ok(a, b)
+
+
+def _pairs(operands):
+    for i, (a, ma) in enumerate(operands):
+        for j, (b, mb) in enumerate(operands):
+            if i != j:
+                yield a, ma, b, mb
+
+
+def _derived(value: float, operands: list, text: str = "") -> bool:
+    """Is this percentage the change or the share between two DESCRIBED figures?
+    Checked by arithmetic, to 0.05 points, and by meaning — a correct
+    "(1,107,301.89 - 863,547.10) / 863,547.10 = 28.23%" between two months stands."""
     said = _direction_said(text, value) if text else None
-    for i, a in enumerate(operands):
-        for j, b in enumerate(operands):
-            if i == j or not b:
-                continue
-            change = (a - b) / b * 100
-            # THE DIRECTION OF A WORKED-OUT CHANGE IS CHECKED TOO (review: "giảm
-            # 28,23%" for a rise passed on magnitude alone). The two orderings
-            # give different magnitudes, so the matching one fixes the sign.
-            if abs(abs(value) - abs(change)) <= 0.05 and not (said and (change < 0) != (said == "down")):
-                return True
-            if abs(abs(value) - a / b * 100) <= 0.05:
-                return True
+    for a, ma, b, mb in _pairs(operands):
+        if not b:
+            continue
+        change = (a - b) / b * 100
+        # THE DIRECTION OF A WORKED-OUT CHANGE IS CHECKED TOO (review: "giảm
+        # 28,23%" for a rise passed on magnitude alone). The two orderings
+        # give different magnitudes, so the matching one fixes the sign.
+        if abs(abs(value) - abs(change)) <= 0.05 and not (said and (change < 0) != (said == "down")) \
+                and any(_change_ok(x, y) for x in ma for y in mb):
+            return True
+        if abs(abs(value) - a / b * 100) <= 0.05 and any(_share_ok(x, y) for x in ma for y in mb):
+            return True
     return False
 
 
-def _derived_plain(value: float, operands: list[float]) -> bool:
-    """A plain figure that IS the sum, difference or quotient of two figures the
-    answer states and the evidence holds — checked by arithmetic. GMV minus
-    revenue, revenue per order: correct and not invented (acceptance)."""
-    for i, a in enumerate(operands):
-        for j, b in enumerate(operands):
-            if i == j:
-                continue
-            for x in (a + b, a - b, a / b if b else None):
-                if x is not None and abs(abs(value) - abs(x)) <= max(0.011, 1e-6 * abs(x)):
-                    return True
+def _derived_plain(value: float, operands: list) -> bool:
+    """A plain figure that IS the sum, difference or quotient of two DESCRIBED
+    figures whose meanings allow that operation — GMV minus revenue, revenue per
+    order: correct and not invented (acceptance); revenue per CATEGORY COUNT is not."""
+    for a, ma, b, mb in _pairs(operands):
+        for x, allowed in ((a + b, _sum_ok), (a - b, _sum_ok), (a / b if b else None, _quotient_ok)):
+            if x is not None and abs(abs(value) - abs(x)) <= max(0.011, 1e-6 * abs(x)) \
+                    and any(allowed(p, q) for p in ma for q in mb):
+                return True
     return False
 
 
@@ -675,6 +745,8 @@ def _names_measure(ctx: Any, measure: str) -> bool:
 
 
 def _contradiction(e: dict, t: dict, ctx: Any) -> str | None:
+    if e.get("invalid_lineage"):
+        return "invalid_lineage"         # a formula over an input that is not a measure's figure
     dim = e.get("dimension")
     if dim and not _is_time(dim) and t["dimension"] and dim != t["dimension"] \
             and not _names_dimension(ctx, dim, t["dimension"]):
@@ -716,7 +788,7 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         claims = extract_answer_claims(text)
         pending = [(v, p) for v, p in claims
                    if not in_evidence(v) and (p or abs(v) >= 1000 or v != int(v))]
-        flagged = _resolve_derived(pending, claims, [], in_evidence, text)
+        flagged = _resolve_derived(pending, claims, [], in_evidence, text, ledger=ledger)
         return {"target": {}, "flagged": flagged} if flagged else {}
     t = target_of(state, ctx)
     flagged: list[dict] = []
@@ -820,6 +892,8 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                             "of": {k: e.get(k) for k in ("measure", "dimension", "member")}})
             continue
         attributed = _misattributed(support, asked_member, sentence)
+        if attributed == "whole_as_member" and _framed_as_population(sentence, value):
+            attributed = None            # "… trên tổng 99,441 đơn": the population, not SP's
         if attributed:
             e = next((x for x in support if x.get("member")), support[0])
             flagged.append({"value": value, "pct": pct, "why": attributed,
@@ -838,7 +912,8 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                             "of": {"measure": next(iter(sorted(t["measures"])), None),
                                    "dimension": None, "member": None}})
     flagged += _resolve_derived(pending, claims, flagged, in_evidence, text,
-                                [e for e in ledger if "periods" in e and e.get("ratio")])
+                                [e for e in ledger if "periods" in e and e.get("ratio")],
+                                ledger=ledger, labels=labels)
     return {"target": {**t, "measures": sorted(t["measures"])}, "flagged": flagged}
 
 
@@ -862,6 +937,9 @@ _WHY = {
     "whole_as_member": ("là số của TOÀN BỘ báo cáo — báo cáo không có số liệu này theo chiều "
                         "được hỏi; nếu giữ, phải nói rõ đó là tổng toàn bộ"),
     "wrong_direction": "câu nói chiều ngược với dấu của con số đã tính (tăng ↔ giảm)",
+    "invalid_lineage": ("được tính từ một đầu vào không phải số của đại lượng nào (số dòng, số nhóm, "
+                        "hoặc số chưa được mô tả) — tính lại từ đúng số đo bằng compute với tham "
+                        "chiếu, hoặc bỏ con số này"),
     "measure_absent": ("gọi con số bằng một đại lượng mà báo cáo không đo — đừng gán số của đại "
                        "lượng khác cho nó; nói rõ báo cáo không có số này"),
     "wrong_period": ("là số của một kỳ khác (hoặc của toàn bộ thời gian), không phải của kỳ được "
@@ -885,19 +963,16 @@ def review_message(flagged: list[dict], target: dict) -> str:
 
 
 def reader_note(flagged: list[dict], locale: str = "vi") -> str:
-    """The line a READER sees under an answer whose figures could not be backed."""
-    whole = [f for f in flagged if f.get("why") == "whole_as_member"]
-    flagged = [f for f in flagged if f.get("why") != "whole_as_member"]
-    lines = []
-    if whole:
-        shown_w = ", ".join(_fmt(f["value"], f.get("pct")) for f in whole[:6])
-        lines.append(
-            f"⚠️ Report totals: {shown_w} — figures for the whole report; this report does not "
-            "give them for the breakdown asked about." if str(locale or "").lower().startswith("en")
-            else f"⚠️ Số của toàn bộ báo cáo: {shown_w} — báo cáo không có số liệu này theo chiều "
-                 "được hỏi, nên đây không phải số của một đối tượng cụ thể.")
+    """The line a READER sees under an answer whose figures could not be backed.
+
+    NEVER A NUMBER. A figure withheld from its sentence is not relabelled and put
+    back ("⚠️ Số của toàn bộ báo cáo: 13,591,643.7" — product decision after the
+    security re-test at a2d2e68b): a report total may appear only as an independent,
+    verified claim of the answer itself.
+    """
+    lines: list[str] = []
     if not flagged:
-        return "\n".join(lines)
+        return ""
     if str(locale or "").lower().startswith("en"):
         lines.append("⚠️ Withheld: the data this answer read does not produce these figures "
                      "for what was asked, so they are not shown.")
