@@ -213,8 +213,22 @@ async function publicStructure(ctx: APIRequestContext, token: string) {
   return (await ctx.get(`${V1}/public/dashboards/${token}`)).json();
 }
 const frameIn = (d: any, dcId: number) => (d.dashboard_charts ?? []).find((c: any) => c.id === dcId)?.layout?.styleConfigOverride?.tileFrame ?? 'card';
-const kpiTexts = (page: Page) => page.evaluate(() => Array.from(document.querySelectorAll('main .dashboard-kpi-value, [data-grid-item-id] .dashboard-kpi-value'))
+const kpiNow = (page: Page) => page.evaluate(() => Array.from(document.querySelectorAll('main .dashboard-kpi-value, [data-grid-item-id] .dashboard-kpi-value'))
   .map((e) => (e.textContent ?? '').trim()).filter(Boolean).sort());
+/** The KPI figures once every KPI tile has drawn its value: read until two
+ *  readings a second apart agree and every KPI tile has one (a tile still
+ *  loading is not a changed number). */
+async function kpiTexts(page: Page): Promise<string[]> {
+  let last: string[] = [];
+  for (let i = 0; i < 30; i += 1) {
+    const tiles = await page.locator('[data-grid-item-id]').filter({ has: page.locator('.dashboard-kpi-value, [data-tile-kind="kpi"]') }).count();
+    const now = await kpiNow(page);
+    if (now.length > 0 && now.length >= tiles && JSON.stringify(now) === JSON.stringify(last)) return now;
+    last = now;
+    await page.waitForTimeout(1000);
+  }
+  return last;
+}
 async function publicAt(ctx: BrowserContext, url: string, width: number, height: number) {
   const p = await ctx.newPage();
   await p.setViewportSize({ width, height });

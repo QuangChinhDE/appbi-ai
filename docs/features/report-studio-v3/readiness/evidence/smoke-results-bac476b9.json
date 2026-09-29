@@ -1,0 +1,93 @@
+{
+  "sha": "bac476b9",
+  "ranAt": "2026-09-29T05:38:17.588Z",
+  "results": {
+    "A manual builder": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — with one chart selected the bar offers a frame",
+        "PASS — the chart is drawn as a subtle panel (subtle)",
+        "PASS — one undo gives the card back (card)",
+        "PASS — the control sits directly above the chart, in its column (663,752,272,80 vs 663,848,631,432)",
+        "PASS — the neighbouring chart kept its width (nothing was shrunk) (16,752,631,432 → 16,848,631,432)",
+        "PASS — nothing overlaps after the placement ([])",
+        "PASS — the control says it filters the whole page (Filters every chart on this page)",
+        "PASS — holding a drag at the bottom edge scrolls the report (1308px)",
+        "PASS — the published report draws the chart as the author framed it (subtle)",
+        "PASS — /d at 820px has no sideways scroll",
+        "PASS — /d at 820px has no render defect",
+        "PASS — /d at 390px has no sideways scroll",
+        "PASS — /d at 390px has no render defect",
+        "PASS — the export is a PDF",
+        "PASS — the export has nothing missing ([])"
+      ],
+      "metrics": {
+        "autoscroll_px": 1308
+      },
+      "evidence": [
+        "A-manual-builder-1440.jpg",
+        "A-manual-public-1440.jpg",
+        "A-manual-public-820.jpg",
+        "A-manual-public-390.jpg",
+        "D-report.pdf"
+      ],
+      "notes": []
+    },
+    "B AI design then manual": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the redesign changed no number (R$13.6M,98.7K,R$137.8,91.9%,4.1 → R$13.6M,98.7K,R$137.8,91.9%,4.1)",
+        "PASS — the redesign opens with a headline block",
+        "PASS — the table tile ends near its last row ({\"rows\":10,\"empty\":-136,\"tile\":368})",
+        "PASS — the AI-designed chart is still editable by hand (flush)",
+        "PASS — the public report has the headline",
+        "PASS — the public report has the author's refinement",
+        "PASS — every published sentence is computed (0 pending)"
+      ],
+      "metrics": {
+        "table_fit": {
+          "rows": 10,
+          "empty": -136,
+          "tile": 368
+        }
+      },
+      "evidence": [
+        "B-ai-public-1440.jpg"
+      ],
+      "notes": []
+    },
+    "C public and lifecycle": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the page filters are staged ({\"name\":\"Olist commercial review (Copy) (29)\",\"description\":\"Olist marketplace 2016-2018 — built the way a user would, before AI Design\",\"filters_config\":[],\"sl)",
+        "PASS — the page filters are published (200)",
+        "PASS — the page-scoped chart returns data ([{\"dataset_table_2.revenue\":5202955.05}])",
+        "PASS — a request that leaves the page filter out still gets the page scope ([{\"dataset_table_2.revenue\":5202955.05}] vs [{\"dataset_table_2.revenue\":5202955.05}])",
+        "PASS — a pick outside the page scope falls back to the scope, never escapes it ([{\"dataset_table_2.revenue\":5202955.05}] vs [{\"dataset_table_2.revenue\":5202955.05}])",
+        "PASS — without a page named, the chart's page scope still applies ([{\"dataset_table_2.revenue\":5202955.05}] vs [{\"dataset_table_2.revenue\":5202955.05}])",
+        "PASS — the hidden page filter is not in the public structure",
+        "PASS — a link whose lock the engine cannot apply is refused at save (422)",
+        "PASS — saving from a report asks what is being changed",
+        "PASS — the copy takes the tile's place as a draft ([[12811,9868,false],[12812,9869,false],[12813,9870,false],[12814,9871,false],[12815,9872,false],[12816,9873,false],[12818,9875,false],[12819,9876,false],[12820,9877,false],[12821,9878,false],[12822,9879,false],[12823,null,false],[12824,9880,true]])",
+        "PASS — the public link still shows the original chart ([9868,9869,9870,9871,9872,9873,9874,9875,9876,9877,9878,9879,null])",
+        "PASS — Discard puts the original chart back ([[9868,false],[9869,false],[9870,false],[9871,false],[9872,false],[9873,false],[9874,false],[9875,false],[9876,false],[9877,false],[9878,false],[9879,false],[null,false]])",
+        "PASS — the other author's shared edit is saved (200)",
+        "PASS — the stale edit is refused and the author is told, with Reload offered",
+        "PASS — the colleague's shared edit survived (#0f766e)"
+      ],
+      "metrics": {
+        "values": {
+          "honest": "[{\"dataset_table_2.revenue\":5202955.05}]",
+          "crafted": "[{\"dataset_table_2.revenue\":5202955.05}]",
+          "escape": "[{\"dataset_table_2.revenue\":5202955.05}]",
+          "noPage": "[{\"dataset_table_2.revenue\":5202955.05}]"
+        }
+      },
+      "evidence": [
+        "C-report-only-edit-builder-1440.jpg",
+        "C-stale-shared-edit-1440.jpg"
+      ],
+      "notes": []
+    }
+  }
+}
