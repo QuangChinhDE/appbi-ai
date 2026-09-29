@@ -3,7 +3,10 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, Clock, GripVertical, Lock, Hand } from 'lucide-react';
+import { useIsStudioPreview, isStudioMessage, studioFrameId, type StudioMessage, type StudioPreviewState } from '@/lib/studio/preview-mode';
+import { StudioPreview } from '@/components/dashboards/StudioPreview';
+import { pendingWork } from '@/lib/dashboard-presentation/vision-review';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, Clock, GripVertical, Lock, Hand, PanelRight } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import {
@@ -16,22 +19,30 @@ import {
   usePublishDashboard,
   useDiscardDashboardDraft,
 } from '@/hooks/use-dashboards';
-import { dashboardApi } from '@/lib/api/dashboards';
+import { dashboardApi, SHARED_DRAFT_CONFLICT_EVENT } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
-import { resolveStyleTokens } from '@/lib/dashboard-theme-tokens';
 import { AiDesignPanel } from '@/components/dashboards/ai-design/AiDesignPanel';
 import { planFromTemplate } from '@/lib/dashboard-presentation/templates';
+import { buildFieldMetaIndex } from '@/lib/dashboard-presentation/design-context';
+import { auditRenderedTiles } from '@/lib/dashboard-presentation/render-audit';
 import { buildPresentationSnapshot, tilesOnPage } from '@/lib/dashboard-presentation/snapshot';
 import { buildPresentationMutation, tilesWithLocalEdits, toLocalLayoutOverrides } from '@/lib/dashboard-presentation/executor';
 import { useAiDesign } from '@/components/dashboards/ai-design/useAiDesign';
 import { DashboardThemeModal } from '@/components/dashboards/DashboardThemeModal';
-import { DashboardCanvas } from '@/components/dashboards/DashboardCanvas';
-import { Palette, Move, Undo2, Redo2, ArrowUpToLine } from 'lucide-react';
+import { Palette, Undo2, Redo2, ArrowUpToLine, Eye } from 'lucide-react';
 import { ChartTile } from '@/components/dashboards/ChartTile';
 import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
+import { AddElementMenu } from '@/components/dashboards/AddElementMenu';
+import { ReportInspector } from '@/components/dashboards/ReportInspector';
+import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-style';
+import { resolveTileFrame } from '@/lib/dashboard-presentation/tile-frame';
+import { applyLayoutPattern, type LayoutPattern } from '@/lib/report-patterns';
+import { measureNaturalHeight, rowsForHeight } from '@/lib/fit-content';
+import { ReportMetaProvider } from '@/lib/report-meta';
+import { widgetTypeLabel as WIDGET_TYPE_LABEL } from '@/components/dashboards/widget-forms';
 import { DashboardChartManagerModal } from '@/components/dashboards/DashboardChartManagerModal';
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
@@ -50,14 +61,11 @@ import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import FilterMapModal from '@/components/dashboards/FilterMapModal';
 import { FilterPane } from '@/components/dashboards/FilterPane';
-import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
-import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
 import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
 import type { BaseFilter, ColumnInfo, FilterType, Filter as TypedFilter } from '@/lib/filters';
 import {
   applyScopeBound,
   collectJoinKeySemanticFields,
-  dockLayoutClasses,
   fromBaseFilter,
   getColumnDisplayLabel,
   getDistinctValueFilterContext,
@@ -69,7 +77,6 @@ import {
   isSemanticDimensionFilterableForDashboard,
   resolveEffectiveFilterSet,
   toBaseFilter,
-  resolveFilterDock,
 } from '@/lib/filters';
 import { extractParamDefs, seedParamValues, paramsToFilters } from '@/lib/dashboard-params';
 import { fetchDatasetModel, fetchDatasetModelDistinctValues, SLICER_DISTINCT_PREFETCH_LIMIT, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
@@ -81,17 +88,36 @@ import {
   getDashboardChartsForPage,
   normalizeDashboardPages,
   tidyPageLayout,
+  compactPageUp,
   normalizeDashboardGridForRender,
   GRID_VERSION,
-} from '@/lib/dashboard-pages';
-import {
-  ensureCanvasLayout,
-  hasCanvasCoords,
-  mergeCanvasLayout,
+  DASHBOARD_GRID_COLS,
   mergeGridLayout,
-} from '@/lib/dashboard-layout-convert';
+  dashboardRowHeight,
+} from '@/lib/dashboard-pages';
+import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components/dashboards/GridSlicerTile';
+import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
+import { ArrangeBar, type TileFrame } from '@/components/dashboards/ArrangeBar';
+import { arrangeTiles, closeVacatedBand, nudgeTiles, placeBeside, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
+import { adoptableUnder, moveSection, resolveStructure, sectionForPosition, structureIssues, insertionFor, toStructTiles, type StructTile } from '@/lib/report-structure';
+import { pageFilterFacts, statePageFilterFact } from '@/lib/public-page-filters';
+import { settleStoredLayout } from '@/lib/grid-settle';
+import {
+  SLICER_CONTROL_SIZE,
+  SLICER_CONTROL_WIDGET,
+  nextFreeSlot,
+  placedSlicerIds,
+  replaceSlicerById,
+  isSlicerControl,
+  slicerIdOfControl,
+  type SlicerTreatment,
+} from '@/lib/slicer-placement';
+import { createSlicerEntry, defaultInteractionFor } from '@/lib/slicer-entry';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
+import { ReportEvidenceProvider, useReportFindings } from '@/lib/report-evidence';
+import { renderFindingSentence } from '@/lib/report-findings';
+import { coerceModelProposals, deriveProposals, type ContentProposal, type TileContext } from '@/lib/dashboard-presentation/proposals';
 
 function semanticDimensionToFilterType(type: string | undefined): FilterType {
   switch ((type ?? '').toLowerCase()) {
@@ -210,8 +236,16 @@ function normalizeLegacyDateFilter(filter: TypedFilter, dateColumn: ColumnInfo |
 // Filter state lives in dashboard.filters_config + pages_config —
 // no second source of truth needed.
 
-export default function DashboardDetailPage() {
-  const { t } = useI18n();
+/** Drop keys whose value is `undefined` — a theme patch uses them to CLEAR a
+ *  key, and a cleared key must not be persisted as an explicit null. */
+function stripUndefined<T extends Record<string, any>>(value: T): T {
+  const out: Record<string, any> = {};
+  for (const [key, v] of Object.entries(value)) if (v !== undefined) out[key] = v;
+  return out as T;
+}
+
+function DashboardDetailPageInner() {
+  const { t, locale } = useI18n();
   const params = useParams();
   const dashboardId = Number(params.id);
 
@@ -245,12 +279,22 @@ export default function DashboardDetailPage() {
   // Phase-G — cluster-level layout (position/direction/gap/etc.).
   const [draftSlicerClusterLayout, setDraftSlicerClusterLayout] = useState<any | null>(null);
   const [appliedSlicerClusterLayout, setAppliedSlicerClusterLayout] = useState<any | null>(null);
-  // An AI-Design theme that has been APPLIED to the draft but NOT persisted. A
-  // manual theme change (the modal) saves instantly; an AI redesign must not,
-  // because "Apply" is a draft step — the report only truly changes colour on
-  // Save/Publish, and Discard drops it. Painted into the query cache for the
-  // preview; the server keeps the published theme until a save flushes this.
+  // A theme change (AI Design Apply, the theme menu, an undo) that is not yet
+  // saved. It is an unsaved edit exactly like a drag: rendered immediately,
+  // staged into the server DRAFT on Save draft, and published — together with
+  // the layout, in one server transaction — on Publish. Nothing writes the
+  // published theme directly any more. Discard drops it.
   const [pendingThemeConfig, setPendingThemeConfig] = useState<any | null>(null);
+  // Blocks an AI Design preview adds (negative temporary ids). Rendered through
+  // the same page memo as every tile, so the preview shows what Apply creates.
+  const [previewBlocks, setPreviewBlocks] = useState<any[] | null>(null);
+  // An AI design being LOOKED at: the theme keys and slicer-cluster keys it
+  // would write. A view layer only — never staged — so the preview shows the
+  // dock/variant/density exactly as Apply will, and Discard is free.
+  const [previewPresentation, setPreviewPresentation] = useState<{
+    theme: Record<string, any>;
+    slicerCluster: Record<string, any>;
+  } | null>(null);
   const slicersSeededRef = React.useRef(false);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
   const [crossFilterState, setCrossFilterState] = useState<{
@@ -279,7 +323,8 @@ export default function DashboardDetailPage() {
   // itself is gone — the right-dock FilterPane (isFilterPaneOpen) replaces
   // it. Both states stay in sync via the menu close-out pattern.
   const [, setIsFilterPopoverOpen] = useState(false);
-  const [isWidgetSubmenuOpen, setIsWidgetSubmenuOpen] = useState(false);
+  const [isAddElementOpen, setIsAddElementOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [editingWidgetId, setEditingWidgetId] = useState<number | null>(null);
   // What-if parameter — which chart tile's bind modal is open (null = closed).
   const [bindingChartId, setBindingChartId] = useState<number | null>(null);
@@ -334,6 +379,17 @@ export default function DashboardDetailPage() {
   >({});
   const hasLocalLayoutChanges = Object.keys(localLayoutOverrides).length > 0;
   const hasAnyPendingChanges = hasLocalLayoutChanges || Boolean(serverDashboard?.has_draft) || Boolean(pendingThemeConfig);
+  /** Unsaved = not yet in the server draft: local layout edits or a theme. */
+  const hasUnsavedPresentation = hasLocalLayoutChanges || Boolean(pendingThemeConfig);
+  /** True for the WHOLE save (layout, then theme, then filters) — not just the
+   *  layout request — so the controls never report "saved" half-way through. */
+  const [isStagingDraft, setIsStagingDraft] = useState(false);
+  // An AI Apply commits in steps (create its blocks, then move the tiles).
+  // Save/Publish in between would stage the OLD layout with the NEW blocks —
+  // the published report then had the blocks at the bottom and every chart
+  // where it was. Nothing is staged or published while a commit is running.
+  const [isCommittingPresentation, setIsCommittingPresentation] = useState(false);
+  const committingPresentationRef = React.useRef(false);
   // Always-current mirror of localLayoutOverrides so undo-capture can read the
   // pre-change value without adding it to every handler's dep array.
   const localLayoutOverridesRef = React.useRef(localLayoutOverrides);
@@ -357,13 +413,16 @@ export default function DashboardDetailPage() {
     if (
       !hasLocalLayoutChanges
       && !previewLayoutOverrides
+      && !pendingThemeConfig
+      && !previewBlocks?.length
       && (!beDrafts || Object.keys(beDrafts).length === 0)
     ) {
       return serverDashboard;
     }
     return {
       ...serverDashboard,
-      dashboard_charts: serverDashboard.dashboard_charts.map((dc) => {
+      ...(pendingThemeConfig ? { theme_config: pendingThemeConfig } : {}),
+      dashboard_charts: [...serverDashboard.dashboard_charts, ...((previewBlocks ?? []) as any[])].map((dc) => {
         const beOverride = beDrafts
           ? (beDrafts[dc.id] ?? beDrafts[String(dc.id) as any])
           : null;
@@ -381,31 +440,26 @@ export default function DashboardDetailPage() {
         };
       }),
     };
-  }, [serverDashboard, localLayoutOverrides, hasLocalLayoutChanges, previewLayoutOverrides]);
+  }, [serverDashboard, localLayoutOverrides, hasLocalLayoutChanges, previewLayoutOverrides, pendingThemeConfig, previewBlocks]);
 
   // The dock the CLUSTER will actually use. Resolved here too so the wrapper
   // that positions the cluster beside the grid cannot disagree with the
   // cluster's own decision — the theme supplies the default composition, an
   // explicit author placement overrides it.
-  // Track the viewport so the dock can answer "is there room for a rail?".
-  // A rail on a phone takes the width the charts need, and squeezing every
-  // slicer into one horizontal row instead is not the answer either.
-  const [viewportWidth, setViewportWidth] = React.useState(
-    () => (typeof window === 'undefined' ? 1440 : window.innerWidth),
+  // What the page RENDERS: the draft, with an AI design under preview laid over
+  // it. Staging always reads `draftSlicerClusterLayout`; only the view reads this.
+  const viewSlicerClusterLayout = React.useMemo(
+    () => (previewPresentation && Object.keys(previewPresentation.slicerCluster).length > 0
+      ? { ...(draftSlicerClusterLayout ?? {}), ...previewPresentation.slicerCluster }
+      : draftSlicerClusterLayout),
+    [draftSlicerClusterLayout, previewPresentation],
   );
-  React.useEffect(() => {
-    const onResize = () => setViewportWidth(window.innerWidth);
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
-
-  const preferredFilterDock = React.useMemo(
-    () => draftSlicerClusterLayout?.position
-      ?? resolveStyleTokens((dashboard?.theme_config ?? null) as any).filterDock,
-    [draftSlicerClusterLayout?.position, dashboard?.theme_config],
+  const viewThemeConfig = React.useMemo(
+    () => (previewPresentation && Object.keys(previewPresentation.theme).length > 0
+      ? { ...(dashboard?.theme_config ?? {}), ...previewPresentation.theme }
+      : dashboard?.theme_config),
+    [dashboard?.theme_config, previewPresentation],
   );
-
-
   const dashboardDatasetIds = React.useMemo(
     () => Array.from(new Set(
       (dashboard?.dashboard_charts ?? [])
@@ -433,11 +487,32 @@ export default function DashboardDetailPage() {
   }, [dashboardDatasetIds, datasetModelQueries]);
   const resPerms = getResourcePermissions(dashboard?.user_permission);
   const canShare = resPerms.canShare;
-  const canEditResource = resPerms.canEdit;
+  // The Studio preview iframe is a viewer of this page: no editing, no edit
+  // lock, no presence heartbeat (it would otherwise compete with the author's
+  // own tab for the page lock).
+  const studioPreview = useIsStudioPreview();
+  const canEditResource = resPerms.canEdit && !studioPreview;
   // Phase-B17 — publish conflict (someone else published the SAME tiles).
   const [publishConflict, setPublishConflict] = useState<{ editor: string | null; tiles?: string[] } | null>(null);
+  // The shared filters/pages/theme draft holds another author's edits: Publish
+  // or Discard asks whether to include them (never silently).
+  const [sharedChoice, setSharedChoice] = useState<{ action: 'publish' | 'discard'; authors: string[]; rev: string; tileBaseV?: Record<string, number> } | null>(null);
+  // Someone changed the shared draft since this page loaded; a write was refused.
+  const [sharedStale, setSharedStale] = useState<{ by: string | null } | null>(null);
+  useEffect(() => {
+    const onConflict = (e: Event) => {
+      const detail = (e as CustomEvent<{ dashboardId: number; by: string | null }>).detail;
+      if (detail?.dashboardId === dashboardId) setSharedStale({ by: detail.by ?? null });
+    };
+    window.addEventListener(SHARED_DRAFT_CONFLICT_EVENT, onConflict);
+    return () => window.removeEventListener(SHARED_DRAFT_CONFLICT_EVENT, onConflict);
+  }, [dashboardId]);
   const updateDashboardMutation = useUpdateDashboard();
   const addChartMutation = useAddChartToDashboard();
+  // Charts added from the Add palette go under the ONE selected element, as a
+  // block (the picker lays a batch out in rows; the block keeps that).
+  const insertBatchRef = React.useRef<{ anchorId: number; ids: number[]; closed: boolean } | null>(null);
+  const [insertBatchTick, setInsertBatchTick] = useState(0);
   const removeChartMutation = useRemoveChartFromDashboard();
   const updateLayoutMutation = useUpdateDashboardLayout();
   // Phase-15.56 — layout edits go into draft_snapshot instead of live
@@ -465,11 +540,36 @@ export default function DashboardDetailPage() {
     layout: Record<number, Record<string, any>>;
     theme: any;
     slicerCluster: any;
+    /** Draft-only blocks this step created (next side only). Undo removes them;
+     *  redo creates them again from `createdBlockSpecs` and records the new ids. */
+    createdBlockIds?: number[];
+    createdBlockSpecs?: { widgetType: string; widgetConfig: Record<string, unknown>; layout: Record<string, unknown> }[];
+  };
+  /** An element removed in the draft that was never published: Undo creates
+   *  it again (draft-only) from this. */
+  type RemovedDraftSpec = {
+    widgetType: string;
+    chartId: number | null;
+    widgetConfig: Record<string, unknown>;
+    layout: Record<string, unknown>;
+    parameters?: Record<string, unknown>;
   };
   type UndoEntry =
     | { kind: 'layout'; prev: Record<number, Record<string, any>>; next: Record<number, Record<string, any>> }
     | { kind: 'theme'; prev: any; next: any }
-    | { kind: 'ai-presentation'; prev: PresentationState; next: PresentationState };
+    | { kind: 'ai-presentation'; prev: PresentationState; next: PresentationState }
+    // Removing elements. A PUBLISHED one is only marked removed in the draft, so
+    // Undo restores that same row (still published) and Redo marks it again. One
+    // added in this draft was deleted: Undo creates it again and records the new
+    // id for Redo. `prev`/`next` are the layout around it (a band that closed).
+    | {
+      kind: 'removal';
+      published: number[];
+      drafts: RemovedDraftSpec[];
+      draftIds: number[];
+      prev: Record<number, Record<string, any>>;
+      next: Record<number, Record<string, any>>;
+    };
   const undoRef = React.useRef<UndoEntry[]>([]);
   const redoRef = React.useRef<UndoEntry[]>([]);
   const [, setHistoryTick] = React.useState(0);
@@ -487,77 +587,54 @@ export default function DashboardDetailPage() {
       bumpHistory();
     }
   };
-  // Apply a theme_config (live update) — reused by the modal onSave and by theme
-  // undo/redo so both go through one path. Persist, then AUTHORITATIVELY patch the
-  // detail cache so the theme provider repaints live. A plain invalidate+refetch
-  // did NOT repaint in-session: the dashboard GET can be response-cached and
-  // return the pre-change theme, leaving the cached dashboard stale until a hard
-  // reload. setQueryData (the same pattern the draft-layout save uses, which is
-  // why layout edits repaint live) guarantees the in-session restyle for BOTH a
-  // manual theme change AND theme undo/redo. Only the LIST is invalidated (card
-  // refresh); the detail query is written directly to avoid racing a stale refetch.
-  /**
-   * Persist a theme, and hand the filter dock back to it when the user picked a
-   * LAYOUT.
-   *
-   * `slicer_cluster_layout.position` outranks the theme's `filterDock` on
-   * purpose — an author who drags the filter rail somewhere must keep it. The
-   * trap is that `DEFAULT_LAYOUT` carries `position: 'top'` and every draft save
-   * writes the whole object, so a dashboard that has merely BEEN EDITED holds a
-   * stored 'top' that is indistinguishable from a deliberate choice. Measured on
-   * dash 67: the theme resolved `filterDock: left`, the draft held
-   * `position: 'top'`, and the rail never moved — every template's dock was
-   * silently dead on any dashboard with an edit history, which is all of them.
-   *
-   * Picking a layout template IS picking where the filters go, so applying one
-   * clears the stored position and lets the template drive. Dragging the cluster
-   * afterwards writes it back and that choice sticks until the next template.
-   */
-  const applyThemeConfig = async (theme: any, opts?: { releaseDock?: boolean }) => {
-    // Optimistic-first: repaint the cached dashboard IMMEDIATELY so a manual theme
-    // change and (especially) Ctrl+Z undo feel instant, then persist in the
-    // background. On success reconcile with the server-normalized value; on
-    // failure a reload reconciles (the theme is already visually applied).
-    queryClient.setQueryData(['dashboards', dashboardId], (old: any) =>
-      old ? { ...old, theme_config: theme } : old);
-    // Local draft state first, so the rail moves on the same frame as the paint.
-    const clearedDock = opts?.releaseDock && draftSlicerClusterLayout
-      ? { ...draftSlicerClusterLayout, position: undefined, direction: undefined }
-      : null;
-    if (clearedDock) {
-      setDraftSlicerClusterLayout(clearedDock);
-      setAppliedSlicerClusterLayout(clearedDock);
-    }
-    try {
-      const updated = await dashboardApi.update(dashboardId, {
-        theme_config: theme,
-        ...(clearedDock ? { slicer_cluster_layout: clearedDock } : {}),
-      } as any);
-      queryClient.setQueryData(['dashboards', dashboardId], (old: any) =>
-        old ? { ...old, theme_config: updated?.theme_config ?? theme } : old);
-      queryClient.invalidateQueries({ queryKey: ['dashboards'], exact: true });
-    } catch (err) {
-      console.error('Failed to persist theme:', err);
-    }
+  // Apply a theme_config — reused by the theme menu and by theme undo/redo so
+  // both go through one path. It is an unsaved DRAFT edit: rendered at once
+  // through the page memo (so a refetch cannot undo it), staged on Save draft,
+  // published with the layout on Publish.
+  /** Apply a theme as a draft edit (the theme menu, AI Apply, an undo). */
+  const applyThemeConfig = async (theme: any) => {
+    // A theme change is an unsaved edit: rendered now, saved with the draft,
+    // published with the layout. (It used to PUT the live theme_config at once,
+    // so picking a colour in the menu — or an AI "Save draft" — repainted the
+    // PUBLISHED report while its layout was still the old one.)
+    paintThemeDraft(theme);
   };
-  /** Paint an AI-Design theme WITHOUT persisting — the draft path. The report
-   *  shows the new surface immediately (cache paint), the server keeps the
-   *  published theme, and `persistPendingTheme` / Discard decide its fate. */
+  /** Render a theme as an unsaved edit. The page memo overlays it, so a refetch
+   *  cannot wipe it; Save draft stages it, Discard drops it. */
   const paintThemeDraft = (theme: any) => {
     setPendingThemeConfig(theme);
-    queryClient.setQueryData(['dashboards', dashboardId], (old: any) =>
-      old ? { ...old, theme_config: theme } : old);
   };
 
-  /** Flush a drafted AI theme to the server. Called by Save draft and Publish so
-   *  the colour only becomes real when the author commits, matching the layout. */
-  const persistPendingTheme = async (): Promise<boolean> => {
+  /** Stage the unsaved theme into the SERVER DRAFT (never the live row). Returns
+   *  false — and leaves it unsaved — when the server refused, so Save/Publish
+   *  can say so instead of reporting a success that did not happen. */
+  const stagePendingTheme = async (): Promise<boolean> => {
     if (!pendingThemeConfig) return true;
+    const theme = pendingThemeConfig;
     try {
-      await applyThemeConfig(pendingThemeConfig);
-      setPendingThemeConfig(null);
+      const updated = await dashboardApi.updateDraftFilters(dashboardId, { theme_config: theme });
+      if (updated) queryClient.setQueryData(['dashboards', dashboardId], updated);
+      // Only clear it if nothing newer was painted while the request was in flight.
+      setPendingThemeConfig((current: any) => (current === theme ? null : current));
       return true;
-    } catch {
+    } catch (err) {
+      console.error('Failed to stage theme draft:', err);
+      return false;
+    }
+  };
+
+  /** Stage the slicer-cluster draft NOW (it is normally staged 500ms after a
+   *  change). Save/Publish must not race that debounce, or a dock change made
+   *  just before publishing would be left out of the published report. */
+  const stageSlicerClusterLayout = async (): Promise<boolean> => {
+    if (JSON.stringify(draftSlicerClusterLayout) === JSON.stringify(appliedSlicerClusterLayout)) return true;
+    const cluster = draftSlicerClusterLayout;
+    try {
+      await dashboardApi.updateDraftFilters(dashboardId, { slicer_cluster_layout: cluster ?? {} });
+      setAppliedSlicerClusterLayout(cluster);
+      return true;
+    } catch (err) {
+      console.error('Failed to stage slicer cluster layout:', err);
       return false;
     }
   };
@@ -567,10 +644,39 @@ export default function DashboardDetailPage() {
     if (entry.kind === 'layout') { setLocalLayoutOverrides(value as any); return; }
     if (entry.kind === 'ai-presentation') {
       const state = value as PresentationState;
+      // Undoing a design that CREATED blocks removes those draft-only rows (they
+      // were never published). Redo cannot resurrect them under the same ids, so
+      // that entry leaves the redo branch rather than redo half a design.
+      const created = entry.next.createdBlockIds ?? [];
+      if (dir === 'prev' && created.length) {
+        void Promise.all(created.map((id) => dashboardApi.removeChart(dashboardId, id).catch(() => null)))
+          .then(() => queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] }));
+      }
+      const specs = entry.next.createdBlockSpecs ?? [];
+      if (dir === 'next' && specs.length) {
+        // Redo re-creates the blocks the design added (as draft-only rows) and
+        // records their new ids, so a further undo removes the right rows.
+        void (async () => {
+          const ids: number[] = [];
+          for (const spec of specs) {
+            const before = new Set(((queryClient.getQueryData(['dashboards', dashboardId]) as any)?.dashboard_charts ?? []).map((d: any) => d.id));
+            try {
+              const updated: any = await dashboardApi.addWidget(dashboardId, spec.widgetType, { ...spec.layout, draftOnly: true } as any, spec.widgetConfig as any);
+              if (updated) queryClient.setQueryData(['dashboards', dashboardId], updated);
+              const fresh = (updated?.dashboard_charts ?? []).find((d: any) => !before.has(d.id) && d.widget_type === spec.widgetType);
+              if (fresh) ids.push(fresh.id);
+            } catch (err) {
+              console.error('Redo could not re-create a design block:', err);
+            }
+          }
+          entry.next.createdBlockIds = ids;
+        })();
+      }
       setLocalLayoutOverrides(state.layout);
       if (state.slicerCluster !== undefined) {
+        // Draft only: the auto-stage sees draft ≠ applied and writes it, so an
+        // undone dock change also leaves the server draft.
         setDraftSlicerClusterLayout(state.slicerCluster);
-        setAppliedSlicerClusterLayout(state.slicerCluster);
       }
       // Undo/redo of an AI redesign stays in the DRAFT — repaint the theme
       // without persisting, the same way Apply did, so a stray Ctrl+Z can never
@@ -578,9 +684,43 @@ export default function DashboardDetailPage() {
       if (state.theme !== undefined) paintThemeDraft(state.theme);
       return;
     }
+    if (entry.kind === 'removal') {
+      void (async () => {
+        try {
+          if (dir === 'prev') {
+            // A published element comes back as ITSELF (same id, still
+            // published); one added in this draft is created again.
+            for (const id of entry.published) await dashboardApi.restoreChart(dashboardId, id);
+            const ids: number[] = [];
+            for (const spec of entry.drafts) {
+              const before = new Set(((queryClient.getQueryData(['dashboards', dashboardId]) as any)?.dashboard_charts ?? []).map((d: any) => d.id));
+              const layout = { ...spec.layout, draftOnly: true } as any;
+              const updated: any = spec.widgetType === 'chart' && spec.chartId
+                ? await dashboardApi.addChart(dashboardId, spec.chartId, layout, spec.parameters as any)
+                : await dashboardApi.addWidget(dashboardId, spec.widgetType, layout, spec.widgetConfig as any);
+              const fresh = (updated?.dashboard_charts ?? []).find((d: any) => !before.has(d.id));
+              if (fresh) ids.push(fresh.id);
+            }
+            entry.draftIds = ids;
+          } else {
+            for (const id of [...entry.published, ...entry.draftIds]) await dashboardApi.removeChart(dashboardId, id);
+          }
+        } catch (err) {
+          console.error('Undo/redo of a removal failed:', err);
+          toast.error(t('dashboards.detail.chartRemoveFailed'));
+        }
+        await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+      })();
+      setLocalLayoutOverrides(dir === 'prev' ? entry.prev : entry.next);
+      return;
+    }
     void applyThemeConfig(value);
   };
   const doUndo = () => {
+    // Not while an Apply is still committing: its undo entry is written when
+    // the last block exists, so an Undo in between undid something else and
+    // left the new blocks behind.
+    if (committingPresentationRef.current) return;
     const entry = undoRef.current.pop();
     if (!entry) { toast.info(t('dashboards.detail.nothingToUndo')); return; }
     redoRef.current.push(entry);
@@ -589,6 +729,7 @@ export default function DashboardDetailPage() {
     toast.success(t(entry.kind === 'theme' ? 'dashboards.detail.undoTheme' : 'dashboards.detail.undoLayout'));
   };
   const doRedo = () => {
+    if (committingPresentationRef.current) return;
     const entry = redoRef.current.pop();
     if (!entry) return;
     undoRef.current.push(entry);
@@ -616,6 +757,12 @@ export default function DashboardDetailPage() {
   const visibleDashboardCharts = React.useMemo(
     () => getDashboardChartsForPage(dashboard?.dashboard_charts, activePageId),
     [dashboard?.dashboard_charts, activePageId],
+  );
+  // Slicers whose control sits on THIS page's grid (lib/slicer-placement). The
+  // filter bar does not repeat them; nothing about what they filter changes.
+  const placedSlicerIdsOnPage = React.useMemo(
+    () => placedSlicerIds(visibleDashboardCharts),
+    [visibleDashboardCharts],
   );
   const resolveDashboardChartLayout = useCallback((
     dashboardChartId: number,
@@ -800,20 +947,6 @@ export default function DashboardDetailPage() {
   );
   const [draftPageSlicers, setDraftPageSlicers] = useState<any[]>([]);
 
-  // The template states a preference; the content and the viewport decide
-  // whether it holds. See `resolveFilterDock` for the cases and why each one
-  // exists.
-  const filterDockDecision = React.useMemo(
-    () => resolveFilterDock({
-      preferred: preferredFilterDock,
-      slicerCount: draftGlobalSlicers.length + draftPageSlicers.length,
-      viewportWidth,
-      canEdit: canEditResource,
-    }),
-    [preferredFilterDock, draftGlobalSlicers.length, draftPageSlicers.length, viewportWidth, canEditResource],
-  );
-  const effectiveFilterDock = filterDockDecision.dock;
-
   // ── AI Design ─────────────────────────────────────────────────────────────
   // The panel and everything behind it live in `components/dashboards/ai-design`
   // and `lib/dashboard-presentation`. What stays here is orchestration: which
@@ -825,16 +958,59 @@ export default function DashboardDetailPage() {
   // never hidden — the popup sits OVER the report, it does not shrink it.
   const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false);
 
-  const commitPresentation = React.useCallback((commit: {
+  const commitPresentation = React.useCallback(async (commit: {
     layoutOverrides: Record<number, Record<string, any>>;
     themePatch: Record<string, any> | null;
     slicerClusterPatch: Record<string, any> | null;
+    createdBlocks?: import('@/lib/dashboard-presentation/types').CreatedBlock[];
   }) => {
+    committingPresentationRef.current = true;
+    setIsCommittingPresentation(true);
+    try {
+    // Blocks first: each becomes a DRAFT-ONLY row (invisible to /d and /embed
+    // until Publish, deleted by Discard), then its temporary id is swapped for
+    // the real one so it moves, resizes and locks like any tile.
+    let layoutOverrides = commit.layoutOverrides;
+    const createdIds: number[] = [];
+    const realIdOf = new Map<number, number>();
+    if (commit.createdBlocks?.length) {
+      layoutOverrides = { ...layoutOverrides };
+      for (const block of commit.createdBlocks) {
+        const before = new Set(((queryClient.getQueryData(['dashboards', dashboardId]) as any)?.dashboard_charts ?? []).map((d: any) => d.id));
+        try {
+          const layout = { ...block.layout, ...(layoutOverrides[block.tempId] ?? {}), pageId: block.layout.pageId ?? activePageId, draftOnly: true };
+          const updated: any = await dashboardApi.addWidget(dashboardId, block.widgetType, layout as any, block.widgetConfig as any);
+          const fresh = (updated?.dashboard_charts ?? []).find((d: any) => !before.has(d.id) && d.widget_type === block.widgetType);
+          if (updated) queryClient.setQueryData(['dashboards', dashboardId], updated);
+          delete layoutOverrides[block.tempId];
+          if (fresh) { createdIds.push(fresh.id); realIdOf.set(block.tempId, fresh.id); }
+        } catch (err) {
+          console.error('Failed to create design block:', err);
+          toast.error(t('dashboards.aiDesign.blockCreateFailed'));
+        }
+      }
+      setPreviewBlocks(null);
+      // A tile placed under a heading the design created names that heading by
+      // its temporary id: now that the row exists, name it by its real one
+      // (a heading that failed to create leaves the tile in no section).
+      const swap = (v: unknown) => (typeof v === 'number' && v < 0 ? (realIdOf.get(v) ?? null) : v);
+      for (const [key, l] of Object.entries(layoutOverrides)) {
+        const s = (l as any)?.sectionId;
+        if (typeof s === 'number' && s < 0) layoutOverrides[key as any] = { ...(l as any), sectionId: swap(s) };
+      }
+      for (const block of commit.createdBlocks) {
+        const real = realIdOf.get(block.tempId);
+        const s = (block.layout as any)?.sectionId;
+        if (real != null && typeof s === 'number' && s < 0) {
+          layoutOverrides[real] = { ...(layoutOverrides[real] ?? {}), sectionId: swap(s) };
+        }
+      }
+    }
     // One undo entry for one click (§14). The `before` half is captured here,
     // from live state, rather than being handed in — a caller that snapshotted
     // earlier would record a baseline that has since moved.
     const nextTheme = commit.themePatch
-      ? { ...(dashboard?.theme_config ?? {}), ...commit.themePatch }
+      ? stripUndefined({ ...(dashboard?.theme_config ?? {}), ...commit.themePatch })
       : undefined;
     const nextCluster = commit.slicerClusterPatch
       ? { ...(draftSlicerClusterLayout ?? {}), ...commit.slicerClusterPatch }
@@ -848,29 +1024,120 @@ export default function DashboardDetailPage() {
         slicerCluster: nextCluster === undefined ? undefined : draftSlicerClusterLayout,
       },
       next: {
-        layout: commit.layoutOverrides,
+        layout: layoutOverrides,
         theme: nextTheme,
         slicerCluster: nextCluster,
+        createdBlockIds: createdIds,
+        createdBlockSpecs: (commit.createdBlocks ?? []).map((b) => ({
+          widgetType: b.widgetType,
+          widgetConfig: b.widgetConfig as Record<string, unknown>,
+          layout: { ...b.layout, ...(commit.layoutOverrides[b.tempId] ?? {}), pageId: b.layout.pageId ?? activePageId } as Record<string, unknown>,
+        })),
       },
     });
 
     setPreviewLayoutOverrides(null);
-    setLocalLayoutOverrides(commit.layoutOverrides);
+    setPreviewPresentation(null);
+    setLocalLayoutOverrides(layoutOverrides);
     if (nextCluster !== undefined) {
+      // Draft only. Marking it applied as well (as this used to) told the
+      // auto-stage there was nothing to send, so an AI dock change never
+      // reached the server draft and was silently absent from Publish.
       setDraftSlicerClusterLayout(nextCluster);
-      setAppliedSlicerClusterLayout(nextCluster);
     }
     // Draft, don't persist: the colour lands on Save/Publish and Discard drops
     // it — an AI Apply must not silently repaint the live report (§ theme-draft).
     if (nextTheme !== undefined) paintThemeDraft(nextTheme);
-  }, [dashboard?.theme_config, draftSlicerClusterLayout, localLayoutOverrides]);
+    } finally {
+      // Cleared in the same render batch as the new layout: the render that
+      // re-enables Publish is the one that already holds the moved tiles.
+      committingPresentationRef.current = false;
+      setIsCommittingPresentation(false);
+    }
+  }, [dashboard?.theme_config, draftSlicerClusterLayout, localLayoutOverrides, activePageId, dashboardId, queryClient, t]);
 
   // Tile focus (Canvas/Grid highlight). Declared here — above useAiDesign —
   // because in AI mode a focused tile scopes the redesign to that one visual
   // (click-chart-to-edit), so the hook needs to read it.
   const [focusedTileId, setFocusedTileId] = useState<number | null>(null);
+  // AI Design scope = what is selected on the canvas. Click selects one visual,
+  // Shift/Ctrl/⌘+click adds or removes one; clicking the only selected visual
+  // again clears it. Outside AI mode selection is the single focus highlight.
+  const [selectedTileIds, setSelectedTileIds] = useState<number[]>([]);
+  const handleTileFocus = React.useCallback((id: number, additive?: boolean) => {
+    setFocusedTileId(id);
+    setSelectedTileIds((current) => {
+      if (additive) return current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+      return current.length === 1 && current[0] === id ? [] : [id];
+    });
+  }, []);
+  const clearTileSelection = React.useCallback(() => {
+    setSelectedTileIds([]);
+    setFocusedTileId(null);
+  }, []);
+  // A selection belongs to the page it was made on.
+  React.useEffect(() => { setSelectedTileIds([]); }, [activePageId]);
+  const canvasRootRef = React.useRef<HTMLDivElement | null>(null);
+  // The builder header's real height. It wraps to a second row when a draft's
+  // actions and the tools do not fit on one; the overlays (AI Design, the
+  // Inspector) sit below it, never over its second row.
+  const builderHeaderRef = React.useRef<HTMLDivElement | null>(null);
+  const [builderHeaderH, setBuilderHeaderH] = useState(64);
+  React.useEffect(() => {
+    const el = builderHeaderRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      const h = Math.round(el.getBoundingClientRect().bottom);
+      setBuilderHeaderH((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+    // The header mounts once the report has loaded (and never in the preview).
+  }, [Boolean(dashboard), studioPreview]);
+  const getCanvasRoot = React.useCallback(() => canvasRootRef.current, []);
+  // The render-quality probe (see lib/dashboard-presentation/render-audit):
+  // the e2e gate calls it on the builder canvas and on the published report.
+  React.useEffect(() => {
+    (window as any).__APPBI_RENDER_AUDIT__ = () => auditRenderedTiles(canvasRootRef.current ?? document);
+    return () => { delete (window as any).__APPBI_RENDER_AUDIT__; };
+  }, []);
+  // Design Context: labels, types and formats from the semantic models this page
+  // has already loaded — no extra request, nothing the page does not show.
+  const designFieldMeta = React.useMemo(
+    () => buildFieldMetaIndex(Array.from(datasetModelsById.values()).map((model) => (model as any)?.views)),
+    [datasetModelsById],
+  );
 
+  // The findings the tiles on screen currently support — what the report SAYS,
+  // for the planner to decide what leads. Sentences are rendered with the same
+  // templates the narrative blocks use.
+  const reportFindings = useReportFindings();
+  const aiFindings = React.useMemo(
+    () => Array.from(reportFindings.findings.values()).map((f) => ({
+      key: f.key, sentence: renderFindingSentence(f, t as any, locale),
+    })),
+    [reportFindings, t, locale],
+  );
+  const directionLabels = React.useMemo(() => ({
+    whatMoved: t('report.direction.whatMoved'),
+    latestStatus: t('report.direction.latestStatus'),
+    detail: t('report.direction.detail'),
+    worthKnowing: t('report.direction.worthKnowing'),
+    againstTarget: t('report.direction.againstTarget'),
+    keepInMind: t('report.direction.keepInMind'),
+  }), [t]);
+
+  // Rows each loaded tile returned (counts only): a redesign sizes a table to
+  // them instead of giving six rows a 540px tile.
+  const tileRowCounts = React.useMemo(() => {
+    const out: Record<number, number> = {};
+    for (const e of reportFindings.evidence) out[e.tileId] = Array.isArray(e.rows) ? e.rows.length : 0;
+    return out;
+  }, [reportFindings]);
   const aiDesign = useAiDesign({
+    rowCountByTile: tileRowCounts,
+    findings: aiFindings,
+    directionLabels,
     dashboardId: Number(dashboardId),
     dashboard,
     activePageId,
@@ -878,14 +1145,64 @@ export default function DashboardDetailPage() {
     pageCount: dashboardPages.length,
     localLayoutOverrides,
     slicers: [...draftGlobalSlicers, ...draftPageSlicers],
-    slicerDock: effectiveFilterDock,
+    // Filters are grid elements now; a slicer's place is its control's tile.
+    slicerDock: 'grid',
     currentTheme: dashboard?.theme_config,
-    slicerClusterLayout: draftSlicerClusterLayout,
+    slicerClusterLayout: viewSlicerClusterLayout,
     gridGapPx: getDashboardGridMargin(dashboard?.theme_config)[1],
-    // Only a click while the AI panel is open means "restyle just this one".
-    focusedChartId: designMode === 'ai' ? focusedTileId : null,
+    // Only a selection made while the AI panel is open scopes a request.
+    selectedIds: designMode === 'ai' ? selectedTileIds : [],
+    fieldMeta: designFieldMeta,
+    getCanvasRoot,
     onCommit: commitPresentation,
   });
+
+  // ── Content proposals ─────────────────────────────────────────────────────
+  // Changes to what a tile SAYS (its order, its title): listed with before →
+  // after, applied only on the author's Accept as a draft edit (one undo,
+  // published on Publish), and audited either way.
+  const [decidedProposals, setDecidedProposals] = useState<Set<string>>(() => new Set());
+  const proposalTiles = React.useMemo(() => {
+    const map = new Map<number, TileContext>();
+    for (const dc of (dashboard?.dashboard_charts ?? []) as any[]) {
+      if (dc.widget_type && dc.widget_type !== 'chart') continue;
+      const override = (dc.layout?.styleConfigOverride ?? {}) as Record<string, unknown>;
+      const base = (dc.chart?.config?.styleConfig ?? {}) as Record<string, unknown>;
+      map.set(dc.id, {
+        tileId: dc.id,
+        title: String(dc.layout?.custom_title || base.chartTitle || dc.chart?.name || ''),
+        currentSortRules: (override.chartSortRules ?? base.chartSortRules) as unknown[] | undefined,
+        currentStyleOverride: override,
+      });
+    }
+    return map;
+  }, [dashboard?.dashboard_charts]);
+  const contentProposals = React.useMemo(() => {
+    const all = [
+      ...deriveProposals(reportFindings.evidence, proposalTiles),
+      ...coerceModelProposals(aiDesign.modelProposals, proposalTiles),
+    ];
+    const seen = new Set<string>();
+    return all.filter((p) => {
+      if (decidedProposals.has(p.id) || seen.has(p.id)) return false;
+      seen.add(p.id);
+      return true;
+    });
+  }, [reportFindings.evidence, proposalTiles, aiDesign.modelProposals, decidedProposals]);
+  const decideProposal = React.useCallback((proposal: ContentProposal, accepted: boolean) => {
+    setDecidedProposals((current) => new Set(current).add(proposal.id));
+    if (accepted) {
+      const prev = localLayoutOverrides;
+      const next = { ...prev, [proposal.tileId]: { ...(prev[proposal.tileId] ?? {}), ...proposal.patch } };
+      pushUndo({ kind: 'layout', prev, next });
+      setLocalLayoutOverrides(next);
+    }
+    void dashboardApi.recordProposalDecision(dashboardId, {
+      decision: accepted ? 'accepted' : 'rejected', kind: proposal.kind, tile_id: proposal.tileId,
+      before: proposal.auditBefore, after: proposal.auditAfter, source: proposal.source,
+    }).catch((err) => console.error('Failed to record proposal decision:', err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localLayoutOverrides, dashboardId]);
 
   // The preview is a view layer, so it is pushed into the render overlay rather
   // than returned by the hook and threaded through every child.
@@ -893,16 +1210,96 @@ export default function DashboardDetailPage() {
     setPreviewLayoutOverrides(
       aiDesign.pending ? (aiDesign.pending.mutation.layoutOverrides as any) : null,
     );
+    const blocks = aiDesign.pending?.mutation.createdBlocks ?? [];
+    setPreviewBlocks(blocks.length
+      ? blocks.map((b) => ({
+          id: b.tempId, dashboard_id: Number(dashboardId), chart_id: null, chart: null,
+          widget_type: b.widgetType, widget_config: b.widgetConfig,
+          layout: { ...b.layout, pageId: b.layout.pageId ?? activePageId }, parameters: {},
+        }))
+      : null);
+    setPreviewPresentation(
+      aiDesign.pending
+        ? {
+            theme: (aiDesign.pending.mutation.themePatch ?? {}) as Record<string, any>,
+            slicerCluster: (aiDesign.pending.mutation.slicerClusterPatch ?? {}) as Record<string, any>,
+          }
+        : null,
+    );
   }, [aiDesign.pending]);
+
+  // Studio preview (the author's tab): the whole report before and after the
+  // pending design, as the same overlays the canvas renders — local unsaved
+  // edits first, the AI design on top. Nothing here writes a layout.
+  const [studioOpen, setStudioOpen] = useState(false);
+  const studioBefore = React.useMemo<StudioPreviewState>(() => ({
+    overrides: Object.keys(localLayoutOverrides).length ? (localLayoutOverrides as any) : null,
+    blocks: null,
+    presentation: pendingThemeConfig ? { theme: pendingThemeConfig, slicerCluster: {} } : null,
+    pageId: activePageId ?? null,
+  }), [localLayoutOverrides, pendingThemeConfig, activePageId]);
+  const studioAfter = React.useMemo<StudioPreviewState>(() => {
+    const merged: Record<number, Record<string, unknown>> = { ...(localLayoutOverrides as any) };
+    for (const [id, o] of Object.entries(previewLayoutOverrides ?? {})) merged[Number(id)] = { ...(merged[Number(id)] ?? {}), ...(o as any) };
+    const theme = { ...(pendingThemeConfig ?? {}), ...(previewPresentation?.theme ?? {}) };
+    return {
+      overrides: Object.keys(merged).length ? merged : null,
+      blocks: previewBlocks ?? null,
+      presentation: Object.keys(theme).length || Object.keys(previewPresentation?.slicerCluster ?? {}).length
+        ? { theme, slicerCluster: previewPresentation?.slicerCluster ?? {} }
+        : null,
+      pageId: activePageId ?? null,
+    };
+  }, [localLayoutOverrides, previewLayoutOverrides, previewBlocks, previewPresentation, pendingThemeConfig, activePageId]);
+
+  // Studio preview (inside the iframe): show exactly the state the author's tab
+  // sends — before or after an AI design — through the same overlays the canvas
+  // uses, and report the report's full height and whether it has settled, so the
+  // frame can be sized to the whole report and a capture never shows spinners.
+  React.useEffect(() => {
+    if (!studioPreview) return;
+    const frame = studioFrameId();
+    const onMessage = (e: MessageEvent) => {
+      if (!isStudioMessage(e)) return;
+      const m = e.data as StudioMessage;
+      if (m.type !== 'appbi-studio-state' || m.frame !== frame) return;
+      setPreviewLayoutOverrides((m.state.overrides as any) ?? null);
+      setPreviewBlocks(m.state.blocks && m.state.blocks.length ? (m.state.blocks as any[]) : null);
+      setPreviewPresentation((m.state.presentation as any) ?? null);
+      if (m.state.pageId) setCurrentPageId(m.state.pageId);
+    };
+    window.addEventListener('message', onMessage);
+    window.parent?.postMessage({ type: 'appbi-studio-ready', frame } satisfies StudioMessage, window.location.origin);
+    let last = '';
+    let lastHeight = -1;
+    let still = 0;
+    const beat = window.setInterval(() => {
+      const main = document.querySelector('main') as HTMLElement | null;
+      if (!main) return;
+      const height = Math.ceil(main.scrollHeight);
+      // Settled = the report is there (tiles mounted), nothing is loading, and
+      // its height has held for three beats. A frame that has not started
+      // fetching yet has nothing pending either — that is not "finished".
+      still = height === lastHeight ? still + 1 : 0;
+      lastHeight = height;
+      const hasTiles = main.querySelector('[data-grid-item-id]') !== null;
+      const settled = hasTiles && pendingWork(main) === null && still >= 3;
+      const key = `${height}:${settled}`;
+      if (key === last) return;
+      last = key;
+      window.parent?.postMessage({ type: 'appbi-studio-height', frame, height, settled } satisfies StudioMessage, window.location.origin);
+    }, 400);
+    return () => { window.removeEventListener('message', onMessage); window.clearInterval(beat); };
+  }, [studioPreview]);
 
   // Clicking a chart while the AI panel is minimised should bring the panel
   // back — otherwise the "Editing: X" chip the click just armed is invisible.
   React.useEffect(() => {
-    if (designMode === 'ai' && focusedTileId != null && aiPanelCollapsed) {
+    if (designMode === 'ai' && selectedTileIds.length > 0 && aiPanelCollapsed) {
       setAiPanelCollapsed(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedTileId, designMode]);
+  }, [selectedTileIds, designMode]);
 
   // A report-scoped redesign changes the SURFACE — a dark ground, a violet
   // accent, softer cards — and that is the biggest thing "make this a dark
@@ -911,19 +1308,11 @@ export default function DashboardDetailPage() {
   // as the preview is on screen. It is derived from `pending`, never stored, so
   // Discard reverts it for free. Page-scoped previews carry no theme patch, so
   // this is exactly the live theme for them.
-  const previewTheme = React.useMemo(() => {
-    const patch = aiDesign.pending?.mutation.themePatch;
-    if (!patch || Object.keys(patch).length === 0) return dashboard?.theme_config;
-    // Preview the SURFACE and the slicer's LOOK, but not its POSITION. The dock
-    // and variant reflow the filter cluster — reflowing it mid-preview shoves the
-    // whole grid sideways (the "charts jumping" §) — so those land on Apply.
-    // `slicerStyle` (card/pill/glass/…) only repaints the chips, no reflow, so it
-    // rides in the preview: a "modern glass filter" should look modern before you
-    // commit, not after.
-    const { filterDock, slicerVariant, ...surface } = patch as Record<string, any>;
-    void filterDock; void slicerVariant;
-    return { ...(dashboard?.theme_config ?? {}), ...surface };
-  }, [aiDesign.pending, dashboard?.theme_config]);
+  // The theme the page RENDERS: the (draft) theme with an AI design under
+  // preview laid over it — the WHOLE patch, dock and variant included. The dock
+  // used to be held back until Apply ("charts jumping"); that made Apply show a
+  // layout the preview never did. What the user approves is what they saw.
+  const previewTheme = viewThemeConfig;
 
   const pageSlicersServerSignatureRef = React.useRef<string>('');
   React.useEffect(() => {
@@ -1051,6 +1440,19 @@ export default function DashboardDetailPage() {
       (a, b) => (idx.get(idOf(a)) ?? 1e9) - (idx.get(idOf(b)) ?? 1e9),
     );
   }, [combinedSlicerChildren, slicerDisplayOrder]);
+
+  // A value picked in a grid control: the same entry, the same staging.
+  const handleControlSlicerChange = React.useCallback((next: BaseFilter) => {
+    handleSlicerChildrenChange(replaceSlicerById(orderedSlicerChildren, next));
+  }, [handleSlicerChildrenChange, orderedSlicerChildren]);
+  const slicerIsVisibleHere = React.useCallback(
+    (s: any) => (s?.scope === 'page' ? true : slicerVisibleOnPage(s, activePageId)),
+    [slicerVisibleOnPage, activePageId],
+  );
+  const slicerFiltersHere = React.useCallback(
+    (s: any) => (s?.scope === 'page' ? true : slicerFiltersPage(s, activePageId)),
+    [slicerFiltersPage, activePageId],
+  );
 
   // Phase-15.81 v11 — pending flag must light up for BOTH scopes so
   // the Apply button surfaces when a DA edits page filters too.
@@ -1201,7 +1603,7 @@ export default function DashboardDetailPage() {
   // toàn: drag/resize chỉ update React state, không gọi BE. User chủ
   // động click "Lưu nháp" / "Lưu & xuất bản" để persist.
   //
-  const handleLayoutChange = (newLayout: Layout[]) => {
+  const handleLayoutChange = (newLayout: Layout[], extra: Record<number, Record<string, any>> = {}) => {
     if (!serverDashboard) return;
     // One gesture = one chart: DashboardGrid forwards ONLY the moved tile, so we
     // touch exactly the charts in `newLayout` and never re-read/re-write siblings.
@@ -1213,16 +1615,39 @@ export default function DashboardDetailPage() {
     const prevOverrides = localLayoutOverridesRef.current;
     const nextOverrides: Record<number, Record<string, any>> = { ...prevOverrides };
     let changed = false;
-    for (const item of newLayout) {
+    // Structure keys that ride with the same gesture (a moved tile's section,
+    // a section materialized before its header moves): one undo step. A tile
+    // that only gets a structure key keeps its cell.
+    const extraOnly = Object.keys(extra).map(Number).filter((id) => !newLayout.some((l) => Number(l.i) === id));
+    const items = [...newLayout, ...extraOnly.map((id) => {
+      const l = resolveDashboardChartLayout(id, prevOverrides) as any;
+      return { i: String(id), x: Number(l?.x) || 0, y: Number(l?.y) || 0, w: Number(l?.w) || 1, h: Number(l?.h) || 1 } as Layout;
+    })];
+    for (const item of items) {
       const id = Number(item.i);
       const existing = serverDashboard.dashboard_charts?.find((dc) => dc.id === id);
       if (!existing) continue;
+      if (extra[id]) {
+        nextOverrides[id] = { ...mergeGridLayout(resolveDashboardChartLayout(id, prevOverrides), item), ...extra[id] };
+        changed = true;
+        continue;
+      }
       const baseline = resolveDashboardChartLayout(id, {});
       const atBaseline =
         baseline.x === item.x && baseline.y === item.y
         && baseline.w === item.w && baseline.h === item.h;
-      if (atBaseline) {
+      // Back at its baseline cell: the override goes only if NOTHING else in it
+      // differs — a lock or a slicer's display set before the drag must not be
+      // thrown away because the tile returned to where it was.
+      const candidate = mergeGridLayout(resolveDashboardChartLayout(id, prevOverrides), item) as Record<string, any>;
+      const onlyGeometry = Object.keys(candidate).every(
+        (k) => JSON.stringify(candidate[k]) === JSON.stringify((baseline as any)[k]),
+      );
+      if (atBaseline && onlyGeometry) {
         if (id in nextOverrides) { delete nextOverrides[id]; changed = true; }
+      } else if (atBaseline) {
+        nextOverrides[id] = candidate;
+        changed = true;
       } else {
         nextOverrides[id] = mergeGridLayout(resolveDashboardChartLayout(id), item);
         changed = true;
@@ -1232,6 +1657,47 @@ export default function DashboardDetailPage() {
     pushUndo({ kind: 'layout', prev: prevOverrides, next: nextOverrides });
     setLocalLayoutOverrides(nextOverrides);
   };
+
+  // Lock is layout state, so it goes through the same local-override → draft →
+  // publish path as a drag: undoable, visible immediately (the grid reads the
+  // merged layout), and never lost when a draft saved BEFORE the lock is
+  // published. It used to write the live row directly, which a stale draft
+  // entry then overwrote on publish — the lock silently came undone.
+  // Any tile-level edit — title, frame/appearance, highlight opt-out, date-grain
+  // lock, HAVING filters, position lock — is a DRAFT edit: it goes through the
+  // page's buffer (undoable, saved with the draft, published with it). These
+  // used to PUT the live row, so a title typed in the editor was on /d before
+  // Publish and Discard could not take it back.
+  const handlePatchTileLayout = useCallback((dashboardChartId: number, patch: Record<string, any>) => {
+    const prevOverrides = localLayoutOverridesRef.current;
+    const merged = {
+      ...prevOverrides,
+      [dashboardChartId]: { ...resolveDashboardChartLayout(dashboardChartId, prevOverrides), ...patch },
+    };
+    pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
+    setLocalLayoutOverrides(merged);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolveDashboardChartLayout]);
+  const handleToggleTileLock = useCallback((dashboardChartId: number, next: boolean) => {
+    handlePatchTileLayout(dashboardChartId, { locked: next });
+  }, [handlePatchTileLayout]);
+
+  // The persisted layout of each tile (server row ⊕ saved draft), WITHOUT the
+  // unsaved local edits or an AI preview. A ChartTile used OUTSIDE this builder
+  // (no draft buffer) still writes its row and spreads THIS, so an unsaved drag
+  // or a design being previewed can never leak into the live report.
+  const persistedLayoutById = React.useMemo(() => {
+    const map: Record<number, Record<string, any>> = {};
+    for (const dc of serverDashboard?.dashboard_charts ?? []) {
+      map[dc.id] = resolveDashboardChartLayout(dc.id, {}) as Record<string, any>;
+    }
+    return map;
+  }, [serverDashboard, resolveDashboardChartLayout]);
+  const persistedLayoutRef = React.useRef(persistedLayoutById);
+  persistedLayoutRef.current = persistedLayoutById;
+  // Stable getter: tiles are memoised and must not re-render on every refetch
+  // just to see a fresher persisted layout — they read it at write time.
+  const getPersistedLayout = useCallback((id: number) => persistedLayoutRef.current[id], []);
 
   // Phase-18 — "Sắp xếp gọn": re-flow the active page's tiles into a clean,
   // aligned, equal-height-row grid (kills the ragged "thò thụt" look). Writes
@@ -1248,7 +1714,10 @@ export default function DashboardDetailPage() {
       w: Number(dc.layout?.w) || 4,
       h: Number(dc.layout?.h) || 4,
     }));
-    const tidied = tidyPageLayout(tiles);
+    // Locked tiles are obstacles, not participants: they keep their rectangle
+    // and the re-flow routes around them.
+    const lockedIds = new Set(pageCharts.filter((dc) => (dc.layout as any)?.locked === true).map((dc) => dc.id));
+    const tidied = tidyPageLayout(tiles, lockedIds);
     const next: Record<number, Record<string, any>> = {};
     for (const t of tidied) {
       next[t.id] = mergeGridLayout(resolveDashboardChartLayout(t.id), t);
@@ -1276,14 +1745,15 @@ export default function DashboardDetailPage() {
       w: Number(dc.layout?.w) || 4,
       h: Number(dc.layout?.h) || 4,
     }));
-    const minY = Math.min(...tiles.map((tl) => tl.y));
-    if (!Number.isFinite(minY) || minY <= 0) {
+    const lockedIds = new Set(pageCharts.filter((dc) => (dc.layout as any)?.locked === true).map((dc) => dc.id));
+    const lifted = compactPageUp(tiles, lockedIds);
+    if (!lifted) {
       toast.info(t('dashboards.detail.compactUpNoop'));
       return;
     }
     const next: Record<number, Record<string, any>> = {};
-    for (const tl of tiles) {
-      next[tl.id] = mergeGridLayout(resolveDashboardChartLayout(tl.id), { x: tl.x, y: tl.y - minY, w: tl.w, h: tl.h });
+    for (const tl of lifted) {
+      next[tl.id] = mergeGridLayout(resolveDashboardChartLayout(tl.id), { x: tl.x, y: tl.y, w: tl.w, h: tl.h });
     }
     const prevOverrides = localLayoutOverridesRef.current;
     const merged = { ...prevOverrides, ...next };
@@ -1292,24 +1762,6 @@ export default function DashboardDetailPage() {
     toast.success(t('dashboards.detail.compactUpDone'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboard, activePageId, resolveDashboardChartLayout, t]);
-
-  // Canvas-mode layout updates: same pattern — local state only.
-  const handleCanvasLayoutChange = useCallback(
-    (
-      updates: Array<{ id: number; xPx: number; yPx: number; wPx: number; hPx: number; z: number }>,
-    ) => {
-      if (!serverDashboard) return;
-      const prevOverrides = localLayoutOverridesRef.current;
-      const merged = { ...prevOverrides };
-      for (const u of updates) {
-        merged[u.id] = mergeCanvasLayout(resolveDashboardChartLayout(u.id, prevOverrides), u);
-      }
-      pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
-      setLocalLayoutOverrides(merged);
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [serverDashboard, resolveDashboardChartLayout],
-  );
 
   // Flush helpers — used by Save draft / Save & Publish buttons.
   const flushLocalLayoutsToDraft = async () => {
@@ -1340,10 +1792,25 @@ export default function DashboardDetailPage() {
     }
   };
 
+  /** Stage everything unsaved into the server draft. All-or-report: each part
+   *  is attempted, and the caller learns which failed — nothing is reported as
+   *  saved that the server did not accept. */
+  const stageAllToDraft = async (): Promise<{ ok: boolean; failed: string[] }> => {
+    const failed: string[] = [];
+    setIsStagingDraft(true);
+    try {
+      if (!(await flushLocalLayoutsToDraft())) failed.push('layout');
+      if (!(await stagePendingTheme())) failed.push('theme');
+      if (!(await stageSlicerClusterLayout())) failed.push('filters');
+    } finally {
+      setIsStagingDraft(false);
+    }
+    return { ok: failed.length === 0, failed };
+  };
+
   const handleSaveDraft = async () => {
-    const ok = await flushLocalLayoutsToDraft();
-    // A drafted AI theme becomes real on Save, together with the layout.
-    await persistPendingTheme();
+    if (committingPresentationRef.current) return;
+    const { ok } = await stageAllToDraft();
     if (ok) {
       // Save flushes local overrides → the pre-save snapshots in the undo stack
       // no longer map cleanly onto the now-empty override buffer, so clear the
@@ -1351,6 +1818,7 @@ export default function DashboardDetailPage() {
       resetUndo();
       toast.success(t('dashboards.detail.draftSaved'));
     } else {
+      // What failed stays unsaved and on screen; nothing was published.
       toast.error(t('dashboards.detail.draftSaveFailed'));
     }
   };
@@ -1380,7 +1848,7 @@ export default function DashboardDetailPage() {
   // mounted once but always sees current state.
   const ctrlSRef = React.useRef<() => void>(() => {});
   ctrlSRef.current = () => {
-    if (hasLocalLayoutChanges) handleSaveDraft();
+    if (hasUnsavedPresentation) handleSaveDraft();
   };
   React.useEffect(() => {
     if (!canEditResource) return;
@@ -1433,21 +1901,26 @@ export default function DashboardDetailPage() {
   };
 
   const handlePublish = async () => {
+    if (committingPresentationRef.current) return;
     // Capture base versions BEFORE the flush clears local overrides.
     const tileBaseV = buildTileBaseV();
-    const ok = await flushLocalLayoutsToDraft();
-    if (!ok) {
+    // Everything is staged first; Publish runs only if ALL of it was accepted.
+    // The server then applies layout + theme + filters in one transaction, so a
+    // failed stage or a 409 leaves the published report exactly as it was.
+    const staged = await stageAllToDraft();
+    if (!staged.ok) {
       toast.error(t('dashboards.detail.publishAbortedDraftFailed'));
       return;
     }
-    // A drafted AI theme becomes real on Publish, together with the layout.
-    await persistPendingTheme();
     resetUndo();
     try {
       await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV });
       toast.success(t('dashboards.detail.publishedNewVersion'));
     } catch (err: any) {
-      if (err?.response?.status === 409) {
+      const detail = err?.response?.data?.detail;
+      if (err?.response?.status === 409 && detail?.code === 'shared_draft_other_authors') {
+        setSharedChoice({ action: 'publish', authors: detail.authors ?? [], rev: detail.rev, tileBaseV });
+      } else if (err?.response?.status === 409) {
         setPublishConflict({
           editor: err?.response?.data?.detail?.last_editor ?? null,
           tiles: err?.response?.data?.detail?.tiles ?? [],
@@ -1471,34 +1944,64 @@ export default function DashboardDetailPage() {
 
   const handleDiscardAll = async () => {
     setLocalLayoutOverrides({});
-    // A drafted AI theme was only painted into the cache, never persisted — drop
-    // it and refetch the server's published theme so Discard reverts colour too.
-    if (pendingThemeConfig) {
-      setPendingThemeConfig(null);
-      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
-    }
+    // An unsaved theme lives only in page state — dropping it reverts colour.
+    // A STAGED theme is in the server draft and goes with discard-draft below.
+    setPendingThemeConfig(null);
     resetUndo();
     if (serverDashboard?.has_draft) {
       try {
         await discardDraftMutation.mutateAsync(dashboardId);
         toast.success(t('dashboards.detail.revertedToPublished'));
-      } catch (err) {
-        toast.error(t('dashboards.detail.discardDraftFailed'));
+      } catch (err: any) {
+        const detail = err?.response?.data?.detail;
+        if (err?.response?.status === 409 && detail?.code === 'shared_draft_other_authors') {
+          setSharedChoice({ action: 'discard', authors: detail.authors ?? [], rev: detail.rev });
+        } else {
+          toast.error(t('dashboards.detail.discardDraftFailed'));
+        }
+      }
+    }
+  };
+
+  // The answer to "the shared draft also holds X's edits": include them, or
+  // act on this author's own work only and leave the shared draft pending.
+  const resolveSharedChoice = async (include: boolean) => {
+    const choice = sharedChoice;
+    setSharedChoice(null);
+    if (!choice) return;
+    const shared = include ? { sharedAckRev: choice.rev } : { keepShared: true };
+    try {
+      if (choice.action === 'publish') {
+        await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV: choice.tileBaseV, ...shared });
+        toast.success(t(include ? 'dashboards.detail.publishedNewVersion' : 'dashboards.detail.sharedChoice.publishedMine'));
+      } else {
+        await discardDraftMutation.mutateAsync({ dashboardId, ...shared });
+        toast.success(t(include ? 'dashboards.detail.revertedToPublished' : 'dashboards.detail.sharedChoice.discardedMine'));
+      }
+    } catch (err: any) {
+      if (err?.response?.status === 409) {
+        setPublishConflict({ editor: err?.response?.data?.detail?.last_editor ?? null, tiles: err?.response?.data?.detail?.tiles ?? [] });
+      } else {
+        toast.error(t(choice.action === 'publish' ? 'dashboards.detail.publishFailed' : 'dashboards.detail.discardDraftFailed'));
       }
     }
   };
 
   const handleAddWidget = useCallback(
-    async (widgetType: 'text' | 'countdown' | 'image' | 'shape' | 'parameter_switcher' | 'section_header' | 'callout' | 'hero_strip') => {
+    async (widgetType: 'text' | 'countdown' | 'image' | 'shape' | 'parameter_switcher' | 'section_header' | 'callout' | 'hero_strip' | 'narrative') => {
       if (!dashboard) return;
+      // What a new element says before the author writes anything — in the
+      // report's language, never a fixed Vietnamese placeholder in an English
+      // report. The report header states the report's own name/description
+      // (empty = live), never a typed figure.
       const defaults: Record<string, any> = {
-        text: { template: 'Hello {{today()}}', align: 'left', fontSize: 18 },
-        countdown: { target: new Date(Date.now() + 7 * 86400000).toISOString(), label: 'Time left' },
+        text: { template: t('dashboards.addElement.defaultText'), align: 'left' },
+        countdown: { target: new Date(Date.now() + 7 * 86400000).toISOString(), label: t('dashboards.addElement.defaultCountdown') },
         image: { url: '', fit: 'contain' },
-        shape: { kind: 'rect', color: '#facc15' },
+        shape: { kind: 'divider', color: '#cbd5e1' },
         parameter_switcher: {
           paramName: 'period',
-          label: 'Chu kỳ',
+          label: t('dashboards.addElement.defaultParamLabel'),
           layout: 'tabs',
           options: [
             { label: 'YTD', value: 'YTD' },
@@ -1506,103 +2009,90 @@ export default function DashboardDetailPage() {
             { label: 'Q2', value: 'Q2' },
           ],
         },
-        // Modern/SaaS "element" widgets (decorative inserts).
-        section_header: { eyebrow: 'KHU VỰC', title: 'Tiêu đề mục', subtitle: '' },
-        callout: { title: 'Chú thích', text: 'Nhập insight hoặc ghi chú cho khu vực này…', tone: 'accent' },
-        hero_strip: { title: dashboard.name || 'Tên báo cáo', subtitle: 'Mô tả ngắn về báo cáo', metric: '', metricLabel: '' },
+        section_header: { eyebrow: '', title: t('dashboards.addElement.defaultSection'), subtitle: '' },
+        callout: { title: t('dashboards.addElement.defaultCalloutTitle'), text: t('dashboards.addElement.defaultCalloutText'), tone: 'accent' },
+        hero_strip: { title: '', description: '', variant: 'banner', showPeriod: true, showContext: true },
+        narrative: { variant: 'summary', origin: 'author', items: [] },
       };
 
-      // Default footprint per widget type — picked so the widget is visible
-      // immediately after dropping (a 4×2 grid cell is too short for text/countdown).
-      const sizeByType: Record<string, { w: number; h: number; wPx: number; hPx: number }> = {
-        // Text/heading widgets are almost always a one-line section header, so
-        // default to a slim band (1 grid row) instead of a 2-row box that leaves
-        // a big empty gap under the text. The DA can still stretch it for a
-        // multi-line note.
-        // Grid w/h are in the finer 36-col grid (×3 of the old 12-col sizes so a
-        // widget keeps the same default footprint); wPx/hPx are canvas pixels
-        // (unchanged — independent of grid resolution).
-        text: { w: 12, h: 3, wPx: 360, hPx: 64 },
-        countdown: { w: 12, h: 9, wPx: 360, hPx: 200 },
-        image: { w: 12, h: 12, wPx: 360, hPx: 240 },
-        shape: { w: 12, h: 3, wPx: 360, hPx: 80 },
-        parameter_switcher: { w: 12, h: 6, wPx: 360, hPx: 120 },
-        // Section header + hero span full width (36); callout is a small note.
-        section_header: { w: 36, h: 3, wPx: 1080, hPx: 56 },
-        hero_strip: { w: 36, h: 6, wPx: 1080, hPx: 120 },
-        callout: { w: 12, h: 6, wPx: 360, hPx: 110 },
+      // Default footprint per widget type on the 36-col grid.
+      const sizeByType: Record<string, { w: number; h: number }> = {
+        text: { w: 12, h: 3 },
+        countdown: { w: 12, h: 9 },
+        image: { w: 12, h: 12 },
+        shape: { w: 36, h: 1 },
+        parameter_switcher: { w: 12, h: 6 },
+        section_header: { w: 36, h: 3 },
+        hero_strip: { w: 36, h: 6 },
+        callout: { w: 12, h: 6 },
+        narrative: { w: 18, h: 6 },
       };
       const size = sizeByType[widgetType];
 
-      // Compute next non-overlapping position on the active page.
-      const sameMode = (dashboard.layout_mode ?? 'grid') === 'canvas' ? 'canvas' : 'grid';
-      const charts = (dashboard.dashboard_charts ?? []).filter((dc) => {
-        const dcPage = (dc.layout as any)?.pageId ?? null;
-        return activePageId ? dcPage === activePageId : true;
+      // Where it goes: directly under the ONE selected element, in its section
+      // (the rows below move down to make room), else at the end of the page.
+      // Built from the layout the author sees (unsaved moves included).
+      const pageTiles = (dashboard.dashboard_charts ?? []).filter((dc) => {
+        const l = resolveDashboardChartLayout(dc.id, localLayoutOverridesRef.current) as any;
+        return activePageId ? (l?.pageId ?? null) === activePageId || (!l?.pageId && activePageId === dashboardPages[0]?.id) : true;
       });
-
-      let x = 0;
-      let y = 0;
-      let xPx = 24;
-      let yPx = 24;
-      let z = 100;
-
-      if (sameMode === 'canvas' && charts.length > 0) {
-        const maxBottom = charts.reduce((acc, dc) => {
-          const l = dc.layout as any;
-          const top = Number(l?.yPx ?? 0);
-          const h = Number(l?.hPx ?? 240);
-          return Math.max(acc, top + h);
-        }, 0);
-        const maxZ = charts.reduce((acc, dc) => {
-          const lz = Number((dc.layout as any)?.z ?? 0);
-          return Math.max(acc, lz);
-        }, 0);
-        xPx = 24;
-        yPx = maxBottom + 16;
-        z = maxZ + 1;
-      } else if (sameMode === 'grid' && charts.length > 0) {
-        const maxBottom = charts.reduce((acc, dc) => {
-          const l = dc.layout as any;
-          const top = Number(l?.y ?? 0);
-          const h = Number(l?.h ?? 4);
-          return Math.max(acc, top + h);
-        }, 0);
-        x = 0;
-        y = maxBottom;
-      }
+      const structTiles = toStructTiles(pageTiles, (tid) => resolveDashboardChartLayout(tid, localLayoutOverridesRef.current));
+      const anchorId = selectedTileIds.length === 1 ? selectedTileIds[0] : null;
+      const spot = insertionFor(structTiles, widgetType === 'hero_strip' ? null : anchorId, size)
+        ?? insertionFor(structTiles, null, size)!;
+      // A report header opens the report: at the top, pushing the page down.
+      const rect = widgetType === 'hero_strip'
+        ? { x: 0, y: 0, w: size.w, h: size.h }
+        : spot.rect;
+      const pushed = widgetType === 'hero_strip'
+        ? structTiles.map((st) => ({ id: st.id, x: st.x, y: st.y + size.h, w: st.w, h: st.h }))
+        : spot.changed;
+      const sectionId = widgetType === 'section_header' || widgetType === 'hero_strip' ? null : spot.sectionId;
 
       try {
+        if (pushed.length > 0) {
+          handleLayoutChange(pushed.map((bx) => ({ i: String(bx.id), x: bx.x, y: bx.y, w: bx.w, h: bx.h })) as Layout[]);
+        }
         const updated = await dashboardApi.addWidget(
           dashboardId,
           widgetType,
           {
-            x,
-            y,
-            w: size.w,
-            h: size.h,
-            xPx,
-            yPx,
-            wPx: size.wPx,
-            hPx: size.hPx,
-            z,
+            ...rect,
             pageId: activePageId ?? undefined,
             gv: GRID_VERSION, // sizeByType is already finer (36-col) — mark so it's not re-scaled on read
+            ...(sectionId != null ? { sectionId } : {}),
+            // An addition is a draft change like any other: the public link
+            // gets it on Publish, Discard deletes it.
+            draftOnly: true,
           } as any,
           defaults[widgetType],
         );
         await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
         resetUndo(); // chart/widget set changed — prior layout undo entries are stale
-        // Open edit modal for the freshly-created widget — auto-increment id
-        // means the largest id in the response is the one we just inserted.
+        // The new element is selected and open in the inspector.
         const newest = (updated?.dashboard_charts ?? []).reduce<number | null>((acc, dc) => {
           if (dc.widget_type && dc.widget_type !== 'chart') {
             return acc === null || dc.id > acc ? dc.id : acc;
           }
           return acc;
         }, null);
-        if (newest !== null) setEditingWidgetId(newest);
-        toast.success(t('dashboards.detail.widgetAdded', { type: widgetType.replace('_', ' ') }));
+        // A heading introduces what sits under it: the elements below it, down
+        // to the next heading, that belong to no section join it.
+        if (newest !== null && widgetType === 'section_header') {
+          const pushedById = new Map(pushed.map((bx) => [bx.id, bx]));
+          const after: StructTile[] = [
+            ...structTiles.map((st) => ({ ...st, ...(pushedById.has(st.id) ? { y: pushedById.get(st.id)!.y } : {}) })),
+            { id: newest, ...rect, kind: 'section' as const, sectionId: null },
+          ];
+          const adopt = adoptableUnder(after, newest);
+          if (adopt.length > 0) handleLayoutChange([], Object.fromEntries(adopt.map((tid) => [tid, { sectionId: newest }])));
+        }
+        if (newest !== null) {
+          setSelectedTileIds([newest]);
+          setFocusedTileId(newest);
+          setInspectorOpen(true);
+        }
+        toast.success(t('dashboards.addElement.added', { type: WIDGET_TYPE_LABEL(t, widgetType) }));
       } catch (err) {
         console.error('Failed to add widget:', err);
         const detail = (err as any)?.response?.data?.detail;
@@ -1612,39 +2102,8 @@ export default function DashboardDetailPage() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [dashboard, dashboardId, activePageId, queryClient],
+    [dashboard, dashboardId, activePageId, queryClient, selectedTileIds, dashboardPages],
   );
-
-  const handleToggleLayoutMode = useCallback(async () => {
-    if (!dashboard) return;
-    // Grid (x/y cells) ↔ canvas (px) use different coordinate spaces, so undo
-    // entries captured in one mode can't be replayed in the other.
-    resetUndo();
-    const next = (dashboard.layout_mode ?? 'grid') === 'grid' ? 'canvas' : 'grid';
-    if (next === 'canvas') {
-      const canvasWidth = Number((dashboard.canvas_config as any)?.width ?? 1440);
-      setLocalLayoutOverrides((prev) => {
-        const bootstrapped: Record<number, Record<string, any>> = {};
-        for (const [index, dc] of (dashboard.dashboard_charts ?? []).entries()) {
-          const baseline = resolveDashboardChartLayout(dc.id, prev);
-          if (!hasCanvasCoords(baseline)) {
-            bootstrapped[dc.id] = ensureCanvasLayout(baseline, canvasWidth, Number(baseline.z ?? index + 1));
-          }
-        }
-        return Object.keys(bootstrapped).length > 0 ? { ...prev, ...bootstrapped } : prev;
-      });
-    }
-    try {
-      await dashboardApi.update(dashboardId, { layout_mode: next });
-      await updateDashboardMutation.mutateAsync({
-        id: dashboardId,
-        data: { layout_mode: next },
-      }).catch(() => {});
-    } catch (err) {
-      console.error('Failed to toggle layout mode:', err);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dashboard, dashboardId, resolveDashboardChartLayout, updateDashboardMutation]);
 
   const handleCrossFilterChange = useCallback((sourceChartId: number, filter: BaseFilter | null) => {
     // One selection drives the whole dashboard (PBI parity): the SOURCE chart
@@ -1682,16 +2141,26 @@ export default function DashboardDetailPage() {
 
   const handleAddChart = async (chartId: number, layout: DashboardChartLayout, parameters?: Record<string, any>) => {
     try {
-      await addChartMutation.mutateAsync({
+      const before = new Set((dashboard?.dashboard_charts ?? []).map((dc) => dc.id));
+      const updated = await addChartMutation.mutateAsync({
         dashboardId,
         chartId,
         layout: {
           ...layout,
           pageId: activePageId,
           gv: GRID_VERSION, // AddChartModal packs on the finer 36-col grid — tag so read doesn't re-scale
-        },
+          // A draft addition: public/embed get it on Publish; Discard deletes it.
+          draftOnly: true,
+        } as DashboardChartLayout,
         parameters,
       });
+      // Opened from Add with one element selected: remember what this batch
+      // added, so it is placed under that element once the report has it.
+      const batch = insertBatchRef.current;
+      if (batch) {
+        const added = (updated?.dashboard_charts ?? []).find((dc) => dc.chart_id === chartId && !before.has(dc.id) && !batch.ids.includes(dc.id));
+        if (added) batch.ids.push(added.id);
+      }
       resetUndo(); // chart set changed — prior layout undo entries are stale
       // Modal-close is owned by AddChartModal now — it closes ONCE after the
       // whole batch finishes (DA6-F3 multi-add), so adding N charts doesn't
@@ -1723,11 +2192,9 @@ export default function DashboardDetailPage() {
     setRemovingChartId(pendingRemoveDashboardChartId);
     setPendingRemoveDashboardChartId(undefined);
     try {
-      await removeChartMutation.mutateAsync({
-        dashboardId,
-        dashboardChartId: dashboardChart.id,
-      });
-      resetUndo(); // chart set changed — prior layout undo entries are stale
+      const next = { ...localLayoutOverridesRef.current };
+      delete next[dashboardChart.id];
+      await removeElementsInDraftRef.current([dashboardChart.id], next);
       toast.success(t('dashboards.detail.chartRemoved'));
     } catch (error) {
       console.error('Failed to remove chart:', error);
@@ -2637,6 +3104,14 @@ export default function DashboardDetailPage() {
     () => paramsToFilters(paramDefs, paramValues, resolvedAvailableColumns),
     [paramDefs, paramValues, resolvedAvailableColumns],
   );
+  // What the report header says about the context: the filters the charts are
+  // queried with right now, stated as a reader reads them.
+  const reportMeta = React.useMemo(() => ({
+    name: dashboard?.name,
+    description: dashboard?.description ?? null,
+    filterFacts: pageFilterFacts({ applied: effectivePageScopeFilters, pageHidden: [], locked: [] })
+      .map((f) => `${f.label}: ${statePageFilterFact(f, t)}`),
+  }), [dashboard?.name, dashboard?.description, effectivePageScopeFilters, t]);
   const effectiveFiltersWithParams = React.useMemo<BaseFilter[]>(
     () =>
       paramFilters.length
@@ -2668,22 +3143,617 @@ export default function DashboardDetailPage() {
     return merged;
   }, [hasSemanticFilterColumns, semanticDistinctValues, distinctValues]);
 
+  // ── Slicer controls: add, restyle, remove, delete ──────────────────────
+  // A report has no filter area of its own: every filter a viewer can change is
+  // drawn by a control ON the grid. These are the filters that can have one.
+  const [isAddSlicerOpen, setIsAddSlicerOpen] = useState(false);
+  const [isPlacingSlicer, setIsPlacingSlicer] = useState(false);
+  const handleRemoveChartRef = React.useRef(handleRemoveChart);
+  handleRemoveChartRef.current = handleRemoveChart;
+
+  // Filter-pane filters left visible to viewers are controls too: the public
+  // link always let a viewer change them. Visibility is the stored config's;
+  // the value is the draft's.
+  const viewerPaneFilters = React.useMemo<BaseFilter[]>(() => {
+    const visibleIds = new Set(((dashboard as any)?.filters_config ?? [])
+      .filter((f: any) => f && typeof f === 'object' && (f.publicMode ?? 'visible') === 'visible')
+      .map((f: any) => String(f.id)));
+    return draftGlobalFilters
+      .filter((f) => visibleIds.has(String(f.id)))
+      .map((f) => toBaseFilter(f, { allowInactive: true }))
+      .filter((b): b is BaseFilter => b !== null);
+  }, [dashboard, draftGlobalFilters]);
+  const paneFilterIds = React.useMemo(() => new Set(viewerPaneFilters.map((f) => String(f.id))), [viewerPaneFilters]);
+  const controlFilters = React.useMemo<BaseFilter[]>(
+    () => [...(orderedSlicerChildren.filter((s: any) => s?.type !== 'image') as BaseFilter[]), ...viewerPaneFilters],
+    [orderedSlicerChildren, viewerPaneFilters],
+  );
+  // A value picked in a control is staged into the entry it shows.
+  const handleControlChange = React.useCallback((next: BaseFilter) => {
+    if (paneFilterIds.has(String(next.id))) {
+      setDraftGlobalFilters((prev) => prev.map((f) => {
+        if (String(f.id) !== String(next.id)) return f;
+        const typed = fromBaseFilter(next);
+        return typed ? ({ ...f, ...typed } as TypedFilter) : f;
+      }));
+      return;
+    }
+    handleControlSlicerChange(next);
+  }, [paneFilterIds, handleControlSlicerChange]);
+  const controlVisibleHere = React.useCallback(
+    (s: any) => paneFilterIds.has(String(s?.id)) || slicerIsVisibleHere(s),
+    [paneFilterIds, slicerIsVisibleHere],
+  );
+  const controlFiltersHere = React.useCallback(
+    (s: any) => paneFilterIds.has(String(s?.id)) || slicerFiltersHere(s),
+    [paneFilterIds, slicerFiltersHere],
+  );
+  // Filters this page shows that have no control here (a new page, a filter
+  // made in the pane, a control the author removed): the Slicer button lists them.
+  const unplacedControlFilters = React.useMemo(
+    () => controlFilters.filter((s) => controlVisibleHere(s) && !placedSlicerIdsOnPage.has(String(s.id ?? ''))),
+    [controlFilters, controlVisibleHere, placedSlicerIdsOnPage],
+  );
+
+  // Save the slicer lists to the draft now. Used when a control is created for
+  // a NEW filter (a reload must never find a control pointing at nothing) and
+  // when a filter is deleted with its controls. It stores what Apply stores:
+  // any other staged slicer edit is saved with it.
+  const persistSlicerLists = useCallback(async (
+    nextGlobal: any[],
+    nextPage: any[],
+    extra: { filters_config?: BaseFilter[]; remove_tile_ids?: number[] } = {},
+  ) => {
+    setDraftGlobalSlicers(nextGlobal);
+    setAppliedGlobalSlicers(nextGlobal);
+    setDraftPageSlicers(nextPage);
+    const body: { slicers_config: any[]; pages_config?: any[]; filters_config?: BaseFilter[]; remove_tile_ids?: number[] } = {
+      slicers_config: nextGlobal,
+      ...extra,
+    };
+    if (activePageId) {
+      const nextPages = dashboardPages.map((p) => {
+        if (p.id !== activePageId) return p;
+        const next: any = { ...p };
+        const pageSlicers = nextPage.filter((s) => !(s && typeof s === 'object' && (s as any).type === 'image'));
+        if (pageSlicers.length > 0) next.slicers = pageSlicers;
+        else delete next.slicers;
+        return next;
+      });
+      body.pages_config = nextPages;
+      setLocalPagesConfig(nextPages);
+    }
+    await dashboardApi.updateDraftFilters(dashboardId, body);
+    await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+  }, [activePageId, dashboardPages, dashboardId, queryClient]);
+
+  // Placing controls is ONE undoable step through the same commit path as an AI
+  // design: draft-only rows until Publish, deleted by Undo or Discard. At the top
+  // of the page the content moves down by the band the controls need (room is
+  // made, nothing is shoved aside); below the content they take the free rows.
+  const placeSlicerControls = useCallback(async (slicers: BaseFilter[], requested: 'top' | 'end' | 'beside') => {
+    if (!slicers.length) return;
+    const card = SLICER_CONTROL_SIZE.card;
+    const rows = Math.ceil(slicers.length / 4) * card.h;
+    const prev = localLayoutOverridesRef.current;
+    const overrides: Record<number, Record<string, any>> = { ...prev };
+    let y0 = nextFreeSlot(visibleDashboardCharts, card).y;
+    let where = requested;
+    // Next to the selected element: in free space in its rows (nothing moves),
+    // else directly above it (the rows from there down make room). Each
+    // control is placed against the page as the previous one left it.
+    const targetId = selectedTileIds.length === 1 ? selectedTileIds[0] : null;
+    const besideCells: { x: number; y: number; w: number; h: number }[] = [];
+    if (where === 'beside' && targetId !== null) {
+      let boxes: GridBox[] = settleStoredLayout(visibleDashboardCharts.map((dc) => {
+        const l = resolveDashboardChartLayout(dc.id, prev) as Record<string, any>;
+        return { i: String(dc.id), id: dc.id, x: Number(l.x) || 0, y: Number(l.y) || 0, w: Number(l.w) || 1, h: Number(l.h) || 1,
+          static: Boolean(l.locked), locked: Boolean(l.locked) };
+      }), DASHBOARD_GRID_COLS).map(({ i: _i, static: _s, ...box }) => box);
+      let fits = true;
+      for (let n = 0; n < slicers.length; n += 1) {
+        const spot = placeBeside(boxes, targetId, card);
+        if (!spot) { fits = false; break; }
+        const moved = new Map(spot.changed.map((b) => [b.id, b]));
+        boxes = [...boxes.map((b) => moved.get(b.id) ?? b), { id: -(n + 1), ...spot.rect }];
+        besideCells.push(spot.rect);
+      }
+      if (fits) {
+        for (const b of boxes) {
+          if (b.id < 0) continue;
+          const was = visibleDashboardCharts.find((dc) => dc.id === b.id);
+          const full = resolveDashboardChartLayout(b.id, prev) as Record<string, any>;
+          if (was && (Number(full.y) !== b.y || Number(full.x) !== b.x)) overrides[b.id] = { ...full, x: b.x, y: b.y };
+        }
+      } else {
+        besideCells.length = 0;
+        toast.info(t('dashboards.addSlicer.besideBlocked'));
+        where = 'end';
+      }
+    } else if (where === 'beside') {
+      where = 'end';
+    }
+    if (where === 'top') {
+      if (visibleDashboardCharts.some((dc) => (dc.layout as any)?.locked)) {
+        toast.info(t('dashboards.addSlicer.topBlocked'));
+      } else {
+        for (const dc of visibleDashboardCharts) {
+          const full = resolveDashboardChartLayout(dc.id, prev) as Record<string, any>;
+          overrides[dc.id] = { ...full, y: (Number(full.y) || 0) + rows };
+        }
+        y0 = 0;
+      }
+    }
+    await commitPresentation({
+      layoutOverrides: overrides,
+      themePatch: null,
+      slicerClusterPatch: null,
+      createdBlocks: slicers.map((s, i) => ({
+        tempId: -(i + 1),
+        widgetType: SLICER_CONTROL_WIDGET as 'slicer',
+        widgetConfig: { slicerId: String(s.id), treatment: 'auto', origin: 'author' },
+        layout: besideCells[i]
+          ? { ...besideCells[i], gv: GRID_VERSION, pageId: activePageId }
+          : { x: (i % 4) * card.w, y: y0 + Math.floor(i / 4) * card.h, w: card.w, h: card.h, gv: GRID_VERSION, pageId: activePageId },
+      })),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleDashboardCharts, activePageId, resolveDashboardChartLayout, commitPresentation, selectedTileIds, t]);
+
+  const usedSlicerFieldKeys = React.useMemo(
+    () => new Set(controlFilters.map((s: any) => getFilterKey(s))),
+    [controlFilters],
+  );
+  const addSlicerColumns = React.useMemo(
+    () => resolvedAvailableColumns.filter((c) => (c.type === 'date' || (c.chartCoverage ?? 0) > 0)
+      && !usedSlicerFieldKeys.has(getColumnKey(c))),
+    [resolvedAvailableColumns, usedSlicerFieldKeys],
+  );
+
+  const handleAddSlicer = useCallback(async (input: { existing?: BaseFilter[]; column?: ColumnInfo; where?: 'top' | 'end' | 'beside' }) => {
+    setIsPlacingSlicer(true);
+    try {
+      let slicers = input.existing ?? [];
+      if (!slicers.length && input.column) {
+        const created = createSlicerEntry({
+          column: input.column,
+          columns: resolvedAvailableColumns,
+          usedFields: usedSlicerFieldKeys,
+          interaction: defaultInteractionFor(input.column),
+          // A new date control starts OPEN ("all dates"): defaulting it to
+          // this month emptied the report the moment it was placed.
+          preset: input.column.type === 'date' ? 'custom' : undefined,
+          pageScope: true,
+        });
+        await persistSlicerLists(draftGlobalSlicers, [...draftPageSlicers, created]);
+        slicers = [created];
+      }
+      if (!slicers.length) return;
+      await placeSlicerControls(slicers, input.where ?? 'end');
+      setIsAddSlicerOpen(false);
+      toast.success(t('dashboards.slicerControl.added'));
+    } catch (err) {
+      console.error('Failed to place slicer:', err);
+      toast.error(t('dashboards.slicerControl.addFailed'));
+    } finally {
+      setIsPlacingSlicer(false);
+    }
+  }, [resolvedAvailableColumns, usedSlicerFieldKeys, persistSlicerLists, draftGlobalSlicers, draftPageSlicers, placeSlicerControls, t]);
+
+  // Remove elements in the draft — ONE undoable step for any kind of element.
+  // A published one stays on the public link until Publish and comes back as
+  // itself on Undo or Discard; one added in this draft is deleted (Undo creates
+  // it again). `next` is the layout after the removal (e.g. a closed band).
+  const removeElementsInDraft = useCallback(async (tileIds: number[], next: Record<number, Record<string, any>>) => {
+    const prev = localLayoutOverridesRef.current;
+    const rows = serverDashboard?.dashboard_charts ?? [];
+    const published: number[] = [];
+    const drafts: RemovedDraftSpec[] = [];
+    for (const id of tileIds) {
+      const dc = rows.find((d) => d.id === id);
+      if (!dc) continue;
+      if ((dc.layout as any)?.draftOnly) {
+        const { draftOnly: _o, draftOwner: _w, ...layout } = resolveDashboardChartLayout(id, prev) as unknown as Record<string, unknown>;
+        drafts.push({
+          widgetType: String(dc.widget_type || 'chart'),
+          chartId: (dc as any).chart_id ?? null,
+          widgetConfig: { ...((dc.widget_config ?? {}) as Record<string, unknown>) },
+          layout,
+          parameters: ((dc as any).parameters ?? undefined) as Record<string, unknown> | undefined,
+        });
+      } else {
+        published.push(id);
+      }
+    }
+    for (const id of tileIds) await dashboardApi.removeChart(dashboardId, id);
+    await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    setLocalLayoutOverrides(next);
+    pushUndo({ kind: 'removal', published, drafts, draftIds: [], prev, next });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverDashboard, resolveDashboardChartLayout, dashboardId, queryClient]);
+  const removeElementsInDraftRef = React.useRef(removeElementsInDraft);
+  removeElementsInDraftRef.current = removeElementsInDraft;
+
+  // Remove a CONTROL (the filter stays and keeps filtering). One undoable step:
+  // Undo puts the control back where it was; a band made only for filters closes
+  // when its last control leaves it.
+  const removeSlicerControl = useCallback(async (tileId: number) => {
+    const dc = visibleDashboardCharts.find((d) => d.id === tileId);
+    if (!dc) return;
+    const prev = localLayoutOverridesRef.current;
+    const boxes: GridBox[] = visibleDashboardCharts.map((d) => ({
+      id: d.id, x: Number(d.layout?.x) || 0, y: Number(d.layout?.y) || 0,
+      w: Number(d.layout?.w) || 1, h: Number(d.layout?.h) || 1, locked: Boolean((d.layout as any)?.locked),
+    }));
+    const next: Record<number, Record<string, any>> = { ...prev };
+    delete next[tileId];
+    for (const b of closeVacatedBand(boxes, tileId)) {
+      next[b.id] = mergeGridLayout(resolveDashboardChartLayout(b.id, prev), b);
+    }
+    setRemovingChartId(tileId);
+    try {
+      await removeElementsInDraft([tileId], next);
+      toast.success(t('dashboards.slicerControl.removed'));
+    } catch (error) {
+      console.error('Failed to remove slicer control:', error);
+      toast.error(t('dashboards.detail.chartRemoveFailed'));
+    } finally {
+      setRemovingChartId(undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleDashboardCharts, resolveDashboardChartLayout, removeElementsInDraft, t]);
+  const removeSlicerControlRef = React.useRef(removeSlicerControl);
+  removeSlicerControlRef.current = removeSlicerControl;
+
+  // Delete the FILTER: its entry — a slicer, a page slicer or a filter-pane
+  // filter — and every control for it on every page, as ONE draft change (one
+  // request, one transaction): all of it or nothing. The public link keeps the
+  // filter and its controls until Publish; Discard brings both back.
+  const handleDeleteSlicerFilter = useCallback(async (slicerId: string) => {
+    try {
+      const controls = (serverDashboard?.dashboard_charts ?? []).filter((dc) => slicerIdOfControl(dc) === slicerId);
+      const extra: { filters_config?: BaseFilter[]; remove_tile_ids?: number[] } = { remove_tile_ids: controls.map((dc) => dc.id) };
+      if (paneFilterIds.has(slicerId)) {
+        extra.filters_config = draftGlobalFilters
+          .filter((f) => String(f.id) !== slicerId)
+          .map((f) => toBaseFilter(f, { allowInactive: true }))
+          .filter((b): b is BaseFilter => b !== null);
+      }
+      await persistSlicerLists(
+        draftGlobalSlicers.filter((s: any) => String(s?.id ?? '') !== slicerId),
+        draftPageSlicers.filter((s: any) => String(s?.id ?? '') !== slicerId),
+        extra,
+      );
+      if (extra.filters_config) {
+        setDraftGlobalFilters((prev) => prev.filter((f) => String(f.id) !== slicerId));
+        setAppliedGlobalFilters((prev) => prev.filter((f) => String(f.id) !== slicerId));
+      }
+      resetUndo();
+    } catch (err) {
+      console.error('Failed to delete slicer filter:', err);
+      toast.error(t('dashboards.detail.filterSaveFailed'));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persistSlicerLists, draftGlobalSlicers, draftPageSlicers, draftGlobalFilters, paneFilterIds, serverDashboard, t]);
+
+  // Display is layout: local edit → draft → publish, undoable like a drag.
+  const handleSlicerTreatmentChange = useCallback((tileId: number, treatment: SlicerTreatment) => {
+    const prevOverrides = localLayoutOverridesRef.current;
+    const next = {
+      ...prevOverrides,
+      [tileId]: { ...resolveDashboardChartLayout(tileId, prevOverrides), slicerTreatment: treatment },
+    };
+    pushUndo({ kind: 'layout', prev: prevOverrides, next });
+    setLocalLayoutOverrides(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolveDashboardChartLayout]);
+
+  const renderBuilderSlicerControl = useCallback((dc: any) => <GridSlicerTile tile={dc} />, []);
+
+  // ── Arrange tools + keyboard (manual builder) ──────────────────────────
+  // Grid operations on the selection (lib/grid-arrange), committed through the
+  // same path as a drag. The keyboard handler reads the latest state through a
+  // ref: it is bound once, and a stale closure would nudge an old layout.
+  // The page as the grid draws it (a stored overlap settled, as for viewers):
+  // arrange and drop rules work on what the author sees.
+  const pageBoxes = (): GridBox[] => settleStoredLayout(visibleDashboardCharts.map((dc) => ({
+    i: String(dc.id),
+    id: dc.id,
+    x: Number(dc.layout?.x) || 0,
+    y: Number(dc.layout?.y) || 0,
+    w: Number(dc.layout?.w) || 1,
+    h: Number(dc.layout?.h) || 1,
+    static: Boolean((dc.layout as any)?.locked),
+    locked: Boolean((dc.layout as any)?.locked),
+  })), DASHBOARD_GRID_COLS).map(({ i: _i, static: _s, ...box }) => box);
+  const tileTitle = (id: number) => {
+    const dc = visibleDashboardCharts.find((d) => d.id === id);
+    // A filter control is named by its filter, never by its widget type.
+    const control = isSlicerControl(dc) ? controlFilters.find((s) => String(s.id) === slicerIdOfControl(dc)) : undefined;
+    const controlName = control ? (control.label || control.field) : undefined;
+    // A widget by what it says (its title; the report header states the
+    // report's name), else by what it is — never by its internal type name.
+    const cfg = (dc?.widget_config ?? {}) as Record<string, any>;
+    const widgetName = [cfg.title, cfg.headline, cfg.label, dc?.widget_type === 'hero_strip' ? dashboard?.name : undefined]
+      .map((v) => (typeof v === 'string' ? v.trim() : ''))
+      .find(Boolean);
+    const typeName = dc?.widget_type && dc.widget_type !== 'chart' ? WIDGET_TYPE_LABEL(t, dc.widget_type) : undefined;
+    return String((dc?.layout as any)?.custom_title || dc?.chart?.name || controlName || widgetName || typeName || id);
+  };
+  const commitArrange = (result: ArrangeResult) => {
+    if (result.status === 'blocked') {
+      toast.info(t('dashboards.arrange.blocked', { title: tileTitle(result.blockedBy) }));
+      return;
+    }
+    if (result.status === 'noop') {
+      if (result.skippedLocked > 0) toast.info(t('dashboards.arrange.lockedSkipped'));
+      return;
+    }
+    handleLayoutChange(result.moved.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })) as Layout[]);
+    if (result.skippedLocked > 0) toast.info(t('dashboards.arrange.lockedSkipped'));
+  };
+  const handleArrange = (op: ArrangeOp) => commitArrange(arrangeTiles(op, pageBoxes(), selectedTileIds));
+  // Frame of the selected CHARTS (a widget frames itself). One undo step; it is
+  // layout state, so it is a draft edit published with the rest.
+  const selectedChartIds = selectedTileIds.filter((id) => {
+    const dc = visibleDashboardCharts.find((d) => d.id === id);
+    return !!dc && (!dc.widget_type || dc.widget_type === 'chart');
+  });
+  const selectedFrame = (() => {
+    // The frame the tile actually renders with: the chart's own style (an
+    // older "transparent background" reads as flush) under this report's override.
+    const frames = new Set(selectedChartIds.map((id) => {
+      const dc = visibleDashboardCharts.find((d) => d.id === id);
+      return resolveTileFrame(getEffectiveDashboardChartStyleConfig(dc?.chart as any, resolveDashboardChartLayout(id) as any) as any);
+    }));
+    return frames.size === 1 ? [...frames][0] : null;
+  })();
+  const handleFrame = (frame: TileFrame) => {
+    if (selectedChartIds.length === 0) return;
+    const prevOverrides = localLayoutOverridesRef.current;
+    const next = { ...prevOverrides };
+    for (const id of selectedChartIds) {
+      const layout = resolveDashboardChartLayout(id, prevOverrides) as any;
+      next[id] = { ...layout, styleConfigOverride: { ...(layout?.styleConfigOverride ?? {}), tileFrame: frame } };
+    }
+    pushUndo({ kind: 'layout', prev: prevOverrides, next });
+    setLocalLayoutOverrides(next);
+  };
+  // A drag or resize on the grid: where the tile lands, what makes room for it,
+  // and — for a filter control — whether the band it left closes
+  // (lib/grid-arrange resolveDrop). One undo step, whatever it moved.
+  const [gridRevision, setGridRevision] = useState(0);
+  const handleGridGesture = (items: Layout[]) => {
+    const item = items[0];
+    if (!item) return;
+    const id = Number(item.i);
+    const boxes = pageBoxes();
+    const was = boxes.find((b) => b.id === id);
+    if (!was) { handleLayoutChange(items); return; }
+    const dc = visibleDashboardCharts.find((d) => d.id === id);
+    // The page's structure as the author sees it (report-structure): geometry
+    // from the settled grid, membership from each tile's layout.
+    const geometry = new Map(boxes.map((b) => [b.id, b]));
+    const structTiles = toStructTiles(visibleDashboardCharts, (tid) => ({
+      ...(resolveDashboardChartLayout(tid, localLayoutOverridesRef.current) as any), ...geometry.get(tid),
+    }));
+    const structure = resolveStructure(structTiles);
+    const moved = item.x !== was.x || item.y !== was.y;
+    const resized = item.w !== was.w || item.h !== was.h;
+    // Membership stated before anything moves, so a structural gesture never
+    // re-reads another section from the new geometry (a legacy report's
+    // inferred sections are written down the first time).
+    const materialize = (): Record<number, Record<string, any>> => {
+      const out: Record<number, Record<string, any>> = {};
+      for (const t of structTiles) {
+        if (t.kind === 'section' || t.kind === 'header' || t.sectionId !== undefined) continue;
+        out[t.id] = { sectionId: structure.sectionOf.get(t.id) ?? null };
+      }
+      return out;
+    };
+    if (dc?.widget_type === 'section_header' && moved && !resized) {
+      // A section moves as a whole: its members keep their place under it.
+      const group = moveSection(structTiles, id, { x: item.x, y: item.y }, structure);
+      if (!group) {
+        toast.info(t('dashboards.arrange.lockedInWay', { title: tileTitle(id) }));
+        setGridRevision((n) => n + 1);
+        return;
+      }
+      handleLayoutChange(group.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })) as Layout[], materialize());
+      return;
+    }
+    const result = resolveDrop(boxes, id, { x: item.x, y: item.y, w: item.w, h: item.h }, {
+      from: { y: was.y, h: was.h },
+      closeVacatedBand: isSlicerControl(dc),
+    });
+    if (result.status === 'refused') {
+      toast.info(t(result.reason === 'locked' ? 'dashboards.arrange.lockedInWay' : 'dashboards.arrange.blocked',
+        { title: tileTitle(result.blockedBy ?? id) }));
+      setGridRevision((n) => n + 1);
+      return;
+    }
+    // A moved element belongs to the section it now sits in (a resize never
+    // changes membership). Headers and the report header belong to none.
+    const extra: Record<number, Record<string, any>> = {};
+    const self = structTiles.find((st) => st.id === id);
+    if (moved && self && (self.kind === 'content' || self.kind === 'narrative')) {
+      const landed = result.changed.find((b) => b.id === id) ?? { ...was, ...item };
+      const after = structTiles.map((st) => {
+        const c = result.changed.find((b) => b.id === st.id);
+        return c ? { ...st, x: c.x, y: c.y } : st;
+      });
+      const target = sectionForPosition(after, landed.y, id);
+      if (target !== (structure.sectionOf.get(id) ?? null) || self.sectionId === undefined) {
+        Object.assign(extra, materialize(), { [id]: { sectionId: target } });
+      }
+    }
+    handleLayoutChange(result.changed.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })) as Layout[], extra);
+  };
+  const openAddChartUnderSelection = () => {
+    insertBatchRef.current = selectedTileIds.length === 1 ? { anchorId: selectedTileIds[0], ids: [], closed: false } : null;
+    setIsAddChartModalOpen(true);
+  };
+  // Once the picker is closed and the report holds every chart it added: move
+  // the batch, as one block, directly under the anchor and into its section
+  // (the rows below make room — the grid's single placement rule). One undo step.
+  React.useEffect(() => {
+    const batch = insertBatchRef.current;
+    if (!batch || !batch.closed) return;
+    if (batch.ids.length === 0) { insertBatchRef.current = null; return; }
+    const present = new Set(visibleDashboardCharts.map((dc) => dc.id));
+    if (!batch.ids.every((id) => present.has(id)) || !present.has(batch.anchorId)) return;
+    insertBatchRef.current = null;
+    const boxes = pageBoxes();
+    const geometry = new Map(boxes.map((b) => [b.id, b]));
+    const all = toStructTiles(visibleDashboardCharts, (tid) => ({
+      ...(resolveDashboardChartLayout(tid, localLayoutOverridesRef.current) as any), ...geometry.get(tid),
+    }));
+    const group = all.filter((s) => batch.ids.includes(s.id));
+    const rest = all.filter((s) => !batch.ids.includes(s.id));
+    const top = Math.min(...group.map((g) => g.y));
+    const left = Math.min(...group.map((g) => g.x));
+    const right = Math.max(...group.map((g) => g.x + g.w));
+    const height = Math.max(...group.map((g) => g.y + g.h)) - top;
+    const spot = insertionFor(rest, batch.anchorId, { w: right - left, h: height });
+    if (!spot) return; // a locked tile in the way: the charts stay where the picker put them
+    const dx = spot.rect.x - left;
+    const dy = spot.rect.y - top;
+    const structure = resolveStructure(all);
+    const extra: Record<number, Record<string, any>> = {};
+    for (const s of all) {
+      if (s.kind === 'section' || s.kind === 'header' || s.sectionId !== undefined || batch.ids.includes(s.id)) continue;
+      extra[s.id] = { sectionId: structure.sectionOf.get(s.id) ?? null };
+    }
+    for (const id of batch.ids) extra[id] = { sectionId: spot.sectionId };
+    handleLayoutChange([
+      ...spot.changed.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })),
+      ...group.map((g) => ({ i: String(g.id), x: g.x + dx, y: g.y + dy, w: g.w, h: g.h })),
+    ] as Layout[], extra);
+    setSelectedTileIds(batch.ids);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insertBatchTick, visibleDashboardCharts]);
+  // ── Inspector ───────────────────────────────────────────────────────────
+  // The Inspector docks beside the grid in the manual builder only (AI Design
+  // has its own drawer; a preview or an export shows the report alone).
+  const inspectorShown = inspectorOpen && canEditThisPage && designMode === 'manual' && !studioPreview && !isExportingPdf;
+  // Anything docked to the right makes the content row side by side (lg+).
+  const rightDocked = isFilterPaneOpen || inspectorShown;
+  // The page's structure as the author sees it, for the Inspector's outline and
+  // section picker: geometry from the settled grid, membership from layouts.
+  const inspectorStructure = (() => {
+    if (!inspectorShown) return null;
+    const geometry = new Map(pageBoxes().map((b) => [b.id, b]));
+    const tiles = toStructTiles(visibleDashboardCharts, (tid) => ({
+      ...(resolveDashboardChartLayout(tid, localLayoutOverridesRef.current) as any), ...geometry.get(tid),
+    }));
+    const resolved = resolveStructure(tiles);
+    return { tiles, resolved, issues: structureIssues(tiles, resolved) };
+  })();
+  // Typed geometry is a gesture like a drag: the same placement rule, one undo step.
+  const handleInspectorGeometry = (id: number, rect: { x: number; y: number; w: number; h: number }) => {
+    handleGridGesture([{ i: String(id), ...rect } as Layout]);
+  };
+  // Into a section: the element goes to the end of that section (the rows
+  // below make room) and is stated a member; "no section" = the end of the page.
+  const handleMoveToSection = (id: number, sectionId: number | null) => {
+    const geometry = new Map(pageBoxes().map((b) => [b.id, b]));
+    const all = toStructTiles(visibleDashboardCharts, (tid) => ({
+      ...(resolveDashboardChartLayout(tid, localLayoutOverridesRef.current) as any), ...geometry.get(tid),
+    }));
+    const self = all.find((s) => s.id === id);
+    if (!self) return;
+    if (self.locked) { toast.info(t('dashboards.arrange.lockedInWay', { title: tileTitle(id) })); return; }
+    const structure = resolveStructure(all);
+    const rest = all.filter((s) => s.id !== id);
+    const section = sectionId != null ? structure.sections.find((s) => s.headerId === sectionId) : undefined;
+    const members = (section?.members ?? []).filter((m) => m !== id).map((m) => rest.find((s) => s.id === m)!).filter(Boolean);
+    const anchor = sectionId == null ? null
+      : members.length ? members.reduce((a, b) => (b.y + b.h > a.y + a.h || (b.y + b.h === a.y + a.h && b.x > a.x) ? b : a)).id
+        : sectionId;
+    const spot = insertionFor(rest, anchor, { w: self.w, h: self.h });
+    if (!spot) { toast.info(t('dashboards.arrange.blocked', { title: tileTitle(id) })); return; }
+    const extra: Record<number, Record<string, any>> = {};
+    for (const s of all) {
+      if (s.kind === 'section' || s.kind === 'header' || s.sectionId !== undefined) continue;
+      extra[s.id] = { sectionId: structure.sectionOf.get(s.id) ?? null };
+    }
+    extra[id] = { sectionId };
+    handleLayoutChange([
+      ...spot.changed.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })),
+      { i: String(id), ...spot.rect },
+    ] as Layout[], extra);
+  };
+  // Height to content: measured on the tile as rendered, in whole rows.
+  const handleFitToContent = (id: number) => {
+    const el = canvasRootRef.current?.querySelector<HTMLElement>(`[data-grid-item-id="${id}"] [data-tile-id="${id}"]`);
+    const box = pageBoxes().find((b) => b.id === id);
+    if (!el || !box) return;
+    const gapY = getDashboardGridMargin(dashboard?.theme_config)[1];
+    const h = rowsForHeight(measureNaturalHeight(el), dashboardRowHeight(gapY), gapY);
+    if (h !== box.h) handleInspectorGeometry(id, { x: box.x, y: box.y, w: box.w, h });
+  };
+  const handleInspectorPattern = (pattern: LayoutPattern) => {
+    const leadId = selectedTileIds.find((id) => (resolveDashboardChartLayout(id, localLayoutOverridesRef.current) as any)?.emphasis === 'lead') ?? null;
+    commitArrange(applyLayoutPattern(pattern, pageBoxes(), selectedTileIds, { leadId }));
+  };
+  const handleSaveWidgetConfig = async (id: number, config: Record<string, any>) => {
+    await dashboardApi.updateWidget(dashboardId, id, config);
+    await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+  };
+  const handleSaveReportDetails = async (patch: { name: string; description: string | null }) => {
+    try {
+      await updateDashboardMutation.mutateAsync({ id: dashboardId, data: { name: patch.name, description: patch.description ?? '' } });
+      toast.success(t('dashboards.inspector.reportSaved'));
+    } catch (error) {
+      console.error('Failed to update report details:', error);
+      toast.error(t('dashboards.detail.nameUpdateFailed'));
+    }
+  };
+  const openInspectorFor = useCallback((id: number) => {
+    setSelectedTileIds([id]);
+    setFocusedTileId(id);
+    setInspectorOpen(true);
+  }, []);
+  const nudgeRef = React.useRef<(d: { dx: number; dy: number }) => void>(() => {});
+  nudgeRef.current = (d) => commitArrange(nudgeTiles(pageBoxes(), selectedTileIds, d));
+  const keyboardArrangeOn = designMode === 'manual' && canEditThisPage && selectedTileIds.length > 0;
+  React.useEffect(() => {
+    if (!keyboardArrangeOn) return;
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"]')) return;
+      const step = e.shiftKey ? 4 : 1;
+      const delta = e.key === 'ArrowLeft' ? { dx: -step, dy: 0 }
+        : e.key === 'ArrowRight' ? { dx: step, dy: 0 }
+          : e.key === 'ArrowUp' ? { dx: 0, dy: -step }
+            : e.key === 'ArrowDown' ? { dx: 0, dy: step }
+              : null;
+      if (delta) { e.preventDefault(); nudgeRef.current(delta); return; }
+      if (e.key === 'Escape') clearTileSelection();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [keyboardArrangeOn, clearTileSelection]);
+
+  const hasPendingSlicerChanges = JSON.stringify(draftGlobalSlicers) !== JSON.stringify(appliedGlobalSlicers)
+    || JSON.stringify(draftPageSlicers) !== JSON.stringify(activePageSlicers)
+    || JSON.stringify(draftSlicerClusterLayout) !== JSON.stringify(appliedSlicerClusterLayout);
+
   // Phase-B22 — hybrid export: tables as real text+links (all rows), other
   // charts as images, paginated legibly, with an applied-filters header.
   // NOTE: must stay ABOVE the early returns below — hooks can't run
   // conditionally (React #310 if placed after `if (isLoadingDashboard) return`).
-  const summarizeAppliedFilters = useCallback((): string => {
-    const active = (appliedGlobalFiltersLegacy || []).filter((f: any) => {
-      const v = f?.value;
-      return Array.isArray(v) ? v.length > 0 : (v != null && v !== '');
-    });
-    return active.map((f: any) => {
-      const v = f.value;
-      const val = Array.isArray(v) ? v.slice(0, 5).join(', ') + (v.length > 5 ? ` +${v.length - 5}` : '') : String(v);
-      const label = f.label || f.semanticField || f.field || 'Filter';
-      return `${label}: ${val}`;
-    }).join('  ·  ');
-  }, [appliedGlobalFiltersLegacy]);
+  // One page's header: the all-pages filters plus THAT page's own filters,
+  // stated by the rule the public banner uses (an exclusion reads "not RJ", a
+  // range "a – b", a preset by its name).
+  const summarizeAppliedFilters = useCallback((page?: { filters?: unknown }): string => pageFilterFacts({
+    applied: [
+      ...(appliedGlobalFiltersLegacy || []),
+      ...(Array.isArray(page?.filters) ? page!.filters as BaseFilter[] : []),
+    ],
+    pageHidden: [],
+    locked: [],
+  }).map((f) => `${f.label}: ${statePageFilterFact(f, t)}`).join('  ·  '), [appliedGlobalFiltersLegacy, t]);
 
   const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
     if (!dashboard) return;
@@ -2696,9 +3766,16 @@ export default function DashboardDetailPage() {
     try {
       const { exportDashboardPdf } = await import('@/lib/export-pdf');
       const safeName = safePdfFilename(dashboard.name, 'dashboard');
-      const filtersSummary = summarizeAppliedFilters();
       const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
       const result = await exportDashboardPdf({
+        description: dashboard.description ?? null,
+        locale,
+        labels: {
+          filters: t('dashboards.pdf.filters'),
+          exportedAt: t('dashboards.pdf.exportedAt'),
+          dataAsOf: t('dashboards.pdf.dataAsOf'),
+          snapshotNote: t('dashboards.pdf.snapshotNote'),
+        },
         previewWindow,
         filename: `${safeName}.pdf`,
         title: dashboard.name || 'Dashboard',
@@ -2708,7 +3785,7 @@ export default function DashboardDetailPage() {
         onProgress: setExportProgress,
         pages: chosen.map((p) => ({
           name: p.name,
-          filtersSummary,
+          filtersSummary: summarizeAppliedFilters(p),
           getRoot: async () => {
             setCurrentPageId(p.id);
             // Let the switched-to page's tiles mount + fire their own fetches
@@ -2743,7 +3820,7 @@ export default function DashboardDetailPage() {
       setExportRenderMode(false);
       setExportProgress(null);
     }
-  }, [dashboard, dashboardPages, activePageId, summarizeAppliedFilters]);
+  }, [dashboard, dashboardPages, activePageId, summarizeAppliedFilters, t]);
 
   if (isLoadingDashboard) {
     return (
@@ -2797,24 +3874,26 @@ export default function DashboardDetailPage() {
       ?? t('dashboards.detail.chartFallbackName', { id: crossFilterState.sourceChartId }))
     : null;
 
-  // The name of the tile the user clicked to restyle in AI mode — shown as the
-  // "Editing: X" chip. Only meaningful while the AI panel is open.
-  const focusedChartName = (designMode === 'ai' && focusedTileId != null)
-    ? (() => {
-        const dc = visibleDashboardCharts.find((c) => c.id === focusedTileId);
-        return dc?.layout?.custom_title
-          ?? dc?.chart?.name
-          ?? t('dashboards.detail.chartFallbackName', { id: focusedTileId });
-      })()
-    : null;
+  // Titles of the visuals selected for AI Design — the panel's scope strip.
+  const selectionNames = designMode === 'ai'
+    ? selectedTileIds
+        .map((id) => visibleDashboardCharts.find((c) => c.id === id))
+        .filter(Boolean)
+        .map((dc) => String(dc!.layout?.custom_title || dc!.chart?.name || t('dashboards.detail.chartFallbackName', { id: dc!.id })))
+    : [];
+  const lockedTileCount = visibleDashboardCharts.filter((dc) => (dc.layout as any)?.locked === true).length;
 
   return (
     <DashboardThemeProvider theme={previewTheme} className="min-h-full bg-surface-2">
       {/* ── Sticky compact header (single row) ── */}
-      <div className="sticky top-0 z-20 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8">
+      {!studioPreview && (
+      <div ref={builderHeaderRef} className="sticky top-0 z-20 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8">
         <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-surface-1 shadow-linear-sm overflow-visible">
 
-          <div className="flex h-11 items-center gap-2 px-3">
+          {/* One row when it fits; when the draft actions and the tools do not
+              fit beside the name, the tools wrap to a second row instead of
+              drawing over each other. */}
+          <div className="flex min-h-11 flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-1.5">
             {/* Back */}
             <Link
               href="/dashboards"
@@ -2827,7 +3906,7 @@ export default function DashboardDetailPage() {
             <div className="h-4 w-px bg-[rgba(255,255,255,0.08)]" />
 
             {/* Title (inline edit) */}
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div className="flex min-w-fit flex-1 items-center gap-2">
               {isEditingName ? (
                 <div className="flex min-w-0 flex-1 items-center gap-1">
                   <input
@@ -2859,7 +3938,9 @@ export default function DashboardDetailPage() {
                 </div>
               ) : (
                 <>
-                  <h1 className="truncate text-[14px] font-[590] tracking-[-0.182px] text-text-primary">
+                  {/* The report's name keeps its room: the toolbar's status and
+                      actions used to squeeze it to "I…" while a draft was open. */}
+                  <h1 className="min-w-[5rem] max-w-[18rem] shrink-0 truncate text-[14px] font-[590] tracking-[-0.182px] text-text-primary" title={dashboard.name}>
                     {dashboard.name}
                   </h1>
                   {canEditResource && (
@@ -2907,7 +3988,7 @@ export default function DashboardDetailPage() {
 
                   {/* Pages dropdown — replaces the old pages row */}
                   {!isRenamingCurrentPage && dashboardPages.length > 0 && (
-                    <div className="relative">
+                    <div className="relative shrink-0">
                       <button
                         type="button"
                         onClick={() => { setIsPagesMenuOpen((v) => !v); setIsMoreMenuOpen(false); }}
@@ -3011,8 +4092,10 @@ export default function DashboardDetailPage() {
                   )}
                   {dashboard.description && (
                     <>
-                      <span className="text-text-quaternary">·</span>
-                      <span className="hidden truncate text-[13px] font-[400] text-text-tertiary md:inline" title={dashboard.description}>
+                      <span className="hidden text-text-quaternary 2xl:inline">·</span>
+                      {/* Wide screens only: the description is edited in the Inspector
+                          and stated by the report header, not squeezed in here. */}
+                      <span className="hidden min-w-0 max-w-[22rem] truncate text-[13px] font-[400] text-text-tertiary 2xl:inline" title={dashboard.description}>
                         {dashboard.description}
                       </span>
                     </>
@@ -3052,7 +4135,7 @@ export default function DashboardDetailPage() {
                       <button
                         type="button"
                         onClick={doUndo}
-                        disabled={!canUndo}
+                        disabled={!canUndo || isCommittingPresentation}
                         className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
                         title={t('dashboards.detail.undo')}
                       >
@@ -3061,7 +4144,7 @@ export default function DashboardDetailPage() {
                       <button
                         type="button"
                         onClick={doRedo}
-                        disabled={!canRedo}
+                        disabled={!canRedo || isCommittingPresentation}
                         className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
                         title={t('dashboards.detail.redo')}
                       >
@@ -3073,37 +4156,44 @@ export default function DashboardDetailPage() {
                     <div className="ml-2 flex shrink-0 items-center gap-1.5">
                       <span
                         className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-[600] uppercase tracking-wide ${
-                          hasLocalLayoutChanges
+                          hasUnsavedPresentation
                             ? 'bg-warning/20 text-warning'
                             : 'bg-warning/10 text-warning'
                         }`}
                         title={
-                          hasLocalLayoutChanges
+                          hasUnsavedPresentation
                             ? t('dashboards.detail.unsavedTooltip')
                             : t('dashboards.detail.draftTooltip')
                         }
                       >
-                        {hasLocalLayoutChanges ? t('dashboards.detail.badgeUnsaved') : t('dashboards.detail.badgeDraft')}
+                        {hasUnsavedPresentation ? t('dashboards.detail.badgeUnsaved') : t('dashboards.detail.badgeDraft')}
                       </span>
                       <button
                         type="button"
                         onClick={handleSaveDraft}
+                        data-testid="dashboard-save-draft"
+                        data-state={isStagingDraft ? 'saving' : hasUnsavedPresentation ? 'unsaved' : 'saved'}
                         disabled={
-                          !hasLocalLayoutChanges
+                          !hasUnsavedPresentation
+                          || isStagingDraft
+                          || isCommittingPresentation
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
                         title={t('dashboards.detail.saveDraftTooltip')}
                       >
-                        {updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                        {isStagingDraft || updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
                         {t('dashboards.detail.saveDraft')}
                         <kbd className="ml-1 hidden rounded bg-[rgba(255,255,255,0.08)] px-1 text-[9px] text-text-tertiary sm:inline">⌘S</kbd>
                       </button>
                       <button
                         type="button"
                         onClick={handlePublish}
+                        data-testid="dashboard-publish"
                         disabled={
                           publishDashboardMutation.isPending
+                          || isStagingDraft
+                          || isCommittingPresentation
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white transition-colors hover:bg-brand-hover disabled:opacity-50"
@@ -3115,6 +4205,7 @@ export default function DashboardDetailPage() {
                       <button
                         type="button"
                         onClick={() => setIsDiscardConfirmOpen(true)}
+                        data-testid="dashboard-discard"
                         disabled={discardDraftMutation.isPending}
                         className="inline-flex h-7 items-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
                         title={t('dashboards.detail.discardTooltip')}
@@ -3128,7 +4219,7 @@ export default function DashboardDetailPage() {
             </div>
 
             {/* Primary actions — collapsed to [Filter] [⋯] [+ Add] */}
-            <div className="flex shrink-0 items-center gap-1">
+            <div className="ml-auto flex shrink-0 items-center gap-1">
               {/* Data freshness — READ-ONLY. The dashboard reads the dataset's
                   refreshed data; refresh itself now happens IN THE DATASET
                   (scheduled or manual Sync & Publish, with history), so the old
@@ -3185,7 +4276,8 @@ export default function DashboardDetailPage() {
               {/* More menu — gathers Export, Share, Public links, Theme, Switch layout, Manage, Import, Widgets */}
               <div className="relative">
                 <button
-                  onClick={() => { setIsMoreMenuOpen((v) => !v); setIsFilterPopoverOpen(false); setIsPagesMenuOpen(false); setIsWidgetSubmenuOpen(false); }}
+                  data-testid="dashboard-more"
+                  onClick={() => { setIsMoreMenuOpen((v) => !v); setIsFilterPopoverOpen(false); setIsPagesMenuOpen(false); }}
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)]"
                   title={t('dashboards.detail.moreOptions')}
                 >
@@ -3194,7 +4286,7 @@ export default function DashboardDetailPage() {
 
                 {isMoreMenuOpen && (
                   <>
-                    <div className="fixed inset-0 z-40" onClick={() => { setIsMoreMenuOpen(false); setIsWidgetSubmenuOpen(false); }} />
+                    <div className="fixed inset-0 z-40" onClick={() => { setIsMoreMenuOpen(false); }} />
                     <div className="absolute right-0 z-50 mt-1.5 w-56 overflow-y-auto max-h-[80vh] rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-1 py-1 shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]">
                       {/* Export */}
                       <button
@@ -3247,36 +4339,7 @@ export default function DashboardDetailPage() {
 
                           <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
 
-                          {/* Canvas is LOCKED for now — Grid (tiled) is the standard editor.
-                              "Switch to Canvas" is disabled so nobody starts a canvas layout
-                              the public report can't yet render WYSIWYG. "Switch to Grid" stays
-                              enabled so any dashboard already in canvas can move back to Grid. */}
-                          <button
-                            onClick={() => { handleToggleLayoutMode(); setIsMoreMenuOpen(false); }}
-                            disabled={(dashboard?.layout_mode ?? 'grid') === 'grid'}
-                            className={`flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] transition-colors ${
-                              (dashboard?.layout_mode ?? 'grid') === 'grid'
-                                ? 'cursor-not-allowed text-text-quaternary opacity-60'
-                                : 'text-text-secondary hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary'
-                            }`}
-                            title={(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.canvasLocked') : t('dashboards.detail.switchToGridMode')}
-                          >
-                            {(dashboard?.layout_mode ?? 'grid') === 'grid' ? (
-                              <Move className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                            ) : (
-                              <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                            )}
-                            <span className="flex-1 text-left">
-                              {(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.switchToCanvas') : t('dashboards.detail.switchToGrid')}
-                            </span>
-                            {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
-                              <span className="rounded bg-[rgba(255,255,255,0.06)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-quaternary">
-                                {t('dashboards.detail.canvasOffBadge')}
-                              </span>
-                            )}
-                          </button>
-
-                          {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
+                          {(
                             <button
                               onClick={() => { handleTidyLayout(); setIsMoreMenuOpen(false); }}
                               className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
@@ -3287,7 +4350,7 @@ export default function DashboardDetailPage() {
                             </button>
                           )}
 
-                          {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
+                          {(
                             <button
                               onClick={() => { handleCompactUp(); setIsMoreMenuOpen(false); }}
                               className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
@@ -3325,38 +4388,15 @@ export default function DashboardDetailPage() {
                             {t('dashboards.detail.importHtml')}
                           </button>
 
-                          {/* Widgets submenu */}
+                          {/* Adding content: the same palette as the toolbar's Add. */}
                           <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
                           <button
-                            onClick={() => setIsWidgetSubmenuOpen((v) => !v)}
+                            onClick={() => { setIsMoreMenuOpen(false); setIsAddElementOpen(true); }}
                             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                           >
                             <Plus className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             <span className="flex-1 text-left">{t('dashboards.detail.addWidget')}</span>
-                            <ChevronDown className={`h-3 w-3 transition-transform ${isWidgetSubmenuOpen ? 'rotate-180' : ''}`} />
                           </button>
-                          {isWidgetSubmenuOpen && (
-                            <div className="bg-[rgba(255,255,255,0.02)]">
-                              {([
-                                ['section_header', t('dashboards.detail.widgetSectionHeader')],
-                                ['hero_strip', t('dashboards.detail.widgetHeroStrip')],
-                                ['callout', t('dashboards.detail.widgetCallout')],
-                                ['text', t('dashboards.detail.widgetText')],
-                                ['countdown', t('dashboards.detail.widgetCountdown')],
-                                ['image', t('dashboards.detail.widgetImage')],
-                                ['shape', t('dashboards.detail.widgetShape')],
-                                ['parameter_switcher', t('dashboards.detail.widgetParamSwitcher')],
-                              ] as const).map(([k, label]) => (
-                                <button
-                                  key={k}
-                                  onClick={() => { handleAddWidget(k); setIsMoreMenuOpen(false); setIsWidgetSubmenuOpen(false); }}
-                                  className="flex w-full items-center gap-2.5 px-6 py-1.5 text-[12px] font-[510] text-text-tertiary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
-                                >
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
-                          )}
                         </>
                       )}
                     </div>
@@ -3369,7 +4409,19 @@ export default function DashboardDetailPage() {
                   and a person needs to see which mode they are in without
                   opening anything. Grid only — a canvas dashboard has no grid
                   for a composition to compile onto. */}
-              {canEditThisPage && (dashboard?.layout_mode ?? 'grid') === 'grid' && (
+              {(
+                <button
+                  type="button"
+                  data-testid="studio-preview-open"
+                  onClick={() => setStudioOpen(true)}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary"
+                  title={t('dashboards.studio.openFull')}
+                >
+                  <Eye className="h-3 w-3" />
+                  {t('dashboards.studio.open')}
+                </button>
+              )}
+              {canEditThisPage && (
                 <div
                   className="inline-flex h-7 items-center rounded-md border border-[rgb(var(--border-line))] p-0.5"
                   role="radiogroup"
@@ -3383,6 +4435,7 @@ export default function DashboardDetailPage() {
                         type="button"
                         role="radio"
                         aria-checked={active}
+                        data-testid={`design-mode-${mode}`}
                         onClick={() => {
                           // Leaving AI mode drops a preview rather than keeping
                           // it invisibly pending — an unapplied design that
@@ -3406,11 +4459,63 @@ export default function DashboardDetailPage() {
 
               {canEditThisPage && (
                 <button
-                  onClick={() => setIsAddChartModalOpen(true)}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white shadow-sm transition-colors hover:bg-brand-hover"
+                  type="button"
+                  data-testid="add-slicer-open"
+                  onClick={() => setIsAddSlicerOpen(true)}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary"
+                  title={t('dashboards.addSlicer.title')}
                 >
-                  <Plus className="h-3 w-3" />
-                  <span>{t('dashboards.detail.addChart')}</span>
+                  <Filter className="h-3 w-3" />
+                  <span>{t('dashboards.addSlicer.menu')}</span>
+                  {unplacedControlFilters.length > 0 && (
+                    <span
+                      data-testid="add-slicer-unplaced-count"
+                      className="rounded-full bg-brand/15 px-1.5 text-[10px] font-semibold text-brand"
+                      title={t('dashboards.addSlicer.unplacedBadge', { count: unplacedControlFilters.length })}
+                    >
+                      {unplacedControlFilters.length}
+                    </span>
+                  )}
+                </button>
+              )}
+              {canEditThisPage && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    data-testid="add-element-open"
+                    aria-haspopup="dialog"
+                    aria-expanded={isAddElementOpen}
+                    onClick={() => setIsAddElementOpen((v) => !v)}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white shadow-sm transition-colors hover:bg-brand-hover"
+                  >
+                    <Plus className="h-3 w-3" />
+                    <span>{t('dashboards.addElement.open')}</span>
+                  </button>
+                  <AddElementMenu
+                    open={isAddElementOpen}
+                    onClose={() => setIsAddElementOpen(false)}
+                    insertionLabel={selectedTileIds.length === 1
+                      ? t('dashboards.addElement.insertAfter', { title: tileTitle(selectedTileIds[0]) })
+                      : t('dashboards.addElement.insertEnd')}
+                    onPick={(kind) => {
+                      if (kind === 'chart') openAddChartUnderSelection();
+                      else if (kind === 'slicer') setIsAddSlicerOpen(true);
+                      else void handleAddWidget(kind);
+                    }}
+                  />
+                </div>
+              )}
+              {canEditThisPage && designMode === 'manual' && (
+                <button
+                  type="button"
+                  data-testid="inspector-toggle"
+                  aria-pressed={inspectorOpen}
+                  onClick={() => setInspectorOpen((v) => !v)}
+                  title={t('dashboards.inspector.openHint')}
+                  className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[12px] font-[510] transition-colors ${inspectorOpen ? 'border-brand/50 bg-brand/10 text-brand' : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2 hover:text-text-primary'}`}
+                >
+                  <PanelRight className="h-3.5 w-3.5" />
+                  <span className="hidden xl:inline">{t('dashboards.inspector.title')}</span>
                 </button>
               )}
             </div>
@@ -3419,6 +4524,7 @@ export default function DashboardDetailPage() {
           {/* Row 2 (pages) merged into title dropdown; Row 3 (filter) merged into header Filter popover. */}
         </div>
       </div>
+      )}
 
       {/* ── Content area ──
           Phase-15.81 — when the FilterPane is open we render a 2-column
@@ -3429,9 +4535,9 @@ export default function DashboardDetailPage() {
           right of the grid. Without this the dock renders as a full-width block
           BELOW the report — which is what the AI panel did on first wiring: it
           was in the DOM, 380px wide, and 2000px down the page. */}
-      <div className={`px-4 pb-8 sm:px-6 lg:px-8 ${isFilterPaneOpen ? 'flex gap-3 items-stretch min-h-[calc(100vh-12rem)]' : ''}`}>
+      <div className={`px-4 pb-8 sm:px-6 lg:px-8 ${rightDocked ? 'flex gap-3 items-stretch min-h-[calc(100vh-12rem)]' : ''}`}>
 
-        <div className={isFilterPaneOpen ? 'min-w-0 flex-1' : 'w-full'}>
+        <div className={rightDocked ? 'min-w-0 flex-1' : 'w-full'}>
         {activeCrossFilter && (
           <div className="mb-4 flex items-center gap-3 rounded-lg border border-warning/20 bg-[rgba(245,158,11,0.05)] px-4 py-2.5 text-[13px] font-[510] text-warning">
             <span>
@@ -3459,22 +4565,26 @@ export default function DashboardDetailPage() {
           </div>
         )}
 
-        {/* SlicerCluster and the dashboard grid share the selected dock layout. */}
-        <div
-          className={dockLayoutClasses(effectiveFilterDock).wrapper}
-          style={effectiveFilterDock === 'drawer' ? { position: 'relative' } : undefined}
-        >
-        {(draftGlobalSlicers.length > 0 || draftPageSlicers.length > 0 || canEditResource) && (
-          <SlicerCluster
-            // Editor shows ALL slicers (incl. ones a 'custom' scope hides on
-            // this page) so the author can always open ⚙ to reconfigure; the
+        {/* The report is ONE grid. Filter controls are elements of it; this
+            scope only hands each control its filter state — it draws nothing,
+            so there is no filter area outside the grid. */}
+        <div className="relative">
+          <SlicerControlScope
+            // Editor resolves ALL slicers (incl. ones a 'custom' scope hides on
+            // this page) so the author sees why a placed control is dimmed; the
             // per-page VISIBLE hiding is applied only on the public viewer.
             // The chart PREVIEW still respects scope via effectivePageScopeFilters
             // (only slicers that filter the active page are applied).
-            items={orderedSlicerChildren}
-            onChildrenChange={handleSlicerChildrenChange}
-            layout={draftSlicerClusterLayout}
-            onLayoutChange={setDraftSlicerClusterLayout}
+            slicers={controlFilters}
+            siblingFilters={controlFilters}
+            visibleHere={controlVisibleHere}
+            filtersHere={controlFiltersHere}
+            editing={canEditThisPage}
+            onChange={handleControlChange}
+            onTreatmentChange={canEditThisPage ? handleSlicerTreatmentChange : undefined}
+            onRemoveControl={canEditThisPage ? (id: number) => { void removeSlicerControlRef.current(id); } : undefined}
+            onDeleteFilter={canEditResource ? handleDeleteSlicerFilter : undefined}
+            onToggleLock={canEditThisPage ? handleToggleTileLock : undefined}
             columns={resolvedAvailableColumns}
             columnChartCount={resolvedColumnChartCount}
             distinctValues={resolvedDistinctValues}
@@ -3513,26 +4623,11 @@ export default function DashboardDetailPage() {
             dashboardPages={dashboardPages.map((p) => ({ id: p.id, name: (p as any).name || p.id }))}
             activePageId={activePageId}
             onUpdateSlicerScope={handleUpdateSlicerScope}
-            onOpenFilterMap={canEditResource ? () => setIsFilterMapOpen(true) : undefined}
-            hasPendingChanges={JSON.stringify(draftGlobalSlicers) !== JSON.stringify(appliedGlobalSlicers)
-              || JSON.stringify(draftPageSlicers) !== JSON.stringify(activePageSlicers)
-              || JSON.stringify(draftSlicerClusterLayout) !== JSON.stringify(appliedSlicerClusterLayout)}
-            onApply={canEditResource ? () => handleApplyFilters('all') : undefined}
-            onReset={canEditResource ? () => {
-              setDraftGlobalSlicers(appliedGlobalSlicers);
-              setDraftPageSlicers(activePageSlicers);
-              setDraftSlicerClusterLayout(appliedSlicerClusterLayout);
-            } : undefined}
-            isApplying={isApplyingFilters}
-            lockSlots={!canEditResource}
-          />
-        )}
+          >
 
-        {/* Dashboard Grid or Canvas. When the slicer cluster is on the
-            left, this area flexes to fill the remaining width. */}
         <div
           ref={dashboardContentRef}
-          className={dockLayoutClasses(effectiveFilterDock).content}
+          className="min-w-0"
         >
         {/* Phase-B19 — per-page co-edit banners (owner-priority + request→approve).
             Never shown during PDF export. */}
@@ -3586,45 +4681,37 @@ export default function DashboardDetailPage() {
           </div>
         )}
         <ExportModeContext.Provider value={exportRenderMode}>
-        {(dashboard?.layout_mode ?? 'grid') === 'canvas' ? (
-          <DashboardCanvas
-            dashboardId={dashboardId}
-            dashboardCharts={visibleDashboardCharts}
-            canvasConfig={dashboard?.canvas_config}
-            canEdit={canEditThisPage}
-            allowAppearanceEdit={canEditThisPage}
-            onLayoutChange={canEditThisPage ? handleCanvasLayoutChange : undefined}
-            onRemoveChart={canEditThisPage ? handleRemoveChart : undefined}
-            onEditWidget={canEditThisPage ? setEditingWidgetId : undefined}
-            removingChartId={removingChartId}
-            filtersReady={filtersReady}
-            globalFilters={effectiveFiltersWithParams}
-            crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
-            crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
-            highlightFilter={activeHighlight}
-            highlightSourceChartId={highlightSourceChartId}
-            onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
-            onSelectCrossFilter={handleCrossFilterChange}
-            availablePages={dashboardPages}
-            onMoveChartToPage={canEditThisPage ? handleMoveChartToPage : undefined}
-            emptyMessage={emptyPageMessage}
-            focusedDashboardChartId={focusedTileId}
-            onFocusChart={setFocusedTileId}
-            params={paramValues}
-            onParamChange={handleParamChange}
-            onBindParameter={canEditThisPage ? setBindingChartId : undefined}
+        {designMode === 'manual' && canEditThisPage && !isExportingPdf && (
+          <ArrangeBar
+            count={selectedTileIds.length}
+            onArrange={handleArrange}
+            onClear={clearTileSelection}
+            onFrame={selectedChartIds.length > 0 ? handleFrame : undefined}
+            frame={selectedFrame}
           />
-        ) : (
+        )}
+        <div ref={canvasRootRef} data-dashboard-canvas-root="builder">
+        {(
+          <ReportMetaProvider value={reportMeta}>
           <DashboardGrid
             dashboardId={dashboardId}
             dashboardCharts={visibleDashboardCharts}
+            // In the Studio preview iframe, an IntersectionObserver measures
+            // against the TOP-level viewport, so tiles in the part of the frame
+            // scrolled out of the overlay would never mount. The preview is a
+            // whole-report view: every tile renders.
+            disableLazy={studioPreview}
+            publicProjection={studioPreview}
             canEdit={canEditThisPage}
             allowAppearanceEdit={canEditThisPage}
             themeConfig={dashboard?.theme_config}
-            onLayoutChange={canEditThisPage ? handleLayoutChange : undefined}
+            onLayoutChange={canEditThisPage ? handleGridGesture : undefined}
+            layoutRevision={gridRevision}
             presenceByChart={presenceByChart}
             onRemoveChart={canEditThisPage ? handleRemoveChart : undefined}
-            onEditWidget={canEditThisPage ? setEditingWidgetId : undefined}
+            // Manual builder: the Inspector. In AI Design (no Inspector) the editor dialog.
+            onEditWidget={canEditThisPage ? (designMode === 'manual' ? openInspectorFor : setEditingWidgetId) : undefined}
+            onOpenInspector={canEditThisPage && designMode === 'manual' ? openInspectorFor : undefined}
             removingChartId={removingChartId}
             filtersReady={filtersReady}
             globalFilters={effectiveFiltersWithParams}
@@ -3636,18 +4723,75 @@ export default function DashboardDetailPage() {
             onSelectCrossFilter={handleCrossFilterChange}
             availablePages={dashboardPages}
             onMoveChartToPage={canEditThisPage ? handleMoveChartToPage : undefined}
-            emptyMessage={emptyPageMessage}
+            emptyMessage={canEditThisPage && designMode === 'manual' ? t('dashboards.start.message') : emptyPageMessage}
+            emptyActions={canEditThisPage && designMode === 'manual' ? (
+              // A blank report's guided start: the three moves a report is made of,
+              // each the same action as the Add palette.
+              <ol className="mt-2 grid w-full max-w-2xl gap-2 text-left sm:grid-cols-3" data-testid="report-start">
+                {([
+                  { n: 1, key: 'header', run: () => void handleAddWidget('hero_strip') },
+                  { n: 2, key: 'charts', run: () => openAddChartUnderSelection() },
+                  { n: 3, key: 'section', run: () => void handleAddWidget('section_header') },
+                ] as const).map((s) => (
+                  <li key={s.key}>
+                    <button
+                      type="button"
+                      data-testid={`report-start-${s.key}`}
+                      onClick={s.run}
+                      className="flex h-full w-full flex-col gap-1 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3.5 py-3 text-left shadow-linear-sm transition-colors hover:border-brand/40 hover:bg-brand/5"
+                    >
+                      <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-brand">{t('dashboards.start.step', { n: s.n })}</span>
+                      <span className="text-[13px] font-[590] text-text-primary">{t(`dashboards.start.${s.key}`)}</span>
+                      <span className="text-[11.5px] leading-snug text-text-tertiary">{t(`dashboards.start.${s.key}Desc`)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            ) : undefined}
             focusedDashboardChartId={focusedTileId}
-            onFocusChart={setFocusedTileId}
+            // One selection model for both modes: AI Design scopes to it, the
+            // manual Arrange tools and the keyboard act on it.
+            selectedDashboardChartIds={selectedTileIds}
+            onFocusChart={handleTileFocus}
+            renderSlicerControl={renderBuilderSlicerControl}
             aiDesignMode={designMode === 'ai'}
+            onToggleLock={canEditThisPage ? handleToggleTileLock : undefined}
+            onPatchLayout={canEditThisPage ? handlePatchTileLayout : undefined}
+            getPersistedLayout={getPersistedLayout}
             params={paramValues}
             onParamChange={handleParamChange}
             onBindParameter={canEditThisPage ? setBindingChartId : undefined}
           />
+          </ReportMetaProvider>
         )}
-        </ExportModeContext.Provider>
         </div>
-        </div>{/* /Phase-G3 slicer-cluster arrangement wrapper */}
+        </ExportModeContext.Provider>
+        {/* Controls placed on the grid stage their choice exactly like the bar;
+            this is the one Apply for all of them. */}
+        <FilterApplyBar
+          visible={placedSlicerIdsOnPage.size > 0 && hasPendingSlicerChanges && !isExportingPdf && !studioPreview}
+          isApplying={isApplyingFilters}
+          onApply={() => handleApplyFilters('all')}
+          onReset={() => {
+            setDraftGlobalSlicers(appliedGlobalSlicers);
+            setDraftPageSlicers(activePageSlicers);
+            setDraftSlicerClusterLayout(appliedSlicerClusterLayout);
+          }}
+        />
+        </div>
+          </SlicerControlScope>
+        </div>{/* /report grid + its filter controls */}
+        <AddSlicerModal
+          open={isAddSlicerOpen}
+          onClose={() => setIsAddSlicerOpen(false)}
+          existing={unplacedControlFilters}
+          columns={addSlicerColumns}
+          busy={isPlacingSlicer}
+          onPlaceExisting={(slicer, where) => { void handleAddSlicer({ existing: [slicer], where }); }}
+          onPlaceAll={(where) => { void handleAddSlicer({ existing: unplacedControlFilters, where }); }}
+          onCreate={(column, where) => { void handleAddSlicer({ column, where }); }}
+          besideName={selectedTileIds.length === 1 ? tileTitle(selectedTileIds[0]) : null}
+        />
 
         {/* Hidden off-screen ChartTiles for non-active pages — pre-warm React Query cache.
             Renders only ChartTile (no grid layout) to avoid WidthProvider / layout interference. */}
@@ -3683,6 +4827,17 @@ export default function DashboardDetailPage() {
             frame it will publish at (the page reserves `lg:pr` for the drawer so
             nothing hides behind it), and typing a long instruction grows the box
             inside the drawer instead of reflowing the whole page. */}
+        {studioOpen && !studioPreview && (
+          <StudioPreview
+            dashboardId={Number(dashboardId)}
+            before={studioBefore}
+            after={studioAfter}
+            hasPending={Boolean(aiDesign.pending)}
+            onApply={() => { aiDesign.apply(); setStudioOpen(false); }}
+            onDiscard={() => { aiDesign.discard(); setStudioOpen(false); }}
+            onClose={() => setStudioOpen(false)}
+          />
+        )}
         {designMode === 'ai' && (aiPanelCollapsed ? (
           <button
             type="button"
@@ -3698,29 +4853,59 @@ export default function DashboardDetailPage() {
             )}
           </button>
         ) : (
-          <div className="fixed right-3 top-[64px] bottom-3 z-30 w-[380px] max-w-[calc(100vw-1.5rem)] shadow-xl rounded-xl">
+          <div className="fixed right-3 bottom-3 z-30 w-[380px] max-w-[calc(100vw-1.5rem)] shadow-xl rounded-xl" style={{ top: builderHeaderH }}>
             <AiDesignPanel
               turns={aiDesign.turns}
               busy={aiDesign.busy}
-              scope={aiDesign.scope}
-              onScopeChange={aiDesign.setScope}
               onSubmit={aiDesign.submit}
+              onDirection={aiDesign.applyDirection}
+              proposals={contentProposals}
+              onDecideProposal={decideProposal}
               pendingDiff={aiDesign.pending?.diff ?? null}
               onApply={aiDesign.apply}
               onDiscard={aiDesign.discard}
+              onPreview={() => setStudioOpen(true)}
               onCollapse={() => setAiPanelCollapsed(true)}
               onClose={() => { aiDesign.discard(); setDesignMode('manual'); }}
               visualCount={aiDesign.visualCount}
               pageName={currentPage?.name ?? activePageId}
-              focusedChartName={focusedChartName}
-              onClearFocus={() => setFocusedTileId(null)}
-              onRetryEntireReport={aiDesign.retryEntireReport}
+              selectionNames={selectionNames}
+              onClearSelection={clearTileSelection}
+              lockedCount={lockedTileCount}
             />
           </div>
         ))}
 
         {/* Right dock: Filter Pane (Phase-15.81). Sticky alongside the
             canvas; sections own visual / page / all-pages scope. */}
+        {inspectorShown && inspectorStructure && dashboard && (
+          <aside
+            className="fixed bottom-0 right-0 z-40 w-[320px] max-w-[92vw] shadow-xl lg:sticky lg:z-auto lg:flex lg:flex-shrink-0 lg:self-start lg:overflow-hidden lg:rounded-lg lg:border lg:border-[rgb(var(--border-line))] lg:shadow-none"
+            style={{ top: builderHeaderH + 8, height: `calc(100vh - ${builderHeaderH + 16}px)` }}
+          >
+            <ReportInspector
+              onClose={() => setInspectorOpen(false)}
+              dashboardId={dashboardId}
+              report={{ name: dashboard.name, description: dashboard.description ?? null }}
+              selected={selectedTileIds
+                .map((id) => visibleDashboardCharts.find((d) => d.id === id))
+                .filter((d): d is NonNullable<typeof d> => Boolean(d))
+                .map((d) => ({ ...d, layout: resolveDashboardChartLayout(d.id, localLayoutOverridesRef.current) as Record<string, any> }))}
+              structure={inspectorStructure}
+              titleOf={tileTitle}
+              onSelect={(id) => { setSelectedTileIds([id]); setFocusedTileId(id); }}
+              onGeometry={handleInspectorGeometry}
+              onPatchLayout={handlePatchTileLayout}
+              onMoveToSection={handleMoveToSection}
+              onSaveWidgetConfig={handleSaveWidgetConfig}
+              onSaveReport={handleSaveReportDetails}
+              onPattern={handleInspectorPattern}
+              onFitToContent={handleFitToContent}
+              onFrame={handleFrame}
+              frame={selectedFrame}
+            />
+          </aside>
+        )}
         {isFilterPaneOpen && (
           <aside className="hidden lg:flex w-[300px] flex-shrink-0 flex-col overflow-hidden rounded-lg border border-[rgb(var(--border-line))] self-stretch">
             <FilterPane
@@ -3757,7 +4942,10 @@ export default function DashboardDetailPage() {
       {/* Modals */}
       <AddChartModal
           isOpen={isAddChartModalOpen}
-          onClose={() => setIsAddChartModalOpen(false)}
+          onClose={() => {
+            setIsAddChartModalOpen(false);
+            if (insertBatchRef.current) { insertBatchRef.current.closed = true; setInsertBatchTick((n) => n + 1); }
+          }}
           onAdd={handleAddChart}
           dashboardCharts={dashboard.dashboard_charts ?? []}
           dashboardDatasetIds={dashboardDatasetIds}
@@ -3765,6 +4953,9 @@ export default function DashboardDetailPage() {
           activePageId={activePageId}
           isAdding={addChartMutation.isPending}
           currentPageName={currentPage?.name}
+          placementNote={isAddChartModalOpen && insertBatchRef.current
+            ? t('dashboards.addElement.insertAfter', { title: tileTitle(insertBatchRef.current.anchorId) })
+            : undefined}
         />
 
         {isHtmlImportOpen && (
@@ -3797,9 +4988,65 @@ export default function DashboardDetailPage() {
           onRemoveChart={handleRemoveChartFromManager}
         />
 
+        {/* Co-authoring — the shared filters/pages/theme draft holds another
+            author's edits: the author decides, with names, what happens to them. */}
+        {sharedChoice && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" data-testid="shared-draft-choice">
+            <div className="w-full max-w-sm rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-lg">
+              <h2 className="text-sm font-semibold text-text-primary">{t('dashboards.detail.sharedChoice.title')}</h2>
+              <p className="mt-1.5 text-[13px] leading-5 text-text-secondary">
+                {t('dashboards.detail.sharedChoice.body', { authors: sharedChoice.authors.join(', ') })}
+              </p>
+              <div className="mt-3 flex flex-col gap-2">
+                <button
+                  type="button"
+                  data-testid="shared-draft-mine"
+                  onClick={() => { void resolveSharedChoice(false); }}
+                  className="rounded-md bg-brand px-3 py-1.5 text-left text-[13px] font-medium text-white hover:opacity-90"
+                >
+                  {t(sharedChoice.action === 'publish' ? 'dashboards.detail.sharedChoice.publishMine' : 'dashboards.detail.sharedChoice.discardMine')}
+                </button>
+                <button
+                  type="button"
+                  data-testid="shared-draft-all"
+                  onClick={() => { void resolveSharedChoice(true); }}
+                  className="rounded-md border border-[rgb(var(--border-strong))] px-3 py-1.5 text-left text-[13px] font-medium text-text-primary hover:bg-surface-2"
+                >
+                  {t(sharedChoice.action === 'publish' ? 'dashboards.detail.sharedChoice.publishAll' : 'dashboards.detail.sharedChoice.discardAll', { authors: sharedChoice.authors.join(', ') })}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSharedChoice(null)}
+                  className="self-end rounded-md px-2.5 py-1.5 text-[13px] text-text-tertiary hover:text-text-primary"
+                >
+                  {t('dashboards.detail.conflictLater')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {sharedStale && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" data-testid="shared-draft-stale">
+            <div className="w-full max-w-sm rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-lg">
+              <h2 className="text-sm font-semibold text-text-primary">{t('dashboards.detail.sharedStale.title')}</h2>
+              <p className="mt-1.5 text-[13px] leading-5 text-text-secondary">
+                {t('dashboards.detail.sharedStale.body', { editor: sharedStale.by || t('dashboards.detail.someoneElse') })}
+              </p>
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <button type="button" onClick={() => setSharedStale(null)} className="rounded-md px-2.5 py-1.5 text-[13px] text-text-tertiary hover:text-text-primary">
+                  {t('dashboards.detail.conflictLater')}
+                </button>
+                <button type="button" onClick={() => window.location.reload()} className="rounded-md bg-brand px-3 py-1.5 text-[13px] font-medium text-white hover:opacity-90">
+                  {t('dashboards.detail.conflictReload')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Phase-B17 — publish conflict: someone else published since load. */}
         {publishConflict && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" data-testid="publish-conflict">
             <div className="w-full max-w-sm rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-lg">
               <h2 className="text-sm font-semibold text-text-primary">{t('dashboards.detail.publishConflictTitle')}</h2>
               <p className="mt-1.5 text-[13px] leading-5 text-text-secondary">
@@ -3859,8 +5106,10 @@ export default function DashboardDetailPage() {
           isOpen={pendingRemoveDashboardChartId !== undefined}
           onClose={() => setPendingRemoveDashboardChartId(undefined)}
           onConfirm={confirmRemoveChart}
-          title="Remove chart from dashboard?"
-          description="This will remove the chart tile from the dashboard. The chart itself will not be deleted."
+          // Removing a slicer CONTROL is not removing a filter: say what stays.
+          {...(slicerIdOfControl(dashboard?.dashboard_charts?.find((dc) => dc.id === pendingRemoveDashboardChartId))
+            ? { title: t('dashboards.slicerControl.removeTitle'), description: t('dashboards.slicerControl.removeBody') }
+            : { title: 'Remove chart from dashboard?', description: 'This will remove the chart tile from the dashboard. The chart itself will not be deleted.' })}
           confirmLabel="Remove"
           variant="danger"
         />
@@ -3940,9 +5189,9 @@ export default function DashboardDetailPage() {
               // Use {} (→ server defaults) not null: normalize_dashboard_theme_config
               // does dict(x) and would throw on a null restore.
               pushUndo({ kind: 'theme', prev: dashboard?.theme_config ?? {}, next: theme });
-              // A templateId in the payload means the user chose a LAYOUT, and a
-              // layout owns the filter dock — so release any stored position.
-              await applyThemeConfig(theme, { releaseDock: Boolean((theme as any)?.templateId) });
+              // The theme is presentation only: filters are controls on the grid,
+              // so there is no filter position for a template to change.
+              await applyThemeConfig(theme);
             }}
             onApplyLayout={async (templateId) => {
               // The other half of picking a template. Snapshot first: this moves
@@ -3991,12 +5240,13 @@ export default function DashboardDetailPage() {
                   pageName: currentPage?.name ?? activePageId,
                   pageCount: dashboardPages.length,
                   slicers: [...draftGlobalSlicers, ...draftPageSlicers],
-                  slicerDock: effectiveFilterDock,
+                  // Filters are grid elements now; a slicer's place is its control's tile.
+    slicerDock: 'grid',
                 });
                 // Layout only. Picking a template in the modal already applies
                 // its colours through the theme path; re-applying them here
                 // would repaint every page as a side effect of a layout button.
-                const plan = planFromTemplate(templateId, snapshot, 'page');
+                const plan = planFromTemplate(templateId, snapshot);
                 const built = buildPresentationMutation({
                   plan,
                   snapshot,
@@ -4018,5 +5268,15 @@ export default function DashboardDetailPage() {
           />
         )}
     </DashboardThemeProvider>
+  );
+}
+
+/** The page provides the report's evidence store so the AI Design panel can
+ *  read the findings the tiles below are showing. */
+export default function DashboardDetailPage() {
+  return (
+    <ReportEvidenceProvider>
+      <DashboardDetailPageInner />
+    </ReportEvidenceProvider>
   );
 }

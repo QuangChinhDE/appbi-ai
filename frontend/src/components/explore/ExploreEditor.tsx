@@ -41,6 +41,8 @@ import {
 } from '@/components/explore/ExploreChartConfig';
 import { toast } from '@/lib/toast';
 import { extractApiError } from '@/lib/api-errors';
+import { chartApi } from '@/lib/api/charts';
+import { dashboardApi } from '@/lib/api/dashboards';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ChartDescriptionDrawer, ChartDescriptionTrigger } from '@/components/explore/ChartDescriptionDrawer';
 import {
@@ -53,7 +55,7 @@ import {
 } from '@/lib/explore-query';
 import type { ChartDebugInfo, ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
 import { useDatasetModel, type DatasetModelView } from '@/hooks/use-dataset-model';
-import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
+import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
 import { getReachableViews, computeStrictReachableViews } from '@/lib/dataset-model-graph';
 
 type ChartType = ExploreChartType;
@@ -1082,6 +1084,12 @@ export interface ExploreEditorProps {
   // (e.g. the HTML-import wizard) can fold it back into its own state.
   mode?: 'full' | 'ephemeral';
   initialSeed?: ExploreEditorEphemeralSeed;
+  /**
+   * Opened from a report's tile ("Edit chart"). Saving then asks what the
+   * author is editing: this report only (a copy swapped into the tile, as a
+   * draft of the report) or the shared chart (live in every report using it).
+   */
+  reportContext?: { dashboardId: number; tileId: number } | null;
   onEphemeralSave?: (result: ExploreEditorEphemeralResult) => void | Promise<void>;
   // Lock the dataset dropdown — useful when the wizard has already committed
   // to a specific dataset and the user should only change tables within it.
@@ -1103,9 +1111,15 @@ export function ExploreEditor({
   initialSeed,
   onEphemeralSave,
   lockDatasetSelection = false,
+  reportContext = null,
 }: ExploreEditorProps) {
   const router = useRouter();
   const { t } = useI18n();
+  // "What am I editing?" — asked once per save when opened from a report.
+  const [saveScopeAsk, setSaveScopeAsk] = useState<null | {
+    reports: Array<{ id: number; name: string; tiles: number; published: boolean }>;
+    otherReports: number;
+  }>(null);
   const isEphemeral = mode === 'ephemeral';
   // Ephemeral editors are never bound to an existing chart row.
   const effectiveChartId = isEphemeral ? null : chartId;
@@ -1219,6 +1233,7 @@ export function ExploreEditor({
     () => buildSemanticFormatMap(datasetModel?.views),
     [datasetModel],
   );
+  const semanticCurrencyMap = useMemo(() => buildSemanticCurrencyMap(datasetModel?.views), [datasetModel]);
 
   const skipNextSourceResetRef = useRef(false);
   const seedAppliedRef = useRef(false);
@@ -2666,7 +2681,22 @@ export function ExploreEditor({
     [drillDateField],
   );
 
-  const handleSaveLook = async () => {
+  const requestSave = async () => {
+    if (reportContext && chartId !== null && !isEphemeral) {
+      try {
+        const usage = await chartApi.getUsage(chartId);
+        setSaveScopeAsk({ reports: usage.reports, otherReports: usage.other_reports });
+      } catch {
+        // Unknown usage: still ask — the safe default is "this report only".
+        setSaveScopeAsk({ reports: [], otherReports: 0 });
+      }
+      return;
+    }
+    await handleSaveLook();
+  };
+
+  const handleSaveLook = async (scope: 'shared' | 'report' = 'shared') => {
+    setSaveScopeAsk(null);
     if (!selectedTableId) {
       toast.error(t('explore.editor.selectDatasetTableFirst'));
       return;
@@ -2786,6 +2816,36 @@ export function ExploreEditor({
       }
       const normalizedExploreConfig = dryRun.normalized_config as import('@/types/api').ChartConfig;
 
+      if (chartId !== null && scope === 'report' && reportContext) {
+        // This report only: a new chart with the edits, swapped into this tile
+        // as a DRAFT of the report. The shared chart and every other report are
+        // untouched; the report changes when its author publishes.
+        const baseName = chartNameInput.trim() || chart?.name || 'Chart';
+        const reportName = saveScopeAsk?.reports.find((r) => r.id === reportContext.dashboardId)?.name;
+        // One request: the copy, its metadata and parameters, and the draft swap
+        // are one server transaction — a failure leaves no stray chart.
+        const alreadyThisReportsCopy = (chart?.config as any)?.reportCopy?.dashboardId === reportContext.dashboardId;
+        const next = await dashboardApi.forkChartForReport(reportContext.dashboardId, reportContext.tileId, {
+          name: alreadyThisReportsCopy || !reportName ? baseName : t('explore.saveScope.copyName', { name: baseName, report: reportName }),
+          description: chartDescInput.trim() || null,
+          chart_type: chartType as any,
+          dataset_table_id: selectedTableId,
+          config: normalizedExploreConfig as unknown as Record<string, any>,
+          metadata: hasMetadata ? (metaPayload as unknown as Record<string, any>) : null,
+          parameters: paramRows as unknown as Array<Record<string, any>>,
+        });
+        // The copy is edited in place (same tile) or swapped in as a new draft tile.
+        const tiles = next.dashboard_charts ?? [];
+        const newTile = tiles.find((dc) => dc.id === reportContext.tileId)
+          ?? tiles
+            .filter((dc) => (dc.layout as any)?.draftOnly
+              && (dc.chart?.config as any)?.reportCopy?.dashboardId === reportContext.dashboardId)
+            .sort((a, b) => b.id - a.id)[0];
+        const copyId = newTile?.chart_id ?? chartId;
+        toast.success(t('explore.saveScope.savedForReport'));
+        router.replace(`/explore/${copyId}?fromReport=${reportContext.dashboardId}${newTile ? `&tile=${newTile.id}` : ''}`);
+        return;
+      }
       if (chartId !== null) {
         await updateChart.mutateAsync({
           id: chartId,
@@ -2882,6 +2942,64 @@ export function ExploreEditor({
 
   return (
     <div className={`flex flex-col bg-surface-2 ${embedded ? 'h-full min-h-0' : 'h-screen'}`}>
+      {saveScopeAsk && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/30 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="save-scope-title"
+          data-testid="save-scope-dialog"
+        >
+          <div className="w-full max-w-md rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 p-5 shadow-xl">
+            <h2 id="save-scope-title" className="text-sm font-semibold text-text-primary">{t('explore.saveScope.title')}</h2>
+            <p className="mt-1 text-xs text-text-secondary">
+              {saveScopeAsk.reports.length + saveScopeAsk.otherReports > 1
+                ? t('explore.saveScope.usedIn', { count: saveScopeAsk.reports.length + saveScopeAsk.otherReports })
+                : t('explore.saveScope.usedHere')}
+            </p>
+            {saveScopeAsk.reports.length > 0 && (
+              <ul className="mt-2 max-h-28 overflow-auto rounded-md bg-surface-2 px-3 py-2 text-xs text-text-secondary">
+                {saveScopeAsk.reports.map((r) => (
+                  <li key={r.id} className="truncate">
+                    {r.name}{r.id === reportContext?.dashboardId ? ` · ${t('explore.saveScope.thisReport')}` : ''}
+                  </li>
+                ))}
+                {saveScopeAsk.otherReports > 0 && (
+                  <li className="italic">{t('explore.saveScope.otherReports', { count: saveScopeAsk.otherReports })}</li>
+                )}
+              </ul>
+            )}
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                type="button"
+                autoFocus
+                data-testid="save-scope-report"
+                onClick={() => { void handleSaveLook('report'); }}
+                className="rounded-md border border-brand bg-brand px-3 py-2 text-left text-xs font-medium text-white hover:bg-brand-hover"
+              >
+                <span className="block">{t('explore.saveScope.reportOnly')}</span>
+                <span className="block text-[11px] font-normal opacity-90">{t('explore.saveScope.reportOnlyHint')}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="save-scope-shared"
+                onClick={() => { void handleSaveLook('shared'); }}
+                className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-left text-xs font-medium text-text-primary hover:bg-surface-2"
+              >
+                <span className="block">{t('explore.saveScope.shared')}</span>
+                <span className="block text-[11px] font-normal text-text-tertiary">{t('explore.saveScope.sharedHint')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSaveScopeAsk(null)}
+                className="self-end px-2 py-1 text-xs text-text-tertiary hover:text-text-primary"
+              >
+                {t('explore.saveScope.cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {!isNew && !resPerms.canEdit && resPerms.canView && (
         <div className="shrink-0 border-b border-warning/30 bg-warning/10 px-4 py-2">
           <div className="flex items-center gap-2 text-xs text-warning">
@@ -3114,7 +3232,7 @@ export function ExploreEditor({
             )}
             {resPerms.canEdit && (
               <button
-                onClick={handleSaveLook}
+                onClick={() => { void requestSave(); }}
                 disabled={!selectedTableId || dryRunCreateChart.isPending || createChart.isPending || updateChart.isPending}
                 className="flex items-center gap-1.5 rounded-md border border-brand bg-brand px-3 py-1 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -3453,6 +3571,7 @@ export function ExploreEditor({
                           preAggregated={displayedQueryState.chartPreAggregated}
                           labelMap={semanticLabelMap}
                           formatMap={semanticFormatMap}
+              currencyMap={semanticCurrencyMap}
                         />
                       </ChartErrorBoundary>
                     </div>

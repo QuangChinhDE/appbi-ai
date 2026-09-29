@@ -267,7 +267,18 @@ def check_architecture_violation(changed_files: list[str],
             unknown_files.append(f)
             continue
         allowed = set(layer.get("may_depend_on") or [])
-        specs = (imports or {}).get(raw) or (imports or {}).get(f) or extract_imports(f)
+        # The caller's import map is the ADDED lines of the diff. A file present
+        # in it with an EMPTY list added no import — that is an answer, not a
+        # missing one. `x or extract_imports(f)` read [] as missing and rescanned
+        # the whole file, so any edit to a file with an old violation (e.g. a
+        # comment in schemas.py) was blocked for an import it did not add.
+        # Only a file the map does not mention at all is scanned whole.
+        if imports is not None and raw in imports:
+            specs = imports[raw]
+        elif imports is not None and f in imports:
+            specs = imports[f]
+        else:
+            specs = extract_imports(f)
         file_viol = []
         for spec in specs:
             il = import_layer(spec, f)

@@ -36,6 +36,7 @@ import { useExportMode } from '@/lib/export-mode';
 import { applyCalculatedFields, buildExploreChartModel, type ChartSeriesDef } from './chartDataAdapter';
 import { AdvancedExploreChart, ADVANCED_EXPLORE_CHART_TYPES } from './AdvancedExploreCharts';
 import { useI18n } from '@/providers/LanguageProvider';
+import { parseBucket } from '@/lib/time-buckets';
 
 // Phase-15.83 — DA dropped the FE row cap; the chart renders every row
 // the BE returns. Constants removed (no longer referenced); if Recharts
@@ -181,7 +182,9 @@ function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string, m
   // force-rotated (no regression for the common case).
   const long = maxLabelChars >= 11;
   const veryLong = maxLabelChars >= 16;
-  if (count > 60 || (long && count > 8)) {
+  // Vertical text is the last resort: it is the hardest to read, and ten
+  // category names stood on end read as a barcode. Diagonal first.
+  if (count > 30 || (veryLong && count > 16)) {
     angle = -90;                                   // vertical → zero horizontal overlap
     height = Math.min(150, 70 + Math.min(maxLabelChars, 22) * 4);
   } else if (count > 25 || (long && count > 2) || veryLong) {
@@ -314,6 +317,10 @@ interface CustomLegendProps {
   onToggle: (key: string) => void;
   onColorChange?: (key: string, color: string) => void;
   onColorReset?: (key: string) => void;
+  /** Wrap a top/bottom legend onto more rows instead of scrolling one row:
+   *  for a legend that names CATEGORIES (a pie's slices), where a scrolled-away
+   *  entry is a slice nobody can identify. */
+  wrap?: boolean;
 }
 function CustomLegend({
   payload = [],
@@ -324,6 +331,7 @@ function CustomLegend({
   onToggle,
   onColorChange,
   onColorReset,
+  wrap = false,
 }: CustomLegendProps) {
   // Phase-15.88 — controlled Popover state. Earlier each <Popover.Root>
   // was uncontrolled, defaulting to closed. Picking a swatch fired
@@ -362,10 +370,10 @@ function CustomLegend({
         // flips to start-aligned once it overflows, so the first item is never
         // clipped behind the centering offset. Vertical (side) legends keep
         // wrapping into columns as before.
-        flexWrap: layout === 'vertical' ? 'wrap' : 'nowrap',
-        overflowX: layout === 'vertical' ? 'visible' : 'auto',
+        flexWrap: layout === 'vertical' || wrap ? 'wrap' : 'nowrap',
+        overflowX: layout === 'vertical' || wrap ? 'visible' : 'auto',
         overflowY: 'hidden',
-        gap: layout === 'vertical' ? 4 : 14,
+        gap: layout === 'vertical' ? 4 : wrap ? '4px 12px' : 14,
         justifyContent: layout === 'vertical' ? 'center' : 'safe center',
         maxWidth: '100%',
         scrollbarWidth: 'thin',
@@ -898,6 +906,18 @@ function buildDataLabelContent(opts: {
         style: styleForLabel,
       });
     }
+    // A data label is read at a glance: an amount reads at display magnitude,
+    // like its axis ("R$1.3M", not "R$1,258,681.3"), unless the author gave the
+    // DATA LABEL its own format (a per-label/series override). The chart-wide
+    // decimalPlaces is saved on nearly every chart, so it is not that signal.
+    // The tooltip keeps the precise value.
+    const n = Number(value);
+    const authoredPrecision = resolved.format !== undefined
+      || (seriesKey ? style.seriesDecimalPlaces?.[seriesKey] !== undefined : false);
+    if (!authoredPrecision && Number.isFinite(n) && Math.abs(n) >= 10_000
+      && (styleForLabel.numberFormat === 'currency' || styleForLabel.numberFormat === 'number')) {
+      return formatAxisValue(n, { ...styleForLabel, axisDisplayUnits: 'auto' } as ChartStyleConfig, seriesKey);
+    }
     return formatNumber(value, styleForLabel, seriesKey);
   };
 
@@ -934,6 +954,11 @@ function buildDataLabelContent(opts: {
     let cy = y;
     let textAnchor: 'start' | 'middle' | 'end' = 'middle';
     if (orientation === 'vertical') {
+      // A value label wider than its bar's slot lands on the neighbouring bars
+      // (a narrow tile: "R$302.6K" over three bars). Show it only when it fits
+      // the bar plus the gap either side — hidden labels keep the value in the
+      // tooltip. An author-rotated label is theirs to place.
+      if (rotation === 0 && width > 0 && approxWidth > width * 1.6 + 4) return null;
       cx = x + width / 2;
       switch (position) {
         case 'top':       cy = y - 4; break;
@@ -1178,6 +1203,17 @@ function parseDateAxisValue(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** A formatter for an axis whose buckets are all months, else null. */
+function monthlyAxisFormatter(values: unknown[]): ((v: unknown) => string) | null {
+  const dates = values.filter((v) => v != null && v !== '').map((v) => parseBucket(v as any));
+  if (dates.length < 2 || dates.some((d) => !d || d.getUTCDate() !== 1)) return null;
+  const fmt = new Intl.DateTimeFormat(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' });
+  return (v: unknown) => {
+    const d = v == null || v === '' ? null : parseBucket(v as any);
+    return d ? fmt.format(d) : String(v ?? '');
+  };
+}
+
 function isDateLikeAxis(data: Record<string, any>[], field?: string, label?: string): boolean {
   if (!field) return false;
   const axisText = `${field} ${label ?? ''}`.toLowerCase();
@@ -1385,7 +1421,7 @@ function applyTimeGranularity(
 
 function EmptyState({ message }: { message: string }) {
   return (
-    <div className="h-full flex items-center justify-center text-text-quaternary">
+    <div className="h-full flex items-center justify-center text-text-quaternary" data-empty-state>
       <p className="text-sm text-center max-w-xs px-4">{message}</p>
     </div>
   );
@@ -1448,6 +1484,13 @@ export interface ExploreChartProps {
    *  per-series override). Lets a CR1 measure with format.kind='percent'
    *  render as "30%" instead of "0.3" out of the box. */
   formatMap?: Map<string, import('./ExploreChartConfig').NumberFormat>;
+  /** {field → currency symbol} from the measure's declared currency code. When
+   *  the chart's series share one declared currency it replaces the style
+   *  default "$"; a symbol the author picked (anything but "$") is kept. */
+  currencyMap?: Map<string, string>;
+  /** Buckets of the time axis that are not whole periods (from the chart data
+   *  response). Shown as a footnote under the chart; no row is hidden. */
+  timeCompleteness?: import('@/types/api').TimeCompleteness;
   /** Rendered inside a dashboard tile (which supplies its own card frame).
    *  Currently only affects KPI: drops KpiCard's nested card chrome and lets
    *  it fill the tile width instead of capping at max-w-xl. Default false
@@ -1470,6 +1513,57 @@ export interface ExploreChartProps {
   kpiLabelInHeader?: boolean;
 }
 
+/** Chart types whose marks are positioned by a measure value on an axis. */
+const AXIS_VALUE_CHART_TYPES: ReadonlySet<string> = new Set([
+  'TIME_SERIES', 'LINE', 'AREA', 'BAR', 'STACKED_BAR', 'GROUPED_BAR', 'HORIZONTAL_BAR', 'BAR_LINE', 'COMBO',
+]);
+
+/** True when at least one row carries a finite number for one of the chart's
+ *  measures. Numeric strings count (the value is plottable once coerced). */
+export function hasPlottableMeasure(rows: any[], rc: { metrics?: any[]; lineMetric?: any }): boolean {
+  const metrics = [...(rc.metrics ?? []), rc.lineMetric].filter(Boolean);
+  if (metrics.length === 0) return true; // nothing to check; other guards own it
+  const keys = metrics.flatMap((m: any) => [metricKey(m), String(m.field || '')]).filter(Boolean);
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    for (const k of keys) {
+      const v = (row as any)[k];
+      if (v === null || v === undefined || v === '') continue;
+      if (Number.isFinite(typeof v === 'number' ? v : Number(v))) return true;
+    }
+  }
+  // Rows keyed by an alias this check does not know: do not claim "no data".
+  return !rows.some((row) => row && keys.some((k) => k in row));
+}
+
+/**
+ * Recharts finds its series by walking `children` and matching component TYPES
+ * (`<Line>`, `<Bar>` …), flattening Fragments with `react-is`. Under the Next 15
+ * App Router, React elements carry React 19's `react.transitional.element` tag,
+ * which the `react-is@18` recharts resolves does not recognise — so a series
+ * returned inside `<React.Fragment>` was invisible to the chart: every LINE and
+ * TIME_SERIES tile drew its axes and no line at all. Unwrap Fragments here,
+ * against THIS runtime's `React.Fragment`, keeping keys, so the series reach
+ * recharts as a flat list.
+ */
+function flatChartChildren(nodes: React.ReactNode): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  const walk = (node: React.ReactNode, prefix: string) => {
+    if (Array.isArray(node)) { node.forEach((n, i) => walk(n, `${prefix}${i}.`)); return; }
+    if (React.isValidElement(node) && node.type === React.Fragment) {
+      const key = node.key != null ? `${prefix}${String(node.key)}.` : prefix;
+      React.Children.forEach((node.props as { children?: React.ReactNode }).children, (child, i) => {
+        if (React.isValidElement(child)) out.push(React.cloneElement(child, { key: `${key}${child.key ?? i}` }));
+        else if (child) walk(child, `${key}${i}.`);
+      });
+      return;
+    }
+    if (node !== null && node !== undefined && node !== false) out.push(node);
+  };
+  walk(nodes, '');
+  return out;
+}
+
 function ExploreChartInner({
   type,
   data,
@@ -1482,11 +1576,13 @@ function ExploreChartInner({
   highlightData,
   labelMap,
   formatMap,
+  currencyMap,
   embedded = false,
   onViewerDrill,
   viewerGrain,
   lockDateGrain = false,
   kpiLabelInHeader = false,
+  timeCompleteness,
 }: ExploreChartProps) {
   const { t } = useI18n();
   const baseStyle = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
@@ -1539,9 +1635,22 @@ function ExploreChartInner({
         }
         if (changed) s = { ...s, seriesFormats: merged };
       }
+      // The declared currency of the measures replaces the "$" default. Only
+      // when every series that has one agrees — a chart mixing BRL and USD keeps
+      // its own setting rather than labelling one of them wrongly.
+      if (currencyMap && currencyMap.size && (!s.currencySymbol || s.currencySymbol === '$')) {
+        const nrc = normalizeRoleConfig(type, roleConfig);
+        const fields = [...nrc.metrics, nrc.lineMetric, nrc.benchmarkMetric].filter(Boolean).map((m: any) => String(m.field || ''));
+        const syms = new Set(
+          fields
+            .map((f) => currencyMap.get(f) ?? (f.includes('.') ? currencyMap.get(f.split('.').slice(-1)[0]) : undefined))
+            .filter((x): x is string => !!x),
+        );
+        if (syms.size === 1) s = { ...s, currencySymbol: [...syms][0] };
+      }
       return s;
     },
-    [baseStyle, onStyleConfigChange, ephemeralDrill, formatMap, type, roleConfig, dashboardTheme.displayUnits],
+    [baseStyle, onStyleConfigChange, ephemeralDrill, formatMap, currencyMap, type, roleConfig, dashboardTheme.displayUnits],
   );
   const PALETTE = useMemo(
     () => {
@@ -1929,7 +2038,8 @@ function ExploreChartInner({
   // alignment is the conventional spot for a per-visual drill toggle and keeps
   // it clear of the plot.
   const DrillBar = canDrill ? (
-    <div className="flex items-center justify-end gap-1 px-1 mb-1">
+    // An interactive control: never printed (the PDF capture hides it).
+    <div className="flex items-center justify-end gap-1 px-1 mb-1" data-export-hide="">
       {drillActive ? (
         <>
           <span className="mr-0.5 text-[10px] font-medium text-text-tertiary" title={t('explore.dateDrill.activeHint')}>
@@ -2023,9 +2133,15 @@ function ExploreChartInner({
   // 'always' turns labels on for a theme built around stated numbers
   // (executive / vibrant); 'off' keeps a minimal chrome clean. 'auto' leaves
   // the decision to the chart, which is the historical behaviour.
+  // With no choice made by the author or the theme, a dashboard bar chart of a
+  // few bars states its values: a ranking is read by its numbers, and the
+  // visual review kept flagging "bar chart lacks data labels".
+  const autoBarLabels = embedded && chrome?.dataLabels !== 'off'
+    && (type === 'BAR' || type === 'HBAR' || type === 'COLUMN')
+    && metrics.length === 1 && data.length > 0 && data.length <= 12;
   const showDataLabels = style.dataLabelConfig?.enabled
     ?? opinion(style.showDataLabels, DEFAULT_STYLE_CONFIG.showDataLabels)
-    ?? (chrome?.dataLabels === 'always');
+    ?? (chrome?.dataLabels === 'always' || autoBarLabels);
   // Phase-15.84 — collision registry as a Map keyed by series+pointIndex.
   // Recreated each React render. Recharts replays `content` on every
   // animation tick within the same render closure; the Map shape is
@@ -2302,8 +2418,11 @@ function ExploreChartInner({
   // xAxisLabel/yAxisLabel always win. Only auto-name the metric axis when a
   // single metric is plotted (multi-metric → legend disambiguates, so a
   // single Y title would be misleading).
-  const derivedDimLabel = fieldLabel(xField, labelMap);
-  const derivedMetricLabel = metrics.length === 1 ? metricLabel(metrics[0], labelMap) : undefined;
+  // A dashboard tile already carries its title; a derived axis title there is
+  // usually the raw field name ("order_purchase_date") and only costs plot
+  // space. Embedded tiles show an axis title only when the author set one.
+  const derivedDimLabel = embedded ? undefined : fieldLabel(xField, labelMap);
+  const derivedMetricLabel = embedded || metrics.length !== 1 ? undefined : metricLabel(metrics[0], labelMap);
   const xAxisLabel = style.xAxisLabel || derivedDimLabel || undefined;
   const yAxisLabel = style.yAxisLabel || derivedMetricLabel || undefined;
   // HBAR swaps orientation: category on Y, value on X.
@@ -2348,12 +2467,23 @@ function ExploreChartInner({
     // #1 fix — measure the longest rendered label so the axis rotates for long
     // string labels, not only for high category counts.
     const labelSample = (categoricalData.length ? categoricalData : data).slice(0, 80);
+    // Month buckets (every value on the 1st) read as "Sep 16", not "01/09/2016".
+    const dateFormatter = dateLike ? monthlyAxisFormatter(labelSample.map((r) => r?.[dataKey])) ?? formatDateAxisValue : undefined;
     const maxLabelChars = labelSample.reduce((m, r) => {
       const v = r?.[dataKey];
-      const s = dateLike ? formatDateAxisValue(v) : (v == null || v === '' ? '(blank)' : String(v));
+      const s = dateFormatter ? dateFormatter(v) : (v == null || v === '' ? '(blank)' : String(v));
       return Math.max(m, s.length);
     }, 0);
-    const { angle, height, textAnchor, interval } = buildXAxisProps(count, fontSize, xAxisLabel, maxLabelChars, responsive.maxXBand);
+    let { angle, height, textAnchor, interval } = buildXAxisProps(count, fontSize, xAxisLabel, maxLabelChars, responsive.maxXBand);
+    // A time axis is read as a sequence, so thin its ticks to what fits the
+    // measured width horizontally rather than rotating 30 overlapping dates.
+    if (dateLike && rootSize.width > 0) {
+      const slots = Math.max(2, Math.floor((rootSize.width - 60) / (maxLabelChars * fontSize * 0.62 + 14)));
+      if (count > slots) {
+        interval = Math.ceil(count / slots) - 1;
+        angle = 0; textAnchor = 'middle'; height = 30;
+      }
+    }
     // On a very short tile drop the tick-label band entirely (keep a thin axis
     // line) so the plot stays usable — values remain on hover. PBI-parity.
     if (!responsive.showAxisLabels) {
@@ -2369,7 +2499,7 @@ function ExploreChartInner({
             angle={angle}
             textAnchor={textAnchor}
             fontSize={fontSize}
-            formatter={dateLike ? formatDateAxisValue : undefined}
+            formatter={dateFormatter}
             orientation="x"
             fill={axisTickFill}
           />
@@ -2485,7 +2615,7 @@ function ExploreChartInner({
     onStyleConfigChange({ ...style, seriesColors: next });
   }, [onStyleConfigChange, style]);
   const legendLayout: 'horizontal' | 'vertical' = legendPos === 'left' || legendPos === 'right' ? 'vertical' : 'horizontal';
-  const renderLegend = () => showLegend ? (
+  const renderLegend = (wrap = false) => showLegend ? (
     <Legend
       // Phase-16.x — separate the legend's area from the plot so they never
       // collide. A BOTTOM legend sits flush at the container edge (below the
@@ -2509,13 +2639,17 @@ function ExploreChartInner({
       // (Radix popover) + click-to-toggle visibility. handleLegendClick
       // is now unused for the popover path but kept for series visibility
       // when the popover is dismissed via the label click.
-      content={(props: any) => (
+      // On a dashboard tile a one-entry legend only repeats the tile title
+      // ("Revenue" under "Revenue by region"); it shows as soon as the chart
+      // has a second series.
+      content={(props: any) => (embedded && (props?.payload ?? []).length <= 1) ? null : (
         <CustomLegend
           payload={props?.payload ?? []}
           hiddenSeries={hiddenSeries}
           seriesColors={style.seriesColors}
           fontSize={fontSize}
           layout={legendLayout}
+          wrap={wrap}
           onToggle={toggleSeriesHidden}
           onColorChange={onStyleConfigChange ? handleSeriesColorChange : undefined}
           onColorReset={onStyleConfigChange ? handleSeriesColorReset : undefined}
@@ -2652,6 +2786,12 @@ function ExploreChartInner({
   }
   if (invalidMessage) {
     return <EmptyState message={invalidMessage} />;
+  }
+  // Rows came back but not one measure cell is a number: an axis chart would
+  // draw its axes and no marks, which reads as "the value is zero" or, worse,
+  // as a working chart. Say so instead.
+  if (AXIS_VALUE_CHART_TYPES.has(type) && !hasPlottableMeasure(data, normalizeRoleConfig(type, roleConfig))) {
+    return <EmptyState message={t('explore.emptyState.noNumericValues')} />;
   }
 
   if (type === 'KPI') {
@@ -2905,13 +3045,47 @@ function ExploreChartInner({
     // renderer. Previously Recharts `label` prop took a string only, so
     // colour/size from the editor went nowhere. Position/rotation
     // stay N/A for radial layout (Pie picks the angle).
+    // Outside labels need horizontal room beside the pie. Size the radius from
+    // the measured tile so the longest label fits (up to ~28% of the width per
+    // side), and clip any label that still would not, with the full text in a
+    // <title> — a label cut by the tile edge ("dit_card (78%)") reads as broken.
+    const pieW = rootSize.width;
+    const pieH = rootSize.height;
+    const longestPieLabel = sortedPieData.reduce((mx: number, r: any) => Math.max(mx, String(r?.displayName ?? r?.name ?? '').length + 6), 0);
+    const pieOuterRadius: number | string = pieW > 0 && pieH > 0
+      // +40: the label sits a leader line (~20px) beyond the rim, plus its own padding.
+      // Vertically too: the pie is centred at 45%, so a label near the top needs
+      // ~34px above the rim — a short tile clipped "Online (44%)" to a dangling
+      // leader line.
+      ? Math.max(36, Math.min(
+        pieH * 0.4,
+        showDataLabels ? pieH * 0.45 - 34 : pieH * 0.4,
+        pieW / 2 - Math.min(pieW * 0.3, longestPieLabel * 6.6 + 40),
+      ))
+      : '60%';
+    const fitPieText = (text: string, x: number, anchor: 'start' | 'end', fontSize: number): string | null => {
+      if (!(pieW > 0)) return text;
+      const room = anchor === 'start' ? pieW - x - 4 : x - 4;
+      const maxChars = Math.floor(room / (fontSize * 0.6));
+      if (maxChars < 4) return null;
+      return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}…`;
+    };
+    // Slices too thin to label keep their name in the legend and their value
+    // in the tooltip; their leader lines go too (a line to nothing is noise).
+    const pieMinShare = sortedPieData.length > 4 ? 0.06 : 0.03;
+    const renderPieLabelLine = (p: any) => {
+      if (!(p?.percent > pieMinShare) || !Array.isArray(p.points) || p.points.length < 2) return <g />;
+      const [a, b] = p.points;
+      return <path d={`M${a.x},${a.y}L${b.x},${b.y}`} stroke={p.stroke} strokeWidth={1} fill="none" />;
+    };
     const renderPieLabel = (entry: any) => {
       const { name, value, percent, x, y, cx, cy, midAngle } = entry;
       const rawName = String(entry?.payload?.name ?? name ?? '');
       const displayName = String(entry?.payload?.displayName ?? name ?? rawName);
-      // Skip slices below 3% — match Recharts default to keep small
-      // slice labels from overlapping near the centre.
-      if (percent === undefined || percent <= 0.03) return null;
+      // Skip small slices: below 3% always, below 6% once there are more than
+      // four slices — thin wedges' labels pile up at the rim. Every slice keeps
+      // its name in the legend and its value in the tooltip.
+      if (percent === undefined || percent <= pieMinShare) return null;
       // Phase-B3 — guard non-finite anchors (degenerate slice geometry).
       if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
       const sliceKey = rawName;
@@ -2922,6 +3096,9 @@ function ExploreChartInner({
       if (!resolved) {
         // Render a soft "Name (X%)" so the chart still has a visual
         // identifier — matches the old behaviour pre-15.84.
+        const soft = `${displayName} (${(percent * 100).toFixed(0)}%)`;
+        const fitted = fitPieText(soft, x, x > cx ? 'start' : 'end', 11);
+        if (!fitted) return null;
         return (
           <text x={x} y={y}
             fill="rgb(var(--text-secondary))"
@@ -2929,7 +3106,8 @@ function ExploreChartInner({
             textAnchor={x > cx ? 'start' : 'end'}
             dominantBaseline="central"
           >
-            {`${displayName} (${(percent * 100).toFixed(0)}%)`}
+            {fitted !== soft ? <title>{soft}</title> : null}
+            {fitted}
           </text>
         );
       }
@@ -2950,9 +3128,11 @@ function ExploreChartInner({
             style: styleForLabel,
           })
         : `${displayName}: ${formatNumber(value, styleForLabel, sliceKey)} (${(percent * 100).toFixed(0)}%)`;
-      const approxWidth = text.length * resolved.fontSize * 0.6;
-      const approxHeight = resolved.fontSize + 4;
       const anchor: 'start' | 'end' = x > cx ? 'start' : 'end';
+      const shown = fitPieText(text, x, anchor, resolved.fontSize);
+      if (!shown) return null;
+      const approxWidth = shown.length * resolved.fontSize * 0.6;
+      const approxHeight = resolved.fontSize + 4;
       const bgX = anchor === 'start' ? x - 3 : x - approxWidth - 3;
       return (
         <g>
@@ -2974,7 +3154,8 @@ function ExploreChartInner({
             textAnchor={anchor}
             dominantBaseline="central"
           >
-            {text}
+            {shown !== text ? <title>{text}</title> : null}
+            {shown}
           </text>
         </g>
       );
@@ -2993,15 +3174,17 @@ function ExploreChartInner({
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie isAnimationActive={animate} data={sortedPieData} dataKey="value" nameKey="displayName"
-                cx="50%" cy="45%" outerRadius="60%"
+                cx="50%" cy="45%" outerRadius={pieOuterRadius}
                 // Hole % is relative to the 60% outer radius — NOT the
                 // container — so it can never exceed the outer radius and blank
                 // the donut (the old `${pieInnerRadius}%` was container-relative,
                 // so an 80% hole = 80% container > 60% outer → empty ring).
-                innerRadius={pieInnerRadius > 0 ? `${(pieInnerRadius / 100) * 60}%` : undefined}
+                innerRadius={pieInnerRadius > 0
+                  ? (typeof pieOuterRadius === 'number' ? (pieInnerRadius / 100) * pieOuterRadius : `${(pieInnerRadius / 100) * 60}%`)
+                  : undefined}
                 onClick={handlePieClick}
                 label={renderPieLabel}
-                labelLine={showDataLabels}
+                labelLine={showDataLabels ? renderPieLabelLine : false}
               >
                 {sortedPieData.map((row: any, i) => {
                   // Cross-highlight: dim each slice by its highlighted share
@@ -3032,7 +3215,7 @@ function ExploreChartInner({
                   />
                 )}
               />
-              {renderLegend()}
+              {renderLegend(true)}
             </PieChart>
           </ResponsiveContainer>
         </div>
@@ -3528,7 +3711,7 @@ function ExploreChartInner({
                 )}
               />
               {renderLegend()}
-              {displaySeries.map((series, i) => {
+              {flatChartChildren(displaySeries.map((series, i) => {
                 const color = getSeriesColor(series.key, i);
                 return (
                   <React.Fragment key={series.key}>
@@ -3566,7 +3749,7 @@ function ExploreChartInner({
                     )}
                   </React.Fragment>
                 );
-              })}
+              }))}
               {renderBenchmarkLines('y', displayData)}
               {renderAnnotations()}
             </AreaChart>,
@@ -3586,7 +3769,11 @@ function ExploreChartInner({
     const displaySeries = categoricalSeriesWithCalc;
     // Cross-highlight: dim the baseline line and overlay a solid line of the
     // P-contribution (`<key>__hl`). Keeps full series context (PBI-parity).
-    const displayData = isHighlight ? buildHighlightSplitRows(baseLineData, displaySeries) : baseLineData;
+    const partialKeys = partialBucketKeys(timeCompleteness, baseLineData, xField);
+    const splitPartial = !isHighlight && partialKeys.size > 0;
+    const displayData = isHighlight
+      ? buildHighlightSplitRows(baseLineData, displaySeries)
+      : splitPartial ? splitPartialRows(baseLineData, displaySeries.map((s) => s.key), xField, partialKeys) : baseLineData;
     const lineDualYAxis = dualYAxis && displaySeries.length >= 2;
     const selectedRightSeries = yAxisRightSeriesKey
       ? displaySeries.find((series) => series.key === yAxisRightSeriesKey)
@@ -3639,7 +3826,7 @@ function ExploreChartInner({
                 )}
               />
               {renderLegend()}
-              {displaySeries.map((series, i) => {
+              {flatChartChildren(displaySeries.map((series, i) => {
                 const stroke = getSeriesColor(series.key, i);
                 return (
                   <React.Fragment key={series.key}>
@@ -3659,6 +3846,23 @@ function ExploreChartInner({
                         <LabelList dataKey={series.key} content={rightAxisMinMaxLabelContent(series.key, displayData)} />
                       )}
                     </Line>
+                    {splitPartial && (
+                      // An incomplete period (in progress, or far below a
+                      // typical one at the data's edge) is drawn faded and
+                      // dashed: its value stays readable in the tooltip, but a
+                      // half-counted month no longer reads as a collapse.
+                      <Line isAnimationActive={animate} type="monotone" dataKey={`${series.key}__partial`}
+                        name={`${series.label} ${t('explore.chart.incompletePeriod')}`}
+                        hide={hiddenSeries.has(series.key)}
+                        stroke={stroke}
+                        strokeOpacity={0.45}
+                        strokeWidth={Math.max(1, lineWidth - 0.5)}
+                        strokeDasharray="4 4"
+                        dot={{ r: 2.5, strokeWidth: 1.5, fill: 'transparent' }}
+                        legendType="none"
+                        connectNulls={false}
+                        yAxisId={rightAxisSeries?.key === series.key ? 'right' : 0} />
+                    )}
                     {isHighlight && (
                       <Line isAnimationActive={animate} type="monotone" dataKey={`${series.key}__hl`}
                         name={series.label}
@@ -3673,7 +3877,7 @@ function ExploreChartInner({
                     )}
                   </React.Fragment>
                 );
-              })}
+              }))}
               {renderBenchmarkLines('y', displayData)}
               {renderAnnotations()}
             </LineChart>,
@@ -3732,7 +3936,7 @@ function ExploreChartInner({
           )}
         />
         {renderLegend()}
-        {displaySeries.map((series, i) => {
+        {flatChartChildren(displaySeries.map((series, i) => {
           const baseColor = getSeriesColor(series.key, i);
           if (isHighlight) {
             return (
@@ -3764,7 +3968,7 @@ function ExploreChartInner({
               )}
             </Bar>
           );
-        })}
+        }))}
         {renderBenchmarkLines('x', hbarData)}
         {renderAnnotations()}
       </BarChart>
@@ -3861,7 +4065,7 @@ function ExploreChartInner({
                 )}
               />
               {renderLegend()}
-              {hasFreeFormMix
+              {flatChartChildren(hasFreeFormMix
                 ? allComboSeries.map((series, index) => {
                     const mode = renderAsMap[series.key] ?? 'bar';
                     const color = getSeriesColor(series.key, index);
@@ -3958,8 +4162,7 @@ function ExploreChartInner({
                       )}
                     </Line>
                   </>
-                )
-              }
+                ))}
               {renderBenchmarkLines('y', displayData)}
               {renderAnnotations()}
             </ComposedChart>,
@@ -3998,7 +4201,7 @@ function ExploreChartInner({
               )}
             />
             {renderLegend()}
-            {displayBarSeries.map((series, i) => {
+            {flatChartChildren(displayBarSeries.map((series, i) => {
               const baseColor = getSeriesColor(series.key, i);
               const hasConditional = conditionalSeriesRules.length > 0;
               if (isHighlight) {
@@ -4033,7 +4236,7 @@ function ExploreChartInner({
                   )}
                 </Bar>
               );
-            })}
+            }))}
             {renderBenchmarkLines('y', barChartData)}
             {renderAnnotations()}
           </BarChart>,
@@ -4077,7 +4280,94 @@ export function ExploreChart(props: ExploreChartProps) {
           100% { opacity: 1; transform: translateY(0); }
         }
       `}</style>
-      <ExploreChartMemo {...props} />
+      {props.timeCompleteness?.partial?.length ? (
+        <div style={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: '1 1 auto', minHeight: 0 }}>
+            <ExploreChartMemo {...props} />
+          </div>
+          <PartialPeriodNote completeness={props.timeCompleteness} />
+        </div>
+      ) : (
+        <ExploreChartMemo {...props} />
+      )}
     </div>
+  );
+}
+
+/** The x values of this chart's rows that the engine flagged as incomplete. */
+function partialBucketKeys(
+  completeness: import('@/types/api').TimeCompleteness | undefined,
+  rows: Record<string, any>[],
+  xField: string,
+): Set<string> {
+  const out = new Set<string>();
+  if (!completeness?.partial?.length || !xField) return out;
+  const flagged = new Set(completeness.partial
+    .map((p) => parseBucket(p.bucket)?.getTime())
+    .filter((v): v is number => typeof v === 'number'));
+  for (const row of rows) {
+    const d = parseBucket(row?.[xField]);
+    if (d && flagged.has(d.getTime())) out.add(String(row[xField]));
+  }
+  return out;
+}
+
+/**
+ * Rows for a line whose incomplete periods are drawn apart: on a partial row
+ * the value moves from `key` to `key__partial`; the complete neighbour of a
+ * partial row carries it too, so the dashed segment joins the solid line.
+ */
+function splitPartialRows(
+  rows: Record<string, any>[],
+  keys: string[],
+  xField: string,
+  partial: Set<string>,
+): Record<string, any>[] {
+  const isPartial = rows.map((r) => partial.has(String(r?.[xField])));
+  return rows.map((row, i) => {
+    const out: Record<string, any> = { ...row };
+    const neighbourOfPartial = !isPartial[i] && (isPartial[i - 1] || isPartial[i + 1]);
+    for (const key of keys) {
+      if (isPartial[i]) {
+        out[`${key}__partial`] = row[key];
+        out[key] = null;
+      } else if (neighbourOfPartial) {
+        out[`${key}__partial`] = row[key];
+      }
+    }
+    return out;
+  });
+}
+
+function formatBucket(raw: string, grain: string): string {
+  // Naive engine timestamps name a calendar period: read them as UTC, or a
+  // viewer east of UTC sees every bucket labelled one month early.
+  const d = parseBucket(raw);
+  if (!d) return String(raw);
+  const opts: Intl.DateTimeFormatOptions =
+    grain === 'year' ? { year: 'numeric' }
+      : grain === 'month' || grain === 'quarter' ? { year: 'numeric', month: 'short' }
+        : { year: 'numeric', month: 'short', day: 'numeric' };
+  return d.toLocaleDateString(undefined, { ...opts, timeZone: 'UTC' });
+}
+
+/** The honest footnote for a time series whose edges are not whole periods:
+ *  which buckets, and which rule said so. Rendered on every surface that
+ *  renders the chart (builder, public, embed) because it is part of the data. */
+function PartialPeriodNote({ completeness }: { completeness: import('@/types/api').TimeCompleteness }) {
+  const { t } = useI18n();
+  const inProgress = completeness.partial.filter((p) => p.reason === 'in_progress').map((p) => formatBucket(p.bucket, completeness.grain));
+  const thin = completeness.partial.filter((p) => p.reason === 'edge_low_volume').map((p) => formatBucket(p.bucket, completeness.grain));
+  const parts: string[] = [];
+  if (thin.length) parts.push(t('explore.partialPeriods.thin', { periods: thin.join(', ') }));
+  if (inProgress.length) parts.push(t('explore.partialPeriods.inProgress', { periods: inProgress.join(', ') }));
+  return (
+    <p
+      data-testid="partial-period-note"
+      data-partial-count={completeness.partial.length}
+      style={{ flex: '0 0 auto', margin: '4px 2px 0', fontSize: 11, lineHeight: 1.35, opacity: 0.72 }}
+    >
+      {parts.join(' · ')}
+    </p>
   );
 }

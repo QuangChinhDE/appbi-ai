@@ -21,7 +21,7 @@ import { buildExploreChartModel } from '@/components/explore/chartDataAdapter';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDataset } from '@/hooks/use-datasets';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
-import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
+import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
 import { chartApi } from '@/lib/api/charts';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { getActiveChartRoleConfig, getSavedChartQueryMode } from '@/lib/chart-config';
@@ -46,6 +46,9 @@ interface ChartDetailModalProps {
   currentLayout?: Record<string, any> | null;
   allowAppearanceEdit?: boolean;
   initialTab?: 'appearance' | 'data';
+  /** Stage the appearance edit in the builder's draft instead of writing the
+   *  live row (the builder always passes it). */
+  onPatchLayout?: (patch: Record<string, any>) => void;
 }
 
 type DetailPanelTab = 'appearance' | 'data';
@@ -333,6 +336,7 @@ export function ChartDetailModal({
   currentLayout = null,
   allowAppearanceEdit = false,
   initialTab = 'data',
+  onPatchLayout,
 }: ChartDetailModalProps) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -382,6 +386,7 @@ export function ChartDetailModal({
     () => buildSemanticFormatMap(detailDatasetModel?.views),
     [detailDatasetModel],
   );
+  const detailCurrencyMap = useMemo(() => buildSemanticCurrencyMap(detailDatasetModel?.views), [detailDatasetModel]);
   const datasetTable = useMemo(
     () => dataset?.tables?.find((table) => table.id === chart?.dataset_table_id) ?? null,
     [chart?.dataset_table_id, dataset?.tables],
@@ -548,6 +553,15 @@ export function ChartDetailModal({
     try {
       const styleOverride = buildDashboardChartStyleOverride(baseStyleConfig, draftStyleConfig);
       const nextLayout = buildDashboardChartLayoutWithStyleOverride(currentLayout, styleOverride);
+      if (onPatchLayout) {
+        // A reset is `null`, not a missing key: Publish merges the draft layout
+        // over the row, so an absent key would leave the old override live.
+        onPatchLayout({ styleConfigOverride: (nextLayout as any)?.styleConfigOverride ?? null });
+        toast.success(styleOverride
+          ? t('dashboards.chartDetail.saveUpdatedToast')
+          : t('dashboards.chartDetail.saveResetToast'));
+        return;
+      }
       await dashboardApi.updateLayout(dashboardId, [{
         id: dashboardChartId,
         layout: nextLayout,
@@ -690,6 +704,7 @@ export function ChartDetailModal({
                 styleConfig={previewStyleConfig}
                 labelMap={detailLabelMap}
                 formatMap={detailFormatMap}
+              currencyMap={detailCurrencyMap}
                 onStyleConfigChange={setDraftStyleConfig}
                 preAggregated={chartRuntime.pre_aggregated ?? false}
               />

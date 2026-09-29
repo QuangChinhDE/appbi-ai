@@ -1207,9 +1207,43 @@
   border-width: 1.5px;
   border-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 32%, rgb(var(--border-line)));
 }
+/* Frameless means NO container: no border, no fill, no shadow, no tint/accent
+   wash. It used to clear only the colours, so a "frameless" report still drew
+   1px borders' worth of space, theme shadows and the accent-bar gradient. */
 [data-dashboard-cardtreatment="frameless"] .dashboard-tile {
   border-color: transparent;
   background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+}
+
+/* ── Per-tile frame (tileFrame / AI Design) ──────────────────────────────────
+   Set by lib/dashboard-presentation/tile-frame.ts on BOTH the builder tile and
+   the published tile. A per-tile frame outranks the report's card treatment,
+   KPI wash and accent bar — that is what "this KPI frameless, the rest carded"
+   means — so these carry !important against the theme's selector-level rules.
+   State rings (focus, cross-filter) are Tailwind ring = box-shadow on the
+   builder only, and are re-allowed below for the selected tile. */
+.dashboard-tile[data-tile-frame="flush"] {
+  border-width: 0 !important;
+  border-color: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.dashboard-tile[data-tile-frame="subtle"] {
+  border-width: 0 !important;
+  border-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+.dashboard-tile[data-tile-frame="flush"].ring-2,
+.dashboard-tile[data-tile-frame="subtle"].ring-2,
+.dashboard-tile[data-tile-frame="flush"].ring-1,
+.dashboard-tile[data-tile-frame="subtle"].ring-1 {
+  box-shadow: var(--tw-ring-inset, ) 0 0 0 calc(var(--tw-ring-offset-width, 0px) + 2px) var(--tw-ring-color) !important;
 }
 [data-dashboard-cardtreatment="glass"] .dashboard-tile {
   background-color: color-mix(in srgb, rgb(var(--surface-1)) calc(var(--dash-card-opacity, 1) * 100%), transparent);
@@ -1696,4 +1730,126 @@
 }
 .chart-surface-light .recharts-cartesian-grid line {
   stroke: rgb(226 230 235) !important;
+}
+
+/* ── Report Experience: narrative blocks ────────────────────────────────────
+   Words bound to findings. They inherit the report's text colour and font so a
+   theme or direction restyles them with everything else; the accent marks the
+   one figure a takeaway leads with. Variants encode ROLE, not decoration. */
+.dashboard-narrative { color: inherit; container-type: inline-size; }
+/* A wide headline block used ~half its width (the headline caps at 46ch for
+   reading). Wide enough, the supporting sentences take the right-hand column
+   instead of stacking under it; a headline with nothing beside it stays one
+   column. Container query: the block's own width decides, not the viewport. */
+@container (min-width: 860px) {
+  .dashboard-narrative[data-narrative-variant="headline"] .dashboard-narrative__inner:has(.dashboard-narrative__list > li, .dashboard-narrative__prose) {
+    display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); column-gap: 40px; row-gap: 6px; align-content: center;
+  }
+  .dashboard-narrative[data-narrative-variant="headline"] .dashboard-narrative__eyebrow { grid-column: 1 / -1; }
+  .dashboard-narrative[data-narrative-variant="headline"] .dashboard-narrative__headline { grid-column: 1; }
+  .dashboard-narrative[data-narrative-variant="headline"] .dashboard-narrative__prose,
+  .dashboard-narrative[data-narrative-variant="headline"] .dashboard-narrative__list { grid-column: 2; grid-row: 2 / span 4; align-self: center; }
+}
+.dashboard-narrative__inner { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px; min-height: 100%; justify-content: center; }
+.dashboard-narrative__eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; opacity: .65; }
+.dashboard-narrative__headline { margin: 0; font-size: clamp(20px, 2.3vw, 32px); line-height: 1.18; font-weight: 600; letter-spacing: -.01em; text-wrap: balance; max-width: 46ch; }
+.dashboard-narrative__title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.3; }
+.dashboard-narrative__prose { margin: 0; font-size: var(--dash-font-narrative, 14px); line-height: 1.6; opacity: .85; max-width: 72ch; }
+.dashboard-narrative__list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.dashboard-narrative__item { font-size: var(--dash-font-narrative, 14px); line-height: 1.5; padding-left: 12px; border-left: 2px solid color-mix(in srgb, currentColor 18%, transparent); max-width: 72ch; }
+.dashboard-narrative__item.is-pending { opacity: .5; font-style: italic; }
+.dashboard-narrative__item.is-unavailable { opacity: .6; font-style: italic; }
+.dashboard-narrative__hint { margin: 0; font-size: 12px; opacity: .55; }
+.dashboard-narrative__figure { font-size: 28px; font-weight: 650; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--dashboard-accent, currentColor); }
+/* A fall is not bad news by itself (cost, late orders, returns): the figure
+   keeps the accent colour whichever way it moved; the sign carries direction. */
+/* The sentence leads its box: spare height (a re-wrapped phone column) falls below it, not above. */
+[data-narrative-variant="headline"] .dashboard-narrative__inner { justify-content: flex-start; gap: 10px; }
+[data-narrative-variant="headline"] .dashboard-narrative__item { border-left: 0; padding-left: 0; font-size: 15px; opacity: .8; }
+[data-narrative-variant="summary"] .dashboard-narrative__item:first-child { border-left-color: var(--dashboard-accent, currentColor); }
+[data-narrative-variant="callout"] .dashboard-narrative__inner,
+[data-narrative-variant="takeaway"] .dashboard-narrative__inner { justify-content: flex-start; padding: 6px 4px; }
+[data-narrative-variant="callout"] .dashboard-narrative__item,
+[data-narrative-variant="takeaway"] .dashboard-narrative__item { border-left: 0; padding-left: 0; }
+[data-narrative-variant="chapter"] .dashboard-narrative__inner { justify-content: flex-start; gap: 8px; padding-top: 10px; }
+[data-narrative-variant="chapter"] .dashboard-narrative__title { font-size: clamp(18px, 1.7vw, 24px); font-weight: 600; letter-spacing: -.01em; }
+[data-narrative-variant="chapter"] .dashboard-narrative__item { border-left: 0; padding-left: 0; font-size: 15px; line-height: 1.65; }
+
+/* ── The report header (opening) ────────────────────────────────────────────
+   Title on the report's largest type role, description as body text, the
+   period and filters as quiet meta — three layouts over the same accent. */
+.dashboard-report-header { position: relative; display: flex; gap: 28px; height: 100%; width: 100%; padding: 18px 22px; color: inherit; container-type: inline-size; overflow: hidden; }
+.dashboard-report-header__main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 6px; }
+.dashboard-report-header__eyebrow { font-size: var(--dash-font-meta, 11px); font-weight: 650; letter-spacing: .12em; text-transform: uppercase; color: var(--dashboard-accent, currentColor); }
+.dashboard-report-header__title { margin: 0; font-size: var(--dash-font-reportTitle, 30px); font-weight: var(--dash-weight-reportTitle, 700); line-height: 1.12; letter-spacing: -.015em; text-wrap: balance; }
+.dashboard-report-header__title.is-placeholder { opacity: .35; }
+.dashboard-report-header__description { margin: 0; font-size: var(--dash-font-narrative, 14px); line-height: 1.5; opacity: .8; max-width: 78ch; }
+.dashboard-report-header__meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: var(--dash-font-meta, 11.5px); font-weight: 500; opacity: .72; }
+.dashboard-report-header__meta > span + span::before { content: '·'; margin-right: 14px; opacity: .6; }
+.dashboard-report-header__headline p { margin: 0; font-size: calc(var(--dash-font-narrative, 14px) * 1.15); line-height: 1.45; font-weight: 550; max-width: 60ch; }
+.dashboard-report-header__headline[data-finding-state="pending"] p,
+.dashboard-report-header__headline[data-finding-state="unavailable"] p { opacity: .55; font-style: italic; font-weight: 400; }
+.dashboard-report-header__figure { font-size: calc(var(--dash-font-reportTitle, 30px) * 1.05); font-weight: 700; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--dashboard-accent, currentColor); margin-bottom: 6px; }
+.dashboard-report-header__aside { flex: 0 0 min(38%, 360px); display: flex; flex-direction: column; justify-content: center; gap: 10px; padding-left: 24px; border-left: 1px solid color-mix(in srgb, currentColor 14%, transparent); }
+.dashboard-report-header__static { flex: 0 0 auto; align-self: center; text-align: right; }
+.dashboard-report-header__static-value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--dashboard-accent, currentColor); }
+.dashboard-report-header__static-label { font-size: var(--dash-font-meta, 11px); text-transform: uppercase; letter-spacing: .06em; opacity: .65; }
+.dashboard-report-header.is-banner { border-radius: var(--dashboard-card-radius, 14px); background: linear-gradient(115deg, color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 11%, transparent), color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 3%, transparent) 70%); border: 1px solid color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 16%, transparent); }
+.dashboard-report-header.is-banner::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--dashboard-accent, #5b5bd6); }
+.dashboard-report-header.is-split { border-radius: var(--dashboard-card-radius, 14px); background: rgb(var(--surface-1)); border: 1px solid rgb(var(--border-line)); }
+.dashboard-report-header.is-minimal { padding: 10px 2px 14px; border-bottom: 2px solid color-mix(in srgb, currentColor 12%, transparent); border-radius: 0; }
+@container (max-width: 560px) {
+  .dashboard-report-header { flex-direction: column; gap: 12px; padding: 14px 16px; }
+  .dashboard-report-header__aside { flex: 0 0 auto; padding-left: 0; border-left: 0; border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent); padding-top: 10px; }
+  .dashboard-report-header__title { font-size: calc(var(--dash-font-reportTitle, 30px) * .78); }
+}
+
+/* KPI context: the comparable-period change of the same measure + its shape.
+   Neutral unless the author declared which direction is good. */
+.dashboard-kpi-context { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 16px 10px; font-size: 12px; line-height: 1.3; color: inherit; }
+.dashboard-kpi-delta { font-weight: 600; font-variant-numeric: tabular-nums; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, currentColor 10%, transparent); }
+.dashboard-kpi-delta.is-good { color: #15803d; background: rgba(21, 128, 61, .1); }
+.dashboard-kpi-delta.is-bad { color: #b42318; background: rgba(180, 35, 24, .1); }
+.dashboard-kpi-vs { opacity: .62; }
+.dashboard-kpi-spark { margin-left: auto; color: var(--dashboard-accent, currentColor); opacity: .9; flex: 0 0 auto; }
+
+/* A KPI's label needs the tile's width more than the hover-only actions do:
+   out of the flow until the tile is hovered or focused (the filter-skipped
+   badge is a span and stays visible). */
+.dashboard-tile-title-row[data-kpi] > a,
+.dashboard-tile-title-row[data-kpi] > button,
+.dashboard-tile-title-row[data-kpi] > div { display: none; }
+.group:hover .dashboard-tile-title-row[data-kpi] > a,
+.group:hover .dashboard-tile-title-row[data-kpi] > button,
+.group:hover .dashboard-tile-title-row[data-kpi] > div,
+.dashboard-tile-title-row[data-kpi]:focus-within > a,
+.dashboard-tile-title-row[data-kpi]:focus-within > button,
+.dashboard-tile-title-row[data-kpi]:focus-within > div { display: inline-flex; }
+
+/* KPI context: the span the number covers, then a comparison that carries its
+   own window and value, so a change is never read as the total's change. */
+.dashboard-kpi-scope { display: block; font-size: 11px; opacity: .6; margin-bottom: 2px; }
+.dashboard-kpi-window { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; font-size: 11.5px; }
+.dashboard-kpi-window-label { opacity: .7; }
+.dashboard-kpi-window-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* KPI context steps down on a short tile: sparkline first, then the
+   comparison; the one-line scope stays as long as anything does. */
+.dashboard-kpi-context[data-fit="compact"] .dashboard-kpi-spark { display: none; }
+.dashboard-kpi-context[data-fit="scope"] .dashboard-kpi-spark,
+.dashboard-kpi-context[data-fit="scope"] .dashboard-kpi-window { display: none; }
+
+.dashboard-kpi-context { container-type: inline-size; }
+@container (max-width: 170px) { .dashboard-kpi-scope-prefix { display: none; } }
+
+/* ── Tile emphasis (layout.emphasis) ─────────────────────────────────────────
+   The author's statement of what leads: a lead tile's title steps up the
+   report's own chart-title role, a quiet one steps down and recedes. The KPI
+   figure is scaled in KpiCard (it is sized to fit its tile there). */
+[data-emphasis="lead"] [data-pdf-tile-title] {
+  font-size: calc(var(--dash-font-chartTitle, 13px) * 1.18);
+}
+[data-emphasis="quiet"] [data-pdf-tile-title] {
+  font-size: calc(var(--dash-font-chartTitle, 13px) * 0.92);
+  color: rgb(var(--text-secondary));
 }

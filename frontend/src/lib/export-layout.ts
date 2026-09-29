@@ -19,7 +19,18 @@ import type { PdfOrientation, PdfPageSize } from './export-pdf';
 
 export const SHEET_COLS = 12;
 
+/**
+ * The key of a report element that is not a chart (a report header, a section
+ * heading, text, a note, an insight): the negative of its tile id, so it can
+ * never collide with a chart id. The arranger and the exporter treat both the
+ * same way; only where the element is found on the page differs.
+ */
+export const planKeyForElement = (dashboardChartId: number): number => -Math.abs(dashboardChartId);
+/** Report elements that print (interactive controls do not). */
+export const PRINTABLE_ELEMENT_TYPES = new Set(['hero_strip', 'section_header', 'text', 'callout', 'narrative', 'image', 'shape', 'html_fragment']);
+
 export interface PlanTile {
+  /** A chart id, or planKeyForElement(tileId) for a report element. */
   chartId: number;
   x: number;
   y: number;

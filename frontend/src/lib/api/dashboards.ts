@@ -42,6 +42,19 @@ export type DashboardEditLock = {
   pending_requests: Array<{ requester_key: string; name: string | null; email: string | null }>;
 };
 
+// The shared filters/pages/theme draft is edited by every author together; each
+// write names the revision it was made on and the server refuses a stale one
+// (409 `shared_draft_stale`) instead of silently replacing a colleague's edit.
+// The revision is read from every response that carries it.
+const sharedDraftRev = new Map<number, string>();
+function noteSharedDraft<T extends { id?: number; shared_draft?: { rev?: string } | null }>(d: T): T {
+  if (d && typeof d.id === 'number' && typeof d.shared_draft?.rev === 'string') sharedDraftRev.set(d.id, d.shared_draft.rev);
+  return d;
+}
+
+/** Raised when the shared draft moved on since this editor loaded it. */
+export const SHARED_DRAFT_CONFLICT_EVENT = 'appbi:shared-draft-conflict';
+
 export const dashboardApi = {
   getAll: async (): Promise<Dashboard[]> => {
     const response = await apiClient.get('/dashboards/');
@@ -50,7 +63,7 @@ export const dashboardApi = {
 
   getById: async (id: number): Promise<Dashboard> => {
     const response = await apiClient.get(`/dashboards/${id}`);
-    return response.data;
+    return noteSharedDraft(response.data);
   },
 
   create: async (data: DashboardCreate): Promise<Dashboard> => {
@@ -65,6 +78,15 @@ export const dashboardApi = {
 
   delete: async (id: number): Promise<void> => {
     await apiClient.delete(`/dashboards/${id}`);
+  },
+
+  // Start a report from a dataset: charts are chosen from its semantic model
+  // and each is run before it is kept (POST /dashboards/report-starter).
+  reportStarter: async (body: { dataset_id: number; goal?: string; name?: string }): Promise<{
+    dashboard_id: number; name: string; charts: unknown[]; source: 'model' | 'rules'; candidates: number; probed: number; elapsed_ms: number;
+  }> => {
+    const response = await apiClient.post('/dashboards/report-starter', body, { timeout: 90_000 });
+    return response.data;
   },
 
   // Deep-clone a dashboard into an independent copy (own chart rows).
@@ -129,8 +151,55 @@ export const dashboardApi = {
     return response.data;
   },
 
+  /** Remove an element IN THE CALLER'S DRAFT. A published element stays live
+   *  (the public link and embed keep it) until Publish; `restoreChart` (Undo)
+   *  or Discard brings the same row back. An element added in this draft is
+   *  deleted — it was never published. */
   removeChart: async (dashboardId: number, dashboardChartId: number): Promise<Dashboard> => {
-    const response = await apiClient.delete(`/dashboards/${dashboardId}/charts/${dashboardChartId}`);
+    const response = await apiClient.delete(`/dashboards/${dashboardId}/charts/${dashboardChartId}`, { params: { draft: true } });
+    return response.data;
+  },
+
+  /** Undo a draft removal: the same element, the same id, back in the draft. */
+  /** Show another chart in this tile's place, as a draft edit of this report:
+   *  Publish makes the swap, Discard undoes it (the shared chart is untouched). */
+  swapChartInDraft: async (dashboardId: number, dashboardChartId: number, chartId: number): Promise<Dashboard> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/charts/${dashboardChartId}/swap-chart`, { chart_id: chartId });
+    return response.data;
+  },
+
+  /** Edit a chart for THIS report only, in one server transaction: the copy
+   *  (with its metadata and parameter definitions) is created and swapped into
+   *  the tile as a draft. Nothing is left behind if it fails; Discard deletes
+   *  the copy. */
+  forkChartForReport: async (
+    dashboardId: number,
+    dashboardChartId: number,
+    body: {
+      name: string;
+      description?: string | null;
+      chart_type: string;
+      dataset_table_id: number;
+      config: Record<string, any>;
+      metadata?: Record<string, any> | null;
+      parameters?: Array<Record<string, any>>;
+    },
+  ): Promise<Dashboard> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/charts/${dashboardChartId}/fork-chart`, body);
+    return response.data;
+  },
+
+  restoreChart: async (dashboardId: number, dashboardChartId: number): Promise<Dashboard> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/charts/${dashboardChartId}/restore`);
+    return response.data;
+  },
+
+  /** Audit a person's decision on an AI Design content proposal. */
+  recordProposalDecision: async (
+    dashboardId: number,
+    body: { decision: 'accepted' | 'rejected'; kind: string; tile_id: number; before?: unknown; after?: unknown; source: 'ai' | 'rule' },
+  ): Promise<{ ok: boolean }> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/content-proposals/decision`, body);
     return response.data;
   },
 
@@ -156,6 +225,9 @@ export const dashboardApi = {
     const response = await apiClient.patch(
       `/dashboards/${dashboardId}/widgets/${dashboardChartId}`,
       { widget_config: widgetConfig },
+      // A draft edit: a published widget keeps its published content on the
+      // public link until Publish; Discard drops the edit.
+      { params: { draft: true } },
     );
     return response.data;
   },
@@ -171,6 +243,9 @@ export const dashboardApi = {
     const response = await apiClient.patch(
       `/dashboards/${dashboardId}/charts/${dashboardChartId}/parameters`,
       { parameters },
+      // A draft edit (the builder is the only caller): public and embed keep
+      // the published bindings until Publish; Discard drops the edit.
+      { params: { draft: true } },
     );
     return response.data;
   },
@@ -210,10 +285,28 @@ export const dashboardApi = {
       slicers_config?: Array<Record<string, any>>;
       slicer_cluster_layout?: Record<string, any>;
       pages_config?: Array<Record<string, any>>;
+      /** The report theme, staged with the rest of the presentation and
+       *  published by POST /publish in the same transaction. */
+      theme_config?: Record<string, any>;
+      /** Elements removed in the SAME draft change (a deleted filter's
+       *  controls): all of them and the filter entry, or nothing. */
+      remove_tile_ids?: number[];
     }
   ): Promise<Dashboard> => {
-    const response = await apiClient.put(`/dashboards/${dashboardId}/draft-filters`, body);
-    return response.data;
+    const baseRev = sharedDraftRev.get(dashboardId);
+    try {
+      const response = await apiClient.put(`/dashboards/${dashboardId}/draft-filters`, {
+        ...body,
+        ...(baseRev !== undefined ? { base_rev: baseRev } : {}),
+      });
+      return noteSharedDraft(response.data);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      if (err?.response?.status === 409 && detail?.code === 'shared_draft_stale' && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(SHARED_DRAFT_CONFLICT_EVENT, { detail: { dashboardId, by: detail.by ?? null } }));
+      }
+      throw err;
+    }
   },
 
   // Phase-B17 — publish accepts an optimistic-concurrency guard. Pass the
@@ -221,18 +314,29 @@ export const dashboardApi = {
   // published meanwhile (unless force=true).
   publishDraft: async (
     dashboardId: number,
-    opts?: { tileBaseV?: Record<string, number> | null; force?: boolean },
+    opts?: { tileBaseV?: Record<string, number> | null; force?: boolean; sharedAckRev?: string; keepShared?: boolean },
   ): Promise<Dashboard> => {
+    // sharedAckRev / keepShared: the answer to 409 `shared_draft_other_authors`
+    // — publish other authors' shared edits too (the revision shown), or leave
+    // the shared draft pending and publish only this author's work.
     const body = opts
-      ? { tile_base_v: opts.tileBaseV ?? null, force: !!opts.force }
+      ? {
+        tile_base_v: opts.tileBaseV ?? null,
+        force: !!opts.force,
+        ...(opts.sharedAckRev !== undefined ? { shared_ack_rev: opts.sharedAckRev } : {}),
+        ...(opts.keepShared ? { keep_shared: true } : {}),
+      }
       : undefined;
     const response = await apiClient.post(`/dashboards/${dashboardId}/publish`, body);
-    return response.data;
+    return noteSharedDraft(response.data);
   },
 
-  discardDraft: async (dashboardId: number): Promise<Dashboard> => {
-    const response = await apiClient.post(`/dashboards/${dashboardId}/discard-draft`);
-    return response.data;
+  discardDraft: async (dashboardId: number, opts?: { sharedAckRev?: string; keepShared?: boolean }): Promise<Dashboard> => {
+    const body = opts
+      ? { ...(opts.sharedAckRev !== undefined ? { shared_ack_rev: opts.sharedAckRev } : {}), ...(opts.keepShared ? { keep_shared: true } : {}) }
+      : undefined;
+    const response = await apiClient.post(`/dashboards/${dashboardId}/discard-draft`, body);
+    return noteSharedDraft(response.data);
   },
 
   // Phase-B17/B19 — editor presence + per-page co-edit rights. Heartbeat reports
@@ -423,6 +527,15 @@ export const dashboardApi = {
    * draft. The server is a proxy so the API key stays server-side; it has no
    * opinion about what a legal plan is.
    */
+  /** One visual review of a rendered AI Design preview (503 when no vision model). */
+  critiquePresentation: async (
+    dashboardId: number,
+    body: { image: string; tiles: { id: number; kind: string; title: string }[]; direction?: string | null },
+  ): Promise<import('@/lib/dashboard-presentation/vision-review').VisionReview> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/presentation-critique`, body, { timeout: 90_000 });
+    return response.data;
+  },
+
   planPresentation: async (
     dashboardId: number,
     input: {
@@ -433,8 +546,11 @@ export const dashboardApi = {
        *  that comes back is validated and compiled here before it can touch a
        *  tile, so an image can never change what a chart shows. */
       images?: string[];
-      /** When the user clicked one chart to restyle only it. */
-      focusedChartId?: number | null;
+      /** The permission the user's words granted (style/structure/redesign).
+       *  Advisory for the model; the client clamps and enforces it regardless. */
+      grantedLayer?: 'style' | 'structure' | 'redesign';
+      /** The visuals the user selected. Empty = the whole page. */
+      targetIds?: number[];
     },
   ): Promise<{ plan: unknown }> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/presentation-plan`, {
@@ -442,7 +558,8 @@ export const dashboardApi = {
       snapshot: input.snapshot,
       conversation: input.conversation ?? null,
       images: input.images && input.images.length > 0 ? input.images : null,
-      focused_chart_id: input.focusedChartId ?? null,
+      granted_layer: input.grantedLayer ?? 'style',
+      target_ids: input.targetIds && input.targetIds.length > 0 ? input.targetIds : null,
     });
     return response.data;
   },

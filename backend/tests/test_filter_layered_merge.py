@@ -17,8 +17,10 @@ from app.services.filter_layered_merge import (
     LAYER_VIEWER_SLICER,
     LAYER_LINK_HIDDEN,
     LAYER_LINK_LOCKED,
+    LINK_ENTRY_MALFORMED,
     filters_to_merge_entries,
     link_entry_has_value,
+    link_entry_state,
     link_managed_field_keys,
     make_public_layers,
     merge_layered_filters,
@@ -314,10 +316,13 @@ def test_link_entry_has_value_matrix():
     assert link_entry_has_value({"field": "p", "value": 0}) is True  # 0 is a real value
     assert link_entry_has_value({"field": "p", "value": []}) is False
     assert link_entry_has_value({"field": "p", "value": ""}) is False
-    # BE does NOT trim (preserves the pre-existing `v not in (None, "")`
-    # semantics): a whitespace-only value counts as present. The FE save-guard
-    # trims and blocks that degenerate case upstream.
-    assert link_entry_has_value({"field": "p", "value": "   "}) is True
+    # The ENGINE decides (Report Studio V3 completion, DoD 1.1): it trims, so a
+    # whitespace-only value enforces nothing. It used to count as present here —
+    # the structure stripped the field's slicer and page filter while the engine
+    # applied no lock (wider data than the page). Now it is not enforced, and
+    # because it carries something, it is malformed: the link fails closed.
+    assert link_entry_has_value({"field": "p", "value": "   "}) is False
+    assert link_entry_state({"field": "p", "value": "   "}) == LINK_ENTRY_MALFORMED
     assert link_entry_has_value({"field": "p", "value": None}) is False
     assert link_entry_has_value({"field": "p"}) is False  # missing value
     assert link_entry_has_value({"field": "p", "value": {}}) is False

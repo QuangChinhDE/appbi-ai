@@ -2165,7 +2165,8 @@ def tool_inspect_filters(ctx: ToolContext, args: dict) -> dict:
     khoảng date >= 2024-01-01 …") and let the user decide whether to
     relax them. No data is read; no scope is bypassed.
     """
-    filters = list(ctx.public_filters or [])
+    from app.services.filter_layered_merge import disclosed_applied_filters
+    filters, withheld = disclosed_applied_filters(getattr(ctx, "public_filters", None))
     formatted: list[dict] = []
     for f in filters:
         if not isinstance(f, dict):
@@ -2179,6 +2180,7 @@ def tool_inspect_filters(ctx: ToolContext, args: dict) -> dict:
         "filter_count": len(formatted),
         "has_filters": bool(formatted),
         "active_filters": formatted,
+        **({"restricted_by_author": withheld} if withheld else {}),
         "note": (
             "These filters are merged from the dashboard public link's "
             "saved filters and any slicer values the viewer applied. "

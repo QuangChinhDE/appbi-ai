@@ -536,6 +536,8 @@ def _cache_key(ctx: Any, name: str, args: dict) -> str | None:
             [
                 dashboard,
                 getattr(ctx, "public_filters", []),
+                # A result read under one page scope never answers another.
+                sorted((str(k), v) for k, v in (getattr(ctx, "page_scope_by_chart", None) or {}).items()),
                 _authorization_identity(ctx),
                 name,
                 args,
@@ -767,24 +769,34 @@ def _declare_scope(ctx: Any, spec: "ToolSpec", out: dict) -> dict:
     applied = getattr(ctx, "public_filters", None) or []
     if not isinstance(applied, list) or not applied:
         return out
+    # Name only what may be disclosed; a 🚫 hidden constraint is counted, never
+    # named (it would otherwise be repeated to a public viewer as "the slice").
+    from app.services.filter_layered_merge import disclosable_filters
+    shown, withheld = disclosable_filters(applied)
     fields = []
-    for f in applied:
+    for f in shown:
         if not isinstance(f, dict):
             continue
         label = str(f.get("label") or f.get("semanticField") or f.get("field")
                     or f.get("column") or "").strip()
         if label and label not in fields:
             fields.append(label)
-    if not fields:
+    if not fields and not withheld:
         return out
     out.setdefault("scope", {
         "filtered_by": fields[:12],
         "filter_count": len(applied),
+        **({"restricted_by_author": withheld} if withheld else {}),
         "note": (
             "Every figure in this result is for THIS SLICE of the data only, not "
             "the whole business. The filters above were applied before the query "
             "ran and cannot be removed. Say which slice the numbers describe; "
             "never present them as the overall total."
+            + (
+                " Some restrictions set by the report author are not named: say the "
+                "data is restricted by the report, never guess or name them."
+                if withheld else ""
+            )
         ),
     })
     return out

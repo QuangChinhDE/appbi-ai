@@ -40,40 +40,46 @@ export function isDecorativeWidget(widgetType: string | null | undefined): boole
 export interface RoleInferenceInput {
   chartType: string;
   widgetType: string;
-  /** Current width in grid columns (36-col space). */
+  /** Current width in grid columns (36-col space). A TIE-BREAKER only. */
   w: number;
-  /** Current row. Tiles the author put at the top are more likely headline. */
+  /** Current row. Kept for callers; no longer decides a role on its own. */
   y: number;
   gridColumns: number;
+  /** The visual is organised over time (date axis / time grain). */
+  temporal?: boolean;
+  /** Analytical intent from chart metadata (trend, comparison, ranking, …). */
+  intent?: string;
 }
 
 /**
- * The inference. Deliberately conservative — when the signals disagree it
- * returns `supporting` rather than promoting something to `primary`, because a
- * composition that over-promotes ends up with three "main" charts and no
- * hierarchy at all, which is the exact failure the redesign is meant to fix.
+ * The inference, meaning first.
+ *
+ * It used to read mostly geometry — "a trend given half the width is the
+ * page's argument" — which made every redesign a function of the last one: the
+ * chart the author happened to make wide was promoted, got made wider, and was
+ * promoted again. Now the order of evidence is: what KIND of mark it is (a
+ * number, a table, a composition), then what it SAYS (a series over time is the
+ * argument; metadata intent), and only when those are silent, how wide the
+ * author made it. Geometry is still a signal — an author who gave a bar chart
+ * two thirds of the page meant something — but it is the last one consulted.
  */
 export function inferPresentationRole(input: RoleInferenceInput): PresentationRole {
-  const { chartType, widgetType, w, y, gridColumns } = input;
+  const { chartType, widgetType, w, gridColumns } = input;
   const type = String(chartType || '').toUpperCase();
+  const intent = String(input.intent ?? '').toLowerCase();
 
   if (!isDataVisual(widgetType)) return 'supporting';
-
-  if (KPI_TYPES.has(type)) {
-    // A KPI the author left full-width at the very top was doing headline work.
-    const isHeadline = y === 0 && w >= gridColumns / 2;
-    return isHeadline ? 'headline' : 'kpi';
-  }
-
+  if (KPI_TYPES.has(type)) return 'kpi';
   if (TABLE_TYPES.has(type)) return 'table';
   if (BREAKDOWN_TYPES.has(type)) return 'breakdown';
 
-  if (TREND_TYPES.has(type)) {
-    // A trend given at least half the width is the page's argument.
-    return w >= gridColumns / 2 ? 'primary' : 'secondary';
-  }
+  // A series over time carries the page's argument, whatever width it has now.
+  if (TREND_TYPES.has(type) || input.temporal || intent === 'trend') return 'primary';
 
-  // BAR and the rest: wide means it was leading, narrow means it was flanking.
+  if (intent === 'distribution' || intent === 'composition') return 'breakdown';
+  if (intent === 'comparison' || intent === 'ranking') return 'secondary';
+
+  // Silent on meaning: the author's sizing is the remaining evidence.
   if (w >= gridColumns * 0.6) return 'primary';
   if (w <= gridColumns / 3) return 'breakdown';
   return 'secondary';

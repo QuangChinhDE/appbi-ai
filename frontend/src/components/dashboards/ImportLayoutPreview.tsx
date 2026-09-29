@@ -13,9 +13,13 @@ import { useI18n } from '@/providers/LanguageProvider';
  *
  * This is a map, not a rendering: the charts do not exist yet, so there is no
  * data to draw. It shows where every tile lands, how big it is, what kind it
- * is, and which template and filter dock the report will use — everything the
- * layout decides, which is exactly what a person needs to check before
- * committing.
+ * is, and which template the report will use — everything the layout decides,
+ * which is exactly what a person needs to check before committing.
+ *
+ * Filters: the import places the report's filter controls as a band at the
+ * top of the grid (slicer_control_service), unless the source hid its filter
+ * UI. There is no rail or drawer any more, so the preview never draws one —
+ * it used to show "filters: left" and a side rail that would never render.
  */
 
 type Tile = {
@@ -131,8 +135,7 @@ export function ImportLayoutPreview({
 
   if (tiles.length === 0) return null;
 
-  const dock = String(filterDock ?? 'top');
-  const railDock = dock === 'left' || dock === 'right';
+  const filtersShown = String(filterDock ?? 'top') !== 'hidden' && (slicers ?? []).length > 0;
 
   return (
     <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
@@ -148,7 +151,6 @@ export function ImportLayoutPreview({
         <div className="flex flex-wrap items-center gap-1.5">
           {templateFamily && <Chip label={t('dashboards.htmlImport.previewTemplate')} value={templateFamily} />}
           {colorway && <Chip label={t('dashboards.htmlImport.previewColorway')} value={colorway} />}
-          <Chip label={t('dashboards.htmlImport.previewDock')} value={dock} />
           <Chip
             label={t('dashboards.htmlImport.previewSlicers')}
             value={String((slicers ?? []).length)}
@@ -162,10 +164,9 @@ export function ImportLayoutPreview({
         </p>
       )}
 
-      <div className={railDock ? 'flex gap-2' : ''}>
-        {railDock && <DockRail side={dock} label={t('dashboards.htmlImport.previewFilters')} />}
+      <div>
         <div className="min-w-0 flex-1">
-          {!railDock && dock !== 'drawer' && (
+          {filtersShown && (
             <div className="mb-2 rounded-md border border-dashed border-[rgb(var(--border-strong))] px-3 py-1.5 text-center text-[10px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">
               {t('dashboards.htmlImport.previewFilters')}
             </div>
@@ -239,14 +240,3 @@ function Chip({ label, value }: { label: string; value: string }) {
   );
 }
 
-function DockRail({ side, label }: { side: string; label: string }) {
-  return (
-    <div
-      className={`w-16 shrink-0 rounded-md border border-dashed border-[rgb(var(--border-strong))] px-1 py-2 text-center text-[9px] font-semibold uppercase leading-tight tracking-[0.08em] text-text-tertiary ${
-        side === 'right' ? 'order-2' : ''
-      }`}
-    >
-      {label}
-    </div>
-  );
-}

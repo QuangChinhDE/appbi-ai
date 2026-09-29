@@ -6,6 +6,7 @@ import { Minus, Target, TrendingDown, TrendingUp } from 'lucide-react';
 import type { NumberFormat } from '@/components/explore/ExploreChartConfig';
 import type { KpiBackgroundMode, KpiGoalDirection, KpiValueColorRule } from '@/types/api';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
+import { EMPHASIS_SCALE, useTileEmphasis } from '@/lib/tile-emphasis';
 
 type KpiCardProps = {
   value: number | string | null;
@@ -173,6 +174,12 @@ function formatNumericValue(
   }
 
   if (format === 'currency') {
+    // A headline figure in the millions reads as R$13.6M, not R$13,591,643.7 —
+    // the full digits are for a table cell (choose 'number' to keep them).
+    if (abs >= 1_000_000) {
+      const scaled = abs >= 1_000_000_000 ? `${(numericValue / 1_000_000_000).toFixed(decimalPlaces)}B` : `${(numericValue / 1_000_000).toFixed(decimalPlaces)}M`;
+      return `${currencySymbol}${scaled}`;
+    }
     return `${currencySymbol}${numericValue.toLocaleString(undefined, {
       minimumFractionDigits: 0,
       maximumFractionDigits: decimalPlaces,
@@ -317,6 +324,7 @@ export function KpiCard({
   // Phase-B15 — dashboard theme: KPI value size + status colors. Empty {} when
   // rendered standalone (no DashboardThemeProvider), so behaviour is unchanged.
   const dashTheme = useDashboardChartTheme();
+  const tileEmphasis = useTileEmphasis();
   // #4 — dashboard-wide display units. An explicit prop (from ExploreChart) wins;
   // otherwise inherit the report theme so the legacy ChartPreview KPI path (no
   // prop) is covered too. Undefined in standalone Explore → behaviour unchanged.
@@ -484,12 +492,18 @@ export function KpiCard({
   // to stop a long number overflowing a short tile, not to inflate a short
   // number to 72px because the tile happens to be tall — which is how six KPIs
   // ended up shouting in identical 58px digits.
+  // The number leads: ~2.3x body text (a 14px theme → 32px) so value, label
+  // and context read as three levels, not two sizes of the same text. The
+  // width/height clamp below still keeps it on one line inside the tile.
   const themeKpiRole = dashTheme.tokens
-    ? Math.round(dashTheme.tokens.typoBase * 1.85)
+    ? Math.round(dashTheme.tokens.typoBase * 2.3)
     : undefined;
+  // The author's emphasis for this tile (lead / quiet) scales the report's own
+  // KPI role; a size the author typed for this chart stays exactly that size.
+  const emphasisScale = EMPHASIS_SCALE[tileEmphasis];
   const fontCeil = resolvedValueFontSize
-    ?? (dashTheme.kpiFontSize as number | undefined)
-    ?? themeKpiRole
+    ?? (dashTheme.kpiFontSize != null ? Number(dashTheme.kpiFontSize) * emphasisScale : undefined)
+    ?? (themeKpiRole != null ? Math.round(themeKpiRole * emphasisScale) : undefined)
     ?? 72;
   // Height budget. A KPI with just label+value (no benchmark/delta panels) was
   // only taking ~0.36 of the tile height, so the number sat small with a big

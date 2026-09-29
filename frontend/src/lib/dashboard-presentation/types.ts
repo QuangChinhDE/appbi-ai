@@ -35,11 +35,46 @@ export const PRESENTATION_ROLES: PresentationRole[] = [
   'headline', 'kpi', 'primary', 'secondary', 'breakdown', 'table', 'supporting',
 ];
 
-export type PresentationSpan = 'small' | 'medium' | 'large' | 'full';
-export const PRESENTATION_SPANS: PresentationSpan[] = ['small', 'medium', 'large', 'full'];
-
 export type PresentationEmphasis = 'low' | 'normal' | 'high';
 export const PRESENTATION_EMPHASES: PresentationEmphasis[] = ['low', 'normal', 'high'];
+
+/**
+ * How much of the page a design action is ALLOWED to rewrite.
+ *
+ *   style     - appearance only. Not one coordinate moves; enforced by the
+ *               validator, not hoped for by compiling and comparing.
+ *   structure - targeted arrangement ("KPIs on top", "make this bigger"): the
+ *               named visuals move, everything else stays where the author put
+ *               it unless it has to step aside.
+ *   redesign  - the user handed over the page: recompose it. Locks still hold.
+ *
+ * The user never picks one. It is inferred from their words (`intent.ts`), and
+ * the model can only ever ask for LESS than was granted, never more.
+ */
+export type DesignLayer = 'style' | 'structure' | 'redesign';
+export const DESIGN_LAYERS: DesignLayer[] = ['style', 'structure', 'redesign'];
+
+/** Targeted arrangement, as operations on the CURRENT layout rather than a new
+ *  one. Each names the visuals it moves; nothing it does not name is rewritten
+ *  except to make room. */
+export type StructureOp = 'move_to_top' | 'move_to_bottom' | 'resize' | 'swap' | 'arrange_row';
+export const STRUCTURE_OPS: StructureOp[] = ['move_to_top', 'move_to_bottom', 'resize', 'swap', 'arrange_row'];
+export type StructureSize = 'larger' | 'smaller' | 'full_width';
+export const STRUCTURE_SIZES: StructureSize[] = ['larger', 'smaller', 'full_width'];
+
+export interface StructureOperation {
+  op: StructureOp;
+  visuals: VisualId[];
+  /** Only for `resize`. */
+  size?: StructureSize;
+}
+
+/** Something the model thinks would help but is not presentation - a chart type
+ *  that would read better, a metric worth adding. Shown, never applied. */
+export interface DesignSuggestion {
+  visual?: VisualId;
+  text: string;
+}
 
 /** The layout primitives (§9). A composition is a sequence of these, and every
  *  one resolves to column spans that sum to the grid width — which is why a
@@ -62,12 +97,14 @@ export type LayoutPrimitive =
   // height of the rail, so `visuals[0]` is the hero and the rest stack beside
   // it. The compiler special-cases it exactly as it does `kpi_strip` (§9).
   | 'hero_with_rail'
-  | 'section_break';
+  // A band of slicer controls, each as wide as a control needs (not the grid's
+  // width split N ways): the page's filters in one row, whitespace after them.
+  | 'filter_bar';
 
 export const LAYOUT_PRIMITIVES: LayoutPrimitive[] = [
   'kpi_strip', 'hero_metric', 'full_width', 'two_equal', 'two_one', 'one_two',
   'three_equal', 'bento_primary', 'bento_secondary', 'table_full',
-  'analysis_with_sidebar', 'hero_with_rail', 'section_break',
+  'analysis_with_sidebar', 'hero_with_rail', 'filter_bar',
 ];
 
 export type CompositionStyle =
@@ -81,21 +118,19 @@ export const COMPOSITION_STYLES: CompositionStyle[] = [
 export type PresentationDensity = 'compact' | 'balanced' | 'spacious';
 export const PRESENTATION_DENSITIES: PresentationDensity[] = ['compact', 'balanced', 'spacious'];
 
-export type PresentationScope = 'page' | 'report';
-
 /** One band of the page. `visuals` is an ordered list of visual ids; the
  *  primitive decides how they share the row. */
 export interface PresentationSection {
   primitive: LayoutPrimitive;
   visuals: VisualId[];
-  /** Only for `section_break` — the heading a decorative widget will carry. */
-  title?: string;
 }
 
+/** `emphasis` is the one sizing lever a plan has over a visual: the compiler
+ *  gives a high-emphasis visual more height and a low one less. Widths come
+ *  from the primitive (a `span` field used to exist and changed nothing). */
 export interface VisualPreference {
   role: PresentationRole;
-  span: PresentationSpan;
-  emphasis: PresentationEmphasis;
+  emphasis?: PresentationEmphasis;
 }
 
 /** Slicer PRESENTATION. Nothing here can change what a slicer filters — the
@@ -134,20 +169,6 @@ export interface ThemeIntent {
   cardTreatment?: 'clean' | 'soft' | 'tinted' | 'elevated' | 'glass' | 'outline' | 'frameless';
 }
 
-export type DecorativeWidgetType = 'section_header' | 'callout' | 'hero_strip';
-export const DECORATIVE_WIDGET_TYPES: DecorativeWidgetType[] = [
-  'section_header', 'callout', 'hero_strip',
-];
-
-export interface DecorativeElement {
-  widgetType: DecorativeWidgetType;
-  /** Structural copy only. A callout may not assert something about the data —
-   *  see `validator.ts`. */
-  text?: string;
-  /** Index into `sections`; the element is placed immediately before it. */
-  beforeSection?: number;
-}
-
 /** Per-tile presentation, restricted to the allow-list in `capabilities.ts`.
  *  Typed as a bag because the allow-list is the authority — a key not in it is
  *  rejected regardless of what this type permits. */
@@ -159,30 +180,63 @@ export type TileStyleIntent = Record<string, unknown>;
  * type, a dataset or a filter, so none of those can be smuggled in.
  */
 export interface PresentationPlan {
-  scope: PresentationScope;
+  /** The layer the plan works at. Clamped to what the user's words granted. */
+  layer: DesignLayer;
   direction: {
     style: CompositionStyle;
     density: PresentationDensity;
   };
+  /** REDESIGN only - the recomposition. */
   sections: PresentationSection[];
   visualPreferences: Record<string, VisualPreference>;
+  /** STRUCTURE only - targeted operations on the current layout. */
+  structure?: { operations: StructureOperation[] };
   slicerPresentation?: SlicerPresentationIntent;
   themeIntent?: ThemeIntent;
-  decorativeElements?: DecorativeElement[];
   tileStyles?: Record<string, TileStyleIntent>;
+  /** Non-presentation ideas (a better chart type, ...). Displayed, never applied. */
+  suggestions?: DesignSuggestion[];
   /** The model's own one-line account of what it did, shown in the diff. */
   rationale?: string;
+  /** Presentation blocks a REDESIGN adds (headline, summary, chapter,
+   *  takeaway). Sections place them by their (negative) id like a visual.
+   *  They carry finding KEYS, never numbers. */
+  blocks?: PlanBlock[];
+  /** REDESIGN only — a control on the grid for a slicer the report already
+   *  has. It names the slicer; it cannot say what the slicer filters. */
+  slicerControls?: PlanSlicerControl[];
 }
 
 // ── Snapshot: what the planner is allowed to SEE ────────────────────────────
 
 /** A visual described without a single field that could identify a data
  *  source. No SQL, no dataset id, no column names, no rows. */
+export type BlockVariant = 'headline' | 'summary' | 'callout' | 'chapter' | 'takeaway';
+export const BLOCK_VARIANTS: BlockVariant[] = ['headline', 'summary', 'callout', 'chapter', 'takeaway'];
+
+/** A block in a plan. `id` is negative until the block is created. */
+export interface PlanBlock {
+  id: VisualId;
+  variant: BlockVariant;
+  eyebrow?: string;
+  title?: string;
+  /** Finding keys (`kind:dashboardChartId`) the block states, in order. */
+  findings: string[];
+  /** Sit on the canvas without a card (editorial prose, a flush summary). */
+  frameless?: boolean;
+  /** A section heading: its title introduces the tiles below it. It states no
+   *  finding, so it is created as a section header, not as a narrative. */
+  heading?: boolean;
+}
+
 export interface SnapshotVisual {
   dashboardChartId: VisualId;
   chartType: string;
   title: string;
   currentLayout: { x: number; y: number; w: number; h: number };
+  /** The section the author stated this tile belongs to (a heading's tile id),
+   *  or null for none. Absent when never stated (membership read by position). */
+  sectionId?: number | null;
   displayRoleHint: PresentationRole;
   isWidget: boolean;
   widgetType: string;
@@ -200,6 +254,55 @@ export interface SnapshotVisual {
    *   'flex'   — anything else; no strong preference
    */
   renderAspect: 'square' | 'wide' | 'tall' | 'flex';
+  /** How many rows the tile returned (a table is sized to what it shows). A
+   *  count only — never a value. Absent when the tile has not loaded. */
+  rowCount?: number;
+  /** 1-based position in the author's reading order (top to bottom, left to right). */
+  readingOrder: number;
+  /** The author locked this visual's geometry. No layer may move or resize it. */
+  locked: boolean;
+  /** What the visual SAYS - best available, every field optional. */
+  meaning: VisualMeaning;
+  /** The allow-listed style keys this tile already carries, so a restyle can
+   *  build on the current look instead of guessing it. */
+  currentStyle: Record<string, unknown>;
+  /** The finding kinds this visual can support, from its shape (a monthly
+   *  additive series → trend/peak/latest/period_comparison…). */
+  findingKinds?: string[];
+  /** For a narrative block already on the page: its role and who made it. */
+  block?: { variant: BlockVariant; origin?: 'ai' | 'author'; draftOnly?: boolean; findings: string[] };
+  /** For a section heading already on the page: who wrote it. An author's
+   *  heading always stays above the content it introduces; an AI heading can
+   *  be reused by a later redesign instead of adding a second one. */
+  heading?: { origin?: 'ai' | 'author' };
+}
+
+/**
+ * The business meaning of a visual, built from metadata the dashboard already
+ * loads - the chart's own role config, the dataset's semantic model and the
+ * chart's written description. Labels only: no SQL, no dataset ids, no rows.
+ */
+export interface VisualMeaning {
+  measures: Array<{ label: string; agg?: string; format?: string; description?: string; additive?: boolean }>;
+  dimensions: Array<{ label: string; temporal?: boolean }>;
+  /** True when the visual is organised over time (a date axis or a time grain). */
+  temporal: boolean;
+  /** A short statement of what the chart shows, when one exists. */
+  description?: string;
+  /** The chart's analytical intent, when metadata records one (trend, ranking...). */
+  intent?: string;
+  /** A benchmark or target is configured - the number is judged against something. */
+  hasBenchmark: boolean;
+  /** Whether higher is good (`up`) or bad (`down`), when the author said so. */
+  goodDirection?: 'up' | 'down';
+}
+
+/** A slicer control a redesign places. Negative id, placed by `sections` like
+ *  a block; created as a draft-only `slicer` widget on Apply. */
+export interface PlanSlicerControl {
+  id: VisualId;
+  slicerId: string;
+  treatment: 'auto' | 'dropdown' | 'list' | 'buttons' | 'compact';
 }
 
 export interface SnapshotSlicer {
@@ -207,10 +310,14 @@ export interface SnapshotSlicer {
   displayLabel: string;
   presentationType: string;
   currentPosition: string;
+  /** Its control's tile on this page's grid, when it has one. */
+  placedTileId?: number | null;
+  /** Whether its scope shows a control on this page at all. */
+  visibleHere?: boolean;
 }
 
 export interface DashboardPresentationSnapshot {
-  dashboard: { name: string; currentPageId: string; pageCount: number };
+  dashboard: { name: string; currentPageId: string; pageCount: number; description?: string };
   currentPage: { id: string; name: string };
   visuals: SnapshotVisual[];
   slicers: SnapshotSlicer[];
@@ -222,6 +329,9 @@ export interface DashboardPresentationSnapshot {
     cardTreatment?: string;
   };
   capabilities: unknown;
+  /** What the page currently says: findings its tiles support (sentence + key).
+   *  Aggregates only; a block references them by key. */
+  findings?: { key: string; sentence: string }[];
 }
 
 // ── The mutation the compiler produces ──────────────────────────────────────
@@ -233,18 +343,28 @@ export interface PresentationMutation {
   /** Per-tile layout overrides, keyed by DashboardChart id. Merges into
    *  `localLayoutOverrides` exactly as a drag would. */
   layoutOverrides: Record<VisualId, Partial<DashboardChartLayout>>;
-  /** Theme keys to merge into `theme_config`. Empty when scope is 'page'. */
+  /** Theme keys to merge into `theme_config` (report-level by storage). */
   themePatch: Partial<DashboardThemeConfig>;
   /** `slicer_cluster_layout` keys to merge. */
   slicerClusterPatch: Record<string, unknown>;
-  /** Decorative widgets to create, each already stamped `createdBy`. */
-  createdWidgets: Array<{
-    widgetType: DecorativeWidgetType;
-    widgetConfig: Record<string, unknown>;
-    layout: Partial<DashboardChartLayout>;
-  }>;
   /** Non-fatal notes: things the plan asked for that were approximated. */
   notes: string[];
+  /** The layer this mutation was built at - what the validator holds it to. */
+  layer: DesignLayer;
+  /** Presentation blocks the plan adds (narrative, section header). Each has a
+   *  NEGATIVE temporary id until Apply creates it as a draft-only row; its
+   *  geometry is in `layoutOverrides` under that id like any tile. Only a
+   *  `redesign` may create blocks. */
+  createdBlocks?: CreatedBlock[];
+}
+
+/** A block a redesign adds to the canvas. It carries no data of its own: a
+ *  narrative references findings by key, a heading carries words. */
+export interface CreatedBlock {
+  tempId: VisualId;
+  widgetType: 'narrative' | 'section_header' | 'slicer';
+  widgetConfig: Record<string, unknown>;
+  layout: Partial<DashboardChartLayout> & { x: number; y: number; w: number; h: number; pageId?: string };
 }
 
 /** A tile as the validator sees it — enough to prove identity and semantics

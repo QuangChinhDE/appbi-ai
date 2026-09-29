@@ -1,10 +1,13 @@
 'use client';
 
+import { emphasisOf, TileEmphasisProvider } from '@/lib/tile-emphasis';
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw, Sparkles, Lock, CalendarClock } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
-import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
+import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
+import { buildTileEvidence, usePublishTileEvidence } from '@/lib/report-evidence';
+import { KpiContext, kpiRowValue } from './KpiContext';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
@@ -36,6 +39,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { ChartSemanticBinding, DashboardPageConfig } from '@/types/api';
 import { ChartDetailModal } from './ChartDetailModal';
+import { resolveTileFrameStyle, tileKindOf, TILE_TITLE_CLASS, TILE_KPI_LABEL_CLASS } from '@/lib/dashboard-presentation/tile-frame';
 
 interface ChartTileProps {
   chartId: number;
@@ -82,7 +86,18 @@ interface ChartTileProps {
    *  so Canvas can outline the most-recently-clicked tile during layout
    *  edits. onFocus fires on tile body click. */
   isFocused?: boolean;
-  onFocus?: (dashboardChartId: number) => void;
+  /** `additive` is true for Shift/Ctrl/⌘+click — add to the AI Design selection. */
+  onFocus?: (dashboardChartId: number, additive?: boolean) => void;
+  /** Toggle the author's position lock through the page's draft buffer. When
+   *  absent the tile has no lock control. */
+  onToggleLock?: (dashboardChartId: number, next: boolean) => void;
+  /** The tile's PERSISTED layout (server row ⊕ saved draft), read at the moment
+   *  a live toggle writes — never the view layout, which carries unsaved drags
+   *  and any AI preview. */
+  getPersistedLayout?: (dashboardChartId: number) => Record<string, any> | undefined;
+  /** Stage a layout edit in the builder's draft buffer (undoable, published with
+   *  the draft). When given, NO tile edit writes the live row. */
+  onPatchLayout?: (dashboardChartId: number, patch: Record<string, any>) => void;
   /** AI Design mode. When true, click-to-focus is the primary gesture: the tile
    *  is NOT a drag handle (so a click anywhere — title included — reliably
    *  focuses it for a scoped restyle instead of being swallowed by the grid's
@@ -137,7 +152,15 @@ function useStickyVisibility(rootMargin = '300px') {
     }
     const observer = new IntersectionObserver(
       (entries) => {
-        const isVisible = entries.some((entry) => entry.isIntersecting);
+        // A superseded observer can still deliver a queued entry for the node
+        // it watched — which, once removed, reports "not intersecting". Landing
+        // after the NEW observer's "intersecting", it froze `current` at false
+        // for a tile in plain view, and its data was never fetched (seen on the
+        // production image: chart metadata loaded, the data request never sent).
+        if (observerRef.current !== observer) return;
+        const mine = entries.filter((entry) => entry.target === node);
+        if (mine.length === 0) return;
+        const isVisible = mine[mine.length - 1].isIntersecting;
         setCurrent(isVisible);
         if (isVisible) setVisible(true);
       },
@@ -244,6 +267,9 @@ function ChartTileBase({
   onMoveToPage,
   isFocused = false,
   onFocus,
+  onToggleLock,
+  getPersistedLayout,
+  onPatchLayout,
   aiDesignMode = false,
   editingBy = null,
   dashboardParams,
@@ -289,6 +315,7 @@ function ChartTileBase({
     () => buildSemanticFormatMap(tileDatasetModel?.views),
     [tileDatasetModel],
   );
+  const tileCurrencyMap = useMemo(() => buildSemanticCurrencyMap(tileDatasetModel?.views), [tileDatasetModel]);
 
   const parameterFilters = useMemo(() => {
     if (!chart?.parameters?.length || !instanceParameters) return [];
@@ -601,9 +628,10 @@ function ChartTileBase({
     // Skip the initial mount — only persist when user actually changes filters
     if (!canEdit || havingFiltersKey === initialHavingRef.current) return;
     initialHavingRef.current = havingFiltersKey;
+    if (onPatchLayout) { onPatchLayout(dashboardChartId, { havingFilters }); return; }
     dashboardApi.updateLayout(dashboardId, [{
       id: dashboardChartId,
-      layout: { ...currentLayout, havingFilters },
+      layout: { ...(getPersistedLayout?.(dashboardChartId) ?? currentLayout), havingFilters },
     }]).then(() => {
       queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     }).catch(() => { /* layout save is best-effort */ });
@@ -627,31 +655,25 @@ function ChartTileBase({
     if (!canEdit) return;
     const next = !highlightEnabled;
     setHlOverride(next); // instant visual — no wait for the persist round-trip
+    if (onPatchLayout) { onPatchLayout(dashboardChartId, { highlightEnabled: next }); return; }
     dashboardApi.updateLayout(dashboardId, [{
       id: dashboardChartId,
-      layout: { ...currentLayout, highlightEnabled: next },
+      layout: { ...(getPersistedLayout?.(dashboardChartId) ?? currentLayout), highlightEnabled: next },
     }]).then(() => {
       queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     }).catch(() => { /* layout save is best-effort */ });
-  }, [canEdit, dashboardId, dashboardChartId, currentLayout, highlightEnabled, queryClient]);
+  }, [canEdit, dashboardId, dashboardChartId, currentLayout, highlightEnabled, queryClient, onPatchLayout, getPersistedLayout]);
 
   // Position lock: a locked chart can't be dragged or resized (the grid marks it
-  // `static`), so it can't be nudged by accident. Same optimistic-flip + live
-  // updateLayout pattern as the highlight toggle.
-  const [lockOverride, setLockOverride] = useState<boolean | null>(null);
-  useEffect(() => { setLockOverride(null); }, [currentLayout?.locked]);
-  const positionLocked = lockOverride ?? (currentLayout?.locked === true);
+  // `static`), and no AI design, template re-arrange or tidy may move it. It is
+  // layout state, so it goes through the page's draft buffer like a drag does —
+  // undoable, saved with the draft, and never undone by publishing a draft that
+  // was saved before the lock.
+  const positionLocked = currentLayout?.locked === true;
   const toggleLocked = useCallback(() => {
-    if (!canEdit) return;
-    const next = !positionLocked;
-    setLockOverride(next);
-    dashboardApi.updateLayout(dashboardId, [{
-      id: dashboardChartId,
-      layout: { ...currentLayout, locked: next },
-    }]).then(() => {
-      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
-    }).catch(() => { /* layout save is best-effort */ });
-  }, [canEdit, dashboardId, dashboardChartId, currentLayout, positionLocked, queryClient]);
+    if (!canEdit || !onToggleLock) return;
+    onToggleLock(dashboardChartId, !positionLocked);
+  }, [canEdit, onToggleLock, dashboardChartId, positionLocked]);
 
   // Lock date grouping: when on, VIEWERS (dashboard/public/embed) can't change
   // the chart's group-by time grain — the switcher is hidden and the chart
@@ -664,13 +686,14 @@ function ChartTileBase({
     if (!canEdit) return;
     const next = !dateGrainLocked;
     setGrainLockOverride(next);
+    if (onPatchLayout) { onPatchLayout(dashboardChartId, { lockDateGrain: next }); return; }
     dashboardApi.updateLayout(dashboardId, [{
       id: dashboardChartId,
-      layout: { ...currentLayout, lockDateGrain: next },
+      layout: { ...(getPersistedLayout?.(dashboardChartId) ?? currentLayout), lockDateGrain: next },
     }]).then(() => {
       queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     }).catch(() => { /* layout save is best-effort */ });
-  }, [canEdit, dashboardId, dashboardChartId, currentLayout, dateGrainLocked, queryClient]);
+  }, [canEdit, dashboardId, dashboardChartId, currentLayout, dateGrainLocked, queryClient, onPatchLayout, getPersistedLayout]);
 
   const effectiveStyleConfig = useMemo(
     () => getEffectiveDashboardChartStyleConfig(chart, currentLayout),
@@ -698,42 +721,12 @@ function ChartTileBase({
     if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
     return { ...effectiveStyleConfig, chartTitle: '' };
   }, [effectiveStyleConfig]);
-  // Per-tile "transparent background": drop the card bg/border/shadow so the
-  // dashboard's own background shows through (frameless). Focus / cross-filter /
-  // collaborator rings still render (Tailwind ring / inline ring = box-shadow).
-  const transparentTile = effectiveStyleConfig.transparentBackground === true;
-  // Per-tile surface (AI Design "make this chart dark/light"). A named mode, not
-  // a free colour: the tile paints a dark/light card and, crucially, overrides
-  // the text / axis / grid tokens on ITS OWN subtree so Recharts (which reads
-  // `rgb(var(--text-*))` and, for its SVG internals, the `.chart-surface-*` CSS
-  // in globals.css) stays readable. The data never changes — this is paint.
-  const chartSurface = (effectiveStyleConfig as any).chartSurface as 'dark' | 'light' | undefined;
-  const surfaceClass = chartSurface === 'dark'
-    ? 'chart-surface-dark'
-    : chartSurface === 'light' ? 'chart-surface-light' : '';
-  const surfaceVars: React.CSSProperties | undefined = (!transparentTile && chartSurface === 'dark')
-    ? ({
-        background: '#0f172a',
-        '--surface-1': '15 23 42',
-        '--surface-2': '30 41 59',
-        '--text-primary': '226 232 240',
-        '--text-secondary': '203 213 225',
-        '--text-tertiary': '148 163 184',
-        '--border-line': '51 65 85',
-        color: 'rgb(226 232 240)',
-      } as React.CSSProperties)
-    : (!transparentTile && chartSurface === 'light')
-    ? ({
-        background: '#ffffff',
-        '--surface-1': '255 255 255',
-        '--surface-2': '243 244 245',
-        '--text-primary': '8 9 10',
-        '--text-secondary': '60 65 73',
-        '--text-tertiary': '120 126 134',
-        '--border-line': '230 230 230',
-        color: 'rgb(8 9 10)',
-      } as React.CSSProperties)
-    : undefined;
+  // Frame + surface: one resolver shared with the published tile, so a tile
+  // looks the same in the builder and on /d and /embed.
+  const ringActive = isCrossFilterSource || isHighlightSource || isFocused;
+  const tileEmphasis = emphasisOf(currentLayout);
+  const tileFrame = resolveTileFrameStyle({ style: effectiveStyleConfig as any, theme: dashTheme, ringActive });
+  const transparentTile = tileFrame.frame !== 'card';
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -765,9 +758,13 @@ function ChartTileBase({
       )
         ? { ...currentStyleOverride, chartTitle: newTitle }
         : { chartTitle: newTitle };
+      if (onPatchLayout) {
+        onPatchLayout(dashboardChartId, { custom_title: newTitle, styleConfigOverride });
+        return;
+      }
       await dashboardApi.updateLayout(dashboardId, [{
         id: dashboardChartId,
-        layout: { ...currentLayout, custom_title: newTitle, styleConfigOverride },
+        layout: { ...(getPersistedLayout?.(dashboardChartId) ?? currentLayout), custom_title: newTitle, styleConfigOverride },
       }]);
       queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     } finally {
@@ -849,6 +846,24 @@ function ChartTileBase({
     }
   }, [chartData?.data, onDataLoaded, chartId, exploreConfig]);
 
+  // Report evidence — what this tile is showing, for the narrative blocks that
+  // state findings about it. `pending` while (re)fetching so a sentence never
+  // sits beside new numbers still stating the old ones.
+  const tileEvidence = useMemo(
+    () => (exploreConfig
+      ? buildTileEvidence({
+        tileId: dashboardChartId,
+        chartType: exploreConfig.chartType,
+        title: kpiHeaderTitle || displayTitle,
+        roleConfig: exploreConfig.roleConfig,
+        styleConfig: exploreConfig.styleConfig,
+        response: chartData ?? null,
+        views: tileDatasetModel?.views as any,
+      })
+      : null),
+    [exploreConfig, dashboardChartId, kpiHeaderTitle, displayTitle, chartData, tileDatasetModel],
+  );
+  usePublishTileEvidence(dashboardChartId, tileEvidence, isLoadingData || isFetchingData);
   const rawRows: Record<string, any>[] = chartData?.data ?? [];
   const preAggregated = chartData?.pre_aggregated ?? false;
   // Phase-15.78 — BE now reports filters it dropped before SQL (binding
@@ -1097,16 +1112,19 @@ function ChartTileBase({
   }
 
   return (
+    <TileEmphasisProvider value={tileEmphasis}>
     <div
+      data-emphasis={tileEmphasis}
       ref={visibilityRef}
       /* Phase-B12 — no `overflow-hidden` on the tile: the ⋯ menu popup was
          clipped when the tile was small. The chart body has its own
          overflow-hidden (so the chart never spills), and tile content is inset
          by p-3 so it won't poke the rounded corners — only the menu escapes. */
-      className={`dashboard-tile bi-card-hover relative group flex h-full flex-col rounded-lg p-3 ${surfaceClass} ${
-        aiDesignMode ? 'cursor-pointer' : canEdit ? 'drag-handle cursor-move' : ''
-      } ${
-        transparentTile ? '' : 'border bg-surface-1'
+      data-tile-id={dashboardChartId}
+      data-tile-kind={tileKindOf(chart?.chart_type)}
+      {...tileFrame.dataAttributes}
+      className={`${tileFrame.className} bi-card-hover group flex h-full flex-col ${
+        aiDesignMode ? 'cursor-pointer' : canEdit && !positionLocked ? 'drag-handle cursor-move' : ''
       } ${
         isCrossFilterSource || isHighlightSource
           ? 'border-warning/40 ring-1 ring-warning'
@@ -1120,30 +1138,7 @@ function ChartTileBase({
          keep the default flat look). Border COLOR only in the default state so
          the cross-filter/focus rings still read. */
       style={{
-        borderRadius: 'var(--dashboard-card-radius, 0.5rem)',
-        // Frameless when transparent: no border/bg/glass → dashboard bg shows
-        // through. Focus/cross-filter/collaborator rings below still render.
-        ...(transparentTile
-          ? { borderWidth: 0, background: 'transparent' }
-          : {
-              borderWidth: 'var(--dashboard-card-border-width, 1px)',
-              ...(isCrossFilterSource || isHighlightSource || isFocused
-                ? {}
-                : { borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))' }),
-              // Phase-B16 — translucent "glass" tile that floats over a bg image.
-              ...(dashTheme.cardBg
-                ? {
-                    background: dashTheme.cardBg,
-                    backdropFilter: dashTheme.cardBackdrop,
-                    WebkitBackdropFilter: dashTheme.cardBackdrop,
-                    boxShadow: '0 10px 30px -14px rgba(2, 6, 23, 0.45)',
-                  }
-                : {}),
-            }),
-        // Per-tile surface override (AI Design). Placed after the theme bg so a
-        // "dark chart" wins over the report's card background, and the flipped
-        // text/border tokens cascade to the whole tile subtree.
-        ...(surfaceVars ?? {}),
+        ...tileFrame.style,
         // Phase-B17 — a collaborator is editing THIS tile: colored ring (kept
         // even when transparent so presence stays visible).
         ...(editingBy ? { boxShadow: `0 0 0 2px ${editingBy.color}`, borderColor: editingBy.color } : {}),
@@ -1153,7 +1148,7 @@ function ChartTileBase({
       // scope was removed). onMouseDown stop-prop on inner buttons
       // keeps the focus click from firing during drag-handle / menu
       // interactions.
-      onClick={onFocus ? () => onFocus(dashboardChartId) : undefined}
+      onClick={onFocus ? (event) => onFocus(dashboardChartId, event.shiftKey || event.metaKey || event.ctrlKey) : undefined}
     >
       {/* Phase-B17 — GG-Sheets cursor: a small avatar dot marks who's on this
           tile (full name on hover); the colored ring shows the location. */}
@@ -1188,7 +1183,7 @@ function ChartTileBase({
           for a scoped restyle, not start a grid drag. */}
       <div className={`mb-2 flex flex-col gap-1 pr-8 ${aiDesignMode ? '' : 'drag-handle cursor-grab active:cursor-grabbing'}`}>
         {/* Title row */}
-        <div className="flex items-center gap-1.5 min-h-[1.5rem]">
+        <div className="dashboard-tile-title-row flex items-center gap-1.5 min-h-[1.5rem]" data-kpi={isKpiCard ? '' : undefined}>
         {isEditingTitle ? (
           <>
             <input
@@ -1212,12 +1207,12 @@ function ChartTileBase({
           <>
             {isKpiCard ? (
               kpiHeaderTitle ? (
-                <h3 data-pdf-tile-title className="text-sm font-semibold truncate flex-1" style={themeTitleStyle} title={kpiHeaderTitle}>{kpiHeaderTitle}</h3>
+                <h3 data-pdf-tile-title className={TILE_KPI_LABEL_CLASS} style={themeTitleStyle} title={kpiHeaderTitle}>{kpiHeaderTitle}</h3>
               ) : (
                 <span className="flex-1" aria-hidden />
               )
             ) : displayTitle ? (
-              <h3 data-pdf-tile-title className="text-sm font-semibold truncate flex-1" style={themeTitleStyle} title={displayTitle}>{displayTitle}</h3>
+              <h3 data-pdf-tile-title className={TILE_TITLE_CLASS} style={themeTitleStyle} title={displayTitle}>{displayTitle}</h3>
             ) : canEdit ? (
               /* Phase-B11 — no auto chart-name title; nudge the DA to add one. */
               <button
@@ -1261,7 +1256,7 @@ function ChartTileBase({
               </span>
             )}
             <a
-              href={`/explore/${chartId}`}
+              href={`/explore/${chartId}?fromReport=${dashboardId}&tile=${dashboardChartId}`}
               target="_blank"
               rel="noreferrer"
               onMouseDown={e => e.stopPropagation()}
@@ -1326,7 +1321,7 @@ function ChartTileBase({
                       {t('dashboards.tile.viewDetails')}
                     </button>
                     <a
-                      href={`/explore/${chartId}`}
+                      href={`/explore/${chartId}?fromReport=${dashboardId}&tile=${dashboardChartId}`}
                       target="_blank"
                       rel="noreferrer"
                       onClick={() => setIsTileMenuOpen(false)}
@@ -1587,6 +1582,7 @@ function ChartTileBase({
            fiddly), but a press that STARTS on the live chart body must not begin
            a tile-drag, so click-to-cross-filter / click-a-mark stays intact.
            Grab the header, padding frame, or title to move the tile. */
+        data-tile-body
         className={`no-drag relative flex-1 min-h-0 overflow-hidden ${
           onSelectCrossFilter && chartSemanticBinding?.datasetId != null
             ? 'cursor-crosshair'
@@ -1644,7 +1640,7 @@ function ChartTileBase({
                   {t('dashboards.tile.details')}
                 </button>
                 <a
-                  href={`/explore/${chartId}`}
+                  href={`/explore/${chartId}?fromReport=${dashboardId}&tile=${dashboardChartId}`}
                   target="_blank"
                   rel="noreferrer"
                   onMouseDown={e => e.stopPropagation()}
@@ -1693,8 +1689,10 @@ function ChartTileBase({
               styleConfig={exploreConfig.styleConfig}
               labelMap={tileLabelMap}
               formatMap={tileFormatMap}
+              currencyMap={tileCurrencyMap}
               havingFilters={havingFilters}
               preAggregated={preAggregated}
+              timeCompleteness={chartData?.time_completeness ?? undefined}
               embedded
               kpiLabelInHeader={isKpiCard}
               onViewerDrill={setViewerGrain}
@@ -1731,6 +1729,13 @@ function ChartTileBase({
           </div>
         ) : null}
       </div>
+      {isKpiCard && chartData && exploreConfig?.roleConfig?.metrics?.[0]?.field ? (
+          <KpiContext
+            measureField={exploreConfig.roleConfig.metrics[0].field}
+            kpiValue={kpiRowValue(chartData.data)}
+            goalDirection={(exploreConfig.styleConfig as any)?.kpiGoalDirection ?? null}
+          />
+        ) : null}
 
       <ChartDetailModal
         chartId={chartId}
@@ -1743,8 +1748,10 @@ function ChartTileBase({
         currentLayout={currentLayout}
         allowAppearanceEdit={allowAppearanceEdit}
         initialTab={detailModalInitialTab}
+        onPatchLayout={onPatchLayout ? (patch) => onPatchLayout(dashboardChartId, patch) : undefined}
       />
     </div>
+    </TileEmphasisProvider>
   );
 }
 
@@ -1795,6 +1802,7 @@ function chartTilePropsEqual(prev: ChartTileProps, next: ChartTileProps): boolea
   if (prev.onSelectCrossFilter !== next.onSelectCrossFilter) return false;
   if (prev.onMoveToPage !== next.onMoveToPage) return false;
   if (prev.onFocus !== next.onFocus) return false;
+  if (prev.onToggleLock !== next.onToggleLock) return false;
   // Trust reference identity for arrays & dicts. Parent owns immutability
   // (slicer Apply path always swaps the array), so a new ref means a real
   // value change and the tile must re-render.

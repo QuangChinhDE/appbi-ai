@@ -5,12 +5,12 @@ import json
 import re
 import secrets
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from app.services import dashboard_presence
 
@@ -32,6 +32,9 @@ from app.models.dataset import Dataset, DatasetTable
 from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.schemas import (
+    ChartMetadataUpsert,
+    ChartParameterCreate,
+    ChartTypeSchema,
     DashboardCreate,
     DashboardUpdate,
     DashboardShareRequest,
@@ -59,7 +62,19 @@ from app.schemas import (
 # )
 # from app.models.dashboard_filter import DashboardFilter
 from app.services import DashboardService
-from app.services.dashboard_service import normalize_dashboard_widget_config
+from app.services.dashboard_service import (
+    drop_unreferenced_report_copies,
+    fork_chart_for_report,
+    swap_tile_chart_in_draft as _swap_in_draft,
+    is_draft_only_by,
+    is_draft_only_item,
+    is_draft_removed_by,
+    normalize_dashboard_widget_config,
+    remove_tile_in_draft,
+    restore_tile_in_draft,
+    strip_draft_row_keys,
+    draft_layout_dump,
+)
 from app.services.dashboard_html_import_service import (
     _build_ai_fix_source_profiles,
     _load_existing_source_profile,
@@ -1601,6 +1616,107 @@ def _draft_user_layouts(snapshot: Any, user_key: str) -> Dict[str, Any]:
     return legacy if isinstance(legacy, dict) else {}
 
 
+def _draft_user_widget_configs(snapshot: Optional[Dict[str, Any]], user_key: str) -> Dict[str, Dict[str, Any]]:
+    """This author's draft edits of published widgets' content: {tileId: widget_config}."""
+    buckets = (snapshot or {}).get("user_widget_configs") if isinstance(snapshot, dict) else None
+    mine = buckets.get(user_key) if isinstance(buckets, dict) else None
+    return {str(k): v for k, v in mine.items() if isinstance(v, dict)} if isinstance(mine, dict) else {}
+
+
+def _draft_user_parameters(snapshot: Optional[Dict[str, Any]], user_key: str) -> Dict[str, Dict[str, Any]]:
+    """This author's draft edits of published chart instances' ``parameters``
+    (what-if bindings): {tileId: parameters}. Same lifecycle as widget content."""
+    buckets = (snapshot or {}).get("user_parameters") if isinstance(snapshot, dict) else None
+    mine = buckets.get(user_key) if isinstance(buckets, dict) else None
+    return {str(k): v for k, v in mine.items() if isinstance(v, dict)} if isinstance(mine, dict) else {}
+
+
+# The report-level settings every author edits TOGETHER: one shared draft.
+# (Layouts, widget content and chart parameters are per author: user_layouts /
+# user_widget_configs / user_parameters.)
+_SHARED_DRAFT_KEYS = ("filters_config", "slicers_config", "slicer_cluster_layout", "pages_config", "theme_config")
+_SHARED_META = "shared_draft_meta"
+
+
+def _shared_meta(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    meta = (snapshot or {}).get(_SHARED_META) if isinstance(snapshot, dict) else None
+    meta = dict(meta) if isinstance(meta, dict) else {}
+    meta["rev"] = int(meta.get("rev") or 0)
+    meta["authors"] = dict(meta.get("authors") or {})
+    return meta
+
+
+def _has_shared_draft(snapshot: Optional[Dict[str, Any]]) -> bool:
+    return isinstance(snapshot, dict) and any(k in snapshot for k in _SHARED_DRAFT_KEYS)
+
+
+def _shared_rev_token(dash, snapshot: Optional[Dict[str, Any]]) -> str:
+    """The revision an editor's copy of the shared draft was made on.
+
+    The published version it builds on (``last_published_at`` — every Publish
+    changes it) plus a counter of the pending shared edits since. Nothing is
+    stored while nothing is pending: a copy loaded then equals the live report,
+    so it is current."""
+    published = dash.last_published_at.isoformat() if getattr(dash, "last_published_at", None) else "never"
+    return f"{published}#{_shared_meta(snapshot)['rev'] if _has_shared_draft(snapshot) else 0}"
+
+
+def _shared_draft_state(dash, snapshot: Optional[Dict[str, Any]], user_key: str) -> Dict[str, Any]:
+    """What an editor is told about the shared draft: its revision, whether it
+    holds unpublished changes, and WHO else made them (so Publish/Discard can
+    say whose work they would apply or drop)."""
+    meta = _shared_meta(snapshot)
+    pending = _has_shared_draft(snapshot)
+    others = [n for k, n in meta["authors"].items() if k != user_key] if pending else []
+    return {"rev": _shared_rev_token(dash, snapshot), "has_changes": pending, "other_authors": others}
+
+
+def _refuse_others_shared_draft(dash, snapshot: Optional[Dict[str, Any]], user_key: str,
+                                ack_rev: Optional[str], action: str) -> None:
+    """Publish and Discard act on the WHOLE shared draft. When another author
+    has unpublished edits in it, the caller must say so explicitly (``ack_rev``
+    = the revision they were shown) — never apply or drop a colleague's work
+    silently."""
+    state = _shared_draft_state(dash, snapshot, user_key)
+    if state["other_authors"] and ack_rev != state["rev"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "shared_draft_other_authors",
+                "action": action,
+                "authors": state["other_authors"],
+                "rev": state["rev"],
+                "message": "The report's filters, pages or theme also have unpublished changes by other authors.",
+            },
+        )
+
+
+def _after_author_leaves(snapshot: Optional[Dict[str, Any]], user_key: str, keep_shared: bool) -> Optional[Dict[str, Any]]:
+    """The draft after this author published or discarded: other authors'
+    per-author parts, plus the shared draft when the caller chose to keep it
+    (otherwise it is gone, under a new revision)."""
+    out = dict(_other_authors_drafts(snapshot, user_key) or {})
+    if keep_shared and isinstance(snapshot, dict):
+        for key in (*_SHARED_DRAFT_KEYS, _SHARED_META):
+            if key in snapshot:
+                out[key] = snapshot[key]
+    # Otherwise the shared draft is gone; its revision token moves on by itself
+    # (a Publish changes last_published_at).
+    return out or None
+
+
+def _other_authors_drafts(snapshot: Optional[Dict[str, Any]], user_key: str) -> Optional[Dict[str, Any]]:
+    """The per-author parts of a draft that belong to OTHER authors — kept when
+    this author publishes or discards."""
+    out: Dict[str, Any] = {}
+    for key in ("user_layouts", "user_widget_configs", "user_parameters"):
+        buckets = (snapshot or {}).get(key) if isinstance(snapshot, dict) else None
+        others = {k: v for k, v in (buckets or {}).items() if k != user_key} if isinstance(buckets, dict) else {}
+        if others:
+            out[key] = others
+    return out or None
+
+
 def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: User) -> DashboardResponse:
     """Build a DashboardResponse explicitly so the draft fields
     (draft_layouts + has_draft) actually flow through to the JSON. The
@@ -1646,12 +1762,35 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     draft_pages_config = (
         snapshot.get("pages_config") if isinstance(snapshot, dict) else None
     )
+    # The staged report theme (AI Design Apply / theme menu → Save draft).
+    draft_theme_config = (
+        snapshot.get("theme_config") if isinstance(snapshot, dict) else None
+    )
 
     # Round-trip via from_attributes for the live fields, then override.
     base = DashboardResponse.model_validate(dash, from_attributes=True)
+    user_key = str(current_user.id)
+    # A tile this author removed in their draft is still live (public/embed keep
+    # it until they publish) but is not in THEIR draft: the editor does not show
+    # it. Another author's draft still has it.
+    removed_here = {r.id for r in (dash.dashboard_charts or []) if is_draft_removed_by(r, user_key)}
+    rows_in_draft = any(is_draft_only_by(r, user_key) for r in (dash.dashboard_charts or [])) or bool(removed_here)
     overrides: Dict[str, Any] = {
         "draft_layouts": normalized_layouts,
     }
+    # This author's draft edits of a published widget's content (a text block,
+    # a section title): shown to them, applied on Publish, dropped on Discard.
+    my_widget_configs = _draft_user_widget_configs(snapshot, user_key)
+    my_parameters = _draft_user_parameters(snapshot, user_key)
+    if removed_here or my_widget_configs or my_parameters:
+        charts = [dc for dc in base.dashboard_charts if dc.id not in removed_here]
+        if my_widget_configs:
+            charts = [dc.model_copy(update={"widget_config": my_widget_configs[str(dc.id)]}) if str(dc.id) in my_widget_configs else dc
+                      for dc in charts]
+        if my_parameters:
+            charts = [dc.model_copy(update={"parameters": my_parameters[str(dc.id)]}) if str(dc.id) in my_parameters else dc
+                      for dc in charts]
+        overrides["dashboard_charts"] = charts
     if isinstance(draft_filters_config, list):
         overrides["filters_config"] = draft_filters_config
     if isinstance(draft_slicers_config, list):
@@ -1660,14 +1799,21 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
         overrides["slicer_cluster_layout"] = draft_slicer_cluster_layout
     if isinstance(draft_pages_config, list):
         overrides["pages_config"] = draft_pages_config
+    if isinstance(draft_theme_config, dict):
+        overrides["theme_config"] = draft_theme_config
 
     has_filter_draft = (
         isinstance(draft_filters_config, list)
         or isinstance(draft_slicers_config, list)
         or isinstance(draft_slicer_cluster_layout, dict)
         or isinstance(draft_pages_config, list)
+        or isinstance(draft_theme_config, dict)
     )
-    overrides["has_draft"] = bool(normalized_layouts) or has_filter_draft
+    # Adding or removing an element is a draft change too: without counting
+    # those rows the draft bar (and Discard) disappeared while one was pending.
+    overrides["has_draft"] = (bool(normalized_layouts) or has_filter_draft or rows_in_draft
+                              or bool(my_widget_configs) or bool(my_parameters))
+    overrides["shared_draft"] = _shared_draft_state(dash, snapshot, user_key)
 
     enriched = base.model_copy(update=overrides)
     logger.info(
@@ -1839,6 +1985,18 @@ def delete_dashboard(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
 
 
+def _stamp_draft_addition(layout, current_user: User) -> None:
+    """A draft-only element belongs to the draft of whoever added it — stamped
+    here, never taken from the client, so another editor's publish cannot
+    publish it and another editor's discard cannot delete it. A client can
+    never mark a new element as removed."""
+    for key in ("draftOwner", "draftRemoved", "draftRemovedBy"):
+        if hasattr(layout, key):
+            delattr(layout, key)
+    if getattr(layout, "draftOnly", False):
+        layout.draftOwner = str(current_user.id)
+
+
 @router.post("/{dashboard_id}/charts", response_model=DashboardResponse)
 def add_chart_to_dashboard(
     dashboard_id: int,
@@ -1852,6 +2010,7 @@ def add_chart_to_dashboard(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
     _require_chart_visibility(db, current_user, request.chart_id)
+    _stamp_draft_addition(request.layout, current_user)
     try:
         dashboard = DashboardService.add_chart(
             db,
@@ -2033,7 +2192,9 @@ def plan_dashboard_presentation(
             user_prompt=request.prompt,
             conversation=request.conversation,
             images=request.images,
-            focused_chart_id=request.focused_chart_id,
+            granted_layer=request.granted_layer,
+            target_ids=request.target_ids
+            or ([request.focused_chart_id] if request.focused_chart_id is not None else None),
         )
     except PresentationPlanUnavailable as exc:
         # 503, not 500: the report is fine and the request was valid — there is
@@ -2051,6 +2212,112 @@ def plan_dashboard_presentation(
     return PresentationPlanResponse(plan=plan)
 
 
+class ReportStarterRequest(BaseModel):
+    """Start a report from data: the dataset and what the report is for."""
+    dataset_id: int
+    goal: str = Field(default="", max_length=1000)
+    name: Optional[str] = Field(default=None, max_length=200)
+
+
+@router.post("/report-starter", status_code=status.HTTP_201_CREATED)
+def start_report_from_data(
+    body: ReportStarterRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """A first draft of real, engine-validated charts for `goal` on a new
+    dashboard the user then shapes. Needs view access to the dataset."""
+    from app.models.dataset import Dataset as _Dataset
+    from app.services.report_starter_service import build_report_starter
+
+    dataset = db.query(_Dataset).filter(_Dataset.id == body.dataset_id).first()
+    if dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found")
+    require_view_access(db, current_user, dataset, "datasets")
+    try:
+        return build_report_starter(db, dataset_id=body.dataset_id, goal=body.goal, name=body.name,
+                                    owner_id=current_user.id)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+class PresentationCritiqueRequest(BaseModel):
+    """A rendered preview to review. The image is the preview the author is
+    looking at (a data URL, JPEG/PNG); the tile list names what is on it."""
+    image: str = Field(..., min_length=32, max_length=6_000_000)
+    tiles: List[Dict[str, Any]] = Field(default_factory=list, max_length=80)
+    direction: Optional[str] = Field(default=None, max_length=40)
+
+
+@router.post("/{dashboard_id}/presentation-critique", status_code=status.HTTP_200_OK)
+def critique_presentation_preview(
+    dashboard_id: int,
+    body: PresentationCritiqueRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """One visual review of a rendered AI Design preview (advice, not a gate).
+    503 when no vision model is configured — the client then keeps its
+    deterministic review only."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    if not body.image.startswith("data:image/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="image must be a data:image URL")
+    from app.services.dashboard_presentation_critic import CritiqueUnavailable, critique_rendered_preview
+    try:
+        return critique_rendered_preview(image=body.image, tiles=body.tiles, direction=body.direction)
+    except CritiqueUnavailable as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+class ContentProposalDecision(BaseModel):
+    """A person's decision on a change AI Design PROPOSED to what a tile says.
+
+    The change itself is applied by the editor like any draft edit (it reaches
+    /d only on Publish); this records WHO decided WHAT, before → after."""
+    decision: Literal["accepted", "rejected"]
+    kind: Literal["sort_by_value", "retitle"]
+    tile_id: int
+    before: Optional[Any] = None
+    after: Optional[Any] = None
+    source: Literal["ai", "rule"] = "ai"
+
+
+@router.post("/{dashboard_id}/content-proposals/decision", status_code=status.HTTP_200_OK)
+def record_content_proposal_decision(
+    dashboard_id: int,
+    body: ContentProposalDecision,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Audit a content proposal decision. Only an editor can make one, and only
+    for a tile on this dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    tile = db.query(DashboardChart).filter(
+        DashboardChart.id == body.tile_id, DashboardChart.dashboard_id == dashboard_id,
+    ).first()
+    if tile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tile not on this dashboard")
+    from app.models.audit_log import AuditAction
+    from app.services.audit_service import audit
+    action = (AuditAction.DASHBOARD_CONTENT_PROPOSAL_ACCEPTED if body.decision == "accepted"
+              else AuditAction.DASHBOARD_CONTENT_PROPOSAL_REJECTED)
+    audit(
+        db, action, request=request, user_id=current_user.id,
+        resource_type="dashboard", resource_id=str(dashboard_id),
+        details={"kind": body.kind, "tile_id": body.tile_id, "before": body.before,
+                 "after": body.after, "source": body.source},
+    )
+    return {"ok": True, "decision": body.decision}
+
+
 @router.post("/{dashboard_id}/widgets", response_model=DashboardResponse)
 def add_widget_to_dashboard(
     dashboard_id: int,
@@ -2066,6 +2333,7 @@ def add_widget_to_dashboard(
     widget_type = request.widget_type or "text"
     if widget_type == "chart":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use /charts endpoint for chart widgets")
+    _stamp_draft_addition(request.layout, current_user)
     try:
         dashboard = DashboardService.add_widget(
             db,
@@ -2086,11 +2354,17 @@ def update_widget_config(
     dashboard_id: int,
     dashboard_chart_id: int,
     request: DashboardUpdateWidgetRequest,
+    draft: bool = Query(False, description="Edit in the caller's draft: a published widget keeps its published content until Publish."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Update widget_config for a non-chart widget on a dashboard."""
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    """Update widget_config for a non-chart widget on a dashboard.
+
+    `draft=true` (the builder): editing a PUBLISHED widget is a draft change —
+    the public link and embed keep the published text until the caller
+    publishes; Discard drops it. A widget only in the caller's draft is edited
+    in place (it is not published). Without it the live row is written."""
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
@@ -2104,7 +2378,18 @@ def update_widget_config(
     if not item.widget_type or item.widget_type == "chart":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target is not a widget")
 
-    item.widget_config = normalize_dashboard_widget_config(item.widget_type, request.widget_config)
+    config = normalize_dashboard_widget_config(item.widget_type, request.widget_config)
+    if draft and not is_draft_only_item(item):
+        snapshot = dict(dash.draft_snapshot or {})
+        buckets = dict(snapshot.get("user_widget_configs") or {})
+        mine = dict(buckets.get(str(current_user.id)) or {})
+        mine[str(item.id)] = config
+        buckets[str(current_user.id)] = mine
+        snapshot["user_widget_configs"] = buckets
+        dash.draft_snapshot = snapshot
+        flag_modified(dash, "draft_snapshot")
+    else:
+        item.widget_config = config
     db.commit()
     refreshed = DashboardService.get_by_id(db, dashboard_id)
     if refreshed is None:
@@ -2123,13 +2408,18 @@ def update_chart_parameters(
     dashboard_id: int,
     dashboard_chart_id: int,
     request: DashboardUpdateChartParamsRequest,
+    draft: bool = Query(False, description="Edit in the caller's draft: a published chart keeps its published bindings until Publish."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Update the `parameters` dict on a chart instance — used to bind a chart's
     dimension/measure to a dashboard what-if parameter (stored under
-    `__whatifBindings`). Only valid for chart tiles (not widgets)."""
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    `__whatifBindings`). Only valid for chart tiles (not widgets).
+
+    `draft=true` (the builder): a draft edit of a PUBLISHED tile — public and
+    embed keep the published bindings until the caller publishes; Discard drops
+    it. Without it the live row is written (API clients outside the lifecycle)."""
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
@@ -2143,7 +2433,18 @@ def update_chart_parameters(
     if item.widget_type and item.widget_type != "chart":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target is a widget, not a chart")
 
-    item.parameters = request.parameters or {}
+    params = request.parameters or {}
+    if draft and not is_draft_only_item(item):
+        snapshot = dict(dash.draft_snapshot or {})
+        buckets = dict(snapshot.get("user_parameters") or {})
+        mine = dict(buckets.get(str(current_user.id)) or {})
+        mine[str(item.id)] = params
+        buckets[str(current_user.id)] = mine
+        snapshot["user_parameters"] = buckets
+        dash.draft_snapshot = snapshot
+        flag_modified(dash, "draft_snapshot")
+    else:
+        item.parameters = params
     db.commit()
     refreshed = DashboardService.get_by_id(db, dashboard_id)
     if refreshed is None:
@@ -2155,14 +2456,32 @@ def update_chart_parameters(
 def remove_chart_from_dashboard(
     dashboard_id: int,
     dashboard_chart_id: int,
+    draft: bool = Query(False, description="Remove in the caller's draft: a published element stays live until Publish; Discard or restore brings it back."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Remove a chart instance from a dashboard."""
+    """Remove a chart instance from a dashboard.
+
+    `draft=true` (the builder): a draft edit — see `remove_tile_in_draft`.
+    Without it the row is deleted at once (kept for API clients that edit a
+    report outside the draft/publish lifecycle)."""
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
+    if draft:
+        row = db.query(DashboardChart).filter(
+            DashboardChart.dashboard_id == dashboard_id, DashboardChart.id == dashboard_chart_id,
+        ).first()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard chart with ID {dashboard_chart_id} not found")
+        try:
+            remove_tile_in_draft(db, row, str(current_user.id))
+        except PermissionError as e:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        db.commit()
+        db.refresh(dash)
+        return _serialize_dashboard_with_draft(db, dash, current_user)
     try:
         dashboard = DashboardService.remove_chart(db, dashboard_id, dashboard_chart_id)
         if dashboard is None:
@@ -2170,6 +2489,130 @@ def remove_chart_from_dashboard(
         return _serialize_dashboard_with_draft(db, dashboard, current_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/{dashboard_id}/charts/{dashboard_chart_id}/restore", response_model=DashboardResponse)
+def restore_chart_in_draft(
+    dashboard_id: int,
+    dashboard_chart_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Undo the caller's draft removal of a published element: the same row,
+    the same id, back in their draft. A no-op when it was not removed by them."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    row = db.query(DashboardChart).filter(
+        DashboardChart.dashboard_id == dashboard_id, DashboardChart.id == dashboard_chart_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard chart with ID {dashboard_chart_id} not found")
+    if restore_tile_in_draft(row, str(current_user.id)):
+        db.commit()
+        db.refresh(dash)
+    return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
+class _SwapTileChartRequest(BaseModel):
+    chart_id: int
+
+
+@router.post("/{dashboard_id}/charts/{dashboard_chart_id}/swap-chart", response_model=DashboardResponse)
+def swap_tile_chart_in_draft(
+    dashboard_id: int,
+    dashboard_chart_id: int,
+    request: _SwapTileChartRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Show another chart in this tile's place — as a DRAFT edit of this report.
+
+    "Edit chart → only this report" saves the edited chart as a new chart and
+    calls this: the new chart gets a draft-only tile with the same place, size,
+    page and per-report settings, and the old tile is removed in the caller's
+    draft. Publish makes the swap; Discard undoes it; the shared chart and every
+    other report using it are untouched. One transaction: never both tiles, never
+    neither.
+    """
+    dash = _dashboard_for_draft_write(db, dashboard_id)
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    row = db.query(DashboardChart).filter(
+        DashboardChart.dashboard_id == dashboard_id, DashboardChart.id == dashboard_chart_id,
+    ).first()
+    if not row or not row.chart_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart tile with ID {dashboard_chart_id} not found")
+    chart = db.query(Chart).filter(Chart.id == request.chart_id).first()
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart with ID {request.chart_id} not found")
+    require_view_access(db, current_user, chart, "explore_charts")
+    try:
+        _swap_in_draft(db, row, chart, str(current_user.id))
+    except PermissionError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(dash)
+    return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
+class _ForkChartRequest(BaseModel):
+    """The edited chart, as Explore saves it, plus its metadata and parameter
+    definitions — everything the copy needs, in one request."""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    chart_type: ChartTypeSchema
+    dataset_table_id: int
+    config: Dict[str, Any]
+    metadata: Optional[ChartMetadataUpsert] = None
+    parameters: List[ChartParameterCreate] = Field(default_factory=list)
+
+
+@router.post("/{dashboard_id}/charts/{dashboard_chart_id}/fork-chart", response_model=DashboardResponse)
+def fork_tile_chart_for_report(
+    dashboard_id: int,
+    dashboard_chart_id: int,
+    request: _ForkChartRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Edit a chart for THIS report only — one transaction.
+
+    The copy (marked as this report's, with the edited metadata and parameter
+    definitions) is created and swapped into the tile as a draft. Publish makes
+    the swap; Discard undoes it AND deletes the copy; a failure anywhere leaves
+    nothing behind. The shared chart and every other report are untouched.
+    Editing a tile that already shows this author's unpublished copy updates
+    that copy instead of copying it again."""
+    dash = _dashboard_for_draft_write(db, dashboard_id)
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    row = db.query(DashboardChart).filter(
+        DashboardChart.dashboard_id == dashboard_id, DashboardChart.id == dashboard_chart_id,
+    ).first()
+    if not row or not row.chart_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart tile with ID {dashboard_chart_id} not found")
+    source = db.query(Chart).filter(Chart.id == row.chart_id).first()
+    if source is not None:
+        require_view_access(db, current_user, source, "explore_charts")
+    try:
+        fork_chart_for_report(db, dash, row, payload=request, user=current_user)
+        db.commit()
+    except PermissionError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(dash)
+    return _serialize_dashboard_with_draft(db, dash, current_user)
 
 
 @router.put("/{dashboard_id}/layout", response_model=DashboardResponse)
@@ -2204,10 +2647,10 @@ def update_dashboard_layout(
 # `layout` column on DashboardChart rows — they only see the new layout
 # AFTER the editor clicks "Publish".
 #
-# Other mutations (add chart, rename, theme, widget edit) keep auto-
-# saving to the live columns. The most disruptive class of edit — fast
-# drag/resize on the grid — is the one that benefits most from draft
-# isolation, so we scope the column to layout for now.
+# The report theme joins the draft too (`draft-filters` → `theme_config`),
+# so the presentation an editor approves is published as one unit. Other
+# mutations (add chart, rename, widget edit) keep auto-saving to the live
+# columns. PUT /{id} can still write `theme_config` directly for API clients.
 
 
 @router.put("/{dashboard_id}/draft-layout", response_model=DashboardResponse)
@@ -2227,13 +2670,13 @@ def update_dashboard_draft_layout(
 
     Public viewers stay on the last-published layout until POST /publish.
     """
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
     layouts_map: Dict[str, Dict[str, Any]] = {}
     for entry in request.chart_layouts:
-        layouts_map[str(int(entry.id))] = entry.layout.model_dump(exclude_none=True)
+        layouts_map[str(int(entry.id))] = strip_draft_row_keys(draft_layout_dump(entry.layout))
     snapshot = dict(dash.draft_snapshot or {})
     # Per-user bucket, MERGED (legacy-aware so a pre-B17 shared draft migrates).
     user_layouts = dict(snapshot.get("user_layouts") or {})
@@ -2247,6 +2690,28 @@ def update_dashboard_draft_layout(
     db.commit()
     db.refresh(dash)
     return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
+def _dashboard_for_draft_write(db: Session, dashboard_id: int):
+    """The dashboard row, LOCKED until this request commits.
+
+    Every author's draft lives in one JSON column (``draft_snapshot``: layouts,
+    widget content, chart parameters, the shared filters/pages/theme) that each
+    draft write reads, changes and writes back whole. Two writes at once — one
+    author saving a layout while another stages a filter — each read the same
+    old snapshot and the later commit silently dropped the other's edit. The
+    row lock serialises them; the revision check (``base_rev``) then sees the
+    other's change instead of overwriting it."""
+    return _draft_write_query(db, dashboard_id).first()
+
+
+def _draft_write_query(db: Session, dashboard_id: int):
+    return (
+        db.query(Dashboard)
+        .filter(Dashboard.id == dashboard_id)
+        .with_for_update(of=Dashboard)
+        .populate_existing()
+    )
 
 
 @router.put("/{dashboard_id}/draft-filters", response_model=DashboardResponse)
@@ -2270,12 +2735,42 @@ def update_dashboard_draft_filters(
 
     Either omitted field leaves that scope unchanged in the draft.
     """
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
 
     snapshot = dict(dash.draft_snapshot or {})
+    touches_shared = any(
+        getattr(request, k) is not None
+        for k in ("filters_config", "slicers_config", "slicer_cluster_layout", "pages_config", "theme_config")
+    )
+    if touches_shared:
+        meta = _shared_meta(snapshot)
+        current = _shared_rev_token(dash, snapshot)
+        # A write that does not say which revision it was made on is refused like
+        # a stale one: omitting the field must not be a way around the check (an
+        # old cached editor, a script). The editor learns the revision from every
+        # dashboard it loads (`shared_draft.rev`).
+        if request.base_rev is None or str(request.base_rev) != current:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "shared_draft_stale",
+                    "rev": current,
+                    "by": meta.get("last_by_name") if request.base_rev is not None else None,
+                    "message": ("The report's filters, pages or theme were changed since you opened it. Reload to continue."
+                                if request.base_rev is not None else
+                                "This change does not say which version of the report it was made on. Reload to continue."),
+                },
+            )
+        author_name = getattr(current_user, "full_name", None) or current_user.email
+        if not _has_shared_draft(snapshot):
+            meta = {"rev": 0, "authors": {}}
+        meta["rev"] += 1
+        meta["authors"][str(current_user.id)] = author_name
+        meta["last_by_name"] = author_name
+        snapshot[_SHARED_META] = meta
     if request.filters_config is not None:
         snapshot["filters_config"] = list(request.filters_config)
     if request.slicers_config is not None:
@@ -2284,8 +2779,26 @@ def update_dashboard_draft_filters(
         snapshot["slicer_cluster_layout"] = dict(request.slicer_cluster_layout)
     if request.pages_config is not None:
         snapshot["pages_config"] = list(request.pages_config)
+    if request.theme_config is not None:
+        snapshot["theme_config"] = dict(request.theme_config)
     dash.draft_snapshot = snapshot
     flag_modified(dash, "draft_snapshot")
+    # The controls of a filter being deleted go in the SAME commit as the entry:
+    # either the draft loses the filter and every control for it, or nothing.
+    if request.remove_tile_ids:
+        wanted = {int(i) for i in request.remove_tile_ids}
+        rows = db.query(DashboardChart).filter(
+            DashboardChart.dashboard_id == dashboard_id, DashboardChart.id.in_(wanted),
+        ).all()
+        if len(rows) != len(wanted):
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="An element to remove is not on this dashboard.")
+        try:
+            for row in rows:
+                remove_tile_in_draft(db, row, str(current_user.id))
+        except PermissionError as e:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     db.commit()
     db.refresh(dash)
     return _serialize_dashboard_with_draft(db, dash, current_user)
@@ -2309,6 +2822,18 @@ class PublishRequest(BaseModel):
     caller's own tiles."""
     tile_base_v: Optional[Dict[str, int]] = None
     force: bool = False
+    # The shared filters/pages/theme draft holds other authors' edits: publish
+    # them too (`shared_ack_rev` = the revision the caller was shown), or
+    # publish only the caller's own work and leave the shared draft pending.
+    shared_ack_rev: Optional[str] = None
+    keep_shared: bool = False
+
+
+class DiscardRequest(BaseModel):
+    """Same choice for Discard: drop the shared draft including other
+    authors' edits (acknowledged revision), or keep it."""
+    shared_ack_rev: Optional[str] = None
+    keep_shared: bool = False
 
 
 @router.post("/{dashboard_id}/publish", response_model=DashboardResponse)
@@ -2327,7 +2852,7 @@ def publish_dashboard_draft(
     publishing was published by someone else since the caller loaded it
     (tile_base_v mismatch), we 409 listing those tiles (unless force).
     """
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
     require_edit_access(db, current_user, dash, "dashboards")
@@ -2362,12 +2887,16 @@ def publish_dashboard_draft(
                     name = None
                 conflicted.append(name or f"Biểu đồ #{row.id}")
         if conflicted:
-            others = dashboard_presence.heartbeat(
+            presence = dashboard_presence.heartbeat(
                 dashboard_id, user_key,
                 getattr(current_user, "full_name", None) or current_user.email,
                 current_user.email,
             )
-            last_editor = others[0]["name"] if others else None
+            # heartbeat returns {editors, lock, page_holders}; reading it as the
+            # list of editors raised KeyError here — every same-tile publish
+            # conflict was a 500 instead of the "someone published this" choice.
+            others = (presence.get("editors") if isinstance(presence, dict) else presence) or []
+            last_editor = others[0].get("name") if others and isinstance(others[0], dict) else None
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
@@ -2377,46 +2906,92 @@ def publish_dashboard_draft(
                 },
             )
 
+    keep_shared = bool(payload and payload.keep_shared)
+    if not keep_shared:
+        _refuse_others_shared_draft(dash, snapshot, user_key, payload.shared_ack_rev if payload else None, "publish")
+
+    # ── Elements this user removed in the draft leave the live report now, in
+    #    the same commit as everything else they publish. ──
+    removed_ids = {str(r.id) for r in rows if is_draft_removed_by(r, user_key)}
+    unpublished_charts: list[int] = []
+    for row in rows:
+        if str(row.id) in removed_ids:
+            if row.chart_id:
+                unpublished_charts.append(row.chart_id)
+            db.delete(row)
+    # A report-only copy the publish replaced (a newer copy took its tile) is
+    # used by nothing now: it goes in the same commit.
+    drop_unreferenced_report_copies(db, dashboard_id, unpublished_charts)
+
     # ── Apply ONLY this user's tiles (bump per-tile version) ──
     for cid, new_layout in my_layouts.items():
         row = rows_by_id.get(str(cid))
-        if row is None or not new_layout:
+        if row is None or not new_layout or str(cid) in removed_ids:
             continue
-        merged = {**(row.layout or {}), **new_layout}
+        # A tile's draft state is the row's, never the layout a user saved: a
+        # colleague's saved copy of a block they did not create must not turn a
+        # published block back into a draft (or mark it removed).
+        merged = {**(row.layout or {}), **strip_draft_row_keys(new_layout)}
         merged["_v"] = int((row.layout or {}).get("_v", 0)) + 1
         row.layout = merged
         flag_modified(row, "layout")
 
-    # ── Filter / slicer slots (still a shared draft — applied + cleared here) ──
-    draft_filters_config = snapshot.get("filters_config")
+    # ── This user's draft edits of widget content go live with the rest. ──
+    for cid, config in _draft_user_widget_configs(snapshot, user_key).items():
+        row = rows_by_id.get(str(cid))
+        if row is not None and str(cid) not in removed_ids:
+            row.widget_config = config
+            flag_modified(row, "widget_config")
+    for cid, params in _draft_user_parameters(snapshot, user_key).items():
+        row = rows_by_id.get(str(cid))
+        if row is not None and str(cid) not in removed_ids:
+            row.parameters = params
+            flag_modified(row, "parameters")
+
+    # ── Blocks this user's AI Design created in the draft go live now, in the
+    #    same commit as the layout: flag cleared, owner mark dropped. ──
+    for row in rows:
+        lay = row.layout if isinstance(row.layout, dict) else None
+        if lay and lay.get("draftOnly") and str(lay.get("draftOwner") or user_key) == user_key:
+            row.layout = {k: v for k, v in lay.items() if k not in ("draftOnly", "draftOwner")}
+            flag_modified(row, "layout")
+
+    # ── Filter / slicer slots, pages, theme: the SHARED draft — applied +
+    #    cleared here unless the caller chose to leave it pending. ──
+    draft_filters_config = None if keep_shared else snapshot.get("filters_config")
     if isinstance(draft_filters_config, list):
         dash.filters_config = draft_filters_config
         flag_modified(dash, "filters_config")
-    draft_slicers_config = snapshot.get("slicers_config")
+    draft_slicers_config = None if keep_shared else snapshot.get("slicers_config")
     if isinstance(draft_slicers_config, list):
         dash.slicers_config = draft_slicers_config
         flag_modified(dash, "slicers_config")
-    draft_slicer_cluster_layout = snapshot.get("slicer_cluster_layout")
+    draft_slicer_cluster_layout = None if keep_shared else snapshot.get("slicer_cluster_layout")
     if isinstance(draft_slicer_cluster_layout, dict):
         dash.slicer_cluster_layout = draft_slicer_cluster_layout
         flag_modified(dash, "slicer_cluster_layout")
-    draft_pages_config = snapshot.get("pages_config")
+    draft_pages_config = None if keep_shared else snapshot.get("pages_config")
     if isinstance(draft_pages_config, list):
         dash.pages_config = draft_pages_config
         flag_modified(dash, "pages_config")
+    # The staged theme goes live in the same commit as the tiles above: either
+    # the whole approved presentation is published, or (on 409 / error) none.
+    draft_theme_config = None if keep_shared else snapshot.get("theme_config")
+    if isinstance(draft_theme_config, dict):
+        dash.theme_config = draft_theme_config
+        flag_modified(dash, "theme_config")
 
     # ── Clear ONLY this user's layout bucket + the applied filter drafts.
     #    Other users' pending layout buckets survive. ──
-    ul = dict(snapshot.get("user_layouts") or {})
-    ul.pop(user_key, None)
-    new_snapshot: Dict[str, Any] = {}
-    if ul:
-        new_snapshot["user_layouts"] = ul
-    dash.draft_snapshot = new_snapshot or None
+    dash.draft_snapshot = _after_author_leaves(snapshot, user_key, keep_shared)
     flag_modified(dash, "draft_snapshot")
     dash.last_published_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(dash)
+    # Public/embed serve a cached structure (short TTL, keyed by token). A
+    # publish must be visible on the next view, not a minute later.
+    from app.services import query_cache as _qc
+    _qc.invalidate_all_public_meta()
     return _serialize_dashboard_with_draft(db, dash, current_user)
 
 
@@ -2425,13 +3000,33 @@ def discard_dashboard_draft(
     dashboard_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    payload: Optional[DiscardRequest] = None,
 ):
-    """Throw away any pending draft. Live state is untouched."""
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    """Throw away the caller's pending draft. Live state is untouched.
+
+    Elements the caller added in the draft were never published: they are
+    deleted. Elements the caller removed in the draft were never unpublished:
+    they are back. The shared filter/page/theme draft is cleared; other
+    authors' layout drafts, additions and removals are kept."""
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
     require_edit_access(db, current_user, dash, "dashboards")
-    dash.draft_snapshot = None
+    user_key = str(current_user.id)
+    keep_shared = bool(payload and payload.keep_shared)
+    if not keep_shared:
+        _refuse_others_shared_draft(dash, dash.draft_snapshot, user_key, payload.shared_ack_rev if payload else None, "discard")
+    discarded_charts: list[int] = []
+    for row in db.query(DashboardChart).filter(DashboardChart.dashboard_id == dashboard_id).all():
+        if is_draft_only_by(row, user_key):
+            if row.chart_id:
+                discarded_charts.append(row.chart_id)
+            db.delete(row)
+        else:
+            restore_tile_in_draft(row, user_key)
+    # A report-only copy made in this draft is not left in the library.
+    drop_unreferenced_report_copies(db, dashboard_id, discarded_charts)
+    dash.draft_snapshot = _after_author_leaves(dash.draft_snapshot, user_key, keep_shared)
     flag_modified(dash, "draft_snapshot")
     db.commit()
     db.refresh(dash)
@@ -2643,6 +3238,22 @@ def list_public_links(
     return [_sanitize_link_for_admin(link) for link in links]
 
 
+def _refuse_unappliable_link_filters(filters_config) -> None:
+    """A link filter that carries a value the chart engine cannot apply
+    (``between 5``, ``in 5``, an unknown relative-date preset) is refused at
+    save: the public link would otherwise fail closed for every viewer (see
+    ``public._refuse_malformed_link``). An EMPTY lock stays allowed — it is the
+    documented "no value picked yet" no-op."""
+    from app.services.filter_layered_merge import malformed_link_entries
+    bad = malformed_link_entries(filters_config if isinstance(filters_config, list) else [])
+    if bad:
+        names = ", ".join(str(e.get("label") or e.get("field") or "?") for e in bad[:5])
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"These link filters have a value that cannot be applied: {names}. Fix the operator or value.",
+        )
+
+
 @router.post("/{dashboard_id}/public-links", response_model=PublicLinkResponse, status_code=status.HTTP_201_CREATED)
 def create_public_link(
     dashboard_id: int,
@@ -2655,6 +3266,7 @@ def create_public_link(
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
     require_edit_access(db, current_user, dash, "dashboards")
+    _refuse_unappliable_link_filters(request.filters_config)
     link = DashboardPublicLink(
         dashboard_id=dashboard_id,
         name=request.name,
@@ -2698,6 +3310,7 @@ def update_public_link(
     if request.name is not None:
         link.name = request.name
     if request.filters_config is not None:
+        _refuse_unappliable_link_filters(request.filters_config)
         link.filters_config = request.filters_config
     if request.appearance_config is not None:
         new_config = dict(request.appearance_config)

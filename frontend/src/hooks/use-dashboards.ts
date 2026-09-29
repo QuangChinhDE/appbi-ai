@@ -188,12 +188,14 @@ export const usePublishDashboard = () => {
     // Phase-B17 — accept an optimistic-concurrency guard. Callers pass the
     // dashboard.updated_at they loaded; force=true overwrites after a conflict.
     mutationFn: (
-      arg: number | { dashboardId: number; tileBaseV?: Record<string, number> | null; force?: boolean },
+      arg: number | { dashboardId: number; tileBaseV?: Record<string, number> | null; force?: boolean; sharedAckRev?: string; keepShared?: boolean },
     ) => {
       if (typeof arg === 'number') return dashboardApi.publishDraft(arg);
       return dashboardApi.publishDraft(arg.dashboardId, {
         tileBaseV: arg.tileBaseV,
         force: arg.force,
+        sharedAckRev: arg.sharedAckRev,
+        keepShared: arg.keepShared,
       });
     },
     onSuccess: (_, arg) => {
@@ -207,8 +209,13 @@ export const usePublishDashboard = () => {
 export const useDiscardDashboardDraft = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (dashboardId: number) => dashboardApi.discardDraft(dashboardId),
-    onSuccess: (_, dashboardId) => {
+    mutationFn: (arg: number | { dashboardId: number; sharedAckRev?: string; keepShared?: boolean }) => (
+      typeof arg === 'number'
+        ? dashboardApi.discardDraft(arg)
+        : dashboardApi.discardDraft(arg.dashboardId, { sharedAckRev: arg.sharedAckRev, keepShared: arg.keepShared })
+    ),
+    onSuccess: (_, arg) => {
+      const dashboardId = typeof arg === 'number' ? arg : arg.dashboardId;
       queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     },
   });

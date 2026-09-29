@@ -1,5 +1,6 @@
 'use client';
 
+import { emphasisOf, TileEmphasisProvider } from '@/lib/tile-emphasis';
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { AlertTriangle, Download, Loader2, SlidersHorizontal, X } from 'lucide-react';
 import { collectRowColumns, csvFilename, downloadCsv, rowsToCsv } from '@/lib/export-csv';
@@ -8,8 +9,10 @@ import { ExploreChart } from '@/components/explore/ExploreChart';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { useI18n } from '@/providers/LanguageProvider';
-import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
-import { metricKey, metricLabel } from '@/components/explore/ExploreChartConfig';
+import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
+import { buildTileEvidence, usePublishTileEvidence } from '@/lib/report-evidence';
+import { KpiContext, kpiRowValue } from './KpiContext';
+import { metricKey, metricLabel, normalizeRoleConfig } from '@/components/explore/ExploreChartConfig';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
 import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-style';
 import {
@@ -19,10 +22,14 @@ import {
   type BaseFilter,
   type FilterOperator,
 } from '@/lib/filters';
+import { resolveTileFrameStyle, tileKindOf, TILE_TITLE_CLASS, TILE_KPI_LABEL_CLASS } from '@/lib/dashboard-presentation/tile-frame';
 import type { Chart, ChartDataResponse, ChartSemanticBinding, DashboardChartLayout, TimeGranularity } from '@/types/api';
 
 interface ReadonlyChartTileProps {
   chart: Chart | null | undefined;
+  /** The DashboardChart id — the same identity the builder tile carries, so
+   *  builder/public parity checks can pair tiles. */
+  dashboardChartId?: number;
   chartData?: ChartDataResponse | null;
   error?: string | null;
   title?: string;
@@ -62,6 +69,7 @@ interface ReadonlyChartTileProps {
 
 export function ReadonlyChartTile({
   chart,
+  dashboardChartId,
   chartData,
   error = null,
   title,
@@ -146,6 +154,7 @@ export function ReadonlyChartTile({
     : hookDatasetModel;
   const roLabelMap = useMemo(() => buildSemanticLabelMap(roDatasetModel?.views), [roDatasetModel]);
   const roFormatMap = useMemo(() => buildSemanticFormatMap(roDatasetModel?.views), [roDatasetModel]);
+  const roCurrencyMap = useMemo(() => buildSemanticCurrencyMap(roDatasetModel?.views), [roDatasetModel]);
   const effectiveStyleConfig = useMemo(
     () => getEffectiveDashboardChartStyleConfig(chart, layout),
     [chart, layout],
@@ -161,40 +170,11 @@ export function ReadonlyChartTile({
   const displayTitle = customTileTitle || configuredChartTitle || chartNameTrim;
   // Phase-B15 — dashboard theme title font/color (empty {} when unthemed).
   const dashTheme = useDashboardChartTheme();
-  // Per-tile "transparent background": drop the card bg/border/shadow so the
-  // dashboard's own background shows through (frameless). Cross-filter/highlight
-  // rings still render (Tailwind ring = box-shadow, independent of the border).
-  const transparentTile = effectiveStyleConfig.transparentBackground === true;
-  // Per-tile surface (AI Design "make this chart dark/light"). Must mirror
-  // ChartTile so a saved/published restyle renders identically on the public
-  // and embed views — the builder and the viewer use different tile components.
-  const chartSurface = (effectiveStyleConfig as any).chartSurface as 'dark' | 'light' | undefined;
-  const surfaceClass = chartSurface === 'dark'
-    ? 'chart-surface-dark'
-    : chartSurface === 'light' ? 'chart-surface-light' : '';
-  const surfaceVars: CSSProperties | undefined = (!transparentTile && chartSurface === 'dark')
-    ? ({
-        background: '#0f172a',
-        '--surface-1': '15 23 42',
-        '--surface-2': '30 41 59',
-        '--text-primary': '226 232 240',
-        '--text-secondary': '203 213 225',
-        '--text-tertiary': '148 163 184',
-        '--border-line': '51 65 85',
-        color: 'rgb(226 232 240)',
-      } as CSSProperties)
-    : (!transparentTile && chartSurface === 'light')
-    ? ({
-        background: '#ffffff',
-        '--surface-1': '255 255 255',
-        '--surface-2': '243 244 245',
-        '--text-primary': '8 9 10',
-        '--text-secondary': '60 65 73',
-        '--text-tertiary': '120 126 134',
-        '--border-line': '230 230 230',
-        color: 'rgb(8 9 10)',
-      } as CSSProperties)
-    : undefined;
+  // Frame + surface: the SAME resolver the builder tile uses, so a published
+  // tile cannot drift from what the author saw.
+  const ringActive = isCrossFilterSource || isHighlightSource;
+  const tileFrame = resolveTileFrameStyle({ style: effectiveStyleConfig as any, theme: dashTheme, ringActive });
+  const transparentTile = tileFrame.frame !== 'card';
   const themeTitleStyle: CSSProperties | undefined =
     dashTheme.titleFontSize || dashTheme.titleColor
       ? { fontSize: dashTheme.titleFontSize, color: dashTheme.titleColor }
@@ -221,6 +201,22 @@ export function ReadonlyChartTile({
   // so a viewer/public reader saw a number silently computed WITHOUT the
   // filter they applied (the DA's "mông lung"). PowerBI shows every consumer
   // when a slicer doesn't reach a visual; we do the same here.
+  // Report evidence — the rows this published tile shows, for narrative blocks
+  // on the same report (builder, /d and /embed alike).
+  const tileEvidence = useMemo(() => {
+    if (!roleConfig || dashboardChartId == null) return null;
+    const type = String(chart?.chart_type || '');
+    return buildTileEvidence({
+      tileId: dashboardChartId,
+      chartType: type,
+      title: (isKpiCard ? kpiHeaderTitle : displayTitle) || chartNameTrim,
+      roleConfig: normalizeRoleConfig(type, roleConfig as any),
+      styleConfig: effectiveStyleConfig,
+      response: chartData ?? null,
+      views: roDatasetModel?.views as any,
+    });
+  }, [roleConfig, dashboardChartId, chart?.chart_type, isKpiCard, kpiHeaderTitle, displayTitle, chartNameTrim, effectiveStyleConfig, chartData, roDatasetModel]);
+  usePublishTileEvidence(dashboardChartId, tileEvidence, !chartData && !error);
   const droppedByBackend = chartData?.debug?.dropped_filters ?? [];
   const chartRenderStyleConfig = useMemo(() => {
     if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
@@ -365,6 +361,7 @@ export function ReadonlyChartTile({
     setIsHavingOpen(false);
   };
 
+  const tileEmphasis = emphasisOf(layout);
   if (!hasBeenVisible) {
     return (
       <div
@@ -376,43 +373,23 @@ export function ReadonlyChartTile({
   }
 
   return (
+    <TileEmphasisProvider value={tileEmphasis}>
     <div
+      data-emphasis={tileEmphasis}
       /* Phase-B4 — flat "BI card": 8px radius, 1px hairline border, NO heavy
          drop-shadow/backdrop-blur (read as a web card before), tighter padding.
          Phase-B14 — honor the dashboard theme's card radius/border. */
-      className={`dashboard-tile group relative h-full overflow-hidden rounded-lg p-3 transition-colors ${surfaceClass} ${
-        transparentTile ? '' : 'border bg-surface-1'
-      } ${
+      data-tile-id={dashboardChartId ?? chart?.id ?? ''}
+      data-tile-kind={tileKindOf(chart?.chart_type)}
+      {...tileFrame.dataAttributes}
+      className={`${tileFrame.className} group h-full overflow-hidden transition-colors ${
         isCrossFilterSource || isHighlightSource
           ? 'border-sky-300 ring-2 ring-sky-100'
           : transparentTile
             ? ''
             : 'border-[rgb(var(--border-line))] hover:border-[rgb(var(--border-strong))]'
       }`}
-      style={{
-        borderRadius: 'var(--dashboard-card-radius, 0.5rem)',
-        // Frameless when transparent: no border/bg/shadow → dashboard bg shows
-        // through. (A cross-filter/highlight ring still renders via Tailwind.)
-        ...(transparentTile
-          ? { borderWidth: 0, background: 'transparent' }
-          : {
-              borderWidth: 'var(--dashboard-card-border-width, 1px)',
-              ...(isCrossFilterSource || isHighlightSource
-                ? {}
-                : { borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))' }),
-              // Phase-B16 — translucent "glass" tile that floats over a bg image.
-              ...(dashTheme.cardBg
-                ? {
-                    background: dashTheme.cardBg,
-                    backdropFilter: dashTheme.cardBackdrop,
-                    WebkitBackdropFilter: dashTheme.cardBackdrop,
-                    boxShadow: '0 10px 30px -14px rgba(2, 6, 23, 0.45)',
-                  }
-                : {}),
-            }),
-        // Per-tile AI Design surface — after the theme bg so a dark chart wins.
-        ...(surfaceVars ?? {}),
-      }}
+      style={tileFrame.style}
     >
       <div className="flex h-full min-h-0 flex-col">
         {/* Phase-B11 — render the header row ONLY when it has real content
@@ -474,12 +451,14 @@ export function ReadonlyChartTile({
           if (isKpiCard) {
             if (!kpiHeaderTitle && !hasActions) return null;
             return (
-              <div className={`mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
+              <div className={`relative mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
                 {kpiHeaderTitle && (
-                  <p data-pdf-tile-title className="dashboard-kpi-label min-w-0 flex-1 truncate font-medium text-text-secondary" style={themeTitleStyle} title={kpiHeaderTitle}>{kpiHeaderTitle}</p>
+                  <p data-pdf-tile-title className={TILE_KPI_LABEL_CLASS} style={themeTitleStyle} title={kpiHeaderTitle}>{kpiHeaderTitle}</p>
                 )}
+                {/* Overlaid, not in the row: on a 2-up phone KPI the (hover-only)
+                    actions otherwise take the width the label needs. */}
                 {hasActions && (
-                  <div className="ml-auto flex flex-shrink-0 items-center gap-1">
+                  <div className="absolute right-0 top-0 flex items-center gap-1">
                     {droppedBadge}
                     {havingToggle}
                     {exportButton}
@@ -496,7 +475,7 @@ export function ReadonlyChartTile({
             <div className={`mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
               <div className="min-w-0 flex-1">
                 {displayTitle && (
-                  <p data-pdf-tile-title className="truncate font-medium text-text-secondary" style={themeTitleStyle} title={displayTitle}>{displayTitle}</p>
+                  <p data-pdf-tile-title className={TILE_TITLE_CLASS} style={themeTitleStyle} title={displayTitle}>{displayTitle}</p>
                 )}
                 {showChartTypeLabel && chart?.chart_type && (
                   <p className="mt-1 truncate text-[11px] text-text-quaternary">
@@ -588,6 +567,7 @@ export function ReadonlyChartTile({
         )}
 
         <div
+          data-tile-body
           className="flex-1 min-h-0 overflow-hidden"
           onClick={(e) => {
             // Click on EMPTY chart space clears the cross-filter selection
@@ -631,8 +611,10 @@ export function ReadonlyChartTile({
               styleConfig={chartRenderStyleConfig}
               labelMap={roLabelMap}
               formatMap={roFormatMap}
+              currencyMap={roCurrencyMap}
               havingFilters={havingFilters}
               preAggregated={chartData.pre_aggregated ?? false}
+              timeCompleteness={chartData.time_completeness ?? undefined}
               embedded
               kpiLabelInHeader={isKpiCard}
               viewerGrain={viewerGrain}
@@ -657,7 +639,15 @@ export function ReadonlyChartTile({
             />
           )}
         </div>
+        {isKpiCard && chartData && (roleConfig as any)?.metrics?.[0]?.field ? (
+          <KpiContext
+            measureField={(roleConfig as any).metrics[0].field}
+            kpiValue={kpiRowValue(chartData.data)}
+            goalDirection={(effectiveStyleConfig as any)?.kpiGoalDirection ?? null}
+          />
+        ) : null}
       </div>
     </div>
+    </TileEmphasisProvider>
   );
 }

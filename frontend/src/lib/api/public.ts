@@ -70,6 +70,7 @@ export const publicDashboardApi = {
     sessionToken?: string,
     filters?: BaseFilter[],
     granularity?: string,
+    pageId?: string,
   ): Promise<any> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     // #2 — viewer date-hierarchy: re-bucket the time axis at the grain the
@@ -77,6 +78,8 @@ export const publicDashboardApi = {
     const params: Record<string, string> = {};
     if (filters && filters.length > 0) params.filters = JSON.stringify(filters);
     if (granularity) params.granularity = granularity;
+    // The page being shown: the server applies that page's scope itself.
+    if (pageId) params.page_id = pageId;
     const res = await publicClient.get(
       `/public/dashboards/${token}/charts/${chartId}/data`,
       {
@@ -96,11 +99,14 @@ export const publicDashboardApi = {
     token: string,
     sessionToken: string | undefined,
     items: Array<{ chart_id: number; filters?: BaseFilter[]; granularity?: string }>,
+    pageId?: string,
   ): Promise<{ results: Array<{ chart_id: number; data?: any; error?: string; status?: number }> }> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     const res = await publicClient.post(
       `/public/dashboards/${token}/charts/data`,
-      { items },
+      // page_id: the server applies that page's scope itself (the filters the
+      // page sends are only the viewer's own choices, bounded client-side too).
+      { items, ...(pageId ? { page_id: pageId } : {}) },
       { headers },
     );
     return res.data;
@@ -171,6 +177,7 @@ export const publicDashboardApi = {
     filters?: BaseFilter[],
     search?: string,
     offset?: number,
+    pageId?: string,
   ): Promise<{ field: string; values: string[]; total?: number; has_more?: boolean }> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     const res = await publicClient.get(
@@ -184,6 +191,7 @@ export const publicDashboardApi = {
           ...(offset ? { offset } : {}),
           ...(search && search.trim() ? { search: search.trim() } : {}),
           ...(filters?.length ? { filters: JSON.stringify(filters) } : {}),
+          ...(pageId ? { page_id: pageId } : {}),
         },
       },
     );

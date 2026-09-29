@@ -208,7 +208,17 @@ jobs:
             tests/test_no_evidence_no_confident_number.py \
             tests/test_report_read_selection_is_explicit.py \
             tests/test_authoring_is_strict.py \
-            tests/test_node_child_slots.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
+            tests/test_node_child_slots.py \
+            tests/test_presentation_planner_reference_image.py \
+            tests/test_dashboard_presentation_publish_is_atomic.py \
+            tests/test_chart_value_normalization.py \
+            tests/test_report_starter.py \
+            tests/test_unified_grid_contract.py \
+            tests/test_dashboard_draft_removal_lifecycle.py \
+            tests/test_public_link_filter_disclosure.py \
+            tests/test_embed_link_claim_operator.py \
+            tests/test_public_filter_authority.py \
+            tests/test_report_content_widgets.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
       # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
       #
       # The step below reports failures. Nothing reported SUCCESS, so a

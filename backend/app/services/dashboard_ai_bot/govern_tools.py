@@ -117,7 +117,16 @@ def _scope(ctx: ToolContext) -> tuple[set[int], set[int]]:
     if getattr(ctx, "dashboard", None) is None:
         return set(), set()
 
-    tids = set(dashboard_table_ids(ctx.db, ctx.dashboard.id))
+    # The tiles this context was built from, not every row of the dashboard: a
+    # public token is served published tiles only (public._serve_published_only),
+    # so a dataset that sits only on an editor's draft tile is not described to a
+    # public viewer. Recorded once by ToolContext.from_dashboard — never re-read
+    # from the live relationship, which a commit mid-turn reloads raw.
+    served = getattr(ctx, "served_table_ids", None)
+    if served is not None:
+        tids = set(served)
+    else:
+        tids = set(dashboard_table_ids(ctx.db, ctx.dashboard.id))
     dsids: set[int] = set()
     if tids:
         for table in ctx.db.query(DatasetTable).filter(DatasetTable.id.in_(tids)).all():

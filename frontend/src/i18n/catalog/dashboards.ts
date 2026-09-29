@@ -4,6 +4,11 @@ import type { ModuleCatalog } from '../messages';
 // modal, AI bot, export dialog, public-links manager, calculated fields).
 export const dashboardsCatalog: ModuleCatalog = {
   en: {
+    'dashboards.create.title': 'New report',
+    'dashboards.create.name': 'Name',
+    'dashboards.create.description': 'What is it for?',
+    'dashboards.create.descriptionHint': 'One sentence. The report header states it to every reader.',
+    'dashboards.create.submit': 'Create',
     'dashboards.chartManager.title': 'Manage Dashboard Charts',
     'dashboards.chartManager.help': 'Remove broken tiles here without relying on the chart tile itself to render successfully.',
     'dashboards.chartManager.empty': 'This dashboard does not contain any charts.',
@@ -638,7 +643,7 @@ export const dashboardsCatalog: ModuleCatalog = {
     'dashboards.filterPane.tooltipDataset': 'Dataset: {{dataset}}',
     'dashboards.filterPane.tooltipType': 'Type: {{type}}',
     'dashboards.themeModal.title': 'Dashboard appearance',
-    'dashboards.themeModal.subtitle': 'Personalize the whole report — applies to both Build and the public link.',
+    'dashboards.themeModal.subtitle': 'Personalize the whole report. Changes are saved with your draft and reach the public link when you publish.',
     'dashboards.themeModal.sectionStyles': 'Styles',
     'dashboards.themeModal.stylesHint': 'Pick a designed look for each surface. Every combination is built to work together, so you can mix freely without the report falling apart.',
     'dashboards.themeModal.cardStyleHeading': 'Card style',
@@ -747,6 +752,11 @@ export const dashboardsCatalog: ModuleCatalog = {
     'dashboards.themeModal.save': 'Save appearance',
   },
   vi: {
+    'dashboards.create.title': 'Báo cáo mới',
+    'dashboards.create.name': 'Tên',
+    'dashboards.create.description': 'Báo cáo dùng để làm gì?',
+    'dashboards.create.descriptionHint': 'Một câu. Phần mở đầu báo cáo sẽ nói điều này với mọi người đọc.',
+    'dashboards.create.submit': 'Tạo',
     'dashboards.chartManager.title': 'Quản lý biểu đồ Dashboard',
     'dashboards.chartManager.help': 'Xóa các tile lỗi tại đây mà không cần tile biểu đồ tự render thành công.',
     'dashboards.chartManager.empty': 'Dashboard này chưa có biểu đồ nào.',
@@ -1381,7 +1391,7 @@ export const dashboardsCatalog: ModuleCatalog = {
     'dashboards.filterPane.tooltipDataset': 'Dataset: {{dataset}}',
     'dashboards.filterPane.tooltipType': 'Loại: {{type}}',
     'dashboards.themeModal.title': 'Giao diện Dashboard',
-    'dashboards.themeModal.subtitle': 'Cá nhân hóa toàn bộ báo cáo — áp dụng cho cả Build và link công khai.',
+    'dashboards.themeModal.subtitle': 'Cá nhân hóa toàn bộ báo cáo. Thay đổi được lưu cùng bản nháp và chỉ lên link công khai khi bạn xuất bản.',
     'dashboards.themeModal.sectionStyles': 'Kiểu',
     'dashboards.themeModal.stylesHint': 'Chọn kiểu đã thiết kế sẵn cho từng thành phần. Mọi tổ hợp đều được thiết kế để đi cùng nhau nên phối thoải mái mà báo cáo vẫn đồng bộ.',
     'dashboards.themeModal.cardStyleHeading': 'Kiểu thẻ',

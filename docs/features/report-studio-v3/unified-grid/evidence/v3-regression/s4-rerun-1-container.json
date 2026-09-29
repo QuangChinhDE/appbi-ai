@@ -1,0 +1,76 @@
+{
+  "sha": "23f6b3c3b5ebeff0c5be1a91ac4dd024047f9d63",
+  "ranAt": "2026-09-28T17:23:59.357Z",
+  "results": {
+    "S4 three directions": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — executive: no finding is said twice (period_comparison:10815,peak:10815,trend:10815,latest:10815,top_item:10816,trend:10819)",
+        "PASS — s4-executive /d at 1440px has no render defect",
+        "PASS — s4-executive /d at 1440px has no sideways scroll",
+        "PASS — s4-executive /d at 1440px: every published sentence is computed (ready,ready / ready,ready,ready,ready)",
+        "PASS — s4-executive /d at 820px has no render defect",
+        "PASS — s4-executive /d at 820px has no sideways scroll",
+        "PASS — s4-executive /d at 820px: every published sentence is computed (ready,ready / ready,ready,ready,ready)",
+        "PASS — s4-executive /d at 390px has no render defect",
+        "PASS — s4-executive /d at 390px has no sideways scroll",
+        "PASS — s4-executive /d at 390px: every published sentence is computed (ready,ready / ready,ready,ready,ready)",
+        "PASS — operations: no finding is said twice (latest:10831,latest:10835,concentration:10833,concentration:10834,concentration:10836,partial_periods:10831,partial_periods:10835)",
+        "PASS — s4-operations /d at 1440px has no render defect",
+        "PASS — s4-operations /d at 1440px has no sideways scroll",
+        "PASS — s4-operations /d at 1440px: every published sentence is computed (ready / ready / ready,ready,ready,ready,ready)",
+        "PASS — s4-operations /d at 820px has no render defect",
+        "PASS — s4-operations /d at 820px has no sideways scroll",
+        "PASS — s4-operations /d at 820px: every published sentence is computed (ready / ready / ready,ready,ready,ready,ready)",
+        "PASS — s4-operations /d at 390px has no render defect",
+        "PASS — s4-operations /d at 390px has no sideways scroll",
+        "PASS — s4-operations /d at 390px: every published sentence is computed (ready / ready / ready,ready,ready,ready,ready)",
+        "PASS — editorial: no finding is said twice (trend:10848,peak:10848,latest:10848,period_comparison:10848,trend:10852,peak:10852,latest:10852,top_item:10849,top_item:10850,top_item:10851,top_item:10853,partial_periods:10848,partial_periods:10852,concentration:10850,concentration:10851)",
+        "PASS — s4-editorial /d at 1440px has no render defect",
+        "PASS — s4-editorial /d at 1440px has no sideways scroll",
+        "PASS — s4-editorial /d at 1440px: every published sentence is computed (ready,ready / ready,ready / ready,ready,ready / ready / ready / ready / ready / ready,ready,ready,ready)",
+        "PASS — s4-editorial /d at 820px has no render defect",
+        "PASS — s4-editorial /d at 820px has no sideways scroll",
+        "PASS — s4-editorial /d at 820px: every published sentence is computed (ready,ready / ready,ready / ready,ready,ready / ready / ready / ready / ready / ready,ready,ready,ready)",
+        "PASS — s4-editorial /d at 390px has no render defect",
+        "PASS — s4-editorial /d at 390px has no sideways scroll",
+        "PASS — s4-editorial /d at 390px: every published sentence is computed (ready,ready / ready,ready / ready,ready,ready / ready / ready / ready / ready / ready,ready,ready,ready)",
+        "PASS — the three directions differ in blocks and theme ({\"executive\":\"headline,summary | theme brief/light\",\"operations\":\"callout,takeaway,takeaway | theme ops/dark\",\"editorial\":\"callout,chapter,chapter,chapter,chapter,chapter,chapter,headline | theme editorial/light\"})"
+      ],
+      "metrics": {
+        "executive_preview_ms": 459,
+        "executive_publish_ms": 948,
+        "s4-executive_public_1440_ms": 4489,
+        "s4-executive_public_820_ms": 3737,
+        "s4-executive_public_390_ms": 4129,
+        "operations_preview_ms": 277,
+        "operations_publish_ms": 1134,
+        "s4-operations_public_1440_ms": 4253,
+        "s4-operations_public_820_ms": 3429,
+        "s4-operations_public_390_ms": 3713,
+        "editorial_preview_ms": 359,
+        "editorial_publish_ms": 2904,
+        "s4-editorial_public_1440_ms": 4671,
+        "s4-editorial_public_820_ms": 4035,
+        "s4-editorial_public_390_ms": 4786,
+        "signatures": {
+          "executive": "headline,summary | theme brief/light",
+          "operations": "callout,takeaway,takeaway | theme ops/dark",
+          "editorial": "callout,chapter,chapter,chapter,chapter,chapter,chapter,headline | theme editorial/light"
+        }
+      },
+      "evidence": [
+        "s4-executive-public-1440.jpg",
+        "s4-executive-public-820.jpg",
+        "s4-executive-public-390.jpg",
+        "s4-operations-public-1440.jpg",
+        "s4-operations-public-820.jpg",
+        "s4-operations-public-390.jpg",
+        "s4-editorial-public-1440.jpg",
+        "s4-editorial-public-820.jpg",
+        "s4-editorial-public-390.jpg"
+      ],
+      "notes": []
+    }
+  }
+}
