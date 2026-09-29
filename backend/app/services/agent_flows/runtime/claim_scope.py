@@ -105,6 +105,15 @@ def _member_list(data: dict, list_key: str, measure: Any, dimension: Any) -> lis
         if not isinstance(it, dict):
             continue
         label = it.get("label", it.get("item", it.get("name")))
+        if label is None:
+            # A SUMMARY ROW IS KEYED BY COLUMN: {"dataset_table_443.seller_state":
+            # "MG", "…total_revenue": 1011564.74}. Its member is the value of the
+            # dimension column — without it every top/bottom row of every chart
+            # summary was an anonymous figure (live run 4723: seller-state MG
+            # published as the customer-state answer).
+            dim_key = _key(dimension)
+            label = next((v for k, v in it.items() if isinstance(v, str)
+                          and (_key(k) == dim_key or dim_key is None)), None)
         for k, v in it.items():
             n = _num(v)
             if n is None or k in ("rank",):

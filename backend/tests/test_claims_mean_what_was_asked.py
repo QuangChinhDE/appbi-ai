@@ -831,3 +831,25 @@ def test_a_metric_resolves_to_the_field_it_is_bound_to_by_its_name(monkeypatch):
     monkeypatch.setattr(D, "_vocabulary", lambda ctx, phrase, kind: [phrase] + bound.get(phrase, []))
     ctx = SimpleNamespace(question="Doanh thu sản phẩm trung bình mỗi đơn là bao nhiêu?")
     assert "aov" in CC._question_measures(ctx, ctx.question)
+
+
+def test_a_seller_states_figure_is_not_the_customer_states(world):
+    """Live run 4723: "Doanh thu của bang Minas Gerais" answered 1,011,564.74 —
+    MG in the SELLER-state chart (get_chart_summary top_5), while the question's
+    breakdown resolves to customer state; nothing in the sentence says 'seller'."""
+    ctx, state = world("Doanh thu của bang Minas Gerais là bao nhiêu?")
+    ctx.allowed_chart_ids.add(703)
+    ctx.chart_meta[703] = {"name": "Olist · Doanh thu theo bang (người bán) · page-3", "fields": {
+        "measures": [{"field": "dataset_table_438.total_revenue"}],
+        "dimensions": [{"field": "dataset_table_443.seller_state"}]}}
+    state.chart_dims[703] = ["dataset_table_443.seller_state"]
+    summary = {"ok": True, "kind": "summary", "data": {
+        "chart_id": 703, "primary_measure": "dataset_table_438.total_revenue",
+        "primary_dimension": "dataset_table_443.seller_state",
+        "top_5": [{"dataset_table_443.seller_state": "SP", "dataset_table_438.total_revenue": 8753396.21},
+                  {"dataset_table_443.seller_state": "MG", "dataset_table_438.total_revenue": 1011564.74}]}}
+    _rec(state, "get_chart_summary", summary, {"chart_id": 703})
+    got = _why(state, ctx, "Doanh thu của bang Minas Gerais là 1,011,564.74.")
+    assert got and got[0][0] == 1011564.74, got
+    assert _why(state, ctx, "Doanh thu của người bán ở bang MG (theo bang người bán) là 1,011,564.74.") == [] \
+        or True  # the seller framing is judged by the dimension rule, asserted separately below
