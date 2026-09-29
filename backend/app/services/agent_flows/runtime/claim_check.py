@@ -607,6 +607,42 @@ _OUT_OF = ("tren tong", "trong tong so", "tren tong so", "tren toan bo", "out of
            "of total", "of all")
 
 
+#: Words that ask for — or answer with — ONE member by rank.
+#: Vietnamese marks the superlative with "nhất" AFTER the noun ("nhiều đơn hàng nhất"),
+#: so the token itself is the cue, not a fixed phrase.
+_RANK_WORDS = ("nhat", "dan dau", "dung dau", "highest", "lowest", "most", "least", "largest",
+               "smallest", "leading", "best", "worst", "top")
+#: Words that make a figure an AVERAGE or a per-unit value.
+_PER_UNIT_WORDS = ("trung binh", "binh quan", "moi don", "moi don hang", "moi khach", "moi lan",
+                   "tren moi", "average", "avg", "mean", "per order", "per customer", "per unit",
+                   "per item", "on average")
+
+
+def _has_words(text: str, words) -> bool:
+    import re
+
+    folded = _fold(text or "")
+    return any(re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", folded) for w in words)
+
+
+def _clause_of(text: str, value: float) -> str:
+    """The clause (split on . ; , and line breaks) that carries `value`."""
+    import re
+
+    from app.services.dashboard_ai_bot.verifier import extract_answer_claims
+
+    for clause in re.split(r"(?<=[.!?;,])\s+|\n+", text or ""):
+        if any(_close(value, v) for v, _ in extract_answer_claims(clause)):
+            return clause
+    return ""
+
+
+def _is_average_measure(key: str | None) -> bool:
+    k = f"_{str(key or '').lower()}_"
+    return any(f"_{w}_" in k for w in ("avg", "average", "mean", "aov", "per", "rate", "pct", "ratio",
+                                        "score", "share"))
+
+
 def _framed_as_population(sentence: str, value: float) -> bool:
     import re
 
@@ -908,6 +944,29 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                             "of": {"measure": support[0].get("measure"), "dimension": None,
                                    "member": None}})
             continue
+        whole_only = all(not e.get("dimension") and not e.get("member") for e in support)
+        # A RANK ANSWER CARRIES A MEMBER'S FIGURE. Live a2d2e68b/a7354461 (link 39):
+        # "Bang có doanh thu cao nhất là bang tương ứng với tổng doanh thu là
+        # 13,591,643.7" — the report total as the top state's value. Whether or not
+        # the breakdown was read, a whole-report figure cannot be the answer to
+        # "which member is highest" in the sentence that says so.
+        if whole_only and _has_words(question, _RANK_WORDS) and _has_words(sentence, _RANK_WORDS) \
+                and not _framed_as_population(sentence, value) \
+                and not _given_to_other_than_asked(_clause_of(text, value), None):
+            flagged.append({"value": value, "pct": pct, "why": "whole_as_member",
+                            "of": {"measure": support[0].get("measure"), "dimension": None, "member": None}})
+            continue
+        # A SUM IS NOT AN AVERAGE. Live a7354461 g3_rev_per_order: "Doanh thu … trung
+        # bình mỗi đơn là 13,591,643.70" — the total revenue given as the per-order
+        # average. The clause frames the figure per unit; its only support is a summed
+        # measure (not an average/rate measure, not a derived quotient).
+        clause = _clause_of(text, value)
+        if not pct and clause and _has_words(clause, _PER_UNIT_WORDS) and all(
+                not _is_average_measure(e.get("measure")) and not e.get("derived") and not e.get("ratio")
+                for e in support):
+            flagged.append({"value": value, "pct": pct, "why": "aggregation_mismatch",
+                            "of": {k: support[0].get(k) for k in ("measure", "dimension", "member")}})
+            continue
         attributed = _misattributed(support, asked_member, sentence)
         if attributed == "whole_as_member" and _framed_as_population(sentence, value):
             attributed = None            # "… trên tổng 99,441 đơn": the population, not SP's
@@ -954,6 +1013,9 @@ _WHY = {
     "whole_as_member": ("là số của TOÀN BỘ báo cáo — báo cáo không có số liệu này theo chiều "
                         "được hỏi; nếu giữ, phải nói rõ đó là tổng toàn bộ"),
     "wrong_direction": "câu nói chiều ngược với dấu của con số đã tính (tăng ↔ giảm)",
+    "aggregation_mismatch": ("là một TỔNG, nhưng câu trả lời gọi nó là trung bình/mỗi đơn vị — lấy "
+                             "đúng số đo trung bình (biểu đồ AOV/trung bình) hoặc tính bằng compute "
+                             "từ tổng và số lượng cùng phạm vi"),
     "whole_as_breakdown": ("là một số của TOÀN BỘ báo cáo, không phải số theo chiều được hỏi — "
                            "tìm biểu đồ có số đo này theo đúng chiều đó; nếu không có thì nói rõ "
                            "báo cáo không có số theo chiều này"),

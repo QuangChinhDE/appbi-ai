@@ -1082,3 +1082,30 @@ def test_a_delivered_breakdown_still_answers(world):
     state.intent = _intent(measures=["gmv"], dimension="year_month")
     _months(state)
     assert _why(state, ctx, "GMV tháng 1/2018 là 1,107,301.89.") == []
+
+
+def test_a_rank_answer_carries_a_members_figure_not_the_total(world):
+    """Live a2d2e68b/a7354461 link 39: "Bang có doanh thu cao nhất là bang tương ứng với
+    tổng doanh thu là 13,591,643.7" — the report total given as the top state's
+    value, although the state breakdown WAS read. Controls: the top member's own
+    figure stands; the total framed as the population stands."""
+    ctx, state = world("Bang nào có nhiều đơn hàng nhất?", asked=("order_count",))
+    _states(ctx, state)
+    _value(state, 99441.0, "dataset_table_437.order_count")
+    assert (99441.0, "whole_as_member") in _why(
+        state, ctx, "Bang có nhiều đơn hàng nhất là bang tương ứng với tổng số đơn là 99,441.")
+    assert _why(state, ctx, "SP có nhiều đơn hàng nhất với 41,746 đơn.") == []
+    assert _why(state, ctx, "SP dẫn đầu với 41,746 đơn, trên tổng 99,441 đơn.") == []
+
+
+def test_a_total_is_never_the_per_unit_average(world):
+    """Live a7354461 g3_rev_per_order: "Doanh thu sản phẩm trung bình mỗi đơn là
+    13,591,643.70" — the total given as the per-order average. Controls: an average
+    measure framed as an average stands; the total in its own clause stands."""
+    ctx, state = world("Doanh thu trung bình mỗi đơn là bao nhiêu?", asked=("total_revenue", "aov"))
+    _value(state, 13591643.70, "dataset_table_438.total_revenue")
+    _value(state, 137.75, "dataset_table_438.aov")
+    assert (13591643.7, "aggregation_mismatch") in _why(
+        state, ctx, "Doanh thu sản phẩm trung bình mỗi đơn là 13,591,643.70.")
+    assert _why(state, ctx, "Giá trị đơn trung bình (AOV) là 137.75.") == []
+    assert _why(state, ctx, "Tổng doanh thu là 13,591,643.70.") == []
