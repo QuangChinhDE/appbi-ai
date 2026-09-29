@@ -191,5 +191,5 @@ The Agent Flow migrations are additive. The Report Studio ones rewrite layouts, 
   - A backslash in a pattern value is not escaped, so `ends_with 'a\'` errors on Postgres.
   - `ESCAPE '\'` on MySQL is not verified.
 - **Open finding, not changed:** string literals are escaped by doubling the quote (`'O''Brien'`) on every dialect, and `test_dialect_structural.py::test_quote_escaping_is_dialect_independent` locks that for BigQuery. GoogleSQL is documented to use `\'` instead. If a BigQuery run confirms this, that test is wrong and the literal helpers need a dialect branch. Per repository rules, the test is reported here rather than changed without that proof.
-- **Production-size data:** not verified. The rehearsal ran on the rig database (58 reports); a production copy has not been migrated.
+- **Production-size data:** not verified. The rehearsals ran on copies of the rig database: 58 reports for the stack round trip, and 62 reports with 762 tiles for the combined graph with Agent Flow. A production copy has not been migrated.
 - **Human product acceptance:** pending. It is the owner's decision, not an assistant's.

@@ -1,141 +1,171 @@
-# Manual Report Builder: status at the end of this round
+# Report Studio V3: finalization and coordinated integration
 
-**Audience.** Reviewers and the owner deciding whether to accept and deploy the Report Studio stack (#5 → #6 → #7).
+**Audience.** The owner deciding on product acceptance and on merging the Report Studio stack (#5 → #6 → #7) into `demo`, and the reviewers of those PRs.
 
-**Status.**
+**Status: BLOCKED, not merged.**
 
-- Product commit: `50ff1d8c`, on branch `feat/report-studio-v3`.
-- Every executable gate listed below ran at that commit.
-- Human acceptance and deployment authorization are still pending. They are the owner's decision.
+- **Merge is blocked by BigQuery.** The supported production data path has not been verified on BigQuery. The BigQuery text-filter fix is in code, but it has never run on a warehouse, and this machine has no warehouse access (§5). No PR has been merged into `demo`, and none will be until that gate runs.
+- **Everything else passes.** Every other executable gate listed below ran and passed at the SHAs given.
+- **Human product acceptance is pending.** That is the owner's decision; no assistant may take it.
+
+| PR | Branch | Head | CI |
+|---|---|---|---|
+| #5 | `feat/dashboard-design-engine-v2` | `35f78a6e` | 5/5 green |
+| #6 | `feat/report-experience` | `fa180520` | 5/5 green |
+| #7 | `feat/report-studio-v3` | `933ab8b2` (product), then docs and evidence | see §4 |
+
+All three carry `demo` at `30a048f4`, which includes Agent Flow V3 (PR #3 and #4). All three are Draft, and auto-merge is off.
 
 **Related documents.**
 
-- [`plan.md`](plan.md): the capability audit and the implementation order.
-- [`release.md`](release.md): deploy order, migrations and rollback.
+- [`release.md`](release.md): deploy order, the combined migration graph, rollback, and what is not verified.
+- [`plan.md`](plan.md): the capability audit and the implementation order from the previous round.
 
-## 1. What a report author can do now, without AI
+## 1. What changed in this round
 
-| Step | How |
+**Release closure** (`5e895d3b`, `97921bf1`, `beb5d723`, `024550f5`, `a7b39a70`):
+
+| Gate | Change |
 |---|---|
-| Start | Use **New report** (name and "what is it for"). The report opens in the builder on a guided start with three steps: add a header, add charts, group them into sections. |
-| Add anything | **Add** opens one palette for every native element: report header, section, chart, insight, filter control, text, note, image, shape, parameter, countdown. It says where the element will go, which is under the selected element and inside its section, with the rows below moving down, or else at the end of the page. The chart picker keeps picks across searches. |
-| Report header | By default it states the report's title and description. It computes the period from the data and states the filters in force. Its headline can be a finding from the data. It has three layouts: banner, split and minimal. No figure in it is typed by hand. |
-| Sections | Membership is stored (`layout.sectionId`), not guessed. Moving a heading moves its whole section. A heading placed above content that belongs to no section adopts it. The Inspector outline lists what a reader would find broken: an empty section, a member above its heading, or an insight about another section's charts. |
-| Inspector | Toolbar, double-click, or the pencil button. **Content** is saved to the draft as you type. **Style** covers emphasis (lead, normal, quiet), frame and surface. **Position and size** covers typed geometry through the same placement rule as dragging, the section, lock and fit to content. **Data** covers the Explore link and cross-highlight. With nothing selected, it shows the report's name, description and structure outline. |
-| Several elements | Patterns: **equal row**, **KPI strip**, **lead + supporting**. They never overlap, never move a locked tile, and close the rows the selection leaves behind. A selection that is alone in its rows fills the page width. |
-| Insight | A manual "insight" element. The author chooses findings computed from the data; the element never stores numbers. |
-| Reading surfaces | The builder, `/d`, `/embed`, Studio preview and PDF share one structure: bands, phone reading order, and a tablet preview identical to the published tablet view. On paper, bands print whole, a lone heading stays with its section, an arranged PDF includes report elements, and the text is in the reader's language. |
+| A2: BigQuery text filters | The report WHERE clause, the live-query path and the distinct-value cascade emitted `LIKE … ESCAPE '\'`, which GoogleSQL rejects. One helper (`app/services/sql_pattern.py`) now gives BigQuery `STRPOS` / `STARTS_WITH` / `ENDS_WITH`. Postgres SQL is unchanged byte for byte. A measure's own text filter is deliberately unchanged, because changing it would move saved numbers (see `release.md` §7). |
+| A4: Inspector save | An edit typed in the Inspector is settled before Save, Publish and a page switch, and cannot land after Discard. Leaving the page with an unsent edit asks first. |
+| B3: split header on a phone | The header's aside stacks under the title through a container query on a wrapper. A container query cannot style its own container. |
+| B4: KPI whitespace | A new KPI tile's default size is 4 columns × 7 rows. A lead KPI's figure is 1.25× the size of a normal one's, and a quiet KPI's is 0.85×. |
+| B5: sections with locked members | A section whose header or any member is locked refuses to move and names the member, instead of moving around it. |
+| C: time coverage | A report over independent datasets states each period, named by its section ("Marketplace: Sep 2016 – Sep 2018 · Sales: Jan 2024 – Dec 2025"). |
+| C: chart readability | The last tick of a date axis is no longer clipped. A legend of up to 6 items wraps instead of scrolling. |
+| C: phone and tablet heights | Text-like elements and KPI cards are measured as rendered and re-measured when their content arrives late. On phone the grid is re-laid; on tablet cells only grow. The public page measures the grid it actually renders; a dead duplicate grid block was removed. |
+| C: PDF | Charts no longer print washed out. html2canvas restarted their fade-in in its clone; the clone now has no motion. |
+| F: accessibility | Every Inspector field is associated with its label. Small labels no longer use the quaternary text colour (3.3:1 on white). axe-core runs in the acceptance spec. |
 
-**AI Design uses the same native capabilities.**
+**Integration with `demo`** (`35f78a6e`, `3525eaa4`, `fa180520`, `924d2a93`, `8816979c`, `8ee77536`):
 
-- It reads stated section membership.
-- It stamps membership on what it moves, including under a heading it creates.
-- Surface, emphasis and insights are available by hand as well.
+- `demo` at `30a048f4` was merged into #5, then #5 into #6, then #6 into #7. Every conflict was an addition on both sides and was resolved as a union:
+  - the preflight pytest list;
+  - the frontend `qa` chain;
+  - `agent_flows/dispatch.py`, where this stack's `_disclosed` sits next to Agent Flow's `v3_capabilities` / `v3_blocked_for_readers`.
+- Two no-op merge revisions give `demo` one head after each PR: `20260926_0201` in #6 and `20260930_0001` in #7.
+- One fix to `app/core/alembic_reconcile.py` (`fa180520`), reviewed and adopted by the Agent Flow owner. Recording both lines before their merge no longer crashes startup on `alembic_version`'s primary key.
+- The whole graph was rehearsed on real Postgres (`evidence/integration-migration-rehearsal.json`, summarized in `release.md` §4).
 
-## 2. Benchmarks, driven through the UI (`e2e/acceptance/manual-studio.spec.ts`)
+**Found reviewing the final evidence, and fixed** (`62abc63e`, `933ab8b2`):
 
-**Environment.**
+- At tablet width a bar chart printed one stray value ("R$1M") over one bar. An upright bar series now labels every bar or none, judged on its widest label.
+- Two bars of about the same height lost one label (the "housewares" bar in the M1 PDF). The colliding label now lifts just clear of its neighbour.
+- The report header's meta line could open a wrapped line with "·".
+- "Group by time" drew two chevrons.
 
-- Production build, served on the host.
-- Isolated backend and a temporary Postgres database.
-- Run at `50ff1d8c`.
+## 2. Gates
 
-**Evidence.**
-
-- Files are in [`evidence/`](evidence/), with `results.json` listing every assertion.
-- All four scenarios are **PASS**.
-
-| | Scenario | Assertions |
+| Gate | State | Basis |
 |---|---|---|
-| M1 | Blank report to finished report. Covers: new report, guided start, header, 5 charts placed under the header, KPI strip, a section that adopts the charts, an insight with two findings, fit to content, lead emphasis, resize, moving the section as a whole, undo, publish. Then the public report at 1440, 820 and 390, and the PDF. | 40 |
-| M2 | An existing report's charts become a composed report. Covers: KPI strip, lead + supporting, a split header whose headline is a finding, publish. KPI figures stay between 20 and 60 px. | 13 |
-| M3 | Migrated report 574 (copied) is improved. Covers: the outline names its section, a header is added, the section moves as a whole, the filter controls stay intact. Its band on the public page holds only its own section. | 14 |
-| M4 | Two independent datasets in one report. Each section holds its own dataset's charts and is arranged as lead + supporting, filling the row. The header states the period both datasets cover. The phone view keeps each dataset under its own heading. PDF. | 16 |
+| A1: public surface trust | TECHNICALLY VERIFIED | Semantic-guard review of the public surface: no authed call and no data outside the link's scope. Readiness R3 (tampering, scope, lock AND page, embed isolation) and R4 (disclosure) pass. `qa:public-bundle` passes. |
+| A2: BigQuery compatibility | **BLOCKED** | Fixed in code and locked on the SQL shape by `test_dialect_structural.py` (33 tests), but never executed on BigQuery. §5. |
+| A3: draft isolation | RUNTIME VERIFIED | M5: the public report never saw a discarded edit. Readiness R6: a failed report-only edit leaves nothing, a copy is a labelled draft, and Discard deletes it. |
+| A4: Inspector save lifecycle | RUNTIME VERIFIED | M5: Publish right after typing ships the edit. After Discard and after a reload, only the published text remains. |
+| A5: co-authoring | RUNTIME VERIFIED | Readiness R5: two accounts, the same tile and different tiles, shared draft revisions, Publish/Discard choices and concurrent writes. |
+| B: manual builder | RUNTIME VERIFIED | M1–M4 driven through the UI, plus unified-grid and readiness. |
+| B3/B4/B6 | RUNTIME VERIFIED | M2: the phone header has no clipped content, and KPI figures stay within bounds. Slicers on the grid: unified grid, and M3's filters stay intact. |
+| B5: section with a locked member | TECHNICALLY VERIFIED | The contract check runs `moveSection` itself: a locked member refuses the move and is named. No UI benchmark locks a member. |
+| B7: design quality | REVIEWED, not accepted | §3 has the reviewer's notes. Acceptance is the owner's. |
+| C: reading surfaces | RUNTIME VERIFIED | 1440/820/390 in M1–M4 with clipped-tick, clipped-legend, clipped-content and band-intruder assertions. PDFs in M1 and M4. The multi-dataset period is asserted per dataset in M4. |
+| D: AI uses native capabilities | RUNTIME VERIFIED | V3 S1–S8, smoke B, readiness R11 and unified-grid S7–S9 pass with the real model. Membership stamping is contract-checked. |
+| E: M1–M4 on published output | RUNTIME VERIFIED | §4. Human acceptance is requested below. |
+| F: checks | see §4 | Evidence is tied to SHAs. Skipped tests are NOT VERIFIED. |
+| G: migrations and rollback | RUNTIME VERIFIED on copies | The rehearsal matrix in `release.md` §4. A production-size copy has not been migrated. |
+| H: coordination with Agent Flow | DONE | Agent Flow landed first. Merge revisions and the reconcile fix are agreed with its owner. No force-push; `demo` is untouched by this stack. |
+| I: merge into `demo` | **NOT DONE: BLOCKED by A2** | |
+| Human product acceptance | **PENDING** | The owner's decision. |
+| Deployment | not done | Not authorized in this task. |
 
-**Timings.** These are measured end to end by the spec, including its fixed settle waits, so they are upper bounds and not latencies.
+## 3. Visual review of the final evidence
 
-| Interaction | Time |
-|---|---|
-| Select | 163 ms |
-| Resize | 1.2 s |
-| Drag a section | 1.2–1.35 s |
-| Pattern commit | ≤ 0.97 s (includes a 0.9 s wait) |
-| Fit to content | ≤ 1.05 s |
-| Add 5 charts | 4.4 s |
-| Save draft | 1.6 s |
-| Publish | 0.25–0.78 s |
-| Public first render | 2.2–3.6 s |
-| PDF (2 pages) | 1.6 s |
-
-The latency gates are in unified-grid S14 (performance), which is PASS.
-
-**Found by the benchmarks, and fixed:**
-
-- `sectionId: null` was dropped by the draft save, so "no section" became "inferred" and the public band covered the KPIs.
-- The chart picker lost earlier picks on each new search.
-- A heading introduced nothing that was placed before it.
-- Double-click on a chart title did nothing.
-- The picker said "added at the top" when it wasn't.
-- The toolbar drew items over each other once a draft was open. Its wrap fix then hid Manual/AI under the AI panel; the overlays now sit below the measured header.
-- Shift-click selected text.
-- The new report dialog was in English only.
-- The PDF engine printed Vietnamese in English reports.
-
-## 3. Visual review
-
-I opened every screenshot and read every PDF page. The observations below are a reviewer's notes; they are not an acceptance.
+I opened every screenshot and read every PDF page at `933ab8b2`. These are a reviewer's notes, not an acceptance.
 
 **Reads well:**
 
-- The M2 and M4 compositions.
-- The phone order: header, KPIs, heading, insight, charts.
-- The PDF:
-  - the header states the title, description, page and "Exported";
-  - the section heading stays with its insight;
-  - the footer is in the reader's language.
+- The header states the title, description, per-dataset period and filter context on every surface, including the PDF sheets.
+- Sections stay whole on every width and on paper. On a phone each heading is followed by its own charts.
+- KPI figures print black, and charts print at full strength.
+- Bar values read whole, or are left to the tooltip.
 
-**Still weak, and not fixed this round:**
+**Still weak, and not fixed:**
 
-- The last x-axis label of "Delivery days by month" is clipped at the right edge ("Oct 1…"). This chart-renderer margin issue predates this round.
-- KPI tiles taller than their content leave empty space under the figure.
-- The split header's aside states the finding as a sentence without a large figure.
-- PDF captures print KPI figures in grey.
-- In the M1 layout, the insight fills half a row. That is a choice the benchmark made, not a product default.
+- On a phone, pie slice labels are truncated ("boleto (1…", "credit_car…"). This is the chart renderer.
+- In lead + supporting, a KPI beside a chart takes the chart's height. The figure is centred with its context below; there is more space than content.
+- M3 ends with the controls and KPIs under the moved section. That is what the benchmark did, not a product default.
+- Axe whole-page findings outside the asserted surfaces, recorded rather than asserted:
+  - builder: colour contrast (4), SVG images without alt text (4), one unnamed link, document title;
+  - public pages: document title, SVG images without alt text (4).
+  - They come from charts and app chrome.
 
-## 4. Definition of Done
+## 4. Verification
 
-| Area | State | Basis |
+| Check | SHA | Result |
 |---|---|---|
-| Gate A: trust and data safety | TECHNICALLY VERIFIED | Semantic-guard review of the public surface: no authed call, no data outside the link's scope. It found two presentation defects (link-title precedence, parameter switcher), which are now fixed. The public-bundle check passes. |
-| A7: stack migration round trip | RUNTIME VERIFIED on a copy of the rig database | Down to `20260914_0002` and back up: counts restored, no new overlap. Constraints are documented in `release.md` §4. |
-| Gate B: manual builder (B1–B14) | RUNTIME VERIFIED | M1–M4 driven through the UI, plus unified-grid S1–S14, L, F, U and R1–R7. |
-| Gate C: preview, responsive, parity, PDF, localization | RUNTIME VERIFIED | 1440/820/390 in M1–M4 and readiness R8/R9. PDF in M1, M4 and R10. EN strings asserted by contract. Accessibility (roles, labels, keyboard in the palette and Inspector) is CODE COMPLETE; no audit tool was run. |
-| Gate D: AI uses native capabilities | TECHNICALLY VERIFIED | Contract checks on membership stamping and the temporary-id swap. The AI suites (V3 S1–S8, smoke B, readiness R11, unified-grid S7–S9) pass with the real model. |
-| Gate E: integrated pass on the production build | RUNTIME VERIFIED | See §5. |
-| BigQuery-backed gates | **BLOCKED** | No warehouse credentials on this rig. No result is claimed. |
-| Human product acceptance | **HUMAN ACCEPTANCE PENDING** | The owner's decision. |
-| Deployment | not done | Needs authorization; follow `release.md`. |
-
-## 5. Verification at `50ff1d8c`
-
-| Check | Result |
-|---|---|
-| `npx tsc --noEmit` | PASS |
-| `npm run qa` (includes `check-report-structure-contract.mjs`, 23 checks) | PASS |
-| Backend `test_report_content_widgets.py` (14) | PASS. Wired into CI; `verify.py` confirms it runs. |
-| `python scripts/ci/verify.py task` | PASS: nothing failed, nothing unverified |
-| Guardrail diff | OK. The new acceptance spec and contract are an "unknown layer" (tests). |
-| Acceptance: manual-studio M1–M4 | 4/4 PASS |
-| Acceptance: readiness R3–R11 | 9/9 PASS |
-| Acceptance: completion smoke A–C | 3/3 PASS |
-| Acceptance: unified grid | 24/24 scenarios PASS |
-| Acceptance: Report Studio V3 S1–S8 | 8/8 PASS |
-| CI e2e | 72 passed, 5 skipped. The skips are Agent Flow runtime tests that need a flow-bound link this rig doesn't have: NOT VERIFIED here, unrelated to this area. |
+| `npx tsc --noEmit` | `933ab8b2` | PASS |
+| `npm run qa` (12 steps, including report-structure with 31 checks and unified-grid with 41) | `933ab8b2` | PASS |
+| Backend CI unit list, run as the workflow runs it (110 paths) | `924d2a93` | 2651 passed, 3 skipped. 2 failed locally: `test_module_floor` needs the pinned FastAPI 0.109, and the local version is 0.141. CI runs them green. |
+| Tier-1 semantic oracles | `924d2a93` | every oracle ran and passed |
+| Guardrail-required pytest groups (Agent Flow container, contract, evidence, replay and surface; dialect; layered merge; measure render; the protection meta-tests) | `8816979c` | all pass. 3 skipped in `test_time_axis_contract`: they need a migrated `dashboards` table, so NOT VERIFIED in this tier. |
+| Guardrail diff, `origin/demo...HEAD` | `8816979c` | WARN: protected subsystems touched; the named tests ran (row above) |
+| `alembic_chain.py` | `8816979c` | single head `20260930_0001` |
+| `verify.py task` | `933ab8b2` + this docs commit | PASS. Its scope is the working tree (docs and evidence), so it resolved no required gate. The stack-level gates come from the guardrail diff against `demo` (above), and their tests were run there. |
+| Migration rehearsal matrix | `924d2a93` tree | all five starting states end at one schema; Agent Flow changes no report content |
+| Acceptance: manual-studio M1–M5 + A11Y | `933ab8b2` | **7/7 PASS, twice** (M1 49 assertions, M2 22, M3 23, M4 25, M5 4, A11Y 6) |
+| Acceptance: readiness R3–R11 | `933ab8b2` | **10/10 PASS** (including setup) |
+| Acceptance: completion smoke A–C | `933ab8b2` | **4/4 PASS** (including setup) |
+| Acceptance: unified grid | `933ab8b2` | **24/24 PASS** |
+| Acceptance: Report Studio V3 S1–S8 | `933ab8b2` | **9/9 PASS** (including setup), with the real model |
+| CI e2e (Playwright, full stack) | `933ab8b2` | 79 passed, 0 failed. 11 skipped: Agent Flow runtime tests (author/reader golden, run inspector, surfaces) that need a link with a flow binding, which this rig's database has none of. **NOT VERIFIED** here; not this stack's area. |
+| Remote CI | `35f78a6e`, `fa180520`, `8816979c` | 5/5 success on each. REMOTE_FINAL |
+| BigQuery gates (`galaxy_golden`, `distinct_cascade_bq`, and a BigQuery run of the text filters) | none | **BLOCKED**: not run |
 
 **Declared changes to tests, gates and CI in this round:**
 
-- **New:** `frontend/scripts/check-report-structure-contract.mjs`, added to `npm run qa`.
-- **New:** `backend/tests/test_report_content_widgets.py`, allow-listed in `.gitignore` and added to `backend-contract-tests.yml`.
-- **New:** `e2e/acceptance/manual-studio.spec.ts`. It is not in CI and is run explicitly.
-- **Changed:** in `check-theme-presets.mjs`, the widget-key contract for `hero_strip` now reads the renderer from `ReportHeaderWidget.tsx`, with the same assertion.
-- No existing assertion was removed or weakened.
+- `check-unified-grid-contract.mjs`: the absent-control check read a dead code block. It now asserts on the one live public grid. It is stricter than before, and was mutation-tested.
+- `check-report-structure-contract.mjs`: new checks for the rules of this round (31 in total). Each was mutation-tested where it asserts a rule.
+- `test_alembic_revision_reconcile.py`: one test added for the both-lines-recorded state. The existing five are unchanged.
+- `test_dialect_structural.py`: BigQuery and Postgres shapes for the text filters. Existing assertions are unchanged. One of them is reported as an open finding in `release.md` §7, not edited.
+- `e2e/acceptance/manual-studio.spec.ts`: M5 and A11Y added; the public checks were extended. It is not in CI and is run explicitly.
+- Merge unions: the preflight pytest list and the `qa` chain gained the other stream's entries. Nothing was removed.
+- No assertion was removed or weakened. No gate was marked missing or manual.
+
+## 5. The blocker, its owner, and what unblocks it
+
+**Unmet gate: A2, BigQuery verification of the supported production data path.**
+
+What exists: the SQL generator's BigQuery shapes, locked structurally by tests.
+
+What does not exist:
+
+- a run against BigQuery;
+- the `galaxy_golden` and `distinct_cascade_bq` harnesses, which `guardrail_rules.yaml` declares `missing` because they were never committed.
+
+This machine has:
+
+- no service-account credentials (the `GCP_SERVICE_ACCOUNT_*` variables are empty);
+- no gcloud application-default credential;
+- no authorization for the BigQuery connector.
+
+**Owner: the repository owner or data platform owner.** To unblock, one of these is needed:
+
+1. **Provide a BigQuery project and credentials** for a test dataset through the environment (never committed), and the ds113 fixtures. The text-filter paths and the tier-1 harnesses can then run.
+2. **Commit the `galaxy_golden` / `distinct_cascade_bq` harnesses**, so the gate is executable anywhere credentials exist.
+3. **Explicitly accept** merging without BigQuery verification, recorded as the owner's decision. This task's instructions do not allow an assistant to make that call.
+
+**Preserved state:**
+
+- all three branches are pushed as above, with no force and no merge;
+- `demo` is unchanged at `30a048f4`;
+- the Agent Flow owner has a follow-up (`pilot.py`, which replaces `v3_capabilities`) that is not yet in `demo`. When it lands, the stack is re-merged and its gates are re-run.
+
+## 6. Human acceptance requested
+
+Please review, on a production build or from `evidence/`:
+
+- M1–M4 at 1440, 820 and 390;
+- the M1 and M4 PDFs;
+- the §3 notes.
+
+Then decide on product acceptance. The acceptance, and any decision on the BigQuery gate, are yours.
