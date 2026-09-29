@@ -139,3 +139,67 @@ def test_the_resolved_intent_is_on_the_answering_steps_trace(monkeypatch, undecl
     step = next(s for s in (env.get("trace") or {}).get("steps") or [] if s["key"] == "tl")
     intent = (step.get("capabilities") or {}).get("intent") or {}
     assert intent.get("source") == "model" and intent.get("measures") == ["gmv"]
+
+
+# ── holdout findings (run_422b8fd2) ─────────────────────────────────────────────
+
+MEMBERS = {"customer_state": ["SP", "RJ", "MG"], "payment_type": ["credit_card", "boleto"],
+           "product_category_name_english": ["sports_leisure", "health_beauty"]}
+
+
+def test_a_member_is_resolved_to_the_value_the_rows_carry():
+    """Holdout 5657/5665: "sports leisure" and "Rio de Janeiro" left without a code,
+    so the answering step filtered rows by words the data does not contain."""
+    got = I.validate({"members": [{"said": "sports leisure", "code": None},
+                                  {"said": "Rio de Janeiro", "code": "rj"}]},
+                     {**VOCAB, "members": MEMBERS})
+    assert [m["code"] for m in got["members"]] == ["sports_leisure", "RJ"]
+
+
+def test_a_measure_or_period_is_never_a_member():
+    """Holdout 5653/5664: "GMV thấp nhất" and "payment method" were returned as members."""
+    got = I.validate({"members": [{"said": "GMV thấp nhất", "code": "gmv"},
+                                  {"said": "payment method", "code": None}]},
+                     {**VOCAB, "members": MEMBERS})
+    assert got["members"] == [] and any("dropped member" in n for n in got["notes"])
+    free = I.validate({"members": [{"said": "Bahia", "code": "BA"}]}, VOCAB)
+    assert free["members"] == [{"said": "Bahia", "code": "BA"}], "without read values the model's code stands"
+
+
+def test_the_vocabulary_pairs_measures_with_the_breakdowns_that_carry_them():
+    """Holdout 5664: "money by payment method" resolved to total_revenue, which no
+    payment chart carries; the pairing is what lets the resolver pick total_payment."""
+    class Ctx:
+        chart_meta = {1: {"name": "Thanh toán theo hình thức", "fields": {
+            "measures": [{"field": "dataset_table_439.total_payment"}],
+            "dimensions": [{"field": "dataset_table_439.payment_type"}]}},
+            2: {"name": "Doanh thu theo bang", "fields": {
+                "measures": [{"field": "dataset_table_438.total_revenue"}],
+                "dimensions": [{"field": "dataset_table_441.customer_state"}]}}}
+    v = I.vocabulary(Ctx())
+    assert v["measures_by_dimension"]["payment_type"] == ["total_payment"]
+    assert v["measures_by_dimension"]["customer_state"] == ["total_revenue"]
+
+
+def test_member_values_are_read_from_a_chart_grouped_by_that_breakdown_alone(monkeypatch):
+    from app.services.agent_flows.tools import context as C
+
+    class Ctx:
+        chart_meta = {7: {"fields": {"dimensions": [{"field": "t.customer_state"}, {"field": "t.order_status"}]}},
+                      8: {"fields": {"dimensions": [{"field": "t.customer_state"}]}},
+                      9: {"fields": {"dimensions": [{"field": "t.year_month"}]}}}
+    read = []
+
+    def fetch(ctx, cid, **kw):
+        read.append(cid)
+        return {"columns": ["t.customer_state", "t.gmv"], "rows": [["SP", 1.0], ["RJ", 2.0]]}
+    monkeypatch.setattr(C, "_fetch_chart_data", fetch)
+    got = I.member_values(Ctx(), {"customer_state": [], "year_month": []})
+    assert got == {"customer_state": ["SP", "RJ"]} and read == [8], (got, read)
+
+
+def test_an_absent_quantity_is_a_thing_to_check_not_a_verdict():
+    """Holdout 5660: a share of payment value was called absent and the answering
+    step refused without reading anything. The claim check keeps the verdict."""
+    text = I.describe_for_prompt(_model_intent(absent="share paid by boleto"))
+    assert "kiểm tra bằng công cụ trước khi kết luận" in text

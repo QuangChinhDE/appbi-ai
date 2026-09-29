@@ -43,6 +43,7 @@ from app.services.dashboard_ai_bot.tool_context import (
     _round,
     compute_related_charts as _compute_related_charts,
     fields_block as _fields_block,
+    resolve_column,
     resolve_field_label as _resolve_label,
 )
 
@@ -529,8 +530,9 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
     rows: list[list] = data["rows"]
 
     if sort and sort_by:
+        sort_by = resolve_column(sort_by, columns) or sort_by
         if sort_by not in columns:
-            return _err(f"sort_by '{sort_by}' not in columns {columns}")
+            return _err(f"sort_by '{sort_by}' not in columns {columns}", code="bad_argument")
         idx = columns.index(sort_by)
         rev = (sort == "desc")
         try:
@@ -641,8 +643,10 @@ def tool_compare_segments(ctx: ToolContext, args: dict) -> dict:
 
     columns = data["columns"]
     rows = data["rows"]
+    dimension = resolve_column(dimension, columns) or dimension
+    measure = resolve_column(measure, columns) or measure
     if dimension not in columns:
-        return _err(f"dimension '{dimension}' not in columns {columns}")
+        return _err(f"dimension '{dimension}' not in columns {columns}", code="bad_argument")
     dim_idx = columns.index(dimension)
 
     # Pick measure: explicit or last numeric column != dimension

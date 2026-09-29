@@ -42,6 +42,7 @@ from app.services.dashboard_ai_bot.thinking.tools import (
     _err,
     _round,
 )
+from app.services.dashboard_ai_bot.tool_context import resolve_column
 
 logger = logging.getLogger(__name__)
 
@@ -1207,8 +1208,9 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
 
     columns = data["columns"]
     rows = data["rows"]
+    column = resolve_column(column, columns) or column
     if column not in columns:
-        return _err(f"column '{column}' not in chart columns {columns}")
+        return _err(f"column '{column}' not in chart columns {columns}", code="bad_argument")
     col_idx = columns.index(column)
 
     def _matches(v: Any) -> bool:
@@ -1348,8 +1350,8 @@ def _is_truthy(v: Any) -> bool | None:
 
 
 def _row_passes_filter(row: list, columns: list[str], flt: dict) -> bool:
-    col = flt.get("column")
-    if not isinstance(col, str) or col not in columns:
+    col = resolve_column(flt.get("column"), columns)
+    if col is None:
         return True  # unknown column → no-op, do not silently drop rows
     idx = columns.index(col)
     val = row[idx] if idx < len(row) else None
@@ -1479,9 +1481,10 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
     rows: list[list] = data["rows"]
 
     # Validate group_by columns exist
+    group_by = [resolve_column(g, columns) or g for g in group_by]
     for g in group_by:
         if g not in columns:
-            return _err(f"group_by column {g!r} not in chart columns {columns}")
+            return _err(f"group_by column {g!r} not in chart columns {columns}", code="bad_argument")
     group_indices = [columns.index(g) for g in group_by]
 
     # Validate aggregations
@@ -1499,10 +1502,10 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
                 return _err(f"column='*' only valid with op='count' (got {op!r})")
         elif not isinstance(col, str):
             return _err("aggregation.column must be a string")
-        elif col not in columns:
-            return _err(f"aggregation column {col!r} not in chart columns {columns}")
+        elif (resolve_column(col, columns) or col) not in columns:
+            return _err(f"aggregation column {col!r} not in chart columns {columns}", code="bad_argument")
         else:
-            col_idx = columns.index(col)
+            col_idx = columns.index(resolve_column(col, columns) or col)
         out_name = str(a.get("as") or "").strip() or (
             f"{op}_*" if col_idx is None else f"{op}_{columns[col_idx]}"
         )
@@ -1684,10 +1687,12 @@ def tool_explain_change(ctx: ToolContext, args: dict) -> dict:
 
     columns: list[str] = data["columns"]
     rows: list[list] = data["rows"]
+    breakdown = resolve_column(breakdown, columns) or breakdown
+    split_column = resolve_column(split_column, columns) or split_column
     if breakdown not in columns:
-        return _err(f"breakdown '{breakdown}' is not a column. Available: {columns}")
+        return _err(f"breakdown '{breakdown}' is not a column. Available: {columns}", code="bad_argument")
     if split_column not in columns:
-        return _err(f"split_column '{split_column}' is not a column. Available: {columns}")
+        return _err(f"split_column '{split_column}' is not a column. Available: {columns}", code="bad_argument")
     measure_idx = _detect_measure_idx(columns, rows)
     if measure_idx is None:
         return _err("no numeric measure column detected in this chart")
@@ -2011,6 +2016,7 @@ def tool_segment_compare(ctx: ToolContext, args: dict) -> dict:
     measure_idx = _detect_measure_idx(columns, rows)
     if measure_idx is None:
         return _err("no numeric measure detected in this chart")
+    dimension = resolve_column(dimension, columns) or dimension
     if dimension and dimension in columns:
         dim_idx = columns.index(dimension)
     else:

@@ -920,3 +920,15 @@ def test_the_number_of_an_asked_qualifier_is_a_label():
     """Live 4961/4986: the 5 of "lượt đánh giá 5 sao" was withheld as a figure."""
     assert CC._qualifier_numbers(["5sao"], "Không có số liệu về lượt đánh giá 5 sao.") == {5.0}
     assert CC._qualifier_numbers(["5sao"], "Có 5 lượt đánh giá.") == set()
+
+
+def test_a_month_outside_the_asked_year_is_the_wrong_period(world):
+    """Holdout 5653: asked the lowest month IN 2017, the series' lowest month (2016)
+    was published — a month was never compared with an asked year."""
+    ctx, state = world("Tháng nào trong năm 2017 có GMV thấp nhất?", asked=("gmv",))
+    _rec(state, "get_chart_data", {"ok": True, "kind": "table", "data": {
+        "chart_id": MONTHLY, "columns": ["year_month", "gmv"],
+        "rows": [["2016-10", 19.62], ["2017-01", 56808.84], ["2017-11", 1179143.77]]}},
+        {"chart_id": MONTHLY})
+    assert (19.62, "wrong_period") in _why(state, ctx, "GMV thấp nhất là 19.62.")
+    assert _why(state, ctx, "Tháng 1/2017 có GMV thấp nhất: 56,808.84.") == []

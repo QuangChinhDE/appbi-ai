@@ -312,9 +312,31 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
         return False
     labels = [_periods(str(e["member"]).replace("Q", " q")) or _periods("nam " + str(e["member"]))
               for e in timed]
-    if not all(labels) or not all({p[0] for p in lab} & grains for lab in labels):
+    # A FINER ROW LIES INSIDE A COARSER ASKED PERIOD. Holdout run 5653: asked "trong
+    # năm 2017", the lowest month of the whole series (a 2016 month) was published —
+    # a month is not the grain of a year, so the row was never compared at all.
+    if not all(labels) or not all(any(_nests(p, a) for p in lab for a in asked) or
+                                  {p[0] for p in lab} & grains for lab in labels):
         return False
-    return not any(lab & asked for lab in labels)
+    return not any(lab & asked or any(_inside(p, a) for p in lab for a in asked)
+                   for lab in labels)
+
+
+_GRAIN_RANK = {"m": 0, "q": 1, "y": 2}
+
+
+def _nests(p: tuple, a: tuple) -> bool:
+    """`p` is of a finer grain than the asked period `a`, so it can lie inside it."""
+    return _GRAIN_RANK.get(p[0], 9) < _GRAIN_RANK.get(a[0], -1)
+
+
+def _inside(p: tuple, a: tuple) -> bool:
+    """The finer period `p` lies inside the asked period `a`."""
+    if not _nests(p, a) or p[1] != a[1]:
+        return False
+    if a[0] == "y":
+        return True
+    return p[0] == "m" and (p[2] - 1) // 3 + 1 == a[2]
 
 
 #: Words that end the member phrase after a breakdown's cue word.

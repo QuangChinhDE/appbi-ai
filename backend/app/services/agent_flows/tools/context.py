@@ -481,6 +481,27 @@ def fold_column(name: Any) -> str:
     return fold_text(name)
 
 
+def resolve_column(name: Any, columns: list[str]) -> str | None:
+    """The chart column a caller means, or None.
+
+    A chart's columns are qualified (`dataset_table_445.product_category_name_english`)
+    while every other surface — the semantic model, the intent, the glossary — names
+    the field bare. A bare name that matches exactly one column's last segment IS that
+    column; an ambiguous one is not guessed. Exact spelling always wins.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return None
+    if name in columns:
+        return name
+    want = fold_column(name.strip())
+    hits = [c for c in columns if fold_column(c) == want]
+    if len(hits) == 1:
+        return hits[0]
+    tail = want.rsplit(".", 1)[-1]
+    hits = [c for c in columns if fold_column(str(c)).rsplit(".", 1)[-1] == tail]
+    return hits[0] if len(hits) == 1 else None
+
+
 def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:
     """Columns GovernAIScope hides from the AI, for the datasets behind this
     dashboard's charts. Best-effort: a resolve failure must never break a turn,

@@ -487,3 +487,40 @@ def test_contributors_to_a_change_add_up_to_the_change(monkeypatch):
         assert abs(parts) <= abs(total) + 0.01, (parts, total, coverage)
         return
     assert abs(parts - total) < max(0.01, abs(total) * 0.01), (parts, total)
+
+
+# ── a field named bare is the chart's qualified column ──────────────────────
+
+def test_a_bare_field_name_reaches_the_qualified_column(stub):
+    """Holdout runs 5657/5658/5665: the semantic model and the intent name a field
+    bare ("product_category_name_english"); chart rows carry it qualified. Every
+    grouped read was refused as a warehouse failure and the reader was told the
+    report had no such breakdown."""
+    agg = ok(ADV.tool_aggregate_chart_data(Ctx(), {
+        "chart_id": 1, "group_by": ["category"],
+        "aggregations": [{"column": "revenue", "op": "sum"}]}))
+    alias = agg["aggregations"][0]["as"]
+    assert abs(sum(r[alias] for r in agg["rows"]) - CATEGORY_TOTAL) < 0.01
+    drill = ADV.tool_smart_drilldown(Ctx(), {"chart_id": 1, "column": "category",
+                                            "match": "watches"})
+    assert drill.get("ok") is True and drill["data"]["n_rows_matching"] == 1, drill
+
+
+def test_a_filter_on_a_bare_field_filters(stub):
+    """An unknown filter column is a no-op, so a bare name used to return the
+    WHOLE population as if it were the filtered segment."""
+    data = ok(ADV.tool_aggregate_chart_data(Ctx(), {
+        "chart_id": 1, "group_by": ["category"],
+        "aggregations": [{"column": "revenue", "op": "sum"}],
+        "filters": [{"column": "category", "op": "eq", "value": "books"}]}))
+    assert data["n_groups"] == 1, data
+
+
+def test_a_column_the_chart_lacks_is_the_callers_argument(stub):
+    """Not `query_failed`: that code reads as retryable and the model repeated it."""
+    from app.services.agent_flows.tools.result import normalise
+
+    res = normalise(ADV.tool_aggregate_chart_data(Ctx(), {
+        "chart_id": 1, "group_by": ["city"],
+        "aggregations": [{"column": "revenue", "op": "sum"}]}), kind="table")
+    assert res["ok"] is False and res["error_code"] == "bad_argument", res

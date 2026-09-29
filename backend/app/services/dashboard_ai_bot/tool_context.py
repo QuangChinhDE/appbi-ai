@@ -37,6 +37,7 @@ from app.services.agent_flows.tools.context import (  # noqa: F401
     extract_chart_field_semantics,
     fields_block,
     fold_column,
+    resolve_column,
     resolve_field_label,
 )
 
@@ -49,5 +50,6 @@ __all__ = [
     "extract_chart_field_semantics",
     "fields_block",
     "fold_column",
+    "resolve_column",
     "resolve_field_label",
 ]

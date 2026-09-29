@@ -260,6 +260,12 @@ _CODE_HINTS: tuple[tuple[str, ErrorCode], ...] = (
     ("not allowed", "bad_argument"),
     ("invalid expression", "bad_argument"),
     ("not in columns", "bad_argument"),
+    # A column the chart does not have is the caller's argument, not a warehouse
+    # refusal: as `query_failed` it read as retryable and the model repeated it.
+    ("not in chart columns", "bad_argument"),
+    ("is not a column", "bad_argument"),
+    ("unsupported op", "bad_argument"),
+    ("not supported", "bad_argument"),
     ("no data", "no_data"),
     ("failed to load", "query_failed"),
     ("raised", "internal"),

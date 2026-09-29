@@ -33,19 +33,23 @@ def empty_intent() -> dict:
 # ── the report's own vocabulary ────────────────────────────────────────────────
 
 def vocabulary(ctx: Any) -> dict:
-    """{measures: {key: label}, dimensions: {key: [chart titles]}} from the charts in scope."""
+    """{measures: {key: label}, dimensions: {key: [chart titles]},
+    measures_by_dimension: {dim: [measure keys]}} from the charts in scope."""
     from app.services.agent_flows.tools.dimension_gate import field_key
 
     measures: dict[str, str] = {}
     dimensions: dict[str, list[str]] = {}
+    by_dim: dict[str, list[str]] = {}
     for meta in (getattr(ctx, "chart_meta", None) or {}).values():
         fields = (meta or {}).get("fields") or {}
         labels = fields.get("label_by_field") or {}
         title = str((meta or {}).get("name") or "")
+        chart_measures = []
         for m in fields.get("measures") or []:
             ref = m.get("field") if isinstance(m, dict) else m
             if ref:
                 k = field_key(str(ref))
+                chart_measures.append(k)
                 measures.setdefault(k, str((m.get("label") if isinstance(m, dict) else "") or labels.get(ref) or k))
         for d in fields.get("dimensions") or []:
             ref = d.get("field") if isinstance(d, dict) else d
@@ -54,7 +58,55 @@ def vocabulary(ctx: Any) -> dict:
                 bucket = dimensions.setdefault(k, [])
                 if title and title not in bucket and len(bucket) < 3:
                     bucket.append(title)
-    return {"measures": measures, "dimensions": dimensions}
+                pair = by_dim.setdefault(k, [])
+                pair.extend(m for m in chart_measures if m not in pair)
+    return {"measures": measures, "dimensions": dimensions, "measures_by_dimension": by_dim}
+
+
+#: Bounds on reading the report's own member values: they are what lets "Rio de
+#: Janeiro" be resolved to the RJ the rows carry, and they must never make the
+#: turn slow. A read is the same cached read a tool would make.
+MEMBER_VALUES_PER_DIMENSION = 80
+MEMBER_READ_SECONDS = 3.0
+
+
+def member_values(ctx: Any, dimensions: dict) -> dict[str, list[str]]:
+    """{dimension key: [its values as the rows carry them]} for the non-time
+    breakdowns in scope, read from one chart grouped by each alone. Never raises."""
+    import time
+
+    from app.services.agent_flows.tools.context import _fetch_chart_data
+    from app.services.agent_flows.tools.dimension_gate import field_key
+    from app.services.time_semantics import looks_like_time_name
+
+    out: dict[str, list[str]] = {}
+    started = time.monotonic()
+    metas = getattr(ctx, "chart_meta", None) or {}
+    for dim in dimensions:
+        if looks_like_time_name(dim) or time.monotonic() - started > MEMBER_READ_SECONDS:
+            continue
+        for cid, meta in metas.items():
+            dims = [field_key(str(d.get("field") if isinstance(d, dict) else d))
+                    for d in (((meta or {}).get("fields") or {}).get("dimensions") or []) if d]
+            if dims != [dim]:
+                continue
+            try:
+                data = _fetch_chart_data(ctx, int(cid))
+            except Exception:                                   # noqa: BLE001
+                continue
+            cols = [field_key(str(c)) for c in data.get("columns") or []]
+            if dim not in cols:
+                continue
+            i = cols.index(dim)
+            seen: list[str] = []
+            for r in data.get("rows") or []:
+                v = r[i] if i < len(r) else None
+                if v is not None and str(v) not in seen:
+                    seen.append(str(v))
+            if len(seen) <= MEMBER_VALUES_PER_DIMENSION:
+                out[dim] = seen
+            break
+    return out
 
 
 # ── the constrained model call ────────────────────────────────────────────────
@@ -64,15 +116,22 @@ _SYSTEM = (
     "answer the question. Reply with ONE JSON object and nothing else:\n"
     '{"measures": [<keys from MEASURES>], "absent": <null or the asked quantity, in the '
     "user's words, when NO listed measure is it>, \"dimension\": <null or a key from "
-    'DIMENSIONS>, "members": [{"said": <entity as the user wrote it>, "code": <its likely '
-    'short code or data label, or null>}], "periods": [{"grain": "m"|"q"|"y", "year": <int>, '
+    'DIMENSIONS>, "members": [{"said": <the entity only, as the user wrote it>, "code": <the '
+    'matching value from MEMBERS, or null>}], "periods": [{"grain": "m"|"q"|"y", "year": <int>, '
     '"n": <month 1-12, quarter 1-4, or null for a year>}], "baseline": <null or a period '
     'object>, "followup": <true when the question only makes sense with the PREVIOUS '
     "question>}\n"
-    "Rules: choose measures and dimension ONLY from the lists; a measure that merely shares a "
-    "generic word (rate, total, số, tỷ lệ) is NOT the asked quantity — use \"absent\" instead. "
-    "For a follow-up, carry over the previous question's measure/member and resolve relative "
-    "periods (\"tháng trước\", \"previous month\") to concrete ones. Do not invent periods."
+    "Rules: choose measures and dimension ONLY from the lists. A share, percentage of the "
+    "total, ranking, top/bottom, change, growth or comparison OF a listed measure IS that "
+    "measure, never absent. When the question asks by a breakdown, choose the measure "
+    "MEASURES_BY_DIMENSION lists for that breakdown (money by payment type is the payment "
+    "measure). A measure that merely shares a generic word (rate, total, số, tỷ lệ) with a "
+    "different quantity is NOT the asked quantity: use \"absent\" instead. A member is one "
+    "value of a breakdown (a state, a category, a payment type), never a measure, a period "
+    "or a breakdown's own name; its code is the MEMBERS value it denotes (a state's name is "
+    "its state code). For a follow-up, carry over the previous question's measure/member and "
+    "resolve relative periods (\"tháng trước\", \"previous month\") to concrete ones. Do "
+    "not invent periods."
 )
 
 
@@ -80,6 +139,8 @@ def _prompt(question: str, previous: str, vocab: dict) -> str:
     return json.dumps({
         "MEASURES": vocab["measures"],
         "DIMENSIONS": vocab["dimensions"],
+        "MEASURES_BY_DIMENSION": vocab.get("measures_by_dimension") or {},
+        "MEMBERS": vocab.get("members") or {},
         "PREVIOUS_QUESTION": previous or None,
         "QUESTION": question,
     }, ensure_ascii=False)
@@ -131,6 +192,20 @@ def _valid_period(p: Any) -> tuple | None:
     return None
 
 
+def _known_member(text: Any, known: dict[str, list[str]]) -> str | None:
+    """The report value `text` names, matched accent- and case-insensitively, or None."""
+    from app.core.text_fold import fold_text
+
+    if not isinstance(text, str) or not text.strip():
+        return None
+    want = fold_text(text).replace("_", " ").strip()
+    for values in known.values():
+        for v in values:
+            if fold_text(v).replace("_", " ").strip() == want:
+                return v
+    return None
+
+
 def validate(data: dict, vocab: dict) -> dict:
     """Keep only what the report's vocabulary allows; the rest is left to heuristics."""
     out = empty_intent()
@@ -142,11 +217,21 @@ def validate(data: dict, vocab: dict) -> dict:
     dim = data.get("dimension")
     out["dimension"] = dim if isinstance(dim, str) and dim in vocab["dimensions"] else None
     members = []
+    known = vocab.get("members") or {}
     for it in data.get("members") or []:
         if isinstance(it, dict) and isinstance(it.get("said"), str) and it["said"].strip():
             code = it.get("code")
-            members.append({"said": it["said"].strip()[:80],
-                            "code": code.strip()[:40] if isinstance(code, str) and code.strip() else None})
+            said = it["said"].strip()[:80]
+            code = code.strip()[:40] if isinstance(code, str) and code.strip() else None
+            if known:
+                # The report's values decide: a member names one of them, or it is
+                # not a member (a measure, a period or a breakdown's own name).
+                hit = _known_member(code, known) or _known_member(said, known)
+                if hit is None:
+                    out["notes"].append(f"dropped member (no such value in the report): {said}")
+                    continue
+                code = hit
+            members.append({"said": said, "code": code})
     out["members"] = members[:6]
     out["periods"] = [p for p in (_valid_period(x) for x in (data.get("periods") or [])) if p][:6]
     out["baseline"] = _valid_period(data.get("baseline"))
@@ -202,6 +287,10 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
     if not vocab["measures"]:
         return floor
     try:
+        vocab["members"] = member_values(ctx, vocab["dimensions"])
+    except Exception:                                           # noqa: BLE001
+        vocab["members"] = {}
+    try:
         raw = await asyncio.wait_for(
             _model_call(provider=provider, api_key=api_key, model=model, system=_SYSTEM,
                         user=_prompt(question, previous, vocab)),
@@ -221,8 +310,9 @@ def describe_for_prompt(intent: dict, locale: str = "vi") -> str:
     if intent.get("measures"):
         parts.append("đại lượng: " + ", ".join(intent["measures"]))
     if intent.get("absent"):
-        parts.append(f"đại lượng được hỏi \"{intent['absent']}\" KHÔNG có trong báo cáo — nói rõ "
-                     "điều đó, không thay bằng một đại lượng khác")
+        parts.append(f"đại lượng được hỏi \"{intent['absent']}\" có thể KHÔNG có trong báo cáo — "
+                     "kiểm tra bằng công cụ trước khi kết luận; nếu đúng là không có thì nói rõ, "
+                     "không thay bằng một đại lượng khác")
     if intent.get("dimension"):
         parts.append("chiều: " + intent["dimension"])
     if intent.get("members"):
