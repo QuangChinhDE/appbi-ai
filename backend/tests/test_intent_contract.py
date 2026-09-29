@@ -229,3 +229,12 @@ def test_a_generic_word_or_one_syllable_does_not_make_a_quantity_present():
     not "chuyển đổi": the conversion rate stays absent (live 4164/4879)."""
     for asked in ("tỷ lệ chuyển đổi của website", "Lợi nhuận gộp", "customer churn rate"):
         assert I.validate({"measures": [], "absent": asked}, NAMED)["absent"] == asked, asked
+
+
+def test_a_member_named_without_a_code_is_kept():
+    """Smoke 6040: "Rio de Janeiro" came back with no code, rows say "RJ", and the
+    member was dropped — the claim check then had no member to judge by."""
+    got = I.validate({"members": [{"said": "Rio de Janeiro", "code": None},
+                                  {"said": "tháng trước đó", "code": None}]},
+                     {**VOCAB, "members": MEMBERS})
+    assert got["members"] == [{"said": "Rio de Janeiro", "code": None}], got

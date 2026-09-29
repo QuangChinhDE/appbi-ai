@@ -581,3 +581,11 @@ def test_a_share_is_of_the_member_the_turn_resolved(stub):
     ctx.member_aliases = {"rio de janeiro": "RJ"}
     data = ok(DER.tool_share_of(ctx, {"chart_id": 1, "item": "Rio de Janeiro"}))
     assert data["item"] == "RJ" and abs(data.get("share_pct", data.get("pct", 0)) - 20.0) < 0.01, data
+
+
+def test_a_member_written_with_its_code_in_parentheses_is_found(stub):
+    """Smoke 6041: the model drilled on "Rio de Janeiro (RJ)" and matched nothing."""
+    stub([("SP", 5000.0), ("RJ", 1800.0)], dim="dataset_table_441.customer_state")
+    drill = ok(ADV.tool_smart_drilldown(Ctx(), {"chart_id": 1, "column": "customer_state",
+                                               "match": "Rio de Janeiro (RJ)"}))
+    assert drill["n_rows_matching"] == 1 and drill["totals"]["sum"] == 1800.0, drill

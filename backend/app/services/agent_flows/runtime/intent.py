@@ -266,6 +266,22 @@ def _known_member(text: Any, known: dict[str, list[str]]) -> str | None:
     return None
 
 
+def _is_vocabulary(text: str, vocab: dict) -> bool:
+    """`text` names a measure, a breakdown or a period — never a member."""
+    from app.services.time_semantics import named_periods
+
+    if named_periods(text) or _terms(text, singles=False) and not absent_is_real(text, vocab):
+        return True
+    words = set(_words(text))
+    keys = {w for k in (*(vocab.get("measures") or {}), *(vocab.get("dimensions") or {}),
+                        *(vocab.get("members") or {}))
+            for w in _words(k) if len(w) >= 3 and w not in _GENERIC}
+    return bool(words & keys) or bool(words & _PERIOD_WORDS)
+
+
+_PERIOD_WORDS = {"thang", "quy", "month", "quarter", "year", "week", "tuan", "ngay", "day"}
+
+
 def validate(data: dict, vocab: dict) -> dict:
     """Keep only what the report's vocabulary allows; the rest is left to heuristics."""
     out = empty_intent()
@@ -287,11 +303,14 @@ def validate(data: dict, vocab: dict) -> dict:
             said = it["said"].strip()[:80]
             code = code.strip()[:40] if isinstance(code, str) and code.strip() else None
             if known:
-                # The report's values decide: a member names one of them, or it is
-                # not a member (a measure, a period or a breakdown's own name).
+                # The report's values decide the code: a member naming one of them
+                # carries it. One naming none is kept without a code (a state's full
+                # name is not in rows that say "RJ") — unless it is the report's own
+                # vocabulary (a measure, a breakdown) or a period, which are never
+                # members.
                 hit = _known_member(code, known) or _known_member(said, known)
-                if hit is None:
-                    out["notes"].append(f"dropped member (no such value in the report): {said}")
+                if hit is None and _is_vocabulary(said, vocab):
+                    out["notes"].append(f"dropped member (a measure, breakdown or period): {said}")
                     continue
                 code = hit
             members.append({"said": said, "code": code})

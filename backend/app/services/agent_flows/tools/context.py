@@ -521,13 +521,23 @@ def resolve_value(ctx: Any, value: Any, values: list[Any]) -> Any:
     present = {str(v) for v in values if v is not None}
     if str(value) in present:
         return value
-    want = value_key(value)
-    hits = [v for v in present if value_key(v) == want]
-    if len(hits) == 1:
-        return hits[0]
-    code = (getattr(ctx, "member_aliases", None) or {}).get(want)
-    if code is not None and str(code) in present:
-        return code
+    import re
+
+    # "Rio de Janeiro (RJ)" names the member twice: try each spelling (smoke 6041).
+    text = str(value)
+    inner = re.findall(r"\(([^()]+)\)", text)
+    outer = re.sub(r"\([^()]*\)", " ", text).strip()
+    aliases = getattr(ctx, "member_aliases", None) or {}
+    for candidate in [text, *inner, outer]:
+        if candidate in present:
+            return candidate
+        want = value_key(candidate)
+        hits = [v for v in present if value_key(v) == want]
+        if len(hits) == 1:
+            return hits[0]
+        code = aliases.get(want)
+        if code is not None and str(code) in present:
+            return code
     return value
 
 
