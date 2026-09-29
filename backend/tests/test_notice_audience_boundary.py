@@ -205,3 +205,44 @@ def test_the_stored_thread_replay_scrubs_notice_facts():
     from app.services.agent_flows import direct_chat
 
     assert "reader_notice_dict(n)" in inspect.getsource(direct_chat)
+
+
+def _flow(nodes):
+    from app.services.agent_flows.contract import Flow
+
+    return Flow.model_validate({"key": "f", "name": "f", "answer_node": nodes[-1]["key"], "nodes": nodes})
+
+
+def test_v3_capabilities_are_off_for_readers_until_the_pilot_opens(monkeypatch):
+    """Merge mode "pilot disabled": a flow using a Skill (step or grant) is refused
+    on reader paths while settings.AGENT_FLOW_V3_ENABLED is false; a flow without
+    V3 capabilities is untouched; setting it true opens the pilot."""
+    from app.core.config import settings
+    from app.services.agent_flows import dispatch
+
+    plain = _flow([{"key": "a", "type": "agent", "prompt": "x", "tools": [{"tool": "total_measure"}]}])
+    granted = _flow([{"key": "a", "type": "agent", "prompt": "x",
+                      "tools": [{"tool": "total_measure"}, {"tool": "skill:so_sanh"}]}])
+    assert dispatch.v3_capabilities(plain) == []
+    assert dispatch.v3_capabilities(granted) == ["skill:so_sanh"]
+    monkeypatch.setattr(settings, "AGENT_FLOW_V3_ENABLED", False, raising=False)
+    assert dispatch.v3_blocked_for_readers(granted) and not dispatch.v3_blocked_for_readers(plain)
+    monkeypatch.setattr(settings, "AGENT_FLOW_V3_ENABLED", True, raising=False)
+    assert not dispatch.v3_blocked_for_readers(granted)
+
+
+def test_both_reader_paths_are_gated_and_the_author_path_is_not():
+    import inspect
+
+    from app.core.config import Settings
+    from app.services.agent_flows import dispatch
+
+    assert Settings.model_fields["AGENT_FLOW_V3_ENABLED"].default is False, "off by default"
+    src = inspect.getsource(dispatch)
+    for fn in ("run_for_link", "run_for_chat_thread"):
+        body = src[src.index("async def %s(" % fn):]
+        body = body[:body.index("\nasync def ", 10)] if "\nasync def " in body[10:] else body
+        assert "v3_blocked_for_readers(" in body, fn
+    preview = src[src.index("async def run_preview("):]
+    preview = preview[:preview.index("\nasync def ", 10)]
+    assert "v3_blocked_for_readers(" not in preview, "Studio Test keeps running V3 flows"

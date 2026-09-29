@@ -339,3 +339,18 @@ def test_the_memo_does_not_outlive_one_search():
     """
     ctx = _FakeCtx([], set())
     assert D._Once(ctx, "a") is not D._Once(ctx, "a")
+
+
+def test_a_metric_only_search_that_finds_nothing_looks_at_the_charts(monkeypatch):
+    """Live efaa3873 runs 7291/7262/7260: `types: ["metric"]` for distinct_sellers /
+    total_freight / late_orders found no governed metric and the model concluded
+    the report had none — each is on a chart in scope."""
+    for kind in D._KINDS:
+        monkeypatch.setitem(D._FINDERS, kind, lambda *_a, **_k: [])
+    monkeypatch.setitem(D._FINDERS, "chart", lambda *_a, **_k: [
+        {"type": "chart", "id": 700, "name": "Số người bán hoạt động"}])
+    out = D.tool_search_business_assets(_FakeCtx([], set()), {"query": "distinct_sellers",
+                                                            "types": ["metric"]})
+    data = out["data"]
+    assert [r["id"] for r in data["results"]] == [700]
+    assert "chart" in data["coverage"]["searched"] and "CHARTS carry it" in data["coverage"]["note"]

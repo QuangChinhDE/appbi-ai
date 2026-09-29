@@ -256,3 +256,95 @@ def test_the_questions_own_words_name_the_measure_over_the_models_pick():
     assert I.titled_measure(q, ["avg_delivery_days"], TITLED) == "avg_delay_days"
     assert I.titled_measure("Số ngày giao TB theo bang?", ["avg_delivery_days"], TITLED) is None
     assert I.titled_measure("Doanh thu theo bang là bao nhiêu?", ["total_revenue"], TITLED) is None
+
+
+def test_latest_means_the_reports_last_period(monkeypatch):
+    """Live efaa3873 g4_mom/g6: "GMV tháng gần nhất so với tháng trước" compared
+    2023-10 with 2023-09 — the model's clock — on a report that ends in 2018."""
+    from app.services.agent_flows.tools import context as C
+
+    class Ctx:
+        chart_meta = {9: {"fields": {"dimensions": [{"field": "t.year_month"}]}},
+                      8: {"fields": {"dimensions": [{"field": "t.customer_state"}]}}}
+
+    def fetch(ctx, cid, **kw):
+        if cid == 9:
+            return {"columns": ["t.year_month", "t.gmv"], "rows": [["2017-01", 1.0], ["2018-10", 2.0], ["2016-09", 3.0]]}
+        return {"columns": ["t.customer_state", "t.gmv"], "rows": [["SP", 1.0]]}
+    monkeypatch.setattr(C, "_fetch_chart_data", fetch)
+    cov: dict = {}
+    got = I.member_values(Ctx(), {"year_month": [], "customer_state": []}, cov)
+    assert cov == {"year_month": ("2016-09", "2018-10")} and got == {"customer_state": ["SP"]}
+    text = I.describe_for_prompt(_model_intent(measures=["gmv"], coverage={"year_month": ["2016-09", "2018-10"]}))
+    assert "2018-10" in text and "không phải theo ngày hôm nay" in text
+
+
+def test_an_average_question_names_the_average_measure():
+    """Live efaa3873 run 7329: "Trung bình mỗi lần thanh toán trả góp bao nhiêu kỳ?"
+    resolved to payment_count ("trả góp" is in both installment titles); the correct
+    2.85 avg_installments was withheld as another measure's. Count questions keep
+    the count."""
+    v = {"measures": {"avg_installments": "Avg installments", "payment_count": "Payment count"},
+         "dimensions": {}, "measure_names": {
+             "avg_installments": ["Olist · Số kỳ trả góp TB"],
+             "payment_count": ["Olist · Lượt TT theo số kỳ trả góp"]}}
+    assert I.titled_measure("Trung bình mỗi lần thanh toán trả góp bao nhiêu kỳ?",
+                            ["payment_count"], v) == "avg_installments"
+    assert I.titled_measure("Có bao nhiêu lượt thanh toán trả góp 1 kỳ?", ["payment_count"], v) is None
+
+
+def test_the_intent_names_the_charts_that_carry_what_was_asked():
+    """Live efaa3873 runs 7291/7260: the measure was resolved and the model still
+    guessed chart_id 2 / 1. The intent names in-scope charts: a single figure by the
+    chart with no breakdown, a breakdown by the chart grouped by exactly it."""
+    class Ctx:
+        chart_meta = {
+            700: {"name": "Số người bán hoạt động", "fields": {
+                "measures": [{"field": "t.distinct_sellers"}], "dimensions": []}},
+            703: {"name": "Doanh thu theo bang (người bán)", "fields": {
+                "measures": [{"field": "t.total_revenue"}], "dimensions": [{"field": "t.seller_state"}]}},
+            679: {"name": "Doanh thu sản phẩm", "fields": {
+                "measures": [{"field": "t.total_revenue"}], "dimensions": []}},
+        }
+    v = I.vocabulary(Ctx())
+    one = I.charts_for({"measures": ["distinct_sellers"], "dimension": None, "periods": []}, v)
+    assert [c["chart_id"] for c in one] == [700]
+    by_state = I.charts_for({"measures": ["total_revenue"], "dimension": "seller_state", "periods": []}, v)
+    assert by_state[0]["chart_id"] == 703
+    whole = I.charts_for({"measures": ["total_revenue"], "dimension": None, "periods": []}, v)
+    assert whole[0]["chart_id"] == 679
+    text = I.describe_for_prompt(_model_intent(measures=["distinct_sellers"], charts=one))
+    assert "700" in text and "không đoán" in text
+
+
+def test_a_breakdown_or_range_not_asked_is_not_asserted():
+    """Live ccf8af44 main set (regression 55 -> 49/71): single-figure questions were
+    answered "the report has no freight by state / no review score by month" and
+    "cho kỳ 2018-09" — the model attached a dimension nobody asked for, and the data
+    range was stated on every turn and read as the asked period."""
+    assert not I.asks_breakdown("Tổng phí vận chuyển là bao nhiêu?", "", {})
+    assert I.asks_breakdown("Bang nào có doanh thu cao nhất?", "", {})
+    assert I.asks_breakdown("SP chiếm bao nhiêu phần trăm doanh thu?", "",
+                            {"members": [{"said": "SP", "code": "SP"}]})
+    assert not I.asks_relative_period("Tỷ lệ giao đúng hẹn tháng 3/2018 là bao nhiêu?", "")
+    assert I.asks_relative_period("GMV tháng gần nhất so với tháng trước thay đổi thế nào?", "")
+
+
+def test_a_period_the_question_does_not_ask_is_dropped(monkeypatch, world):
+    """Live 0d335866 run 7442: "Tổng GMV (hàng + ship) là bao nhiêu?" resolved to
+    periods [2018-09] and was answered with September's 166.46."""
+    ctx, state = world("Tổng GMV (hàng + ship) là bao nhiêu?")
+
+    async def call(**kw):
+        return json.dumps({"measures": ["gmv"], "periods": [{"grain": "m", "year": 2018, "n": 9}]})
+    monkeypatch.setattr(I, "_model_call", call)
+    monkeypatch.setattr(I, "vocabulary", lambda c: {"measures": {"gmv": "Gmv"}, "dimensions": {}})
+    got = asyncio.run(I.resolve(state, ctx, question=ctx.question, previous="", provider="openai",
+                                api_key="k", model="m"))
+    assert got["periods"] == [] and any("period not asked" in n for n in got["notes"])
+
+
+def test_a_month_is_read_from_the_monthly_chart():
+    rows = {"measures": ["order_count"], "dimension": None, "periods": [("m", 2018, 10)]}
+    v = {"carriers": {"order_count": [(705, ["day_name"], "Đơn theo ngày"), (726, ["year_month"], "Số đơn theo tháng")]}}
+    assert I.charts_for(rows, v)[0]["chart_id"] == 726

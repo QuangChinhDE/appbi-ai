@@ -626,3 +626,37 @@ def test_the_cross_run_cache_keys_on_what_the_turn_resolved():
     rj = REG._cache_key(ctx(asked_measures=[], member_aliases={"rio de janeiro": "RJ"}), "smart_drilldown", args)
     none = REG._cache_key(ctx(asked_measures=[], member_aliases={}), "smart_drilldown", args)
     assert rev != orders and rj != none
+
+
+def test_a_row_cap_never_drops_the_period_the_turn_asked_for(stub):
+    """Live efaa3873 run 7278: get_chart_data(sort desc, top_n 1) returned only the
+    latest month and the answer said the asked month was not in the data."""
+    stub(MONTHS_RISING, dim="t.year_month")
+    ctx = Ctx()
+    ctx.asked_periods = [("m", 2024, 3)]
+    data = ok(LEG.tool_get_chart_data(ctx, {"chart_id": 1, "sort": "desc", "sort_by": "year_month", "top_n": 1}))
+    labels = [r[0] for r in data["rows"]]
+    assert labels == ["2024-12", "2024-03"] and data["coverage"]["kept_for_asked_period"] == 1, data
+    plain = ok(LEG.tool_get_chart_data(Ctx(), {"chart_id": 1, "sort": "desc", "sort_by": "year_month", "top_n": 1}))
+    assert [r[0] for r in plain["rows"]] == ["2024-12"], "no asked period: the cap stands"
+
+
+def test_a_distinct_count_refusal_says_where_the_figure_is(stub, monkeypatch):
+    """Live 0d335866 runs 7455/7476/7429: total_measure refused to sum a distinct
+    count across states (correctly) with no route; the model gave up or quoted
+    average_across_rows. The refusal names the single-value chart of that measure
+    and the row tools for one member."""
+    from app.services.agent_flows.tools.packs import measure_meta
+
+    stub([("SP", 41746.0), ("RJ", 12852.0), ("MG", 11635.0)],
+         dim="t.customer_state", measure="t.order_count")
+    monkeypatch.setattr(measure_meta, "describe_measure", lambda ctx, cid, m: {
+        "additive": False, "agg": "count_distinct", "format_kind": "number", "unit": None})
+
+    class C(Ctx):
+        allowed_chart_ids = {1, 680}
+        chart_meta = {680: {"name": "Số đơn hàng", "fields": {
+            "measures": [{"field": "t.order_count"}], "dimensions": []}}}
+    res = DER.tool_total_measure(C(), {"chart_id": 1})
+    assert res["ok"] is False and res["error_code"] == "not_applicable", res
+    assert "680" in res["recovery"] and "average_across_rows" in res["recovery"], res["recovery"]
