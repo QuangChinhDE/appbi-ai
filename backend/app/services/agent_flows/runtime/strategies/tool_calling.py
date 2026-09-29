@@ -142,9 +142,13 @@ class ToolCallingStrategy:
         if note:
             self.system = f"{self.system}\n\n{note}"
         node, messages = self.node, self.messages
-        # Only the answering node's prose reaches the viewer, and only when it IS
-        # prose: a half-written JSON object cannot be rendered.
-        stream_text = rt.is_answering and node.output_format == "chat"
+        # ONE PUBLICATION BOUNDARY. The model's tokens are a DRAFT: the claim check
+        # may withhold figures in it, and the in-loop review may send it back.
+        # Streaming them let a reader see the unverified draft on SSE while only
+        # the final envelope was corrected (pilot review, 2026-09-29). The verified
+        # answer is emitted once, after the answering step's checks, by the
+        # executor (`run_flow`: prose goes out when nothing streamed).
+        stream_text = False
 
         for _round in range(self.max_rounds):
             last = _round == self.max_rounds - 1

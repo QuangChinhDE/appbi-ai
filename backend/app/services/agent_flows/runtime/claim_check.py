@@ -881,3 +881,112 @@ def redact(text: str, flagged: list[dict], locale: str = "vi") -> str:
     out.append(text[last:])
     return re.sub(r"\s+(?=[.,;:])", "", "".join(out))
 
+
+
+# ── TYPED OUTPUT GOES THROUGH THE SAME BOUNDARY ───────────────────────────────
+#
+# Pilot review (2026-09-29): an answering step with `output_format: json` built
+# metric/table blocks and never reached `check()` — it lived in the chat branch
+# only — so a metric value, a delta or a table cell carried any figure the model
+# wrote straight to the reader. The blocks are rendered into ONE document that
+# keeps each number's context (a metric is "label: value", a table row is its
+# header line plus "column: value" pairs), checked with the same `check()`, and a
+# flagged value is withheld in its typed position.
+
+def _num_of(v: Any) -> float | None:
+    try:
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    except Exception:                                           # noqa: BLE001
+        return None
+
+
+def _fmt_for_check(v: float, pct: bool) -> str:
+    s = f"{v:.6f}".rstrip("0").rstrip(".")
+    return s + ("%" if pct else "")
+
+
+def _blocks_document(blocks: list[dict]) -> str:
+    lines: list[str] = []
+    for b in blocks:
+        kind = b.get("type")
+        if kind == "text":
+            lines.append(str(b.get("markdown") or ""))
+        elif kind == "callout":
+            lines.append(str(b.get("text") or ""))
+        elif kind == "metric":
+            label = str(b.get("label") or "")
+            v = _num_of(b.get("value"))
+            if v is not None:
+                lines.append(f"{label}: {_fmt_for_check(v, b.get('format') == 'percent')}.")
+            d = b.get("delta") or {}
+            dv = _num_of(d.get("value")) if isinstance(d, dict) else None
+            if dv is not None:
+                word = {"up": "tăng", "down": "giảm"}.get(str(d.get("direction") or ""), "thay đổi")
+                lines.append(f"{label} {word} {_fmt_for_check(abs(dv), d.get('format', 'percent') == 'percent')}.")
+        elif kind == "table":
+            cols = [c for c in (b.get("columns") or []) if isinstance(c, dict)]
+            head = ", ".join(str(c.get("label") or c.get("key") or "") for c in cols)
+            lines.append(f"Bảng {head}:")
+            for row in b.get("rows") or []:
+                if not isinstance(row, dict):
+                    continue
+                cells = []
+                for c in cols:
+                    k = c.get("key")
+                    v = row.get(k)
+                    n = _num_of(v)
+                    cells.append(f"{c.get('label') or k}: "
+                                 f"{_fmt_for_check(n, c.get('format') == 'percent') if n is not None else v}")
+                lines.append("- " + ", ".join(cells))
+        elif kind == "followups":
+            lines.extend(str(x) for x in (b.get("items") or []))
+    return "\n".join(x for x in lines if x)
+
+
+def _is_flagged(v: float, pct: bool, flagged: list[dict]) -> bool:
+    return any(abs(abs(v) - abs(float(f["value"]))) <= 1e-6 * max(1.0, abs(v))
+               and (pct or not f.get("pct")) for f in flagged)
+
+
+def check_blocks(state: Any, ctx: Any, blocks: list[dict], locale: str = "vi") -> tuple[list[dict], dict]:
+    """(blocks as published, the check's verdict with the draft) for typed output."""
+    import copy
+
+    doc = _blocks_document(blocks)
+    final = check(state, ctx, doc) if doc else {}
+    flagged = (final or {}).get("flagged") or []
+    if not flagged:
+        return blocks, final
+    mark = PLACEHOLDER["en" if str(locale or "").lower().startswith("en") else "vi"]
+    out = copy.deepcopy(blocks)
+    for b in out:
+        kind = b.get("type")
+        if kind == "text":
+            b["markdown"] = redact(str(b.get("markdown") or ""), flagged, locale)
+        elif kind == "callout":
+            b["text"] = redact(str(b.get("text") or ""), flagged, locale)
+        elif kind == "followups":
+            b["items"] = [redact(str(x), flagged, locale) for x in (b.get("items") or [])]
+        elif kind == "metric":
+            v = _num_of(b.get("value"))
+            if v is not None and _is_flagged(v, b.get("format") == "percent", flagged):
+                b["value"] = mark
+                b["format"] = "text"
+            d = b.get("delta") or {}
+            dv = _num_of(d.get("value")) if isinstance(d, dict) else None
+            if dv is not None and _is_flagged(dv, d.get("format", "percent") == "percent", flagged):
+                b["delta"] = None
+        elif kind == "table":
+            pct_cols = {c.get("key") for c in (b.get("columns") or []) if isinstance(c, dict)
+                        and c.get("format") == "percent"}
+            for row in b.get("rows") or []:
+                if isinstance(row, dict):
+                    for k, v in list(row.items()):
+                        n = _num_of(v)
+                        if n is not None and _is_flagged(n, k in pct_cols, flagged):
+                            row[k] = mark
+    note = reader_note(flagged, locale)
+    if note:
+        out.append({"type": "callout", "level": "warning", "text": note})
+    final = {**final, "draft": {"blocks": blocks}}
+    return out, final

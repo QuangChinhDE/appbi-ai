@@ -270,7 +270,25 @@ async def run(
         raise RuntimeError(provider_error)
 
     if node.output_format == "json":
-        state.outputs[node.key] = _parse_blocks(text, state, node)
+        parsed = _parse_blocks(text, state, node)
+        # TYPED OUTPUT GOES THROUGH THE SAME PUBLICATION BOUNDARY as prose: a
+        # metric value, delta or table cell is checked and withheld like a figure
+        # in a sentence (pilot review: this branch never reached the claim check).
+        if node.key == rctx.answer_key and isinstance(parsed, dict) \
+                and isinstance(parsed.get("blocks"), list) and not provider_error:
+            from app.services.agent_flows.runtime import claim_check
+
+            try:
+                published, final = claim_check.check_blocks(
+                    state, getattr(rctx, "ctx", None), parsed["blocks"], _locale_of(rctx))
+            except Exception:                                   # noqa: BLE001
+                published, final = parsed["blocks"], {}
+            if (final or {}).get("flagged"):
+                state.unverified_claims = [*(state.unverified_claims or []), *final["flagged"]]
+                parsed = {**parsed, "blocks": published}
+            if final:
+                state.capability_trace.setdefault(node.key, {})["claims"] = final
+        state.outputs[node.key] = parsed
     elif node.output_format == "choice":
         # THE CONSTRAINT, CHECKED AFTER THE MODEL SPEAKS.
         #
