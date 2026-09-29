@@ -651,6 +651,57 @@ def enforce_author_bounds(
     return out
 
 
+# ---------------------------------------------------------------------------
+# What a public viewer (or the public AI) may filter BY: the fields the served
+# report exposes. `public._public_field_refs(..., exact=True)` computes the set;
+# this is the rule, shared by the viewer path and the AI's own tool filters.
+# ---------------------------------------------------------------------------
+
+#: Keys that pick the COLUMN a raw-table date filter reads: server-owned, never
+#: a public viewer's or a model's (no public control sends them).
+SERVER_OWNED_FILTER_KEYS = ("calendarField", "calendarSourceField", "calendar_field", "calendar_source_field")
+_EXPOSED_NAME_KEYS = ("semanticField", "fieldKey", "field")
+
+
+def _exposed_ref(ref: str, allowed: set, bare_allowed: set) -> bool:
+    if "." in ref:
+        if ref in allowed:
+            return True
+        # A calendar attribute ("<view>__date_dim.month") only of the calendar
+        # role of a date field the report USES: its view is one an exposed ref
+        # is on (a used field's fieldMap/calendar mapping), or the role view
+        # derived from a used field. Any other calendar view would rewrite onto
+        # a date column the report never shows. Calendar names are lowercase slugs.
+        view, attr = ref.split(".", 1)
+        return (view.endswith("__date_dim") and attr == attr.lower()
+                and (f"{view}.*" in allowed or any(a.startswith(f"{view}.") for a in allowed)))
+    return ref in bare_allowed or ref in allowed
+
+
+def filter_names_only_exposed_fields(entry: Any, allowed: set, bare_allowed: set) -> bool:
+    """True only if EVERY field name the filter carries is exposed — semanticField,
+    fieldKey, field and each linkedFields entry (the engine reads semanticField,
+    then fieldKey, then field, and the dropdown falls back to a linked field: a
+    harmless name beside a crafted one must not pass). Spellings are compared
+    EXACTLY, as the engine does. A name without a dot is judged as a bare name."""
+    if not isinstance(entry, dict):
+        return False
+    names = [str(entry.get(k)).strip() for k in _EXPOSED_NAME_KEYS if entry.get(k)]
+    names += [lf.strip() for lf in (entry.get("linkedFields") or []) if isinstance(lf, str) and lf.strip()]
+    # A bare name that is the column of a qualified name in the SAME entry (the
+    # distinct endpoint rewrites `field` to that tail) names that same column —
+    # and the qualified one must be exposed itself.
+    tails = {n.rsplit(".", 1)[-1] for n in names if "." in n}
+    return bool(names) and all(
+        _exposed_ref(n, allowed, bare_allowed) or ("." not in n and n in tails)
+        for n in names
+    )
+
+
+def without_server_owned_keys(entry: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in entry.items() if k not in SERVER_OWNED_FILTER_KEYS}
+
+
 #: Marker on a HARD bound handed to a distinct-values query: the dropdown's
 #: self-strip (which drops every condition on its own field so a slicer is not
 #: pinned to its current pick) must keep it.

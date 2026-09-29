@@ -528,6 +528,19 @@ def test_a_slicer_on_a_raw_column_header_is_kept_and_labelled(name):
     assert trimmed["views"] and trimmed["views"][0]["measures"], "a measure with a non-identifier name lost its label/format"
 
 
+@pytest.mark.parametrize("stored_field", ["Region", "t1.region", "UPPER(region)"])
+def test_the_distinct_endpoint_rewrite_of_a_slicer_does_not_fail_its_own_gate(stored_field):
+    # _sanitize_public_viewer_filters rewrites `field` to the tail of the matched
+    # ref; the exact gate then refused the slicer and sibling dropdowns stopped
+    # cascading by it.
+    slicer = {"id": "s1", "field": stored_field, "semanticField": "t1.region", "datasetId": 1, "operator": "in", "value": []}
+    dash = _dash(pages_config=[], slicers_config=[slicer])
+    fields = [{"datasetId": 1, "semanticField": "t1.region"}]
+    sanitized = public_api._sanitize_public_viewer_filters(fields, 1, [{**slicer, "value": ["North"]}])
+    merged = public_api._build_public_chart_filters(dash, [], sanitized)
+    assert any(f.get("value") == ["North"] for f in merged), sanitized
+
+
 def test_a_bare_fieldkey_slicer_is_kept_and_a_smuggled_linked_field_is_not():
     slicer = {"id": "s1", "field": "region", "fieldKey": "region", "operator": "in", "value": []}
     dash = _dash(pages_config=[], slicers_config=[slicer])
@@ -546,6 +559,52 @@ def test_a_chart_saved_without_a_binding_still_exposes_its_bare_fields():
     click = {"field": "customer_state", "semanticField": "dataset_table_3.customer_state", "operator": "in", "value": ["SP"]}
     merged = public_api._build_public_chart_filters(dash, [], [click])
     assert any(f.get("value") == ["SP"] for f in merged), "a cross-filter from a binding-less chart was dropped"
+
+
+def test_a_calendar_attribute_is_allowed_only_for_a_date_the_report_uses():
+    # The engine rewrites "<view>__date_dim.<part>" onto a fact date column; an
+    # invented or unrelated calendar view would filter by a date nobody shows.
+    from app.services.dataset_calendar_service import build_calendar_role_view_name
+    dash = _dash(pages_config=[])
+    dash.dashboard_charts = [SimpleNamespace(chart_id=7, layout={}, chart=SimpleNamespace(dataset_table_id=5, config={
+        "roleConfig": {"timeField": "order_date", "metrics": [{"field": "revenue", "agg": "sum"}]},
+        "semanticBinding": {"baseViewName": "dataset_table_5"}}))]
+    used = f"{build_calendar_role_view_name('dataset_table_5', 'order_date')}.year"
+    for name, keep in ((used, True), ("anything__date_dim.year", False),
+                       (f"{build_calendar_role_view_name('dataset_table_5', 'canceled_at')}.year", False)):
+        merged = public_api._build_public_chart_filters(dash, [], [{"field": name, "semanticField": name, "operator": "eq", "value": 2018}])
+        assert any(f.get("semanticField") == name for f in merged) is keep, (name, keep)
+
+
+def test_a_case_variant_of_an_exposed_name_is_not_that_name():
+    # The gate compared lowercased while the engine's calendar rewrite is exact:
+    # "DATASET_TABLE_5__ORDER_DATE__DATE_DIM.year" matched no role and fanned out
+    # to EVERY date column (canceled_at included).
+    from app.services.dataset_calendar_service import build_calendar_role_view_name
+    dash = _dash(pages_config=[])
+    dash.dashboard_charts = [SimpleNamespace(chart_id=7, layout={}, chart=SimpleNamespace(dataset_table_id=5, config={
+        "roleConfig": {"timeField": "order_date", "dimension": "dataset_table_5.region"},
+        "semanticBinding": {"baseViewName": "dataset_table_5"}}))]
+    exposed = f"{build_calendar_role_view_name('dataset_table_5', 'order_date')}.year"
+    for name, keep in ((exposed, True), (exposed.upper().replace(".YEAR", ".year"), False),
+                       ("dataset_table_5.region", True), ("DATASET_TABLE_5.REGION", False)):
+        merged = public_api._build_public_chart_filters(dash, [], [{"field": name, "semanticField": name, "operator": "eq", "value": 2018}])
+        assert any(f.get("semanticField") == name for f in merged) is keep, (name, keep)
+
+
+def test_a_legacy_chart_cross_filter_and_server_owned_calendar_keys():
+    dash = _dash(pages_config=[])
+    dash.dashboard_charts = [SimpleNamespace(chart_id=7, layout={}, chart=SimpleNamespace(dataset_table_id=3, config={
+        "labelField": "customer_state", "semanticBinding": {"baseViewName": "dataset_table_3"}}))]
+    click = {"field": "customer_state", "semanticField": "dataset_table_3.customer_state", "operator": "in", "value": ["SP"],
+             "calendarField": "year", "calendarSourceField": "canceled_at",
+             "calendar_field": "year", "calendar_source_field": "canceled_at"}
+    merged = public_api._build_public_chart_filters(dash, [], [click])
+    kept = [f for f in merged if f.get("value") == ["SP"]]
+    assert kept, "a click on a pre-roleConfig chart was dropped"
+    assert not {"calendarSourceField", "calendarField", "calendar_field", "calendar_source_field"} & set(kept[0]),         "a viewer chose the column a date filter reads"
+    grain = public_api._build_public_chart_filters(dash, [], [{"field": "month", "operator": "eq", "value": 1}])
+    assert not any(f.get("field") == "month" for f in grain), "a config word (grain) was taken for a field"
 
 
 def test_a_calendar_cross_filter_survives_the_viewer_gate():
@@ -570,6 +629,24 @@ def test_a_viewer_inventory_never_falls_back_to_every_reachable_dimension(monkey
     monkeypatch.setattr(public_api, "_augment_with_slicer_fields", lambda _db, _d, fields: calls.append(fields) or fields)
     assert public_api._build_public_filter_fields(None, _dash(), [], legacy_scan=False) == []
     assert calls == [[]]
+
+
+def test_the_public_ai_cannot_filter_by_a_field_the_report_does_not_expose(monkeypatch):
+    # A viewer asking the bot "revenue of canceled orders" made the MODEL add an
+    # order_status filter — the viewer gate's probe, by another route. Refused
+    # loudly: a silently dropped filter would answer with the unfiltered number.
+    from app.services.agent_flows.tools import context as ctx_mod
+    from app.services.agent_flows.tools.context import ToolContext
+    seen = []
+    monkeypatch.setattr(ctx_mod.ChartService, "get_chart_data", staticmethod(lambda _db, _cid, extra_filters=None, **_k: seen.append(extra_filters) or {"data": [{"v": 1}]}))
+    ctx = ToolContext(db=None, dashboard=None, public_filters=[], exposed_fields=({"t1.region"}, {"region"}))
+    monkeypatch.setattr(ToolContext, "assert_chart_in_scope", lambda self, cid: None)
+    with pytest.raises(ctx_mod.ToolError) as exc:
+        ctx_mod._fetch_chart_data(ctx, 7, extra_filters=[{"field": "order_status", "semanticField": "t1.order_status", "operator": "in", "value": ["canceled"]}])
+    assert "t1.order_status" in str(exc.value) and seen == [], "the unexposed filter reached the engine"
+    ctx_mod._fetch_chart_data(ctx, 7, extra_filters=[{"field": "region", "semanticField": "t1.region", "operator": "in", "value": ["North"],
+                                                      "calendarSourceField": "canceled_at"}])
+    assert seen and seen[-1][0]["value"] == ["North"] and "calendarSourceField" not in seen[-1][0]
 
 
 def test_the_ai_is_not_handed_a_hidden_constraint():

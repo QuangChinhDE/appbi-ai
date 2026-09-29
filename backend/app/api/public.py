@@ -54,7 +54,9 @@ from app.services.filter_layered_merge import (
     canonical_link_entry,
     disclosed_applied_filters,
     enforce_author_bounds,
+    filter_names_only_exposed_fields,
     hard_bounds_on_field,
+    without_server_owned_keys,
     LINK_ENTRY_EMPTY,
     link_entry_state,
     apply_link_scope_bounds,
@@ -728,7 +730,9 @@ def _build_public_chart_filters(
     # filter that already carries a token (explicit viewer choice) is untouched.
     if viewer_filters:
         allowed, bare_allowed = viewer_allowed or _viewer_allowed(dash, link_filters_config)
-        kept = [f for f in viewer_filters if _viewer_may_filter(f, allowed, bare_allowed)]
+        # calendarField / calendarSourceField pick the COLUMN a raw-table date
+        # filter reads: server-owned, never a viewer's (no public control sends them).
+        kept = [without_server_owned_keys(f) for f in viewer_filters if _viewer_may_filter(f, allowed, bare_allowed)]
         if len(kept) != len(viewer_filters):
             logger.info("filter_merge context=%s dropped=%s", context_for_log,
                         ["viewer_field_not_exposed"] * (len(viewer_filters) - len(kept)))
@@ -1078,8 +1082,10 @@ def _shape_public_structure(dash: Dashboard, link_filters_config: list[dict] | N
     _set_committed(dash, "pages_config", pages)
 
 
-#: Where a chart config names the fields it READS (not its titles or styling).
-_CHART_FIELD_KEYS = ("roleConfig", "generatedRoleConfig", "customRoleConfig", "filters", "baseFilters")
+#: Top-level keys older (pre-roleConfig) chart configs name their fields under —
+#: the public ChartPreview cross-filters by these.
+_LEGACY_CHART_FIELD_KEYS = ("labelField", "color_by_dimension", "xField", "yField", "timeField", "x_axis", "y_axis",
+                            "label", "value", "time_column", "value_column")
 #: Keys whose values are field names inside a filter or control entry.
 _ENTRY_FIELD_KEYS = ("semanticField", "fieldKey", "field")
 
@@ -1088,30 +1094,18 @@ def _norm_ref(v: Any) -> str:
     return str(v or "").strip().lower()
 
 
-def _strings_in(obj: Any, out: list[str]) -> None:
-    if isinstance(obj, str):
-        if obj.strip():
-            out.append(_norm_ref(obj))
-    elif isinstance(obj, dict):
-        for v in obj.values():
-            _strings_in(v, out)
-    elif isinstance(obj, (list, tuple)):
-        for v in obj:
-            _strings_in(v, out)
-
-
-def _chart_base_view(dc: Any, cfg: dict) -> str:
+def _chart_base_view(dc: Any, cfg: dict, norm=None) -> str:
     """The view a chart's bare field names are on: its binding's base view, or —
     for a chart saved without a binding — the stable ``dataset_table_<id>``."""
     sb = cfg.get("semanticBinding") if isinstance(cfg.get("semanticBinding"), dict) else {}
-    base = _norm_ref(sb.get("baseViewName"))
+    base = (norm or _norm_ref)(sb.get("baseViewName"))
     if base:
         return base
     table_id = getattr(getattr(dc, "chart", None), "dataset_table_id", None) or cfg.get("dataset_table_id")
     return f"dataset_table_{table_id}" if table_id else ""
 
 
-def _public_field_refs(dash: Any) -> set[str]:
+def _public_field_refs(dash: Any, *, exact: bool = False) -> set[str]:
     """The fields the SERVED report exposes, as normalised names: qualified refs
     (``view.field``) and, without a dot, bare names.
 
@@ -1127,6 +1121,11 @@ def _public_field_refs(dash: Any) -> set[str]:
     a served binding keeps, and which fields a viewer's own filter may name.
     """
     from app.services.dashboard_service import is_draft_only_item
+    # exact=True keeps each name's own spelling: the viewer gate compares
+    # case-sensitively, as the engine does (a case variant of an exposed name
+    # is not that name — the calendar rewrite fans an unmatched one out to
+    # every date). Display trims compare lowercased.
+    norm = (lambda v: str(v or "").strip()) if exact else _norm_ref
     refs: set[str] = set()
 
     def _entry(e: Any) -> None:
@@ -1134,10 +1133,10 @@ def _public_field_refs(dash: Any) -> set[str]:
             return
         for k in _ENTRY_FIELD_KEYS:
             if e.get(k):
-                refs.add(_norm_ref(e.get(k)))
+                refs.add(norm(e.get(k)))
         for lf in e.get("linkedFields") or []:
             if isinstance(lf, str) and lf.strip():
-                refs.add(_norm_ref(lf))
+                refs.add(norm(lf))
 
     for e in (getattr(dash, "slicers_config", None) or []):
         _entry(e)
@@ -1154,10 +1153,14 @@ def _public_field_refs(dash: Any) -> set[str]:
         if not isinstance(cfg, dict):
             continue
         sb = cfg.get("semanticBinding") if isinstance(cfg.get("semanticBinding"), dict) else {}
-        base = _chart_base_view(dc, cfg)
-        strings: list[str] = []
-        for key in _CHART_FIELD_KEYS:
-            _strings_in(cfg.get(key), strings)
+        base = _chart_base_view(dc, cfg, norm)
+        # The fields the chart READS — the same collector its binding is built
+        # from — plus the legacy top-level keys. Not every string of the config
+        # (grain words, aggregation names, sort directions are not fields).
+        from app.services.chart_semantic_service import _collect_chart_field_names
+        from app.services.dataset_calendar_service import build_calendar_role_view_name
+        strings = [norm(s) for s in _collect_chart_field_names(cfg) if str(s or "").strip()]
+        strings += [norm(cfg.get(k)) for k in _LEGACY_CHART_FIELD_KEYS if isinstance(cfg.get(k), str) and cfg.get(k).strip()]
         used_bare: set[str] = set()
         for s in strings:
             refs.add(s)
@@ -1167,13 +1170,16 @@ def _public_field_refs(dash: Any) -> set[str]:
                 used_bare.add(s)
                 if base:
                     refs.add(f"{base}.{s}")
+                    # The calendar role view of this field (a stored binding
+                    # may predate the calendar): its attributes are this date's.
+                    refs.add(f"{build_calendar_role_view_name(base, s).lower()}.*")
         field_map = sb.get("fieldMap") if isinstance(sb.get("fieldMap"), dict) else {}
         for src, target in field_map.items():
-            if _norm_ref(src) in used_bare and target:
-                refs.add(_norm_ref(target))
+            if norm(src) in used_bare and target:
+                refs.add(norm(target))
         for m in sb.get("calendarFieldMappings") or []:
-            if isinstance(m, dict) and _norm_ref(m.get("sourceField")) in used_bare and m.get("semanticField"):
-                refs.add(_norm_ref(m.get("semanticField")))
+            if isinstance(m, dict) and norm(m.get("sourceField")) in used_bare and m.get("semanticField"):
+                refs.add(norm(m.get("semanticField")))
     return refs
 
 
@@ -1222,31 +1228,11 @@ def _viewer_filterable_refs(dash: Any, link_filters_config: list[dict] | None) -
     from types import SimpleNamespace as _NS
     _s, _f, _p = _shaped_public_config(dash, link_filters_config)
     return _public_field_refs(_NS(slicers_config=_s, filters_config=_f, pages_config=_p,
-                                  dashboard_charts=getattr(dash, "dashboard_charts", None) or []))
+                                  dashboard_charts=getattr(dash, "dashboard_charts", None) or []), exact=True)
 
 
-def _viewer_ref_allowed(ref: str, allowed: set[str], bare_allowed: set[str]) -> bool:
-    if "." in ref:
-        if ref in allowed:
-            return True
-        # A calendar attribute of a date axis ("<view>__date_dim.month"): the
-        # served binding can map a used date field to a calendar the stored one
-        # predates. Only a date's calendar parts, never a field of a data view.
-        return ref.split(".", 1)[0].endswith("__date_dim")
-    return ref in bare_allowed or ref in allowed
-
-
-def _viewer_may_filter(entry: Any, allowed: set[str], bare_allowed: set[str]) -> bool:
-    """A viewer filter is kept only if EVERY field name it carries is exposed —
-    semanticField, fieldKey, field and each linkedFields entry (the engine reads
-    semanticField, then fieldKey, then field, and the dropdown falls back to a
-    linked field: a harmless name beside a crafted one must not pass it). A name
-    without a dot is judged as a bare name (a slicer's fieldKey can be bare)."""
-    if not isinstance(entry, dict):
-        return False
-    names = [_norm_ref(entry.get(k)) for k in _ENTRY_FIELD_KEYS if entry.get(k)]
-    names += [_norm_ref(lf) for lf in (entry.get("linkedFields") or []) if isinstance(lf, str) and lf.strip()]
-    return bool(names) and all(_viewer_ref_allowed(n, allowed, bare_allowed) for n in names)
+#: The exposed-field rule itself lives with the rest of the filter authority.
+_viewer_may_filter = filter_names_only_exposed_fields
 
 
 def _viewer_allowed(dash: Any, link_filters_config: list[dict] | None) -> tuple[set[str], set[str]]:
@@ -1258,7 +1244,7 @@ def _viewer_allowed(dash: Any, link_filters_config: list[dict] | None) -> tuple[
 def _viewer_bare_fields(dash: Any, link_filters_config: list[dict] | None) -> set[str]:
     _s, _f, _p = _shaped_public_config(dash, link_filters_config)
     entries = [*_s, *_f, *[e for page in _p if isinstance(page, dict) for e in [*(page.get("filters") or []), *(page.get("slicers") or [])]]]
-    return {_norm_ref(e.get(k)) for e in entries if isinstance(e, dict)
+    return {str(e.get(k)).strip() for e in entries if isinstance(e, dict)
             for k in ("field", "fieldKey") if e.get(k) and "." not in str(e.get(k))}
 
 
@@ -3973,6 +3959,7 @@ def get_dashboard_ai_recon(
         ctx = ToolContext.from_dashboard(
             db=db, dashboard=dash, public_filters=combined_filters,
             page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
+            exposed_fields=_viewer_allowed(dash, public_filters),
         )
         recon = build_proactive_recon(ctx)
     except Exception:
@@ -4128,6 +4115,7 @@ def get_dashboard_ai_briefing_guess(
         ctx = ToolContext.from_dashboard(
             db=db, dashboard=dash, public_filters=combined_filters,
             page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
+            exposed_fields=_viewer_allowed(dash, public_filters),
         )
         recon = build_proactive_recon(ctx)
         guess = guess_briefing_from_recon(
@@ -4216,6 +4204,7 @@ async def post_dashboard_ai_briefing_brief(
     ctx = ToolContext.from_dashboard(
             db=db, dashboard=dash, public_filters=combined_filters,
             page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
+            exposed_fields=_viewer_allowed(dash, public_filters),
         )
     recon = build_proactive_recon(ctx)
     user_prompt = build_executive_brief_user_prompt(
@@ -4672,6 +4661,7 @@ async def chat_dashboard_ai_agent(
     ctx = ToolContext.from_dashboard(
             db=db, dashboard=dash, public_filters=combined_filters,
             page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
+            exposed_fields=_viewer_allowed(dash, public_filters),
         )
 
     # Phase A + B: parse briefing + state, default-construct if missing.
@@ -5047,6 +5037,7 @@ async def explore_dashboard_ai_agent(
     ctx = ToolContext.from_dashboard(
             db=db, dashboard=dash, public_filters=combined_filters,
             page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
+            exposed_fields=_viewer_allowed(dash, public_filters),
         )
     # Guarded BEFORE the run starts. This endpoint fans one briefing out into a
     # multi-round exploration, so an instruction smuggled into `smart_goal` is

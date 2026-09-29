@@ -272,6 +272,10 @@ class ToolContext:
     #: (public links: `public._public_page_scope_by_chart`). Applied at the one
     #: fetch boundary below, so no tool reads a chart wider than its page.
     page_scope_by_chart: dict[int, list[dict]] = field(default_factory=dict)
+    #: Public links: ``(exposed qualified refs, bare control fields)`` — the
+    #: fields the served report exposes (`public._viewer_allowed`). A filter the
+    #: MODEL adds may name only those; None = not a public context (no rule).
+    exposed_fields: tuple | None = None
     #: The CURRENT step's knowledge scope, set per step by the flow engine:
     #: ``{"doc_ids": [...], "metric_names": [...]}``. Empty/absent means the step
     #: may reach everything the report is entitled to.
@@ -326,6 +330,7 @@ class ToolContext:
         actor_type: str = "public_session",
         actor_ref: str | None = None,
         page_scope_by_chart: dict[int, list[dict]] | None = None,
+        exposed_fields: tuple | None = None,
     ) -> "ToolContext":
         allowed: set[int] = set()
         served_tables: set[int] = set()
@@ -396,6 +401,7 @@ class ToolContext:
             excluded_columns=_resolve_excluded_columns(db, dashboard),
             served_table_ids=served_tables,
             page_scope_by_chart=dict(page_scope_by_chart or {}),
+            exposed_fields=exposed_fields,
         )
 
     def disclosed_filters(self) -> tuple[list[dict], int]:
@@ -631,9 +637,23 @@ def _fetch_chart_data(
     for f in ctx.public_filters:
         if isinstance(f, dict):
             merged.append(dict(f))
+    # On a public link a filter the MODEL adds is held to the viewer's rule: only
+    # fields the served report exposes. Refused LOUDLY — a silently dropped
+    # filter would present the unfiltered number as the filtered answer.
+    if ctx.exposed_fields and extra_filters:
+        from app.services.filter_layered_merge import filter_names_only_exposed_fields
+        refused = [f for f in extra_filters if isinstance(f, dict)
+                   and not filter_names_only_exposed_fields(f, *ctx.exposed_fields)]
+        if refused:
+            names = ", ".join(sorted({str(f.get("semanticField") or f.get("field") or "?") for f in refused}))
+            raise ToolError(
+                f"Báo cáo này không cho lọc theo: {names}. Chỉ lọc được theo các trường báo cáo đang hiển thị "
+                f"(This report cannot be filtered by {names}; only by the fields it shows)."
+            )
     for f in extra_filters or []:
         if isinstance(f, dict):
-            merged.append(dict(f))
+            from app.services.filter_layered_merge import without_server_owned_keys
+            merged.append(without_server_owned_keys(dict(f)) if ctx.exposed_fields else dict(f))
     # The chart's page scope — a model-added filter can narrow it, never undo it.
     bounds = ctx.page_scope_by_chart.get(chart_id) if ctx.page_scope_by_chart else None
     if bounds:
