@@ -817,6 +817,18 @@ def check(state: Any, ctx: Any, text: str) -> dict:
     intent_periods = {tuple(p) for p in (intent.get("periods") or [])} \
         if intent.get("source") == "model" else set()
     labels = _qualifier_numbers(asked_member, text)
+    # A BREAKDOWN ASKED, NONE DELIVERED. Live a2d2e68b: "điểm đánh giá trung bình
+    # theo từng tháng là 4.0864" (the all-time average) and "tổng doanh thu của người
+    # bán theo bang là 13,591,643.7" (the report total) — one whole figure given as
+    # the breakdown the question asked for. Read from the resolved intent: time
+    # breakdowns count here too (target_of leaves them to the period rules).
+    asked_breakdown = intent.get("dimension") if (
+        intent.get("source") == "model" and intent.get("dimension")
+        and not intent.get("members") and not asked_member and not intent_periods) else None
+    breakdown_delivered = bool(asked_breakdown) and any(
+        e.get("member") and (e.get("dimension") == asked_breakdown
+                             or (_is_time(asked_breakdown) and _is_time(e.get("dimension"))))
+        for e in ledger)
     for value, pct in claims:
         if not pct and value in labels:
             continue                     # the "5" of "5 sao" is a label, not a figure
@@ -891,6 +903,11 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             flagged.append({"value": value, "pct": pct, "why": "measure_absent",
                             "of": {k: e.get(k) for k in ("measure", "dimension", "member")}})
             continue
+        if asked_breakdown and not breakdown_delivered and not _given_to_other_than_asked(sentence, None)                 and all(not e.get("dimension") and not e.get("member") for e in support):
+            flagged.append({"value": value, "pct": pct, "why": "whole_as_breakdown",
+                            "of": {"measure": support[0].get("measure"), "dimension": None,
+                                   "member": None}})
+            continue
         attributed = _misattributed(support, asked_member, sentence)
         if attributed == "whole_as_member" and _framed_as_population(sentence, value):
             attributed = None            # "… trên tổng 99,441 đơn": the population, not SP's
@@ -937,6 +954,9 @@ _WHY = {
     "whole_as_member": ("là số của TOÀN BỘ báo cáo — báo cáo không có số liệu này theo chiều "
                         "được hỏi; nếu giữ, phải nói rõ đó là tổng toàn bộ"),
     "wrong_direction": "câu nói chiều ngược với dấu của con số đã tính (tăng ↔ giảm)",
+    "whole_as_breakdown": ("là một số của TOÀN BỘ báo cáo, không phải số theo chiều được hỏi — "
+                           "tìm biểu đồ có số đo này theo đúng chiều đó; nếu không có thì nói rõ "
+                           "báo cáo không có số theo chiều này"),
     "invalid_lineage": ("được tính từ một đầu vào không phải số của đại lượng nào (số dòng, số nhóm, "
                         "hoặc số chưa được mô tả) — tính lại từ đúng số đo bằng compute với tham "
                         "chiếu, hoặc bỏ con số này"),

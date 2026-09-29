@@ -62,7 +62,7 @@ from app.services.agent_flows.contract import (
 )
 from contextlib import contextmanager
 
-from app.services.agent_flows.runtime.state import BudgetExhausted
+from app.services.agent_flows.runtime.state import DISCOVERY_TOOLS, BudgetExhausted
 from app.services.dashboard_ai_bot.events import AgentEvent
 
 logger = logging.getLogger(__name__)
@@ -603,11 +603,8 @@ def _err(message: str, code: str, recovery: str = "") -> dict:
 
 
 _READING_NODES = ("report_read", "tool", "knowledge", "web", "skill")
-#: Tools that find WHERE data is; none of them is an analysis result.
-_DISCOVERY_TOOLS = frozenset({
-    "list_charts", "search_business_assets", "resolve_chart_candidates", "describe_semantic_model",
-    "get_chart_glossary", "inspect_filters", "describe_time_coverage", "find_capability",
-})
+#: Tools that find WHERE data is — one set, owned by the runtime state.
+_DISCOVERY_TOOLS = DISCOVERY_TOOLS
 
 
 def _did_no_work(flow: Flow, child_state: Any) -> bool:

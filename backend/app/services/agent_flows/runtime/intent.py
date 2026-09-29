@@ -103,6 +103,32 @@ def _terms(text: str, *, singles: bool) -> set:
     return out
 
 
+def titled_measure(question: str, chosen: list[str], vocab: dict) -> str | None:
+    """The one measure the QUESTION names in the report's own words, when the model
+    chose a measure the question does not name at all.
+
+    Live a2d2e68b run 6675: "Bang nào có lệch hẹn giao trung bình thấp nhất?" was
+    resolved to avg_delivery_days; the report titles avg_delay_days "Lệch hẹn giao TB
+    theo bang". Only a word pair that belongs to exactly ONE measure's names counts —
+    "theo bang" is in a dozen titles and names nothing.
+    """
+    names = vocab.get("measure_names") or {}
+    terms = {k: _terms(" | ".join([k, str(lbl), *names.get(k, [])]), singles=False)
+             for k, lbl in (vocab.get("measures") or {}).items()}
+    owners: dict = {}
+    for k, ts in terms.items():
+        for t in ts:
+            owners.setdefault(t, set()).add(k)
+    asked = _terms(question, singles=False)
+    hits = {k for t in asked for k in owners.get(t, ()) if len(owners[t]) == 1}
+    if len(hits) != 1:
+        return None
+    best = next(iter(hits))
+    if best in chosen or any(asked & terms.get(c, set()) for c in chosen):
+        return None
+    return best
+
+
 def absent_is_real(absent: str, vocab: dict) -> bool:
     """Whether the quantity called absent is really outside the report.
 
@@ -381,7 +407,13 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
         logger.info("[intent] model resolution unavailable; heuristics decide", exc_info=True)
         floor["notes"].append("model resolution unavailable")
         return floor
-    return merge(validate(_parse(raw), vocab), floor, question)
+    model = validate(_parse(raw), vocab)
+    better = titled_measure(question, model.get("measures") or [], vocab)
+    if better:
+        model["notes"].append(f"measure by the question's own words: {better} "
+                              f"(model chose {model.get('measures')})")
+        model["measures"], model["absent"] = [better], None
+    return merge(model, floor, question)
 
 
 def describe_for_prompt(intent: dict, locale: str = "vi") -> str:

@@ -81,6 +81,18 @@ class StepBudgetExhausted(Exception):
 #: tool budget of tens of calls; this only stops a runaway from growing the store.
 _MAX_EVIDENCE_REFS = 500
 
+#: Tools that find WHERE data is; none of them is an analysis result. One set, used
+#: by the Skill engine ("looking is not reading") and by evidence harvesting.
+DISCOVERY_TOOLS = frozenset({
+    "list_charts", "search_business_assets", "resolve_chart_candidates", "describe_semantic_model",
+    "get_chart_glossary", "inspect_filters", "describe_time_coverage", "find_capability",
+})
+#: Discovery results whose numbers are NOT evidence for a figure. Live a2d2e68b run
+#: 7047: the only data call failed, yet "tỷ lệ giao đúng hẹn tháng 3/2018 là 89,48%"
+#: was published — the number sat in a discovery payload (a chart card preview) and
+#: counted as "read". A time-coverage range is legitimately stated from its tool.
+_NOT_FIGURE_EVIDENCE = DISCOVERY_TOOLS - {"describe_time_coverage"}
+
 _IDENTIFIER_KEYS = frozenset({
     "id", "chart_id", "dashboard_id", "doc_id", "dataset_id", "dataset_table_id",
     "link_id", "binding_id", "run_id", "version", "flow_version",
@@ -436,6 +448,8 @@ class RunState:
         # `compute` names only its certified result, never its literals or echoed
         # inputs; a Skill names nothing (its child's ledger is merged directly).
         # Everything else is harvested as it always was.
+        if str(tool or "") in _NOT_FIGURE_EVIDENCE:
+            return ref                   # referenceable, never a figure's support
         if "evidence_values" in data or data.get("provenance") == "unreferenced":
             if self.evidence_source:
                 self.evidence_sources.add(self.evidence_source)

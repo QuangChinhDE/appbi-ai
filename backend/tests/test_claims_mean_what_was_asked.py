@@ -1041,3 +1041,44 @@ def test_a_formula_over_a_count_is_not_a_measures_figure(world):
         "a": {"ref": ref_a, "path": "value"}, "b": {"ref": ref_b, "path": "value"}}})
     _rec(state, "compute", good, {})
     assert _why(state, ctx, "Doanh thu trung bình mỗi đơn là 136.68.") == []
+
+
+def test_a_number_in_a_discovery_result_is_not_a_figures_support(world):
+    """Live a2d2e68b run 7047: the only data call failed; "89.48%" for March 2018 was
+    published because the number sat in a resolve_chart_candidates payload."""
+    ctx, state = world("Tỷ lệ giao đúng hẹn tháng 3/2018 là bao nhiêu?", asked=("on_time_rate",))
+    _rec(state, "resolve_chart_candidates", {"ok": True, "kind": "list", "data": {
+        "candidates": [{"chart_id": KPI, "preview_value": 89.48, "measure_match": True}]}}, {})
+    assert (89.48, "unsupported") in _why(state, ctx, "Tỷ lệ giao đúng hẹn tháng 3/2018 là 89.48%.")
+
+
+def _intent(**kw):
+    from app.services.agent_flows.runtime import intent as I
+
+    return {**I.empty_intent(), "source": "model", **kw}
+
+
+def test_a_whole_figure_is_not_the_breakdown_that_was_asked(world):
+    """Live a2d2e68b 6616/6667: the all-time average given "theo từng tháng", the
+    report total given "theo bang"; the breakdown was never read."""
+    ctx, state = world("Doanh thu theo bang của người bán là bao nhiêu?", asked=("total_revenue",))
+    state.intent = _intent(measures=["total_revenue"], dimension="seller_state")
+    _value(state, 13591643.7, "dataset_table_438.total_revenue")
+    assert (13591643.7, "whole_as_breakdown") in _why(
+        state, ctx, "Tổng doanh thu của người bán theo bang là 13,591,643.7.")
+    # Framed as the whole report it is true, and stands.
+    assert _why(state, ctx, "Báo cáo không chia theo bang người bán; doanh thu toàn bộ báo cáo "
+                            "là 13,591,643.7.") == []
+    ctx, state = world("Điểm đánh giá trung bình theo từng tháng thế nào?", asked=("avg_review_score",))
+    state.intent = _intent(measures=["avg_review_score"], dimension="year_month")
+    _value(state, 4.0864, "dataset_table_440.avg_review_score")
+    assert (4.0864, "whole_as_breakdown") in _why(
+        state, ctx, "Điểm đánh giá trung bình theo từng tháng là 4.0864.")
+
+
+def test_a_delivered_breakdown_still_answers(world):
+    """Positive control: the months were read, so a month's figure stands."""
+    ctx, state = world("GMV theo từng tháng thế nào?", asked=("gmv",))
+    state.intent = _intent(measures=["gmv"], dimension="year_month")
+    _months(state)
+    assert _why(state, ctx, "GMV tháng 1/2018 là 1,107,301.89.") == []

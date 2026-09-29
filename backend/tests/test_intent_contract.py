@@ -238,3 +238,21 @@ def test_a_member_named_without_a_code_is_kept():
                                   {"said": "tháng trước đó", "code": None}]},
                      {**VOCAB, "members": MEMBERS})
     assert got["members"] == [{"said": "Rio de Janeiro", "code": None}], got
+
+
+TITLED = {"measures": {"avg_delay_days": "Avg delay days", "avg_delivery_days": "Avg delivery days",
+                       "total_revenue": "Total revenue"},
+          "dimensions": {}, "measure_names": {
+              "avg_delay_days": ["Olist · Lệch hẹn giao TB theo bang"],
+              "avg_delivery_days": ["Olist · Số ngày giao TB theo bang"],
+              "total_revenue": ["Olist · Doanh thu theo bang (khách)"]}}
+
+
+def test_the_questions_own_words_name_the_measure_over_the_models_pick():
+    """Live a2d2e68b 6675: "lệch hẹn giao" resolved to avg_delivery_days; delivery
+    days were published as the delay. A pair shared by many titles ("theo bang")
+    decides nothing; a pick the question does name is kept."""
+    q = "Bang nào có lệch hẹn giao trung bình thấp nhất?"
+    assert I.titled_measure(q, ["avg_delivery_days"], TITLED) == "avg_delay_days"
+    assert I.titled_measure("Số ngày giao TB theo bang?", ["avg_delivery_days"], TITLED) is None
+    assert I.titled_measure("Doanh thu theo bang là bao nhiêu?", ["total_revenue"], TITLED) is None
