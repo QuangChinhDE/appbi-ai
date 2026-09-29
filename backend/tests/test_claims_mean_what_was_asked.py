@@ -1109,3 +1109,39 @@ def test_a_total_is_never_the_per_unit_average(world):
         state, ctx, "Doanh thu sản phẩm trung bình mỗi đơn là 13,591,643.70.")
     assert _why(state, ctx, "Giá trị đơn trung bình (AOV) là 137.75.") == []
     assert _why(state, ctx, "Tổng doanh thu là 13,591,643.70.") == []
+
+
+def _five_star(state):
+    from app.services.agent_flows.runtime import intent as I
+
+    state.intent = {**I.empty_intent(), "source": "model", "measures": ["review_count"],
+                    "dimension": "review_score", "members": [{"said": "5 sao", "code": "5"}]}
+    _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+        "chart_id": 720, "measure": "dataset_table_440.review_count",
+        "dimension": "dataset_table_440.review_score", "item": "5", "value": 57328.0,
+        "rank": 1, "group_count": 5, "total": 99224.0, "share_pct": 57.78}}, {"chart_id": 720})
+    _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+        "chart_id": 720, "measure": "dataset_table_440.review_count",
+        "dimension": "dataset_table_440.review_score", "item": "1", "value": 11424.0,
+        "rank": 3, "group_count": 5, "total": 99224.0, "share_pct": 11.51}}, {"chart_id": 720})
+
+
+def test_a_one_character_resolved_code_is_the_asked_member(world):
+    """Live 3ac706e6 run 7208: review score "5" was dropped by the two-character floor
+    meant for spoken words; the correct 57,328 was withheld as another member's.
+    Control: the 1-star count given as the 5-star count is still caught."""
+    ctx, state = world("Có bao nhiêu lượt đánh giá 5 sao?", asked=("review_count",))
+    _five_star(state)
+    assert _why(state, ctx, "Có tổng cộng 57,328 lượt đánh giá 5 sao.") == []
+    assert _why(state, ctx, "Có tổng cộng 11,424 lượt đánh giá 5 sao.")
+
+
+def test_a_qualifier_the_question_names_is_a_label(world):
+    """Live 3ac706e6 run 7247: asked about SP's 5-star rate, the "5" of "5 sao" was
+    withheld as an unsupported figure."""
+    ctx, state = world("Tỷ lệ đánh giá 5 sao của bang SP là bao nhiêu?", asked=("pct_five_star",))
+    _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+        "chart_id": 724, "measure": "dataset_table_440.pct_five_star",
+        "dimension": "dataset_table_441.customer_state", "item": "SP", "value": 60.29,
+        "rank": 2, "group_count": 27}}, {"chart_id": 724})
+    assert (5.0, "unsupported") not in _why(state, ctx, "Tỷ lệ đánh giá 5 sao của bang SP là 60.29.")

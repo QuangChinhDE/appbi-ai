@@ -589,6 +589,35 @@ def tool_total_measure(ctx: ToolContext, args: dict) -> dict:
     )
 
 
+def _partition_whole(ctx: ToolContext, chart_id: int, measure_name: str, groups_sum: float) -> dict | None:
+    """The single-value chart of this measure whose value equals the sum of the
+    groups (within 0.5%) — proof that the groups partition the whole — or None."""
+    from app.services.agent_flows.tools.dimension_gate import field_key
+
+    key = field_key(str(measure_name))
+    for cid, meta in sorted((getattr(ctx, "chart_meta", None) or {}).items()):
+        if cid == chart_id or cid not in (getattr(ctx, "allowed_chart_ids", None) or set()):
+            continue
+        f = (meta or {}).get("fields") or {}
+        if f.get("dimensions") or not any(field_key(str(m.get("field") or "")) == key
+                                           for m in f.get("measures") or [] if isinstance(m, dict)):
+            continue
+        try:
+            data = _fetch_chart_data(ctx, int(cid))
+        except Exception:  # noqa: BLE001
+            continue
+        rows = data.get("rows") or []
+        if len(rows) != 1:
+            continue
+        nums = [v for v in rows[0] if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if len(nums) != 1:
+            continue
+        whole = float(nums[0])
+        if whole and abs(whole - groups_sum) <= 0.005 * abs(whole):
+            return {"chart_id": int(cid), "value": whole}
+    return None
+
+
 def tool_share_of(ctx: ToolContext, args: dict) -> dict:
     """One group's figure, its share of the whole, and where it ranks."""
     loaded = _load(ctx, args)
@@ -657,6 +686,17 @@ def tool_share_of(ctx: ToolContext, args: dict) -> dict:
     ranked = sorted(sums.items(), key=lambda kv: kv[1], reverse=True)
     rank = next(i for i, (k, _) in enumerate(ranked) if k == matched) + 1
     value = sums[matched]
+    # A DISTINCT COUNT IS SHAREABLE WHEN THE GROUPS PARTITION IT. Live 3ac706e6
+    # g3_cancel_share: "đơn bị hủy chiếm bao nhiêu % tổng số đơn" — each order has
+    # ONE status, so 625 of 99,441 is a share; refused as non-additive, the answer
+    # said it could not be computed. Proved, not assumed: a single-value chart of the
+    # same measure equals the sum of the groups. Overlapping groups (an order in two
+    # categories) sum to more than the whole and stay refused, as do rates.
+    partition = None
+    if not info["additive"] and len(sums) > 1 and str(info.get("agg") or "") in ("count_distinct", "count"):
+        partition = _partition_whole(ctx, chart_id, measure_name, total)
+    shareable = info["additive"] or len(sums) <= 1 or partition is not None
+    whole = partition["value"] if partition else total
     return R.ok(
         {
             "chart_id": chart_id,
@@ -677,11 +717,15 @@ def tool_share_of(ctx: ToolContext, args: dict) -> dict:
             # value and the rank still stand.
             **(
                 {
-                    "total": round(total, 4),
-                    "total_formatted": _fmt(total),
-                    "share_pct": round(value / total * 100, 2) if total else None,
+                    "total": round(whole, 4),
+                    "total_formatted": _fmt(whole),
+                    "share_pct": round(value / whole * 100, 2) if whole else None,
+                    **({"share_basis": (f"the groups partition the whole: they sum to "
+                                        f"{_fmt(total)}, the single-value chart "
+                                        f"{partition['chart_id']} holds {_fmt(whole)}")}
+                       if partition else {}),
                 }
-                if (info["additive"] or len(sums) <= 1)
+                if shareable
                 else {
                     "total": None,
                     "share_pct": None,

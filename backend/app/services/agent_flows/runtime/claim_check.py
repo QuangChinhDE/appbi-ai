@@ -425,15 +425,20 @@ def _asked_member(ctx: Any, t: dict, question: str) -> list[str] | None:
     intent = t.get("intent") or {}
     if intent.get("source") == "model" and intent.get("members"):
         cands: list[str] = []
+        codes: list[str] = []
         for m in intent["members"]:
             said = str(m.get("said") or "")
             cands.append(_squash(said))
             if m.get("code"):
-                cands.append(_squash(m["code"]))
+                codes.append(_squash(m["code"]))
             ini = _initials(said.split())
             if ini:
                 cands.append(ini)
-        cands = [c for c in dict.fromkeys(cands) if len(c) >= 2]
+        # A CODE RESOLVED AGAINST THE REPORT'S OWN VALUES IS NEVER NOISE, whatever its
+        # length: review score "5" was dropped by the two-character floor meant for
+        # spoken words, and the correct 57,328 five-star reviews were withheld as
+        # another member's (live 3ac706e6 run 7208).
+        cands = list(dict.fromkeys([c for c in codes if c] + [c for c in cands if len(c) >= 2]))
         if cands:
             return cands
     found = _asked_member_by_cue(ctx, t, question)
@@ -530,14 +535,20 @@ def _words_in_clause(text: str, value: float, words: set[str]) -> bool:
     return False
 
 
-def _qualifier_numbers(asked: list[str] | None, text: str) -> set[float]:
+def _qualifier_numbers(asked: list[str] | None, text: str, question: str = "") -> set[float]:
     """Numbers that are PART of the asked qualifier as the answer writes it
     ("5 sao" when the question asked about "5 sao") — labels, never figures.
-    Live 4961/4986: the 5 of "lượt đánh giá 5 sao" was withheld as a figure."""
+    Live 4961/4986: the 5 of "lượt đánh giá 5 sao" was withheld as a figure. Live
+    3ac706e6 run 7247: asked about SP's 5-star rate, the "5" of "5 sao" was withheld
+    — the qualifier was the QUESTION's words, not the asked member's; a small number
+    followed by the same word in the question and the answer is a label."""
     import re
 
     out: set[float] = set()
     folded = _fold(text)
+    for n, word in re.findall(r"(?<![\d.,])(\d{1,2})\s+([^\W\d_]{2,})", _fold(question or "")):
+        if re.search(rf"(?<![\d.,]){n}\s*{re.escape(word)}(?![^\W_])", folded):
+            out.add(float(n))
     for c in asked or []:
         m = re.fullmatch(r"(\d{1,3})([a-z]+)", c or "")
         if m and re.search(rf"(?<![\d.,]){m.group(1)}\s*{m.group(2)}(?![^\W_])", folded):
@@ -852,7 +863,7 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                         if _squash(w) not in vocab}
     intent_periods = {tuple(p) for p in (intent.get("periods") or [])} \
         if intent.get("source") == "model" else set()
-    labels = _qualifier_numbers(asked_member, text)
+    labels = _qualifier_numbers(asked_member, text, question)
     # A BREAKDOWN ASKED, NONE DELIVERED. Live a2d2e68b: "điểm đánh giá trung bình
     # theo từng tháng là 4.0864" (the all-time average) and "tổng doanh thu của người
     # bán theo bang là 13,591,643.7" (the report total) — one whole figure given as

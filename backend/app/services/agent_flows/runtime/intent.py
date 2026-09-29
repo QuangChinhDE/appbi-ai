@@ -178,8 +178,12 @@ def titled_measure(question: str, chosen: list[str], vocab: dict) -> str | None:
     return None
 
 
-_AGG_WORDS = {"avg": ("trung binh", "average", "avg", "mean", "binh quan"),
-              "rate": ("ty le", "rate", "phan tram", "percent", "percentage")}
+#: Only the AVERAGE is an aggregation the question can ask for by word. "Phần trăm",
+#: "tỷ lệ" and "share" ask for an OPERATION on a measure (its share of a whole), not
+#: for a rate measure: treated as "rate" they turned "Health & beauty chiếm bao nhiêu
+#: phần trăm doanh thu?" into on_time_rate and withheld every correct share (live
+#: 3ac706e6 runs 7240/7217/7261).
+_AGG_WORDS = {"avg": ("trung binh", "average", "avg", "mean", "binh quan")}
 
 
 def _asked_aggregation(question: str) -> str | None:

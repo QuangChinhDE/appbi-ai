@@ -348,3 +348,15 @@ def test_a_month_is_read_from_the_monthly_chart():
     rows = {"measures": ["order_count"], "dimension": None, "periods": [("m", 2018, 10)]}
     v = {"carriers": {"order_count": [(705, ["day_name"], "Đơn theo ngày"), (726, ["year_month"], "Số đơn theo tháng")]}}
     assert I.charts_for(rows, v)[0]["chart_id"] == 726
+
+
+def test_a_share_question_does_not_ask_for_a_rate_measure():
+    """Live 3ac706e6 runs 7240/7217/7261: "Health & beauty chiếm bao nhiêu phần trăm
+    doanh thu?" was overridden to on_time_rate ("phần trăm" read as a rate measure)
+    and every correct share was withheld."""
+    v = {"measures": {"total_revenue": "Total revenue", "on_time_rate": "On time rate"},
+         "dimensions": {}, "measure_names": {
+             "total_revenue": ["Olist · Doanh thu theo danh mục"],
+             "on_time_rate": ["Olist · Tỷ lệ giao đúng hẹn theo tháng"]}}
+    assert I.titled_measure("Health & beauty chiếm bao nhiêu phần trăm doanh thu?",
+                            ["total_revenue"], v) is None
