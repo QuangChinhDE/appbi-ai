@@ -379,6 +379,12 @@ check('a public link states its own title, and a switcher never states a value t
   assert(/def\.default \?\? def\.options\[0\]/.test(seed), 'a text-only switcher ignores the author default');
 });
 
+check('the builder overlays sit below the header as it is, never over its second row', () => {
+  const src = source('app/(main)/dashboards/[id]/page.tsx');
+  assert(!/fixed right-3 top-\[64px\]/.test(src) && !/lg:top-\[72px\]/.test(src), 'an overlay assumes a one-row header (it covered Manual/AI once the toolbar wrapped)');
+  assert(/ref=\{builderHeaderRef\}/.test(src) && /style=\{\{ top: builderHeaderH \}\}/.test(src) && /top: builderHeaderH \+ 8/.test(src), 'the overlays are not placed from the measured header height');
+});
+
 check('emphasis is a closed vocabulary', () => {
   assert(emphasis.emphasisOf({ emphasis: 'lead' }) === 'lead' && emphasis.emphasisOf({ emphasis: 'quiet' }) === 'quiet', 'known values lost');
   assert(emphasis.emphasisOf({ emphasis: 'LOUD' }) === 'normal' && emphasis.emphasisOf(null) === 'normal', 'an unknown value was kept');

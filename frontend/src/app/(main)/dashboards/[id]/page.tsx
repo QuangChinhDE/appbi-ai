@@ -1078,6 +1078,22 @@ function DashboardDetailPageInner() {
   // A selection belongs to the page it was made on.
   React.useEffect(() => { setSelectedTileIds([]); }, [activePageId]);
   const canvasRootRef = React.useRef<HTMLDivElement | null>(null);
+  // The builder header's real height. It wraps to a second row when a draft's
+  // actions and the tools do not fit on one; the overlays (AI Design, the
+  // Inspector) sit below it, never over its second row.
+  const builderHeaderRef = React.useRef<HTMLDivElement | null>(null);
+  const [builderHeaderH, setBuilderHeaderH] = useState(64);
+  React.useEffect(() => {
+    const el = builderHeaderRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      const h = Math.round(el.getBoundingClientRect().bottom);
+      setBuilderHeaderH((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+    // The header mounts once the report has loaded (and never in the preview).
+  }, [Boolean(dashboard), studioPreview]);
   const getCanvasRoot = React.useCallback(() => canvasRootRef.current, []);
   // The render-quality probe (see lib/dashboard-presentation/render-audit):
   // the e2e gate calls it on the builder canvas and on the published report.
@@ -3871,7 +3887,7 @@ function DashboardDetailPageInner() {
     <DashboardThemeProvider theme={previewTheme} className="min-h-full bg-surface-2">
       {/* ── Sticky compact header (single row) ── */}
       {!studioPreview && (
-      <div className="sticky top-0 z-20 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8">
+      <div ref={builderHeaderRef} className="sticky top-0 z-20 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8">
         <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-surface-1 shadow-linear-sm overflow-visible">
 
           {/* One row when it fits; when the draft actions and the tools do not
@@ -4837,7 +4853,7 @@ function DashboardDetailPageInner() {
             )}
           </button>
         ) : (
-          <div className="fixed right-3 top-[64px] bottom-3 z-30 w-[380px] max-w-[calc(100vw-1.5rem)] shadow-xl rounded-xl">
+          <div className="fixed right-3 bottom-3 z-30 w-[380px] max-w-[calc(100vw-1.5rem)] shadow-xl rounded-xl" style={{ top: builderHeaderH }}>
             <AiDesignPanel
               turns={aiDesign.turns}
               busy={aiDesign.busy}
@@ -4864,7 +4880,8 @@ function DashboardDetailPageInner() {
             canvas; sections own visual / page / all-pages scope. */}
         {inspectorShown && inspectorStructure && dashboard && (
           <aside
-            className="fixed inset-y-0 right-0 z-40 w-[320px] max-w-[92vw] shadow-xl lg:sticky lg:top-[72px] lg:z-auto lg:flex lg:h-[calc(100vh-88px)] lg:flex-shrink-0 lg:self-start lg:overflow-hidden lg:rounded-lg lg:border lg:border-[rgb(var(--border-line))] lg:shadow-none"
+            className="fixed bottom-0 right-0 z-40 w-[320px] max-w-[92vw] shadow-xl lg:sticky lg:z-auto lg:flex lg:flex-shrink-0 lg:self-start lg:overflow-hidden lg:rounded-lg lg:border lg:border-[rgb(var(--border-line))] lg:shadow-none"
+            style={{ top: builderHeaderH + 8, height: `calc(100vh - ${builderHeaderH + 16}px)` }}
           >
             <ReportInspector
               onClose={() => setInspectorOpen(false)}
