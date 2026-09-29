@@ -830,6 +830,7 @@ export function BrainBuilder({
               <span className="absolute inset-y-0 -left-1 -right-1" />
             </div>
             <aside
+              data-inspector=""
               style={{ ['--inspector-w' as string]: `${inspector.width}px` }}
               className="flex max-h-[55%] w-full flex-shrink-0 flex-col overflow-hidden border-t border-[rgb(var(--border-line))] bg-surface-1 md:max-h-none md:w-[var(--inspector-w)] md:max-w-[50vw] md:border-l md:border-t-0"
             >
