@@ -152,6 +152,49 @@ export function WhatTheAiSees({
               </SeenSection>
 
               <SeenSection title={t('agentFlows.seen.tools', { n: String(data.tools.length) })}>
+                {/* HOW THIS LIST WAS CHOSEN. A step granted more than the limit is
+                    shown a shortlist for the question; the rest stay granted and
+                    can be discovered. Said here, because otherwise a granted tool
+                    missing from this list looks like a bug. */}
+                {data.capabilities && (
+                  <p className="mb-1.5 text-tiny leading-snug text-text-tertiary">
+                    {data.capabilities.shortlisted
+                      ? t('agentFlows.seen.shortlisted', {
+                          shown: String(data.capabilities.visible?.length ?? data.tools.length),
+                          eligible: String(data.capabilities.eligible.length),
+                          granted: String(data.capabilities.granted.length),
+                        })
+                      : t('agentFlows.seen.allShown', { n: String(data.capabilities.eligible.length) })}
+                    {data.capabilities.shortlisted && !!data.capabilities.catalogue?.length && (
+                      <span className="block">
+                        {t('agentFlows.seen.catalogue', {
+                          n: String(data.capabilities.catalogue.length),
+                          list: data.capabilities.catalogue.slice(0, 12).join(', ')
+                            + (data.capabilities.catalogue.length > 12 ? '…' : ''),
+                        })}
+                      </span>
+                    )}
+                    {data.capabilities.schema_chars != null && (
+                      <span className="block text-text-quaternary">
+                        {t('agentFlows.seen.schemaChars', {
+                          chars: data.capabilities.schema_chars.toLocaleString(),
+                        })}
+                      </span>
+                    )}
+                    {Object.keys(data.capabilities.excluded || {}).length > 0 && (
+                      <span className="block text-text-quaternary">
+                        {t('agentFlows.seen.excluded', {
+                          list: Object.entries(data.capabilities.excluded)
+                            .map(([n, why]) => {
+                              const k = `agentFlows.reason.${why}`;
+                              const said = t(k);
+                              return `${n} — ${said && said !== k ? said : why}`;
+                            }).join('; '),
+                        })}
+                      </span>
+                    )}
+                  </p>
+                )}
                 {data.tools.length === 0 ? (
                   <HintText>{t('agentFlows.seen.noTools')}</HintText>
                 ) : (
@@ -159,6 +202,19 @@ export function WhatTheAiSees({
                     {data.tools.map((tool) => (
                       <div key={tool.name} className="rounded-md border border-[rgb(var(--border-line))] p-2">
                         <div className="flex flex-wrap items-baseline gap-2">
+                          {(() => {
+                            // WHY THIS ONE IS SHOWN — core, loaded earlier, or
+                            // chosen for the question (with its match score).
+                            const why = data.capabilities?.why_shown?.[tool.name];
+                            if (!why) return null;
+                            const [kind, score] = why.split(':');
+                            return (
+                              <span className="rounded bg-surface-2 px-1 text-tiny text-text-tertiary"
+                                title={t(`agentFlows.seen.why.${kind}.hint`)}>
+                                {t(`agentFlows.seen.why.${kind}`, { score: score ?? '' })}
+                              </span>
+                            );
+                          })()}
                           <b className="font-mono text-tiny">{tool.name}</b>
                           {tool.required.length > 0 && (
                             <span className="rounded bg-warning/10 px-1.5 text-tiny text-warning">

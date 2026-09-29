@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 
 from app.models.agent_brain import AgentBrainVersion
 from app.models.agent_flow_chat_thread import AgentFlowChatThread
+from app.services.agent_flows.envelope import reader_notice_dict
 from app.services.agent_flows.contract import (
     _CHART_KEYED_TOOLS,
     Flow,
@@ -437,7 +438,7 @@ def transcript(db: Session, thread: AgentFlowChatThread, limit: int = 50) -> lis
                 # before the audience boundary existed, so the filter runs here on
                 # plain dicts rather than trusting what was written.
                 "notices": [
-                    n for n in ((content.notices if content else None) or [])
+                    reader_notice_dict(n) for n in ((content.notices if content else None) or [])
                     if (n or {}).get("audience", "reader") != "author"
                 ],
                 "citations": (content.citations if content else None) or [],

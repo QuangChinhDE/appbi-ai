@@ -48,6 +48,19 @@ layers:
     label: "Backend models (SQLAlchemy ORM)"
     may_depend_on: ["be_core", "be_models"]   # NOT services/api (would invert layering)
 
+  # MIGRATIONS WERE ON `blocking_globs` WITH NO LAYER, so every new revision made
+  # the server gate fail as "unmapped" — found adding 20260925_0001 (Skill child
+  # runs). Declared, as the policy note says, rather than dropping the glob. A
+  # revision talks to SQLAlchemy/Alembic and at most the models it migrates;
+  # reaching into services or the API from a migration is the inversion this
+  # layer exists to catch. The migration RULES (single head, additive, no
+  # privileged statements) stay where they are: `alembic_chain.py` and
+  # `.claude/rules/database-migrations.md`.
+  - id: be_migrations
+    match: ["backend/alembic/**"]
+    label: "Backend Alembic migrations"
+    may_depend_on: ["be_core", "be_models"]
+
   - id: be_schemas
     match: ["backend/app/schemas/**"]
     label: "Backend Pydantic schemas"

@@ -1184,7 +1184,7 @@ def test_an_attached_source_that_matched_nothing_is_not_cited():
 # ── 16 · the node list is frozen, and the two halves must agree ───────────────
 #: The fourteen. Changing this list is a deliberate act; the test below makes it one.
 FROZEN_NODE_TYPES = {
-    "agent", "coordinate",                     # AI
+    "agent", "coordinate", "skill",            # AI
     "report_read", "knowledge", "web", "tool",  # data
     "if", "switch", "filter",                  # logic
     "loop", "stop", "delay",                   # flow
@@ -1218,7 +1218,14 @@ def test_the_node_list_is_exactly_the_frozen_thirteen():
     another to read the result, and puts every granted tool's schema in every
     prompt of that step. This node spends `ToolSpec.self_sufficient`, which the
     registry has documented as LATENT for exactly as long as no node could call a
-    tool directly."""
+    tool directly.
+
+    `skill` (V3 phase 5) is the third. A flow that works cannot otherwise be reused:
+    an author who built "compare period performance" rebuilt it in every flow. A
+    Skill step runs a PUBLISHED flow, pinned to an exact version, as a governed
+    child run on the caller's authority — the deterministic counterpart of an
+    Agent granted the same Skill as a capability. Both go through one invoker
+    (`services/agent_flows/skills.invoke_skill`)."""
     assert _contract_node_types() == FROZEN_NODE_TYPES
 
 

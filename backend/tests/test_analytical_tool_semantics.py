@@ -487,3 +487,121 @@ def test_contributors_to_a_change_add_up_to_the_change(monkeypatch):
         assert abs(parts) <= abs(total) + 0.01, (parts, total, coverage)
         return
     assert abs(parts - total) < max(0.01, abs(total) * 0.01), (parts, total)
+
+
+# ── a field named bare is the chart's qualified column ──────────────────────
+
+def test_a_bare_field_name_reaches_the_qualified_column(stub):
+    """Holdout runs 5657/5658/5665: the semantic model and the intent name a field
+    bare ("product_category_name_english"); chart rows carry it qualified. Every
+    grouped read was refused as a warehouse failure and the reader was told the
+    report had no such breakdown."""
+    agg = ok(ADV.tool_aggregate_chart_data(Ctx(), {
+        "chart_id": 1, "group_by": ["category"],
+        "aggregations": [{"column": "revenue", "op": "sum"}]}))
+    alias = agg["aggregations"][0]["as"]
+    assert abs(sum(r[alias] for r in agg["rows"]) - CATEGORY_TOTAL) < 0.01
+    drill = ADV.tool_smart_drilldown(Ctx(), {"chart_id": 1, "column": "category",
+                                            "match": "watches"})
+    assert drill.get("ok") is True and drill["data"]["n_rows_matching"] == 1, drill
+
+
+def test_a_filter_on_a_bare_field_filters(stub):
+    """An unknown filter column is a no-op, so a bare name used to return the
+    WHOLE population as if it were the filtered segment."""
+    data = ok(ADV.tool_aggregate_chart_data(Ctx(), {
+        "chart_id": 1, "group_by": ["category"],
+        "aggregations": [{"column": "revenue", "op": "sum"}],
+        "filters": [{"column": "category", "op": "eq", "value": "books"}]}))
+    assert data["n_groups"] == 1, data
+
+
+def test_a_column_the_chart_lacks_is_the_callers_argument(stub):
+    """Not `query_failed`: that code reads as retryable and the model repeated it."""
+    from app.services.agent_flows.tools.result import normalise
+
+    res = normalise(ADV.tool_aggregate_chart_data(Ctx(), {
+        "chart_id": 1, "group_by": ["city"],
+        "aggregations": [{"column": "revenue", "op": "sum"}]}), kind="table")
+    assert res["ok"] is False and res["error_code"] == "bad_argument", res
+
+
+def test_a_custom_period_written_as_the_question_wrote_it_is_compared(stub):
+    """Holdout 5663: "12/2017" against labels "2017-12" was refused — and coded
+    chart_not_found, which sent the model after a different chart."""
+    from app.services.agent_flows.tools.result import normalise
+
+    stub(MONTHS_RISING, dim="year_month")
+    data = ok(ADV.tool_compare_periods(Ctx(), {"chart_id": 1, "mode": "custom",
+                                              "period_a": "12/2024", "period_b": "tháng 11/2024"}))
+    assert abs(data["current"]["value"] - 2200.0) < 0.01, data
+    assert abs(data["baseline"]["value"] - 2100.0) < 0.01, data
+    miss = normalise(ADV.tool_compare_periods(Ctx(), {"chart_id": 1, "mode": "custom",
+                                                      "period_a": "12/2031", "period_b": "2024-11"}),
+                     kind="comparison")
+    assert miss["error_code"] == "period_not_in_chart", miss
+
+
+def test_a_member_filters_by_the_value_the_rows_carry(stub):
+    """Smoke run at e98d1b8d: intent resolved "Rio de Janeiro" to RJ, but the
+    drilldown filtered on the reader's words, matched nothing, and 0 was published."""
+    stub([("SP", 5000.0), ("RJ", 1800.0), ("sports_leisure", 900.0)], dim="dataset_table_441.customer_state")
+    ctx = Ctx()
+    ctx.member_aliases = {"rio de janeiro": "RJ"}
+    drill = ok(ADV.tool_smart_drilldown(ctx, {"chart_id": 1, "column": "customer_state",
+                                             "match": "Rio de Janeiro"}))
+    assert drill["n_rows_matching"] == 1 and drill["totals"]["sum"] == 1800.0, drill
+    spelled = ok(ADV.tool_smart_drilldown(Ctx(), {"chart_id": 1, "column": "customer_state",
+                                                 "match": "Sports Leisure"}))
+    assert spelled["n_rows_matching"] == 1, spelled
+    agg = ok(ADV.tool_aggregate_chart_data(ctx, {
+        "chart_id": 1, "group_by": ["customer_state"],
+        "aggregations": [{"column": "revenue", "op": "sum"}],
+        "filters": [{"column": "customer_state", "op": "eq", "value": "Rio de Janeiro"}]}))
+    assert agg["n_groups"] == 1, agg
+
+
+def test_a_filter_that_matches_nothing_says_it_is_not_zero(stub):
+    stub([("SP", 5000.0), ("RJ", 1800.0)], dim="dataset_table_441.customer_state")
+    drill = ok(ADV.tool_smart_drilldown(Ctx(), {"chart_id": 1, "column": "customer_state",
+                                               "match": "Curitiba"}))
+    assert drill["n_rows_matching"] == 0 and "NOT a zero value" in drill["note"], drill
+    assert "SP" in drill["note"] and "RJ" in drill["note"]
+    agg = ok(ADV.tool_aggregate_chart_data(Ctx(), {
+        "chart_id": 1, "group_by": ["customer_state"],
+        "aggregations": [{"column": "revenue", "op": "sum"}],
+        "filters": [{"column": "customer_state", "op": "eq", "value": "Curitiba"}]}))
+    assert "NOT a zero value" in agg.get("note", ""), agg
+
+
+def test_a_share_is_of_the_member_the_turn_resolved(stub):
+    """Smoke 6032: "Rio de Janeiro" asked, RJ resolved, share_of refused no_data."""
+    stub([("SP", 6000.0), ("RJ", 2000.0), ("MG", 2000.0)], dim="dataset_table_441.customer_state")
+    ctx = Ctx()
+    ctx.member_aliases = {"rio de janeiro": "RJ"}
+    data = ok(DER.tool_share_of(ctx, {"chart_id": 1, "item": "Rio de Janeiro"}))
+    assert data["item"] == "RJ" and abs(data.get("share_pct", data.get("pct", 0)) - 20.0) < 0.01, data
+
+
+def test_a_member_written_with_its_code_in_parentheses_is_found(stub):
+    """Smoke 6041: the model drilled on "Rio de Janeiro (RJ)" and matched nothing."""
+    stub([("SP", 5000.0), ("RJ", 1800.0)], dim="dataset_table_441.customer_state")
+    drill = ok(ADV.tool_smart_drilldown(Ctx(), {"chart_id": 1, "column": "customer_state",
+                                               "match": "Rio de Janeiro (RJ)"}))
+    assert drill["n_rows_matching"] == 1 and drill["totals"]["sum"] == 1800.0, drill
+
+
+def test_a_two_measure_chart_compares_the_measure_asked(stub, monkeypatch):
+    """Holdout 6044: chart 692 (revenue + orders by month); asked for revenue, the
+    order count's change was compared because it was the LAST numeric column."""
+    rows = [["2017-11", 1010271.37, 7451], ["2017-12", 743914.17, 5624]]
+    data = {"columns": ["t.year_month", "t.total_revenue", "t.orders_with_items"], "rows": rows,
+            "filters_applied": []}
+    monkeypatch.setattr(ADV, "_fetch_chart_data", lambda ctx, cid, **kw: data)
+    args = {"chart_id": 1, "mode": "custom", "period_a": "2017-12", "period_b": "2017-11"}
+    ctx = Ctx()
+    ctx.asked_measures = ["total_revenue"]
+    got = ok(ADV.tool_compare_periods(ctx, args))
+    assert abs(got["pct_change"] - (-26.36)) < 0.01, got
+    named = ok(ADV.tool_compare_periods(Ctx(), {**args, "measure": "orders_with_items"}))
+    assert abs(named["pct_change"] - (-24.52)) < 0.01, named

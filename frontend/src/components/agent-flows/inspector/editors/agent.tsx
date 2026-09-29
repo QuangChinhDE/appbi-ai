@@ -166,12 +166,24 @@ export function AgentEditor(props: NodeEditorProps) {
             <SectionTitle>{t('agentFlows.inspector.grantedTools')}</SectionTitle>
             <ToolPicker
               packs={toolPacks}
+              skills={props.skills}
               granted={(node.tools || []).map((t) => t.tool)}
               onToggle={(name, on) => set({
                 tools: on
-                  ? [...(node.tools || []), { tool: name }]
+                  ? ((node.tools || []).some((t) => t.tool === name)
+                    ? (node.tools || [])
+                    : [...(node.tools || []), { tool: name }])
                   : (node.tools || []).filter((t) => t.tool !== name),
               } as Partial<FlowNode>)}
+              onToggleMany={(names, on) => {
+                const current = node.tools || [];
+                const have = new Set(current.map((t) => t.tool));
+                set({
+                  tools: on
+                    ? [...current, ...names.filter((n) => !have.has(n)).map((tool) => ({ tool }))]
+                    : current.filter((t) => !names.includes(t.tool)),
+                } as Partial<FlowNode>);
+              }}
             />
             {isAnswerNode && (node.tools || []).length > 0 && (
               <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-caption text-warning">

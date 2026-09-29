@@ -16,8 +16,8 @@ import React from 'react';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import {
-  brainActivity, listVersions, restoreToDraft, rollbackBrain,
-  type ActivityEvent, type BrainVersionRow,
+  brainActivity, listVersions, restoreToDraft, rollbackBrain, setSkillLifecycle,
+  type ActivityEvent, type BrainVersionRow, type SkillLifecycle,
 } from '@/lib/agentFlows';
 import { useI18n } from '@/providers/LanguageProvider';
 import { formatWhen, StatusBadge } from './shared';
@@ -61,6 +61,26 @@ export function ActivityTab({
       await restoreToDraft(brainKey, version);
       load();
       onReloaded();
+    } finally { setBusy(''); }
+  };
+
+  // THE STOP SWITCH for a Skill version. A pin decides WHICH version a parent
+  // runs; this decides WHETHER it may. A reason is required to stop one — it is
+  // what every refused caller reads.
+  const [stopping, setStopping] = React.useState<{ version: number; state: SkillLifecycle['lifecycle'] } | null>(null);
+  const [reason, setReason] = React.useState('');
+  const [lifecycleError, setLifecycleError] = React.useState('');
+  const changeLifecycle = async (version: number, state: SkillLifecycle['lifecycle'], why: string) => {
+    setBusy(`lifecycle-${version}`);
+    setLifecycleError('');
+    try {
+      await setSkillLifecycle(brainKey, state, why, [version]);
+      setStopping(null);
+      setReason('');
+      load();
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setLifecycleError(detail || t('agentFlows.activity.lifecycle.failed'));
     } finally { setBusy(''); }
   };
 
@@ -125,6 +145,57 @@ export function ActivityTab({
                 </div>
                 <div className="flex flex-shrink-0 flex-col items-end gap-1">
                   <StatusBadge status={v.status} size="xs" />
+                  {v.flow_type === 'skill' && v.lifecycle && v.lifecycle.lifecycle !== 'active' && (
+                    <Badge size="xs" variant={v.lifecycle.lifecycle === 'disabled' ? 'danger' : 'warning'}
+                      title={v.lifecycle.reason}>
+                      {t(`agentFlows.activity.lifecycle.${v.lifecycle.lifecycle}`)}
+                    </Badge>
+                  )}
+                  {v.flow_type === 'skill' && v.status !== 'draft' && (
+                    <div className="flex gap-1">
+                      {v.lifecycle?.lifecycle !== 'active' ? (
+                        <Button variant="ghost" size="xs" loading={busy === `lifecycle-${v.version}`}
+                          onClick={() => changeLifecycle(v.version, 'active', '')}>
+                          {t('agentFlows.activity.lifecycle.reactivate')}
+                        </Button>
+                      ) : (
+                        <>
+                          <Button variant="ghost" size="xs"
+                            onClick={() => setStopping({ version: v.version, state: 'deprecated' })}>
+                            {t('agentFlows.activity.lifecycle.deprecate')}
+                          </Button>
+                          <Button variant="ghost" size="xs"
+                            onClick={() => setStopping({ version: v.version, state: 'disabled' })}>
+                            {t('agentFlows.activity.lifecycle.disable')}
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {stopping?.version === v.version && (
+                    <div className="mt-1 w-56 space-y-1">
+                      <input
+                        id={`lifecycle-reason-${v.version}`}
+                        className="h-7 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface px-1.5 text-tiny"
+                        value={reason}
+                        placeholder={t('agentFlows.activity.lifecycle.reason')}
+                        onChange={(e) => setReason(e.target.value)} />
+                      <p className="text-tiny text-text-tertiary">
+                        {t(`agentFlows.activity.lifecycle.${stopping.state}Hint`)}
+                      </p>
+                      {lifecycleError && <p className="text-tiny text-danger">{lifecycleError}</p>}
+                      <div className="flex justify-end gap-1">
+                        <Button variant="ghost" size="xs" onClick={() => { setStopping(null); setReason(''); }}>
+                          {t('agentFlows.activity.lifecycle.cancel')}
+                        </Button>
+                        <Button variant="danger" size="xs" loading={busy === `lifecycle-${v.version}`}
+                          disabled={reason.trim().length < 8}
+                          onClick={() => changeLifecycle(v.version, stopping.state, reason)}>
+                          {t('agentFlows.activity.lifecycle.confirm')}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   {v.status !== 'draft' && (
                     <Button
                       variant="ghost" size="xs"

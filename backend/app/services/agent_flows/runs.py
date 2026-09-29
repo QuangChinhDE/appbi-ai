@@ -62,12 +62,22 @@ def record(
     store_content: bool = True,
     usd: float | None = None,
     chat_thread_id: int | None = None,
+    parent_run_key: str | None = None,
+    parent_step_key: str | None = None,
+    invoked_as: str | None = None,
 ) -> int | None:
     """Write one run across the three tables. Never raises into the caller.
 
     A failure to record must not fail the answer that was already delivered — the
     viewer has their reply, and losing a log row is the cheaper loss.
+
+    A CHILD RUN (a Skill invoked by another run) names its parent and carries no
+    reader identity: no `session_key` and no `link_token`. The public rating
+    endpoint matches a reader's thumb by session + link + exact answer text, and
+    a Skill's answer can be word-for-word what the parent then published — the
+    thumb belongs to the run the reader actually talked to.
     """
+    child = bool(parent_run_key)
     try:
         run = AgentFlowRun(
             run_key=inp.request.id,
@@ -75,14 +85,14 @@ def record(
             version=version,
             binding_id=binding_id,
             chat_thread_id=chat_thread_id,
-            link_token=inp.binding.link_token or None,
+            link_token=None if child else (inp.binding.link_token or None),
             # `or None`, for the reason `binding_id` already has one: `ReportInfo.
             # dashboard_id` is a plain int whose "no report" value is the sentinel 0,
             # and a run row storing 0 reads as a dashboard that exists. The column is
             # nullable so "no report" can be said honestly. Every real dashboard id is
             # non-zero, so the public path is unaffected.
             dashboard_id=inp.report.dashboard_id or None,
-            session_key=inp.conversation.session_key or None,
+            session_key=None if child else (inp.conversation.session_key or None),
             status=out.status,
             execution_path=(out.trace.path or "")[:255],
             trigger=inp.request.trigger,
@@ -96,6 +106,9 @@ def record(
             blocked_reason=_blocked_reason(out),
             missing_requirements=(inp.binding.unresolved or None),
             question_norm=normalise_question(inp.question.raw),
+            parent_run_key=parent_run_key,
+            parent_step_key=parent_step_key,
+            invoked_as=invoked_as,
         )
         db.add(run)
         db.flush()
@@ -134,6 +147,8 @@ def record(
                     prompt_tokens=step.prompt_tokens or None,
                     completion_tokens=step.completion_tokens or None,
                     error=step.error or None,
+                    capability_trace=step.capabilities or None,
+                    budget=step.budget or None,
                 )
             )
         db.commit()
@@ -251,7 +266,11 @@ def list_runs(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    q = db.query(AgentFlowRun).filter(AgentFlowRun.brain_key == brain_key)
+    # TOP-LEVEL RUNS ONLY. A Skill's invocations by other flows carry THOSE
+    # flows' data; they are opened from the parent run, whose readers own it —
+    # not listed to everyone the Skill is shared with.
+    q = db.query(AgentFlowRun).filter(
+        AgentFlowRun.brain_key == brain_key, AgentFlowRun.parent_run_key.is_(None))
     if not include_tests:
         # The author's own trials are excluded by default: without this the first
         # week of every flow's numbers is mostly its author.
@@ -292,6 +311,10 @@ def list_runs(
                 "rating": r.rating,
                 "is_test": r.is_test,
                 "blocked_reason": r.blocked_reason,
+                # A Skill's own Runs tab lists its runs, including the ones another
+                # flow invoked; this says which those are.
+                "parent_run_key": r.parent_run_key,
+                "invoked_as": r.invoked_as,
             }
             for r in rows
         ],
@@ -315,6 +338,31 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
     )
     node_configs = _configs_for_version(db, brain_key=brain_key, version=row.version)
     flow_warnings, unresolved = _version_diagnosis(db, brain_key=brain_key, version=row.version)
+    # THE CHILD RUNS THIS RUN CREATED — Skills it invoked — keyed by the step
+    # that invoked them, so "this step ran Skill X; open what X did" is one click.
+    children = (
+        db.query(AgentFlowRun)
+        .filter(AgentFlowRun.parent_run_key == row.run_key)
+        .order_by(AgentFlowRun.id)
+        .all()
+    )
+    child_rows = [{
+        "id": c.id, "run_key": c.run_key, "brain_key": c.brain_key,
+        "version": c.version, "status": c.status, "invoked_as": c.invoked_as,
+        "parent_step_key": c.parent_step_key, "latency_ms": c.latency_ms,
+        "tokens": (c.prompt_tokens or 0) + (c.completion_tokens or 0),
+        "llm_calls": c.llm_calls, "tool_calls": c.tool_calls,
+    } for c in children]
+    parent = None
+    if row.parent_run_key:
+        p_row = db.query(AgentFlowRun).filter(AgentFlowRun.run_key == row.parent_run_key).first()
+        parent = {
+            "run_key": row.parent_run_key, "step_key": row.parent_step_key,
+            "invoked_as": row.invoked_as,
+            "id": p_row.id if p_row else None,
+            "brain_key": p_row.brain_key if p_row else None,
+            "version": p_row.version if p_row else None,
+        }
     return {
         "id": row.id,
         "run_key": row.run_key,
@@ -346,6 +394,8 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
             "usd": float(row.usd) if row.usd is not None else None,
         },
         "rating": row.rating,
+        "parent": parent,
+        "children": child_rows,
         "question": content.question if content else None,
         "answer": content.answer if content else None,
         "citations": (content.citations if content else None) or [],
@@ -381,6 +431,11 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
                 # another screen from the one somebody opens when an answer looks
                 # wrong.
                 "unresolved_refs": unresolved.get(s.node_key, []),
+                # What an Agent step could see and what it tried — granted,
+                # eligible, shown per round, discovered, invoked, rejected.
+                "capabilities": s.capability_trace,
+                "budget": getattr(s, "budget", None),
+                "children": [c for c in child_rows if c["parent_step_key"] == s.node_key],
             }
             for s in steps
         ],
