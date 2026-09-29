@@ -188,32 +188,54 @@ def rate_run(db: Session, *, brain_key: str, run_id: int, rating: str | None) ->
     return True
 
 
-def apply_rating(db: Session, *, session_key: str, answer_text: str, rating: str) -> None:
+def apply_rating(
+    db: Session, *, session_key: str, link_token: str, answer_text: str, rating: str,
+) -> bool:
     """Attach the viewer's thumb to the run that produced that answer.
 
-    Matched on the answer text because the public chat client does not know run ids.
-    It rates text the SERVER produced, so — unlike anything else posted from a public
-    page — it cannot smuggle in a claim of its own.
+    Returns True only when a run was found and rated — the ONE verified result a
+    caller may act on. A public endpoint must never infer "this rating was
+    genuine" from the client payload itself.
+
+    WHAT MUST ALL HOLD, because this is written from an anonymous endpoint:
+
+      * `session_key` — the caller's own conversation;
+      * `link_token`  — the public link the caller is on. Session keys are
+        chosen by the client, so without this a caller on link X could target a
+        run served on link Y merely by reusing a session key;
+      * `answer_text` — byte-equal to the answer the SERVER stored for that run.
+        Matching exactly, never fuzzily, is what stops a page rating words the
+        server never said.
+
+    REPLAY-SAFE BY CONSTRUCTION. The session is saved as a whole snapshot after
+    every turn, so a rated message is re-sent on every later save. This writes a
+    VALUE, never increments anything: re-saving the same transcript leaves the
+    run exactly as it was, and a changed verdict overwrites the old one.
     """
-    if rating not in {"up", "down"} or not session_key:
-        return
+    if rating not in {"up", "down"} or not session_key or not link_token:
+        return False
     try:
         row = (
             db.query(AgentFlowRun)
             .join(AgentFlowRunContent, AgentFlowRunContent.run_id == AgentFlowRun.id)
             .filter(
                 AgentFlowRun.session_key == session_key,
+                AgentFlowRun.link_token == link_token,
                 AgentFlowRunContent.answer == answer_text,
             )
             .order_by(AgentFlowRun.created_at.desc())
             .first()
         )
-        if row is not None:
+        if row is None:
+            return False
+        if row.rating != rating:
             row.rating = rating
             db.commit()
+        return True
     except Exception:  # noqa: BLE001
         logger.warning("[flow] rating not applied", exc_info=True)
         db.rollback()
+        return False
 
 
 # ═══ Reading ══════════════════════════════════════════════════════════════════

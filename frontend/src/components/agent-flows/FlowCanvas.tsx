@@ -29,13 +29,26 @@ import { GripVertical, Plus } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import { isBranching, isContainer, type FlowNode, type InsertTarget, type NodeSpec } from '@/lib/agentFlows';
+import { isBranching, isContainer, type FlowNode, type InsertTarget, type NodeSpec, type ToolSpec } from '@/lib/agentFlows';
+import { toolLabel } from './inspector/ToolPicker';
 import { idBox, idInsert, idNode, idRule, useFlowEdges } from './useFlowEdges';
 import type { MiniRect } from './Minimap';
 
 export interface CanvasProps {
   nodes: FlowNode[];
   specs: Record<string, NodeSpec>;
+  /** Tool name → its catalogue entry, for Tool steps.
+   *
+   *  `specs` is keyed by NODE TYPE, so every Tool step on the canvas resolved to
+   *  the same three words — `Call a tool` as the title and `Call a tool` again as
+   *  the subtitle — no matter which of the thirty-odd tools was selected. A flow
+   *  with four Tool steps drew four identical cards.
+   *
+   *  This is the SAME catalogue the inspector's picker reads, passed down rather
+   *  than re-fetched, and rendered through the same `toolLabel`. A second label
+   *  map in here would drift from the registry the moment a tool was renamed, and
+   *  the canvas would then disagree with the panel sitting beside it. */
+  toolSpecs?: Record<string, ToolSpec>;
   selectedKey: string | null;
   answerKey: string;
   onSelect: (key: string) => void;
@@ -259,17 +272,21 @@ function InsertPoint({
 }
 
 function NodeCard({
-  node, spec, selected, isTabStop, isAnswer, onSelect, width, runCount, runState, register, drag, setDrag,
+  node, spec, toolSpec, selected, isTabStop, isAnswer, onSelect, width, runCount, runState, register, drag, setDrag,
   draggable,
 }: {
-  node: FlowNode; spec?: NodeSpec; selected: boolean; isTabStop?: boolean; isAnswer: boolean;
+  node: FlowNode; spec?: NodeSpec; toolSpec?: ToolSpec;
+  selected: boolean; isTabStop?: boolean; isAnswer: boolean;
   onSelect: () => void; width: string; runCount?: number; runState?: string;
   register: SharedProps['register']; drag: DragState;
   setDrag: (d: DragState) => void; draggable: boolean;
 }) {
   const { t, language } = useI18n();
   const specLabel = spec ? specText(spec, 'label', language) : '';
-  const title = node.name || specLabel || node.type;
+  // WHAT THIS STEP IS, most specific first: what the author called it, then what
+  // it was configured to do, then what kind of step it is. The middle rung only
+  // exists for Tool steps and is exactly why they all read alike before.
+  const title = node.name || (toolSpec ? toolLabel(toolSpec, language) : '') || specLabel || node.type;
   const never = runCount === 0;
   return (
     <div
@@ -313,7 +330,14 @@ function NodeCard({
           toggle-like state, not navigation. */}
       <button type="button" onClick={onSelect} className="w-full text-left"
         aria-pressed={selected}
-        aria-label={`${title} — ${specLabel || node.type}`}
+        // A screen reader gets the tool as well as the step kind. Without it, an
+        // author who named two Tool steps would hear the same words for both —
+        // and one who named neither heard "Call a tool" for every one of them.
+        aria-label={[
+          title,
+          toolSpec && toolLabel(toolSpec, language) !== title ? toolLabel(toolSpec, language) : '',
+          specLabel || node.type,
+        ].filter(Boolean).join(' — ')}
         tabIndex={selected || isTabStop ? 0 : -1}
         data-node-button={node.key}>
         <div className="flex min-h-[44px] items-center gap-2 border-b border-[rgb(var(--border-line))] px-2.5 py-1.5">
@@ -352,7 +376,7 @@ function NodeCard({
           )}
         </div>
         <div className="px-2.5 py-2">
-          <p className="line-clamp-2 text-tiny leading-snug text-text-secondary">{describe(node, t)}</p>
+          <p className="line-clamp-2 text-tiny leading-snug text-text-secondary">{describe(node, t, toolSpec, language)}</p>
           {(never || node.output_var) && (
             <div className="mt-1.5 flex flex-wrap gap-1">
               {node.output_var && (
@@ -376,8 +400,24 @@ function NodeCard({
 
 /** One line saying what this node does, from its own configuration.
  *  Generated rather than authored so it cannot go stale when a setting changes. */
-function describe(node: FlowNode, t: (key: string, values?: Record<string, string | number>) => string): string {
+function describe(
+  node: FlowNode,
+  t: (key: string, values?: Record<string, string | number>) => string,
+  toolSpec?: ToolSpec,
+  language: 'en' | 'vi' = 'vi',
+): string {
   switch (node.type) {
+    // A Tool step used to fall through to `default` and render nothing at all,
+    // which is why the card had no second line to distinguish it by either.
+    case 'tool':
+      if (!node.tool) return t('agentFlows.canvas.describe.noTool');
+      // The registry writes descriptions in Vietnamese only, and the picker shows
+      // nothing rather than Vietnamese prose to an English reader. Same rule here:
+      // the tool's own name is already on the card, so an empty line is honest.
+      if (language === 'vi' && toolSpec?.description_vi) return toolSpec.description_vi;
+      // Unknown tool name, or a catalogue that has not arrived yet: say which
+      // tool was configured rather than pretend the step is unconfigured.
+      return toolSpec ? '' : node.tool;
     case 'agent':
       return node.prompt?.slice(0, 140) || t('agentFlows.canvas.describe.noPrompt');
     case 'report_read': {
@@ -523,14 +563,15 @@ function Body({
 function NodeBlock({
   node, containerPath, ...rest
 }: SharedProps & { node: FlowNode; containerPath: string }) {
-  const { specs, selectedKey, answerKey, onSelect, onInsert, runCounts, running, register, drag, setDrag } = rest;
+  const { specs, toolSpecs, selectedKey, answerKey, onSelect, onInsert, runCounts, running, register, drag, setDrag } = rest;
   void onInsert;
   const spec = specs[node.type];
+  const toolSpec = node.type === 'tool' && node.tool ? toolSpecs?.[node.tool] : undefined;
   const width = containerPath ? '280px' : '360px';
 
   const card = (
     <NodeCard
-      node={node} spec={spec}
+      node={node} spec={spec} toolSpec={toolSpec}
       selected={selectedKey === node.key}
       isTabStop={(selectedKey || rest.focusKey) === node.key}
       isAnswer={node.key === answerKey}

@@ -377,6 +377,7 @@ export function TestChat({
     // and testing is a loop you run WHILE editing, so the canvas staying visible
     // behind the panel is part of the point.
     <AppModalShell
+      testId="test-panel"
       onClose={onClose}
       title={t('agentFlows.test.title')}
       description={

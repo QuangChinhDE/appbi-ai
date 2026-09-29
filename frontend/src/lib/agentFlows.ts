@@ -689,7 +689,10 @@ export interface FlowOutputEnvelope {
   schema_version: number;
   run_id: string;
   status: 'ok' | 'partial' | 'blocked' | 'failed';
-  answer: { blocks: AnswerBlock[] };
+  /** `text` is the SERVER's rendering of `blocks`, and is what a rating is
+   *  matched against. Optional so a frontend deployed ahead of the backend falls
+   *  back to rendering it locally rather than to `undefined`. */
+  answer: { blocks: AnswerBlock[]; text?: string };
   citations: { kind: string; ref: string; label?: string; url?: string; quote?: string }[];
   notices: FlowNotice[];
   trace: { path: string; steps: RunStep[] };
@@ -1471,6 +1474,116 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
     default:
       return { ...base, type: 'set_var', var: 'my_var', value: '' } as FlowNode;
   }
+}
+
+// ── The V1 starter ──────────────────────────────────────────────────────────
+
+/** The tools a report assistant needs, and deliberately no more.
+ *
+ *  WHY A FIXED LIST AND NOT A PACK. Granting `measure` whole would also hand over
+ *  `list_charts`, whose result scales with the report — measured at ~15,600 tokens
+ *  on a seventy-chart report, paid on every model round. Granting `diagnose` or
+ *  `project` would add `explain_change` and `forecast_measure`, both `expensive`,
+ *  to a flow whose author has not yet asked a single question. So the starter
+ *  grants the ten calls that answer "how much / which is biggest / what share /
+ *  versus last period", plus the three that establish what the numbers MEAN
+ *  before they are quoted.
+ *
+ *  `external` is gated per link and is never granted here; `knowledge` is not a V1
+ *  promise and would make the starter depend on an attachment the author has not
+ *  made. Both remain one click away in the inspector.
+ */
+const STARTER_TOOLS: string[] = [
+  // Find the right chart before measuring it.
+  'search_business_assets', 'resolve_chart_candidates',
+  // Establish scope BEFORE quoting a figure. These three are what stop an answer
+  // inventing a currency, a date range or a filter the report does not carry.
+  'inspect_filters', 'describe_time_coverage', 'get_chart_glossary',
+  // Answer "how much", "which is biggest", "what share", "versus when".
+  'total_measure', 'rank_values', 'share_of', 'get_chart_data', 'compare_periods',
+];
+
+/** The first flow a pilot author should ever see: a BI assistant for a report.
+ *
+ *  WHAT THIS IS NOT. Not a template system, not a second runtime, not a second way
+ *  for a flow to enter the product. It returns an ordinary `FlowBody` that goes
+ *  through the same `saveBrain` the blank path uses and is editable from the first
+ *  second. Delete a node and it is simply a flow.
+ *
+ *  WHY THREE STEPS AND NOT TWO. The obvious shape — read the report, then one
+ *  agent that both fetches and answers — is refused by the product's own review:
+ *  *“Bước viết câu trả lời mà còn gọi được công cụ thì dễ đưa ra số chưa qua các
+ *  bước trước.”* Shipping the recommended starting shape with a standing review
+ *  note is how authors learn that notes are noise. Splitting gather from answer
+ *  costs one model call per question and is the architecture the note is asking
+ *  for: figures pass through a step where they can be checked before anything is
+ *  written. Measured against the contract, this shape raises one note (no
+ *  knowledge attached) against the two-step shape's two.
+ *
+ *  WHY `detail: 'index'`. The contract documents the pairing: an index when the
+ *  next step has computing tools, because `rank_values`/`total_measure` reach
+ *  exact figures over every row on demand, so pasting a data sample into the
+ *  prompt buys nothing and is paid on every round.
+ *
+ *  WHY NOT `match_question`. It was the obvious choice and it is wrong here,
+ *  which a real run showed: on a sales report, "tổng doanh thu" matched no chart
+ *  at all, so the read step handed over nothing and the author was shown a
+ *  confident answer next to the diagnosis *"báo cáo này không có dữ liệu cho câu
+ *  hỏi đó"*. Question matching narrows to charts it can tie to the question; an
+ *  index of everything costs about the same and is what the gathering step needs
+ *  to choose from. The dimension truth that question mode was protecting is not
+ *  lost — it lives in `resolve_chart_candidates` and in the dimension gate on
+ *  `get_chart_data`, which this step is granted and which run per tool call.
+ *
+ *  NOTHING HERE IS SPECIFIC TO ONE CUSTOMER. No dashboard id, no report name, no
+ *  measure name, no account: a bot flow is handed whichever report the link it is
+ *  bound to is showing.
+ */
+export function starterFlow(
+  t: (key: string, values?: Record<string, string | number>) => string,
+): FlowBody {
+  const read: FlowNode = {
+    key: 'doc_bao_cao',
+    type: 'report_read',
+    name: t('agentFlows.list.starter.readName'),
+    output_var: 'bao_cao',
+    match_question: false,
+    max_charts: 20,
+    detail: 'index',
+    include_summary: true,
+    include_data: true,
+    include_filters: true,
+    max_rows: 200,
+    run_policy: 'when_stale',
+  };
+  const gather: FlowNode = {
+    key: 'tim_so_lieu',
+    type: 'agent',
+    name: t('agentFlows.list.starter.gatherName'),
+    prompt: t('agentFlows.list.starter.gatherPrompt'),
+    provider: 'inherit',
+    max_tool_calls: 8,
+    output_format: 'chat',
+    context_policy: 'question',
+    tools: STARTER_TOOLS.map((tool) => ({ tool })),
+    knowledge: [],
+  };
+  const answer: FlowNode = {
+    key: 'tra_loi',
+    type: 'agent',
+    name: t('agentFlows.list.starter.answerName'),
+    prompt: t('agentFlows.list.starter.answerPrompt'),
+    provider: 'inherit',
+    // Not zero: the contract's lower bound is 1. The step is given no tools, so
+    // the budget is unreachable either way — this is the schema's floor, not a
+    // quiet allowance.
+    max_tool_calls: 1,
+    output_format: 'chat',
+    context_policy: 'question',
+    tools: [],
+    knowledge: [],
+  };
+  return { schema_version: 2, nodes: [read, gather, answer], answer_node: answer.key };
 }
 
 // ── Conversations & feedback ────────────────────────────────────────────────

@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 #: Bumped only for a breaking change (field removed, or its type changed).
 SCHEMA_VERSION = 1
@@ -527,6 +527,33 @@ class Usage(_Model):
 
 class Answer(_Model):
     blocks: list[Block] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def text(self) -> str:
+        """`plain_text()`, PUBLISHED — because the client was re-deriving it.
+
+        THE BUG THIS CLOSES. A reader's thumb is attached to a run by matching the
+        answer TEXT within their own session (`runs.apply_rating`), which is what
+        stops a public page rating words the server never said. The server stored
+        `plain_text()`; the browser, having only `blocks`, built its own text with
+        `blocksToText` — a second implementation of the same rendering, and not
+        the same function. `plain_text` includes a metric block as
+        `label: value`; the client dropped metric blocks entirely.
+
+        So every KPI-shaped answer — the common case, and the one with numbers in
+        it — produced two different strings, the match found nothing, and the
+        rating was recorded in the session blob and silently absent from
+        `agent_flow_runs.rating`: the column the Runs tab, the operator and the
+        pilot funnel all read. Reproduced on a public link before this was
+        written: the answer rated, the run row unrated.
+
+        Publishing it is the fix at the layer that owns the rendering. The
+        client now quotes what the server said instead of guessing at it, and
+        there is one implementation again. Additive: `blocks` is unchanged and
+        every existing consumer keeps working.
+        """
+        return self.plain_text()
 
     def plain_text(self) -> str:
         """The answer as text, for logs and for clients that cannot render blocks."""

@@ -23,6 +23,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import React from 'react';
 
 import { hasPermission, usePermissions } from '@/hooks/use-permissions';
+import { useI18n } from '@/providers/LanguageProvider';
 import { resolveFlowId } from '@/lib/agentFlows';
 
 import { BrainBuilder } from './BrainBuilder';
@@ -31,6 +32,7 @@ import { BrainList } from './BrainList';
 const MODULE = 'agent_flows';
 
 export function AgentFlowsPage() {
+  const { t } = useI18n();
   const { data: perms } = usePermissions();
   const router = useRouter();
   const pathname = usePathname();
@@ -83,9 +85,7 @@ export function AgentFlowsPage() {
   if (param !== null && paramIsId && openKey === null) {
     return (
       <div className="p-6 text-caption text-text-tertiary">
-        {unknownId
-          ? 'Không mở được flow này — có thể link đã cũ, flow đã bị xoá, hoặc bạn không có quyền xem.'
-          : 'Đang mở flow…'}
+        {unknownId ? t('agentFlows.page.cannotOpen') : t('agentFlows.page.opening')}
       </div>
     );
   }
