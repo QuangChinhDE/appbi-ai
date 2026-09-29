@@ -743,3 +743,38 @@ def test_the_same_periods_real_figure_is_published(world):
     _rec(state, "compare_periods", res, {"chart_id": MONTHLY})
     state.add_evidence({"score": 19.62})
     assert _why(state, ctx, "GMV tháng 12/2017 là 863,547.23, tháng 1/2018 là 1,107,301.89: tăng 28.23%.") == []
+
+
+# ── production pilot round: correct figures that were withheld ───────────────
+
+def test_a_members_count_answers_a_question_about_that_member(world):
+    """Acceptance (5 runs): 96,478 delivered orders withheld as other_measure."""
+    ctx, state = world("Có bao nhiêu đơn ở trạng thái đã giao (delivered)?", asked=("delivered_orders",))
+    _rec(state, "rank_values", {"ok": True, "kind": "ranking", "data": {
+        "chart_id": 685, "measure": "dataset_table_437.order_count", "dimension": "dataset_table_437.order_status",
+        "items": [{"label": "delivered", "value": 96478.0}, {"label": "shipped", "value": 1107.0}]}},
+        {"chart_id": 685})
+    assert _why(state, ctx, "Có 96,478 đơn ở trạng thái delivered.") == []
+    assert (1107.0, "other_measure") in _why(state, ctx, "Có 1,107 đơn đã giao."), \
+        "another member's count is still not the asked member's"
+
+
+def test_the_complement_of_a_supported_rate_is_published_and_of_an_unsupported_one_is_not(world):
+    """Acceptance runs 4072/4309: late 8.11% = 100% − 91.89% on-time, withheld."""
+    ctx, state = world("Tỷ lệ giao trễ là bao nhiêu?", asked=("on_time_rate",))
+    _rec(state, "total_measure", {"ok": True, "kind": "value", "data": {
+        "chart_id": KPI, "value": 91.89, "measure": "dataset_table_437.on_time_rate"}}, {"chart_id": KPI})
+    assert _why(state, ctx, "Tỷ lệ giao đúng hẹn là 91.89%, nên tỷ lệ giao trễ là 8.11%.") == []
+    assert (8.11, "unsupported") in _why(state, ctx, "Tỷ lệ A là 91.5%, nên tỷ lệ B là 8.11%.") or \
+        (91.5, "unsupported") in _why(state, ctx, "Tỷ lệ A là 91.5%, nên tỷ lệ B là 8.11%.")
+
+
+def test_a_rate_measures_member_value_is_a_proportion(world):
+    """Acceptance run 3935: a correct 78.64% from a member list was withheld."""
+    ctx, state = world("Tỷ lệ giao đúng hẹn tháng 3/2018 là bao nhiêu?", asked=("on_time_rate",))
+    _rec(state, "rank_values", {"ok": True, "kind": "ranking", "data": {
+        "chart_id": 712, "measure": "dataset_table_437.on_time_rate",
+        "dimension": "dataset_table_437__order_purchase_date__date_dim.year_month",
+        "items": [{"label": "2018-03", "value": 78.6377}, {"label": "2018-02", "value": 84.0}]}},
+        {"chart_id": 712})
+    assert _why(state, ctx, "Tỷ lệ giao đúng hẹn tháng 3/2018 là 78.64%.") == []

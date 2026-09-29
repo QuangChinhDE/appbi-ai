@@ -844,3 +844,13 @@ def test_a_custom_comparison_with_the_current_period_first_in_time_is_refused():
     assert res["detail"] == {"period_a": "2017-Q4", "period_b": "2017-Q3"}
     assert G.period_refusal(ctx, "compare_periods", {"chart_id": 684, "mode": "custom",
                                                      "period_a": "2017-Q4", "period_b": "2017-Q3"}) is None
+
+
+def test_a_plain_word_in_an_accented_question_does_not_fold_onto_an_accented_title():
+    """Acceptance 4207/4419: "trang tổng quan" (a page) folded onto "trạng thái"."""
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    ctx = _Ctx([684, 685, 686], question="Doanh thu trên trang tổng quan và trang sản phẩm có khác nhau không?")
+    assert G.requested_dimension(ctx) is None
+    ascii_ctx = _Ctx([684, 685, 686], question="don theo trang thai nao nhieu nhat")
+    assert G.requested_dimension(ascii_ctx) is not None, "a question typed without accents still folds"

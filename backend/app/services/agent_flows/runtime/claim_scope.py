@@ -66,8 +66,13 @@ def _num(v: Any) -> float | None:
 
 
 def _entry(value: float, *, measure=None, dimension=None, member=None, ratio=False) -> dict:
-    return {"value": value, "measure": _key(measure), "dimension": _key(dimension),
-            "member": (str(member).strip() if member not in (None, "") else None), "ratio": bool(ratio)}
+    # A RATE MEASURE'S VALUE IS A PROPORTION, whichever adapter produced it
+    # (acceptance run 3935: the correct 78.64% on-time rate for March 2018 came
+    # through a member list, was not marked a proportion, and was withheld).
+    key = _key(measure)
+    ratio = bool(ratio) or bool(isinstance(key, str) and _RATIO_MEASURE.search(key))
+    return {"value": value, "measure": key, "dimension": _key(dimension),
+            "member": (str(member).strip() if member not in (None, "") else None), "ratio": ratio}
 
 
 def _whole(data: dict, measure: Any, keys: tuple[str, ...]) -> list[dict]:

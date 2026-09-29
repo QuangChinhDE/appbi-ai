@@ -170,13 +170,20 @@ def title_hits(ctx: Any, asked: set[str], title_words: set[str]) -> set[str]:
     report's titles use that folded form for two different words."""
     hits = asked & title_words
     ambiguous = _ambiguous_folds(ctx)
+    # A QUESTION WRITTEN WITH DIACRITICS MEANS ITS PLAIN WORDS AS WRITTEN. "trang
+    # tổng quan" (a page) folded onto "trạng thái" (status) and invented a
+    # breakdown by status; the correct total was then withheld as a member's
+    # figure (acceptance runs 4207, 4419). Folding is for questions typed
+    # without accents at all.
+    accented = any(not w.isascii() for w in asked)
     for q in asked - title_words:
         fq = _fold_word(q)
         if fq in ambiguous:
             continue
         # Either side may be the one written without accents; the fold is
         # trusted only when the report's titles never use it for two words.
-        if any(_fold_word(t) == fq and (q.isascii() or t.isascii()) for t in title_words):
+        if any(_fold_word(t) == fq and ((q.isascii() and not accented) or t.isascii())
+               for t in title_words):
             hits.add(q)
     return hits
 
@@ -272,7 +279,12 @@ def requested_dimension(ctx: Any) -> str | None:
         if not name:
             continue
         hay = " ".join(str(f.get(k) or "") for k in ("name", "label", "description"))
-        score = _score(hay, wanted)
+        # A question written with diacritics is compared AS WRITTEN — see
+        # `title_hits`: "trang" (a page) is not "Trạng thái" (status).
+        if any(not w.isascii() for w in _raw_terms(question)):
+            score = len(_raw_terms(question) & (_raw_terms(hay) | set(str(f.get("name") or "").lower().split("_"))))
+        else:
+            score = _score(hay, wanted)
         if score >= _MIN_DIMENSION_SCORE and (best is None or score > best[0]):
             best = (score, name)
 

@@ -93,7 +93,11 @@ def _question_measures(ctx: Any, question: str) -> set[str]:
             # ("phần trăm", "chiếm") made "Nó chiếm bao nhiêu phần trăm?" ask for
             # the on-time rate, and correct revenue figures were withheld.
             named = _score(" ".join(str(asset.get(k) or "") for k in ("id", "name")), terms)
-            if ident and named and (strength >= 2 or (strength and strength == len(terms))):
+            # A DEFINITION CAN NAME IT TOO, when it matches strongly: "doanh thu sản
+            # phẩm trung bình mỗi đơn" is AOV's definition, not its name (acceptance
+            # run 4183 withheld a correct 137.75); four shared terms, never the three
+            # generic ones of "Nó chiếm bao nhiêu phần trăm?".
+            if ident and (named or strength >= 4) and (strength >= 2 or (strength and strength == len(terms))):
                 for alias in _vocabulary(ctx, str(ident), "measure") or [ident]:
                     measures.add(field_key(str(alias)))
                 _MEASURE_WORDS.setdefault(id(ctx), set()).update(
@@ -341,6 +345,16 @@ def _given_to_other_than_asked(sentence: str, asked: list[str] | None) -> bool:
     return False
 
 
+def _same_root(measure: str | None, asked: set[str]) -> bool:
+    """`order_count` and `delivered_orders` count the same thing; `order_count`
+    and `total_revenue` do not. Compared on key words, plural stripped."""
+    def roots(k: str) -> set[str]:
+        return {w[:-1] if w.endswith("s") and len(w) > 3 else w
+                for w in str(k or "").lower().replace(".", "_").split("_") if len(w) > 2}
+    mine = roots(measure or "") - {"count", "total", "sum", "avg", "dataset", "table"}
+    return any(mine & roots(a) for a in asked or ())
+
+
 def _given_a_meaning(sentence: str, question: str, asked: list[str] | None) -> bool:
     """Does the sentence tie its figure to a period, or the member, the question
     asked about? Then "read somewhere" is not enough — see `check`."""
@@ -384,8 +398,14 @@ def _resolve_derived(pending, claims, flagged, in_evidence, text, changes=()) ->
                 and not any(_close(v, b) for b in bad)]
     if len(operands) > _MAX_OPERANDS:
         operands = []
+    rates = [v for v, p in claims if p and 0 < v < 100 and not any(_close(v, b) for b in bad)
+             and not any(pp and _close(v, pv) for pv, pp in pending)]   # only SUPPORTED rates
     out = []
     for value, pct in pending:
+        # THE COMPLEMENT OF A STATED RATE: late 8.11% = 100% − on-time 91.89%
+        # (acceptance runs 4072, 4309 withheld it).
+        if pct and any(abs(value - (100 - r)) <= 0.05 for r in rates if not _close(r, value)):
+            continue
         # A CHANGE THE TOOLS COMPUTED IS THE CHANGE. Browser, link 39: compare_periods
         # gave -5.23%, the answer listed July then August and said "tăng 5,52%" —
         # (Jul - Aug) / Aug, the wrong baseline — and arithmetic accepted it.
@@ -539,7 +559,16 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                                    "member": support[0].get("member")}})
             continue
         sentence = _sentence_of(text, value)
-        reasons = [_contradiction(e, t, ctx) for e in support]
+        # A MEMBER THE QUESTION NAMES IS WHAT IT ASKS ABOUT: "đơn ở trạng thái đã
+        # giao (delivered)" is answered by order_count for member `delivered`,
+        # whatever the resolver called the measure (acceptance: 96,478 withheld in
+        # 5 runs as `other_measure`).
+        # Only when that member's measure shares a ROOT with the asked one — SP's
+        # ORDERS share is still not its REVENUE share (test_an_orders_share_called_
+        # a_revenue_share_is_flagged).
+        reasons = [None if (r == "other_measure" and e.get("member") and _names(question, e["member"])
+                            and _same_root(e.get("measure"), t["measures"]))
+                   else r for e, r in ((e, _contradiction(e, t, ctx)) for e in support)]
         if all(reasons):
             e = support[0]
             flagged.append({"value": value, "pct": pct, "why": reasons[0],
