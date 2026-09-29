@@ -172,5 +172,21 @@
   ],
   "A_vs_B_moved_tile_count": 8
  },
- "reading": "B and C differ from A only in dashboard 574 (8 tiles shifted 3 rows): the Report Studio round trip below 20260929_0001 (the same 8 tiles as a7-migration-roundtrip.json). The control (RS line only, Agent Flow never applied) equals B tile for tile, so the Agent Flow line changes no report content."
+ "reading": "B and C differ from A only in dashboard 574 (8 tiles shifted 3 rows): the Report Studio round trip below 20260929_0001 (the same 8 tiles as a7-migration-roundtrip.json). The control (RS line only, Agent Flow never applied) equals B tile for tile, so the Agent Flow line changes no report content.",
+ "F_fresh_head_below_both_and_back": {
+  "head": [
+   "20260930_0001"
+  ],
+  "down_ran": 7,
+  "after_down": [
+   "20260914_0002"
+  ],
+  "af_columns_left": [],
+  "up_ran": 7,
+  "end": [
+   "20260930_0001"
+  ],
+  "schema_equal_at_both_heads": true,
+  "note": "fresh database: head -> downgrade 20260914_0002 -> head"
+ }
 }

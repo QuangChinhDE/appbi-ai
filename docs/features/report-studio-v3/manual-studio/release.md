@@ -14,10 +14,11 @@ Nothing here has been deployed. Deployment and merge need explicit owner authori
 | PR | Branch | Base | Migrations |
 |---|---|---|---|
 | #5 | `feat/dashboard-design-engine-v2` | `demo` | none |
-| #6 | `feat/report-experience` | #5 | `20260926_0001`: audit values for AI Design content proposals (enum values only) |
-| #7 | `feat/report-studio-v3` | #6 | `20260928_0001`: canvas reports become grid reports. `20260929_0001`: the slicer bar becomes controls on the grid |
+| #6 | `feat/report-experience` | #5 | `20260926_0001`: audit values for AI Design content proposals (enum values only). `20260926_0201`: no-op merge with Agent Flow's line |
+| #7 | `feat/report-studio-v3` | #6 | `20260928_0001`: canvas reports become grid reports. `20260929_0001`: the slicer bar becomes controls on the grid. `20260930_0001`: no-op merge |
 
-- Alembic chain: `20260914_0002` (the head on `demo`) → `20260926_0001` → `20260928_0001` → `20260929_0001`. There is a single head.
+- All three branches carry `demo` at `30a048f4`, which includes Agent Flow V3 (PR #3, PR #4) and its migrations `20260925_0001` → `20260926_0101`.
+- Alembic graph: see "Combined with Agent Flow" in §4. After each PR lands, `demo` has a single head: `20260926_0101` after #5, `20260926_0201` after #6, `20260930_0001` after #7.
 - New layout keys: `sectionId` and `emphasis`. They are written by the builder and by AI Design; they are not columns.
 - New widget types: `narrative` and `slicer`. They are stored in the existing `widget_type` string column; there is no schema change for them.
 - No other schema change.
@@ -31,14 +32,18 @@ Nothing here has been deployed. Deployment and merge need explicit owner authori
 2. **Back up the database** (`pg_dump`) immediately before migrating.
    - `20260928` and `20260929` rewrite report layouts. The backup is the only complete undo for reports that authors edit afterwards (§4).
 3. **Run the migrations once**, from the new backend image: `alembic upgrade head`.
-   - Expect one log line per revision, as below.
+   - Expect one log line per revision. On a `demo` database already at Agent Flow's `20260926_0101`, the full stack runs these five (the two merges do nothing but join the graph):
    - Stop if the command reports anything other than a single head.
 
    ```
    Running upgrade 20260914_0002 -> 20260926_0001, Audit values for AI Design content proposals.
+   Running upgrade 20260926_0101, 20260926_0001 -> 20260926_0201, Join Agent Flow's line and the Report Experience line …
    Running upgrade 20260926_0001 -> 20260928_0001, Canvas dashboards become Grid dashboards.
    Running upgrade 20260928_0001 -> 20260929_0001, The slicer bar becomes controls on the grid.
+   Running upgrade 20260926_0201, 20260929_0001 -> 20260930_0001, Join the combined Agent Flow + Report Experience line …
    ```
+
+   Alembic may print the two branches' revisions in a different interleaving; the set is what matters.
 
 4. **Deploy the backend, then the frontend.**
    - The new frontend relies on the new backend's widget normalizer: canonical report-header keys, the neutral callout tone, and draft-only additions.
@@ -109,20 +114,41 @@ The full stack was rehearsed on a copy of the rig database (`CREATE DATABASE …
 - Agent Flow V3: `20260925_0001` → `20260926_0101`.
 - Report Studio: `20260926_0001` → `20260928_0001` → `20260929_0001`.
 
-The stack that lands in `demo` second adds one no-op merge revision, `20260930_0001`, with `down_revision = ("20260926_0101", "20260929_0001")`. That gives a single head. The Agent Flow owner rehearsed the merge on copies of both lineages.
+Agent Flow landed in `demo` first. Report Studio joins the two lines with two no-op merge revisions, so that `demo` has one head after each PR:
 
-Agent Flow originally shipped its migration under `20260926_0001`, the same ID Report Studio uses. A database that applied Agent Flow's under that old ID is re-labelled to `20260926_0101` by `app/core/alembic_reconcile.py`, which reads the schema to decide.
+- `20260926_0201` (#6): `down_revision = ("20260926_0101", "20260926_0001")`.
+- `20260930_0001` (#7): `down_revision = ("20260926_0201", "20260929_0001")`.
 
-At the merge point, `alembic downgrade -1` is ambiguous. Name the target instead:
+`20260928_0001` keeps its parent `20260926_0001`. Re-parenting it onto the merge would let a database already at `20260929_0001` read as past Agent Flow's migrations and never run them. (An earlier plan used one merge at the top; it would have left `demo` with two heads between #6 and #7.)
 
-- to undo only Report Studio, `alembic downgrade 20260926_0101`;
+Agent Flow originally shipped its migration under `20260926_0001`, the same ID Report Studio uses. A database that applied Agent Flow's under that old ID is re-labelled to `20260926_0101` by `app/core/alembic_reconcile.py`, which reads the schema to decide. #6 adds one rule to it (`fa180520`, reviewed by the Agent Flow owner): when `20260926_0101` is already recorded, a `20260926_0001` row is Report Studio's and is left alone. That state exists between the two lines and their merge. `20260926_0001` commits the version table mid-upgrade, so an interrupted upgrade can leave it. Re-labelling it would have hit `alembic_version`'s primary key and stopped the backend from starting.
+
+**Rehearsed on real Postgres** (`evidence/integration-migration-rehearsal.json`). Each scenario ran on its own copy of the rig database (62 reports, 762 tiles) or on a fresh database; every copy was dropped afterwards.
+
+| Start | Path | End |
+|---|---|---|
+| Report Studio lineage, `20260929_0001` | `upgrade head` | `20260930_0001` |
+| Agent Flow lineage, `20260926_0101` (demo today) | → `20260926_0201` (demo after #6) → `head` (after #7) | `20260930_0001` |
+| Agent Flow under its old ID `20260926_0001` | `upgrade head` (re-labelled first) | `20260930_0001` |
+| Both lines recorded, merge not yet | `upgrade head` | `20260930_0001` |
+| Fresh, empty | `upgrade head` (173 revisions) | `20260930_0001` |
+
+- All five end with an identical schema: columns, enum values and indexes.
+- The Agent Flow line changes no report content. The Agent Flow-lineage path differs from the Report Studio-lineage path only in report 574: the same 8 tiles as item 2 above, because that path rolls Report Studio back to `20260914_0002` first. A control run that never applies Agent Flow gives the identical result.
+
+At a merge point, `alembic downgrade -1` is ambiguous. Name the target instead:
+
+- to undo only #7's data migrations, `alembic downgrade 20260926_0201`;
+- to undo all of Report Studio and keep Agent Flow, `alembic downgrade 20260926_0101`;
 - to go below both streams, `alembic downgrade 20260914_0002`.
+
+The first two were rehearsed from the combined head on the data copy: each re-upgrade returned the same reports and tiles, and Agent Flow's columns stayed. The third was rehearsed from the combined head on a fresh database. All 7 revisions went down, no Agent Flow column remained, and the re-upgrade produced the same schema. Its effect on report data is the Report Studio round trip above.
 
 The Agent Flow migrations are additive. The Report Studio ones rewrite layouts, so the limits above still apply to them.
 
 ## 5. Post-deploy checks
 
-- `SELECT version_num FROM alembic_version` returns `20260929_0001`.
+- `SELECT version_num FROM alembic_version` returns exactly one row, `20260930_0001`.
 - Controls exist for reports with visible filters, and no report has a filter area outside its grid:
 
   ```sql
