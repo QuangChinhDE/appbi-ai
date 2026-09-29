@@ -212,6 +212,7 @@ async def run_flow(
             from app.services.agent_flows.tools.context import value_key
 
             ctx.asked_measures = list((getattr(state, "intent", None) or {}).get("measures") or [])
+            ctx.asked_periods = [tuple(p) for p in ((getattr(state, "intent", None) or {}).get("periods") or [])]
             ctx.member_aliases = {
                 value_key(m["said"]): m["code"]
                 for m in ((getattr(state, "intent", None) or {}).get("members") or [])

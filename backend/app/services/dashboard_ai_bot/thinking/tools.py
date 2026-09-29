@@ -483,6 +483,21 @@ _UNORDERED = "the chart's own order (NOT a ranking)"
 # Tool: get_chart_data ────────────────────────────────────────────────────────
 
 
+def _rows_of_asked_periods(ctx: Any, columns: list[str], rows: list[list], limit: int = 12) -> list[list]:
+    """Rows whose time label is a period the turn asked for (ctx.asked_periods)."""
+    from app.services.time_semantics import looks_like_time_name, named_periods
+
+    asked = {tuple(p) for p in (getattr(ctx, "asked_periods", None) or [])}
+    if not asked or not rows:
+        return []
+    idx = [i for i, c in enumerate(columns) if looks_like_time_name(str(c).rsplit(".", 1)[-1])]
+    if not idx:
+        return []
+    i = idx[0]
+    return [r for r in rows if i < len(r) and r[i] is not None
+            and named_periods(str(r[i])) & asked][:limit]
+
+
 def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
     chart_id = args.get("chart_id")
     if not isinstance(chart_id, int):
@@ -559,8 +574,14 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
     # both. See `agent_flows/tools/result.py` for the contract this feeds.
     total_rows = len(rows)
 
+    kept_for_period: list[list] = []
     if isinstance(top_n, int):
-        rows = rows[:top_n]
+        # THE PERIOD THE TURN ASKED FOR IS NEVER CUT OFF. Live efaa3873 run 7278:
+        # "GMV tháng 11/2017" read get_chart_data(684, sort desc, top_n 1), got only
+        # 2018-09, and answered that November 2017 was not in the data — the chart
+        # holds it. Rows of an asked period beyond the cut are returned too, marked.
+        kept_for_period = _rows_of_asked_periods(ctx, columns, rows[top_n:])
+        rows = rows[:top_n] + kept_for_period
 
     # ALWAYS say how the rows were ordered, including when nothing sorted them.
     # The audit found a truncated result whose note named no order at all, so
@@ -574,6 +595,8 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
         "truncated": truncated,
     }
     coverage["ordered_by"] = ordered_by
+    if kept_for_period:
+        coverage["kept_for_asked_period"] = len(kept_for_period)
     if asked_for is not None and asked_for > ceiling:
         # The caller asked for more than the run permits. Said out loud, because
         # the alternative is an operator raising a limit and watching nothing

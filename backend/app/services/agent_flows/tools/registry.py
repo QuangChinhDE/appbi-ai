@@ -544,6 +544,7 @@ def _cache_key(ctx: Any, name: str, args: dict) -> str | None:
                 # would answer the next question's orders comparison.
                 sorted(str(m) for m in (getattr(ctx, "asked_measures", None) or [])),
                 sorted((getattr(ctx, "member_aliases", None) or {}).items()),
+                sorted(str(p) for p in (getattr(ctx, "asked_periods", None) or [])),
                 name,
                 args,
             ],
