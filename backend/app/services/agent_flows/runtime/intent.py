@@ -40,6 +40,7 @@ def vocabulary(ctx: Any) -> dict:
     measures: dict[str, str] = {}
     dimensions: dict[str, list[str]] = {}
     by_dim: dict[str, list[str]] = {}
+    names: dict[str, list[str]] = {}
     for meta in (getattr(ctx, "chart_meta", None) or {}).values():
         fields = (meta or {}).get("fields") or {}
         labels = fields.get("label_by_field") or {}
@@ -50,6 +51,10 @@ def vocabulary(ctx: Any) -> dict:
             if ref:
                 k = field_key(str(ref))
                 chart_measures.append(k)
+                seen = names.setdefault(k, [])
+                for n in (title, str(ref), str((m.get("label") if isinstance(m, dict) else "") or "")):
+                    if n and n not in seen:
+                        seen.append(n)
                 measures.setdefault(k, str((m.get("label") if isinstance(m, dict) else "") or labels.get(ref) or k))
         for d in fields.get("dimensions") or []:
             ref = d.get("field") if isinstance(d, dict) else d
@@ -60,7 +65,62 @@ def vocabulary(ctx: Any) -> dict:
                     bucket.append(title)
                 pair = by_dim.setdefault(k, [])
                 pair.extend(m for m in chart_measures if m not in pair)
-    return {"measures": measures, "dimensions": dimensions, "measures_by_dimension": by_dim}
+    return {"measures": measures, "dimensions": dimensions, "measures_by_dimension": by_dim,
+            "measure_names": names}
+
+
+#: Words that say HOW a quantity is counted, not WHICH quantity it is. Sharing
+#: one of these ("tỷ lệ", "total") is exactly the false match the absent field
+#: exists to reject; sharing anything else means the report measures it.
+_GENERIC = {
+    "ty", "le", "rate", "ratio", "tong", "total", "so", "luong", "count", "number", "of",
+    "trung", "binh", "avg", "average", "mean", "gia", "tri", "value", "cua", "the", "a",
+    "la", "bao", "nhieu", "what", "is", "how", "many", "much", "in", "by", "theo", "va",
+    "and", "per", "pct", "percent", "phan", "tram", "share", "chiem", "olist", "page",
+    "dataset", "table", "cac", "nhung", "mot", "sum", "tb", "luot", "cai", "khach", "hang",
+}
+
+
+def _words(text: str) -> list[str]:
+    from app.core.text_fold import fold_text
+
+    return [w for w in re.split(r"[^0-9a-z]+", fold_text(text or "").replace("_", " ")) if w]
+
+
+def _stem(w: str) -> str:
+    return w[:-1] if len(w) > 4 and w.endswith("s") and not w.endswith("ss") else w
+
+
+def _terms(text: str, *, singles: bool) -> set:
+    """Distinctive terms: consecutive word pairs (a Vietnamese concept is two
+    syllables — "vận chuyển" is not "chuyển đổi"), and, when `singles`, single
+    words of four letters or more (an English field name: "freight", "review")."""
+    ws = _words(text)
+    out: set = {(a, b) for a, b in zip(ws, ws[1:])
+                if not (a in _GENERIC and b in _GENERIC) and not (a.isdigit() or b.isdigit())}
+    if singles:
+        out |= {_stem(w) for w in ws if len(w) >= 4 and w not in _GENERIC and not w.isdigit()}
+    return out
+
+
+def absent_is_real(absent: str, vocab: dict) -> bool:
+    """Whether the quantity called absent is really outside the report.
+
+    Holdout run at 422b8fd2: "Tổng phí vận chuyển" (the report's own
+    total_freight), "total reviews" and "lượt đánh giá 1 sao" were resolved absent
+    and answered "not in the report" with no tool call. A quantity sharing a
+    distinctive term with a measure's key, label or chart title is measured here;
+    "tỷ lệ chuyển đổi của website" shares only "tỷ lệ" with the on-time rate.
+    """
+    want = _terms(absent, singles=True)
+    if not want:
+        return False
+    names = vocab.get("measure_names") or {}
+    for key, label in (vocab.get("measures") or {}).items():
+        have = _terms(f"{key} {label}", singles=True) | _terms(" | ".join(names.get(key, [])), singles=False)
+        if want & have:
+            return False
+    return True
 
 
 #: Bounds on reading the report's own member values: they are what lets "Rio de
@@ -214,6 +274,9 @@ def validate(data: dict, vocab: dict) -> dict:
     out["measures"] = ms
     absent = data.get("absent")
     out["absent"] = absent.strip() if isinstance(absent, str) and absent.strip() and not ms else None
+    if out["absent"] and not absent_is_real(out["absent"], vocab):
+        out["notes"].append(f"not absent (the report measures it): {out['absent']}")
+        out["absent"] = None
     dim = data.get("dimension")
     out["dimension"] = dim if isinstance(dim, str) and dim in vocab["dimensions"] else None
     members = []

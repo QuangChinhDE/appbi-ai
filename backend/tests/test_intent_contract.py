@@ -203,3 +203,29 @@ def test_an_absent_quantity_is_a_thing_to_check_not_a_verdict():
     step refused without reading anything. The claim check keeps the verdict."""
     text = I.describe_for_prompt(_model_intent(absent="share paid by boleto"))
     assert "kiểm tra bằng công cụ trước khi kết luận" in text
+
+
+NAMED = {"measures": {"total_freight": "Total freight", "on_time_rate": "On time rate",
+                      "review_count": "Review count", "total_payment": "Total payment"},
+         "dimensions": {}, "measure_names": {
+             "total_freight": ["Olist · Tổng phí vận chuyển · page-2"],
+             "on_time_rate": ["Olist · Giao đúng hẹn (%) · page-1"],
+             "review_count": ["Olist · Số đánh giá · page-5"],
+             "total_payment": ["Olist · Thanh toán theo hình thức · page-5"]}}
+
+
+def test_a_quantity_the_report_measures_is_never_absent():
+    """Holdout 5667/5668/5676/5660: the report's own freight, review count, 1-star
+    reviews and payment share were resolved absent and refused with no tool call."""
+    for asked in ("Tổng phí vận chuyển", "total reviews", "lượt đánh giá 1 sao",
+                  "share of payment value paid by boleto"):
+        got = I.validate({"measures": [], "absent": asked}, NAMED)
+        assert got["absent"] is None, asked
+        assert any("not absent" in n for n in got["notes"]), asked
+
+
+def test_a_generic_word_or_one_syllable_does_not_make_a_quantity_present():
+    """"tỷ lệ" is how the on-time rate is counted, and "chuyển" in "vận chuyển" is
+    not "chuyển đổi": the conversion rate stays absent (live 4164/4879)."""
+    for asked in ("tỷ lệ chuyển đổi của website", "Lợi nhuận gộp", "customer churn rate"):
+        assert I.validate({"measures": [], "absent": asked}, NAMED)["absent"] == asked, asked
