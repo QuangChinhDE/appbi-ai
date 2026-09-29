@@ -1041,22 +1041,26 @@ function buildDataLabelContent(opts: {
       // own slot. Collision check skips the entry being placed; checks
       // every other entry currently in the map.
       const slotKey = `${seriesKey}:${(props as any).index ?? 0}`;
-      const collides = (b: LabelBBox) => {
+      const collisions = (b: LabelBBox) => {
+        const hit: LabelBBox[] = [];
         for (const [otherKey, placed] of registry) {
-          if (otherKey !== slotKey && rectsOverlap(placed, b)) return true;
+          if (otherKey !== slotKey && rectsOverlap(placed, b)) hit.push(placed);
         }
-        return false;
+        return hit;
       };
-      if (collides(bbox)) {
+      const hit = collisions(bbox);
+      if (hit.length) {
         // A label above an upright bar that meets its neighbour's (two bars of
-        // about the same height) lifts one line instead of vanishing: one bar
-        // without its value among labelled ones reads as "no value".
+        // about the same height) lifts just clear of it instead of vanishing:
+        // one bar without its value among labelled ones reads as "no value".
         const aboveBar = orientation === 'vertical' && rotation === 0
           && !['bottom', 'inside', 'center', 'insideTop', 'insideBottom'].includes(position as string);
-        const lifted = { ...bbox, y: bbox.y - approxHeight };
-        if (!aboveBar || lifted.y < 0 || collides(lifted)) return null;
+        // Clear the highest label it meets by more than rectsOverlap's pad.
+        const liftTo = Math.min(...hit.map((h) => h.y)) - approxHeight - 3;
+        const lifted = { ...bbox, y: liftTo };
+        if (!aboveBar || lifted.y < 0 || collisions(lifted).length) return null;
+        cy += lifted.y - bbox.y;
         bbox = lifted;
-        cy -= approxHeight;
       }
       registry.set(slotKey, bbox);
     }

@@ -434,9 +434,12 @@ check('an upright bar series states every value or none, judged on its widest la
     'the bar-label fit is decided label by label (a narrow tile keeps one stray short label)');
   assert(/const dataLabelContent = [\s\S]{0,1600}rows: sortedCategoricalData,/.test(chart),
     'the chart labels are not given the rows they label, so the widest label is unknown');
-  assert(/const lifted = \{ \.\.\.bbox, y: bbox\.y - approxHeight \};/.test(chart)
-      && /if \(!aboveBar \|\| lifted\.y < 0 \|\| collides\(lifted\)\) return null;/.test(chart),
-    'a bar label that meets its neighbour vanishes instead of lifting (one bar left without its value)');
+  assert(/const liftTo = Math\.min\(\.\.\.hit\.map\(\(h\) => h\.y\)\) - approxHeight - 3;/.test(chart)
+      && /if \(!aboveBar \|\| lifted\.y < 0 \|\| collisions\(lifted\)\.length\) return null;/.test(chart),
+    'a bar label that meets its neighbour vanishes instead of lifting clear of it (one bar left without its value)');
+  // The lift must clear the pad rectsOverlap applies, or it still "touches".
+  const pad = Number((chart.match(/function rectsOverlap\(a: LabelBBox, b: LabelBBox, pad = (\d+)\)/) || [])[1]);
+  assert(Number.isFinite(pad) && pad < 3, `the lift margin (3px) does not clear rectsOverlap's pad (${pad})`);
 });
 
 check('clicking a selected element keeps it selected; empty canvas and Escape clear', () => {
