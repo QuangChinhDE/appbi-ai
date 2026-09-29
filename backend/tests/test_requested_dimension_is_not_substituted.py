@@ -831,3 +831,16 @@ def test_a_parenthesised_title_word_does_not_name_a_breakdown():
 
     assert G.requested_dimension(_Ctx([687, 701], question="Tổng số tiền khách đã thanh toán là bao nhiêu?")) is None
     assert G.requested_dimension(_Ctx([687, 701], question="Bang nào có nhiều đơn nhất?")) is not None
+
+
+def test_a_custom_comparison_with_the_current_period_first_in_time_is_refused():
+    """Acceptance run 4176: period_a=2017-Q3, period_b=2017-Q4 measured the change backwards."""
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    ctx = _Ctx([684], question="Doanh thu quý 4/2017 so với quý 3/2017 tăng hay giảm?")
+    res = G.period_refusal(ctx, "compare_periods", {"chart_id": 684, "mode": "custom",
+                                                    "period_a": "2017-Q3", "period_b": "2017-Q4"})
+    assert res["error_code"] == "period_not_in_chart"
+    assert res["detail"] == {"period_a": "2017-Q4", "period_b": "2017-Q3"}
+    assert G.period_refusal(ctx, "compare_periods", {"chart_id": 684, "mode": "custom",
+                                                     "period_a": "2017-Q4", "period_b": "2017-Q3"}) is None

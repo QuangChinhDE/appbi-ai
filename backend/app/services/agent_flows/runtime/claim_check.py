@@ -233,7 +233,19 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
             for label in e.get("periods") or []:
                 between |= _periods(str(label).replace("Q", " q")) or _periods("nam " + str(label))
             same = {p for p in asked if p[0] in {b[0] for b in between}}
-            if not between or not same or same <= between:
+            if not between or not same:
+                return False
+            if same <= between:
+                # THE LATER PERIOD IS THE CURRENT ONE. Acceptance run 4176: asked
+                # "quý 4/2017 so với quý 3/2017", the model called compare_periods
+                # with the periods swapped; the tool honestly reported -29.85% from
+                # Q4 to Q3 and it was published — the true change is +42.56%.
+                labels = [(_periods(str(x).replace("Q", " q")) or _periods("nam " + str(x)))
+                          for x in (e.get("periods") or [])[:2]]
+                if len(labels) == 2 and all(len(x) == 1 for x in labels):
+                    (current,), (baseline,) = labels
+                    if current[0] == baseline[0] and current < baseline:
+                        return True
                 return False
         return True
     whole = [e for e in support if not e.get("dimension") and not e.get("member")]
@@ -249,6 +261,104 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
     if not all(labels) or not all({p[0] for p in lab} & grains for lab in labels):
         return False
     return not any(lab & asked for lab in labels)
+
+
+#: Words that end the member phrase after a breakdown's cue word.
+_PHRASE_STOP = {"la", "co", "chiem", "thi", "bao", "nao", "dat", "duoc", "trong", "so", "voi",
+                "the", "is", "has", "have", "had", "was", "what", "how", "in", "of", "for",
+                "tang", "giam", "nhieu", "nhat", "cao", "thap", "bang", "danh", "muc"}
+
+
+def _asked_member(ctx: Any, t: dict, question: str) -> list[str] | None:
+    """The member the question names, as WRITTEN: the words after the requested
+    breakdown's own cue word in the report's chart titles ("bang Minas Gerais",
+    "danh mục đồ giường và phòng tắm (bed bath table)"). Returned as squashed
+    candidates — the phrase, and any parenthesised alias — or None."""
+    import re
+
+    dim = t.get("dimension")
+    if not dim or _is_time(dim):
+        return None
+    try:
+        from app.services.agent_flows.tools.dimension_gate import chart_dimension_words, field_key
+
+        cues: set[str] = set()
+        for rows in chart_dimension_words(ctx).values():
+            for ref, _fw, title_words in rows:
+                if field_key(ref) == dim:
+                    cues |= {_fold(w) for w in title_words}
+    except Exception:                                           # noqa: BLE001
+        return None
+    words = re.findall(r"\(|\)|[^\W_]+", _fold(question))
+    for i, w in enumerate(words):
+        if w not in cues:
+            continue
+        phrase, depth = [], 0
+        for x in words[i + 1:]:
+            if x == "(":
+                depth += 1
+            elif x == ")":
+                depth -= 1
+            elif depth == 0 and (x in _PHRASE_STOP or x in cues):
+                break
+            phrase.append(x)
+        text = " ".join(phrase)
+        outside = _squash(re.sub(r"\([^)]*\)", " ", text.replace(" ( ", " (").replace(" ) ", ") ")))
+        inside = [_squash(m) for m in re.findall(r"\(([^)]*)\)", text.replace(" ( ", " (").replace(" ) ", ") "))]
+        cands = [c for c in (outside, *inside) if len(c) >= 2]
+        if cands:
+            return cands
+    return None
+
+
+def _names(sentence: str, label: str) -> bool:
+    """Does `sentence` name `label` (a member as the data writes it)?"""
+    import re
+
+    s = _squash(label)
+    if not s:
+        return False
+    if len(s) <= 3:
+        return bool(re.search(rf"(?<![^\W_]){re.escape(_fold(label))}(?![^\W_])", _fold(sentence)))
+    return s in _squash(sentence)
+
+
+_FRAMED_WHOLE = ("toan bao cao", "toan bo", "ca bao cao", "tat ca cac", "toan ky", "toan thoi gian",
+                 "overall", "whole report", "in total", "report total", "across all", "all states",
+                 "all categories", "chung toan")
+
+
+def _given_to_other_than_asked(sentence: str, asked: list[str] | None) -> bool:
+    """True when the sentence plainly states a TOTAL: it frames the figure as the
+    whole report, or the question named a member and this sentence does not."""
+    import re
+
+    folded = _fold(sentence)
+    if any(re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", folded) for w in _FRAMED_WHOLE):
+        return True
+    if asked and not any((_names(sentence, c) if len(c) <= 3 else c in _squash(sentence)) for c in asked):
+        return True
+    return False
+
+
+def _misattributed(support: list[dict], asked: list[str] | None, sentence: str) -> str | None:
+    """THE SENTENCE SAYS WHOSE FIGURE IT IS. Acceptance, published: SP's revenue
+    as Minas Gerais's (run 4245), health_beauty's as bed_bath_table's (4200), the
+    whole-report total as SP's (4465, 4507). The question named the member in its
+    own words, so the question's target never matched a data label — the check
+    must read the SENTENCE that carries the figure."""
+    if not asked or not sentence:
+        return None
+    if not any((_names(sentence, c) if len(c) <= 3 else c in _squash(sentence)) for c in asked):
+        return None                      # the sentence does not give it to the asked member
+    members = [e for e in support if e.get("member") and not _is_time(e.get("dimension"))]
+    if members:
+        if any(_names(sentence, e["member"]) or _squash(e["member"]) in asked for e in members):
+            return None
+        return "other_member"
+    if all(not e.get("dimension") and not e.get("member") for e in support):
+        return "whole_as_member"
+    return None
 
 
 _MAX_OPERANDS = 6
@@ -377,6 +487,7 @@ def check(state: Any, ctx: Any, text: str) -> dict:
     # all-time totals was published).
     pending: list[tuple[float, bool]] = []
     question = str(getattr(ctx, "question", "") or "")
+    asked_member = _asked_member(ctx, t, question)
     for value, pct in claims:
         if pct:
             support = [e for e in ledger if e.get("ratio") and
@@ -410,22 +521,31 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                             "of": {"measure": support[0].get("measure"), "dimension": None,
                                    "member": support[0].get("member")}})
             continue
+        sentence = _sentence_of(text, value)
         reasons = [_contradiction(e, t, ctx) for e in support]
-        if not all(reasons) and not delivered and all(
-                not e.get("dimension") and (not e.get("measure") or e.get("measure") in t["measures"])
-                for e, r in zip(support, reasons) if not r):
-            # The only support is a WHOLE-REPORT figure of the measure asked, and
-            # the report never gave that measure by the breakdown asked: stated
-            # as a member's figure it is wrong, stated as the total it is true —
-            # the reader is told which it is (never rewritten).
-            flagged.append({"value": value, "pct": pct, "why": "whole_as_member",
-                            "of": {"measure": next(iter(sorted(t["measures"])), None),
-                                   "dimension": None, "member": None}})
-            continue
         if all(reasons):
             e = support[0]
             flagged.append({"value": value, "pct": pct, "why": reasons[0],
                             "of": {k: e.get(k) for k in ("measure", "dimension", "member")}})
+            continue
+        attributed = _misattributed(support, asked_member, sentence)
+        if attributed:
+            e = next((x for x in support if x.get("member")), support[0])
+            flagged.append({"value": value, "pct": pct, "why": attributed,
+                            "of": {k: e.get(k) for k in ("measure", "dimension", "member")}})
+            continue
+        if not delivered and not _given_to_other_than_asked(sentence, asked_member) and all(
+                not e.get("dimension") and (not e.get("measure") or e.get("measure") in t["measures"])
+                for e, r in zip(support, reasons) if not r):
+            # The only support is a WHOLE-REPORT figure of the measure asked, and
+            # the report never gave that measure by the breakdown asked: stated
+            # as a member's figure it is wrong, stated as the total it is true.
+            # A sentence that frames it as the whole report, or that does not
+            # give it to the asked member, states the total — and may (brief:
+            # "có thể nhắc số tổng nếu ghi rõ nó thuộc toàn báo cáo").
+            flagged.append({"value": value, "pct": pct, "why": "whole_as_member",
+                            "of": {"measure": next(iter(sorted(t["measures"])), None),
+                                   "dimension": None, "member": None}})
     flagged += _resolve_derived(pending, claims, flagged, in_evidence, text,
                                 [e for e in ledger if "periods" in e and e.get("ratio")])
     return {"target": {**t, "measures": sorted(t["measures"])}, "flagged": flagged}

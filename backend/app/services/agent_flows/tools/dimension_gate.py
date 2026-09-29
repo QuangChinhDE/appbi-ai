@@ -480,9 +480,29 @@ def _compare_periods_refusal(ctx: Any, args: dict) -> dict | None:
     another question. Measured in acceptance: asked "tháng 1/2018 so với tháng
     12/2017", a Skill ran compare_periods(mode=auto) and compared 2018-09 with
     2018-08. Refused with the exact custom call instead of silently re-pointed."""
-    if str(args.get("mode") or "auto").lower() == "custom":
-        return None
     from app.services.time_semantics import named_periods
+
+    if str(args.get("mode") or "auto").lower() == "custom":
+        # A custom comparison whose CURRENT period is the earlier one reports the
+        # change backwards (acceptance run 4176: Q3 vs Q4 → "giảm 29,85%" for a
+        # +42,56% rise). Refused with the order swapped.
+        a = named_periods(str(args.get("period_a") or "").replace("Q", " q")) \
+            or named_periods("nam " + str(args.get("period_a") or ""))
+        b = named_periods(str(args.get("period_b") or "").replace("Q", " q")) \
+            or named_periods("nam " + str(args.get("period_b") or ""))
+        if len(a) == 1 and len(b) == 1:
+            (pa,), (pb,) = a, b
+            if pa[0] == pb[0] and pa < pb:
+                return R.err(
+                    f"period_a ({args.get('period_a')}) is EARLIER than period_b "
+                    f"({args.get('period_b')}): compare_periods reports the change from "
+                    "period_b to period_a, so this call measures the change backwards.",
+                    code="period_not_in_chart", retryable=False,
+                    recovery=(f"Call compare_periods again with period_a='{args.get('period_b')}' "
+                              f"(the later period, the current one) and period_b='{args.get('period_a')}'."),
+                    detail={"period_a": args.get("period_b"), "period_b": args.get("period_a")},
+                )
+        return None
 
     asked = sorted(named_periods(str(getattr(ctx, "question", "") or "")), reverse=True)
     grains = {p[0] for p in asked}

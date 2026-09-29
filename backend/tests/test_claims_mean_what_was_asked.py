@@ -177,15 +177,17 @@ def test_state_rows_answer_an_orders_question(world):
     assert _why(state, ctx, "Bang SP có 41.746 đơn hàng, chiếm phần lớn.") == []
 
 
-def test_an_honest_refusal_keeps_its_total_with_a_neutral_note(world):
-    """The total is TRUE as the total; the report has no revenue by state. The
-    check cannot read prose, so it never calls it wrong: the only flag is the
-    neutral "whole report" note — never `unsupported`, never a rewrite."""
+def test_an_honest_refusal_keeps_its_total_published(world):
+    """The total is TRUE as the total; the report has no revenue by state. Since
+    flagged figures are WITHHELD, flagging it would hide a correct total the
+    answer never gave to SP (production pilot brief: a total may be mentioned
+    when it is plainly the report's). CONTRACT CHANGE, declared: was flagged
+    `whole_as_member` with a neutral note."""
     ctx, state = world(STATE_Q)
     _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
     text = "Báo cáo không tách được doanh thu theo bang; tổng doanh thu là 13.591.643,70."
-    assert _why(state, ctx, text) == [(13591643.7, "whole_as_member")]
-    assert "Số của toàn bộ báo cáo" in CC.reader_note(CC.check(state, ctx, text)["flagged"])
+    assert _why(state, ctx, text) == []
+    assert (13591643.7, "whole_as_member") in _why(state, ctx, "Bang SP có doanh thu 13.591.643,70.")
 
 
 def test_a_total_given_as_the_top_state_is_flagged(world):
@@ -659,3 +661,65 @@ def test_a_refusal_detail_dict_is_never_a_reader_sentence():
                  "detail": {"requested_dimension": "a", "charts_with_dimension": [686]}}) == ""
     assert _why({"ok": False, "error": "failed to load", "detail": {"k": 1}}) == "failed to load"
     assert _why({"ok": False, "error": "e", "detail": "column x missing"}) == "column x missing"
+
+
+# ── production pilot round: reversed baseline from the tool itself ───────────
+
+def test_a_tool_change_measured_backwards_is_withheld(world):
+    """Acceptance run 4176: compare_periods called with period_a=Q3, period_b=Q4;
+    the tool reported -29.85% (Q4 → Q3) and it was published for "Q4 so với Q3"."""
+    ctx, state = world("Doanh thu quý 4/2017 so với quý 3/2017 tăng hay giảm bao nhiêu phần trăm?")
+    res = _compare(1696404.85, 2418404.97, -29.85)
+    res["data"]["measure"] = "dataset_table_438.total_revenue"
+    res["data"]["current"]["label"], res["data"]["baseline"]["label"] = "2017-Q3", "2017-Q4"
+    _rec(state, "compare_periods", res, {"chart_id": MONTHLY})
+    assert (29.85, "wrong_period") in _why(state, ctx, "Doanh thu giảm 29.85% so với quý trước.")
+
+
+def test_the_same_change_measured_forwards_is_published(world):
+    ctx, state = world("Doanh thu quý 4/2017 so với quý 3/2017 tăng hay giảm bao nhiêu phần trăm?")
+    res = _compare(2418404.97, 1696404.85, 42.56)
+    res["data"]["measure"] = "dataset_table_438.total_revenue"
+    res["data"]["current"]["label"], res["data"]["baseline"]["label"] = "2017-Q4", "2017-Q3"
+    _rec(state, "compare_periods", res, {"chart_id": MONTHLY})
+    assert _why(state, ctx, "Doanh thu quý 4/2017 tăng 42.56% so với quý 3/2017.") == []
+
+
+# ── production pilot round: the sentence says whose figure it is ─────────────
+
+def _states(ctx, state):
+    _rec(state, "rank_values", derived.tool_rank_values(ctx, {"chart_id": STATE_ORDERS_CHART, "n": 5}),
+         {"chart_id": STATE_ORDERS_CHART})
+
+
+def test_one_members_figure_given_to_a_member_named_in_words_is_withheld(world):
+    """Acceptance run 4245: SP's figure published as Minas Gerais's."""
+    ctx, state = world("Bang Minas Gerais có bao nhiêu đơn hàng?", asked=("order_count",))
+    _states(ctx, state)
+    assert (41746.0, "other_member") in _why(state, ctx, "Bang Minas Gerais có 41,746 đơn hàng.")
+
+
+def test_a_members_figure_named_with_its_data_label_is_published(world):
+    ctx, state = world("Bang Minas Gerais có bao nhiêu đơn hàng?", asked=("order_count",))
+    _states(ctx, state)
+    assert _why(state, ctx, "Bang Minas Gerais (MG) có 11,635 đơn hàng.") == []
+    assert _why(state, ctx, "MG có 11,635 đơn hàng.") == []
+
+
+def test_the_whole_total_given_to_the_asked_member_is_withheld_but_framed_as_whole_is_not(world):
+    """Acceptance runs 4465/4507: the report total published as SP's revenue."""
+    ctx, state = world("Bang SP có bao nhiêu đơn hàng?", asked=("order_count",))
+    _value(state, 99441.0, "dataset_table_437.order_count")
+    assert (99441.0, "whole_as_member") in _why(state, ctx, "Bang SP có 99,441 đơn hàng.")
+    assert _why(state, ctx, "Báo cáo không tách theo bang; tổng số đơn của toàn báo cáo là 99,441.") == []
+
+
+def test_the_asked_member_phrase_is_read_from_the_question():
+    from types import SimpleNamespace
+
+    ctx = SimpleNamespace(allowed_chart_ids={686}, chart_meta={686: {
+        "name": "Olist · Doanh thu theo danh mục",
+        "fields": {"dimensions": [{"field": "dataset_table_445.product_category_name_english"}]}}})
+    t = {"dimension": "product_category_name_english"}
+    got = CC._asked_member(ctx, t, "Danh mục đồ giường và phòng tắm (bed bath table) có doanh thu bao nhiêu?")
+    assert got == ["dogiuongvaphongtam", "bedbathtable"]
