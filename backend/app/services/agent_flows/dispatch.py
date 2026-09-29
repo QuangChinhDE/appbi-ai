@@ -397,7 +397,33 @@ BLOCK_MESSAGES = {
     ),
     "binding_broken": "Trợ lý đang được cấu hình lại cho báo cáo này.",
     "not_published": "Trợ lý của link này chưa có bản phát hành nào.",
+    "v3_disabled": (
+        "Trợ lý này dùng tính năng Agent Flow V3 đang trong giai đoạn thử nghiệm và chưa được "
+        "mở cho người xem. / This assistant uses Agent Flow V3 features that are not yet "
+        "open to viewers."
+    ),
 }
+
+
+def v3_capabilities(flow: Any) -> list[str]:
+    """The V3-only capabilities a flow uses: Skill steps and `skill:` grants."""
+    from app.services.agent_flows.contract import SKILL_GRANT_PREFIX
+
+    found: list[str] = []
+    for n in flow.all_nodes():
+        if getattr(n, "type", "") == "skill":
+            found.append(f"skill step {getattr(n, 'key', '')}")
+        for g in getattr(n, "tools", None) or []:
+            if str(getattr(g, "tool", "") or "").startswith(SKILL_GRANT_PREFIX):
+                found.append(str(g.tool))
+    return found
+
+
+def v3_blocked_for_readers(flow: Any) -> bool:
+    """Pilot disabled (settings.AGENT_FLOW_V3_ENABLED false) and the flow needs V3."""
+    from app.core.config import settings
+
+    return not bool(getattr(settings, "AGENT_FLOW_V3_ENABLED", False)) and bool(v3_capabilities(flow))
 
 
 async def run_for_link(
@@ -420,6 +446,8 @@ async def run_for_link(
     run_id = new_run_id()
     binding, row, flow, problem = resolve_for_link(db, link=link, dashboard=dashboard)
 
+    if not problem and flow is not None and v3_blocked_for_readers(flow):
+        problem = "v3_disabled"
     if problem or flow is None or row is None:
         out = blocked(run_id, BLOCK_MESSAGES.get(problem, BLOCK_MESSAGES["not_configured"]), problem or "not_configured")
         _record_blocked(db, out, binding, question, session_key, link, dashboard)
@@ -1016,6 +1044,14 @@ async def run_for_chat_thread(
             ),
             problem or "not_published",
         )
+        _record_chat_blocked(db, out, thread, question)
+        yield AgentEvent(type="text", text=out.answer.plain_text())
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
+        yield AgentEvent(type="done")
+        return
+
+    if v3_blocked_for_readers(flow):
+        out = blocked(run_id, BLOCK_MESSAGES["v3_disabled"], "v3_disabled")
         _record_chat_blocked(db, out, thread, question)
         yield AgentEvent(type="text", text=out.answer.plain_text())
         yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
