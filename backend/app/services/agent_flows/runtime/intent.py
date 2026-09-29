@@ -101,9 +101,13 @@ def charts_for(intent: dict, vocab: dict, limit: int = 3) -> list[dict]:
                     return 0
                 return 1 if any(looks_like_time_name(d) for d in dims) and len(dims) == 1 else 2
             return 0 if not dims else 2
-        for cid, dims, title in sorted(rows, key=rank)[:limit]:
-            if rank((cid, dims, title)) < 3:
-                out.append({"chart_id": cid, "measure": m, "by": dims, "title": title})
+        ranked = sorted(rows, key=rank)
+        fitting = [r for r in ranked if rank(r) < 3]
+        # No chart carries this measure by the asked breakdown: still name the
+        # measure's own charts (live 3ac706e6 run 7207 got none, searched with the
+        # breakdown and gave up) — the answer can then say the breakdown is absent.
+        for cid, dims, title in (fitting or ranked)[:limit]:
+            out.append({"chart_id": cid, "measure": m, "by": dims, "title": title})
     return out[: limit * 2]
 
 
@@ -465,8 +469,16 @@ _RELATIVE_CUES = ("gan nhat", "moi nhat", "hien tai", "thang nay", "thang truoc"
                   "previous", "this month", "current", "prior")
 
 
+#: "mỗi lần / mỗi đơn / mỗi khách" is PER UNIT, not a breakdown (live 3ac706e6 run
+#: 7207: "Trung bình mỗi lần thanh toán trả góp" kept a breakdown nobody asked for).
+_PER_UNIT_NOUNS = {"lan", "don", "khach", "nguoi", "san", "pham", "giao", "dich", "ky", "luot"}
+
+
 def _has_cue(text: str, cues) -> bool:
-    folded = " " + " ".join(_words(text)) + " "
+    ws = _words(text)
+    kept = [w for i, w in enumerate(ws)
+            if not (w == "moi" and i + 1 < len(ws) and ws[i + 1] in _PER_UNIT_NOUNS)]
+    folded = " " + " ".join(kept) + " "
     return any(f" {c} " in folded for c in cues)
 
 
@@ -538,6 +550,17 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
     if model.get("periods") and not (named_periods(question) or relative or model.get("followup")):
         model["notes"].append(f"period not asked: {model['periods']}")
         model["periods"] = []
+    # A PERIOD RELATIVE TO THE DATA IS THE TOOL'S TO CHOOSE. Live 3ac706e6 run 7223
+    # (critical): "GMV tháng gần nhất so với tháng trước" was resolved to 2018-09 vs
+    # 2018-08 from the data's last row — a PARTIAL month; the Skill's compare_periods
+    # (mom) rightly compared the last complete months (2018-08 vs 2018-07, -5.23%),
+    # and that correct change was then judged "another period's". Kept as a hint;
+    # a follow-up relative to the previous question's explicit period keeps it.
+    relative_hint = []
+    if relative and model.get("periods") and not named_periods(question) and not named_periods(previous or ""):
+        relative_hint = list(model["periods"])
+        model["notes"].append(f"relative period left to the tools: {relative_hint}")
+        model["periods"] = []
     better = titled_measure(question, model.get("measures") or [], vocab)
     if better:
         model["notes"].append(f"measure by the question's own words: {better} "
@@ -551,6 +574,9 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
         model["notes"].append(f"dimension not asked: {model['dimension']}")
         model["dimension"] = None
     out = merge(model, floor, question)
+    if relative_hint:
+        out["periods"] = []
+        out["relative_hint"] = relative_hint
     if not model.get("dimension") and out.get("dimension") and not asks_breakdown(question, previous, out):
         out["dimension"] = None
     try:
@@ -585,6 +611,10 @@ def describe_for_prompt(intent: dict, locale: str = "vi") -> str:
         parts.append("kỳ: " + ", ".join(_label(p) for p in intent["periods"]))
     if intent.get("baseline"):
         parts.append("so với: " + _label(intent["baseline"]))
+    if intent.get("relative_hint"):
+        parts.append("kỳ được hỏi là TƯƠNG ĐỐI (gần nhất / trước đó): để công cụ chọn kỳ TRỌN VẸN gần "
+                     "nhất (compare_periods mode mom/qoq/yoy) và nêu đúng kỳ công cụ đã so sánh — kỳ cuối "
+                     "trong dữ liệu có thể chưa trọn kỳ")
     if intent.get("charts"):
         parts.append("biểu đồ đo đúng điều này (dùng chart_id này, không đoán): " + "; ".join(
             f"{c['chart_id']} = {c['title'] or c['measure']}" for c in intent["charts"][:4]))
