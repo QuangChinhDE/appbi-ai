@@ -52,8 +52,9 @@ from app.services.filter_layered_merge import (
     DEFAULT_PAGE_ID,
     DISCLOSE_KEY,
     canonical_link_entry,
-    link_replaced_field_keys,
     disclosed_applied_filters,
+    enforce_author_bounds,
+    hard_bounds_on_field,
     LINK_ENTRY_EMPTY,
     link_entry_state,
     apply_link_scope_bounds,
@@ -61,7 +62,6 @@ from app.services.filter_layered_merge import (
     malformed_link_entries,
     page_scope_bounds,
     public_viewer_visible_entries,
-    same_field_allow_list,
     link_entry_has_value,
     link_entry_is_scope,
     link_filters_a_viewer_may_see,
@@ -71,6 +71,7 @@ from app.services.filter_layered_merge import (
     split_dashboard_filters_by_public_mode,
     split_link_filters_locked_vs_hidden,
 )
+from app.services.chart_contracts import normalize_filter_conditions
 
 # Keep this at module scope as well as inside the workspace router factory.
 # Some deployed builds expose the cookie helper as a module-level function;
@@ -581,7 +582,9 @@ def _sanitize_public_viewer_filters(
 
         _, field_name = matched_field.split(".", 1)
         sanitized.append({
-            **filter_condition,
+            # `_`-keys are the server's own markers (_hard_bound, _disclose,
+            # _layer_source): a viewer's filter never sets them.
+            **{k: v for k, v in filter_condition.items() if not str(k).startswith("_")},
             "field": field_name,
             "fieldKey": matched_field,
             "semanticField": matched_field,
@@ -674,9 +677,16 @@ def _build_public_chart_filters(
     page_ids: list[str] | None = None,
     chart_dataset_id: Any = None,
     context_for_log: str = "public_chart",
+    hard_bounds_out: list[dict] | None = None,
 ) -> list[dict]:
     """Phase-B (PBI-parity rework) — single layered merge for every
     public endpoint that fetches chart data.
+
+    ``hard_bounds_out`` (optional) receives every constraint no viewer choice
+    can relax, UNMERGED — page scope, the report's 🔒/🚫 filters, the link's
+    locks and 'limit' allow-lists. The distinct endpoint needs them apart from
+    the merged list, where a pick on the same field was intersected into the
+    page bound (keeping that would pin the dropdown to the current pick).
 
     Precedence (see docs/filter-semantics.md §3):
 
@@ -771,16 +781,29 @@ def _build_public_chart_filters(
     # server-side so a crafted request can't escape the allow-list.
     merged = apply_link_scope_bounds(merged, scope_link)
     # Page scope — resolved HERE from the stored dashboard for the page(s) the
-    # chart is on, not trusted from the request. A field the link manages is
-    # skipped: its lock replaces the page filter, exactly as the served
-    # structure shows (see _shape_public_structure).
-    if page_ids:
-        merged = apply_page_scope_bounds(merged, page_scope_bounds(
-            getattr(dash, "pages_config", None) or [],
-            page_ids,
-            exclude_field_keys=link_replaced_field_keys(link_filters_config),
-            dataset_id=chart_dataset_id,
-        ))
+    # chart is on, not trusted from the request. A link's lock or kill-marker
+    # on the same field does not replace it: the two AND (DoD 01).
+    page_bounds = page_scope_bounds(
+        getattr(dash, "pages_config", None) or [],
+        page_ids,
+        dataset_id=chart_dataset_id,
+    ) if page_ids else []
+    if page_bounds:
+        merged = apply_page_scope_bounds(merged, page_bounds)
+    # A 🔒/🚫 dashboard filter the link's lock replaced (same field) or its
+    # kill-marker removed comes back, ANDed: a link narrows the report, it
+    # never removes the author's boundary.
+    merged = enforce_author_bounds(merged, authoritative_filters)
+    if hard_bounds_out is not None:
+        hard_bounds_out.extend(page_bounds)
+        hard_bounds_out.extend(normalize_filter_conditions(authoritative_filters))
+        hard_bounds_out.extend(normalize_filter_conditions(locked_link))
+        for scope in scope_link:
+            allow = scope.get("value")
+            allow = [str(v) for v in allow if v not in (None, "")] if isinstance(allow, (list, tuple)) else (
+                [str(allow)] if allow not in (None, "") else [])
+            if allow:
+                hard_bounds_out.append({**scope, "operator": "in", "value": allow})
     if merge_diagnostics:
         logger.info(
             "filter_merge context=%s dropped=%s",
@@ -945,13 +968,11 @@ def _chart_dataset_id(dash: Dashboard, chart_id: int) -> Any:
 def _public_page_scope_by_chart(dash: Dashboard, link_filters_config: list[dict] | None) -> dict[int, list[dict]]:
     """Per chart, the page-scope bounds of every page it is on — for the AI,
     which reads a chart without a page (never wider than any of its pages)."""
-    replaced = link_replaced_field_keys(link_filters_config)
     out: dict[int, list[dict]] = {}
     for chart_id in {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}:
         bounds = page_scope_bounds(
             getattr(dash, "pages_config", None) or [],
             _public_chart_page_ids(dash, chart_id, None),
-            exclude_field_keys=replaced,
             dataset_id=_chart_dataset_id(dash, chart_id),
         )
         if bounds:
@@ -981,8 +1002,11 @@ def _shaped_public_config(
     """What an anonymous viewer is served of the report's filter configuration:
     ``(slicers_config, filters_config, pages_config)``.
 
-    - a field this link enforces or kills: removed from every control and page
-      filter (its lock replaces them; the data path skips the page bound too);
+    - a field this link enforces or kills: the viewer gets no control on it —
+      its slicers and visible (overridable) dashboard defaults go. The report's
+      own boundaries on it stay and still apply: a 🔒 dashboard filter is
+      announced read-only, and a page filter is served read-only (🔒), since
+      the link's condition ANDs with it rather than replacing it;
     - a 🚫 hidden dashboard or page filter-pane entry: removed. It is applied
       from the stored dashboard (_build_public_chart_filters / page scope); its
       field and value never leave the server — not in the JSON, the state, the
@@ -990,7 +1014,6 @@ def _shaped_public_config(
     - 🔒 and visible entries stay (a lock is announced read-only).
     """
     managed = link_managed_field_keys(link_filters_config)
-    replaced = link_replaced_field_keys(link_filters_config)
 
     def _key(entry: dict) -> str:
         return (entry.get("semanticField") or entry.get("field") or "").strip().lower() if isinstance(entry, dict) else ""
@@ -998,13 +1021,21 @@ def _shaped_public_config(
     def _managed(entry: dict) -> bool:
         return _key(entry) in managed
 
-    def _replaced(entry: dict) -> bool:
-        # A page filter goes only where the link's condition REPLACES it — the
-        # data path skips exactly those (link_replaced_field_keys).
-        return _key(entry) in replaced
+    def _mode(entry: dict) -> str:
+        return str(entry.get("publicMode") or entry.get("public_mode") or "visible").lower()
+
+    def _read_only(entry: dict) -> dict:
+        # Applied whatever the viewer does (the link ANDs with it): state it,
+        # offer no control.
+        if _managed(entry) and _mode(entry) == "visible":
+            return {**entry, "publicMode": "locked"}
+        return entry
 
     slicers = [s for s in (getattr(dash, "slicers_config", None) or []) if not _managed(s)]
-    filters = [f for f in public_viewer_visible_entries(dash.filters_config) if not _managed(f)]
+    filters = [
+        f for f in public_viewer_visible_entries(dash.filters_config)
+        if not (_managed(f) and _mode(f) == "visible")
+    ]
     pages = []
     for page in (dash.pages_config or []):
         if isinstance(page, dict):
@@ -1012,9 +1043,7 @@ def _shaped_public_config(
             if page.get("slicers"):
                 page["slicers"] = [s for s in page["slicers"] if not _managed(s)]
             if page.get("filters"):
-                page["filters"] = [
-                    f for f in public_viewer_visible_entries(page["filters"]) if not _replaced(f)
-                ]
+                page["filters"] = [_read_only(f) for f in public_viewer_visible_entries(page["filters"])]
         pages.append(page)
     return slicers, filters, pages
 
@@ -1031,6 +1060,76 @@ def _shape_public_structure(dash: Dashboard, link_filters_config: list[dict] | N
     _set_committed(dash, "slicers_config", slicers)
     _set_committed(dash, "filters_config", filters)
     _set_committed(dash, "pages_config", pages)
+
+
+def _public_field_refs(dash: Any) -> set[str]:
+    """Every string the SERVED report carries: its tiles' configs and its served
+    controls/filters (already shaped — 🚫 entries are gone). A field is part of
+    the public model only if one of these names it: the model used to list every
+    view's every field, so a hidden field's EXISTENCE (and label) reached an
+    anonymous viewer although nothing on the page uses it. A field a served chart
+    reads is already visible in that chart's config."""
+    refs: set[str] = set()
+
+    def _collect(obj: Any) -> None:
+        if isinstance(obj, str):
+            refs.add(obj.strip().lower())
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                _collect(v)
+        elif isinstance(obj, (list, tuple)):
+            for v in obj:
+                _collect(v)
+
+    for dc in getattr(dash, "dashboard_charts", None) or []:
+        _collect((dc.chart.config if getattr(dc, "chart", None) else None) or {})
+    _collect(list(getattr(dash, "slicers_config", None) or []))
+    _collect(list(getattr(dash, "filters_config", None) or []))
+    _collect(list(getattr(dash, "pages_config", None) or []))
+    return refs
+
+
+def _trim_model_for_public(m: dict, refs: set[str]) -> dict:
+    """SECURITY: expose ONLY the label + measure-format of the fields the served
+    report references (buildSemanticLabelMap/FormatMap). Strip measure
+    expressions/SQL/where, join/explore definitions, source-table names and any
+    view/field internals — anonymous viewers must not see the dataset's
+    structure/logic, only what's needed to label the charts already shown."""
+    def _referenced(view_name: Any, field_name: Any) -> bool:
+        name = str(field_name or "").strip().lower()
+        return bool(name) and (f"{str(view_name or '').strip().lower()}.{name}" in refs or name in refs)
+
+    views_out = []
+    for v in (m.get("views") or []):
+        if not isinstance(v, dict):
+            continue
+        dims = [
+            {"name": d.get("name"), "label": d.get("label")}
+            for d in (v.get("dimensions") or [])
+            if isinstance(d, dict) and d.get("name") and _referenced(v.get("name"), d.get("name"))
+        ]
+        meas = []
+        for me in (v.get("measures") or []):
+            if not isinstance(me, dict) or not me.get("name") or not _referenced(v.get("name"), me.get("name")):
+                continue
+            fmt = me.get("format")
+            meas.append({
+                "name": me.get("name"),
+                "label": me.get("label"),
+                # Display-only: the kind, the currency CODE (so a BRL measure is
+                # not shown in dollars) and decimals.
+                "format": {
+                    "kind": fmt.get("kind"),
+                    "currency": fmt.get("currency"),
+                    "decimals": fmt.get("decimals"),
+                } if isinstance(fmt, dict) else None,
+                # The aggregation word only (sum/avg/…), never its SQL: a report
+                # finding may state a share of a total only for an additive measure.
+                "type": me.get("type") if me.get("type") in _PUBLIC_MEASURE_TYPES else None,
+            })
+        if dims or meas:
+            views_out.append({"name": v.get("name"), "dimensions": dims, "measures": meas})
+    return {"views": views_out}
 
 
 def _public_viewer_filter_inventory(dash: Dashboard) -> list[dict]:
@@ -1408,51 +1507,13 @@ def get_public_dashboard(
                     _ds_ids.add(int(ds_id))
                 except (TypeError, ValueError):
                     pass
-        def _trim_model_for_public(m: dict) -> dict:
-            # SECURITY: expose ONLY the field label + measure-format the public
-            # tiles need (buildSemanticLabelMap/FormatMap). Strip measure
-            # expressions/SQL/where, join/explore definitions, source-table
-            # names and any view/field internals — anonymous viewers must not
-            # see the dataset's structure/logic, only what's needed to label
-            # the charts already shown.
-            views_out = []
-            for v in (m.get("views") or []):
-                if not isinstance(v, dict):
-                    continue
-                dims = [
-                    {"name": d.get("name"), "label": d.get("label")}
-                    for d in (v.get("dimensions") or [])
-                    if isinstance(d, dict) and d.get("name")
-                ]
-                meas = []
-                for me in (v.get("measures") or []):
-                    if not isinstance(me, dict) or not me.get("name"):
-                        continue
-                    fmt = me.get("format")
-                    meas.append({
-                        "name": me.get("name"),
-                        "label": me.get("label"),
-                        # Display-only: the kind, the currency CODE (so a BRL
-                        # measure is not shown in dollars) and decimals.
-                        "format": {
-                            "kind": fmt.get("kind"),
-                            "currency": fmt.get("currency"),
-                            "decimals": fmt.get("decimals"),
-                        } if isinstance(fmt, dict) else None,
-                        # The aggregation word only (sum/avg/…), never its SQL:
-                        # a report finding may state a share of a total only for
-                        # an additive measure.
-                        "type": me.get("type") if me.get("type") in _PUBLIC_MEASURE_TYPES else None,
-                    })
-                views_out.append({"name": v.get("name"), "dimensions": dims, "measures": meas})
-            return {"views": views_out}
-
         _models: dict = {}
+        _refs = _public_field_refs(dash)
         for ds_id in _ds_ids:
             try:
                 m = get_dataset_model(db, ds_id)
                 if m:
-                    _models[str(ds_id)] = _trim_model_for_public(m)
+                    _models[str(ds_id)] = _trim_model_for_public(m, _refs)
             except Exception:
                 pass
         dash.public_dataset_models = _models
@@ -3165,16 +3226,21 @@ def get_public_filter_distinct_values(
         viewer_filters,
     )
 
+    raw_hard_bounds: list[dict] = []
     combined_filters = _build_public_chart_filters(
         dash,
         public_filters,
         sanitized_viewer_filters,
         page_ids=_public_request_page_ids(dash, page_id),
         context_for_log=f"distinct_values:{token}:{dataset_id}:{field}",
+        hard_bounds_out=raw_hard_bounds,
     )
-    # The dropdown self-strips its own field, which also drops a HARD bound on
-    # it (page scope, a 🔒/🚫 dashboard filter): re-apply those to the values.
-    hard_allow = same_field_allow_list(combined_filters, dataset_id, field)
+    # The dropdown self-strips every condition on its own field (so it is not
+    # pinned to the current pick) — which also dropped a HARD bound on it. The
+    # raw hard bounds on this field go back into the query marked to survive
+    # the strip: the engine applies every operator, not only `in` lists.
+    own_field_bounds = hard_bounds_on_field(raw_hard_bounds, dataset_id, field)
+    combined_filters = [*combined_filters, *own_field_bounds]
 
     try:
         # Fetch the FULL searched set (server-side search over the cached full
@@ -3192,6 +3258,14 @@ def get_public_filter_distinct_values(
             snapshot_ttl_minutes=_resolve_public_snapshot_ttl(_distinct_appearance),
         )
         values = result.get("values", [])
+        # A hard bound on this field the query could not apply must not widen
+        # the list: offer nothing rather than values the report forbids.
+        if own_field_bounds and any(
+            str(d.get("semantic_field") or d.get("field") or "").strip().lower()
+            in {str(b.get(k) or "").strip().lower() for b in own_field_bounds for k in ("semanticField", "fieldKey", "field")}
+            for d in (result.get("dropped_filters") or []) if isinstance(d, dict)
+        ):
+            values = []
         # PBI-parity (core): a slicer's dropdown cascades STRICTLY by the other
         # active filters (page-filters + sibling slicers), same as the builder.
         # When the cascade legitimately yields no rows we return the EMPTY list
@@ -3209,8 +3283,6 @@ def get_public_filter_distinct_values(
         if scope_allow is not None:
             allow_set = {str(v) for v in scope_allow}
             values = [v for v in values if str(v) in allow_set]
-        if hard_allow is not None:
-            values = [v for v in values if str(v) in hard_allow]
         total = len(values)
         page = values[offset:offset + limit]
         return {

@@ -94,6 +94,9 @@ interface ChartTileProps {
    *  a live toggle writes — never the view layout, which carries unsaved drags
    *  and any AI preview. */
   getPersistedLayout?: (dashboardChartId: number) => Record<string, any> | undefined;
+  /** Stage a layout edit in the builder's draft buffer (undoable, published with
+   *  the draft). When given, NO tile edit writes the live row. */
+  onPatchLayout?: (dashboardChartId: number, patch: Record<string, any>) => void;
   /** AI Design mode. When true, click-to-focus is the primary gesture: the tile
    *  is NOT a drag handle (so a click anywhere — title included — reliably
    *  focuses it for a scoped restyle instead of being swallowed by the grid's
@@ -265,6 +268,7 @@ function ChartTileBase({
   onFocus,
   onToggleLock,
   getPersistedLayout,
+  onPatchLayout,
   aiDesignMode = false,
   editingBy = null,
   dashboardParams,
@@ -623,6 +627,7 @@ function ChartTileBase({
     // Skip the initial mount — only persist when user actually changes filters
     if (!canEdit || havingFiltersKey === initialHavingRef.current) return;
     initialHavingRef.current = havingFiltersKey;
+    if (onPatchLayout) { onPatchLayout(dashboardChartId, { havingFilters }); return; }
     dashboardApi.updateLayout(dashboardId, [{
       id: dashboardChartId,
       layout: { ...(getPersistedLayout?.(dashboardChartId) ?? currentLayout), havingFilters },
@@ -649,13 +654,14 @@ function ChartTileBase({
     if (!canEdit) return;
     const next = !highlightEnabled;
     setHlOverride(next); // instant visual — no wait for the persist round-trip
+    if (onPatchLayout) { onPatchLayout(dashboardChartId, { highlightEnabled: next }); return; }
     dashboardApi.updateLayout(dashboardId, [{
       id: dashboardChartId,
       layout: { ...(getPersistedLayout?.(dashboardChartId) ?? currentLayout), highlightEnabled: next },
     }]).then(() => {
       queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     }).catch(() => { /* layout save is best-effort */ });
-  }, [canEdit, dashboardId, dashboardChartId, currentLayout, highlightEnabled, queryClient]);
+  }, [canEdit, dashboardId, dashboardChartId, currentLayout, highlightEnabled, queryClient, onPatchLayout, getPersistedLayout]);
 
   // Position lock: a locked chart can't be dragged or resized (the grid marks it
   // `static`), and no AI design, template re-arrange or tidy may move it. It is
@@ -679,13 +685,14 @@ function ChartTileBase({
     if (!canEdit) return;
     const next = !dateGrainLocked;
     setGrainLockOverride(next);
+    if (onPatchLayout) { onPatchLayout(dashboardChartId, { lockDateGrain: next }); return; }
     dashboardApi.updateLayout(dashboardId, [{
       id: dashboardChartId,
       layout: { ...(getPersistedLayout?.(dashboardChartId) ?? currentLayout), lockDateGrain: next },
     }]).then(() => {
       queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     }).catch(() => { /* layout save is best-effort */ });
-  }, [canEdit, dashboardId, dashboardChartId, currentLayout, dateGrainLocked, queryClient]);
+  }, [canEdit, dashboardId, dashboardChartId, currentLayout, dateGrainLocked, queryClient, onPatchLayout, getPersistedLayout]);
 
   const effectiveStyleConfig = useMemo(
     () => getEffectiveDashboardChartStyleConfig(chart, currentLayout),
@@ -749,6 +756,10 @@ function ChartTileBase({
       )
         ? { ...currentStyleOverride, chartTitle: newTitle }
         : { chartTitle: newTitle };
+      if (onPatchLayout) {
+        onPatchLayout(dashboardChartId, { custom_title: newTitle, styleConfigOverride });
+        return;
+      }
       await dashboardApi.updateLayout(dashboardId, [{
         id: dashboardChartId,
         layout: { ...(getPersistedLayout?.(dashboardChartId) ?? currentLayout), custom_title: newTitle, styleConfigOverride },
@@ -1733,6 +1744,7 @@ function ChartTileBase({
         currentLayout={currentLayout}
         allowAppearanceEdit={allowAppearanceEdit}
         initialTab={detailModalInitialTab}
+        onPatchLayout={onPatchLayout ? (patch) => onPatchLayout(dashboardChartId, patch) : undefined}
       />
     </div>
   );

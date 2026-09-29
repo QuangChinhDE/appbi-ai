@@ -2822,21 +2822,28 @@ export function ExploreEditor({
         // untouched; the report changes when its author publishes.
         const baseName = chartNameInput.trim() || chart?.name || 'Chart';
         const reportName = saveScopeAsk?.reports.find((r) => r.id === reportContext.dashboardId)?.name;
-        const copy = await createChart.mutateAsync({
-          name: reportName ? t('explore.saveScope.copyName', { name: baseName, report: reportName }) : baseName,
-          description: chartDescInput.trim() || undefined,
+        // One request: the copy, its metadata and parameters, and the draft swap
+        // are one server transaction — a failure leaves no stray chart.
+        const alreadyThisReportsCopy = (chart?.config as any)?.reportCopy?.dashboardId === reportContext.dashboardId;
+        const next = await dashboardApi.forkChartForReport(reportContext.dashboardId, reportContext.tileId, {
+          name: alreadyThisReportsCopy || !reportName ? baseName : t('explore.saveScope.copyName', { name: baseName, report: reportName }),
+          description: chartDescInput.trim() || null,
           chart_type: chartType as any,
           dataset_table_id: selectedTableId,
-          config: normalizedExploreConfig,
+          config: normalizedExploreConfig as unknown as Record<string, any>,
+          metadata: hasMetadata ? (metaPayload as unknown as Record<string, any>) : null,
+          parameters: paramRows as unknown as Array<Record<string, any>>,
         });
-        await Promise.all([
-          hasMetadata ? upsertMetadata.mutateAsync({ id: copy.id, data: metaPayload }) : Promise.resolve(),
-          paramRows.length ? replaceParams.mutateAsync({ id: copy.id, params: paramRows }) : Promise.resolve(),
-        ]);
-        const next = await dashboardApi.swapChartInDraft(reportContext.dashboardId, reportContext.tileId, copy.id);
-        const newTile = (next.dashboard_charts ?? []).find((dc) => dc.chart_id === copy.id);
+        // The copy is edited in place (same tile) or swapped in as a new draft tile.
+        const tiles = next.dashboard_charts ?? [];
+        const newTile = tiles.find((dc) => dc.id === reportContext.tileId)
+          ?? tiles
+            .filter((dc) => (dc.layout as any)?.draftOnly
+              && (dc.chart?.config as any)?.reportCopy?.dashboardId === reportContext.dashboardId)
+            .sort((a, b) => b.id - a.id)[0];
+        const copyId = newTile?.chart_id ?? chartId;
         toast.success(t('explore.saveScope.savedForReport'));
-        router.replace(`/explore/${copy.id}?fromReport=${reportContext.dashboardId}${newTile ? `&tile=${newTile.id}` : ''}`);
+        router.replace(`/explore/${copyId}?fromReport=${reportContext.dashboardId}${newTile ? `&tile=${newTile.id}` : ''}`);
         return;
       }
       if (chartId !== null) {

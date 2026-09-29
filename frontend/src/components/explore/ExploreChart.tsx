@@ -317,6 +317,10 @@ interface CustomLegendProps {
   onToggle: (key: string) => void;
   onColorChange?: (key: string, color: string) => void;
   onColorReset?: (key: string) => void;
+  /** Wrap a top/bottom legend onto more rows instead of scrolling one row:
+   *  for a legend that names CATEGORIES (a pie's slices), where a scrolled-away
+   *  entry is a slice nobody can identify. */
+  wrap?: boolean;
 }
 function CustomLegend({
   payload = [],
@@ -327,6 +331,7 @@ function CustomLegend({
   onToggle,
   onColorChange,
   onColorReset,
+  wrap = false,
 }: CustomLegendProps) {
   // Phase-15.88 — controlled Popover state. Earlier each <Popover.Root>
   // was uncontrolled, defaulting to closed. Picking a swatch fired
@@ -365,10 +370,10 @@ function CustomLegend({
         // flips to start-aligned once it overflows, so the first item is never
         // clipped behind the centering offset. Vertical (side) legends keep
         // wrapping into columns as before.
-        flexWrap: layout === 'vertical' ? 'wrap' : 'nowrap',
-        overflowX: layout === 'vertical' ? 'visible' : 'auto',
+        flexWrap: layout === 'vertical' || wrap ? 'wrap' : 'nowrap',
+        overflowX: layout === 'vertical' || wrap ? 'visible' : 'auto',
         overflowY: 'hidden',
-        gap: layout === 'vertical' ? 4 : 14,
+        gap: layout === 'vertical' ? 4 : wrap ? '4px 12px' : 14,
         justifyContent: layout === 'vertical' ? 'center' : 'safe center',
         maxWidth: '100%',
         scrollbarWidth: 'thin',
@@ -949,6 +954,11 @@ function buildDataLabelContent(opts: {
     let cy = y;
     let textAnchor: 'start' | 'middle' | 'end' = 'middle';
     if (orientation === 'vertical') {
+      // A value label wider than its bar's slot lands on the neighbouring bars
+      // (a narrow tile: "R$302.6K" over three bars). Show it only when it fits
+      // the bar plus the gap either side — hidden labels keep the value in the
+      // tooltip. An author-rotated label is theirs to place.
+      if (rotation === 0 && width > 0 && approxWidth > width * 1.6 + 4) return null;
       cx = x + width / 2;
       switch (position) {
         case 'top':       cy = y - 4; break;
@@ -2605,7 +2615,7 @@ function ExploreChartInner({
     onStyleConfigChange({ ...style, seriesColors: next });
   }, [onStyleConfigChange, style]);
   const legendLayout: 'horizontal' | 'vertical' = legendPos === 'left' || legendPos === 'right' ? 'vertical' : 'horizontal';
-  const renderLegend = () => showLegend ? (
+  const renderLegend = (wrap = false) => showLegend ? (
     <Legend
       // Phase-16.x — separate the legend's area from the plot so they never
       // collide. A BOTTOM legend sits flush at the container edge (below the
@@ -2639,6 +2649,7 @@ function ExploreChartInner({
           seriesColors={style.seriesColors}
           fontSize={fontSize}
           layout={legendLayout}
+          wrap={wrap}
           onToggle={toggleSeriesHidden}
           onColorChange={onStyleConfigChange ? handleSeriesColorChange : undefined}
           onColorReset={onStyleConfigChange ? handleSeriesColorReset : undefined}
@@ -3204,7 +3215,7 @@ function ExploreChartInner({
                   />
                 )}
               />
-              {renderLegend()}
+              {renderLegend(true)}
             </PieChart>
           </ResponsiveContainer>
         </div>

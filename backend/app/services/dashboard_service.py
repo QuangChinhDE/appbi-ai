@@ -174,6 +174,137 @@ def restore_tile_in_draft(row, user_key: str) -> bool:
     return True
 
 
+# ── Report-only chart copies ─────────────────────────────────────────────────
+# "Edit chart → only this report" makes a chart that exists FOR ONE REPORT. It
+# is marked on the chart (``config.reportCopy = {dashboardId}``) so the library
+# can say so, and so it never outlives its reason: when no tile uses it any more
+# (Discard of the swap, Publish of a newer copy, the report deleted) it is
+# deleted in the same transaction. A copy some other report now uses is kept.
+REPORT_COPY_KEY = "reportCopy"
+
+
+def is_report_copy_of(chart, dashboard_id) -> bool:
+    cfg = getattr(chart, "config", None)
+    mark = cfg.get(REPORT_COPY_KEY) if isinstance(cfg, dict) else None
+    return isinstance(mark, dict) and str(mark.get("dashboardId")) == str(dashboard_id)
+
+
+def drop_unreferenced_report_copies(db: Session, dashboard_id, chart_ids) -> List[int]:
+    """Delete, in the caller's transaction, the charts among ``chart_ids`` that
+    are this report's copies and that no tile (of any report) uses. No commit."""
+    from app.models import Chart
+    db.flush()
+    dropped: List[int] = []
+    for cid in sorted({int(c) for c in (chart_ids or []) if c}):
+        chart = db.get(Chart, cid)
+        if chart is None or not is_report_copy_of(chart, dashboard_id):
+            continue
+        if db.query(DashboardChart.id).filter(DashboardChart.chart_id == cid).first() is not None:
+            continue
+        db.delete(chart)
+        dropped.append(cid)
+    return dropped
+
+
+def swap_tile_chart_in_draft(db: Session, row, chart, user_key: str):
+    """Put ``chart`` in ``row``'s place as a DRAFT edit: a draft-only tile with the
+    same place, size, page and per-report settings, and ``row`` removed in this
+    author's draft. No commit — never both tiles, never neither."""
+    layout = strip_draft_row_keys(dict(row.layout or {}))
+    layout["draftOnly"] = True
+    layout["draftOwner"] = user_key
+    replacement = DashboardChart(
+        dashboard_id=row.dashboard_id,
+        chart_id=chart.id,
+        widget_type=row.widget_type,
+        widget_config=dict(row.widget_config or {}) if row.widget_config else row.widget_config,
+        parameters=dict(row.parameters or {}) if getattr(row, "parameters", None) else getattr(row, "parameters", None),
+        layout=layout,
+    )
+    remove_tile_in_draft(db, row, user_key)
+    db.add(replacement)
+    db.flush()
+    return replacement
+
+
+def _free_chart_name(db: Session, name: str, owner_id, exclude_chart_id=None) -> str:
+    from app.services.chart_service import _find_chart_name_conflict
+    base = (name or "Chart").strip() or "Chart"
+    candidate, n = base, 2
+    while _find_chart_name_conflict(db, candidate, owner_id=owner_id, exclude_chart_id=exclude_chart_id):
+        candidate, n = f"{base} ({n})", n + 1
+    return candidate
+
+
+def fork_chart_for_report(db: Session, dash, row, *, payload, user):
+    """"Edit chart → only this report" as ONE transaction (no commit here).
+
+    The copy is created with its metadata and parameter definitions and swapped
+    into the tile as a draft — before, the browser did create / metadata /
+    parameters / swap in four requests, and a failure after the first left a
+    stray chart in the library. When the tile already shows THIS author's
+    unpublished copy for this report, that copy is edited in place (no copy of a
+    copy). Returns ``(chart, tile)``.
+    """
+    from app.models import ChartMetadata, ChartParameter
+    from app.schemas import ChartCreate
+    from app.services.chart_semantic_service import with_chart_semantic_binding
+    user_key = str(user.id)
+    config = {**dict(payload.config or {}), REPORT_COPY_KEY: {"dashboardId": dash.id}}
+    current = getattr(row, "chart", None)
+    in_place = (
+        current is not None
+        and is_report_copy_of(current, dash.id)
+        and is_draft_only_by(row, user_key)
+        and db.query(DashboardChart.id).filter(DashboardChart.chart_id == current.id,
+                                               DashboardChart.id != row.id).first() is None
+    )
+    if in_place:
+        chart = current
+        chart.name = _free_chart_name(db, payload.name, chart.owner_id, exclude_chart_id=chart.id)
+        chart.description = payload.description
+        chart.dataset_table_id = payload.dataset_table_id
+        from app.models import ChartType
+        chart.chart_type = ChartType(payload.chart_type.value)
+        chart.config = with_chart_semantic_binding(db, payload.dataset_table_id, config, auto_generate=True)
+        flag_modified(chart, "config")
+        tile = row
+    else:
+        # A copy never carries the shared chart's bare name: in the library it
+        # must read as this report's version, not as the chart every report uses.
+        name = (payload.name or "").strip()
+        if current is not None and name.lower() == (current.name or "").strip().lower():
+            name = f"{name} ({dash.name})"
+        chart = ChartService.create(db, ChartCreate(
+            name=_free_chart_name(db, name, user.id),
+            description=payload.description,
+            dataset_table_id=payload.dataset_table_id,
+            chart_type=payload.chart_type,
+            config=config,
+        ), owner_id=user.id, commit=False)
+        tile = None
+    if payload.metadata is not None:
+        meta = db.query(ChartMetadata).filter(ChartMetadata.chart_id == chart.id).first()
+        values = payload.metadata.model_dump(exclude_unset=False)
+        if meta is None:
+            db.add(ChartMetadata(chart_id=chart.id, domain=values.get("domain"), intent=values.get("intent"),
+                                 metrics=values.get("metrics") or [], dimensions=values.get("dimensions") or [],
+                                 tags=values.get("tags") or []))
+        else:
+            for key, value in values.items():
+                setattr(meta, key, value)
+    db.query(ChartParameter).filter(ChartParameter.chart_id == chart.id).delete()
+    db.add_all([
+        ChartParameter(chart_id=chart.id, parameter_name=p.parameter_name, parameter_type=p.parameter_type,
+                       column_mapping=p.column_mapping, default_value=p.default_value, description=p.description)
+        for p in (payload.parameters or [])
+    ])
+    if tile is None:
+        tile = swap_tile_chart_in_draft(db, row, chart, user_key)
+    db.flush()
+    return chart, tile
+
+
 def normalize_narrative_config(config: dict) -> dict:
     """The one shape a narrative block is stored in.
 
@@ -444,12 +575,15 @@ class DashboardService:
     
     @staticmethod
     def delete(db: Session, dashboard_id: int) -> bool:
-        """Delete a dashboard."""
+        """Delete a dashboard — and, in the same commit, the charts that existed
+        only as ITS report-only copies and that no other report uses."""
         db_dashboard = DashboardService.get_by_id(db, dashboard_id)
         if not db_dashboard:
             return False
         
+        chart_ids = [dc.chart_id for dc in (db_dashboard.dashboard_charts or []) if dc.chart_id]
         db.delete(db_dashboard)
+        drop_unreferenced_report_copies(db, dashboard_id, chart_ids)
         db.commit()
         logger.info(f"Deleted dashboard: {db_dashboard.name}")
         return True

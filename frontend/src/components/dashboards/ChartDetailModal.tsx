@@ -46,6 +46,9 @@ interface ChartDetailModalProps {
   currentLayout?: Record<string, any> | null;
   allowAppearanceEdit?: boolean;
   initialTab?: 'appearance' | 'data';
+  /** Stage the appearance edit in the builder's draft instead of writing the
+   *  live row (the builder always passes it). */
+  onPatchLayout?: (patch: Record<string, any>) => void;
 }
 
 type DetailPanelTab = 'appearance' | 'data';
@@ -333,6 +336,7 @@ export function ChartDetailModal({
   currentLayout = null,
   allowAppearanceEdit = false,
   initialTab = 'data',
+  onPatchLayout,
 }: ChartDetailModalProps) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -549,6 +553,15 @@ export function ChartDetailModal({
     try {
       const styleOverride = buildDashboardChartStyleOverride(baseStyleConfig, draftStyleConfig);
       const nextLayout = buildDashboardChartLayoutWithStyleOverride(currentLayout, styleOverride);
+      if (onPatchLayout) {
+        // A reset is `null`, not a missing key: Publish merges the draft layout
+        // over the row, so an absent key would leave the old override live.
+        onPatchLayout({ styleConfigOverride: (nextLayout as any)?.styleConfigOverride ?? null });
+        toast.success(styleOverride
+          ? t('dashboards.chartDetail.saveUpdatedToast')
+          : t('dashboards.chartDetail.saveResetToast'));
+        return;
+      }
       await dashboardApi.updateLayout(dashboardId, [{
         id: dashboardChartId,
         layout: nextLayout,

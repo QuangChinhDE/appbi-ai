@@ -252,7 +252,7 @@ def test_delete_filter_is_one_transaction(db, monkeypatch):
     monkeypatch.setattr(api, "remove_tile_in_draft", flaky)
     with pytest.raises(HTTPException):
         api.update_dashboard_draft_filters(1, DashboardUpdateDraftFiltersRequest(
-            slicers_config=[], remove_tile_ids=[20, 21]), db, A)
+            slicers_config=[], remove_tile_ids=[20, 21], base_rev=_rev(db, A)["rev"]), db, A)
     db.expire_all()
     dash = db.query(Dashboard).filter(Dashboard.id == 1).one()
     assert not (dash.draft_snapshot or {}).get("slicers_config") and dash.draft_snapshot is None, "the entry was removed without its controls"
@@ -260,7 +260,7 @@ def test_delete_filter_is_one_transaction(db, monkeypatch):
 
     monkeypatch.setattr(api, "remove_tile_in_draft", real)
     api.update_dashboard_draft_filters(1, DashboardUpdateDraftFiltersRequest(
-        slicers_config=[], remove_tile_ids=[20, 21]), db, A)
+        slicers_config=[], remove_tile_ids=[20, 21], base_rev=_rev(db, A)["rev"]), db, A)
     assert {20, 21} <= _public_ids(db), "public lost the filter's controls before Publish"
     assert not ({20, 21} & _builder_ids(db, A))
     _discard(db)
@@ -376,6 +376,162 @@ def test_a_chart_edited_for_this_report_only_is_swapped_in_the_draft(db, monkeyp
     assert {r.chart_id for r in _rows(db).values() if r.chart_id} == {602}, "Publish did not make the swap"
 
 
+# ── Chart-instance parameters are a draft edit too (DoD 05) ─────────────────
+
+def _bind(db, params, user=A):
+    return api.update_chart_parameters(1, 60, api.DashboardUpdateChartParamsRequest(parameters=params), True, db, user)
+
+
+def _builder_params(db, user):
+    db.expire_all()
+    resp = api._serialize_dashboard_with_draft(db, db.query(Dashboard).filter(Dashboard.id == 1).one(), user)
+    return next(dc.parameters for dc in resp.dashboard_charts if dc.id == 60), resp.has_draft
+
+
+def test_binding_a_published_chart_to_a_parameter_waits_for_publish(db):
+    # Before: PATCH /parameters wrote the live row — /d changed at once and
+    # Discard could not take it back.
+    _with_published_chart_tile(db)
+    bound = {"grain": "month", "__whatifBindings": [{"param": "p", "role": "metric"}]}
+    _bind(db, bound)
+    assert _rows(db)[60].parameters == {"grain": "month"}, "the public link got the binding before Publish"
+    assert _builder_params(db, A) == (bound, True), "the author does not see their binding, or no draft bar"
+    assert _builder_params(db, B)[0] == {"grain": "month"}, "another author sees A's unpublished binding"
+    _publish(db, B)
+    assert _rows(db)[60].parameters == {"grain": "month"}, "B's publish published A's binding"
+    _discard(db, A)
+    assert _builder_params(db, A) == ({"grain": "month"}, False), "Discard did not drop the binding"
+    _bind(db, bound)
+    _publish(db, A)
+    assert _rows(db)[60].parameters == bound, "Publish did not apply the binding"
+
+
+# ── "Only this report" is one server transaction; a copy never outlives it (DoD 06)
+
+def _fork_env(db, monkeypatch):
+    from app.services import chart_service, chart_semantic_service, dataset_crud
+    monkeypatch.setattr(chart_semantic_service, "with_chart_semantic_binding", lambda _db, _t, cfg, **_k: cfg)
+    monkeypatch.setattr(chart_service, "with_chart_semantic_binding", lambda _db, _t, cfg, **_k: cfg)
+    monkeypatch.setattr(dataset_crud.DatasetCRUDService, "get_table_by_id", staticmethod(lambda _db, _id: object()))
+    _with_published_chart_tile(db)
+
+
+def _fork(db, tile=60, name="Revenue", user=A, **extra):
+    from app.schemas import ChartMetadataUpsert, ChartParameterCreate
+    body = api._ForkChartRequest(
+        name=name, chart_type="BAR", dataset_table_id=71,
+        config={"roleConfig": {"dimension": "orders.region", "metrics": [{"field": "orders.revenue", "agg": "sum"}]}},
+        metadata=ChartMetadataUpsert(domain="sales", tags=["kpi"]),
+        parameters=[ChartParameterCreate(parameter_name="date_range", parameter_type="time_range")],
+        **extra,
+    )
+    # A real user id is a UUID (the chart's owner column); the draft key is str(id) either way.
+    import uuid
+    from types import SimpleNamespace
+    author = SimpleNamespace(id=uuid.UUID(user.id), email=user.email, full_name=user.full_name)
+    return api.fork_tile_chart_for_report(1, tile, body, db, author)
+
+
+def _charts(db):
+    db.expire_all()
+    return {c.id: c for c in db.query(Chart).all()}
+
+
+def test_a_report_only_copy_is_one_transaction_with_its_metadata_and_parameters(db, monkeypatch):
+    from app.models.models import ChartMetadata, ChartParameter
+    _fork_env(db, monkeypatch)
+    _fork(db)
+    copies = [c for c in _charts(db).values() if (c.config or {}).get("reportCopy")]
+    assert len(copies) == 1 and copies[0].config["reportCopy"] == {"dashboardId": 1}, copies
+    copy = copies[0]
+    assert copy.name != "Revenue", "the copy took the shared chart's name — it reads as the shared chart in the library"
+    assert db.query(ChartMetadata).filter(ChartMetadata.chart_id == copy.id).one().tags == ["kpi"]
+    assert [p.parameter_name for p in db.query(ChartParameter).filter(ChartParameter.chart_id == copy.id)] == ["date_range"]
+    tile = next(r for r in _rows(db).values() if r.chart_id == copy.id)
+    assert tile.parameters == {"grain": "month"} and is_draft_only_item(tile), "the copy is not a draft in the tile's place"
+    assert {r.chart_id for i, r in _rows(db).items() if i in _public_ids(db) and r.chart_id} == {601}
+
+
+def test_a_failed_fork_leaves_no_chart_behind(db, monkeypatch):
+    from app.services import dashboard_service
+    _fork_env(db, monkeypatch)
+    before = set(_charts(db))
+
+    def boom(*_a, **_k):
+        raise PermissionError("injected: the tile belongs to another author's draft")
+
+    monkeypatch.setattr(dashboard_service, "swap_tile_chart_in_draft", boom)
+    with pytest.raises(HTTPException) as exc:
+        _fork(db)
+    assert exc.value.status_code == 409
+    assert set(_charts(db)) == before, "a failed 'only this report' left a chart in the library"
+    assert {r.chart_id for r in _rows(db).values() if r.chart_id} == {601}
+
+
+def test_discard_deletes_the_copy_it_no_longer_needs(db, monkeypatch):
+    _fork_env(db, monkeypatch)
+    _fork(db)
+    _discard(db)
+    assert not [c for c in _charts(db).values() if (c.config or {}).get("reportCopy")], "Discard left the copy in the library"
+    assert {r.chart_id for r in _rows(db).values() if r.chart_id} == {601}
+    assert 601 in _charts(db), "Discard deleted the shared chart"
+
+
+def test_editing_the_unpublished_copy_again_does_not_copy_the_copy(db, monkeypatch):
+    _fork_env(db, monkeypatch)
+    _fork(db)
+    tile = next(r for r in _rows(db).values() if r.chart_id not in (None, 601))
+    first = tile.chart_id
+    _fork(db, tile=tile.id, name="Revenue v2")
+    copies = [c for c in _charts(db).values() if (c.config or {}).get("reportCopy")]
+    assert [c.id for c in copies] == [first], "a second edit made a copy of the copy"
+    assert copies[0].name == "Revenue v2"
+
+
+def test_publishing_a_newer_copy_deletes_the_one_it_replaced_and_a_report_delete_deletes_its_copies(db, monkeypatch):
+    _fork_env(db, monkeypatch)
+    _fork(db)
+    _publish(db)
+    v1 = next(r for r in _rows(db).values() if r.chart_id not in (None, 601))
+    assert not is_draft_only_item(v1)
+    _fork(db, tile=v1.id, name="Revenue v2")          # published copy → a new draft copy
+    _publish(db)
+    ids = {r.chart_id for r in _rows(db).values() if r.chart_id}
+    assert v1.chart_id not in _charts(db), "the replaced copy stayed in the library"
+    assert 601 in _charts(db), "publishing a copy deleted the shared chart it was made from"
+    (v2,) = ids
+    # A copy another report started using is not deleted with this one.
+    from app.models.models import DashboardPublicLink
+    DashboardPublicLink.__table__.create(db.get_bind(), checkfirst=True)
+    db.add(Dashboard(id=2, name="Other"))
+    db.add(DashboardChart(id=99, dashboard_id=2, chart_id=v2, layout={"x": 0, "y": 0, "w": 6, "h": 4}))
+    db.commit()
+    from app.services import DashboardService
+    DashboardService.delete(db, 1)
+    assert v2 in _charts(db), "deleting the report deleted a copy another report uses"
+    db.query(DashboardChart).filter(DashboardChart.id == 99).delete()
+    db.commit()
+    db.add(Dashboard(id=3, name="Solo"))
+    db.add(DashboardChart(id=98, dashboard_id=3, chart_id=v2, layout={}))
+    db.commit()
+    copy = db.get(Chart, v2)
+    copy.config = {**copy.config, "reportCopy": {"dashboardId": 3}}
+    db.commit()
+    DashboardService.delete(db, 3)
+    assert v2 not in _charts(db), "deleting a report left its report-only copy behind"
+
+
+def test_a_report_copy_stays_one_when_explore_saves_it(db, monkeypatch):
+    from app.schemas import ChartUpdate
+    from app.services.chart_service import ChartService
+    _fork_env(db, monkeypatch)
+    monkeypatch.setattr(ChartService, "hydrate_runtime_config", staticmethod(lambda _db, c: c))
+    _fork(db)
+    copy = next(c for c in _charts(db).values() if (c.config or {}).get("reportCopy"))
+    ChartService.update(db, copy.id, ChartUpdate(config={"roleConfig": {"dimension": "orders.city", "metrics": []}}))
+    assert _charts(db)[copy.id].config.get("reportCopy") == {"dashboardId": 1}, "an Explore save dropped the copy marker"
+
+
 def test_chart_usage_names_only_the_reports_the_caller_may_see(monkeypatch, db):
     from app.api import charts as charts_api
     _with_published_chart_tile(db)
@@ -393,6 +549,10 @@ def test_chart_usage_names_only_the_reports_the_caller_may_see(monkeypatch, db):
 #    published or discarded silently (DoD 1.4) ──────────────────────────────
 
 def _stage(db, user, **fields):
+    # The editor always sends the revision it loaded (shared_draft.rev); a test
+    # that does not name one means "the current one".
+    if "base_rev" not in fields:
+        fields["base_rev"] = _rev(db, user)["rev"]
     return api.update_dashboard_draft_filters(1, DashboardUpdateDraftFiltersRequest(**fields), db, user)
 
 
@@ -410,6 +570,31 @@ def test_a_stale_copy_of_the_shared_draft_cannot_overwrite_a_colleagues_edit(db)
     # Recoverable: B reloads (new revision, A's edit in it) and saves on top.
     _stage(db, B, pages_config=[{"id": "p1", "name": "Overview"}], base_rev=_rev(db, B)["rev"])
     assert _rev(db, B)["other_authors"] and _rev(db, A)["other_authors"]
+
+
+def test_a_shared_draft_write_that_names_no_revision_is_refused(db):
+    # Before, an omitted base_rev skipped the check: an old cached editor or a
+    # script overwrote a colleague's pending filters/pages/theme without a word.
+    _stage(db, A, filters_config=[{"field": "region", "operator": "in", "value": ["North"]}])
+    with pytest.raises(HTTPException) as exc:
+        _stage(db, B, filters_config=[], base_rev=None)
+    assert exc.value.status_code == 409 and exc.value.detail["code"] == "shared_draft_stale"
+    db.expire_all()
+    assert db.get(Dashboard, 1).draft_snapshot["filters_config"][0]["value"] == ["North"], "the refused write changed the draft"
+
+
+def test_every_draft_write_locks_the_dashboard_row(db, monkeypatch):
+    # The per-author buckets and the shared draft are ONE JSON column; each write
+    # reads it, changes it and writes it back. Without a row lock two concurrent
+    # writes both read the old snapshot and the later commit drops the other's.
+    import inspect
+    for fn in (api.update_widget_config, api.update_chart_parameters, api.update_dashboard_draft_layout,
+               api.update_dashboard_draft_filters, api.publish_dashboard_draft, api.discard_dashboard_draft,
+               api.fork_tile_chart_for_report, api.swap_tile_chart_in_draft):
+        assert "_dashboard_for_draft_write(db, dashboard_id)" in inspect.getsource(fn), fn.__name__
+    from sqlalchemy.dialects import postgresql
+    sql = str(api._draft_write_query(db, 1).statement.compile(dialect=postgresql.dialect()))
+    assert "FOR UPDATE OF dashboards" in sql, sql
 
 
 def test_publish_never_applies_a_colleagues_shared_edits_without_saying_so(db):

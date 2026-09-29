@@ -37,7 +37,7 @@ from app.services.filter_layered_merge import (
     disclosable_filters,
     link_entry_state,
     link_managed_field_keys,
-    same_field_allow_list,
+    hard_bounds_on_field,
 )
 
 
@@ -170,11 +170,69 @@ def test_a_chart_cannot_be_asked_for_on_a_page_it_is_not_on():
     assert {"region", "tenant", "channel"} <= set(merged)
 
 
-def test_a_field_the_link_locks_replaces_the_page_filter_as_the_page_shows():
-    link = [{**REGION, "operator": "in", "value": ["South"]}]
+def _regions(merged, field="region"):
+    return sorted((f.get("operator"), repr(f.get("value"))) for f in merged if f["field"] == field)
+
+
+def test_a_link_lock_ands_with_the_page_filter_it_never_replaces_it():
+    # Before: a value-bearing lock REPLACED the page filter, so a link locked to
+    # a region outside the page's scope served that region on that page.
+    link = [{**REGION, "operator": "in", "value": ["West"]}]
     merged = public_api._build_public_chart_filters(_dash(), link, [], page_ids=["p1"])
-    regions = [f for f in merged if f["field"] == "region"]
-    assert len(regions) == 1 and regions[0]["value"] == ["South"], regions
+    assert _regions(merged) == [("in", "['North', 'South']"), ("in", "['West']")], merged
+    # The page filter is still served — read-only, since the viewer cannot change it.
+    _s, _f, pages = public_api._shaped_public_config(_dash(), link)
+    served = next(p for p in pages if p["id"] == "p1")["filters"]
+    assert [(f["field"], f["publicMode"]) for f in served] == [("region", "locked")], served
+
+
+def test_a_link_kill_marker_does_not_remove_the_page_filter():
+    link = [{**REGION, "hidden": True}]
+    merged = public_api._build_public_chart_filters(_dash(), link, [{**REGION, "operator": "in", "value": ["West"]}],
+                                                    page_ids=["p1"])
+    assert _regions(merged) == [("in", "['North', 'South']")], merged
+
+
+def test_a_link_lock_does_not_replace_a_locked_dashboard_filter():
+    dash = _dash(pages_config=[], filters_config=[
+        {**REGION, "operator": "in", "value": ["North", "South"], "publicMode": "locked"}])
+    merged = public_api._build_public_chart_filters(dash, [{**REGION, "operator": "eq", "value": "West"}], [])
+    assert _regions(merged) == [("eq", "'West'"), ("in", "['North', 'South']")], merged
+
+
+def test_a_link_kill_marker_does_not_remove_a_hidden_dashboard_filter_and_it_stays_unnamed():
+    dash = _dash(pages_config=[], filters_config=[
+        {"field": "seg", "semanticField": "t1.seg", "datasetId": 1, "operator": "not_in", "value": ["Staff"],
+         "publicMode": "hidden"}])
+    merged = public_api._build_public_chart_filters(dash, [{"field": "seg", "semanticField": "t1.seg", "hidden": True}], [])
+    assert _regions(merged, "seg") == [("not_in", "['Staff']")], merged
+    shown, withheld = disclosable_filters(merged)
+    assert shown == [] and withheld == 1
+
+
+def test_a_viewer_still_cannot_relax_a_locked_dashboard_filter():
+    dash = _dash(pages_config=[], filters_config=[{**REGION, "operator": "in", "value": ["North"], "publicMode": "locked"}])
+    merged = public_api._build_public_chart_filters(dash, [], [{**REGION, "operator": "in", "value": ["West"]}])
+    assert _regions(merged) == [("in", "['North']")], merged
+
+
+def test_a_link_scope_never_widens_a_lock_on_the_same_field():
+    # A scope and a lock on one field: the intersect-with-fallback used to
+    # REWRITE the lock to the allow-list (a lock on SP + scope RJ served RJ).
+    link = [{**REGION, "operator": "in", "value": ["North"]}, {**REGION, "limit": True, "value": ["South"]}]
+    merged = public_api._build_public_chart_filters(_dash(pages_config=[]), link, [])
+    assert _regions(merged) == [("in", "['North']"), ("in", "['South']")], merged
+    dash = _dash(pages_config=[], filters_config=[{**REGION, "operator": "eq", "value": "North", "publicMode": "locked"}])
+    merged = public_api._build_public_chart_filters(dash, [{**REGION, "limit": True, "value": ["South"]}], [])
+    assert ("eq", "'North'") in _regions(merged), merged
+
+
+def test_an_ordinary_visible_default_is_still_replaced_by_the_link():
+    dash = _dash(pages_config=[], filters_config=[{**REGION, "operator": "in", "value": ["North"]}])
+    merged = public_api._build_public_chart_filters(dash, [{**REGION, "operator": "in", "value": ["West"]}], [])
+    assert _regions(merged) == [("in", "['West']")], merged
+    _s, filters, _p = public_api._shaped_public_config(dash, [{**REGION, "operator": "in", "value": ["West"]}])
+    assert filters == [], "the viewer is offered a control on a field the link manages"
 
 
 def test_the_public_ai_reads_each_chart_under_its_page_scope():
@@ -183,10 +241,156 @@ def test_the_public_ai_reads_each_chart_under_its_page_scope():
     assert "tenant" in _by_field(scopes[8])
 
 
-def test_a_dropdown_is_bounded_by_the_hard_scope_on_its_own_field():
-    merged = public_api._build_public_chart_filters(_dash(), [], [], page_ids=["p1"])
-    assert same_field_allow_list(merged, 1, "t1.region") == {"North", "South"}
-    assert same_field_allow_list(merged, 1, "t1.channel") is None
+class _Cascade(Exception):
+    def __init__(self, filters):
+        self.filters = filters
+
+
+def _cascade_of(monkeypatch, view_name, field_name, filters):
+    """The filters the REAL dropdown query (``_distinct_values_full``) cascades
+    by, after its self-strip — captured where it builds its cache key."""
+    from app.services import chart_contracts, dataset_model_service, semantic_query_engine
+
+    class _Query:
+        def filter(self, *_a, **_k):
+            return self
+
+        def all(self):
+            return []
+
+        def first(self):
+            return SimpleNamespace(name=view_name, dataset_table_id=None)
+
+    def capture(items, **_k):
+        raise _Cascade(list(items or []))
+
+    monkeypatch.setattr(dataset_model_service, "_distinct_snapshot_context", lambda *_a, **_k: ({}, None))
+    monkeypatch.setattr(semantic_query_engine, "SemanticQueryEngine", lambda _db: SimpleNamespace(views_cache={}))
+    monkeypatch.setattr(chart_contracts, "normalize_filter_conditions", capture)
+    with pytest.raises(_Cascade) as got:
+        dataset_model_service._distinct_values_full(SimpleNamespace(query=lambda *_a, **_k: _Query()), 1,
+                                                    f"{view_name}.{field_name}", filters=filters)
+    return got.value.filters
+
+
+def test_a_dropdown_keeps_every_hard_bound_on_its_own_field_and_drops_only_picks(monkeypatch):
+    dash = _dash(filters_config=[
+        {**REGION, "operator": "not_in", "value": ["North"], "publicMode": "hidden"},
+        {"field": "channel", "semanticField": "t1.channel", "datasetId": 1, "operator": "in", "value": ["Web"]},
+    ], slicers_config=[{**REGION, "operator": "in", "value": ["South"]}])
+    bounds: list = []
+    merged = public_api._build_public_chart_filters(dash, [], [], page_ids=["p1"], hard_bounds_out=bounds)
+    on_region = hard_bounds_on_field(bounds, 1, "t1.region")
+    assert sorted((f["operator"], repr(f["value"])) for f in on_region) == [
+        ("in", "['North', 'South']"), ("not_in", "['North']")], "a non-`in` hard bound was not kept"
+    assert hard_bounds_on_field(bounds, 2, "t1.region") == [], "a bound on another dataset constrains this one"
+    assert hard_bounds_on_field(bounds, 1, "t1.channel") == [], "a visible default is treated as a hard bound"
+    cascade = _cascade_of(monkeypatch, "t1", "region", [*merged, *on_region])
+    region_terms = sorted((f["operator"], repr(f["value"])) for f in cascade if f.get("field") == "region")
+    # Every merged condition on the field is stripped (a merged pick would pin the
+    # list); the raw hard bounds come back marked, whatever their operator.
+    assert region_terms == [("in", "['North', 'South']"), ("not_in", "['North']")], region_terms
+    assert any(f.get("field") == "channel" for f in cascade), "a filter on another field stopped cascading"
+
+
+def _public_dropdown(monkeypatch, dash, viewer_filters, dropped=()):
+    import json
+    monkeypatch.setattr(public_api, "_get_dashboard_by_token", lambda *_a, **_k: (dash, [], None, {}))
+    monkeypatch.setattr(public_api, "_build_public_filter_fields",
+                        lambda *_a, **_k: [{"datasetId": 1, "semanticField": "t1.region"}])
+    seen: dict = {}
+
+    def fake_distinct(_db, _ds, _field, **kw):
+        seen["filters"] = kw["filters"]
+        return {"values": ["South", "West"], "dropped_filters": list(dropped)}
+
+    monkeypatch.setattr(public_api, "get_distinct_field_values", fake_distinct)
+    endpoint = public_api.get_public_filter_distinct_values
+    endpoint = getattr(endpoint, "__wrapped__", endpoint)  # past the rate limiter
+    out = endpoint("tok", None, dataset_id=1, field="t1.region", limit=200, offset=0, search=None,
+                   filters=json.dumps(viewer_filters), page_id="p1", db=None, x_public_session=None)
+    return out, seen["filters"]
+
+
+def test_the_public_dropdown_query_carries_the_raw_hard_bounds_and_no_viewer_marker(monkeypatch):
+    dash = _dash(filters_config=[{**REGION, "operator": "not_in", "value": ["North"], "publicMode": "hidden"}])
+    viewer = [{**REGION, "operator": "in", "value": ["North"], "_hard_bound": True, "_disclose": False}]
+    out, sent = _public_dropdown(monkeypatch, dash, viewer)
+    hard = sorted((f["operator"], repr(f["value"])) for f in sent if f.get("_hard_bound"))
+    assert hard == [("in", "['North', 'South']"), ("not_in", "['North']")], hard
+    assert all(f.get("datasetId") == 1 for f in sent if f.get("_hard_bound")), "a hard bound the SQL builder would skip"
+    assert out["values"] == ["South", "West"] and out["dropped_filters"] == []
+
+
+def test_the_public_dropdown_offers_nothing_when_a_hard_bound_on_its_field_could_not_apply(monkeypatch):
+    dash = _dash(filters_config=[{**REGION, "operator": "not_in", "value": ["North"], "publicMode": "hidden"}])
+    out, _ = _public_dropdown(monkeypatch, dash, [], dropped=[{"semantic_field": "t1.region", "reason": "field_not_on_view"}])
+    assert out["values"] == [] and out["total"] == 0, "a bound the query dropped widened the dropdown"
+    out, _ = _public_dropdown(monkeypatch, dash, [], dropped=[{"semantic_field": "t1.channel", "reason": "no_join_path"}])
+    assert out["values"] == ["South", "West"], "an unrelated dropped cascade emptied the dropdown"
+
+
+def test_the_deploy_audit_names_links_that_now_refuse_or_return_nothing():
+    from app.services.public_link_audit import EMPTY, NARROWED, REFUSED, audit_link
+    findings = audit_link(
+        [{**REGION, "operator": "in", "value": ["West"]},            # outside the page scope → empty
+         {"field": "tenant", "semanticField": "t1.tenant", "operator": "in", "value": ["acme-42", "x"]},
+         {"field": "amount", "operator": "between", "value": 5}],    # engine cannot apply → refused
+        filters_config=[], pages_config=PAGES)
+    kinds = sorted((f["kind"], f["field"]) for f in findings)
+    assert kinds == [(EMPTY, "t1.region"), (NARROWED, "t1.tenant"), (REFUSED, "amount")], kinds
+    assert all(f["remedy"] for f in findings)
+    assert audit_link([{**REGION, "operator": "in", "value": ["North"]}], pages_config=PAGES)[0]["kind"] == NARROWED
+    assert audit_link([], pages_config=PAGES) == []
+
+
+# ── DoD 04 — role-scoped links (workboard roles, embed claims) ──────────────
+
+def _role_link(role, mapping=None):
+    from app.modules.workboards.services.dashboard_link_service import _build_filters_config
+    return _build_filters_config(mapping if mapping is not None else [{"datasetId": 1, "semanticField": "t1.region"}], role)
+
+
+def test_two_roles_each_get_only_their_rows_whatever_the_viewer_sends():
+    for role, other in (("north", "south"), ("south", "north")):
+        viewer = [{**REGION, "operator": "in", "value": [other]}]   # a crafted request for the other role's rows
+        merged = public_api._build_public_chart_filters(_dash(pages_config=[]), _role_link(role), viewer)
+        regions = [(f["operator"], f["value"]) for f in merged if f.get("semanticField") == "t1.region"]
+        # The role condition is always applied; a crafted pick can only AND
+        # with it (no rows), never replace it.
+        assert ("eq", role) in regions and all(
+            f.get("_layer_source") == "link_locked" or f["value"] != [role]
+            for f in merged if f.get("semanticField") == "t1.region"), (role, regions)
+
+
+def test_a_role_filter_ands_with_the_page_scope_and_an_exclusion_stays_an_exclusion():
+    merged = public_api._build_public_chart_filters(_dash(), _role_link("North"), [], page_ids=["p1"])
+    both = sorted((f["operator"], repr(f["value"])) for f in merged if f.get("semanticField") == "t1.region")
+    assert both == [("eq", "'North'"), ("in", "['North', 'South']")], merged
+    excl = [{**REGION, "operator": "not_in", "value": ["Staff"]}]
+    merged = public_api._build_public_chart_filters(_dash(pages_config=[]), excl, [{**REGION, "operator": "in", "value": ["Staff"]}])
+    assert _regions(merged) == [("not_in", "['Staff']")], "a viewer pick replaced the exclusion"
+
+
+def test_a_role_slot_that_cannot_be_applied_refuses_the_link_instead_of_showing_every_row():
+    link = _role_link("north", mapping=[{"datasetId": 1, "semanticField": "region"}])   # no view qualifier
+    with pytest.raises(HTTPException) as exc:
+        public_api._refuse_malformed_link(link)
+    assert exc.value.status_code == 409
+
+
+def test_a_role_filter_bounds_only_charts_of_its_own_dataset():
+    merged = public_api._build_public_chart_filters(_dash(pages_config=[]), _role_link("north"), [])
+    [role_entry] = [f for f in merged if f.get("semanticField") == "t1.region"]
+    assert role_entry["datasetId"] == 1, "the engine applies a role entry by its datasetId; it must carry it"
+
+
+def test_an_unmapped_role_on_a_managed_screen_gets_no_token():
+    from app.modules.workboards.services.dashboard_link_service import resolve_managed_token
+    layout = {"screens": [{"id": "s1", "kind": "dashboard", "dashboard": {"managed_links": {"north": "tok-n", "south": "tok-s"}}}]}
+    assert resolve_managed_token(layout_json=layout, screen_id="s1", app_user_role="north") == "tok-n"
+    assert resolve_managed_token(layout_json=layout, screen_id="s1", app_user_role="east") is None
+    assert resolve_managed_token(layout_json=layout, screen_id="s1", app_user_role=None) is None
 
 
 # ── DoD 1.2 — a hidden constraint is applied and never disclosed ─────────────
@@ -215,6 +419,29 @@ def test_the_served_structure_and_the_field_picker_carry_no_hidden_entry():
     inventory = public_api._public_viewer_filter_inventory(SimpleNamespace(
         filters_config=dash.filters_config, slicers_config=[], pages_config=PAGES))
     assert {f["field"] for f in inventory} == {"cat", "region"}, "a locked/hidden entry is offered as a pickable field"
+
+
+def test_the_public_model_names_only_fields_the_served_report_uses():
+    model = {"views": [
+        {"name": "orders", "sql_table": "raw.orders_secret", "dimensions": [
+            {"name": "region", "label": "Region", "sql": "r"},
+            {"name": "tenant", "label": "Tenant (internal)"},
+        ], "measures": [
+            {"name": "revenue", "label": "Revenue", "type": "sum", "sql": "SUM(x)", "format": {"kind": "currency", "currency": "BRL"}},
+            {"name": "margin_secret", "label": "Margin", "type": "sum"},
+        ]},
+        {"name": "staff", "dimensions": [{"name": "salary_band", "label": "Salary band"}], "measures": []},
+    ]}
+    dash = SimpleNamespace(
+        dashboard_charts=[SimpleNamespace(chart=SimpleNamespace(config={
+            "dimensions": ["orders.region"], "metrics": [{"field": "revenue", "agg": "sum"}]}))],
+        slicers_config=[], filters_config=[], pages_config=[])
+    trimmed = public_api._trim_model_for_public(model, public_api._public_field_refs(dash))
+    assert trimmed == {"views": [{"name": "orders",
+                                  "dimensions": [{"name": "region", "label": "Region"}],
+                                  "measures": [{"name": "revenue", "label": "Revenue",
+                                                "format": {"kind": "currency", "currency": "BRL", "decimals": None},
+                                                "type": "sum"}]}]}, trimmed
 
 
 def test_the_ai_is_not_handed_a_hidden_constraint():

@@ -3,6 +3,7 @@ import { jsPDF } from 'jspdf';
 import { DEJAVU_SANS_REGULAR_B64, DEJAVU_SANS_BOLD_B64 } from './pdf-fonts';
 import { tileBoxMm, type ExportLayoutPlan } from './export-layout';
 import { waitForRenderReady } from './render-ready';
+import { planSnapshotSheets } from './pdf-sheet-plan';
 
 /**
  * The capture engine draws a `text-overflow: ellipsis` span from its own width
@@ -760,7 +761,6 @@ async function drawPageSnapshot(
   // pixels prints at ~75% of what the reader saw — readable. The old check
   // compared canvas pixels and warned "shrunk to 47%" on a legible page.
   if (snapshotCanvas && fit * SNAPSHOT_CAPTURE_SCALE < SNAPSHOT_SMALL_SCALE && widthFit > fit) {
-    const pxPerSheet = Math.floor((availH / widthFit) * 3.7795);
     const rootTop = root.getBoundingClientRect().top;
     const pxPerCss = ch / Math.max(1, root.scrollHeight);
     // A sheet ends at the bottom of a row — never right under a section
@@ -776,15 +776,15 @@ async function drawPageSnapshot(
     ]
       .filter((y) => y > 0 && y < ch)
       .sort((a, b) => a - b);
-    const drawW = (cw / 3.7795) * widthFit;
+    const plan = planSnapshotSheets(
+      ch, cuts, (s) => Math.floor((availH / s) * 3.7795), widthFit,
+      SNAPSHOT_SMALL_SCALE / SNAPSHOT_CAPTURE_SCALE,
+    );
+    const drawScale = plan.scale;
+    const drawW = (cw / 3.7795) * drawScale;
     const x = MARGIN + Math.max(0, (availW - drawW) / 2);
-    let from = 0;
     let sheet = 0;
-    while (from < ch) {
-      const limit = from + pxPerSheet;
-      // The lowest row edge that still fits on this sheet (else a hard cut).
-      const edge = cuts.filter((y) => y > from + pxPerSheet * 0.35 && y <= limit).pop();
-      const to = limit >= ch ? ch : (edge ?? limit);
+    for (const [from, to] of plan.sheets) {
       const slice = document.createElement('canvas');
       slice.width = cw;
       slice.height = to - from;
@@ -793,11 +793,10 @@ async function drawPageSnapshot(
         pdf.addPage(opts.format, opts.orientation);
         drawPageHeader(pdf, opts, page, ctx.pageNo, ctx.total);
       }
-      pdf.addImage(slice.toDataURL('image/jpeg', 0.85), 'JPEG', x, startContentY(), drawW, ((to - from) / 3.7795) * widthFit);
-      from = to;
+      pdf.addImage(slice.toDataURL('image/jpeg', 0.85), 'JPEG', x, startContentY(), drawW, ((to - from) / 3.7795) * drawScale);
       sheet += 1;
     }
-    return { scale: widthFit * SNAPSHOT_CAPTURE_SCALE, failed: false };
+    return { scale: drawScale * SNAPSHOT_CAPTURE_SCALE, failed: false };
   }
   const drawW = (cw / 3.7795) * fit;
   const drawH = (ch / 3.7795) * fit;

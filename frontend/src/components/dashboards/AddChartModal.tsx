@@ -624,6 +624,12 @@ export function AddChartModal({
                                           {t('dashboards.addChart.shared')}
                                         </span>
                                       )}
+                                      {(chart.config as any)?.reportCopy && (
+                                        <span className="rounded-full border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary"
+                                          title={t('explore.list.reportCopyHint')} data-testid="report-copy-badge">
+                                          {t('explore.list.reportCopy')}
+                                        </span>
+                                      )}
                                       <OwnerBadge email={chart.owner_email} />
                                     </div>
 

@@ -3192,7 +3192,10 @@ def _distinct_values_full(
         for item in filters:
             if isinstance(item, dict) and _distinct_filter_targets_self(
                 view_name, field_name, item
-            ):
+            ) and not item.get("_hard_bound"):
+                # ...except a HARD bound on this field (page scope, an author
+                # lock, a link scope — filter_layered_merge.HARD_BOUND_KEY): it
+                # is not a pick, and the list must stay inside what it allows.
                 continue
             kept.append(item)
         filters = kept

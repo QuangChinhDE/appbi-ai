@@ -594,6 +594,27 @@ check('a declared currency is shown with its own symbol, not a default dollar', 
   assert(!m.has('oi.aov'), 'a currency without a code was given a symbol it never declared');
 });
 
+check('a long PDF snapshot is cut at row edges at the scale that leaves the least empty sheet', () => {
+  const { planSnapshotSheets } = load('lib/pdf-sheet-plan.ts');
+  // Rows end at 500, 1000, 1500, 1900 (a tall last row), 2300. At the width-fit a
+  // sheet holds 1100px: sheet 1 ends at 1000, sheet 2 at 1900 — fine; sheet
+  // boundaries always land on a row edge or the end.
+  const cuts = [500, 1000, 1500, 1900, 2300];
+  const plan = planSnapshotSheets(2300, cuts, (s) => Math.floor(1100 / s), 1, 0.5);
+  for (const [, to] of plan.sheets) assert(cuts.includes(to), `a sheet ends mid-row at ${to}`);
+  assert(plan.sheets[0][0] === 0 && plan.sheets.at(-1)[1] === 2300, 'the snapshot is not covered end to end');
+  // Rows of 600px: at 1100px/sheet each sheet takes ONE row (45% empty). A
+  // slightly smaller scale fits two rows per sheet: fewer sheets wins.
+  const tall = [600, 1200, 1800, 2400];
+  const one = planSnapshotSheets(2400, tall, () => 1100, 1, 0.5);
+  const tuned = planSnapshotSheets(2400, tall, (s) => Math.floor(1100 / s), 1, 0.5);
+  assert(tuned.sheets.length < one.sheets.length, `no fewer sheets: ${tuned.sheets.length} vs ${one.sheets.length}`);
+  assert(tuned.scale >= 0.8, `shrunk past the readable limit: ${tuned.scale}`);
+  // Never below the readable floor.
+  const floored = planSnapshotSheets(2400, tall, (s) => Math.floor(1100 / s), 1, 0.97);
+  assert(floored.scale >= 0.96, `went below the floor: ${floored.scale}`);
+});
+
 if (failures.length) {
   console.error(`${failures.length} report-experience check(s) FAILED:`);
   for (const f of failures) console.error(`  ✗ ${f.name}\n      ${f.error?.message ?? f.error}`);

@@ -153,6 +153,14 @@ def _build_filters_config(
     for entry in mapping or []:
         slot = _coerce_slot(entry)
         if slot is None:
+            # A ROLE slot that cannot be applied must not vanish: the link would
+            # then carry no row filter and this role would see every row. Emit
+            # an entry the engine refuses (`between` with a scalar), so every
+            # public path under this link fails CLOSED (409, "ask the report
+            # owner to fix the link") until the mapping is fixed.
+            ref = entry.get("semanticField") if isinstance(entry, dict) else None
+            out.append({"field": str(ref or "role_mapping"), "operator": "between", "value": 0,
+                        "roleMappingInvalid": True})
             continue
         out.append({**slot, "value": role})
 

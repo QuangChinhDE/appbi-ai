@@ -1603,22 +1603,29 @@ function DashboardDetailPageInner() {
   // merged layout), and never lost when a draft saved BEFORE the lock is
   // published. It used to write the live row directly, which a stale draft
   // entry then overwrote on publish — the lock silently came undone.
-  const handleToggleTileLock = useCallback((dashboardChartId: number, next: boolean) => {
+  // Any tile-level edit — title, frame/appearance, highlight opt-out, date-grain
+  // lock, HAVING filters, position lock — is a DRAFT edit: it goes through the
+  // page's buffer (undoable, saved with the draft, published with it). These
+  // used to PUT the live row, so a title typed in the editor was on /d before
+  // Publish and Discard could not take it back.
+  const handlePatchTileLayout = useCallback((dashboardChartId: number, patch: Record<string, any>) => {
     const prevOverrides = localLayoutOverridesRef.current;
     const merged = {
       ...prevOverrides,
-      [dashboardChartId]: { ...resolveDashboardChartLayout(dashboardChartId, prevOverrides), locked: next },
+      [dashboardChartId]: { ...resolveDashboardChartLayout(dashboardChartId, prevOverrides), ...patch },
     };
     pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
     setLocalLayoutOverrides(merged);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolveDashboardChartLayout]);
+  const handleToggleTileLock = useCallback((dashboardChartId: number, next: boolean) => {
+    handlePatchTileLayout(dashboardChartId, { locked: next });
+  }, [handlePatchTileLayout]);
 
   // The persisted layout of each tile (server row ⊕ saved draft), WITHOUT the
-  // unsaved local edits or an AI preview. Tile-level toggles that still write
-  // the live row (highlight opt-out, date-grain lock, title) spread THIS, so an
-  // unsaved drag or a design being previewed can never leak into the live
-  // report through an unrelated click.
+  // unsaved local edits or an AI preview. A ChartTile used OUTSIDE this builder
+  // (no draft buffer) still writes its row and spreads THIS, so an unsaved drag
+  // or a design being previewed can never leak into the live report.
   const persistedLayoutById = React.useMemo(() => {
     const map: Record<number, Record<string, any>> = {};
     for (const dc of serverDashboard?.dashboard_charts ?? []) {
@@ -4435,6 +4442,7 @@ function DashboardDetailPageInner() {
             renderSlicerControl={renderBuilderSlicerControl}
             aiDesignMode={designMode === 'ai'}
             onToggleLock={canEditThisPage ? handleToggleTileLock : undefined}
+            onPatchLayout={canEditThisPage ? handlePatchTileLayout : undefined}
             getPersistedLayout={getPersistedLayout}
             params={paramValues}
             onParamChange={handleParamChange}

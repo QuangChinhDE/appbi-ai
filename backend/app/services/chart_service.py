@@ -3576,8 +3576,9 @@ class ChartService:
         return db.query(Chart).filter(Chart.name == name).first()
     
     @staticmethod
-    def create(db: Session, chart: ChartCreate, owner_id=None) -> Chart:
-        """Create a new chart."""
+    def create(db: Session, chart: ChartCreate, owner_id=None, *, commit: bool = True) -> Chart:
+        """Create a new chart. ``commit=False`` only flushes: the caller commits it
+        together with the rest of one change (a report-only copy and its swap)."""
         chart_name = chart.name.strip()
         if not chart_name:
             raise ValueError("Chart name cannot be empty")
@@ -3614,6 +3615,9 @@ class ChartService:
                 owner_id=owner_id,
             )
             db.add(db_chart)
+            if not commit:
+                db.flush()
+                return db_chart
             db.commit()
             db.refresh(db_chart)
             logger.info(f"Created chart: {chart_name}")
@@ -3647,6 +3651,11 @@ class ChartService:
         
         try:
             update_data = chart_update.model_dump(exclude_unset=True)
+            # A report-only copy stays one: Explore rebuilds the config from its
+            # own state, which does not carry this marker.
+            previous_copy = (db_chart.config or {}).get("reportCopy") if isinstance(db_chart.config, dict) else None
+            if previous_copy and isinstance(update_data.get("config"), dict) and "reportCopy" not in update_data["config"]:
+                update_data["config"] = {**update_data["config"], "reportCopy": previous_copy}
             for field, value in update_data.items():
                 if field == "chart_type" and value:
                     setattr(db_chart, field, ChartType(value.value))

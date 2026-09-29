@@ -32,6 +32,9 @@ from app.models.dataset import Dataset, DatasetTable
 from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.schemas import (
+    ChartMetadataUpsert,
+    ChartParameterCreate,
+    ChartTypeSchema,
     DashboardCreate,
     DashboardUpdate,
     DashboardShareRequest,
@@ -60,6 +63,9 @@ from app.schemas import (
 # from app.models.dashboard_filter import DashboardFilter
 from app.services import DashboardService
 from app.services.dashboard_service import (
+    drop_unreferenced_report_copies,
+    fork_chart_for_report,
+    swap_tile_chart_in_draft as _swap_in_draft,
     is_draft_only_by,
     is_draft_only_item,
     is_draft_removed_by,
@@ -1616,8 +1622,17 @@ def _draft_user_widget_configs(snapshot: Optional[Dict[str, Any]], user_key: str
     return {str(k): v for k, v in mine.items() if isinstance(v, dict)} if isinstance(mine, dict) else {}
 
 
+def _draft_user_parameters(snapshot: Optional[Dict[str, Any]], user_key: str) -> Dict[str, Dict[str, Any]]:
+    """This author's draft edits of published chart instances' ``parameters``
+    (what-if bindings): {tileId: parameters}. Same lifecycle as widget content."""
+    buckets = (snapshot or {}).get("user_parameters") if isinstance(snapshot, dict) else None
+    mine = buckets.get(user_key) if isinstance(buckets, dict) else None
+    return {str(k): v for k, v in mine.items() if isinstance(v, dict)} if isinstance(mine, dict) else {}
+
+
 # The report-level settings every author edits TOGETHER: one shared draft.
-# (Layouts and widget content are per author: user_layouts / user_widget_configs.)
+# (Layouts, widget content and chart parameters are per author: user_layouts /
+# user_widget_configs / user_parameters.)
 _SHARED_DRAFT_KEYS = ("filters_config", "slicers_config", "slicer_cluster_layout", "pages_config", "theme_config")
 _SHARED_META = "shared_draft_meta"
 
@@ -1693,7 +1708,7 @@ def _other_authors_drafts(snapshot: Optional[Dict[str, Any]], user_key: str) -> 
     """The per-author parts of a draft that belong to OTHER authors — kept when
     this author publishes or discards."""
     out: Dict[str, Any] = {}
-    for key in ("user_layouts", "user_widget_configs"):
+    for key in ("user_layouts", "user_widget_configs", "user_parameters"):
         buckets = (snapshot or {}).get(key) if isinstance(snapshot, dict) else None
         others = {k: v for k, v in (buckets or {}).items() if k != user_key} if isinstance(buckets, dict) else {}
         if others:
@@ -1765,10 +1780,14 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     # This author's draft edits of a published widget's content (a text block,
     # a section title): shown to them, applied on Publish, dropped on Discard.
     my_widget_configs = _draft_user_widget_configs(snapshot, user_key)
-    if removed_here or my_widget_configs:
+    my_parameters = _draft_user_parameters(snapshot, user_key)
+    if removed_here or my_widget_configs or my_parameters:
         charts = [dc for dc in base.dashboard_charts if dc.id not in removed_here]
         if my_widget_configs:
             charts = [dc.model_copy(update={"widget_config": my_widget_configs[str(dc.id)]}) if str(dc.id) in my_widget_configs else dc
+                      for dc in charts]
+        if my_parameters:
+            charts = [dc.model_copy(update={"parameters": my_parameters[str(dc.id)]}) if str(dc.id) in my_parameters else dc
                       for dc in charts]
         overrides["dashboard_charts"] = charts
     if isinstance(draft_filters_config, list):
@@ -1791,7 +1810,8 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     )
     # Adding or removing an element is a draft change too: without counting
     # those rows the draft bar (and Discard) disappeared while one was pending.
-    overrides["has_draft"] = bool(normalized_layouts) or has_filter_draft or rows_in_draft or bool(my_widget_configs)
+    overrides["has_draft"] = (bool(normalized_layouts) or has_filter_draft or rows_in_draft
+                              or bool(my_widget_configs) or bool(my_parameters))
     overrides["shared_draft"] = _shared_draft_state(dash, snapshot, user_key)
 
     enriched = base.model_copy(update=overrides)
@@ -2343,7 +2363,7 @@ def update_widget_config(
     the public link and embed keep the published text until the caller
     publishes; Discard drops it. A widget only in the caller's draft is edited
     in place (it is not published). Without it the live row is written."""
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
@@ -2387,13 +2407,18 @@ def update_chart_parameters(
     dashboard_id: int,
     dashboard_chart_id: int,
     request: DashboardUpdateChartParamsRequest,
+    draft: bool = Query(False, description="Edit in the caller's draft: a published chart keeps its published bindings until Publish."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Update the `parameters` dict on a chart instance — used to bind a chart's
     dimension/measure to a dashboard what-if parameter (stored under
-    `__whatifBindings`). Only valid for chart tiles (not widgets)."""
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    `__whatifBindings`). Only valid for chart tiles (not widgets).
+
+    `draft=true` (the builder): a draft edit of a PUBLISHED tile — public and
+    embed keep the published bindings until the caller publishes; Discard drops
+    it. Without it the live row is written (API clients outside the lifecycle)."""
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
@@ -2407,7 +2432,18 @@ def update_chart_parameters(
     if item.widget_type and item.widget_type != "chart":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target is a widget, not a chart")
 
-    item.parameters = request.parameters or {}
+    params = request.parameters or {}
+    if draft and not is_draft_only_item(item):
+        snapshot = dict(dash.draft_snapshot or {})
+        buckets = dict(snapshot.get("user_parameters") or {})
+        mine = dict(buckets.get(str(current_user.id)) or {})
+        mine[str(item.id)] = params
+        buckets[str(current_user.id)] = mine
+        snapshot["user_parameters"] = buckets
+        dash.draft_snapshot = snapshot
+        flag_modified(dash, "draft_snapshot")
+    else:
+        item.parameters = params
     db.commit()
     refreshed = DashboardService.get_by_id(db, dashboard_id)
     if refreshed is None:
@@ -2499,7 +2535,7 @@ def swap_tile_chart_in_draft(
     other report using it are untouched. One transaction: never both tiles, never
     neither.
     """
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
@@ -2512,25 +2548,68 @@ def swap_tile_chart_in_draft(
     if not chart:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart with ID {request.chart_id} not found")
     require_view_access(db, current_user, chart, "explore_charts")
-    user_key = str(current_user.id)
-    layout = strip_draft_row_keys(dict(row.layout or {}))
-    layout["draftOnly"] = True
-    layout["draftOwner"] = user_key
-    replacement = DashboardChart(
-        dashboard_id=dashboard_id,
-        chart_id=chart.id,
-        widget_type=row.widget_type,
-        widget_config=dict(row.widget_config or {}) if row.widget_config else row.widget_config,
-        parameters=dict(row.parameters or {}) if getattr(row, "parameters", None) else getattr(row, "parameters", None),
-        layout=layout,
-    )
     try:
-        remove_tile_in_draft(db, row, user_key)
+        _swap_in_draft(db, row, chart, str(current_user.id))
     except PermissionError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    db.add(replacement)
     db.commit()
+    db.refresh(dash)
+    return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
+class _ForkChartRequest(BaseModel):
+    """The edited chart, as Explore saves it, plus its metadata and parameter
+    definitions — everything the copy needs, in one request."""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    chart_type: ChartTypeSchema
+    dataset_table_id: int
+    config: Dict[str, Any]
+    metadata: Optional[ChartMetadataUpsert] = None
+    parameters: List[ChartParameterCreate] = Field(default_factory=list)
+
+
+@router.post("/{dashboard_id}/charts/{dashboard_chart_id}/fork-chart", response_model=DashboardResponse)
+def fork_tile_chart_for_report(
+    dashboard_id: int,
+    dashboard_chart_id: int,
+    request: _ForkChartRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Edit a chart for THIS report only — one transaction.
+
+    The copy (marked as this report's, with the edited metadata and parameter
+    definitions) is created and swapped into the tile as a draft. Publish makes
+    the swap; Discard undoes it AND deletes the copy; a failure anywhere leaves
+    nothing behind. The shared chart and every other report are untouched.
+    Editing a tile that already shows this author's unpublished copy updates
+    that copy instead of copying it again."""
+    dash = _dashboard_for_draft_write(db, dashboard_id)
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    row = db.query(DashboardChart).filter(
+        DashboardChart.dashboard_id == dashboard_id, DashboardChart.id == dashboard_chart_id,
+    ).first()
+    if not row or not row.chart_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart tile with ID {dashboard_chart_id} not found")
+    source = db.query(Chart).filter(Chart.id == row.chart_id).first()
+    if source is not None:
+        require_view_access(db, current_user, source, "explore_charts")
+    try:
+        fork_chart_for_report(db, dash, row, payload=request, user=current_user)
+        db.commit()
+    except PermissionError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(dash)
     return _serialize_dashboard_with_draft(db, dash, current_user)
 
@@ -2590,7 +2669,7 @@ def update_dashboard_draft_layout(
 
     Public viewers stay on the last-published layout until POST /publish.
     """
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
@@ -2610,6 +2689,28 @@ def update_dashboard_draft_layout(
     db.commit()
     db.refresh(dash)
     return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
+def _dashboard_for_draft_write(db: Session, dashboard_id: int):
+    """The dashboard row, LOCKED until this request commits.
+
+    Every author's draft lives in one JSON column (``draft_snapshot``: layouts,
+    widget content, chart parameters, the shared filters/pages/theme) that each
+    draft write reads, changes and writes back whole. Two writes at once — one
+    author saving a layout while another stages a filter — each read the same
+    old snapshot and the later commit silently dropped the other's edit. The
+    row lock serialises them; the revision check (``base_rev``) then sees the
+    other's change instead of overwriting it."""
+    return _draft_write_query(db, dashboard_id).first()
+
+
+def _draft_write_query(db: Session, dashboard_id: int):
+    return (
+        db.query(Dashboard)
+        .filter(Dashboard.id == dashboard_id)
+        .with_for_update(of=Dashboard)
+        .populate_existing()
+    )
 
 
 @router.put("/{dashboard_id}/draft-filters", response_model=DashboardResponse)
@@ -2633,7 +2734,7 @@ def update_dashboard_draft_filters(
 
     Either omitted field leaves that scope unchanged in the draft.
     """
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
@@ -2646,14 +2747,20 @@ def update_dashboard_draft_filters(
     if touches_shared:
         meta = _shared_meta(snapshot)
         current = _shared_rev_token(dash, snapshot)
-        if request.base_rev is not None and str(request.base_rev) != current:
+        # A write that does not say which revision it was made on is refused like
+        # a stale one: omitting the field must not be a way around the check (an
+        # old cached editor, a script). The editor learns the revision from every
+        # dashboard it loads (`shared_draft.rev`).
+        if request.base_rev is None or str(request.base_rev) != current:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "code": "shared_draft_stale",
                     "rev": current,
-                    "by": meta.get("last_by_name"),
-                    "message": "The report's filters, pages or theme were changed since you opened it. Reload to continue.",
+                    "by": meta.get("last_by_name") if request.base_rev is not None else None,
+                    "message": ("The report's filters, pages or theme were changed since you opened it. Reload to continue."
+                                if request.base_rev is not None else
+                                "This change does not say which version of the report it was made on. Reload to continue."),
                 },
             )
         author_name = getattr(current_user, "full_name", None) or current_user.email
@@ -2744,7 +2851,7 @@ def publish_dashboard_draft(
     publishing was published by someone else since the caller loaded it
     (tile_base_v mismatch), we 409 listing those tiles (unless force).
     """
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
     require_edit_access(db, current_user, dash, "dashboards")
@@ -2801,9 +2908,15 @@ def publish_dashboard_draft(
     # ── Elements this user removed in the draft leave the live report now, in
     #    the same commit as everything else they publish. ──
     removed_ids = {str(r.id) for r in rows if is_draft_removed_by(r, user_key)}
+    unpublished_charts: list[int] = []
     for row in rows:
         if str(row.id) in removed_ids:
+            if row.chart_id:
+                unpublished_charts.append(row.chart_id)
             db.delete(row)
+    # A report-only copy the publish replaced (a newer copy took its tile) is
+    # used by nothing now: it goes in the same commit.
+    drop_unreferenced_report_copies(db, dashboard_id, unpublished_charts)
 
     # ── Apply ONLY this user's tiles (bump per-tile version) ──
     for cid, new_layout in my_layouts.items():
@@ -2824,6 +2937,11 @@ def publish_dashboard_draft(
         if row is not None and str(cid) not in removed_ids:
             row.widget_config = config
             flag_modified(row, "widget_config")
+    for cid, params in _draft_user_parameters(snapshot, user_key).items():
+        row = rows_by_id.get(str(cid))
+        if row is not None and str(cid) not in removed_ids:
+            row.parameters = params
+            flag_modified(row, "parameters")
 
     # ── Blocks this user's AI Design created in the draft go live now, in the
     #    same commit as the layout: flag cleared, owner mark dropped. ──
@@ -2885,7 +3003,7 @@ def discard_dashboard_draft(
     deleted. Elements the caller removed in the draft were never unpublished:
     they are back. The shared filter/page/theme draft is cleared; other
     authors' layout drafts, additions and removals are kept."""
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
     require_edit_access(db, current_user, dash, "dashboards")
@@ -2893,11 +3011,16 @@ def discard_dashboard_draft(
     keep_shared = bool(payload and payload.keep_shared)
     if not keep_shared:
         _refuse_others_shared_draft(dash, dash.draft_snapshot, user_key, payload.shared_ack_rev if payload else None, "discard")
+    discarded_charts: list[int] = []
     for row in db.query(DashboardChart).filter(DashboardChart.dashboard_id == dashboard_id).all():
         if is_draft_only_by(row, user_key):
+            if row.chart_id:
+                discarded_charts.append(row.chart_id)
             db.delete(row)
         else:
             restore_tile_in_draft(row, user_key)
+    # A report-only copy made in this draft is not left in the library.
+    drop_unreferenced_report_copies(db, dashboard_id, discarded_charts)
     dash.draft_snapshot = _after_author_leaves(dash.draft_snapshot, user_key, keep_shared)
     flag_modified(dash, "draft_snapshot")
     db.commit()

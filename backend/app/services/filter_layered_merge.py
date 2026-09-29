@@ -516,6 +516,12 @@ def apply_link_scope_bounds(
             out.append(bounded)
             out_by_key[key] = bounded
             continue
+        if existing.get("_layer_source") in (LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED):
+            # An author lock is not a viewer choice: intersecting-with-fallback
+            # (or replacing a non-list lock) could widen it. AND the scope.
+            bounded = {**scope, "operator": "in", "value": allow, "_layer_source": LAYER_LINK_SCOPE}
+            out.append(bounded)
+            continue
         op = str(existing.get("operator") or "").lower()
         if op == "in":
             selected = _to_list(existing.get("value"))
@@ -545,7 +551,6 @@ def page_scope_bounds(
     pages_config: Optional[Sequence[Dict[str, Any]]],
     page_ids: Sequence[str],
     *,
-    exclude_field_keys: Optional[set[str]] = None,
     dataset_id: Any = None,
 ) -> List[Dict[str, Any]]:
     """The hard bounds a page puts on the data of the charts drawn on it.
@@ -560,23 +565,18 @@ def page_scope_bounds(
     Every publicMode applies (visible/locked/hidden only decide disclosure; a
     🚫 entry is tagged ``_disclose: False``). Entries the engine drops (empty,
     invalid) are dropped here too — the builder drops them the same way.
-    Fields in ``exclude_field_keys`` (``link_replaced_field_keys``: the link's
-    condition replaces the page filter, as the served structure already shows)
-    are skipped. A filter on ANOTHER dataset than the chart's (``dataset_id``)
+    A page filter is an author boundary: a public link's lock or kill-marker on
+    the same field never replaces it — they AND. A filter on ANOTHER dataset than the chart's (``dataset_id``)
     does not bound it — the engine could not apply it (the builder skips it the
     same way). With several page ids the bounds of every page apply (AND).
     """
     wanted = {str(p).strip() for p in page_ids}
-    exclude = exclude_field_keys or set()
     raw: List[Dict[str, Any]] = []
     for page in pages_config or []:
         if not isinstance(page, dict) or str(page.get("id") or "").strip() not in wanted:
             continue
         for f in page.get("filters") or []:
             if not isinstance(f, dict):
-                continue
-            key = str(f.get("semanticField") or f.get("field") or "").strip().lower()
-            if key and key in exclude:
                 continue
             if dataset_id is not None and f.get("datasetId") not in (None, "") and str(f.get("datasetId")) != str(dataset_id):
                 continue
@@ -623,33 +623,66 @@ def apply_page_scope_bounds(
     return out
 
 
-def same_field_allow_list(
-    filters: Optional[Sequence[Dict[str, Any]]],
+def _predicate_identity(entry: Dict[str, Any]) -> tuple:
+    return (_filter_dedupe_key(entry), str(entry.get("operator") or "").lower(), repr(entry.get("value")),
+            str(entry.get("datePreset") or entry.get("date_preset") or ""))
+
+
+def enforce_author_bounds(
+    merged: List[Dict[str, Any]],
+    author_filters: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """AND back every author-enforced dashboard filter (🔒/🚫) the merge lost.
+
+    In the layered merge a 🔒/🚫 dashboard filter sits above the viewer layers,
+    so no viewer choice relaxes it — but a public link's lock on the same field
+    REPLACED it (same dedupe key) and a link kill-marker REMOVED it. A link is a
+    per-audience selection, not a way around the report's own boundary: the
+    author's condition stays and the link's ANDs with it (never wider than
+    either). Runs after the link-scope and page-scope bounds.
+    """
+    out: List[Dict[str, Any]] = [dict(e) for e in merged]
+    present = {_predicate_identity(e) for e in out if e.get("_layer_source") == LAYER_DASHBOARD_FILTER_LOCKED}
+    for bound in normalize_filter_conditions(list(author_filters or [])):
+        if _predicate_identity(bound) in present:
+            continue
+        out.append({**bound, "_layer_source": LAYER_DASHBOARD_FILTER_LOCKED})
+        present.add(_predicate_identity(bound))
+    return out
+
+
+#: Marker on a HARD bound handed to a distinct-values query: the dropdown's
+#: self-strip (which drops every condition on its own field so a slicer is not
+#: pinned to its current pick) must keep it.
+HARD_BOUND_KEY = "_hard_bound"
+
+
+def hard_bounds_on_field(
+    bounds: Optional[Sequence[Dict[str, Any]]],
     dataset_id: Any,
     field_ref: str,
-) -> Optional[set[str]]:
-    """Values a hard ``in`` bound on ``field_ref`` allows (None: unbounded).
-
-    A slicer's dropdown self-strips its own field (so the cascade cannot pin
-    it), which also drops any HARD bound on that field — page scope, a 🔒/🚫
-    dashboard filter. The distinct endpoint re-applies them to the returned
-    values with this, the way it already does for a link 'limit' scope.
+) -> List[Dict[str, Any]]:
+    """The hard bounds (page scope, 🔒/🚫 dashboard filters, link locks and
+    scope) that constrain ``field_ref`` itself, marked to survive the dropdown's
+    self-strip — so a slicer never offers a value its own report forbids, for
+    EVERY operator (``not_in``, ``between``, ``is_null``, a date preset), not
+    only ``in`` lists. Pass the RAW bounds, never the merged list: there a
+    viewer's pick has been intersected into the bound and would pin the list.
     """
     ref = str(field_ref or "").strip().lower()
-    allowed: Optional[set[str]] = None
-    for f in filters or []:
-        if not isinstance(f, dict) or str(f.get("operator") or "").lower() != "in":
-            continue
-        if f.get("_layer_source") not in (_AUTHORITATIVE_SOURCES | {LAYER_PAGE_SCOPE}):
+    out: List[Dict[str, Any]] = []
+    for f in bounds or []:
+        if not isinstance(f, dict):
             continue
         if dataset_id is not None and f.get("datasetId") not in (None, "") and str(f.get("datasetId")) != str(dataset_id):
             continue
         keys = {str(f.get(k) or "").strip().lower() for k in ("semanticField", "fieldKey", "field")}
-        if ref not in keys:
-            continue
-        vals = set(_to_allow_list(f.get("value")))
-        allowed = vals if allowed is None else (allowed & vals)
-    return allowed
+        if ref and ref in keys:
+            # Stamped with the queried dataset: the SQL builder skips a filter
+            # whose datasetId is not literally that id (a stored "1" would be
+            # dropped silently, and the bound with it).
+            out.append({**f, HARD_BOUND_KEY: True, **({"datasetId": dataset_id} if dataset_id is not None else {})})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -739,34 +772,6 @@ def link_managed_field_keys(
         if not key:
             continue
         if link_entry_has_value(entry) or bool(entry.get("hidden")):
-            keys.add(key)
-    return keys
-
-
-def link_replaced_field_keys(
-    link_filters_config: Optional[Sequence[Dict[str, Any]]],
-) -> set[str]:
-    """Fields where the link's condition REPLACES the page's own filter.
-
-    A lock carrying a value ("Region = South") is the author's per-link answer
-    for that field: it replaces the page filter on it, as it always has (the page
-    filter is not served either). A kill-marker removes the field outright.
-    Any other enforced lock — ``is_null``, a relative-date preset without a
-    value — only adds a condition: the page filter stays and they AND. (Treating
-    those as replacing would widen the data past the page scope.)
-    """
-    keys: set[str] = set()
-    for entry in link_filters_config or []:
-        if not isinstance(entry, dict) or link_entry_is_scope(entry):
-            continue
-        entry = canonical_link_entry(entry)
-        key = str(entry.get("semanticField") or entry.get("field") or "").strip().lower()
-        if not key:
-            continue
-        state = link_entry_state(entry)
-        v = entry.get("value")
-        carries_value = any(x is not None and x != "" for x in v) if isinstance(v, (list, tuple)) else v not in (None, "")
-        if (bool(entry.get("hidden")) and state == LINK_ENTRY_EMPTY) or (state == LINK_ENTRY_ENFORCED and carries_value):
             keys.add(key)
     return keys
 

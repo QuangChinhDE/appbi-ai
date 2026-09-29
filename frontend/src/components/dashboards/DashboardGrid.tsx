@@ -170,6 +170,9 @@ interface DashboardGridProps {
   onFocusChart?: (dashboardChartId: number, additive?: boolean) => void;
   /** Lock/unlock a tile through the page's draft buffer. */
   onToggleLock?: (dashboardChartId: number, next: boolean) => void;
+  /** Stage a tile-level layout edit (title, appearance, toggles) in the page's
+   *  draft buffer. When absent a tile writes its row directly. */
+  onPatchLayout?: (dashboardChartId: number, patch: Record<string, any>) => void;
   /** Persisted (server ⊕ saved draft) layout for tile-level live toggles. */
   getPersistedLayout?: (dashboardChartId: number) => Record<string, any> | undefined;
   /** AI Design mode — tiles become click-to-focus targets (no drag handle) so a
@@ -219,6 +222,7 @@ function DashboardGridInner({
   selectedDashboardChartIds,
   onFocusChart,
   onToggleLock,
+  onPatchLayout,
   getPersistedLayout,
   aiDesignMode = false,
   presenceByChart,
@@ -561,6 +565,7 @@ function DashboardGridInner({
             isFocused={selectedDashboardChartIds ? selectedDashboardChartIds.includes(dc.id) : focusedDashboardChartId === dc.id}
             onFocus={onFocusChart}
             onToggleLock={onToggleLock}
+            onPatchLayout={onPatchLayout}
             getPersistedLayout={getPersistedLayout}
             aiDesignMode={aiDesignMode}
             editingBy={presenceByChart?.[dc.id] ?? null}

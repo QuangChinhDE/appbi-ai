@@ -168,6 +168,27 @@ export const dashboardApi = {
     return response.data;
   },
 
+  /** Edit a chart for THIS report only, in one server transaction: the copy
+   *  (with its metadata and parameter definitions) is created and swapped into
+   *  the tile as a draft. Nothing is left behind if it fails; Discard deletes
+   *  the copy. */
+  forkChartForReport: async (
+    dashboardId: number,
+    dashboardChartId: number,
+    body: {
+      name: string;
+      description?: string | null;
+      chart_type: string;
+      dataset_table_id: number;
+      config: Record<string, any>;
+      metadata?: Record<string, any> | null;
+      parameters?: Array<Record<string, any>>;
+    },
+  ): Promise<Dashboard> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/charts/${dashboardChartId}/fork-chart`, body);
+    return response.data;
+  },
+
   restoreChart: async (dashboardId: number, dashboardChartId: number): Promise<Dashboard> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/charts/${dashboardChartId}/restore`);
     return response.data;
@@ -222,6 +243,9 @@ export const dashboardApi = {
     const response = await apiClient.patch(
       `/dashboards/${dashboardId}/charts/${dashboardChartId}/parameters`,
       { parameters },
+      // A draft edit (the builder is the only caller): public and embed keep
+      // the published bindings until Publish; Discard drops the edit.
+      { params: { draft: true } },
     );
     return response.data;
   },

@@ -71,6 +71,9 @@ def _live(db: Session) -> Dashboard:
 
 
 def _stage(db: Session, **fields):
+    # The editor sends the revision it loaded (shared_draft.rev).
+    live = _live(db)
+    fields.setdefault("base_rev", api._shared_rev_token(live, live.draft_snapshot))
     return api.update_dashboard_draft_filters(1, DashboardUpdateDraftFiltersRequest(**fields), db, _User())
 
 
