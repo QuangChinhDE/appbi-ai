@@ -290,10 +290,16 @@ def api_health_check():
     """
     return {
         "status": "healthy",
+        # MOST AUTHORITATIVE FIRST. An explicit run-time value is a deployment
+        # stating its own identity and always wins. `APPBI_BUILD_SHA` is baked
+        # into the image at build time and answers when nobody said anything —
+        # which used to be every start that did not go through `run.sh`, and
+        # which reported "unknown" on a perfectly identifiable build.
         "git_sha": (
             os.getenv("GIT_SHA")
             or os.getenv("SOURCE_COMMIT")
             or os.getenv("COMMIT_SHA")
+            or os.getenv("APPBI_BUILD_SHA")
             or "unknown"
         ),
         "code_version": CODE_VERSION,
