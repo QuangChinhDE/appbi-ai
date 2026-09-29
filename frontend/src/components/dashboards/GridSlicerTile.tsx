@@ -26,6 +26,7 @@ import {
   type SlicerTreatment,
 } from '@/lib/slicer-placement';
 import { useI18n } from '@/providers/LanguageProvider';
+import { slicerScopeSummary } from '@/lib/public-page-filters';
 import type { DashboardChart } from '@/types/api';
 
 /** What a surface lends its slicer controls. */
@@ -143,12 +144,16 @@ function BoundSlicerTile({ tile, binding }: { tile: DashboardChart; binding: Sli
   const hidden = resolution.state === 'hidden';
   const listMax = Math.max(72, heightPx - LIST_CHROME_PX);
 
+  const scope = slicerScopeSummary(slicer, binding.dashboardPages ?? []);
+  const scopeText = t(`dashboards.slicerControl.scope.${scope.kind}`, { count: scope.count });
   return (
     <div
       ref={boxRef}
       data-slicer-control={hidden ? 'hidden' : 'ok'}
       data-slicer-id={slicer.id}
       data-slicer-treatment={resolved}
+      data-slicer-scope={scope.kind}
+      title={scopeText}
       className="group/slicer relative h-full w-full min-w-0"
       style={{ ['--slicer-list-max' as any]: `${listMax}px` }}
     >
@@ -177,6 +182,15 @@ function BoundSlicerTile({ tile, binding }: { tile: DashboardChart; binding: Sli
           onUpdateSlicerScope={binding.onUpdateSlicerScope}
         />
       </div>
+      {binding.editing && !hidden && (
+        // What it filters — a control next to one chart filters the whole page.
+        <span
+          data-export-hide=""
+          className="pointer-events-none absolute bottom-0.5 left-2 z-10 truncate text-[10px] text-text-quaternary opacity-0 transition-opacity group-hover/slicer:opacity-100"
+        >
+          {scopeText}
+        </span>
+      )}
       {hidden && (
         <span className="pointer-events-none absolute inset-x-1 bottom-1 flex items-center gap-1 truncate rounded bg-surface-1/90 px-1.5 py-0.5 text-[10px] font-medium text-text-tertiary">
           <EyeOff className="h-3 w-3 shrink-0" />

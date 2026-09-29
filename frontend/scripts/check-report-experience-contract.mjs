@@ -326,7 +326,14 @@ check('a reference that opens with a headline gets one, built from live findings
 const signature = (r) => ({
   primitives: r.plan.sections.map((s) => s.primitive).join(','),
   variants: [...new Set((r.plan.blocks ?? []).map((b) => b.variant))].sort().join(','),
-  dock: r.plan.slicerPresentation?.dock,
+  // Where the filters sit in the reading order — first, after the verdict, or
+  // after the story. (This axis was the slicer `dock`, which no longer moves
+  // anything: filters are grid elements placed by the plan's filter_bar.)
+  filtersAt: (() => {
+    const i = r.plan.sections.findIndex((s) => s.primitive === 'filter_bar');
+    if (i < 0) return 'none';
+    return i === 0 ? 'first' : i >= r.plan.sections.length - 3 ? 'last' : `after:${r.plan.sections[i - 1].primitive}`;
+  })(),
   density: r.plan.direction.density,
   mode: r.plan.themeIntent?.mode,
   frames: [...new Set(Object.values(r.plan.tileStyles ?? {}).map((s) => s.tileFrame))].sort().join(','),
@@ -358,7 +365,7 @@ check('the three directions differ in hierarchy, content treatment, density and 
   const sig = Object.fromEntries(directions.DIRECTION_IDS.map((d) => [d, signature(build(d))]));
   const pairs = [['executive', 'operations'], ['executive', 'editorial'], ['operations', 'editorial']];
   for (const [a, b] of pairs) {
-    const axes = ['primitives', 'variants', 'dock', 'density', 'frames'].filter((k) => sig[a][k] !== sig[b][k]);
+    const axes = ['primitives', 'variants', 'filtersAt', 'density', 'frames'].filter((k) => sig[a][k] !== sig[b][k]);
     assert(axes.length >= 4, `${a} vs ${b} differ on only ${axes.join(', ') || 'nothing'}`);
   }
   assert(sig.executive.firstBlock === 'block' && sig.editorial.firstBlock === 'block', 'executive/editorial do not open with a verdict');

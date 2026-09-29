@@ -1736,7 +1736,20 @@
    Words bound to findings. They inherit the report's text colour and font so a
    theme or direction restyles them with everything else; the accent marks the
    one figure a takeaway leads with. Variants encode ROLE, not decoration. */
-.dashboard-narrative { color: inherit; }
+.dashboard-narrative { color: inherit; container-type: inline-size; }
+/* A wide headline block used ~half its width (the headline caps at 46ch for
+   reading). Wide enough, the supporting sentences take the right-hand column
+   instead of stacking under it; a headline with nothing beside it stays one
+   column. Container query: the block's own width decides, not the viewport. */
+@container (min-width: 860px) {
+  .dashboard-narrative[data-narrative-variant="headline"] .dashboard-narrative__inner:has(.dashboard-narrative__list > li, .dashboard-narrative__prose) {
+    display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); column-gap: 40px; row-gap: 6px; align-content: center;
+  }
+  .dashboard-narrative[data-narrative-variant="headline"] .dashboard-narrative__eyebrow { grid-column: 1 / -1; }
+  .dashboard-narrative[data-narrative-variant="headline"] .dashboard-narrative__headline { grid-column: 1; }
+  .dashboard-narrative[data-narrative-variant="headline"] .dashboard-narrative__prose,
+  .dashboard-narrative[data-narrative-variant="headline"] .dashboard-narrative__list { grid-column: 2; grid-row: 2 / span 4; align-self: center; }
+}
 .dashboard-narrative__inner { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px; min-height: 100%; justify-content: center; }
 .dashboard-narrative__eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; opacity: .65; }
 .dashboard-narrative__headline { margin: 0; font-size: clamp(20px, 2.3vw, 32px); line-height: 1.18; font-weight: 600; letter-spacing: -.01em; text-wrap: balance; max-width: 46ch; }

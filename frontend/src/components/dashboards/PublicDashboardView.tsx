@@ -1968,6 +1968,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     distinctValues: resolvedDistinctValues,
     distinctStatus: resolvedDistinctStatus,
     fetchServerDistinct: fetchPublicServerDistinct,
+    // Only to say what a control filters (its tooltip) — no scope editing here.
+    dashboardPages: dashboardPages.map((p) => ({ id: p.id, name: p.name })),
   };
 
   /**

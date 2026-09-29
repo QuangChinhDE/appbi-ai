@@ -18,7 +18,22 @@ const EXPORT_LEGIBLE_CSS = [
   // dropdown chevrons. A control prints as its label and value.
   '[data-export-hide] { display: none !important; }',
   '.dashboard-slicer .lucide-chevron-down { display: none !important; }',
+  // Figures printed with gaps ("41 .4K", "R$1 25.8"): with a non-zero letter
+  // spacing html2canvas draws text glyph by glyph and mis-advances tabular
+  // numerals. Paper keeps the face and weight, at normal spacing.
+  '.dashboard-kpi-value, .dashboard-kpi-value *, .dashboard-narrative__figure, .dashboard-kpi-delta,'
+    + ' .dashboard-kpi-window-value, .tabular-nums { letter-spacing: normal !important;'
+    + ' font-variant-numeric: normal !important; font-feature-settings: normal !important; }',
+  // A section band is a frame behind several rows; a sheet break sliced it and
+  // left its side edges on the next sheet. On paper the heading marks the
+  // section.
+  '[data-section-bands] { display: none !important; }',
 ].join('\n');
+
+/** A grid item that is a section heading: it belongs with what follows it. */
+function isHeadingItem(el: Element): boolean {
+  return !!el.querySelector('[data-widget-type="section_header"]');
+}
 function legibleClone(doc: Document) {
   const style = doc.createElement('style');
   style.textContent = EXPORT_LEGIBLE_CSS;
@@ -633,6 +648,24 @@ async function drawTileRow(
  * to flowing across pages at full size.
  */
 const MIN_FIT = 0.55;
+
+/** A tile (as the tiled flow collects them) that is a section heading. */
+function isHeadingItemTile(tile: HTMLElement): boolean {
+  return tile.matches('[data-widget-type="section_header"]') || isHeadingItem(tile);
+}
+
+/** The height a row will take on the sheet, by drawTileRow's own rule. */
+function estimateRowMm(row: HTMLElement[], g: ReturnType<typeof geom>, fit: number): number {
+  const rects = row.map((t) => t.getBoundingClientRect());
+  const totalPxW = rects.reduce((a, r) => a + r.width, 0);
+  if (totalPxW <= 0) return 0;
+  const availW = g.usableW - TILE_GAP_X * (row.length - 1);
+  let mmPerPx = (availW / totalPxW) * (fit ?? 1);
+  const maxPxH = Math.max(...rects.map((r) => r.height));
+  const contentH = g.bottom - startContentY();
+  if (maxPxH * mmPerPx > contentH) mmPerPx = contentH / maxPxH;
+  return maxPxH * mmPerPx;
+}
 /** Shrink a row by at most this much to keep it on the current page. */
 const SQUEEZE_MIN = 0.65;
 
@@ -730,8 +763,17 @@ async function drawPageSnapshot(
     const pxPerSheet = Math.floor((availH / widthFit) * 3.7795);
     const rootTop = root.getBoundingClientRect().top;
     const pxPerCss = ch / Math.max(1, root.scrollHeight);
-    const cuts = Array.from(root.querySelectorAll<HTMLElement>('.react-grid-item'))
-      .map((el) => Math.round((el.getBoundingClientRect().bottom - rootTop) * pxPerCss))
+    // A sheet ends at the bottom of a row — never right under a section
+    // heading (it would sit alone at the foot of the sheet, its content on the
+    // next): the heading's top is the cut instead, so it opens the next sheet.
+    const items = Array.from(root.querySelectorAll<HTMLElement>('.react-grid-item'));
+    const headingTops = items.filter(isHeadingItem)
+      .map((el) => Math.round((el.getBoundingClientRect().top - rootTop) * pxPerCss));
+    const cuts = [
+      ...items.filter((el) => !isHeadingItem(el))
+        .map((el) => Math.round((el.getBoundingClientRect().bottom - rootTop) * pxPerCss)),
+      ...headingTops,
+    ]
       .filter((y) => y > 0 && y < ch)
       .sort((a, b) => a - b);
     const drawW = (cw / 3.7795) * widthFit;
@@ -1031,7 +1073,22 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
       });
     };
 
-    for (const row of rows) {
+    for (let ri = 0; ri < rows.length; ri++) {
+      const row = rows[ri];
+      // Keep a section heading with what it introduces: if the heading and (even
+      // squeezed) the row after it cannot share this sheet, start the heading on
+      // the next one instead of leaving it alone at the foot of this one.
+      const next = rows[ri + 1];
+      if (next && row.length > 0 && row.every(isHeadingItemTile) && y > startContentY() + 1) {
+        const g = geom(pdf);
+        const need = estimateRowMm(row, g, fit) + ROW_GAP_Y + estimateRowMm(next, g, fit) * SQUEEZE_MIN;
+        if (y + need > g.bottom && estimateRowMm(next, g, fit) <= g.bottom - startContentY()) {
+          pdf.addPage(opts.format, opts.orientation);
+          pageNo++;
+          drawPageHeader(pdf, opts, page, pageNo, total);
+          y = startContentY();
+        }
+      }
       // A tile holding a data table is always rendered as REAL text at full
       // width (selectable, all rows, clickable links) — squeezing a table into a
       // narrow grid column would defeat the point of the hybrid engine. The rest

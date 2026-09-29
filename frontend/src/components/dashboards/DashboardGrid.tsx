@@ -27,6 +27,61 @@ import { isSlicerControl } from '@/lib/slicer-placement';
 // breakpoint and clobber the saved layout.
 const FixedGridLayout = WidthProvider(GridLayout);
 
+/** The element that scrolls the builder (the app scrolls inside <main>). */
+function scrollParentOf(el: HTMLElement | null): HTMLElement | null {
+  let node = el?.parentElement ?? null;
+  while (node) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if ((overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight) return node;
+    node = node.parentElement;
+  }
+  return (document.scrollingElement as HTMLElement | null) ?? null;
+}
+
+/**
+ * Drag and resize auto-scroll. The grid never scrolled while a tile was
+ * dragged, so moving an element across a long report meant dropping it,
+ * scrolling and dragging again (the acceptance harness had to enlarge its
+ * viewport to move a control from the top to the bottom). Near the top or
+ * bottom edge of the scroll container the page now scrolls, faster the closer
+ * the pointer; each step re-sends the pointer so the dragged tile follows.
+ */
+function useEdgeAutoScroll(anchor: React.RefObject<HTMLElement>) {
+  const state = React.useRef<{ raf: number | null; x: number; y: number; box: HTMLElement | null } | null>(null);
+  const stop = React.useCallback(() => {
+    if (state.current?.raf) cancelAnimationFrame(state.current.raf);
+    state.current = null;
+  }, []);
+  const tick = React.useCallback(() => {
+    const s = state.current;
+    if (!s || !s.box) return;
+    const isRoot = s.box === document.scrollingElement;
+    const rect = isRoot ? { top: 0, bottom: window.innerHeight } : s.box.getBoundingClientRect();
+    const EDGE = 80;
+    let dy = 0;
+    if (s.y < rect.top + EDGE) dy = -Math.ceil((rect.top + EDGE - s.y) / 3);
+    else if (s.y > rect.bottom - EDGE) dy = Math.ceil((s.y - (rect.bottom - EDGE)) / 3);
+    if (dy) {
+      const before = s.box.scrollTop;
+      s.box.scrollTop = before + Math.max(-28, Math.min(28, dy));
+      if (s.box.scrollTop !== before) {
+        document.dispatchEvent(new MouseEvent('mousemove', { clientX: s.x, clientY: s.y, bubbles: true }));
+      }
+    }
+    s.raf = requestAnimationFrame(tick);
+  }, []);
+  const start = React.useCallback((event?: MouseEvent) => {
+    stop();
+    state.current = { raf: null, x: event?.clientX ?? 0, y: event?.clientY ?? 0, box: scrollParentOf(anchor.current) };
+    state.current.raf = requestAnimationFrame(tick);
+  }, [anchor, stop, tick]);
+  const move = React.useCallback((event?: MouseEvent) => {
+    if (state.current && event) { state.current.x = event.clientX; state.current.y = event.clientY; }
+  }, []);
+  React.useEffect(() => stop, [stop]);
+  return { start, move, stop };
+}
+
 /** Wrapper that defers rendering children until the element is visible. */
 function LazyChartSlot({ children }: { children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -188,6 +243,7 @@ function DashboardGridInner({
   // sit below it, so a dashboard going from zero charts to one changed the
   // hook count between renders and threw React #300, taking the grid with it.
   const gridWrapRef = React.useRef<HTMLDivElement | null>(null);
+  const autoScroll = useEdgeAutoScroll(gridWrapRef as React.RefObject<HTMLElement>);
   const [gridWidth, setGridWidth] = React.useState(0);
   React.useEffect(() => {
     const el = gridWrapRef.current;
@@ -319,7 +375,12 @@ function DashboardGridInner({
       cols={DASHBOARD_GRID_COLS}
       rowHeight={gridRowHeight}
       margin={gridMargin}
+      onDragStart={(_l, _o, _n, _p, event) => autoScroll.start(event as unknown as MouseEvent)}
+      onDrag={(_l, _o, _n, _p, event) => autoScroll.move(event as unknown as MouseEvent)}
+      onResizeStart={(_l, _o, _n, _p, event) => autoScroll.start(event as unknown as MouseEvent)}
+      onResize={(_l, _o, _n, _p, event) => autoScroll.move(event as unknown as MouseEvent)}
       onDragStop={(_layout, oldItem, newItem, _placeholder, event) => {
+        autoScroll.stop();
         if (!isNarrow) persistItem(newItem);
         // A press on a widget's body starts a drag, and the grid's placeholder
         // then covers the widget, so the click never reaches it. A drag that
@@ -333,7 +394,7 @@ function DashboardGridInner({
           }
         }
       }}
-      onResizeStop={(_layout, _oldItem, newItem) => { if (!isNarrow) persistItem(newItem); }}
+      onResizeStop={(_layout, _oldItem, newItem) => { autoScroll.stop(); if (!isNarrow) persistItem(newItem); }}
       draggableHandle=".drag-handle"
       // Never start a drag from an interactive control or the widget's own
       // edit/delete cluster (whole widget bodies are now drag handles).

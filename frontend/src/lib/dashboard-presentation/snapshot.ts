@@ -181,6 +181,8 @@ export interface BuildSnapshotInput {
   /** Labels/types/descriptions from the dataset models the builder already
    *  loaded. Optional: without it measure names are humanised instead. */
   fieldMeta?: FieldMetaIndex;
+  /** Rows each loaded tile returned (counts only), so a table is sized to them. */
+  rowCountByTile?: Record<number, number>;
 }
 
 /** The allow-listed style keys a tile already carries on this dashboard. */
@@ -253,6 +255,7 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
       widgetType,
       styleCapabilities: styleCapabilitiesFor(chartType, widgetType),
       renderAspect: renderAspectFor(chartType, widgetType),
+      ...(typeof input.rowCountByTile?.[tile.id] === 'number' ? { rowCount: input.rowCountByTile[tile.id] } : {}),
       readingOrder: order.get(tile.id) ?? 0,
       locked: (tile.layout as any)?.locked === true,
       meaning,

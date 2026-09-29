@@ -261,13 +261,17 @@ function executive(s: DashboardPresentationSnapshot, labels: DirectionLabels): P
 
   return {
     layer: 'redesign',
-    direction: { style: 'executive' as CompositionStyle, density: 'spacious' },
+    // A brief is scanned, not read: balanced density keeps the verdict, the
+    // numbers and the argument chart above the fold (editorial is the spacious,
+    // read-through direction).
+    direction: { style: 'executive' as CompositionStyle, density: 'balanced' },
     sections: b.sections,
     blocks: b.blocks,
     visualPreferences: b.prefs,
     tileStyles: b.tileStyles,
-    themeIntent: { template: 'brief', colorway: 'slate', mode: 'light', density: 'spacious', fontFamily: 'dm-sans', cardTreatment: 'clean' } as any,
-    slicerPresentation: { dock: 'top', variant: 'dropdown', style: 'pill', density: 'balanced' },
+    themeIntent: { template: 'brief', colorway: 'slate', mode: 'light', density: 'balanced', fontFamily: 'dm-sans', cardTreatment: 'clean' } as any,
+    // How the controls LOOK. Where they sit is the plan's filter_bar section.
+    slicerPresentation: { variant: 'dropdown', style: 'pill', density: 'balanced' },
     rationale: 'Executive brief: what happened, why it matters (headline numbers and what moved beside the lead series), supporting evidence, detail last.',
   };
 }
@@ -334,7 +338,7 @@ function operations(s: DashboardPresentationSnapshot, labels: DirectionLabels): 
     visualPreferences: b.prefs,
     tileStyles: b.tileStyles,
     themeIntent: { template: 'ops', colorway: 'graphite', mode: 'dark', density: 'compact', fontFamily: 'inter', cardTreatment: 'outline' } as any,
-    slicerPresentation: { dock: 'left', variant: 'compact', style: 'compact', density: 'compact' },
+    slicerPresentation: { variant: 'compact', style: 'compact', density: 'compact' },
     rationale: 'Operations board: current state, the exceptions the data flags, the monitoring series, then drill-down rankings and tables.',
   };
 }
@@ -391,7 +395,7 @@ function editorial(s: DashboardPresentationSnapshot, labels: DirectionLabels): P
     visualPreferences: b.prefs,
     tileStyles: b.tileStyles,
     themeIntent: { template: 'editorial', colorway: 'indigo', mode: 'light', density: 'spacious', fontFamily: 'serif', cardTreatment: 'frameless' } as any,
-    slicerPresentation: { dock: 'drawer', variant: 'dropdown', style: 'minimal', density: 'spacious' },
+    slicerPresentation: { variant: 'dropdown', style: 'minimal', density: 'spacious' },
     rationale: 'Editorial story: a thesis, a chapter per chart with what it shows, then the caveats to keep in mind.',
   };
 }

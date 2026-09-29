@@ -87,6 +87,16 @@ const MIN_KPI_PX = 95;
 /** A table is read row by row; below ~8 rows plus a header it stops being the
  *  detail people open it for. Low emphasis may quiet it, not truncate it. */
 const MIN_TABLE_PX = 380;
+// A table whose rows are known is sized to them: its title and header, then
+// one row each (up to what a tile shows before it scrolls). A 6-row table got
+// a 540px tile with half of it empty.
+const TABLE_CHROME_PX = 96;
+const TABLE_ROW_PX = 36;
+const TABLE_ROWS_SHOWN = 12;
+const MIN_FITTED_TABLE_PX = 200;
+function fittedTablePx(rowCount: number): number {
+  return Math.max(MIN_FITTED_TABLE_PX, TABLE_CHROME_PX + Math.min(rowCount, TABLE_ROWS_SHOWN) * TABLE_ROW_PX);
+}
 const TABLE_TYPES_FOR_FLOOR: ReadonlySet<string> = new Set(['TABLE', 'MATRIX', 'PIVOT', 'PIVOT_TABLE']);
 const KPI_ROLES: ReadonlySet<string> = new Set(['kpi', 'headline']);
 
@@ -465,8 +475,14 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
       // A gauge/funnel/donut keeps the height its shape needs even when the role
       // would make it a compact card.
       const chartFloorPx = CHART_TYPE_MIN_PX[String(visual?.chartType ?? '').toUpperCase()] ?? 0;
-      const tableFloorPx = role === 'table' || TABLE_TYPES_FOR_FLOOR.has(String(visual?.chartType ?? '').toUpperCase())
-        ? MIN_TABLE_PX : 0;
+      const isTable = role === 'table' || TABLE_TYPES_FOR_FLOOR.has(String(visual?.chartType ?? '').toUpperCase());
+      if (isTable && typeof visual?.rowCount === 'number') {
+        // Same px→rows conversion as every other tile: never taller than the
+        // role's own height, only shorter when the rows need less.
+        const fitted = Math.min(scaled, fittedTablePx(visual.rowCount));
+        return Math.max(rowsForHeight(fitted, gapPx), rowsAtLeast(MIN_FITTED_TABLE_PX, gapPx));
+      }
+      const tableFloorPx = isTable ? MIN_TABLE_PX : 0;
       const floorPx = Math.max(roleFloorPx, chartFloorPx, tableFloorPx);
       return Math.max(rowsForHeight(scaled, gapPx), rowsAtLeast(floorPx, gapPx));
     });

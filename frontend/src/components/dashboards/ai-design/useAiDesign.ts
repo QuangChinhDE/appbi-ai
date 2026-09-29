@@ -46,6 +46,9 @@ import type { AiDesignTurn } from './AiDesignPanel';
  */
 
 export interface UseAiDesignInput {
+  /** Rows each loaded tile returned — counts only — so a redesign sizes a table
+   *  to what it shows. */
+  rowCountByTile?: Record<number, number>;
   dashboardId: number;
   dashboard: Dashboard | null | undefined;
   activePageId: string;
@@ -144,10 +147,11 @@ export function useAiDesign(input: UseAiDesignInput) {
       slicers: input.slicers,
       slicerDock: input.slicerDock,
       fieldMeta: input.fieldMeta,
+      rowCountByTile: input.rowCountByTile,
     });
   }, [
     input.dashboard, seenTheme, baselineTiles, input.activePageId, input.activePageName,
-    input.pageCount, input.slicers, input.slicerDock, input.fieldMeta,
+    input.pageCount, input.slicers, input.slicerDock, input.fieldMeta, input.rowCountByTile,
   ]);
   // What the report currently SAYS: the findings its tiles support right now.
   // The planner reads them to decide what leads; it can reference them by key

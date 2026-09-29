@@ -44,12 +44,29 @@ function slicerVisibleOnPage(slicer: unknown, pageId: string): boolean {
 
 /** Same slicer, but "does it constrain this page's data" (can be true while the
  *  control is hidden → the value applies silently). */
-function slicerFiltersOnPage(slicer: unknown, pageId: string): boolean {
+export function slicerFiltersOnPage(slicer: unknown, pageId: string): boolean {
   const scope = (slicer as { scope?: string } | null)?.scope || 'all';
   if (scope === 'custom') {
     return Boolean((slicer as { pageScope?: Record<string, { filter?: boolean }> })?.pageScope?.[pageId]?.filter);
   }
   return true;
+}
+
+/**
+ * What a slicer control actually filters, said in words — a control placed next
+ * to one chart must not read as "filters that chart" when it filters the whole
+ * page (or every page). Page slicers filter their page; report slicers filter
+ * every page, or the pages their custom scope marks.
+ */
+export function slicerScopeSummary(
+  slicer: unknown,
+  pages: { id: string }[],
+): { kind: 'thisPage' | 'allPages' | 'somePages'; count: number } {
+  const scope = (slicer as { scope?: string } | null)?.scope || 'all';
+  if (scope === 'page' || pages.length <= 1) return { kind: 'thisPage', count: 1 };
+  const count = pages.filter((p) => slicerFiltersOnPage(slicer, p.id)).length;
+  if (count >= pages.length) return { kind: 'allPages', count };
+  return count <= 1 ? { kind: 'thisPage', count: 1 } : { kind: 'somePages', count };
 }
 
 function asFilterArray(value: unknown): BaseFilter[] {

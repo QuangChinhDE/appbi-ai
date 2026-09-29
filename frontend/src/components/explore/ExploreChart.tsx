@@ -3043,7 +3043,14 @@ function ExploreChartInner({
     const longestPieLabel = sortedPieData.reduce((mx: number, r: any) => Math.max(mx, String(r?.displayName ?? r?.name ?? '').length + 6), 0);
     const pieOuterRadius: number | string = pieW > 0 && pieH > 0
       // +40: the label sits a leader line (~20px) beyond the rim, plus its own padding.
-      ? Math.max(36, Math.min(pieH * 0.4, pieW / 2 - Math.min(pieW * 0.3, longestPieLabel * 6.6 + 40)))
+      // Vertically too: the pie is centred at 45%, so a label near the top needs
+      // ~34px above the rim — a short tile clipped "Online (44%)" to a dangling
+      // leader line.
+      ? Math.max(36, Math.min(
+        pieH * 0.4,
+        showDataLabels ? pieH * 0.45 - 34 : pieH * 0.4,
+        pieW / 2 - Math.min(pieW * 0.3, longestPieLabel * 6.6 + 40),
+      ))
       : '60%';
     const fitPieText = (text: string, x: number, anchor: 'start' | 'end', fontSize: number): string | null => {
       if (!(pieW > 0)) return text;

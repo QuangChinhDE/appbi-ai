@@ -251,6 +251,9 @@ export interface SnapshotVisual {
    *   'flex'   — anything else; no strong preference
    */
   renderAspect: 'square' | 'wide' | 'tall' | 'flex';
+  /** How many rows the tile returned (a table is sized to what it shows). A
+   *  count only — never a value. Absent when the tile has not loaded. */
+  rowCount?: number;
   /** 1-based position in the author's reading order (top to bottom, left to right). */
   readingOrder: number;
   /** The author locked this visual's geometry. No layer may move or resize it. */

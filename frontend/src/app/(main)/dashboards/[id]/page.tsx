@@ -88,7 +88,7 @@ import {
 } from '@/lib/dashboard-pages';
 import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components/dashboards/GridSlicerTile';
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
-import { ArrangeBar } from '@/components/dashboards/ArrangeBar';
+import { ArrangeBar, type TileFrame } from '@/components/dashboards/ArrangeBar';
 import { arrangeTiles, closeVacatedBand, nudgeTiles, placeBeside, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
 import { pageFilterFacts, statePageFilterFact } from '@/lib/public-page-filters';
 import { settleStoredLayout } from '@/lib/grid-settle';
@@ -1080,7 +1080,15 @@ function DashboardDetailPageInner() {
     keepInMind: t('report.direction.keepInMind'),
   }), [t]);
 
+  // Rows each loaded tile returned (counts only): a redesign sizes a table to
+  // them instead of giving six rows a 540px tile.
+  const tileRowCounts = React.useMemo(() => {
+    const out: Record<number, number> = {};
+    for (const e of reportFindings.evidence) out[e.tileId] = Array.isArray(e.rows) ? e.rows.length : 0;
+    return out;
+  }, [reportFindings]);
   const aiDesign = useAiDesign({
+    rowCountByTile: tileRowCounts,
     findings: aiFindings,
     directionLabels,
     dashboardId: Number(dashboardId),
@@ -3375,6 +3383,30 @@ function DashboardDetailPageInner() {
     if (result.skippedLocked > 0) toast.info(t('dashboards.arrange.lockedSkipped'));
   };
   const handleArrange = (op: ArrangeOp) => commitArrange(arrangeTiles(op, pageBoxes(), selectedTileIds));
+  // Frame of the selected CHARTS (a widget frames itself). One undo step; it is
+  // layout state, so it is a draft edit published with the rest.
+  const selectedChartIds = selectedTileIds.filter((id) => {
+    const dc = visibleDashboardCharts.find((d) => d.id === id);
+    return !!dc && (!dc.widget_type || dc.widget_type === 'chart');
+  });
+  const selectedFrame = (() => {
+    const frames = new Set(selectedChartIds.map((id) => {
+      const style = (resolveDashboardChartLayout(id) as any)?.styleConfigOverride ?? {};
+      return (style.tileFrame as TileFrame | undefined) ?? 'card';
+    }));
+    return frames.size === 1 ? [...frames][0] : null;
+  })();
+  const handleFrame = (frame: TileFrame) => {
+    if (selectedChartIds.length === 0) return;
+    const prevOverrides = localLayoutOverridesRef.current;
+    const next = { ...prevOverrides };
+    for (const id of selectedChartIds) {
+      const layout = resolveDashboardChartLayout(id, prevOverrides) as any;
+      next[id] = { ...layout, styleConfigOverride: { ...(layout?.styleConfigOverride ?? {}), tileFrame: frame } };
+    }
+    pushUndo({ kind: 'layout', prev: prevOverrides, next });
+    setLocalLayoutOverrides(next);
+  };
   // A drag or resize on the grid: where the tile lands, what makes room for it,
   // and — for a filter control — whether the band it left closes
   // (lib/grid-arrange resolveDrop). One undo step, whatever it moved.
@@ -4357,7 +4389,13 @@ function DashboardDetailPageInner() {
         )}
         <ExportModeContext.Provider value={exportRenderMode}>
         {designMode === 'manual' && canEditThisPage && !isExportingPdf && (
-          <ArrangeBar count={selectedTileIds.length} onArrange={handleArrange} onClear={clearTileSelection} />
+          <ArrangeBar
+            count={selectedTileIds.length}
+            onArrange={handleArrange}
+            onClear={clearTileSelection}
+            onFrame={selectedChartIds.length > 0 ? handleFrame : undefined}
+            frame={selectedFrame}
+          />
         )}
         <div ref={canvasRootRef} data-dashboard-canvas-root="builder">
         {(

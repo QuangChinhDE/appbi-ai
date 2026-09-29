@@ -696,6 +696,75 @@ check('a headline an earlier design wrote keeps headline height when a redesign 
   assert(reused[70].h === fresh[-1].h, `a reused headline is ${reused[70].h} rows, a new one ${fresh[-1].h}`);
 });
 
+// ── Report Studio V3 completion — Milestones 2 and 4 ───────────────────────
+
+check('a table a redesign places is sized to the rows it shows, not a fixed 540px', () => {
+  const compiler = load('lib/dashboard-presentation/compiler.ts');
+  const table = { ...chart(5, 0, 0, 36, 20), chart: { id: 905, name: 'Top sellers', chart_type: 'TABLE' } };
+  const base = { layer: 'redesign', direction: { style: 'x', density: 'spacious' }, sections: [{ primitive: 'table_full', visuals: [5] }],
+    visualPreferences: { 5: { role: 'table', emphasis: 'low' } } };
+  const sized = (rowCountByTile) => compiler.compilePresentationPlan({
+    plan: base, pageId: 'page-1',
+    snapshot: snapshotMod.buildPresentationSnapshot({ dashboard: { name: 'R', theme_config: {}, dashboard_charts: [table] }, tiles: [table],
+      pageId: 'page-1', pageName: 'Overview', pageCount: 1, slicers: [], slicerDock: 'grid', rowCountByTile }),
+  }).mutation.layoutOverrides[5].h;
+  const unknown = sized(undefined);
+  const six = sized({ 5: 6 });
+  const hundred = sized({ 5: 100 });
+  assert(six < unknown, `a 6-row table is ${six} rows, the same as an unknown one (${unknown})`);
+  assert(hundred >= six && hundred <= unknown, `a long table is ${hundred} rows (6 rows: ${six}, cap ${unknown})`);
+});
+
+check('a control says what it filters — the whole page or every page, never only the chart beside it', () => {
+  const ppf = load('lib/public-page-filters.ts');
+  const pages = [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }];
+  assert(ppf.slicerScopeSummary({ scope: 'all' }, pages).kind === 'allPages', 'a report slicer reads as this page only');
+  assert(ppf.slicerScopeSummary({ scope: 'page' }, pages).kind === 'thisPage', 'a page slicer reads as several pages');
+  const some = ppf.slicerScopeSummary({ scope: 'custom', pageScope: { p1: { filter: true }, p3: { filter: true } } }, pages);
+  assert(some.kind === 'somePages' && some.count === 2, JSON.stringify(some));
+  const tile = source('components/dashboards/GridSlicerTile.tsx');
+  assert(/title=\{scopeText\}/.test(tile) && /data-slicer-scope=/.test(tile), 'the control does not state its scope to a viewer');
+  assert(/dashboardPages: dashboardPages\.map/.test(source('components/dashboards/PublicDashboardView.tsx')),
+    'the public control cannot know it filters several pages');
+});
+
+check('an element can be framed as a card, a subtle panel or flush — one undo step, a draft edit', () => {
+  const bar = source('components/dashboards/ArrangeBar.tsx');
+  assert(/arrange-frame-\$\{f\}/.test(bar) && /onFrame\(f\)/.test(bar), 'no frame control in the arrange bar');
+  const page = source('app/(main)/dashboards/[id]/page.tsx');
+  const fn = page.slice(page.indexOf('const handleFrame = '), page.indexOf('const handleFrame = ') + 700);
+  assert(/styleConfigOverride: \{ \.\.\.\(layout\?\.styleConfigOverride \?\? \{\}\), tileFrame: frame \}/.test(fn) && /pushUndo\(/.test(fn),
+    'the frame is not written as an undoable layout override');
+});
+
+check('dragging near the edge of a long report scrolls it', () => {
+  const grid = source('components/dashboards/DashboardGrid.tsx');
+  assert(/onDragStart=\{[^}]*autoScroll\.start/.test(grid) && /onDrag=\{[^}]*autoScroll\.move/.test(grid), 'drag does not drive the auto-scroll');
+  assert(/onResizeStart=\{[^}]*autoScroll\.start/.test(grid), 'resize does not drive the auto-scroll');
+  assert(/dispatchEvent\(new MouseEvent\('mousemove'/.test(grid), 'the dragged tile does not follow the scroll');
+  const body = grid.slice(grid.indexOf('function DashboardGridInner('));
+  assert(body.indexOf('useEdgeAutoScroll(') > 0 && body.indexOf('useEdgeAutoScroll(') < body.indexOf('if (dashboardCharts.length === 0) {'),
+    'the auto-scroll hook runs after the empty-page return');
+});
+
+check('paper: figures print without glyph gaps, section frames are not sliced, a heading opens its sheet', () => {
+  const pdf = source('lib/export-pdf.ts');
+  const css = pdf.slice(pdf.indexOf('const EXPORT_LEGIBLE_CSS'), pdf.indexOf("].join('\\n')"));
+  assert(/\.dashboard-kpi-value[^']*letter-spacing: normal/.test(css.replace(/'\s*\+\s*'/g, '')), 'KPI figures keep the spacing html2canvas mis-draws');
+  assert(/\[data-section-bands\] \{ display: none/.test(css), 'section band frames are sliced across sheets');
+  const snapshotCut = pdf.slice(pdf.indexOf('const headingTops'), pdf.indexOf('const drawW = (cw / 3.7795) * widthFit;'));
+  assert(/filter\(\(el\) => !isHeadingItem\(el\)\)/.test(snapshotCut) && /\.\.\.headingTops/.test(snapshotCut),
+    'a snapshot sheet can still end right under a section heading');
+  assert(/row\.every\(isHeadingItemTile\)/.test(pdf), 'the tiled flow can leave a heading alone at the foot of a sheet');
+});
+
+check('a wide headline block uses its width: the supporting sentences take the right-hand column', () => {
+  const css = source('app/globals.css');
+  assert(/\.dashboard-narrative \{ color: inherit; container-type: inline-size; \}/.test(css), 'the narrative block is not a size container');
+  assert(/@container \(min-width: 860px\)[\s\S]*data-narrative-variant="headline"\] \.dashboard-narrative__list \{ grid-column: 2/.test(css),
+    'a wide headline still stacks its sentences under a half-width headline');
+});
+
 if (failures.length) {
   for (const { name, error } of failures) console.error(`FAIL  ${name}\n      ${error.message}`);
   console.error(`\n${failures.length} failed, ${passed} passed`);
