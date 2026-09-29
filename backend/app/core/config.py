@@ -167,6 +167,10 @@ class Settings(BaseSettings):
     AGENT_FLOW_READER_MODE: str = "pilot"
     AGENT_FLOW_PILOT_LINK_IDS: str = ""   # comma-separated public-link ids
     AGENT_FLOW_PILOT_USERS: str = ""      # comma-separated Direct Chat emails
+    # The model an Agent Flow run uses when neither the link nor the node names one
+    # (OpenAI only). Empty = the provider adapter's default. The pilot sets the model
+    # it was certified on; the legacy dashboard assistant does not read this.
+    AGENT_FLOW_DEFAULT_MODEL: str = ""
     # How many CHARACTERS of capability schema a routed step is shown per round
     # (runtime/capabilities.py). A grant whose schemas fit is shown whole — the V1
     # starter's ten tools are ~8.5k. A larger grant is shown the core (every way in

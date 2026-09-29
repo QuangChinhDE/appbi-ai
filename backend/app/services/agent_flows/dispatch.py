@@ -400,6 +400,21 @@ BLOCK_MESSAGES = {
 }
 
 
+def _runtime_model(model: Any, provider: Any) -> str:
+    """The model an Agent Flow run uses: the link's / request's, else the deployment's
+    Agent Flow default (settings.AGENT_FLOW_DEFAULT_MODEL, OpenAI only), else the
+    provider adapter's own default ("" — today's behaviour). A node's own `model`
+    still wins inside the executor. The pilot is certified on ONE model: without
+    this, public links ran on their own setting and Direct Chat always on the
+    adapter default (gpt-4o-mini), the model the live eval failed on."""
+    from app.core.config import settings
+
+    if model:
+        return str(model)
+    default = str(getattr(settings, "AGENT_FLOW_DEFAULT_MODEL", "") or "").strip()
+    return default if default and str(provider or "openai").lower() in ("", "openai") else ""
+
+
 def _reader_gate(*, link_id: Any = None, user_email: Any = None) -> str | None:
     """The reader rollout policy (services/agent_flows/pilot.py) for this turn."""
     from app.services.agent_flows import pilot
@@ -535,7 +550,7 @@ async def run_for_link(
             # always has the same type) — so the None-to-"" translation belongs
             # here, once, rather than loosening the contract for every consumer.
             provider=provider or "",
-            model=model or "",
+            model=_runtime_model(model, provider),
             budget=BudgetEnvelope(**contract.budget.model_dump()),
         ),
     )
@@ -682,7 +697,7 @@ def _studio_input(
             # envelope's types are fixed by design (L1: a field that is present
             # always has the same type) — so the None-to-"" translation belongs
             # here, once, rather than loosening the contract for every consumer.
-            provider=provider or "", model=model or "",
+            provider=provider or "", model=_runtime_model(model, provider),
             budget=BudgetEnvelope(**contract.budget.model_dump()),
         ),
     )
@@ -1103,7 +1118,7 @@ async def run_for_chat_thread(
         memory=memory,
         runtime=RuntimeInfo(
             provider=provider or "",
-            model=model or "",
+            model=_runtime_model(model, provider),
             budget=BudgetEnvelope(**contract.budget.model_dump()),
         ),
     )

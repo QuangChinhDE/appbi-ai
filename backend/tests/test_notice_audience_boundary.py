@@ -252,3 +252,23 @@ def test_both_reader_paths_ask_the_policy_and_studio_test_does_not():
     preview = src[src.index("async def run_preview("):]
     preview = preview[:preview.index("\nasync def ", 10)]
     assert "_reader_gate(" not in preview, "Studio Test is the author's path"
+
+
+def test_every_agent_flow_path_runs_on_the_certified_default_model(monkeypatch):
+    """The pilot is certified on one model: a link's own model wins, else the
+    deployment's AGENT_FLOW_DEFAULT_MODEL (OpenAI only), else the adapter default.
+    Direct Chat passed no model at all and always ran on gpt-4o-mini."""
+    import inspect
+
+    from app.core.config import settings
+    from app.services.agent_flows import dispatch
+
+    monkeypatch.setattr(settings, "AGENT_FLOW_DEFAULT_MODEL", "gpt-4.1", raising=False)
+    assert dispatch._runtime_model("", "openai") == "gpt-4.1"
+    assert dispatch._runtime_model("", "") == "gpt-4.1"
+    assert dispatch._runtime_model("gpt-4o", "openai") == "gpt-4o", "the link's own model wins"
+    assert dispatch._runtime_model("", "anthropic") == "", "not an OpenAI model for another vendor"
+    monkeypatch.setattr(settings, "AGENT_FLOW_DEFAULT_MODEL", "", raising=False)
+    assert dispatch._runtime_model("", "openai") == "", "unset: today's adapter default"
+    src = inspect.getsource(dispatch)
+    assert src.count("_runtime_model(model, provider)") == 3, "link, chat and studio all use it"
