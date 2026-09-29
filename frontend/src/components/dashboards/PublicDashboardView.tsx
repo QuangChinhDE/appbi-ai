@@ -1,5 +1,8 @@
 ﻿'use client';
 
+import { groupIntoPrintBands } from '@/lib/print-bands';
+import { planKeyForElement, PRINTABLE_ELEMENT_TYPES } from '@/lib/export-layout';
+import { widgetTypeLabel } from '@/components/dashboards/widget-forms';
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
@@ -295,27 +298,6 @@ function getErrorMessage(error: any): string {
  * public chart-data endpoint allows 300 req/min, so 8 concurrent stays well
  * within budget even on a 20-tile dashboard with filter re-fetches.
  */
-/** Group dashboard tiles into their authored rows (same `y`), left to right. */
-function groupTilesIntoRows(charts: DashboardChart[]): DashboardChart[][] {
-  const sorted = [...charts].sort((a, b) => {
-    const ay = a.layout?.y ?? 0;
-    const by = b.layout?.y ?? 0;
-    if (ay !== by) return ay - by;
-    return (a.layout?.x ?? 0) - (b.layout?.x ?? 0);
-  });
-  const rows: DashboardChart[][] = [];
-  let currentY: number | null = null;
-  for (const chart of sorted) {
-    const y = chart.layout?.y ?? 0;
-    if (currentY === null || y !== currentY) {
-      rows.push([chart]);
-      currentY = y;
-    } else {
-      rows[rows.length - 1].push(chart);
-    }
-  }
-  return rows;
-}
 
 const CHART_FETCH_CONCURRENCY = 8;
 // PDF export retries a chart that failed to load before giving up and listing it
@@ -1456,11 +1438,16 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   const planCandidates = useMemo(() => {
     const pageNameById = new Map(dashboardPages.map((pg) => [pg.id, pg.name]));
     return (dashboard?.dashboard_charts ?? [])
-      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id)
+      // Charts, and the report elements that print (header, headings, text,
+      // insights) — an arranged handout keeps the report's own words.
+      .filter((dc) => ((!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id)
+        || PRINTABLE_ELEMENT_TYPES.has(String(dc.widget_type)))
       .map((dc) => ({
-        chartId: dc.chart_id,
-        title: dc.chart?.name || `Biểu đồ #${dc.chart_id}`,
-        chartType: (dc.chart as { chart_type?: string } | undefined)?.chart_type,
+        chartId: dc.widget_type && dc.widget_type !== 'chart' ? planKeyForElement(dc.id) : dc.chart_id,
+        title: dc.widget_type && dc.widget_type !== 'chart'
+          ? String((dc.widget_config as any)?.title || (dc.widget_config as any)?.headline || (dc.widget_type === 'hero_strip' ? dashboard?.name : '') || widgetTypeLabel(t, dc.widget_type))
+          : dc.chart?.name || `#${dc.chart_id}`,
+        chartType: dc.widget_type && dc.widget_type !== 'chart' ? 'ELEMENT' : (dc.chart as { chart_type?: string } | undefined)?.chart_type,
         pageId: getDashboardChartPageId(dc.layout),
         pageName: pageNameById.get(getDashboardChartPageId(dc.layout)) || undefined,
         layout: {
@@ -1470,7 +1457,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           h: Number(dc.layout?.h ?? 6),
         },
       }));
-  }, [dashboard?.dashboard_charts, dashboardPages]);
+  }, [dashboard?.dashboard_charts, dashboard?.name, dashboardPages, t]);
 
   /**
    * Load one page's chart data for the export arranger's previews.
@@ -2101,7 +2088,17 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // render and blow up with React #310 ("rendered more hooks than last time").
   // The grouping is a sort over a handful of tiles — memoising it would cost
   // more than it saves.
-  const printTileRows = printMode ? groupTilesIntoRows(visibleDashboardCharts) : [];
+  const printBands = printMode
+    ? groupIntoPrintBands(visibleDashboardCharts.map((dc) => ({
+      id: dc.id,
+      x: Number(dc.layout?.x) || 0,
+      y: Number(dc.layout?.y) || 0,
+      w: Number(dc.layout?.w) || DASHBOARD_GRID_COLS,
+      h: Number(dc.layout?.h) || 12,
+      kind: dc.widget_type ?? 'chart',
+      dc,
+    })))
+    : [];
 
   const gridSectionEl = (
     <ExportModeContext.Provider value={exportRenderMode || (printMode ? printRenderMode : false)}>
@@ -2169,29 +2166,44 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         <ExportModeContext.Provider value={printRenderMode}>
           <main className="w-full px-3 py-2" data-pdf-root="1">
             <section ref={gridSectionRef}>
-              {printTileRows.map((row, rowIndex) => (
-                <div
-                  key={`pdf-row-${rowIndex}`}
-                  className="pdf-print-row"
-                  style={{ display: 'flex', gap: `${rowGap}px`, marginBottom: `${rowGap}px` }}
-                >
-                  {row.map((dashboardChart) => (
-                    <div
-                      key={dashboardChart.id}
-                      style={{
-                        // Same fraction of the width the author gave the tile on
-                        // the (finer, 36-column) grid, so the sheet mirrors the
-                        // screen. Row height uses the finer per-gap row unit so a
-                        // ×3-migrated tile keeps its exact printed height.
-                        flex: `0 0 calc(${((dashboardChart.layout?.w ?? DASHBOARD_GRID_COLS) / DASHBOARD_GRID_COLS) * 100}% - ${rowGap}px)`,
-                        height: `${(dashboardChart.layout?.h ?? 12) * dashboardRowHeight(rowGap) + (((dashboardChart.layout?.h ?? 12) - 1) * rowGap)}px`,
-                      }}
-                    >
-                      {renderTileNode(dashboardChart)}
-                    </div>
-                  ))}
-                </div>
-              ))}
+              {printBands.map((band, bandIndex) => {
+                const rowH = dashboardRowHeight(rowGap);
+                const px = (rows: number) => rows * rowH + Math.max(0, rows - 1) * rowGap;
+                return (
+                  <div
+                    key={`pdf-band-${bandIndex}`}
+                    className="pdf-print-row"
+                    data-print-band={bandIndex}
+                    // A band prints whole on one sheet; a lone section heading
+                    // stays with the section it opens.
+                    style={{
+                      position: 'relative',
+                      height: `${px(band.rows)}px`,
+                      marginBottom: `${rowGap}px`,
+                      breakInside: 'avoid',
+                      pageBreakInside: 'avoid',
+                      ...(band.keepWithNext ? { breakAfter: 'avoid', pageBreakAfter: 'avoid' } : {}),
+                    }}
+                  >
+                    {band.tiles.map((tile) => (
+                      <div
+                        key={tile.id}
+                        style={{
+                          // The column and offset the author gave the tile on the
+                          // 36-column grid, so the sheet mirrors the screen.
+                          position: 'absolute',
+                          left: `calc(${(tile.x / DASHBOARD_GRID_COLS) * 100}%)`,
+                          width: `calc(${(tile.w / DASHBOARD_GRID_COLS) * 100}% - ${rowGap}px)`,
+                          top: `${tile.y === band.top ? 0 : px(tile.y - band.top) + rowGap}px`,
+                          height: `${px(tile.h)}px`,
+                        }}
+                      >
+                        {renderTileNode(tile.dc)}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             </section>
           </main>
         </ExportModeContext.Provider>
@@ -2239,12 +2251,19 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
               >
                 {presentationTitle}
               </h1>
+              {/* What the report is for — unless this page opens with a report
+                  header, which states it itself (no second copy). */}
+              {dashboard?.description && !visibleDashboardCharts.some((dc) => dc.widget_type === 'hero_strip') && (
+                <p className="mt-0.5 line-clamp-2 text-[12.5px] leading-snug text-text-secondary" data-public-description>
+                  {dashboard.description}
+                </p>
+              )}
               {snapshotAsOf && (
                 <p
                   className="mt-0.5 truncate text-[11px] text-text-tertiary"
-                  title={`Số liệu tính đến ${formatSnapshotAsOf(snapshotAsOf)}`}
+                  title={`${t('dashboards.pdf.dataAsOf')} ${formatSnapshotAsOf(snapshotAsOf)}`}
                 >
-                  Số liệu tính đến {formatSnapshotAsOf(snapshotAsOf)}
+                  {t('dashboards.pdf.dataAsOf')} {formatSnapshotAsOf(snapshotAsOf)}
                 </p>
               )}
             </div>

@@ -24,7 +24,7 @@ export function widgetTypeLabel(t: Translate, type: string | null | undefined): 
     parameter_switcher: 'dashboards.widgetEdit.typeParameterSwitcher',
     section_header: 'dashboards.widgetEdit.typeSectionHeader',
     callout: 'dashboards.widgetEdit.typeCallout',
-    hero_strip: 'dashboards.widgetEdit.typeHeroStrip',
+    hero_strip: 'dashboards.detail.widgetHeroStrip',
     narrative: 'dashboards.addElement.insight',
     html_fragment: 'dashboards.widgetEdit.typeHtml',
     slicer: 'dashboards.addSlicer.menu',
@@ -98,16 +98,16 @@ export function ReportHeaderForm({
   const variant = config.variant ?? 'banner';
   return (
     <>
-      <Field label={t('dashboards.widgetEdit.headerEyebrow')} hint={t('dashboards.widgetEdit.headerEyebrowHint')}>
-        <input className={inputClass} value={config.eyebrow ?? ''} onChange={(e) => set('eyebrow', e.target.value)} />
-      </Field>
       <Field label={t('dashboards.widgetEdit.headingTitle')} hint={t('dashboards.widgetEdit.headerTitleHint')}>
-        <input className={inputClass} value={title} placeholder={context?.reportName ?? ''}
+        <input className={inputClass} data-testid="header-title" value={title} placeholder={context?.reportName ?? ''}
           onChange={(e) => setConfig((p) => { const n: Record<string, any> = { ...p, title: e.target.value }; delete n.headline; return n; })} />
       </Field>
       <Field label={t('dashboards.widgetEdit.headerDescription')} hint={t('dashboards.widgetEdit.headerDescriptionHint')}>
-        <textarea className={inputClass} rows={2} value={description} placeholder={context?.reportDescription ?? ''}
+        <textarea className={inputClass} data-testid="header-description" rows={2} value={description} placeholder={context?.reportDescription ?? ''}
           onChange={(e) => setConfig((p) => { const n: Record<string, any> = { ...p, description: e.target.value }; delete n.subhead; return n; })} />
+      </Field>
+      <Field label={t('dashboards.widgetEdit.headerEyebrow')} hint={t('dashboards.widgetEdit.headerEyebrowHint')}>
+        <input className={inputClass} data-testid="header-eyebrow" value={config.eyebrow ?? ''} onChange={(e) => set('eyebrow', e.target.value)} />
       </Field>
       <Field label={t('dashboards.widgetEdit.headerVariant')}>
         <div className="grid grid-cols-3 gap-1.5" role="radiogroup">

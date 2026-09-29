@@ -1,5 +1,6 @@
 'use client';
 
+import { emphasisOf, TileEmphasisProvider } from '@/lib/tile-emphasis';
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { AlertTriangle, Download, Loader2, SlidersHorizontal, X } from 'lucide-react';
 import { collectRowColumns, csvFilename, downloadCsv, rowsToCsv } from '@/lib/export-csv';
@@ -360,6 +361,7 @@ export function ReadonlyChartTile({
     setIsHavingOpen(false);
   };
 
+  const tileEmphasis = emphasisOf(layout);
   if (!hasBeenVisible) {
     return (
       <div
@@ -371,7 +373,9 @@ export function ReadonlyChartTile({
   }
 
   return (
+    <TileEmphasisProvider value={tileEmphasis}>
     <div
+      data-emphasis={tileEmphasis}
       /* Phase-B4 — flat "BI card": 8px radius, 1px hairline border, NO heavy
          drop-shadow/backdrop-blur (read as a web card before), tighter padding.
          Phase-B14 — honor the dashboard theme's card radius/border. */
@@ -644,5 +648,6 @@ export function ReadonlyChartTile({
         ) : null}
       </div>
     </div>
+    </TileEmphasisProvider>
   );
 }

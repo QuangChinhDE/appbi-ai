@@ -1841,3 +1841,15 @@
 
 .dashboard-kpi-context { container-type: inline-size; }
 @container (max-width: 170px) { .dashboard-kpi-scope-prefix { display: none; } }
+
+/* ── Tile emphasis (layout.emphasis) ─────────────────────────────────────────
+   The author's statement of what leads: a lead tile's title steps up the
+   report's own chart-title role, a quiet one steps down and recedes. The KPI
+   figure is scaled in KpiCard (it is sized to fit its tile there). */
+[data-emphasis="lead"] [data-pdf-tile-title] {
+  font-size: calc(var(--dash-font-chartTitle, 13px) * 1.18);
+}
+[data-emphasis="quiet"] [data-pdf-tile-title] {
+  font-size: calc(var(--dash-font-chartTitle, 13px) * 0.92);
+  color: rgb(var(--text-secondary));
+}

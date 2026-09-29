@@ -12,6 +12,7 @@
  * honest: what the diff showed is exactly what Apply writes.
  */
 import { DASHBOARD_GRID_COLS, GRID_VERSION, dashboardRowHeight } from '@/lib/dashboard-pages';
+import { resolveStructure } from '@/lib/report-structure';
 import { MIN_TILE_H, MIN_TILE_W, MAX_TILE_H } from './capabilities';
 import type {
   BlockVariant,
@@ -381,16 +382,20 @@ export function anchorSectionHeadings(
   const anchored = visuals.filter((v) => v.widgetType === 'section_header' && !fixed.has(v.dashboardChartId)
     && (v.heading?.origin !== 'ai' || !planned.has(v.dashboardChartId)));
   if (!anchored.length) return { sections, notes: [] };
-  const byPos = [...visuals].sort((a, b) => a.currentLayout.y - b.currentLayout.y || a.currentLayout.x - b.currentLayout.x);
-  const heads = byPos.filter((v) => v.widgetType === 'section_header');
-  const membersOf = new Map<VisualId, Set<VisualId>>();
-  heads.forEach((h, i) => {
-    const next = heads[i + 1];
-    membersOf.set(h.dashboardChartId, new Set(byPos
-      .filter((v) => v.widgetType !== 'section_header' && v.currentLayout.y >= h.currentLayout.y
-        && (!next || v.currentLayout.y < next.currentLayout.y))
-      .map((v) => v.dashboardChartId)));
-  });
+  // Membership as the report states it (lib/report-structure): a stored
+  // sectionId wins, an unstated one is read by position — the rule the bands,
+  // the phone order and the Inspector's outline use.
+  const structure = resolveStructure(visuals.map((v) => ({
+    id: v.dashboardChartId,
+    ...v.currentLayout,
+    kind: v.widgetType === 'section_header' ? 'section' as const
+      : v.widgetType === 'hero_strip' ? 'header' as const
+        : v.widgetType === 'narrative' ? 'narrative' as const : 'content' as const,
+    sectionId: v.sectionId,
+  })));
+  const membersOf = new Map<VisualId, Set<VisualId>>(
+    structure.sections.map((s) => [s.headerId, new Set(s.members)]),
+  );
   const anchoredIds = new Set(anchored.map((h) => h.dashboardChartId));
   const planIndex = new Map<VisualId, number>();
   sections.forEach((s, i) => (s.visuals ?? []).forEach((id) => {

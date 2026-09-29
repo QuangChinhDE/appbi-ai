@@ -13,7 +13,7 @@ import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { Loader2, LayoutDashboard } from 'lucide-react';
 import { getDashboardGridMargin } from './DashboardThemeProvider';
-import { DASHBOARD_GRID_COLS, REPORT_STACK_BREAKPOINT, dashboardRowHeight, deriveStackedLayout } from '@/lib/dashboard-pages';
+import { DASHBOARD_GRID_COLS, REPORT_STACK_BREAKPOINT, dashboardRowHeight, deriveStackedLayout, deriveTabletLayout, reportBreakpointFor } from '@/lib/dashboard-pages';
 import { settleStoredLayout } from '@/lib/grid-settle';
 import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { useExportMode } from '@/lib/export-mode';
@@ -150,6 +150,8 @@ interface DashboardGridProps {
   onLayoutChange?: (layouts: Layout[]) => void;
   onRemoveChart?: (dashboardChartId: number) => void;
   onEditWidget?: (dashboardChartId: number) => void;
+  /** Double-click an element: open it in the Inspector (manual builder). */
+  onOpenInspector?: (dashboardChartId: number) => void;
   removingChartId?: number;
   dashboardFilters?: DashboardFilter[];
   /** Forwarded to ChartTile — gate the tile data fetch until the page has
@@ -169,6 +171,11 @@ interface DashboardGridProps {
   availablePages?: DashboardPageConfig[];
   onMoveChartToPage?: (dashboardChartId: number, pageId: string) => void;
   emptyMessage?: string;
+  /** What the author can do on an empty page (the builder's guided start). */
+  emptyActions?: React.ReactNode;
+  /** Studio preview: project tablet widths exactly as the published report does
+   *  (the authoring grid keeps the desktop layout at any editable width). */
+  publicProjection?: boolean;
   canEdit?: boolean;
   allowAppearanceEdit?: boolean;
   themeConfig?: DashboardThemeConfig | null;
@@ -216,6 +223,7 @@ function DashboardGridInner({
   onLayoutChange,
   onRemoveChart,
   onEditWidget,
+  onOpenInspector,
   removingChartId,
   dashboardFilters = [],
   filtersReady = true,
@@ -229,6 +237,8 @@ function DashboardGridInner({
   availablePages = [],
   onMoveChartToPage,
   emptyMessage,
+  emptyActions,
+  publicProjection = false,
   canEdit = false,
   allowAppearanceEdit = false,
   themeConfig = null,
@@ -343,7 +353,18 @@ function DashboardGridInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNarrow, JSON.stringify(authoredLayouts), dashboardCharts, themeConfig]);
 
-  const layouts = isNarrow ? narrowLayouts : authoredLayouts;
+  // The preview of a tablet is the published tablet: the same derivation, at
+  // the width the preview frame has (lib/dashboard-pages buildResponsiveReportLayouts).
+  const tabletPreview = publicProjection && !isNarrow && reportBreakpointFor(gridWidth) === 'md';
+  const tabletLayouts = React.useMemo(() => {
+    if (!tabletPreview) return authoredLayouts;
+    const kindById = new Map(dashboardCharts.map((dc) => [String(dc.id), tileKindOf(dc.chart?.chart_type, dc.widget_type)]));
+    return deriveTabletLayout(authoredLayouts, { kindOf: (item) => kindById.get(item.i) ?? 'chart', referenceWidthPx: gridWidth })
+      .map((item) => ({ ...item, static: true }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabletPreview, gridWidth, JSON.stringify(authoredLayouts), dashboardCharts]);
+
+  const layouts = isNarrow ? narrowLayouts : tabletPreview ? tabletLayouts : authoredLayouts;
 
   // Persist ONLY the tile the user just finished manipulating. react-grid-layout
   // hands the moved item as the 3rd onDragStop/onResizeStop arg; we forward JUST
@@ -367,7 +388,7 @@ function DashboardGridInner({
 
   if (dashboardCharts.length === 0) {
     return (
-      <div className="bi-empty-state bi-fade-in flex h-72 flex-col items-center justify-center gap-3 text-center">
+      <div className={`bi-empty-state bi-fade-in flex flex-col items-center justify-center gap-3 text-center ${emptyActions ? 'min-h-[22rem] py-10' : 'h-72'}`} data-testid="report-empty-state">
         <div className="flex h-14 w-14 items-center justify-center rounded-full bg-surface-1 shadow-linear-sm">
           <LayoutDashboard className="h-7 w-7 text-brand/70" strokeWidth={1.5} />
         </div>
@@ -379,6 +400,7 @@ function DashboardGridInner({
             {emptyMessage ?? t('dashboards.grid.emptyMessage')}
           </p>
         </div>
+        {emptyActions}
       </div>
     );
   }
@@ -594,7 +616,15 @@ function DashboardGridInner({
           />
         );
         return (
-          <div key={dc.id.toString()} data-grid-item-id={dc.id}>
+          <div
+            key={dc.id.toString()}
+            data-grid-item-id={dc.id}
+            onDoubleClick={onOpenInspector && !isNarrow ? (event) => {
+              // A double-click inside a control (a slicer, an input, a menu) is that control's.
+              if ((event.target as HTMLElement).closest('input, textarea, select, [role="menu"], [data-slicer-menu], [contenteditable="true"]')) return;
+              onOpenInspector(dc.id);
+            } : undefined}
+          >
             <ChartErrorBoundary
               chartId={dc.chart_id}
               dashboardChartId={dc.id}

@@ -222,6 +222,12 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
       || a.tile.id - b.tile.id)
     .forEach((entry, index) => order.set(entry.tile.id, index + 1));
 
+  const statedSectionOf = (l: unknown): number | null | undefined => {
+    const raw = (l as { sectionId?: unknown } | null | undefined)?.sectionId;
+    if (raw === null) return null;
+    const n = Number(raw);
+    return raw !== undefined && raw !== '' && Number.isFinite(n) ? n : undefined;
+  };
   const visuals: SnapshotVisual[] = rendered.map(({ tile, layout }) => {
     const chartType = chartTypeOf(tile);
     const widgetType = String(tile.widget_type ?? 'chart');
@@ -247,6 +253,7 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
       chartType: chartType || (widgetType === 'chart' ? 'UNKNOWN' : widgetType.toUpperCase()),
       title: controlOf ? (slicerLabelById.get(controlOf) ?? 'Filter') : titleOf(tile),
       currentLayout: { x, y, w, h },
+      ...(statedSectionOf(tile.layout) !== undefined ? { sectionId: statedSectionOf(tile.layout) } : {}),
       displayRoleHint: inferPresentationRole({
         chartType, widgetType, w, y, gridColumns: DASHBOARD_GRID_COLS,
         temporal: meaning.temporal, intent: meaning.intent,

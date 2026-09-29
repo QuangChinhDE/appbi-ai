@@ -6,7 +6,7 @@ import { useParams } from 'next/navigation';
 import { useIsStudioPreview, isStudioMessage, studioFrameId, type StudioMessage, type StudioPreviewState } from '@/lib/studio/preview-mode';
 import { StudioPreview } from '@/components/dashboards/StudioPreview';
 import { pendingWork } from '@/lib/dashboard-presentation/vision-review';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, Clock, GripVertical, Lock, Hand } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, Clock, GripVertical, Lock, Hand, PanelRight } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import {
@@ -36,6 +36,11 @@ import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
 import { AddElementMenu } from '@/components/dashboards/AddElementMenu';
+import { ReportInspector } from '@/components/dashboards/ReportInspector';
+import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-style';
+import { resolveTileFrame } from '@/lib/dashboard-presentation/tile-frame';
+import { applyLayoutPattern, type LayoutPattern } from '@/lib/report-patterns';
+import { measureNaturalHeight, rowsForHeight } from '@/lib/fit-content';
 import { ReportMetaProvider } from '@/lib/report-meta';
 import { widgetTypeLabel as WIDGET_TYPE_LABEL } from '@/components/dashboards/widget-forms';
 import { DashboardChartManagerModal } from '@/components/dashboards/DashboardChartManagerModal';
@@ -88,6 +93,7 @@ import {
   GRID_VERSION,
   DASHBOARD_GRID_COLS,
   mergeGridLayout,
+  dashboardRowHeight,
 } from '@/lib/dashboard-pages';
 import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components/dashboards/GridSlicerTile';
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
@@ -503,6 +509,10 @@ function DashboardDetailPageInner() {
   }, [dashboardId]);
   const updateDashboardMutation = useUpdateDashboard();
   const addChartMutation = useAddChartToDashboard();
+  // Charts added from the Add palette go under the ONE selected element, as a
+  // block (the picker lays a batch out in rows; the block keeps that).
+  const insertBatchRef = React.useRef<{ anchorId: number; ids: number[]; closed: boolean } | null>(null);
+  const [insertBatchTick, setInsertBatchTick] = useState(0);
   const removeChartMutation = useRemoveChartFromDashboard();
   const updateLayoutMutation = useUpdateDashboardLayout();
   // Phase-15.56 — layout edits go into draft_snapshot instead of live
@@ -962,6 +972,7 @@ function DashboardDetailPageInner() {
     // the real one so it moves, resizes and locks like any tile.
     let layoutOverrides = commit.layoutOverrides;
     const createdIds: number[] = [];
+    const realIdOf = new Map<number, number>();
     if (commit.createdBlocks?.length) {
       layoutOverrides = { ...layoutOverrides };
       for (const block of commit.createdBlocks) {
@@ -972,13 +983,28 @@ function DashboardDetailPageInner() {
           const fresh = (updated?.dashboard_charts ?? []).find((d: any) => !before.has(d.id) && d.widget_type === block.widgetType);
           if (updated) queryClient.setQueryData(['dashboards', dashboardId], updated);
           delete layoutOverrides[block.tempId];
-          if (fresh) createdIds.push(fresh.id);
+          if (fresh) { createdIds.push(fresh.id); realIdOf.set(block.tempId, fresh.id); }
         } catch (err) {
           console.error('Failed to create design block:', err);
           toast.error(t('dashboards.aiDesign.blockCreateFailed'));
         }
       }
       setPreviewBlocks(null);
+      // A tile placed under a heading the design created names that heading by
+      // its temporary id: now that the row exists, name it by its real one
+      // (a heading that failed to create leaves the tile in no section).
+      const swap = (v: unknown) => (typeof v === 'number' && v < 0 ? (realIdOf.get(v) ?? null) : v);
+      for (const [key, l] of Object.entries(layoutOverrides)) {
+        const s = (l as any)?.sectionId;
+        if (typeof s === 'number' && s < 0) layoutOverrides[key as any] = { ...(l as any), sectionId: swap(s) };
+      }
+      for (const block of commit.createdBlocks) {
+        const real = realIdOf.get(block.tempId);
+        const s = (block.layout as any)?.sectionId;
+        if (real != null && typeof s === 'number' && s < 0) {
+          layoutOverrides[real] = { ...(layoutOverrides[real] ?? {}), sectionId: swap(s) };
+        }
+      }
     }
     // One undo entry for one click (§14). The `before` half is captured here,
     // from live state, rather than being handed in — a caller that snapshotted
@@ -2088,7 +2114,8 @@ function DashboardDetailPageInner() {
 
   const handleAddChart = async (chartId: number, layout: DashboardChartLayout, parameters?: Record<string, any>) => {
     try {
-      await addChartMutation.mutateAsync({
+      const before = new Set((dashboard?.dashboard_charts ?? []).map((dc) => dc.id));
+      const updated = await addChartMutation.mutateAsync({
         dashboardId,
         chartId,
         layout: {
@@ -2100,6 +2127,13 @@ function DashboardDetailPageInner() {
         } as DashboardChartLayout,
         parameters,
       });
+      // Opened from Add with one element selected: remember what this batch
+      // added, so it is placed under that element once the report has it.
+      const batch = insertBatchRef.current;
+      if (batch) {
+        const added = (updated?.dashboard_charts ?? []).find((dc) => dc.chart_id === chartId && !before.has(dc.id) && !batch.ids.includes(dc.id));
+        if (added) batch.ids.push(added.id);
+      }
       resetUndo(); // chart set changed — prior layout undo entries are stale
       // Modal-close is owned by AddChartModal now — it closes ONCE after the
       // whole batch finishes (DA6-F3 multi-add), so adding N charts doesn't
@@ -3410,7 +3444,14 @@ function DashboardDetailPageInner() {
     // A filter control is named by its filter, never by its widget type.
     const control = isSlicerControl(dc) ? controlFilters.find((s) => String(s.id) === slicerIdOfControl(dc)) : undefined;
     const controlName = control ? (control.label || control.field) : undefined;
-    return String((dc?.layout as any)?.custom_title ?? dc?.chart?.name ?? controlName ?? (dc?.widget_config as any)?.title ?? dc?.widget_type ?? id);
+    // A widget by what it says (its title; the report header states the
+    // report's name), else by what it is — never by its internal type name.
+    const cfg = (dc?.widget_config ?? {}) as Record<string, any>;
+    const widgetName = [cfg.title, cfg.headline, cfg.label, dc?.widget_type === 'hero_strip' ? dashboard?.name : undefined]
+      .map((v) => (typeof v === 'string' ? v.trim() : ''))
+      .find(Boolean);
+    const typeName = dc?.widget_type && dc.widget_type !== 'chart' ? WIDGET_TYPE_LABEL(t, dc.widget_type) : undefined;
+    return String((dc?.layout as any)?.custom_title || dc?.chart?.name || controlName || widgetName || typeName || id);
   };
   const commitArrange = (result: ArrangeResult) => {
     if (result.status === 'blocked') {
@@ -3432,9 +3473,11 @@ function DashboardDetailPageInner() {
     return !!dc && (!dc.widget_type || dc.widget_type === 'chart');
   });
   const selectedFrame = (() => {
+    // The frame the tile actually renders with: the chart's own style (an
+    // older "transparent background" reads as flush) under this report's override.
     const frames = new Set(selectedChartIds.map((id) => {
-      const style = (resolveDashboardChartLayout(id) as any)?.styleConfigOverride ?? {};
-      return (style.tileFrame as TileFrame | undefined) ?? 'card';
+      const dc = visibleDashboardCharts.find((d) => d.id === id);
+      return resolveTileFrame(getEffectiveDashboardChartStyleConfig(dc?.chart as any, resolveDashboardChartLayout(id) as any) as any);
     }));
     return frames.size === 1 ? [...frames][0] : null;
   })();
@@ -3519,6 +3562,131 @@ function DashboardDetailPageInner() {
     }
     handleLayoutChange(result.changed.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })) as Layout[], extra);
   };
+  const openAddChartUnderSelection = () => {
+    insertBatchRef.current = selectedTileIds.length === 1 ? { anchorId: selectedTileIds[0], ids: [], closed: false } : null;
+    setIsAddChartModalOpen(true);
+  };
+  // Once the picker is closed and the report holds every chart it added: move
+  // the batch, as one block, directly under the anchor and into its section
+  // (the rows below make room — the grid's single placement rule). One undo step.
+  React.useEffect(() => {
+    const batch = insertBatchRef.current;
+    if (!batch || !batch.closed) return;
+    if (batch.ids.length === 0) { insertBatchRef.current = null; return; }
+    const present = new Set(visibleDashboardCharts.map((dc) => dc.id));
+    if (!batch.ids.every((id) => present.has(id)) || !present.has(batch.anchorId)) return;
+    insertBatchRef.current = null;
+    const boxes = pageBoxes();
+    const geometry = new Map(boxes.map((b) => [b.id, b]));
+    const all = toStructTiles(visibleDashboardCharts, (tid) => ({
+      ...(resolveDashboardChartLayout(tid, localLayoutOverridesRef.current) as any), ...geometry.get(tid),
+    }));
+    const group = all.filter((s) => batch.ids.includes(s.id));
+    const rest = all.filter((s) => !batch.ids.includes(s.id));
+    const top = Math.min(...group.map((g) => g.y));
+    const left = Math.min(...group.map((g) => g.x));
+    const right = Math.max(...group.map((g) => g.x + g.w));
+    const height = Math.max(...group.map((g) => g.y + g.h)) - top;
+    const spot = insertionFor(rest, batch.anchorId, { w: right - left, h: height });
+    if (!spot) return; // a locked tile in the way: the charts stay where the picker put them
+    const dx = spot.rect.x - left;
+    const dy = spot.rect.y - top;
+    const structure = resolveStructure(all);
+    const extra: Record<number, Record<string, any>> = {};
+    for (const s of all) {
+      if (s.kind === 'section' || s.kind === 'header' || s.sectionId !== undefined || batch.ids.includes(s.id)) continue;
+      extra[s.id] = { sectionId: structure.sectionOf.get(s.id) ?? null };
+    }
+    for (const id of batch.ids) extra[id] = { sectionId: spot.sectionId };
+    handleLayoutChange([
+      ...spot.changed.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })),
+      ...group.map((g) => ({ i: String(g.id), x: g.x + dx, y: g.y + dy, w: g.w, h: g.h })),
+    ] as Layout[], extra);
+    setSelectedTileIds(batch.ids);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insertBatchTick, visibleDashboardCharts]);
+  // ── Inspector ───────────────────────────────────────────────────────────
+  // The Inspector docks beside the grid in the manual builder only (AI Design
+  // has its own drawer; a preview or an export shows the report alone).
+  const inspectorShown = inspectorOpen && canEditThisPage && designMode === 'manual' && !studioPreview && !isExportingPdf;
+  // Anything docked to the right makes the content row side by side (lg+).
+  const rightDocked = isFilterPaneOpen || inspectorShown;
+  // The page's structure as the author sees it, for the Inspector's outline and
+  // section picker: geometry from the settled grid, membership from layouts.
+  const inspectorStructure = (() => {
+    if (!inspectorShown) return null;
+    const geometry = new Map(pageBoxes().map((b) => [b.id, b]));
+    const tiles = toStructTiles(visibleDashboardCharts, (tid) => ({
+      ...(resolveDashboardChartLayout(tid, localLayoutOverridesRef.current) as any), ...geometry.get(tid),
+    }));
+    const resolved = resolveStructure(tiles);
+    return { tiles, resolved, issues: structureIssues(tiles, resolved) };
+  })();
+  // Typed geometry is a gesture like a drag: the same placement rule, one undo step.
+  const handleInspectorGeometry = (id: number, rect: { x: number; y: number; w: number; h: number }) => {
+    handleGridGesture([{ i: String(id), ...rect } as Layout]);
+  };
+  // Into a section: the element goes to the end of that section (the rows
+  // below make room) and is stated a member; "no section" = the end of the page.
+  const handleMoveToSection = (id: number, sectionId: number | null) => {
+    const geometry = new Map(pageBoxes().map((b) => [b.id, b]));
+    const all = toStructTiles(visibleDashboardCharts, (tid) => ({
+      ...(resolveDashboardChartLayout(tid, localLayoutOverridesRef.current) as any), ...geometry.get(tid),
+    }));
+    const self = all.find((s) => s.id === id);
+    if (!self) return;
+    if (self.locked) { toast.info(t('dashboards.arrange.lockedInWay', { title: tileTitle(id) })); return; }
+    const structure = resolveStructure(all);
+    const rest = all.filter((s) => s.id !== id);
+    const section = sectionId != null ? structure.sections.find((s) => s.headerId === sectionId) : undefined;
+    const members = (section?.members ?? []).filter((m) => m !== id).map((m) => rest.find((s) => s.id === m)!).filter(Boolean);
+    const anchor = sectionId == null ? null
+      : members.length ? members.reduce((a, b) => (b.y + b.h > a.y + a.h || (b.y + b.h === a.y + a.h && b.x > a.x) ? b : a)).id
+        : sectionId;
+    const spot = insertionFor(rest, anchor, { w: self.w, h: self.h });
+    if (!spot) { toast.info(t('dashboards.arrange.blocked', { title: tileTitle(id) })); return; }
+    const extra: Record<number, Record<string, any>> = {};
+    for (const s of all) {
+      if (s.kind === 'section' || s.kind === 'header' || s.sectionId !== undefined) continue;
+      extra[s.id] = { sectionId: structure.sectionOf.get(s.id) ?? null };
+    }
+    extra[id] = { sectionId };
+    handleLayoutChange([
+      ...spot.changed.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })),
+      { i: String(id), ...spot.rect },
+    ] as Layout[], extra);
+  };
+  // Height to content: measured on the tile as rendered, in whole rows.
+  const handleFitToContent = (id: number) => {
+    const el = canvasRootRef.current?.querySelector<HTMLElement>(`[data-grid-item-id="${id}"] [data-tile-id="${id}"]`);
+    const box = pageBoxes().find((b) => b.id === id);
+    if (!el || !box) return;
+    const gapY = getDashboardGridMargin(dashboard?.theme_config)[1];
+    const h = rowsForHeight(measureNaturalHeight(el), dashboardRowHeight(gapY), gapY);
+    if (h !== box.h) handleInspectorGeometry(id, { x: box.x, y: box.y, w: box.w, h });
+  };
+  const handleInspectorPattern = (pattern: LayoutPattern) => {
+    const leadId = selectedTileIds.find((id) => (resolveDashboardChartLayout(id, localLayoutOverridesRef.current) as any)?.emphasis === 'lead') ?? null;
+    commitArrange(applyLayoutPattern(pattern, pageBoxes(), selectedTileIds, { leadId }));
+  };
+  const handleSaveWidgetConfig = async (id: number, config: Record<string, any>) => {
+    await dashboardApi.updateWidget(dashboardId, id, config);
+    await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+  };
+  const handleSaveReportDetails = async (patch: { name: string; description: string | null }) => {
+    try {
+      await updateDashboardMutation.mutateAsync({ id: dashboardId, data: { name: patch.name, description: patch.description ?? '' } });
+      toast.success(t('dashboards.inspector.reportSaved'));
+    } catch (error) {
+      console.error('Failed to update report details:', error);
+      toast.error(t('dashboards.detail.nameUpdateFailed'));
+    }
+  };
+  const openInspectorFor = useCallback((id: number) => {
+    setSelectedTileIds([id]);
+    setFocusedTileId(id);
+    setInspectorOpen(true);
+  }, []);
   const nudgeRef = React.useRef<(d: { dx: number; dy: number }) => void>(() => {});
   nudgeRef.current = (d) => commitArrange(nudgeTiles(pageBoxes(), selectedTileIds, d));
   const keyboardArrangeOn = designMode === 'manual' && canEditThisPage && selectedTileIds.length > 0;
@@ -3738,7 +3906,9 @@ function DashboardDetailPageInner() {
                 </div>
               ) : (
                 <>
-                  <h1 className="truncate text-[14px] font-[590] tracking-[-0.182px] text-text-primary">
+                  {/* The report's name keeps its room: the toolbar's status and
+                      actions used to squeeze it to "I…" while a draft was open. */}
+                  <h1 className="min-w-[5rem] max-w-[18rem] shrink-0 truncate text-[14px] font-[590] tracking-[-0.182px] text-text-primary" title={dashboard.name}>
                     {dashboard.name}
                   </h1>
                   {canEditResource && (
@@ -3786,7 +3956,7 @@ function DashboardDetailPageInner() {
 
                   {/* Pages dropdown — replaces the old pages row */}
                   {!isRenamingCurrentPage && dashboardPages.length > 0 && (
-                    <div className="relative">
+                    <div className="relative shrink-0">
                       <button
                         type="button"
                         onClick={() => { setIsPagesMenuOpen((v) => !v); setIsMoreMenuOpen(false); }}
@@ -3890,8 +4060,10 @@ function DashboardDetailPageInner() {
                   )}
                   {dashboard.description && (
                     <>
-                      <span className="text-text-quaternary">·</span>
-                      <span className="hidden truncate text-[13px] font-[400] text-text-tertiary md:inline" title={dashboard.description}>
+                      <span className="hidden text-text-quaternary 2xl:inline">·</span>
+                      {/* Wide screens only: the description is edited in the Inspector
+                          and stated by the report header, not squeezed in here. */}
+                      <span className="hidden min-w-0 truncate text-[13px] font-[400] text-text-tertiary 2xl:inline" title={dashboard.description}>
                         {dashboard.description}
                       </span>
                     </>
@@ -4294,12 +4466,25 @@ function DashboardDetailPageInner() {
                       ? t('dashboards.addElement.insertAfter', { title: tileTitle(selectedTileIds[0]) })
                       : t('dashboards.addElement.insertEnd')}
                     onPick={(kind) => {
-                      if (kind === 'chart') setIsAddChartModalOpen(true);
+                      if (kind === 'chart') openAddChartUnderSelection();
                       else if (kind === 'slicer') setIsAddSlicerOpen(true);
                       else void handleAddWidget(kind);
                     }}
                   />
                 </div>
+              )}
+              {canEditThisPage && designMode === 'manual' && (
+                <button
+                  type="button"
+                  data-testid="inspector-toggle"
+                  aria-pressed={inspectorOpen}
+                  onClick={() => setInspectorOpen((v) => !v)}
+                  title={t('dashboards.inspector.openHint')}
+                  className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[12px] font-[510] transition-colors ${inspectorOpen ? 'border-brand/50 bg-brand/10 text-brand' : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2 hover:text-text-primary'}`}
+                >
+                  <PanelRight className="h-3.5 w-3.5" />
+                  <span className="hidden xl:inline">{t('dashboards.inspector.title')}</span>
+                </button>
               )}
             </div>
           </div>
@@ -4318,9 +4503,9 @@ function DashboardDetailPageInner() {
           right of the grid. Without this the dock renders as a full-width block
           BELOW the report — which is what the AI panel did on first wiring: it
           was in the DOM, 380px wide, and 2000px down the page. */}
-      <div className={`px-4 pb-8 sm:px-6 lg:px-8 ${isFilterPaneOpen ? 'flex gap-3 items-stretch min-h-[calc(100vh-12rem)]' : ''}`}>
+      <div className={`px-4 pb-8 sm:px-6 lg:px-8 ${rightDocked ? 'flex gap-3 items-stretch min-h-[calc(100vh-12rem)]' : ''}`}>
 
-        <div className={isFilterPaneOpen ? 'min-w-0 flex-1' : 'w-full'}>
+        <div className={rightDocked ? 'min-w-0 flex-1' : 'w-full'}>
         {activeCrossFilter && (
           <div className="mb-4 flex items-center gap-3 rounded-lg border border-warning/20 bg-[rgba(245,158,11,0.05)] px-4 py-2.5 text-[13px] font-[510] text-warning">
             <span>
@@ -4484,6 +4669,7 @@ function DashboardDetailPageInner() {
             // scrolled out of the overlay would never mount. The preview is a
             // whole-report view: every tile renders.
             disableLazy={studioPreview}
+            publicProjection={studioPreview}
             canEdit={canEditThisPage}
             allowAppearanceEdit={canEditThisPage}
             themeConfig={dashboard?.theme_config}
@@ -4491,7 +4677,9 @@ function DashboardDetailPageInner() {
             layoutRevision={gridRevision}
             presenceByChart={presenceByChart}
             onRemoveChart={canEditThisPage ? handleRemoveChart : undefined}
-            onEditWidget={canEditThisPage ? setEditingWidgetId : undefined}
+            // Manual builder: the Inspector. In AI Design (no Inspector) the editor dialog.
+            onEditWidget={canEditThisPage ? (designMode === 'manual' ? openInspectorFor : setEditingWidgetId) : undefined}
+            onOpenInspector={canEditThisPage && designMode === 'manual' ? openInspectorFor : undefined}
             removingChartId={removingChartId}
             filtersReady={filtersReady}
             globalFilters={effectiveFiltersWithParams}
@@ -4503,7 +4691,31 @@ function DashboardDetailPageInner() {
             onSelectCrossFilter={handleCrossFilterChange}
             availablePages={dashboardPages}
             onMoveChartToPage={canEditThisPage ? handleMoveChartToPage : undefined}
-            emptyMessage={emptyPageMessage}
+            emptyMessage={canEditThisPage && designMode === 'manual' ? t('dashboards.start.message') : emptyPageMessage}
+            emptyActions={canEditThisPage && designMode === 'manual' ? (
+              // A blank report's guided start: the three moves a report is made of,
+              // each the same action as the Add palette.
+              <ol className="mt-2 grid w-full max-w-2xl gap-2 text-left sm:grid-cols-3" data-testid="report-start">
+                {([
+                  { n: 1, key: 'header', run: () => void handleAddWidget('hero_strip') },
+                  { n: 2, key: 'charts', run: () => openAddChartUnderSelection() },
+                  { n: 3, key: 'section', run: () => void handleAddWidget('section_header') },
+                ] as const).map((s) => (
+                  <li key={s.key}>
+                    <button
+                      type="button"
+                      data-testid={`report-start-${s.key}`}
+                      onClick={s.run}
+                      className="flex h-full w-full flex-col gap-1 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3.5 py-3 text-left shadow-linear-sm transition-colors hover:border-brand/40 hover:bg-brand/5"
+                    >
+                      <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-brand">{t('dashboards.start.step', { n: s.n })}</span>
+                      <span className="text-[13px] font-[590] text-text-primary">{t(`dashboards.start.${s.key}`)}</span>
+                      <span className="text-[11.5px] leading-snug text-text-tertiary">{t(`dashboards.start.${s.key}Desc`)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            ) : undefined}
             focusedDashboardChartId={focusedTileId}
             // One selection model for both modes: AI Design scopes to it, the
             // manual Arrange tools and the keyboard act on it.
@@ -4634,6 +4846,33 @@ function DashboardDetailPageInner() {
 
         {/* Right dock: Filter Pane (Phase-15.81). Sticky alongside the
             canvas; sections own visual / page / all-pages scope. */}
+        {inspectorShown && inspectorStructure && dashboard && (
+          <aside
+            className="fixed inset-y-0 right-0 z-40 w-[320px] max-w-[92vw] shadow-xl lg:sticky lg:top-[72px] lg:z-auto lg:flex lg:h-[calc(100vh-88px)] lg:flex-shrink-0 lg:self-start lg:overflow-hidden lg:rounded-lg lg:border lg:border-[rgb(var(--border-line))] lg:shadow-none"
+          >
+            <ReportInspector
+              onClose={() => setInspectorOpen(false)}
+              dashboardId={dashboardId}
+              report={{ name: dashboard.name, description: dashboard.description ?? null }}
+              selected={selectedTileIds
+                .map((id) => visibleDashboardCharts.find((d) => d.id === id))
+                .filter((d): d is NonNullable<typeof d> => Boolean(d))
+                .map((d) => ({ ...d, layout: resolveDashboardChartLayout(d.id, localLayoutOverridesRef.current) as Record<string, any> }))}
+              structure={inspectorStructure}
+              titleOf={tileTitle}
+              onSelect={(id) => { setSelectedTileIds([id]); setFocusedTileId(id); }}
+              onGeometry={handleInspectorGeometry}
+              onPatchLayout={handlePatchTileLayout}
+              onMoveToSection={handleMoveToSection}
+              onSaveWidgetConfig={handleSaveWidgetConfig}
+              onSaveReport={handleSaveReportDetails}
+              onPattern={handleInspectorPattern}
+              onFitToContent={handleFitToContent}
+              onFrame={handleFrame}
+              frame={selectedFrame}
+            />
+          </aside>
+        )}
         {isFilterPaneOpen && (
           <aside className="hidden lg:flex w-[300px] flex-shrink-0 flex-col overflow-hidden rounded-lg border border-[rgb(var(--border-line))] self-stretch">
             <FilterPane
@@ -4670,7 +4909,10 @@ function DashboardDetailPageInner() {
       {/* Modals */}
       <AddChartModal
           isOpen={isAddChartModalOpen}
-          onClose={() => setIsAddChartModalOpen(false)}
+          onClose={() => {
+            setIsAddChartModalOpen(false);
+            if (insertBatchRef.current) { insertBatchRef.current.closed = true; setInsertBatchTick((n) => n + 1); }
+          }}
           onAdd={handleAddChart}
           dashboardCharts={dashboard.dashboard_charts ?? []}
           dashboardDatasetIds={dashboardDatasetIds}

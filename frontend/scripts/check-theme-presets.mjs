@@ -476,7 +476,9 @@ const SERVICE_SRC = readSrc('../backend/app/services/dashboard_service.py');
 const WIDGET_KEY_CONTRACT = [
   { type: 'section_header', component: 'SectionHeaderWidget', keys: ['title', 'subtitle'] },
   { type: 'callout', component: 'CalloutWidget', keys: ['text', 'tone'] },
-  { type: 'hero_strip', component: 'HeroStripWidget', keys: ['headline', 'subhead'] },
+  // The report header is drawn by its own module (one renderer for builder, /d,
+  // /embed and PDF); the contract follows it there.
+  { type: 'hero_strip', component: 'ReportHeaderWidget', file: 'src/components/dashboards/ReportHeaderWidget.tsx', keys: ['headline', 'subhead'] },
   { type: 'html_fragment', component: 'HtmlFragmentWidget', keys: ['html'] },
 ];
 const sliceBetween = (source, start, ends) => {
@@ -491,9 +493,9 @@ const sliceBetween = (source, start, ends) => {
 };
 const keyMismatches = [];
 let keysChecked = 0;
-for (const { type, component, keys } of WIDGET_KEY_CONTRACT) {
+for (const { type, component, file, keys } of WIDGET_KEY_CONTRACT) {
   const normalizer = sliceBetween(SERVICE_SRC, `wt == "${type}"`, ['elif wt ==', '\n    return config']);
-  const renderer = sliceBetween(WIDGET, `function ${component}(`, ['\nfunction ']);
+  const renderer = sliceBetween(file ? readSrc(file) : WIDGET, `function ${component}(`, ['\nfunction ']);
   if (!normalizer || !renderer) {
     keyMismatches.push(`${type}: no normalizer branch or no ${component}`);
     continue;

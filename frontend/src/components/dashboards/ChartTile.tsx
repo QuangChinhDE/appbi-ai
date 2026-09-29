@@ -1,5 +1,6 @@
 'use client';
 
+import { emphasisOf, TileEmphasisProvider } from '@/lib/tile-emphasis';
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw, Sparkles, Lock, CalendarClock } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
@@ -723,6 +724,7 @@ function ChartTileBase({
   // Frame + surface: one resolver shared with the published tile, so a tile
   // looks the same in the builder and on /d and /embed.
   const ringActive = isCrossFilterSource || isHighlightSource || isFocused;
+  const tileEmphasis = emphasisOf(currentLayout);
   const tileFrame = resolveTileFrameStyle({ style: effectiveStyleConfig as any, theme: dashTheme, ringActive });
   const transparentTile = tileFrame.frame !== 'card';
 
@@ -1110,7 +1112,9 @@ function ChartTileBase({
   }
 
   return (
+    <TileEmphasisProvider value={tileEmphasis}>
     <div
+      data-emphasis={tileEmphasis}
       ref={visibilityRef}
       /* Phase-B12 — no `overflow-hidden` on the tile: the ⋯ menu popup was
          clipped when the tile was small. The chart body has its own
@@ -1747,6 +1751,7 @@ function ChartTileBase({
         onPatchLayout={onPatchLayout ? (patch) => onPatchLayout(dashboardChartId, patch) : undefined}
       />
     </div>
+    </TileEmphasisProvider>
   );
 }
 

@@ -24,6 +24,7 @@ import { blockWidgetConfig, blockWidgetType } from './blocks';
 import { isAllowedChartStyleKey, isAllowedThemeKey, isAllowedFont, isValidStyleValue, KPI_ONLY_STYLE_KEYS } from './capabilities';
 import { buildPresentationFingerprint } from './snapshot';
 import { applyStructureOperations, avoidFixed } from './structure';
+import { resolveStructure } from '@/lib/report-structure';
 import type { Rect } from './structure';
 import { STRUCTURAL_THEME_KEYS, validatePresentationMutation, validatePresentationPlan } from './validator';
 import type { ValidationResult } from './validator';
@@ -331,6 +332,58 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
     if (created.length) mutation.createdBlocks = created;
   }
   // layer === 'style': no branch writes a coordinate.
+
+  // ── Section membership ───────────────────────────────────────────────────
+  // A design that moves things states where they now belong, the way a person's
+  // drag does (lib/report-structure): every heading introduces what sits under
+  // it in the new arrangement. Without this, membership an author had stated
+  // before the redesign would keep a moved chart in its old section. A tile the
+  // design may not move (fixed) keeps what the author stated. A heading the
+  // design creates is referred to by its temporary id; the page swaps it for
+  // the real one when it creates the row.
+  if (layer !== 'style' && (Object.keys(mutation.layoutOverrides).length > 0 || (mutation.createdBlocks?.length ?? 0) > 0)) {
+    const kindOf = (widgetType: string | null | undefined) => (widgetType === 'section_header' ? 'section' as const
+      : widgetType === 'hero_strip' ? 'header' as const
+        : widgetType === 'narrative' ? 'narrative' as const : 'content' as const);
+    const storedSection = (layout: unknown): number | null | undefined => {
+      const raw = (layout as { sectionId?: unknown } | null | undefined)?.sectionId;
+      if (raw === null) return null;
+      const n = Number(raw);
+      return raw !== undefined && raw !== '' && Number.isFinite(n) ? n : undefined;
+    };
+    const finalTiles = [
+      ...tiles.filter((tile) => beforeRects.has(tile.id)).map((tile) => {
+        const o = mutation.layoutOverrides[tile.id] as Record<string, any> | undefined;
+        const r = beforeRects.get(tile.id)!;
+        return {
+          id: tile.id,
+          x: o?.x ?? r.x, y: o?.y ?? r.y, w: o?.w ?? r.w, h: o?.h ?? r.h,
+          kind: kindOf(tile.widget_type),
+          // Fixed tiles keep the author's statement; everything the design
+          // arranged is read from where it now sits.
+          sectionId: fixed.has(tile.id) ? storedSection(tile.layout) : undefined,
+        };
+      }),
+      ...(mutation.createdBlocks ?? []).map((b) => ({
+        id: b.tempId, x: b.layout.x, y: b.layout.y, w: b.layout.w, h: b.layout.h, kind: kindOf(b.widgetType), sectionId: undefined,
+      })),
+    ];
+    const membership = resolveStructure(finalTiles).sectionOf;
+    for (const tile of finalTiles) {
+      if (tile.kind === 'section' || tile.kind === 'header' || fixed.has(tile.id)) continue;
+      const next = membership.get(tile.id) ?? null;
+      const created = mutation.createdBlocks?.find((b) => b.tempId === tile.id);
+      if (created) { created.layout = { ...created.layout, sectionId: next } as any; continue; }
+      // Only what the design moved is restated: a tile it left in place keeps
+      // the author's statement (and a selection-scoped change touches nothing
+      // outside the selection).
+      const o = mutation.layoutOverrides[tile.id] as Record<string, any> | undefined;
+      if (!o || o.x == null) continue;
+      const existing = tiles.find((x) => x.id === tile.id);
+      if (storedSection(existing?.layout) === next) continue;
+      mutation.layoutOverrides[tile.id] = { ...o, sectionId: next } as Partial<DashboardChartLayout>;
+    }
+  }
 
   // ── Per-tile style ───────────────────────────────────────────────────────
   // Rides on the same layout write, because that is where `styleConfigOverride`

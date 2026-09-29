@@ -234,6 +234,9 @@ export interface SnapshotVisual {
   chartType: string;
   title: string;
   currentLayout: { x: number; y: number; w: number; h: number };
+  /** The section the author stated this tile belongs to (a heading's tile id),
+   *  or null for none. Absent when never stated (membership read by position). */
+  sectionId?: number | null;
   displayRoleHint: PresentationRole;
   isWidget: boolean;
   widgetType: string;

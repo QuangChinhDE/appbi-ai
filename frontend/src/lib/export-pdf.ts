@@ -1,7 +1,7 @@
 import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
 import { DEJAVU_SANS_REGULAR_B64, DEJAVU_SANS_BOLD_B64 } from './pdf-fonts';
-import { tileBoxMm, type ExportLayoutPlan } from './export-layout';
+import { planKeyForElement, tileBoxMm, type ExportLayoutPlan } from './export-layout';
 import { waitForRenderReady } from './render-ready';
 import { planSnapshotSheets } from './pdf-sheet-plan';
 
@@ -970,6 +970,13 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
         const id = Number(el.getAttribute('data-chart-id'));
         const tile = (el.closest('.react-grid-item') as HTMLElement) || el;
         if (Number.isFinite(id) && !tilesByChartId.has(id)) tilesByChartId.set(id, tile);
+      });
+      // Report elements (header, headings, text, insights) are placed under
+      // their plan key — they used to be missing from an arranged export.
+      root.querySelectorAll<HTMLElement>('[data-tile-kind="widget"][data-tile-id]').forEach((el) => {
+        const key = planKeyForElement(Number(el.getAttribute('data-tile-id')));
+        const tile = (el.closest('.react-grid-item') as HTMLElement) || el;
+        if (Number.isFinite(key) && key !== 0 && !tilesByChartId.has(key)) tilesByChartId.set(key, tile);
       });
     }
     await drawArrangedSheets(pdf, opts, tilesByChartId, report, warnings);
