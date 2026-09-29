@@ -51,6 +51,8 @@ export interface CanvasProps {
   toolSpecs?: Record<string, ToolSpec>;
   selectedKey: string | null;
   answerKey: string;
+  /** A Skill's canvas says what a Skill receives and returns, not "viewer". */
+  flowType?: string;
   onSelect: (key: string) => void;
   onInsert: (target: InsertTarget) => void;
   /** The step that is the canvas's single tab stop when NOTHING is selected.
@@ -194,7 +196,7 @@ export function FlowCanvas(props: CanvasProps) {
 
       <SystemBand
         id="input" register={register}
-        title="INPUT" hint={t('agentFlows.canvas.inputHint')}
+        title="INPUT" hint={t(props.flowType === 'skill' ? 'agentFlows.canvas.inputHintSkill' : 'agentFlows.canvas.inputHint')}
       />
       <Gap />
       <Body nodes={nodes} containerPath="" {...shared} />
@@ -202,7 +204,7 @@ export function FlowCanvas(props: CanvasProps) {
       <Gap />
       <SystemBand
         id="output" register={register}
-        title="OUTPUT" hint={t('agentFlows.canvas.outputHint')}
+        title="OUTPUT" hint={t(props.flowType === 'skill' ? 'agentFlows.canvas.outputHintSkill' : 'agentFlows.canvas.outputHint')}
       />
 
       {drag.key && (
@@ -418,6 +420,13 @@ function describe(
       // Unknown tool name, or a catalogue that has not arrived yet: say which
       // tool was configured rather than pretend the step is unconfigured.
       return toolSpec ? '' : node.tool;
+    case 'skill':
+      // Which Skill, and which version runs — the two facts that decide what
+      // this step does. The Skill's own name is on its card in the picker.
+      if (!node.skill_key) return t('agentFlows.canvas.describe.noSkill');
+      return node.version
+        ? t('agentFlows.canvas.describe.skillPinned', { key: node.skill_key, version: node.version })
+        : t('agentFlows.canvas.describe.skillLatest', { key: node.skill_key });
     case 'agent':
       return node.prompt?.slice(0, 140) || t('agentFlows.canvas.describe.noPrompt');
     case 'report_read': {

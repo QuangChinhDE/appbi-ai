@@ -397,9 +397,9 @@ export function TestChat({
       ) : undefined}
     >
     <ChartNamesContext.Provider value={chartNames}>
-      <div className="flex h-full min-h-0">
+      <div className="flex h-full min-h-0 flex-col md:flex-row">
         {/* ── setup ─────────────────────────────────────────────────────────── */}
-        <div className="w-[320px] flex-shrink-0 overflow-auto border-r border-[rgb(var(--border-line))] p-3.5">
+        <div className="max-h-[40%] w-full flex-shrink-0 overflow-auto border-b border-[rgb(var(--border-line))] p-3.5 md:max-h-none md:w-[320px] md:border-b-0 md:border-r">
           {/* A CHAT FLOW HAS NO TARGET, and that is not a missing setup — it is
               what the surface is. So instead of a picker that would be empty, the
               column states what the flow can reach, which is the thing an author
@@ -615,7 +615,7 @@ export function TestChat({
         </div>
 
         {/* ── conversation ──────────────────────────────────────────────────── */}
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div ref={scroller} className="min-h-0 flex-1 overflow-auto px-4 py-4">
             {!turns.length && !busy && (
               <div className="mx-auto max-w-[560px] pt-10 text-center">

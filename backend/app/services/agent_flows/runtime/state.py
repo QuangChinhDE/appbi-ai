@@ -54,16 +54,73 @@ class BudgetExhausted(Exception):
 
     Not an error the viewer sees as a failure: the executor catches it, stops
     walking, and the answer is produced from what has already been gathered.
+    `resource` says which ceiling: a spent TOOL ceiling stops the step that
+    needed a tool, not the run — the answering step may need only the model.
+    """
+
+    def __init__(self, message: str = "", *, resource: str = "all") -> None:
+        super().__init__(message)
+        self.resource = resource
+
+
+class StepBudgetExhausted(Exception):
+    """THIS step may not make a model call: what is left is reserved for the steps
+    after it (`Budget.llm_reserve_stack`).
+
+    Not `BudgetExhausted`: the run is not over — the step is recorded as an error
+    naming the reservation, and the executor walks on to the steps the reservation
+    exists for. A gathering step that cannot gather must never be the reason the
+    answering step cannot answer.
     """
 
 
 #: Dict keys whose numeric value identifies a record rather than measuring
 #: anything. Evidence is the pile an answer's figures are checked against, so a
 #: primary key in it is a false witness: it can only ever agree by coincidence.
+#: How many results one run may register as referenceable evidence. A run has a
+#: tool budget of tens of calls; this only stops a runaway from growing the store.
+_MAX_EVIDENCE_REFS = 500
+
+#: Tools that find WHERE data is; none of them is an analysis result. One set, used
+#: by the Skill engine ("looking is not reading") and by evidence harvesting.
+DISCOVERY_TOOLS = frozenset({
+    "list_charts", "search_business_assets", "resolve_chart_candidates", "describe_semantic_model",
+    "get_chart_glossary", "inspect_filters", "describe_time_coverage", "find_capability",
+})
+#: Discovery results whose numbers are NOT evidence for a figure. Live a2d2e68b run
+#: 7047: the only data call failed, yet "tỷ lệ giao đúng hẹn tháng 3/2018 là 89,48%"
+#: was published — the number sat in a discovery payload (a chart card preview) and
+#: counted as "read". A time-coverage range is legitimately stated from its tool.
+_NOT_FIGURE_EVIDENCE = DISCOVERY_TOOLS - {"describe_time_coverage"}
+
 _IDENTIFIER_KEYS = frozenset({
     "id", "chart_id", "dashboard_id", "doc_id", "dataset_id", "dataset_table_id",
     "link_id", "binding_id", "run_id", "version", "flow_version",
 })
+
+
+def caller_numbers(args: Any, *, depth: int = 0) -> list[float]:
+    """Every number the caller put into a call's arguments (numbers and numeric
+    strings, a few levels deep). Bounded: arguments are small by contract."""
+    out: list[float] = []
+    if depth > 3 or args is None or isinstance(args, bool):
+        return out
+    if isinstance(args, (int, float)):
+        return [float(args)]
+    if isinstance(args, str):
+        n = _num(args)
+        return [n] if n is not None else []
+    if isinstance(args, dict):
+        for v in list(args.values())[:50]:
+            out += caller_numbers(v, depth=depth + 1)
+    elif isinstance(args, (list, tuple)):
+        for v in list(args)[:50]:
+            out += caller_numbers(v, depth=depth + 1)
+    return out
+
+
+def _is_caller_number(value: float, caller: list[float] | None) -> bool:
+    return any(abs(value - c) <= 1e-9 * max(1.0, abs(c)) for c in (caller or ()))
 
 
 @dataclass
@@ -82,6 +139,18 @@ class Budget:
     tool_calls: int = 0
     started_at: float = field(default_factory=time.monotonic)
 
+    #: WHAT THE REST OF THE FLOW STILL NEEDS, pushed by the executor around every
+    #: node (`executor._run_body`): the minimum model / tool calls of the nodes
+    #: after it, at every level of nesting. A step spends only what is left above
+    #: that, so no step — a gathering agent, a coordinator lane, a Skill's child —
+    #: can spend the call a later mandatory step needs in order to run at all.
+    #:
+    #: Measured before this existed: an agent that found its evidence and then
+    #: asked for one more tool on its last model call ended the run "đã dùng hết
+    #: số lượt gọi mô hình" with the evidence in hand and nothing said.
+    llm_reserve_stack: list[int] = field(default_factory=list)
+    tool_reserve_stack: list[int] = field(default_factory=list)
+
     #: Tool calls kept back for the step that actually answers. A gathering step
     #: reads a fixed cost per chart, so on a wide report it can spend the whole
     #: turn's budget before the answering step asks its first question — and the
@@ -94,25 +163,63 @@ class Budget:
 
     def tools_left(self, *, answering: bool = False) -> int:
         """Tool calls still available to this kind of step."""
-        ceiling = self.max_tool_calls
+        ceiling = self.max_tool_calls - sum(self.tool_reserve_stack)
         if not answering:
             ceiling -= min(self.answer_reserve, self.max_tool_calls // 3)
         return max(0, ceiling - self.tool_calls)
+
+    def llm_available(self) -> int:
+        """Model calls the CURRENT step may still make: what is left, minus what
+        the steps after it are guaranteed."""
+        return max(0, self.max_llm_calls - self.llm_calls - sum(self.llm_reserve_stack))
+
+    @contextmanager
+    def reserve(self, *, llm: int, tools: int) -> Iterator[None]:
+        """Hold `llm` / `tools` back for the steps after the one about to run."""
+        self.llm_reserve_stack.append(max(0, int(llm)))
+        self.tool_reserve_stack.append(max(0, int(tools)))
+        try:
+            yield
+        finally:
+            self.llm_reserve_stack.pop()
+            self.tool_reserve_stack.pop()
+
+    def try_spend_llm(self) -> bool:
+        """An OPTIONAL model call — a correction — spends only what is available
+        to this step; it never eats a later step's reservation, and it never
+        raises: not making an optional call is not a failure."""
+        if self.llm_available() <= 0:
+            return False
+        try:
+            self.spend_llm()
+        except BudgetExhausted:
+            return False
+        return True
+
+    def ledger(self) -> dict[str, int]:
+        return {
+            "llm_calls": self.llm_calls, "max_llm_calls": self.max_llm_calls,
+            "tool_calls": self.tool_calls, "max_tool_calls": self.max_tool_calls,
+            "llm_reserved": sum(self.llm_reserve_stack),
+            "tools_reserved": sum(self.tool_reserve_stack),
+        }
 
     def _check_clock(self) -> None:
         if self.elapsed() >= self.max_seconds:
             raise BudgetExhausted("câu hỏi này đã chạy quá thời gian cho phép")
 
     def check(self) -> None:
-        """Every ceiling at once — for the executor, BETWEEN nodes.
+        """For the executor, BETWEEN nodes: may ANY step still run?
 
-        Not for spending: a ceiling must gate the resource it counts and nothing
-        else. See `spend_llm` / `spend_tool`.
+        Only when nothing can: both ceilings spent, or the clock. One ceiling
+        spent is not the end of the run — a Tool step that used the last tool call
+        must not stop the answering agent, which needs only a model call. Found by
+        review: `[tool step, agent]` funded 5 model calls and 1 tool call died
+        `budget_exhausted` before the answer, on a link preflight accepted. Each
+        resource is still gated where it is SPENT (`spend_llm`, `spend_tool`).
         """
-        if self.llm_calls >= self.max_llm_calls:
-            raise BudgetExhausted("đã dùng hết số lượt gọi mô hình cho câu hỏi này")
-        if self.tool_calls >= self.max_tool_calls:
-            raise BudgetExhausted("đã dùng hết số lượt gọi công cụ cho câu hỏi này")
+        if self.llm_calls >= self.max_llm_calls and self.tool_calls >= self.max_tool_calls:
+            raise BudgetExhausted("đã dùng hết số lượt gọi mô hình và công cụ cho câu hỏi này")
         self._check_clock()
 
     def spend_llm(self) -> None:
@@ -138,7 +245,8 @@ class Budget:
         thrown away at the last step instead of being used.
         """
         if self.tool_calls >= self.max_tool_calls:
-            raise BudgetExhausted("đã dùng hết số lượt gọi công cụ cho câu hỏi này")
+            raise BudgetExhausted("đã dùng hết số lượt gọi công cụ cho câu hỏi này",
+                                  resource="tools")
         self._check_clock()
         self.tool_calls += 1
 
@@ -209,6 +317,23 @@ class RunState:
     #: wrong answer and left a wandering one, so the fact has to survive to the
     #: answer step where it can be said out loud.
     dimension_gap: dict[str, Any] = field(default_factory=dict)
+    #: WHAT EACH TRUSTED FIGURE MEANS (`runtime/claim_scope.py`): one entry per
+    #: figure — value, measure, dimension, member, ratio, ref. Written only where the
+    #: ledger is written; read by `claim_check` at the answer.
+    claim_ledger: list[dict[str, Any]] = field(default_factory=list)
+    #: chart id → its grouping fields, from the report's chart metadata (set by the
+    #: executor), so a result that names only its chart can still be placed.
+    chart_dims: dict[int, list[str]] = field(default_factory=dict)
+    #: Figures the answer states that the claim check could not stand behind,
+    #: after the step's own review — each {value, why, ...}. Surfaced to the reader.
+    unverified_claims: list[dict[str, Any]] = field(default_factory=list)
+    #: The answering step ran out of tool calls and was made to answer anyway —
+    #: its "no data" may be the budget's, not the data's (acceptance journey J12).
+    tool_budget_reached: bool = False
+    #: The Question Intent Contract for this turn (runtime/intent.py): what was
+    #: asked — measures, absent quantity, breakdown, members, periods, baseline.
+    intent: dict[str, Any] = field(default_factory=dict)
+
     #: Set by a Stop node, or by the executor when the budget runs out.
     stopped: bool = False
     stop_message: str = ""
@@ -233,8 +358,116 @@ class RunState:
     #: slices this list per node, so every node type is covered by one append at
     #: each call site rather than by each handler remembering to report.
     tool_log: list[str] = field(default_factory=list)
+    #: EVERY RESULT THE RUNTIME PRODUCED, under a stable reference (`e1`, `e2`, …
+    #: in run order). The flat `evidence` list above answers "does this number
+    #: appear somewhere"; it cannot answer "which result is this number" — with
+    #: Revenue 2025 = 100 and Target = 100 in one run, value matching cannot tell
+    #: them apart. A reference can. `compute` resolves its variables through this
+    #: store, so the model names WHICH figure feeds a formula and the runtime
+    #: reads the value itself; the model never supplies a trusted number.
+    #:
+    #: Holds the result objects the runtime produced — the same objects already
+    #: held in the step's messages — plus which tool and step produced them.
+    evidence_store: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Per Agent step: what it was granted, what was eligible, what it was shown
+    #: each round, what it discovered, invoked and had refused. Stamped onto the
+    #: step's TraceStep by `record`, so every recording site carries it.
+    capability_trace: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: >0 while a coordinator lane's body runs.
+    lane_depth: int = 0
+    #: Per step, while it runs: the budget it started with and was made to leave
+    #: for later steps. `record` turns it into the step's budget ledger.
+    step_budget: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _evidence_recorded: set[str] = field(default_factory=set)
 
-    def add_evidence(self, payload: Any, *, depth: int = 0) -> None:
+    def record_evidence(self, result: Any, *, tool: str = "", args: Any = None) -> str | None:
+        """Register one capability result: give it a reference, then harvest it.
+
+        Returns the reference; the caller shows it to the model next to the data
+        it names. The result object is NOT modified: results are shared — the
+        registry's cross-run cache stores the very object it returns, and a
+        reference written into it would follow that figure into another run. A
+        failed result gets no reference — there is nothing in it a formula could
+        stand on.
+
+        A result that declares ``provenance: "unreferenced"`` is stored and
+        referenceable but NOT harvested into the trusted ledger: it is a figure
+        computed from a number the model supplied, and certifying it would let an
+        invented input vouch for itself.
+        """
+        if not isinstance(result, dict) or result.get("ok") is False:
+            self.add_evidence(result)
+            return None
+        start = len(self.evidence)
+        ref = None
+        try:
+            ref = self._register(result, tool=tool, args=args)
+            return ref
+        finally:
+            self.note_claims(tool, result, self.evidence[start:], ref=ref)
+
+    def note_claims(self, tool: str, result: Any, trusted: list[float], *, ref: str | None = None) -> None:
+        """Describe the figures the ledger just kept from `result` (claim_scope)."""
+        if not trusted:
+            return
+        from app.services.agent_flows.runtime import claim_scope
+
+        try:
+            described = claim_scope.describe(tool, result, chart_dims=self.chart_dims,
+                                             ledger=self.claim_ledger)
+        except Exception:                                       # noqa: BLE001
+            described = []
+        kept = set(trusted)
+        for e in described:
+            # A share's stated BASIS ("top10_share_pct" -> the top 10%) is named
+            # by the tool, not read as a figure: kept, as a proportion.
+            if (e.get("value") in kept or e.get("basis")) and len(self.claim_ledger) < 50000:
+                self.claim_ledger.append({**e, "ref": ref, "tool": tool})
+
+    def _register(self, result: Any, *, tool: str, args: Any) -> str | None:
+        if len(self.evidence_store) >= _MAX_EVIDENCE_REFS:
+            self.add_evidence(result)
+            return None
+        ref = f"e{len(self.evidence_store) + 1}"
+        # WHAT THE CALLER TYPED INTO THIS CALL. A tool that echoes an argument —
+        # `search_business_assets` returns its query, `compare_to_target` its
+        # caller-supplied target — would otherwise hand the model's own number
+        # back as a result the ledger and `compute` trust (found by review:
+        # query "13590000" became a certified figure). A number the model supplied
+        # to a call cannot vouch for itself in that call's result.
+        caller = caller_numbers(args)
+        self.evidence_store[ref] = {
+            "tool": tool,
+            "source": self.evidence_source,
+            "result": result,
+            "caller_numbers": caller,
+            "args": args,
+        }
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        # A RESULT MAY DECLARE WHICH NUMBERS IT VOUCHES FOR (`evidence_values`):
+        # `compute` names only its certified result, never its literals or echoed
+        # inputs; a Skill names nothing (its child's ledger is merged directly).
+        # Everything else is harvested as it always was.
+        if str(tool or "") in _NOT_FIGURE_EVIDENCE:
+            return ref                   # referenceable, never a figure's support
+        if "evidence_values" in data or data.get("provenance") == "unreferenced":
+            if self.evidence_source:
+                self.evidence_sources.add(self.evidence_source)
+            for v in data.get("evidence_values") or []:
+                self.add_evidence(v, depth=1)
+            return ref
+        if "evidence_paths" in data:
+            # A result that says which of its fields it vouches for is harvested
+            # from those fields only (e.g. a projection against a caller target).
+            if self.evidence_source:
+                self.evidence_sources.add(self.evidence_source)
+            for key in data.get("evidence_paths") or []:
+                self.add_evidence(data.get(key), depth=1, exclude=caller)
+            return ref
+        self.add_evidence(result, exclude=caller)
+        return ref
+
+    def add_evidence(self, payload: Any, *, depth: int = 0, exclude: list[float] | None = None) -> None:
         """Harvest numbers from a tool result.
 
         Bounded on depth and count: a chart payload can be tens of thousands of
@@ -248,12 +481,14 @@ class RunState:
         if isinstance(payload, bool):
             return
         if isinstance(payload, (int, float)):
-            self.evidence.append(float(payload))
+            if not _is_caller_number(float(payload), exclude):
+                self.evidence.append(float(payload))
             return
         if isinstance(payload, str):
             n = _num(payload)
             if n is not None:
-                self.evidence.append(n)
+                if not _is_caller_number(n, exclude):
+                    self.evidence.append(n)
             elif 1 < len(payload) <= 80 and len(self.evidence_labels) < 5000:
                 self.evidence_labels.add(payload.strip().lower())
             return
@@ -279,11 +514,14 @@ class RunState:
                 # `_unknown_labels` needs them.
                 if isinstance(v, (int, float)) and k in _IDENTIFIER_KEYS:
                     continue
-                self.add_evidence(v, depth=depth + 1)
+                # A reference names a result; it is neither a figure nor a label.
+                if k == "evidence_ref":
+                    continue
+                self.add_evidence(v, depth=depth + 1, exclude=exclude)
             return
         if isinstance(payload, (list, tuple)):
             for v in payload:
-                self.add_evidence(v, depth=depth + 1)
+                self.add_evidence(v, depth=depth + 1, exclude=exclude)
 
     def set_var(self, name: str, value: Any) -> None:
         if name:
@@ -297,7 +535,10 @@ class RunState:
         a genuinely misspelled variable is `Flow.warnings()` at authoring time,
         where the author can still see it.
         """
-        parts = [p for p in (dotted or "").split(".") if p]
+        # `items[0].value` and `items.0.value` are the same path — the bracket
+        # form is what a JSON reader writes and what the builder documents.
+        dotted = (dotted or "").replace("[", ".").replace("]", "")
+        parts = [p.strip() for p in dotted.split(".") if p.strip()]
         if not parts:
             return None
         head, *rest = parts
@@ -351,6 +592,27 @@ class RunState:
         """
         if not step.branch and self.branch_stack:
             step.branch = self.branch_stack[-1]
+        if step.capabilities is None and step.key in self.capability_trace:
+            step.capabilities = self.capability_trace.pop(step.key)
+        # WHICH EVIDENCE THIS STEP CREATED — the references a later formula or a
+        # debugger can name. Children record before their container, so a lane's
+        # evidence is on the lane's step, not repeated on the coordinator.
+        from app.services.agent_flows.runtime.capabilities import args_summary
+
+        made = [{"ref": ref, "tool": entry.get("tool") or "",
+                 **({"args": args_summary(entry["args"])} if entry.get("args") else {})}
+                for ref, entry in self.evidence_store.items()
+                if entry.get("source") == step.key and ref not in self._evidence_recorded]
+        if made:
+            self._evidence_recorded.update(m["ref"] for m in made)
+            step.capabilities = {**(step.capabilities or {}), "evidence": made}
+        if step.budget is None and step.key in self.step_budget:
+            start = self.step_budget.pop(step.key)
+            step.budget = {
+                **{k: v for k, v in start.items() if not k.startswith("_")},
+                "llm_calls": self.budget.llm_calls - int(start.get("_llm0", 0)),
+                "tool_calls": self.budget.tool_calls - int(start.get("_tools0", 0)),
+            }
         self.trace.append(step)
 
     def path_label(self) -> str:

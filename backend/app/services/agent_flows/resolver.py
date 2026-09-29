@@ -200,6 +200,11 @@ def _semantic(call: Call, question: str) -> list[dict]:
             # confidence is how a caller picks a plausible wrong chart.
             if cand.get("match") not in accept:
                 continue
+            # A TITLE IS A JUDGEMENT CALL, and this caller has no judge: a
+            # chart's title naming the breakdown is offered to a model (which can
+            # read it and decide) but never selected here on its own.
+            if cand.get("dimension_match_basis") == "chart_title":
+                continue
             out.append({
                 "chart_id": cand["chart_id"],
                 "chart_name": cand.get("chart_name") or "",

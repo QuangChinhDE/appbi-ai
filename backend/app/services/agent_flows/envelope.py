@@ -55,7 +55,9 @@ class _Model(BaseModel):
 # INPUT
 # ═══════════════════════════════════════════════════════════════════════════════
 Trigger = Literal[
-    "public_chat", "direct_chat", "studio_test", "node_test", "replay", "scheduled"
+    "public_chat", "direct_chat", "studio_test", "node_test", "replay", "scheduled",
+    # A Skill run invoked by another run (its parent is on the run row).
+    "skill",
 ]
 
 
@@ -510,6 +512,14 @@ class TraceStep(_Model):
     #: one node pasting a large context it did not need.
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    #: An Agent step's capability view: granted, eligible (and why the rest were
+    #: not), visible per round, discovered, invoked, rejected. The data behind
+    #: "What the AI sees" for a run that already happened.
+    capabilities: dict[str, Any] | None = None
+    #: Where the budget went: model/tool calls this step spent (children included
+    #: for a container), what it had available when it started, and what it was
+    #: made to leave for the steps after it.
+    budget: dict[str, Any] | None = None
 
 
 class Trace(_Model):
@@ -570,6 +580,18 @@ class Answer(_Model):
 
 RunStatus = Literal["ok", "partial", "blocked", "failed"]
 
+#: Notice facts that name the figures a check withheld or could not verify. They
+#: stay on the recorded run (the author's Runs tab); a reader never receives them.
+_AUTHOR_ONLY_FACTS = frozenset({"flagged", "unmatched", "values", "draft"})
+
+
+def reader_notice_dict(n: dict) -> dict:
+    """One notice as a reader may receive it — live or replayed from a stored turn."""
+    facts = n.get("facts") if isinstance(n, dict) else None
+    if not isinstance(facts, dict):
+        return n
+    return {**n, "facts": {k: v for k, v in facts.items() if k not in _AUTHOR_ONLY_FACTS}}
+
 
 class FlowOutput(_Model):
     """What the bot receives and turns into a screen.
@@ -599,6 +621,27 @@ class FlowOutput(_Model):
         out = self.model_dump(mode="json")
         if notices is not None:
             out["notices"] = [n.model_dump(mode="json") for n in notices]
+        return out
+
+    def to_reader_dict(self) -> dict[str, Any]:
+        """The envelope as a READER receives it: the answer, its citations and the
+        reader's notices — never the author's trace, usage or session state.
+
+        Security acceptance F1 (run at 422b8fd2): a public link sent the whole
+        `trace`, and a withheld figure's draft rode in it
+        (`trace.steps[].capabilities.claims.draft`) while the answer showed it
+        hidden. What the claim check withholds from the answer is withheld from the
+        wire; the recorded run keeps every field for the author's Runs tab.
+        """
+        out = self.to_dict(notices=reader_notices(self.notices))
+        # A WITHHELD FIGURE IS WITHHELD FROM THE NOTICE TOO. Security re-test at
+        # ce6d6313: the answer showed "[đã ẩn]" while the reader notice
+        # `claims_unverified` carried `facts.flagged[].value` = 41746 (link 171),
+        # 987654321 (a chat thread). Readers use `facts.candidates` only.
+        out["notices"] = [reader_notice_dict(n) for n in out.get("notices") or []]
+        out["trace"] = Trace().model_dump(mode="json")
+        out["usage"] = Usage().model_dump(mode="json")
+        out["memory_delta"] = MemoryDelta().model_dump(mode="json")
         return out
 
 

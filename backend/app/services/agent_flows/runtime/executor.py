@@ -63,6 +63,7 @@ from app.services.agent_flows.runtime.state import (
     Budget,
     BudgetExhausted,
     RunState,
+    StepBudgetExhausted,
     as_list,
     evaluate,
     evaluate_all,
@@ -75,7 +76,7 @@ logger = logging.getLogger(__name__)
 #: that ran, ran without error. They downgrade `ok` to `partial`, because a run
 #: whose branches all missed is not a success — it is a question the flow was not
 #: shaped to answer, and the operator has to be able to see that in the numbers.
-DEGRADING_NOTICES = frozenset({"branch_unmatched"})
+DEGRADING_NOTICES = frozenset({"branch_unmatched", "steps_skipped_for_budget"})
 
 
 
@@ -104,6 +105,18 @@ class RunContext:
     answer_key: str = ""
     db: Any = None
     events: list[AgentEvent] = field(default_factory=list)
+    #: The Skill call stack this run sits in: `(skill_key, version)` of every Skill
+    #: between the top-level run and this one. Empty for a top-level run. Checked
+    #: on flow-VERSION identity, so A@v7 → B@v3 → A@v7 is a cycle.
+    skill_stack: tuple = ()
+    #: Whether this run's question and answer may be stored. The CALLER's setting
+    #: (a link's `store_question_content`), carried so a Skill child run obeys the
+    #: same choice instead of defaulting to storing.
+    store_content: bool = True
+    #: Minimum-need memo for the budget reservation, by node identity: a body is
+    #: walked once per node it contains, and a Skill's pinned flow is resolved once.
+    minimum_cache: dict = field(default_factory=dict)
+    skill_lookup: Any = None
 
 
 async def run_flow(
@@ -114,8 +127,18 @@ async def run_flow(
     api_key: str = "",
     base_system_prompt: str = "",
     db: Any = None,
+    budget: Any = None,
+    skill_stack: tuple = (),
+    on_state: Any = None,
+    store_content: bool = True,
 ) -> AsyncGenerator[AgentEvent, None]:
-    """Run `flow` against `inp`. The last event is always `result`."""
+    """Run `flow` against `inp`. The last event is always `result`.
+
+    `budget`, `skill_stack` and `on_state` exist for a Skill child run only
+    (`services/agent_flows/skills.py`): the child spends the PARENT's budget, knows
+    the call stack it sits in, and hands its state back so the parent can take its
+    trusted evidence. Every other caller leaves them unset.
+    """
     started = time.monotonic()
     # THE QUESTION HAS TO REACH THE TOOL BOUNDARY.
     #
@@ -130,12 +153,29 @@ async def run_flow(
         pass
     state = RunState(
         vars=inp.seed_vars(),
-        budget=Budget(
+        budget=budget if budget is not None else Budget(
             max_llm_calls=inp.runtime.budget.max_llm_calls,
             max_tool_calls=inp.runtime.budget.max_tool_calls,
             max_seconds=inp.runtime.budget.max_seconds,
         ),
     )
+    # Each chart's grouping, so a result naming only its chart can be placed.
+    try:
+        for cid, meta in (getattr(ctx, "chart_meta", None) or {}).items():
+            dims = ((meta or {}).get("fields") or {}).get("dimensions") or []
+            state.chart_dims[int(cid)] = [str(d.get("field") if isinstance(d, dict) else d)
+                                          for d in dims if d]
+    except Exception:                                           # noqa: BLE001
+        pass
+    if on_state is not None:
+        on_state(state)
+    # THE EVIDENCE STORE REACHES THE TOOL BOUNDARY the same way the question does:
+    # `compute` resolves `{ref, path}` variables against the results THIS run
+    # produced, and a tool body can only see the context.
+    try:
+        ctx.evidence_store = state.evidence_store
+    except Exception:                                           # noqa: BLE001
+        pass
     rctx = RunContext(
         inp=inp,
         flow=flow,
@@ -144,7 +184,46 @@ async def run_flow(
         base_system_prompt=base_system_prompt,
         answer_key=flow.answering_key(),
         db=db,
+        skill_stack=tuple(skill_stack or ()),
+        store_content=bool(store_content),
     )
+
+    # THE QUESTION INTENT CONTRACT — what this turn asks for, resolved ONCE, before
+    # any node runs (docs/features/agent-flow-v3-pilot/intent-contract.md). Not for
+    # a Skill's child run: it answers the Skill's typed inputs, not the reader.
+    if not skill_stack:
+        from app.services.agent_flows.runtime import intent as intent_mod
+        from app.services.dashboard_ai_bot.govern_doc_followup import prior_user_question
+
+        try:
+            previous = prior_user_question(list(inp.conversation.history or []))
+        except Exception:                                       # noqa: BLE001
+            previous = ""
+        try:
+            state.intent = await intent_mod.resolve(
+                state, ctx, question=inp.question.text(), previous=previous or "",
+                provider=inp.runtime.provider, api_key=api_key, model=inp.runtime.model)
+        except Exception:                                       # noqa: BLE001
+            logger.warning("[flow] intent resolution failed", exc_info=True)
+        try:
+            # THE TOOLS FILTER BY WHAT WAS RESOLVED, not by the reader's words: a
+            # drilldown on "Rio de Janeiro" over rows that say "RJ" matched nothing
+            # and was published as a revenue of 0 (smoke run at e98d1b8d).
+            from app.services.agent_flows.tools.context import value_key
+
+            ctx.asked_measures = list((getattr(state, "intent", None) or {}).get("measures") or [])
+            ctx.asked_periods = [tuple(p) for p in ((getattr(state, "intent", None) or {}).get("periods") or [])]
+            ctx.member_aliases = {
+                value_key(m["said"]): m["code"]
+                for m in ((getattr(state, "intent", None) or {}).get("members") or [])
+                if m.get("said") and m.get("code")
+            }
+        except Exception:                                       # noqa: BLE001
+            pass
+        if getattr(state, "intent", None):
+            # On the ANSWERING step's trace — the one the Runs inspector shows the
+            # author next to the claim verdict it drives.
+            state.capability_trace.setdefault(rctx.answer_key, {})["intent"] = dict(state.intent)
 
     status = "ok"
     streamed_text = False
@@ -261,6 +340,26 @@ async def run_flow(
     # is what survived that — an answer whose figures the model was given a chance
     # to fix and did not, which is worth saying out loud.
     verification = _verify_figures(state, answer)
+    # A FIGURE WITH THE WRONG MEANING IS NOT A VERIFIED ONE (`claim_check`): the
+    # answering step already marked it for the reader; the verdict says so too.
+    if getattr(state, "unverified_claims", None):
+        verification = {**(verification or {}), "claims_unverified": list(state.unverified_claims)}
+        state.notices.append(Notice(
+            code="claims_unverified", audience="reader", severity="warning",
+            text=(f"{len(state.unverified_claims)} con số trong câu trả lời không có nguồn phù "
+                  "hợp với điều được hỏi (sai đại lượng, sai kỳ, sai chiều/đối tượng, hoặc tự tính) "
+                  "— chúng đã bị ẩn khỏi câu trả lời."),
+            facts={"flagged": [{k: f.get(k) for k in ("value", "pct", "why")}
+                               for f in state.unverified_claims[:8]]},
+        ))
+    if getattr(state, "tool_budget_reached", False):
+        verification = {**(verification or {}), "tool_budget_reached": True}
+        state.notices.append(Notice(
+            code="tool_budget_reached", audience="reader", severity="warning",
+            text=("Bước trả lời đã dùng hết số lượt gọi công cụ được cấp nên phải trả lời bằng những gì "
+                  "đã đọc — câu trả lời có thể chưa đầy đủ, và \"không có dữ liệu\" có thể là do hết "
+                  "lượt chứ không phải do báo cáo không có."),
+        ))
     status = _status_after_verification(status, verification)
     if verification:
         yield AgentEvent(type="verification", extra={"verification": verification})
@@ -419,14 +518,34 @@ async def run_flow(
 
 
 # ═══ Walking ══════════════════════════════════════════════════════════════════
+def _minimum(node: Any, rctx: RunContext) -> tuple[int, int]:
+    from app.services.agent_flows.runtime.reserve import node_minimum, skill_lookup_for
+
+    key = id(node)
+    if key not in rctx.minimum_cache:
+        if rctx.skill_lookup is None:
+            rctx.skill_lookup = skill_lookup_for(rctx.db) or (lambda k, v: None)
+        rctx.minimum_cache[key] = node_minimum(
+            node, skill_lookup=rctx.skill_lookup, depth=len(rctx.skill_stack))
+    return rctx.minimum_cache[key]
+
+
 async def _run_body(
     body: list[Any], state: RunState, rctx: RunContext
 ) -> AsyncGenerator[AgentEvent, None]:
-    for node in body:
+    for i, node in enumerate(body):
         if state.stopped:
             return
-        async for ev in _run_node(node, state, rctx):
-            yield ev
+        # THE REST OF THIS BODY IS GUARANTEED WHAT IT NEEDS TO RUN AT ALL.
+        #
+        # Held back for the duration of this node, at every level of nesting
+        # (a lane's body reserves for the lane's later steps; the coordinator's
+        # own body reserves for the steps after the coordinator). Budget is a
+        # runtime rule: no prompt tells a step to leave something for the answer.
+        rest = [_minimum(n, rctx) for n in body[i + 1:]]
+        with state.budget.reserve(llm=sum(r[0] for r in rest), tools=sum(r[1] for r in rest)):
+            async for ev in _run_node(node, state, rctx):
+                yield ev
 
 
 async def _run_node(
@@ -434,6 +553,15 @@ async def _run_node(
 ) -> AsyncGenerator[AgentEvent, None]:
     label = node.name or node.key
     state.budget.check()
+    # WHERE THE BUDGET WENT, per step — what it had, what it was made to leave for
+    # the steps after it, and what it spent. Stamped on every row this node records.
+    before = state.budget.ledger()
+    state.step_budget[node.key] = {
+        "llm_available_at_start": state.budget.llm_available(),
+        "llm_reserved_for_later": before["llm_reserved"],
+        "tools_reserved_for_later": before["tools_reserved"],
+        "_llm0": before["llm_calls"], "_tools0": before["tool_calls"],
+    }
 
     reused = _reuse(node, state, rctx)
     if reused is not None:
@@ -498,6 +626,7 @@ async def _run_node(
     input_before = _vars_preview(state)
     attempts = node.retry.max_attempts if node.retry else 1
     last_error = ""
+    budget_refused = False
 
     for attempt in range(1, attempts + 1):
         try:
@@ -516,6 +645,11 @@ async def _run_node(
             elif isinstance(node, FilterNode):
                 _run_filter(node, state)
             else:
+                # WHOSE EVIDENCE THIS IS, set once for every leaf handler. A Tool
+                # step used to record its result under whichever step ran before
+                # it — so `{step: "tong"}` found nothing and a lineage named the
+                # wrong step. Agent steps set it again per call; same key.
+                state.evidence_source = node.key
                 handler = node_registry.handler_for(node.type)
                 if handler is None:
                     # Unreachable through the API — the contract only accepts types
@@ -548,6 +682,23 @@ async def _run_node(
             )
             raise
         except BudgetExhausted as exc:
+            # ONE SPENT CEILING ENDS ONLY THE STEPS THAT NEED IT. A data step that
+            # hit the TOOL ceiling fails as a step; the run walks on while the model
+            # can still be asked, so the answering step says what was gathered.
+            # Found by review: a loop of Tool steps funded at its minimum died on
+            # iteration 2 and the answer never ran.
+            if getattr(exc, "resource", "all") == "tools" \
+                    and state.budget.llm_calls < state.budget.max_llm_calls:
+                budget_refused = True
+                last_error = str(exc)
+                if not any(n.code == "steps_skipped_for_budget" for n in state.notices):
+                    state.notices.append(Notice(
+                        code="steps_skipped_for_budget", severity="warning", node_key=node.key,
+                        text=("Một số bước không chạy hết vì đã dùng hết số lượt gọi công cụ — "
+                              "câu trả lời có thể chưa đầy đủ."),
+                        facts=state.budget.ledger(),
+                    ))
+                break
             # Same reasoning as BranchStopped above, and the same failure when it
             # was missing: raising straight through left the trace EMPTY, so a run
             # that spent its whole budget on one node reported "no answer" with
@@ -587,6 +738,20 @@ async def _run_node(
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)[:300]
             logger.warning("[flow] node '%s' attempt %s failed: %s", node.key, attempt, exc)
+            if isinstance(exc, StepBudgetExhausted):
+                budget_refused = True
+                # Retrying cannot conjure calls the rest of the flow is owed. Said
+                # once, to the reader: the answer exists but did not get every step.
+                if not any(n.code == "steps_skipped_for_budget" for n in state.notices):
+                    state.notices.append(Notice(
+                        code="steps_skipped_for_budget", severity="warning",
+                        node_key=node.key,
+                        text=("Một số bước không chạy vì số lượt gọi mô hình còn lại được "
+                              "giữ cho các bước bắt buộc phía sau — câu trả lời có thể "
+                              "chưa đầy đủ."),
+                        facts=state.budget.ledger(),
+                    ))
+                break
             if node.retry and attempt < attempts:
                 import asyncio
 
@@ -614,7 +779,12 @@ async def _run_node(
             text=f"Bước “{label}” gặp lỗi và bị bỏ qua.",
             extra={"step": node.key},
         )
-        if node.on_error == "stop":
+        # A BUDGET REFUSAL IS NOT THE STEP FAILING. The step was never allowed to
+        # start, so that the steps after it could run; honouring `on_error="stop"`
+        # here would stop the very steps the refusal exists to protect. Found by
+        # review: a loop body with on_error=stop, refused budget on iteration 2,
+        # ended the run before its answer.
+        if node.on_error == "stop" and not budget_refused:
             state.stopped = True
         return
 
@@ -911,6 +1081,13 @@ async def _run_coordinate(
     state.outputs[node.key] = {
         "picked": [s.key for s in picked],
         "considered": [s.key for s in roster],
+        # WHY, not only WHO: the author's `when` for each chosen specialist is the
+        # ground the planner chose on, and what it actually said is what the
+        # choice was parsed from. Bounded by `max_specialists`, recorded so a
+        # reader can see the ceiling that applied.
+        "why": {s.key: s.when for s in picked},
+        "max_specialists": node.max_specialists,
+        "planner_said": str(plan if isinstance(plan, str) else (plan or {}).get("choice") or plan or "")[:200],
     }
     yield AgentEvent(
         type="branch_taken",
@@ -935,7 +1112,15 @@ async def _run_coordinate(
                     pass
         return
 
+    # EVERY CHOSEN SPECIALIST GETS TO RUN. The planner picked them for this
+    # question; a greedy first lane spending what the next one needs would turn
+    # a decomposition into "whoever went first". Each lane runs with the minimum
+    # of the lanes after it reserved (the steps after the coordinator are already
+    # reserved by the enclosing body).
+    lane_minimum = [sum(_minimum(n, rctx)[0] for n in s.body) for s in picked]
+    lane_tools = [sum(_minimum(n, rctx)[1] for n in s.body) for s in picked]
     for specialist in picked:
+        index = picked.index(specialist)
         # LANES ARE SIBLINGS, NOT A CHAIN.
         #
         # Each specialist starts from what the coordinator was handed. Without
@@ -963,8 +1148,12 @@ async def _run_coordinate(
         # to the planner. Shown to the specialist too, it becomes the assignment,
         # which is the half of "coordination" that is not routing.
         state.set_var(_BRIEF_VAR, _specialist_brief(specialist))
+        # Inside a lane, so a Skill a specialist runs is recorded as that lane's
+        # work (`invoked_as="coordinator_lane"`).
+        state.lane_depth += 1
         try:
-            with state.in_branch(specialist.name or specialist.key):
+            with state.in_branch(specialist.name or specialist.key), state.budget.reserve(
+                    llm=sum(lane_minimum[index + 1:]), tools=sum(lane_tools[index + 1:])):
                 try:
                     async for ev in _run_body(specialist.body, state, rctx):
                         yield ev
@@ -973,6 +1162,7 @@ async def _run_coordinate(
                     # cancel the others — being independent lanes is the point.
                     continue
         finally:
+            state.lane_depth -= 1
             state.set_var(_BRIEF_VAR, "")
 
 
@@ -1101,6 +1291,13 @@ async def _run_loop(
                 type="loop_iteration",
                 extra={"step": node.key, "index": index, "total": len(items)},
             )
+            # AN ITERATION THAT PRODUCED NOTHING COLLECTS NOTHING. The body's last
+            # output survives from the previous iteration, so an iteration whose
+            # step failed (or was refused budget) used to be collected as a copy of
+            # the one before — five "results" from one run. Found when the budget
+            # reservation made later iterations decline: the loop reported 5 of 5.
+            if node.body:
+                state.outputs.pop(node.body[-1].key, None)
             try:
                 async for ev in _run_body(node.body, state, rctx):
                     yield ev
@@ -1169,9 +1366,28 @@ def _final_answer(state: RunState, rctx: RunContext) -> Answer:
                 continue
             candidate = state.outputs.get(step.key)
             if isinstance(candidate, str) and candidate.strip():
-                return text_answer(candidate)
+                return text_answer(_published_fallback(state, rctx, candidate))
         return Answer()
     return text_answer(str(value))
+
+
+def _published_fallback(state: RunState, rctx: RunContext, text: str) -> str:
+    """An intermediate step's prose, made publishable. Intermediate steps are
+    never claim-checked — only the answering step is — so publishing one when
+    the answering step failed was a way AROUND the publication boundary (pilot
+    review). Checked and redacted the same way; its flags make the run partial."""
+    from app.services.agent_flows.runtime import claim_check
+
+    try:
+        final = claim_check.check(state, getattr(rctx, "ctx", None), text)
+    except Exception:                                           # noqa: BLE001
+        final = {}
+    if not (final or {}).get("flagged"):
+        return text
+    state.unverified_claims = [*(state.unverified_claims or []), *final["flagged"]]
+    locale = getattr(getattr(getattr(rctx, "inp", None), "request", None), "locale", "vi") or "vi"
+    return claim_check.with_reader_note(claim_check.redact(text, final["flagged"], locale),
+                                        claim_check.reader_note(final["flagged"], locale))
 
 
 def _status_after_verification(status: str, verification: dict | None) -> str:
@@ -1189,6 +1405,8 @@ def _status_after_verification(status: str, verification: dict | None) -> str:
     """
     if status != "ok" or not verification:
         return status
+    if verification.get("claims_unverified") or verification.get("tool_budget_reached"):
+        return "partial"
     grounding = verification.get("grounding") or {}
     if grounding.get("all_evidence_unresolved"):
         return "partial"

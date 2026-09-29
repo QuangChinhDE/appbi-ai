@@ -55,7 +55,9 @@ def test_the_two_reader_dispatch_paths_filter_and_the_author_path_does_not():
     for fn in ("run_for_link", "run_for_chat_thread"):
         body = src[src.index("async def %s(" % fn):]
         body = body[:body.index("\nasync def ", 10)] if "\nasync def " in body[10:] else body
-        assert "reader_notices(" in body, f"{fn} is a reader surface and does not filter"
+        # `to_reader_dict()` narrows the notices through `reader_notices` and drops
+        # the author trace (security acceptance F1).
+        assert "to_reader_dict()" in body, f"{fn} is a reader surface and does not filter"
 
     preview = src[src.index("async def run_preview("):]
     preview = preview[:preview.index("\nasync def ", 10)]
@@ -108,10 +110,139 @@ def test_the_reader_paths_narrow_on_send_and_record_the_full_set():
     for fn in ("run_for_link", "run_for_chat_thread"):
         body = src[src.index("async def %s(" % fn):]
         body = body[:body.index("\nasync def ", 10)] if "\nasync def " in body[10:] else body
-        assert "to_dict(notices=reader_notices(" in body, (
-            f"{fn} must narrow the SENT envelope"
-        )
+        assert "to_reader_dict()" in body, f"{fn} must narrow the SENT envelope"
+        assert "out.to_dict(" not in body, (
+            f"{fn} sends an author envelope (trace, drafts) to a reader")
         assert "out.notices = reader_notices(" not in body, (
             f"{fn} filters before recording — the author loses diagnostics for "
             f"real viewer traffic"
         )
+
+
+def test_a_reader_never_receives_the_withheld_draft():
+    """Security acceptance F1 (422b8fd2): the answer showed "[đã ẩn: chưa kiểm
+    chứng]" while `trace.steps[].capabilities.claims.draft` in the same public SSE
+    envelope carried the withheld figure."""
+    import json
+
+    from app.services.agent_flows.envelope import FlowOutput, text_answer
+
+    out = FlowOutput.model_validate({
+        "run_id": "r1", "status": "partial",
+        "answer": text_answer("Số đơn của SP là [đã ẩn: chưa kiểm chứng].").model_dump(mode="json"),
+        "notices": [reader("memory_reset").model_dump(mode="json"), author().model_dump(mode="json")],
+        "trace": {"path": "a", "steps": [{"key": "a", "type": "agent", "status": "ok",
+                                         "capabilities": {"claims": {"draft": "SP là 41,746"}}}]},
+    })
+    wire = json.dumps(out.to_reader_dict(), ensure_ascii=False)
+    assert "41,746" not in wire and "draft" not in wire, wire
+    assert [n["code"] for n in out.to_reader_dict()["notices"]] == ["memory_reset"]
+    assert "41,746" in json.dumps(out.to_dict(), ensure_ascii=False), "the recorded run keeps it"
+
+
+def test_a_session_owned_by_another_link_is_neither_moved_nor_written():
+    """Security acceptance F2 (422b8fd2): one turn on link B with link A's session
+    key re-pointed A's row to B — A's stored transcript became readable on B and
+    vanished from A."""
+    from types import SimpleNamespace
+
+    from app.services.agent_flows import dispatch
+    from app.services.agent_flows.envelope import FlowOutput, MemoryDelta, text_answer
+
+    row = SimpleNamespace(token="link-a", session_key="K", messages=["A's secret"], flow_state=None)
+
+    class Q:
+        def filter(self, *a):
+            return self
+
+        def first(self):
+            return row
+
+    class Db:
+        committed = False
+
+        def query(self, *a):
+            return Q()
+
+        def add(self, *a):
+            raise AssertionError("no second row")
+
+        def commit(self):
+            Db.committed = True
+
+        def rollback(self):
+            pass
+
+    out = FlowOutput(run_id="r", answer=text_answer("x"), memory_delta=MemoryDelta(set={"v": 1}))
+    dispatch.save_memory(Db(), session_key="K", token="link-b", fp="f", out=out,
+                         flow=SimpleNamespace(all_nodes=lambda: []))
+    assert row.token == "link-a" and row.flow_state is None and not Db.committed
+    assert row.messages == ["A's secret"]
+
+
+def test_a_withheld_figure_is_not_in_the_readers_notice():
+    """Security re-test at ce6d6313 (F1 residual): the answer showed "[đã ẩn]" while
+    the reader notice claims_unverified carried facts.flagged[].value = 41746 —
+    live and in a stored chat thread. The recorded run keeps it for the author."""
+    import json
+
+    from app.services.agent_flows.envelope import FlowOutput, Notice, reader_notice_dict, text_answer
+
+    n = Notice(code="claims_unverified", audience="reader", text="1 con số đã bị ẩn",
+               facts={"flagged": [{"value": 41746.0, "why": "wrong_period"}],
+                      "candidates": [{"chart_id": 701}]})
+    out = FlowOutput(run_id="r", answer=text_answer("Tổng số đơn là [đã ẩn: chưa kiểm chứng]."), notices=[n])
+    wire = json.dumps(out.to_reader_dict(), ensure_ascii=False)
+    assert "41746" not in wire and "candidates" in wire, wire
+    assert "41746" in json.dumps(out.to_dict(), ensure_ascii=False), "the author's record keeps it"
+    stored = reader_notice_dict(n.model_dump(mode="json"))
+    assert "41746" not in json.dumps(stored), "a replayed stored turn is a reader copy too"
+
+
+def test_the_stored_thread_replay_scrubs_notice_facts():
+    import inspect
+
+    from app.services.agent_flows import direct_chat
+
+    assert "reader_notice_dict(n)" in inspect.getsource(direct_chat)
+
+
+def _flow(nodes):
+    from app.services.agent_flows.contract import Flow
+
+    return Flow.model_validate({"key": "f", "name": "f", "answer_node": nodes[-1]["key"], "nodes": nodes})
+
+
+def test_v3_capabilities_are_off_for_readers_until_the_pilot_opens(monkeypatch):
+    """Merge mode "pilot disabled": a flow using a Skill (step or grant) is refused
+    on reader paths while settings.AGENT_FLOW_V3_ENABLED is false; a flow without
+    V3 capabilities is untouched; setting it true opens the pilot."""
+    from app.core.config import settings
+    from app.services.agent_flows import dispatch
+
+    plain = _flow([{"key": "a", "type": "agent", "prompt": "x", "tools": [{"tool": "total_measure"}]}])
+    granted = _flow([{"key": "a", "type": "agent", "prompt": "x",
+                      "tools": [{"tool": "total_measure"}, {"tool": "skill:so_sanh"}]}])
+    assert dispatch.v3_capabilities(plain) == []
+    assert dispatch.v3_capabilities(granted) == ["skill:so_sanh"]
+    monkeypatch.setattr(settings, "AGENT_FLOW_V3_ENABLED", False, raising=False)
+    assert dispatch.v3_blocked_for_readers(granted) and not dispatch.v3_blocked_for_readers(plain)
+    monkeypatch.setattr(settings, "AGENT_FLOW_V3_ENABLED", True, raising=False)
+    assert not dispatch.v3_blocked_for_readers(granted)
+
+
+def test_both_reader_paths_are_gated_and_the_author_path_is_not():
+    import inspect
+
+    from app.core.config import Settings
+    from app.services.agent_flows import dispatch
+
+    assert Settings.model_fields["AGENT_FLOW_V3_ENABLED"].default is False, "off by default"
+    src = inspect.getsource(dispatch)
+    for fn in ("run_for_link", "run_for_chat_thread"):
+        body = src[src.index("async def %s(" % fn):]
+        body = body[:body.index("\nasync def ", 10)] if "\nasync def " in body[10:] else body
+        assert "v3_blocked_for_readers(" in body, fn
+    preview = src[src.index("async def run_preview("):]
+    preview = preview[:preview.index("\nasync def ", 10)]
+    assert "v3_blocked_for_readers(" not in preview, "Studio Test keeps running V3 flows"
