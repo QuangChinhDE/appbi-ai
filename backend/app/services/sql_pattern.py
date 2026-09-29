@@ -35,6 +35,14 @@ def pattern_predicate(
     (`like` is the legacy name of `contains`)."""
     text = str(value)
     if (dialect or "").lower() == "bigquery":
+        if text == "":
+            # Postgres: LIKE '%%' (and 'x%' / '%x' with x empty) matches every
+            # non-null row; NOT LIKE '%%' matches none. Stated, not left to
+            # STRPOS(col, '')'s behaviour.
+            if operator in ("like", "contains", "starts_with", "ends_with"):
+                return f"({expr} IS NOT NULL)"
+            if operator == "not_contains":
+                return "FALSE"
         lit = quote(text)
         if operator in ("like", "contains"):
             return f"STRPOS({expr}, {lit}) > 0"

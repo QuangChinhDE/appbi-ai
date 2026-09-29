@@ -2663,12 +2663,17 @@ class SemanticQueryEngine:
                 if _present(hi):
                     return f"{_numcast(field_sql, hi)} <= {_lit(hi)}"
                 return None
-            if operator in ("contains", "not_contains", "starts_with", "ends_with") and _present(value):
-                # The same shapes as the WHERE clause (app/services/sql_pattern):
-                # a value's % and _ are literal, not_contains is honoured, and
-                # BigQuery gets STRPOS / STARTS_WITH / ENDS_WITH (no LIKE … ESCAPE).
-                return pattern_predicate(field_sql, operator, value, self.database_type,
-                                         lambda s: "'" + s.replace("'", "''") + "'")
+            # Measure filters keep their own LIKE shape (valid GoogleSQL: no
+            # ESCAPE clause). KNOWN, deliberately not changed during release
+            # closure because it would move saved numbers: a value's % and _ act
+            # as wildcards here, and `not_contains` is not handled (the filter is
+            # dropped). See manual-studio/release.md.
+            if operator == "contains":
+                return f"{field_sql} LIKE '%' || {_lit(value)} || '%'"
+            if operator == "starts_with":
+                return f"{field_sql} LIKE {_lit(value)} || '%'"
+            if operator == "ends_with":
+                return f"{field_sql} LIKE '%' || {_lit(value)}"
             if operator == "is_null":
                 return f"{field_sql} IS NULL"
             if operator == "is_not_null":

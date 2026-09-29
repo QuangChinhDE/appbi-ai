@@ -219,14 +219,36 @@ def test_postgres_report_filter_is_byte_for_byte_unchanged(operator):
     assert "STRPOS" not in sql and "STARTS_WITH" not in sql
 
 
-@pytest.mark.parametrize("operator", PATTERN_OPERATORS)
-def test_measure_filter_uses_the_same_shapes(operator):
-    """A measure's own filter used `LIKE '%' || 'x' || '%'`: the value's % and _
-    were wildcards and not_contains was silently dropped. Same helper now."""
-    bq = _measure_filter_sql("bigquery", operator)
-    assert BQ_SHAPES[operator] in bq, bq
-    pg = _measure_filter_sql("postgresql", operator)
-    assert PG_SHAPES[operator] in pg, pg
+MEASURE_SHAPES = {
+    "contains": "revenue.status LIKE '%' || '50%_off' || '%'",
+    "starts_with": "revenue.status LIKE '50%_off' || '%'",
+    "ends_with": "revenue.status LIKE '%' || '50%_off'",
+}
+
+
+@pytest.mark.parametrize("dialect", ["bigquery", "postgresql"])
+@pytest.mark.parametrize("operator", list(MEASURE_SHAPES))
+def test_measure_filter_shape_is_unchanged_and_valid_on_bigquery(dialect, operator):
+    """A measure's own filter keeps its concatenated LIKE (no ESCAPE clause, so
+    GoogleSQL accepts it). Changing it would move saved measure numbers, which a
+    release-closure change must not do silently; its known gaps (wildcards,
+    not_contains) are recorded in manual-studio/release.md."""
+    sql = _measure_filter_sql(dialect, operator)
+    assert MEASURE_SHAPES[operator] in sql, sql
+    assert "ESCAPE" not in sql, sql
+
+
+@pytest.mark.parametrize("operator, expected", [
+    ("contains", "(revenue.status IS NOT NULL)"),
+    ("starts_with", "(revenue.status IS NOT NULL)"),
+    ("ends_with", "(revenue.status IS NOT NULL)"),
+    ("not_contains", "FALSE"),
+])
+def test_bigquery_empty_value_matches_postgres_semantics(operator, expected):
+    """Postgres `LIKE '%%'` matches every non-null row and `NOT LIKE '%%'` none;
+    BigQuery states the same explicitly rather than relying on STRPOS(col, '')."""
+    sql = _where_sql("bigquery", operator, value="")
+    assert expected in sql and "STRPOS" not in sql, sql
 
 
 def test_live_query_and_distinct_paths_use_the_same_pattern_shapes():
