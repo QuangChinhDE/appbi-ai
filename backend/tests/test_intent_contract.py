@@ -392,3 +392,31 @@ def test_a_period_relative_to_the_data_is_left_to_the_tools(monkeypatch, world):
 def test_per_unit_mỗi_is_not_a_breakdown():
     assert not I.asks_breakdown("Trung bình mỗi lần thanh toán trả góp bao nhiêu kỳ?", "", {})
     assert I.asks_breakdown("Doanh thu mỗi tháng thế nào?", "", {})
+
+
+def test_the_breakdown_the_question_names_is_read_even_when_the_budget_is_spent(monkeypatch):
+    """Live 774b3341 run 7569, the third question after a restart: on a cold cache
+    the member-read budget ran out before payment_type, "Thẻ tín dụng" got no code
+    and the correct 78.34% credit_card share was withheld as another member's. The
+    breakdown the question's words name is read first and always; the others stay
+    bounded by the budget."""
+    from app.services.agent_flows.tools import context as C
+
+    class Ctx:
+        chart_meta = {7: {"fields": {"dimensions": [{"field": "t.customer_state"}]}},
+                      8: {"fields": {"dimensions": [{"field": "t.payment_type"}]}}}
+    read = []
+
+    def fetch(ctx, cid, **kw):
+        read.append(cid)
+        if cid == 8:
+            return {"columns": ["t.payment_type", "t.total_payment"], "rows": [["credit_card", 1.0], ["boleto", 2.0]]}
+        return {"columns": ["t.customer_state", "t.gmv"], "rows": [["SP", 1.0]]}
+    monkeypatch.setattr(C, "_fetch_chart_data", fetch)
+    monkeypatch.setattr(I, "MEMBER_READ_SECONDS", -1.0)
+    dims = {"customer_state": ["Olist · Doanh thu theo bang"], "payment_type": ["Olist · Thanh toán theo hình thức"]}
+    got = I.member_values(Ctx(), dims, None, "Thẻ tín dụng chiếm bao nhiêu phần trăm tổng tiền thanh toán?")
+    assert got == {"payment_type": ["credit_card", "boleto"]} and read == [8], (got, read)
+    # No breakdown named: the budget bounds every read, as before.
+    read.clear()
+    assert I.member_values(Ctx(), dims, None, "Tổng là bao nhiêu?") == {} and read == []

@@ -1176,3 +1176,18 @@ def test_shares_of_one_whole_add_up(world):
     good = "Top 3 chiếm 25.76%: health_beauty 9.26%, watches_gifts 8.87%, bed_bath_table 7.63%."
     assert (25.76, "unsupported") not in _why(state, ctx, good)
     assert (30.1, "unsupported") in _why(state, ctx, good.replace("25.76%", "30.1%"))
+
+
+def test_a_grouped_charts_mean_is_the_per_group_average(world):
+    """Live 774b3341 run 7612: "Trung bình mỗi bang có bao nhiêu đơn hàng?" — the
+    summary's avg over the states (3,683 = 99,441 / 27) was described as a whole
+    figure of order_count and withheld as a sum called an average. Control: the same
+    summary's TOTAL called the per-state average is still flagged."""
+    ctx, state = world("Trung bình mỗi bang có bao nhiêu đơn hàng?", asked=("order_count",))
+    pack = _pack(STATE_ORDERS_CHART, "Số đơn theo bang", STATE_COLS, STATE_ROWS)
+    _rec(state, "get_chart_summary", pack, {"chart_id": STATE_ORDERS_CHART})
+    mean = sum(r[1] for r in STATE_ROWS) / len(STATE_ROWS)
+    total = sum(r[1] for r in STATE_ROWS)
+    assert _why(state, ctx, f"Trung bình mỗi bang có {mean:,.2f} đơn hàng.") == []
+    assert (float(total), "aggregation_mismatch") in _why(
+        state, ctx, f"Trung bình mỗi bang có {total:,} đơn hàng.")

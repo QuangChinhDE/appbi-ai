@@ -169,7 +169,13 @@ def _summary(data: dict, chart_dims: list[str]) -> list[dict]:
         if not isinstance(col, dict):
             continue
         m = col.get("name") or measure
-        out += _whole(col, m, ("total", "avg", "average", "non_null", "null", "distinct"))
+        out += _whole(col, m, ("total", "non_null", "null", "distinct"))
+        # A GROUPED CHART'S AVERAGE IS THE MEAN PER GROUP. Live 774b3341 run 7612:
+        # "Trung bình mỗi bang có bao nhiêu đơn" — the summary's avg 3,683 over 27
+        # states was described as a whole figure of order_count, then judged a sum
+        # called an average and withheld. It is marked the per-group mean it is.
+        for e in _whole(col, m, ("avg", "average")):
+            out.append({**e, "stat": "mean", "per": _key(dim)} if dim and not e.get("count") else e)
         for k in ("min", "max", "median"):
             n = _num(col.get(k))
             if n is not None:

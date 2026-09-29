@@ -232,7 +232,22 @@ MEMBER_VALUES_PER_DIMENSION = 80
 MEMBER_READ_SECONDS = 3.0
 
 
-def member_values(ctx: Any, dimensions: dict, coverage: dict | None = None) -> dict[str, list[str]]:
+def _dimension_order(dimensions: dict, question: str) -> tuple[list[str], set[str]]:
+    """The breakdowns in reading order: those the question's own words name (through
+    the key or the titles of the charts grouped by it) first. Returns (order, named)."""
+    if not question:
+        return list(dimensions), set()
+    asked = _terms(question, singles=True)
+    score: dict[str, int] = {}
+    for dim, titles in dimensions.items():
+        own = _terms(" | ".join([str(dim).replace("_", " "), *[str(t) for t in titles or []]]), singles=True)
+        score[dim] = len(asked & own)
+    order = sorted(dimensions, key=lambda d: -score[d])
+    return order, {d for d in order if score[d] > 0}
+
+
+def member_values(ctx: Any, dimensions: dict, coverage: dict | None = None,
+                  question: str = "") -> dict[str, list[str]]:
     """{dimension key: [its values as the rows carry them]} for the non-time
     breakdowns in scope, read from one chart grouped by each alone. Never raises.
 
@@ -249,9 +264,17 @@ def member_values(ctx: Any, dimensions: dict, coverage: dict | None = None) -> d
     out: dict[str, list[str]] = {}
     started = time.monotonic()
     metas = getattr(ctx, "chart_meta", None) or {}
-    for dim in dimensions:
+    # THE BREAKDOWN THE QUESTION NAMES IS READ FIRST, AND ALWAYS. Live 774b3341 run
+    # 7569, the third question after a restart: on a cold cache the 3 s budget ran
+    # out before payment_type, "Thẻ tín dụng" got no code, and the correct 78.34%
+    # credit_card share was withheld as another member's. Whether a correct figure
+    # is published must not depend on which charts happened to be cached.
+    order, named = _dimension_order(dimensions, question)
+    for dim in order:
         timed = looks_like_time_name(dim)
-        if (timed and coverage is None) or time.monotonic() - started > MEMBER_READ_SECONDS:
+        if timed and coverage is None:
+            continue
+        if dim not in named and time.monotonic() - started > MEMBER_READ_SECONDS:
             continue
         for cid, meta in metas.items():
             dims = [field_key(str(d.get("field") if isinstance(d, dict) else d))
@@ -524,7 +547,7 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
         return floor
     try:
         vocab["coverage"] = {}
-        vocab["members"] = member_values(ctx, vocab["dimensions"], vocab["coverage"])
+        vocab["members"] = member_values(ctx, vocab["dimensions"], vocab["coverage"], question)
     except Exception:                                           # noqa: BLE001
         vocab["members"] = {}
     # The report's range reaches the model ONLY for a relative period. Offered on

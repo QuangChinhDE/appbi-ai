@@ -1048,7 +1048,7 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         clause = _clause_of(text, value)
         if not pct and clause and _has_words(clause, _PER_UNIT_WORDS) and all(
                 not _is_average_measure(e.get("measure")) and not e.get("derived") and not e.get("ratio")
-                for e in support):
+                and not e.get("stat") for e in support):
             flagged.append({"value": value, "pct": pct, "why": "aggregation_mismatch",
                             "of": {k: support[0].get(k) for k in ("measure", "dimension", "member")}})
             continue
