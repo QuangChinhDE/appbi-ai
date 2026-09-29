@@ -676,10 +676,19 @@ def tool_share_of(ctx: ToolContext, args: dict) -> dict:
                 code="bad_argument", detail={"candidates": sorted(near)[:10]},
             )
         else:
+            # A NAME IN ANOTHER LANGUAGE IS NOT AN ABSENT MEMBER. Live 85fc3626
+            # g3_cc_share: "Thẻ tín dụng" was refused here with the values only in
+            # `detail`; the model listed them and gave up instead of retrying with
+            # credit_card. The recovery names the values and says what to do.
+            values = sorted(sums)[:30]
             return R.err(
                 f"no '{item}' in '{dimension_name}'",
                 code="no_data",
-                detail={"sample": sorted(sums)[:10], "group_count": len(sums)},
+                detail={"sample": values[:10], "group_count": len(sums)},
+                recovery=(f"The values of {dimension_name} are: {', '.join(values)}. If the "
+                          f"question names one of them in other words or another language "
+                          f"(e.g. 'thẻ tín dụng' is credit_card), retry with that exact value; "
+                          f"otherwise say the report has no such member."),
             )
 
     total = sum(sums.values())

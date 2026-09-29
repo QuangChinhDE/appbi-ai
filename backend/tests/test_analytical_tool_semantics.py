@@ -690,3 +690,12 @@ def test_a_distinct_count_is_shared_when_the_groups_partition_the_whole(stub, mo
     whole["v"] = 80000.0                                  # overlapping groups: no proof
     got = ok(DER.tool_share_of(C(), {"chart_id": 1, "item": "canceled"}))
     assert got["share_pct"] is None, got
+
+
+def test_a_member_named_in_other_words_gets_a_retry_route(stub):
+    """Live 85fc3626 g3_cc_share: "Thẻ tín dụng" refused with the values only in
+    detail; the model gave up instead of retrying with credit_card."""
+    stub([("credit_card", 12.0), ("boleto", 3.0)], dim="t.payment_type", measure="t.total_payment")
+    res = DER.tool_share_of(Ctx(), {"chart_id": 1, "item": "Thẻ tín dụng"})
+    assert res["ok"] is False and res["error_code"] == "no_data", res
+    assert "credit_card" in res["recovery"] and "retry" in res["recovery"], res
