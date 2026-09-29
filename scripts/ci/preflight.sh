@@ -11,6 +11,12 @@
 #   2. FE imports a provider left uncommitted      -> next build type error
 #   3. BE imports a deleted module                 -> ImportError at boot
 set -uo pipefail
+# A HOOK'S GIT ENVIRONMENT MUST NOT REACH THE TESTS. Git exports GIT_DIR and
+# friends to hooks; the safety-system tests create throwaway repos with plain
+# `git init/commit/config`, and with GIT_DIR inherited those landed in the REAL
+# repository: the branch being pushed was deleted, core.bare was set on the
+# shared config, user.name became `t` (found 2026-09-28, Agent Flow V3 push).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
 
 ROOT="${1:-$(pwd)}"
 cd "$ROOT" || { echo "preflight: cannot cd to $ROOT"; exit 2; }
@@ -78,8 +84,8 @@ if [ -d .claude ]; then
     # The safety system itself: the Stop gate decision paths, and the meta-tests
     # proving a change cannot weaken the protection without being caught.
     if "$PY" -c "import pytest" >/dev/null 2>&1; then
-      "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py scripts/ci/test_guardrail_diff_range.py scripts/ci/test_ci_wiring_is_real.py scripts/ci/test_tool_bodies_are_guarded.py scripts/ci/test_protection_approval_is_one_commit.py scripts/ci/test_product_gate_is_a_real_boundary.py scripts/ci/test_product_gate_root_of_trust.py >/dev/null || {
-        "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py scripts/ci/test_guardrail_diff_range.py scripts/ci/test_ci_wiring_is_real.py scripts/ci/test_tool_bodies_are_guarded.py scripts/ci/test_protection_approval_is_one_commit.py scripts/ci/test_product_gate_is_a_real_boundary.py scripts/ci/test_product_gate_root_of_trust.py; fail=1; }
+      "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py scripts/ci/test_guardrail_diff_range.py scripts/ci/test_ci_wiring_is_real.py scripts/ci/test_tool_bodies_are_guarded.py scripts/ci/test_protection_approval_is_one_commit.py scripts/ci/test_product_gate_is_a_real_boundary.py scripts/ci/test_product_gate_root_of_trust.py scripts/ci/test_deploy_identity_follows_the_pull.py scripts/ci/test_git_env_is_isolated.py >/dev/null || {
+        "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py scripts/ci/test_guardrail_diff_range.py scripts/ci/test_ci_wiring_is_real.py scripts/ci/test_tool_bodies_are_guarded.py scripts/ci/test_protection_approval_is_one_commit.py scripts/ci/test_product_gate_is_a_real_boundary.py scripts/ci/test_product_gate_root_of_trust.py scripts/ci/test_deploy_identity_follows_the_pull.py scripts/ci/test_git_env_is_isolated.py; fail=1; }
       [ "$fail" -eq 0 ] && echo "✓ safety-system tests (stop gate + SDLC meta)"
     else
       echo "· safety-system tests skipped (pytest not installed)"

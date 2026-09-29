@@ -47,7 +47,7 @@ export function extractFollowups(text: string): { body: string; suggestions: str
     // Tolerate leading markdown list markers ("- ", "* ", "1. ", "•") the
     // model sometimes prepends to [FOLLOWUP] lines — else the chips leak as
     // raw text instead of rendering as clickable suggestions.
-    const m = /^[\s>*•.)\-\d]*\[FOLLOWUP\]\s*(.+?)\s*$/i.exec(line);
+    const m = /^[\s>*•.)\-\d]*\[FOLLOWUP\]\s*[:：\-–]?\s*(.+?)\s*$/i.exec(line);
     if (m && m[1]) {
       const q = m[1].trim();
       if (q && suggestions.length < 5) suggestions.push(q);

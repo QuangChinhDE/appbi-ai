@@ -34,6 +34,7 @@ from app.services.agent_flows.contract import (
     AgentNode,
     Flow,
     LoopNode,
+    child_node_lists,
 )
 from app.services.agent_flows.envelope import (
     BindingInfo,
@@ -449,6 +450,28 @@ def preflight(
             ),
         })
 
+    # 7b — CAN IT FINISH AT ALL? The runtime reserves, before every step, the
+    #      minimum the steps after it need (`runtime/reserve.py`), so a funded run
+    #      always reaches its answering step. That guarantee needs the link to fund
+    #      the minimum itself; below it, a mandatory step would be refused every
+    #      time. That is not "tight", it is a flow that cannot run as designed.
+    from app.services.agent_flows.runtime.reserve import minimum_calls, skill_lookup_for
+
+    # A disabled Skill is still counted here: it can be re-enabled without this
+    # link being re-checked, and a link funded without it would then be short.
+    need_llm, need_tools = minimum_calls(list(flow.nodes),
+                                         skill_lookup=skill_lookup_for(db, include_disabled=True))
+    if need_llm > contract.budget.max_llm_calls or need_tools > contract.budget.max_tool_calls:
+        errors.append({
+            "code": "budget_below_minimum",
+            "key": "budget",
+            "message": (
+                f"Các bước bắt buộc của flow cần tối thiểu {need_llm} lượt gọi model và "
+                f"{need_tools} lượt công cụ, nhưng link chỉ cấp {contract.budget.max_llm_calls} "
+                f"và {contract.budget.max_tool_calls} — flow không thể chạy tới bước trả lời."
+            ),
+        })
+
     # 8 — authoring warnings travel with the assignment, so whoever assigns sees
     #     what the flow gives up rather than only what it needs.
     for w in flow.warnings():
@@ -533,6 +556,13 @@ def _slowest_model(flow: Flow, cfg: dict | None) -> tuple[str, int]:
     return worst, _seconds_per_call(worst)
 
 
+#: What one Skill invocation is assumed to cost — (model calls, tool calls). The
+#: estimate cannot read the Skill's own body (it runs without a database), so it
+#: is a conservative constant; the RUN is what bounds it hard: a child spends the
+#: parent's budget and leaves the parent its answer round (`skills.child_budget`).
+SKILL_COST = (4, 8)
+
+
 def estimate_cost(flow: Flow, *, chart_count: int = 0) -> dict[str, int]:
     """Worst case for ONE question, walking the tree.
 
@@ -569,24 +599,45 @@ def estimate_cost(flow: Flow, *, chart_count: int = 0) -> dict[str, int]:
                 rounds = 1 + (n.max_tool_calls if n.tools else 0)
                 llm += rounds
                 tools += n.max_tool_calls if n.tools else 0
+                # Each Skill it may call is a child run on top.
+                skill_grants = sum(1 for t in n.tools if t.tool.startswith("skill:"))
+                llm += skill_grants * SKILL_COST[0]
+                tools += skill_grants * SKILL_COST[1]
+            elif n.type == "skill":
+                llm += SKILL_COST[0]
+                tools += SKILL_COST[1]
             elif n.type == "report_read":
                 tools += per_read
             elif n.type in {"knowledge", "web"}:
                 tools += 3
+            # CHILDREN FROM THE CANONICAL TOPOLOGY (`child_node_lists`), so a
+            # container is never invisible here the way `coordinate` was: this
+            # used to walk loop/if/switch by hand and costed a coordinator — a
+            # planner call plus up to `max_specialists` lanes — at zero. Only how
+            # a container COMBINES its children is written out, per type.
+            groups = [cost(list(g)) for g in child_node_lists(n)]
+            if not groups:
+                continue
             if isinstance(n, LoopNode):
-                bl, bt = cost(list(n.body))
-                llm += bl * n.max_iterations
-                tools += bt * n.max_iterations
-            elif n.type == "if":
-                branches = [cost(list(p.body)) for p in n.paths] or [(0, 0)]
-                best = max(branches, key=lambda x: x[0] * 10 + x[1])
+                llm += sum(g[0] for g in groups) * n.max_iterations
+                tools += sum(g[1] for g in groups) * n.max_iterations
+            elif n.type == "coordinate":
+                # One planner call, then the most expensive `max_specialists`
+                # lanes (the fallback competes as a lane: it runs instead).
+                llm += 1
+                worst = sorted(groups, key=lambda x: x[0] * 10 + x[1], reverse=True)
+                chosen = worst[: n.max_specialists]
+                llm += sum(g[0] for g in chosen)
+                tools += sum(g[1] for g in chosen)
+            elif n.type in {"if", "switch"}:
+                best = max(groups, key=lambda x: x[0] * 10 + x[1])
                 llm += best[0]
                 tools += best[1]
-            elif n.type == "switch":
-                branches = [cost(list(c.body)) for c in n.cases] + [cost(list(n.fallback))]
-                best = max(branches or [(0, 0)], key=lambda x: x[0] * 10 + x[1])
-                llm += best[0]
-                tools += best[1]
+            else:
+                # A container this function has not been taught: assume every
+                # child list can run. Wrong upward, never downward.
+                llm += sum(g[0] for g in groups)
+                tools += sum(g[1] for g in groups)
         return llm, tools
 
     llm, tools = cost(list(flow.nodes))

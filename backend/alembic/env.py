@@ -51,6 +51,10 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        # A revision renamed after it was applied somewhere (see the module).
+        from app.core.alembic_reconcile import reconcile_revision_ids
+
+        reconcile_revision_ids(connection)
         context.configure(
             connection=connection,
             target_metadata=target_metadata

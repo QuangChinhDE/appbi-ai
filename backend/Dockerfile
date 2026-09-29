@@ -52,6 +52,20 @@ COPY backend/scripts/reindex_govern_doc_embeddings.py ./scripts/reindex_govern_d
 COPY backend/entrypoint.sh .
 RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
 
+# WHICH COMMIT THIS IMAGE WAS BUILT FROM.
+#
+# `/api/v1/health` reported `git_sha: "unknown"` on every deployment that was not
+# started by `run.sh`, because the commit was injected at RUN time from the host's
+# working copy. An image moved to another machine, a `docker compose up` typed by
+# hand, or a restart on a box without the repo all produced a running service that
+# could not say what it was — which is the thing that makes a rollback unknowable.
+#
+# Baked LAST so it busts no dependency layer, and kept under its own name rather
+# than overwriting `GIT_SHA`: a deployment that knows its own identity must still
+# win. `main.py` reads the explicit run-time value first and falls back to this.
+ARG APPBI_BUILD_SHA=""
+ENV APPBI_BUILD_SHA=${APPBI_BUILD_SHA}
+
 # Expose port
 EXPOSE 8000
 

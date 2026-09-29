@@ -305,6 +305,15 @@ class ToolContext:
     #: stays silent — a scheduled digest or a replay must not start refusing
     #: tools because it has no question to check against.
     question: str = ""
+    #: The run's evidence store (`RunState.evidence_store`), set per run by
+    #: `executor.run_flow`. `compute` resolves `{ref, path}` variables here, so the
+    #: value in a formula is the value the runtime produced, not one the model typed.
+    evidence_store: dict[str, Any] = field(default_factory=dict)
+    #: Set only on a SKILL child run: the caller's knowledge scope at the moment it
+    #: invoked the Skill. Every step inside the child narrows within it
+    #: (`handlers/data.bounded_scope`), so a Skill's own attachments cannot widen
+    #: what the caller was allowed to read.
+    knowledge_ceiling: dict[str, Any] | None = None
     #: The most rows a single read may return, set per run from the binding's
     #: `capabilities.max_rows_per_call`. None means fall back to `MAX_TOP_N`.
     #:
@@ -503,6 +512,66 @@ def fold_column(name: Any) -> str:
     from app.core.text_fold import fold_text
 
     return fold_text(name)
+
+
+def resolve_column(name: Any, columns: list[str]) -> str | None:
+    """The chart column a caller means, or None.
+
+    A chart's columns are qualified (`dataset_table_445.product_category_name_english`)
+    while every other surface — the semantic model, the intent, the glossary — names
+    the field bare. A bare name that matches exactly one column's last segment IS that
+    column; an ambiguous one is not guessed. Exact spelling always wins.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return None
+    if name in columns:
+        return name
+    want = fold_column(name.strip())
+    hits = [c for c in columns if fold_column(c) == want]
+    if len(hits) == 1:
+        return hits[0]
+    tail = want.rsplit(".", 1)[-1]
+    hits = [c for c in columns if fold_column(str(c)).rsplit(".", 1)[-1] == tail]
+    return hits[0] if len(hits) == 1 else None
+
+
+def value_key(x: Any) -> str:
+    """How two spellings of one value compare: case, accents and `_` aside."""
+    return fold_column(str(x)).replace("_", " ").strip()
+
+
+def resolve_value(ctx: Any, value: Any, values: list[Any]) -> Any:
+    """The column value a caller means when filtering on `value`.
+
+    Smoke run at e98d1b8d: the intent had resolved "Rio de Janeiro" to RJ and
+    "sports leisure" to sports_leisure, but the drilldown filtered on the words the
+    reader used, matched nothing, and the reader was told the revenue was 0. Exact
+    value first; then the one value equal up to case, accents and `_`; then the
+    member the runtime resolved for this turn (`ctx.member_aliases`). Never guessed.
+    """
+    if value is None or not isinstance(value, (str, int, float)):
+        return value
+    present = {str(v) for v in values if v is not None}
+    if str(value) in present:
+        return value
+    import re
+
+    # "Rio de Janeiro (RJ)" names the member twice: try each spelling (smoke 6041).
+    text = str(value)
+    inner = re.findall(r"\(([^()]+)\)", text)
+    outer = re.sub(r"\([^()]*\)", " ", text).strip()
+    aliases = getattr(ctx, "member_aliases", None) or {}
+    for candidate in [text, *inner, outer]:
+        if candidate in present:
+            return candidate
+        want = value_key(candidate)
+        hits = [v for v in present if value_key(v) == want]
+        if len(hits) == 1:
+            return hits[0]
+        code = aliases.get(want)
+        if code is not None and str(code) in present:
+            return code
+    return value
 
 
 def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:

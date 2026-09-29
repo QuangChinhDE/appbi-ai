@@ -106,6 +106,31 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _flatten_tool_blocks(messages: list[dict]) -> list[dict]:
+    """tool_use / tool_result blocks → text blocks, preserving order and roles."""
+    out: list[dict] = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            out.append(msg)
+            continue
+        blocks: list[dict] = []
+        for block in content:
+            kind = block.get("type") if isinstance(block, dict) else None
+            if kind == "tool_use":
+                blocks.append({"type": "text", "text": "[đã gọi %s %s]" % (
+                    block.get("name"), json.dumps(block.get("input") or {}, ensure_ascii=False)[:2000])})
+            elif kind == "tool_result":
+                body = block.get("content")
+                if isinstance(body, list):
+                    body = " ".join(str(b.get("text") or "") for b in body if isinstance(b, dict))
+                blocks.append({"type": "text", "text": "[kết quả công cụ] %s" % str(body or "")})
+            else:
+                blocks.append(block)
+        out.append({**msg, "content": blocks})
+    return out
+
+
 def _to_anthropic_tools(tools: list[dict] | None) -> list[dict] | None:
     if not tools:
         return None
@@ -154,6 +179,13 @@ async def stream_anthropic(
         "messages": _to_anthropic_messages(messages),
         "stream": True,
     }
+    if not tools:
+        # AN ANSWER-ONLY ROUND OVER A TOOL HISTORY. Anthropic refuses a request
+        # whose messages hold tool_use / tool_result blocks when it defines no
+        # tools — which is exactly an agent's final round and every correction
+        # round. The history is kept, as text, so the model still reads what the
+        # tools returned; nothing is offered to call.
+        payload["messages"] = _flatten_tool_blocks(payload["messages"])
     anthropic_tools = _to_anthropic_tools(tools)
     if anthropic_tools:
         # Mark the last tool definition with cache_control so the entire
