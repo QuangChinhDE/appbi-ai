@@ -211,6 +211,7 @@ async def run_flow(
             # and was published as a revenue of 0 (smoke run at e98d1b8d).
             from app.services.agent_flows.tools.context import value_key
 
+            ctx.asked_measures = list((getattr(state, "intent", None) or {}).get("measures") or [])
             ctx.member_aliases = {
                 value_key(m["said"]): m["code"]
                 for m in ((getattr(state, "intent", None) or {}).get("members") or [])

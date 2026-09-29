@@ -1292,6 +1292,9 @@ TOOL_DEFINITIONS: list[dict] = [
                 "mode": {"type": "string", "enum": ["auto", "mom", "qoq", "yoy", "custom"]},
                 "period_a": {"type": "string", "description": "Required for mode=custom"},
                 "period_b": {"type": "string", "description": "Required for mode=custom"},
+                "measure": {"type": "string", "description": (
+                    "The measure to compare when the chart carries more than one "
+                    "(e.g. total_revenue). Defaults to the measure the question asked.")},
             },
             "required": ["chart_id"],
         },

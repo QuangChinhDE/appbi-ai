@@ -589,3 +589,19 @@ def test_a_member_written_with_its_code_in_parentheses_is_found(stub):
     drill = ok(ADV.tool_smart_drilldown(Ctx(), {"chart_id": 1, "column": "customer_state",
                                                "match": "Rio de Janeiro (RJ)"}))
     assert drill["n_rows_matching"] == 1 and drill["totals"]["sum"] == 1800.0, drill
+
+
+def test_a_two_measure_chart_compares_the_measure_asked(stub, monkeypatch):
+    """Holdout 6044: chart 692 (revenue + orders by month); asked for revenue, the
+    order count's change was compared because it was the LAST numeric column."""
+    rows = [["2017-11", 1010271.37, 7451], ["2017-12", 743914.17, 5624]]
+    data = {"columns": ["t.year_month", "t.total_revenue", "t.orders_with_items"], "rows": rows,
+            "filters_applied": []}
+    monkeypatch.setattr(ADV, "_fetch_chart_data", lambda ctx, cid, **kw: data)
+    args = {"chart_id": 1, "mode": "custom", "period_a": "2017-12", "period_b": "2017-11"}
+    ctx = Ctx()
+    ctx.asked_measures = ["total_revenue"]
+    got = ok(ADV.tool_compare_periods(ctx, args))
+    assert abs(got["pct_change"] - (-26.36)) < 0.01, got
+    named = ok(ADV.tool_compare_periods(Ctx(), {**args, "measure": "orders_with_items"}))
+    assert abs(named["pct_change"] - (-24.52)) < 0.01, named

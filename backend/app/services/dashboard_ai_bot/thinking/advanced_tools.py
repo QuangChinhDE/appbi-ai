@@ -287,6 +287,26 @@ def _detect_measure_idx(columns: Sequence[str], rows: Sequence[Sequence[Any]]) -
     return numeric_indices[-1] if numeric_indices else None
 
 
+def _measure_idx(ctx: Any, args: dict, columns: Sequence[str], rows: Sequence[Sequence[Any]]) -> int | None:
+    """Which numeric column a tool measures.
+
+    Holdout 6044: chart 692 carries total_revenue AND orders_with_items; asked for
+    revenue, compare_periods took the LAST numeric column and reported the order
+    count's -24.52% (the claim check withheld it as another measure's). In order:
+    the caller's `measure` argument; the ONE numeric column naming a measure the
+    turn resolved (`ctx.asked_measures`); the last numeric column, as before.
+    """
+    fallback = _detect_measure_idx(columns, rows)
+    numeric = [i for i in range(len(columns))
+               if [n for n in (_to_number(r[i]) for r in rows if i < len(r)) if n is not None]]
+    wanted = resolve_column((args or {}).get("measure"), list(columns))
+    if wanted is not None and columns.index(wanted) in numeric:
+        return columns.index(wanted)
+    asked = {str(m).lower() for m in (getattr(ctx, "asked_measures", None) or [])}
+    hits = [i for i in numeric if str(columns[i]).rsplit(".", 1)[-1].lower() in asked]
+    return hits[0] if len(hits) == 1 else fallback
+
+
 def _detect_dim_idx(
     columns: Sequence[str],
     rows: Sequence[Sequence[Any]],
@@ -363,7 +383,7 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     if not rows or not columns:
         return _err("chart has no data to compare")
 
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need at least one dimension and one numeric column", code="not_applicable")
@@ -614,7 +634,7 @@ def tool_describe_distribution(ctx: ToolContext, args: dict) -> dict:
     if not rows or not columns:
         return _err("chart has no data")
 
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     if measure_idx is None:
         return _err("no numeric measure column found")
 
@@ -973,7 +993,7 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
     if not rows:
         return _err("chart has no data")
 
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     if measure_idx is None:
         return _err("no numeric measure detected")
 
@@ -1286,7 +1306,7 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
             "note": _no_match_note(column, match, [r[col_idx] for r in rows if col_idx < len(r)]),
         })
 
-    measure_idx = _detect_measure_idx(columns, filtered)
+    measure_idx = _measure_idx(ctx, args, columns, filtered)
     totals: dict[str, Any] | None = None
     if measure_idx is not None:
         nums = [_to_number(r[measure_idx]) for r in filtered if measure_idx < len(r)]
@@ -1752,7 +1772,7 @@ def tool_explain_change(ctx: ToolContext, args: dict) -> dict:
         return _err(f"breakdown '{breakdown}' is not a column. Available: {columns}", code="bad_argument")
     if split_column not in columns:
         return _err(f"split_column '{split_column}' is not a column. Available: {columns}", code="bad_argument")
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     if measure_idx is None:
         return _err("no numeric measure column detected in this chart")
     b_idx = columns.index(breakdown)
@@ -1865,7 +1885,7 @@ def tool_forecast_measure(ctx: ToolContext, args: dict) -> dict:
 
     columns: list[str] = data["columns"]
     rows: list[list] = data["rows"]
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need at least one dimension and one numeric column")
@@ -1977,7 +1997,7 @@ def tool_analyze_trend(ctx: ToolContext, args: dict) -> dict:
         return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
     columns, rows = data["columns"], data["rows"]
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need a numeric measure and a dimension")
@@ -2072,7 +2092,7 @@ def tool_segment_compare(ctx: ToolContext, args: dict) -> dict:
         return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
     columns, rows = data["columns"], data["rows"]
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     if measure_idx is None:
         return _err("no numeric measure detected in this chart")
     dimension = resolve_column(dimension, columns) or dimension
