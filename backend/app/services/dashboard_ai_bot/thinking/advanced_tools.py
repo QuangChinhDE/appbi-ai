@@ -320,6 +320,26 @@ def _detect_dim_idx(
 # worsening / flat) and a one-line narrative the LLM can lift verbatim.
 
 
+def _period_label(asked: str, points: list[tuple[str, float]]) -> str:
+    """The chart's own label for the period `asked` names.
+
+    Exact spelling first. Otherwise the ONE label denoting the same period
+    ("12/2017", "tháng 12/2017" → "2017-12"): holdout run 5663 compared December
+    with November by writing the month the way the question did, and every call
+    was refused — as `chart_not_found`, a code that sent the model looking for a
+    different chart. A label that is not unique (a daily axis) is never guessed.
+    """
+    if any(x == asked for x, _ in points):
+        return asked
+    from app.services.time_semantics import named_periods
+
+    want = named_periods(asked)
+    if len(want) != 1:
+        return asked
+    hits = [x for x, _ in points if named_periods(x) == want]
+    return hits[0] if len(hits) == 1 else asked
+
+
 def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     chart_id = args.get("chart_id")
     if not isinstance(chart_id, int):
@@ -346,7 +366,7 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     measure_idx = _detect_measure_idx(columns, rows)
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
-        return _err("need at least one dimension and one numeric column")
+        return _err("need at least one dimension and one numeric column", code="not_applicable")
     if mode != "custom":
         # Peek at the actual dimension labels. If none look date-like, period
         # comparison simply doesn't apply to this chart — say so definitively
@@ -366,7 +386,8 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                 f"chart's dimension '{columns[dim_idx]}' is categorical "
                 f"(e.g. {', '.join(sample_labels[:5]) or 'n/a'}), not a time "
                 "axis — period-over-period comparison is not applicable to this "
-                "chart. Do not retry with custom periods."
+                "chart. Do not retry with custom periods.",
+                code="not_applicable",
             )
         if looks_like_time_name(columns[dim_idx]):
             pass  # the name settles the GRAIN; automatic modes may proceed
@@ -374,7 +395,8 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
             return _err(
             f"chart's dimension '{columns[dim_idx]}' does not look like a "
             "time series; use mode='custom' with explicit period_a/period_b "
-            f"chosen from the available labels: {', '.join(sample_labels)}"
+            f"chosen from the available labels: {', '.join(sample_labels)}",
+            code="not_applicable",
         )
 
     # Sort by dim ascending (assumes ISO-ish labels)
@@ -390,7 +412,7 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
             continue
         points.append((str(x), y))
     if len(points) < 2:
-        return _err("need at least 2 time points to compare")
+        return _err("need at least 2 time points to compare", code="not_applicable")
 
     # A SEVERE LOW EDGE IS A QUESTION, NOT AN ANSWER.
     #
@@ -421,6 +443,8 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
         period_b = str(args.get("period_b") or "")
         if not period_a or not period_b:
             return _err("mode=custom requires period_a and period_b")
+        period_a = _period_label(period_a, points)
+        period_b = _period_label(period_b, points)
         a_val = next((y for x, y in points if x == period_a), None)
         b_val = next((y for x, y in points if x == period_b), None)
         if a_val is None or b_val is None:
@@ -431,7 +455,8 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                 f"period not found in chart: a={period_a!r}, b={period_b!r}. "
                 f"Available labels are: {', '.join(shown)}{more}. "
                 "Pick period_a/period_b from this exact list, or if none are "
-                "time periods this chart has no time axis — stop and tell the user."
+                "time periods this chart has no time axis — stop and tell the user.",
+                code="period_not_in_chart",
             )
         return _ok(_attach_delta_unit(
             ctx, chart_id, columns[measure_idx],

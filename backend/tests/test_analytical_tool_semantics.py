@@ -524,3 +524,19 @@ def test_a_column_the_chart_lacks_is_the_callers_argument(stub):
         "chart_id": 1, "group_by": ["city"],
         "aggregations": [{"column": "revenue", "op": "sum"}]}), kind="table")
     assert res["ok"] is False and res["error_code"] == "bad_argument", res
+
+
+def test_a_custom_period_written_as_the_question_wrote_it_is_compared(stub):
+    """Holdout 5663: "12/2017" against labels "2017-12" was refused — and coded
+    chart_not_found, which sent the model after a different chart."""
+    from app.services.agent_flows.tools.result import normalise
+
+    stub(MONTHS_RISING, dim="year_month")
+    data = ok(ADV.tool_compare_periods(Ctx(), {"chart_id": 1, "mode": "custom",
+                                              "period_a": "12/2024", "period_b": "tháng 11/2024"}))
+    assert abs(data["current"]["value"] - 2200.0) < 0.01, data
+    assert abs(data["baseline"]["value"] - 2100.0) < 0.01, data
+    miss = normalise(ADV.tool_compare_periods(Ctx(), {"chart_id": 1, "mode": "custom",
+                                                      "period_a": "12/2031", "period_b": "2024-11"}),
+                     kind="comparison")
+    assert miss["error_code"] == "period_not_in_chart", miss
