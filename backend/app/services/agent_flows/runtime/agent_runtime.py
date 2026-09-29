@@ -785,7 +785,8 @@ class AgentRuntime:
         if result.get("ok"):
             self.view.note_invoked(call.tool_name)
         else:
-            self.view.note_rejected(call.tool_name, str(result.get("error_code") or "failed"))
+            self.view.note_rejected(call.tool_name, str(result.get("error_code") or "failed"),
+                                    getattr(call, "tool_args", None))
             self.state.tool_log.append(f"{call.tool_name}({result.get('error_code') or 'failed'})")
         self.state.evidence_source = self.node.key
         ref = self.state.record_evidence(result, tool=call.tool_name, args=call.tool_args)
@@ -935,7 +936,8 @@ class AgentRuntime:
         if result.get("ok"):
             view.note_invoked(call.tool_name)
         else:
-            view.note_rejected(call.tool_name, str(result.get("error_code") or "failed"))
+            view.note_rejected(call.tool_name, str(result.get("error_code") or "failed"),
+                               getattr(call, "tool_args", None))
         ref = state.record_evidence(result, tool=call.tool_name, args=call.tool_args)
         _collect_citation(state, call.tool_name, call.tool_args, result)
         # What the MODEL is shown carries the reference; the result itself is

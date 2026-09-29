@@ -176,3 +176,22 @@ def test_the_fallback_answer_goes_through_the_boundary_too(monkeypatch, undeclar
     published = _answer(events) + "".join(e.text or "" for e in events if e.type == "text")
     assert "Doanh thu" in published, "the fallback prose is still used"
     assert "19,78" not in published and "19.78" not in published
+
+
+def test_the_author_trace_names_each_calls_arguments():
+    """Holdout triage at 0beabf5d: the trace said `smart_drilldown` ran and was
+    answered "no data", but not on which chart or value — the first cause could not
+    be read, only guessed. Author-only: the reader envelope drops the trace."""
+    from app.services.agent_flows.envelope import TraceStep
+    from app.services.agent_flows.runtime.capabilities import args_summary
+    from app.services.agent_flows.runtime.state import RunState
+
+    state = RunState()
+    state.evidence_source = "a"
+    state.record_evidence({"ok": True, "kind": "table", "data": {"rows": []}}, tool="smart_drilldown",
+                          args={"chart_id": 701, "column": "customer_state", "match": "RJ"})
+    step = TraceStep(key="a", type="agent")
+    state.record(step)
+    made = step.capabilities["evidence"]
+    assert '"match": "RJ"' in made[0]["args"] and '"chart_id": 701' in made[0]["args"], made
+    assert len(args_summary({"q": "x" * 1000})) <= 240

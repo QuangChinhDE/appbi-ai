@@ -592,6 +592,11 @@ def tool_share_of(ctx: ToolContext, args: dict) -> dict:
     if not sums:
         return R.err(f"chart {chart_id} has no numeric values", code="no_data")
 
+    from app.services.agent_flows.tools.context import resolve_value
+
+    # The member the runtime resolved this turn ("Rio de Janeiro" -> RJ), the same
+    # rule every row filter uses (tools/context.resolve_value).
+    item = str(resolve_value(ctx, item.strip(), list(sums)))
     wanted = item.strip().lower()
     matched = next((k for k in sums if k.lower() == wanted), None)
     if matched is None:

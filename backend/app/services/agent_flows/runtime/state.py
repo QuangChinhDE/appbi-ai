@@ -429,6 +429,7 @@ class RunState:
             "source": self.evidence_source,
             "result": result,
             "caller_numbers": caller,
+            "args": args,
         }
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         # A RESULT MAY DECLARE WHICH NUMBERS IT VOUCHES FOR (`evidence_values`):
@@ -582,7 +583,10 @@ class RunState:
         # WHICH EVIDENCE THIS STEP CREATED — the references a later formula or a
         # debugger can name. Children record before their container, so a lane's
         # evidence is on the lane's step, not repeated on the coordinator.
-        made = [{"ref": ref, "tool": entry.get("tool") or ""}
+        from app.services.agent_flows.runtime.capabilities import args_summary
+
+        made = [{"ref": ref, "tool": entry.get("tool") or "",
+                 **({"args": args_summary(entry["args"])} if entry.get("args") else {})}
                 for ref, entry in self.evidence_store.items()
                 if entry.get("source") == step.key and ref not in self._evidence_recorded]
         if made:

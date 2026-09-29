@@ -572,3 +572,12 @@ def test_a_filter_that_matches_nothing_says_it_is_not_zero(stub):
         "aggregations": [{"column": "revenue", "op": "sum"}],
         "filters": [{"column": "customer_state", "op": "eq", "value": "Curitiba"}]}))
     assert "NOT a zero value" in agg.get("note", ""), agg
+
+
+def test_a_share_is_of_the_member_the_turn_resolved(stub):
+    """Smoke 6032: "Rio de Janeiro" asked, RJ resolved, share_of refused no_data."""
+    stub([("SP", 6000.0), ("RJ", 2000.0), ("MG", 2000.0)], dim="dataset_table_441.customer_state")
+    ctx = Ctx()
+    ctx.member_aliases = {"rio de janeiro": "RJ"}
+    data = ok(DER.tool_share_of(ctx, {"chart_id": 1, "item": "Rio de Janeiro"}))
+    assert data["item"] == "RJ" and abs(data.get("share_pct", data.get("pct", 0)) - 20.0) < 0.01, data

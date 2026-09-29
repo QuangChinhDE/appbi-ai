@@ -579,8 +579,11 @@ class CapabilityView:
         if self.shortlisted and name not in self.sticky and name != FIND_CAPABILITY:
             self.sticky.append(name)
 
-    def note_rejected(self, name: str, code: str) -> None:
-        self.rejected.append({"name": name, "code": code, "round": len(self.rounds)})
+    def note_rejected(self, name: str, code: str, args: Any = None) -> None:
+        entry = {"name": name, "code": code, "round": len(self.rounds)}
+        if args:
+            entry["args"] = args_summary(args)
+        self.rejected.append(entry)
 
     def to_trace(self) -> dict:
         return {
@@ -664,3 +667,16 @@ def build_view(
         for n in eligible
     }
     return view
+
+
+def args_summary(args: Any, limit: int = 240) -> str:
+    """A tool call's arguments as the AUTHOR's trace shows them — bounded, so a
+    run's first cause can be read ("smart_drilldown on chart 687, not 701")
+    instead of guessed. Author-only: the reader envelope drops the trace."""
+    import json
+
+    try:
+        text = json.dumps(args, ensure_ascii=False, default=str, sort_keys=True)
+    except Exception:                                           # noqa: BLE001
+        text = str(args)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
