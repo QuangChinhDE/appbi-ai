@@ -441,6 +441,28 @@ check('every Inspector field names its control for assistive technology; small l
   }
 });
 
+check('phone and tablet heights follow content: stack re-lays, tablet only grows, a row short always grows', () => {
+  const fit = load('lib/responsive-fit.ts');
+  const phone = [
+    { i: '1', x: 0, y: 0, w: 36, h: 10 },
+    { i: '2', x: 0, y: 10, w: 18, h: 6 }, { i: '3', x: 18, y: 10, w: 18, h: 6 },
+    { i: '4', x: 0, y: 16, w: 36, h: 12 },
+  ];
+  const stacked = fit.fitLayoutToContent(phone, { 1: 14, 2: 4, 3: 5 }, 'stack');
+  const at = (l, i) => l.find((x) => x.i === i);
+  assert(at(stacked, '1').h === 14 && at(stacked, '2').y === 14 && at(stacked, '3').y === 14, 'the header did not grow / the pair did not follow');
+  assert(at(stacked, '2').h === 5 && at(stacked, '3').h === 5, 'a 2-up pair does not share the taller height');
+  assert(at(stacked, '4').y === 19 && at(stacked, '4').h === 12, 'the chart below was not re-laid (or its height changed)');
+  const tablet = [{ i: 'a', x: 0, y: 0, w: 18, h: 6 }, { i: 'b', x: 18, y: 0, w: 18, h: 6 }, { i: 'c', x: 0, y: 6, w: 36, h: 8 }];
+  const grown = fit.fitLayoutToContent(tablet, { a: 9, b: 3 }, 'grow');
+  assert(at(grown, 'a').h === 9 && at(grown, 'b').h === 6, 'tablet shrank a tile (only growth is safe beside others)');
+  assert(at(grown, 'c').y === 9, 'the row below was not pushed by the growth');
+  assert(fit.fitLayoutToContent(tablet, {}, 'grow') === tablet, 'nothing measured changed the layout');
+  const src = source('lib/responsive-fit.ts');
+  assert(/b > a \|\| a - b > 1/.test(src), 'a one-row shortfall is ignored (content stays cut off)');
+  assert(/new ResizeObserver\(schedule\)/.test(src), 'content that changes after the first measure is never measured again');
+});
+
 check('emphasis is a closed vocabulary', () => {
   assert(emphasis.emphasisOf({ emphasis: 'lead' }) === 'lead' && emphasis.emphasisOf({ emphasis: 'quiet' }) === 'quiet', 'known values lost');
   assert(emphasis.emphasisOf({ emphasis: 'LOUD' }) === 'normal' && emphasis.emphasisOf(null) === 'normal', 'an unknown value was kept');

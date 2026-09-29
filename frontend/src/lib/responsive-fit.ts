@@ -109,14 +109,38 @@ export function useMeasuredContentRows(
         let changed = false;
         for (const k of keys) {
           const a = prev[k]; const b = next[k];
-          if (a === undefined || b === undefined || Math.abs(a - b) > 1) { changed = true; break; }
+          // Growing is always applied (a row short is content cut off); only a
+          // shrink of one row is ignored, which is what stops a measure ->
+          // relayout -> measure cycle from oscillating.
+          if (a === undefined || b === undefined || b > a || a - b > 1) { changed = true; break; }
         }
         return changed ? next : prev;
       });
     };
+    let debounce: number | null = null;
+    const schedule = () => {
+      if (debounce != null) window.clearTimeout(debounce);
+      debounce = window.setTimeout(measure, 150);
+    };
     const t1 = window.setTimeout(measure, 120);
     const t2 = window.setTimeout(measure, 1200);
-    return () => { cancelled = true; window.clearTimeout(t1); window.clearTimeout(t2); };
+    // Content that changes after the first measure (a KPI's context line that
+    // arrives with the other tiles' data, a header's period) is measured again.
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && root.current) {
+      ro = new ResizeObserver(schedule);
+      for (const item of Array.from(root.current.querySelectorAll<HTMLElement>('[data-grid-item-id]'))) {
+        const tile = item.querySelector<HTMLElement>(CONTENT_SELECTOR);
+        const inner = tile?.firstElementChild as HTMLElement | null;
+        if (inner) ro.observe(inner);
+      }
+    }
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t1); window.clearTimeout(t2);
+      if (debounce != null) window.clearTimeout(debounce);
+      ro?.disconnect();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, rowHeight, gapY, ...deps]);
   return rows;
