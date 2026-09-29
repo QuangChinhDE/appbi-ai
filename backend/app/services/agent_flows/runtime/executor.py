@@ -1329,9 +1329,28 @@ def _final_answer(state: RunState, rctx: RunContext) -> Answer:
                 continue
             candidate = state.outputs.get(step.key)
             if isinstance(candidate, str) and candidate.strip():
-                return text_answer(candidate)
+                return text_answer(_published_fallback(state, rctx, candidate))
         return Answer()
     return text_answer(str(value))
+
+
+def _published_fallback(state: RunState, rctx: RunContext, text: str) -> str:
+    """An intermediate step's prose, made publishable. Intermediate steps are
+    never claim-checked — only the answering step is — so publishing one when
+    the answering step failed was a way AROUND the publication boundary (pilot
+    review). Checked and redacted the same way; its flags make the run partial."""
+    from app.services.agent_flows.runtime import claim_check
+
+    try:
+        final = claim_check.check(state, getattr(rctx, "ctx", None), text)
+    except Exception:                                           # noqa: BLE001
+        final = {}
+    if not (final or {}).get("flagged"):
+        return text
+    state.unverified_claims = [*(state.unverified_claims or []), *final["flagged"]]
+    locale = getattr(getattr(getattr(rctx, "inp", None), "request", None), "locale", "vi") or "vi"
+    return claim_check.with_reader_note(claim_check.redact(text, final["flagged"], locale),
+                                        claim_check.reader_note(final["flagged"], locale))
 
 
 def _status_after_verification(status: str, verification: dict | None) -> str:

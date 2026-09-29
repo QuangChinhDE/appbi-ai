@@ -142,3 +142,37 @@ def test_a_typed_metric_delta_nothing_produced_is_withheld_everywhere(monkeypatc
     everything = "".join(e.text or "" for e in events if e.type == "text") + str(blocks)
     assert "19.78" not in everything and "19,78" not in everything
     assert result.get("status") == "partial"
+
+
+def test_the_fallback_answer_goes_through_the_boundary_too(monkeypatch, undeclared):
+    """The answering step fails; the executor falls back to an intermediate step's
+    prose — which was never claim-checked. It must not carry an unsupported figure."""
+    from app.services.dashboard_ai_bot.events import AgentEvent
+
+    def stream():
+        async def fake(*, provider, api_key, model, system_prompt, messages, tools):
+            if "TRA_LOI" in system_prompt:
+                yield AgentEvent(type="error", text="provider down")
+                return
+            yield AgentEvent(type="text", text="Doanh thu tăng 19,78% so với tháng trước.")
+        return fake
+    monkeypatch.setattr(AH, "_stream", stream())
+    monkeypatch.setattr(CC, "_question_measures", lambda ctx, q: {"gmv"})
+    ctx = H._Ctx([684, 685, 686, 687])
+    ctx.chart_meta = undeclared([684, 685, 686, 687], MOM_Q).chart_meta
+    body = {"answer_node": "tl", "nodes": [
+        {"key": "gom", "name": "gom", "type": "agent", "prompt": "GOM tóm tắt."},
+        {"key": "tl", "name": "tl", "type": "agent", "prompt": "TRA_LOI trả lời.", "on_error": "continue"}]}
+    flow = Flow.model_validate({**upgrade_body(copy.deepcopy(body), key="fx_fb", name="fx_fb"),
+                                "key": "fx_fb", "name": "fx_fb"})
+    env = H._envelope({"envelope": {"question": {"raw": MOM_Q}, "runtime": {
+        "provider": "openai", "model": "m", "budget": {"max_llm_calls": 6, "max_tool_calls": 6,
+                                                        "max_seconds": 60}}}})
+
+    async def go():
+        return [ev async for ev in executor.run_flow(FlowInput.model_validate(env), flow=flow, ctx=ctx,
+                                                     api_key="k", base_system_prompt="BASE")]
+    events = asyncio.run(go())
+    published = _answer(events) + "".join(e.text or "" for e in events if e.type == "text")
+    assert "Doanh thu" in published, "the fallback prose is still used"
+    assert "19,78" not in published and "19.78" not in published
