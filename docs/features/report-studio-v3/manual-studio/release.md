@@ -125,7 +125,16 @@ The full stack was rehearsed on a copy of the rig database (`CREATE DATABASE …
   - `/public/dashboards/{token}`;
   - `/dashboards/{id}/widgets`.
 
-## 6. Not verified here
+## 6. Behaviour changes a publisher should know
+
+- **The report description is now shown on public links.**
+  - It appears in the report header, in the masthead when a page has no header, and on every PDF sheet.
+  - It was already in the public payload, so this exposes nothing new. But no link setting hides it, because the link's `summary`/`show_summary` fields are not settable today.
+  - Review descriptions of reports shared externally before deploying.
+- **The report header and PDF state the link's title for its audience:** the headline, else the link name, else the report name. This is the same as the masthead and the link manager's contract.
+- **A parameter switcher on a public link shows no selection when it is bound to a field or to a chart's what-if slot.** The public data path does not apply parameters, so showing one would state a filter the charts ignore. A text-only switcher shows its default.
+
+## 7. Not verified here
 
 - **BigQuery-backed gates:** BLOCKED. There are no warehouse credentials on the rig, and no result is claimed.
 - **Production-size data:** not verified. The rehearsal ran on the rig database (58 reports); a production copy has not been migrated.

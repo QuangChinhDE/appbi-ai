@@ -369,6 +369,16 @@ check('a selection alone in its rows fills the page width; one beside other elem
   assert(!bad, bad);
 });
 
+check('a public link states its own title, and a switcher never states a value the page does not apply', () => {
+  const src = source('components/dashboards/PublicDashboardView.tsx').replace(/\r\n/g, '\n');
+  const meta = src.slice(src.indexOf('const reportMeta = {'), src.indexOf('const reportMeta = {') + 400);
+  assert(/name: presentationTitle,/.test(meta), 'the report header states something other than the link title (headline, link name, report name)');
+  assert(/const reportTitle = dashboard\.public_link_name \|\| dashboard\.name/.test(src), 'the PDF title is not the link title');
+  const seed = src.slice(src.indexOf('const publicParams'), src.indexOf('const reportMeta = {'));
+  assert(/def\.field \|\| whatIfBound\.has\(def\.paramName\)/.test(seed), 'a field- or what-if-bound switcher shows a selection public does not apply');
+  assert(/def\.default \?\? def\.options\[0\]/.test(seed), 'a text-only switcher ignores the author default');
+});
+
 check('emphasis is a closed vocabulary', () => {
   assert(emphasis.emphasisOf({ emphasis: 'lead' }) === 'lead' && emphasis.emphasisOf({ emphasis: 'quiet' }) === 'quiet', 'known values lost');
   assert(emphasis.emphasisOf({ emphasis: 'LOUD' }) === 'normal' && emphasis.emphasisOf(null) === 'normal', 'an unknown value was kept');

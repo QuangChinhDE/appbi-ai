@@ -1,5 +1,6 @@
 ﻿'use client';
 
+import { extractParamDefs } from '@/lib/dashboard-params';
 import { groupIntoPrintBands } from '@/lib/print-bands';
 import { planKeyForElement, PRINTABLE_ELEMENT_TYPES } from '@/lib/export-layout';
 import { widgetTypeLabel } from '@/components/dashboards/widget-forms';
@@ -1246,7 +1247,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     // silently exporting an empty tile.
     const failures: PdfExportWarning[] = [];
     try {
-      const safeName = safePdfFilename(appearance.headline || dashboard.name || dashboard.public_link_name, 'bao-cao');
+      const safeName = safePdfFilename(dashboard.public_link_name || dashboard.name, 'bao-cao');
       const storedSession = getPublicSession(token) ?? undefined;
       // Each page's header states the filters that page's data was fetched
       // with — the same merge ensurePageDataLoaded uses.
@@ -1312,9 +1313,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         }
       };
 
-      // The sheets carry the report's name (a headline the publisher set on the
-      // link wins); the link's own name is an internal label.
-      const reportTitle = appearance.headline || dashboard.name || dashboard.public_link_name || 'Dashboard';
+      const reportTitle = dashboard.public_link_name || dashboard.name || 'Dashboard';
       const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
       const pageSources = (chosen.length ? chosen : [{ id: activePageId, name: '' }]).map((p) => ({
         name: p.name,
@@ -1449,7 +1448,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       .map((dc) => ({
         chartId: dc.widget_type && dc.widget_type !== 'chart' ? planKeyForElement(dc.id) : dc.chart_id,
         title: dc.widget_type && dc.widget_type !== 'chart'
-          ? String((dc.widget_config as any)?.title || (dc.widget_config as any)?.headline || (dc.widget_type === 'hero_strip' ? dashboard?.name : '') || widgetTypeLabel(t, dc.widget_type))
+          ? String((dc.widget_config as any)?.title || (dc.widget_config as any)?.headline || (dc.widget_type === 'hero_strip' ? (dashboard?.public_link_name || dashboard?.name) : '') || widgetTypeLabel(t, dc.widget_type))
           : dc.chart?.name || `#${dc.chart_id}`,
         chartType: dc.widget_type && dc.widget_type !== 'chart' ? 'ELEMENT' : (dc.chart as { chart_type?: string } | undefined)?.chart_type,
         pageId: getDashboardChartPageId(dc.layout),
@@ -1983,22 +1982,32 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // floating on the page background and an image lost its border/rounding.
   // Pure-visual widgets (shape, which also draws line/divider) and the
   // self-framed parameter switcher stay frameless to avoid a double frame.
-  // What the report header says: the report's name/description and the
-  // filters this surface applies (the same wording as the PDF header).
-  // A reader cannot switch parameters on a published report (their charts are
-  // served as published); templates read each switcher's first option, the
-  // value the author's builder starts from.
-  const publicParams: Record<string, any> = {};
+  // What the report header says: the link's title for its audience, the
+  // report's description, and the filters this surface applies (the same
+  // wording as the PDF header).
+  // A switcher states a value only where that value is what the page applies.
+  // The public data path does not turn a parameter into a chart filter or a
+  // what-if swap, so a switcher bound to a field, or one a chart is bound to,
+  // shows no selection here (it would state a filter the charts ignore). A
+  // text-only parameter is seeded like the builder: its default, else its
+  // first option.
+  const whatIfBound = new Set<string>();
   for (const dc of visibleDashboardCharts) {
-    if (dc.widget_type !== 'parameter_switcher') continue;
-    const c = (dc.widget_config ?? {}) as any;
-    const first = Array.isArray(c.options) && c.options.length ? c.options[0]?.value : undefined;
-    if (c.paramName && first !== undefined && publicParams[c.paramName] === undefined) publicParams[c.paramName] = first;
+    const bindings = ((dc.parameters ?? {}) as any)?.__whatifBindings;
+    if (Array.isArray(bindings)) for (const b of bindings) if (b?.param) whatIfBound.add(String(b.param));
+  }
+  const publicParams: Record<string, any> = {};
+  for (const def of extractParamDefs(visibleDashboardCharts)) {
+    if (def.field || whatIfBound.has(def.paramName) || publicParams[def.paramName] !== undefined) continue;
+    const seed = def.default ?? def.options[0]?.value;
+    if (seed !== undefined) publicParams[def.paramName] = seed;
   }
   const reportMeta = {
-    // The report's own name; a headline the publisher set on the link wins. The
-    // link's name is an internal label, never the report's title.
-    name: appearance.headline ?? dashboard?.name ?? presentationTitle,
+    // The title the link presents to its audience (headline, else the link's
+    // name, else the report's) — the same as the masthead and the PDF: a
+    // publisher names the link for its readers, and the internal report name
+    // must not reappear in the header.
+    name: presentationTitle,
     description: dashboard?.description ?? null,
     filterFacts: pageFilterFacts({ applied: appliedViewerFilters, pageHidden: pageHiddenFilters, locked: lockedBannerEntries })
       .map((f) => `${f.locked ? '🔒 ' : ''}${f.label}: ${statePageFilterFact(f, t)}`),

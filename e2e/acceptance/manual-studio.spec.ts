@@ -97,8 +97,8 @@ async function copyOf(request: APIRequestContext, sourceId: number) {
   made.push(d.id);
   return d.id as number;
 }
-async function linkFor(request: APIRequestContext, id: number) {
-  const link = await request.post(`${DASH}/${id}/public-links`, { data: { name: 'manual-studio' } });
+async function linkFor(request: APIRequestContext, id: number, name = 'manual-studio') {
+  const link = await request.post(`${DASH}/${id}/public-links`, { data: { name } });
   expect(link.status(), await link.text()).toBeLessThan(400);
   return (await link.json()).token as string;
 }
@@ -486,9 +486,12 @@ test('M1 blank to finished report, through the builder UI', async ({ page, reque
   const stated = (saved.dashboard_charts ?? []).filter((d: any) => d.layout?.sectionId === section.id).map((d: any) => d.id);
   check(r, 'the published report stores the section membership', (secFinal?.members ?? []).every((m) => stated.includes(m)), JSON.stringify({ stated, members: secFinal?.members }));
 
-  const token = await linkFor(request, id);
+  const audience = `${name} (for readers)`;
+  const token = await linkFor(request, id, audience);
   const pub = await publicAt(context, `/d/${token}`, r, 'M1');
-  check(r, 'public header states the same title as the builder', pub[1440].headerTitle === name, String(pub[1440].headerTitle));
+  // The link is named for its readers; the header states that title (the
+  // link manager's contract), not the internal report name.
+  check(r, 'public header states the title the link presents to its readers', pub[1440].headerTitle === audience, String(pub[1440].headerTitle));
   check(r, 'public header states the description', (pub[1440].headerDescription ?? '').includes('Olist marketplace'));
   check(r, 'public header states the period the data covers', !!pub[1440].headerPeriod && /\d{4}/.test(pub[1440].headerPeriod), String(pub[1440].headerPeriod));
   check(r, 'public insight states the same findings', pub[1440].narrative.length >= 2 && pub[1440].narrative.every((s: string) => /\d/.test(s)), JSON.stringify(pub[1440].narrative));
