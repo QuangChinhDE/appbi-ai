@@ -460,7 +460,12 @@ check('phone and tablet heights follow content: stack re-lays, tablet only grows
   assert(fit.fitLayoutToContent(tablet, {}, 'grow') === tablet, 'nothing measured changed the layout');
   const src = source('lib/responsive-fit.ts');
   assert(/b > a \|\| a - b > 1/.test(src), 'a one-row shortfall is ignored (content stays cut off)');
-  assert(/new ResizeObserver\(schedule\)/.test(src), 'content that changes after the first measure is never measured again');
+  assert(/new MutationObserver\(schedule\)/.test(src) && /characterData: true/.test(src), 'content that changes after the first measure is never measured again');
+  const pub = source('components/dashboards/PublicDashboardView.tsx');
+  // The fit was once attached to a grid block that was never rendered.
+  assert((pub.match(/<ResponsiveReportGrid/g) ?? []).length === 1 && (pub.match(/ref=\{fitRootRef\}/g) ?? []).length === 1,
+    'the public report has a second grid, or the rendered grid is not the one measured');
+  assert(!/const gridSectionEl = \(/.test(pub), 'dead grid block is back');
 });
 
 check('emphasis is a closed vocabulary', () => {

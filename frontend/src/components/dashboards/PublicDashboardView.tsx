@@ -2136,52 +2136,6 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     })))
     : [];
 
-  const gridSectionEl = (
-    <ExportModeContext.Provider value={exportRenderMode || (printMode ? printRenderMode : false)}>
-      <section
-        ref={gridSectionRef}
-        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} w-full`}
-      >
-        {visibleDashboardCharts.length === 0 ? (
-          <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
-            <p className="text-caption text-text-tertiary">No charts on this page yet.</p>
-          </div>
-        ) : (
-          <div
-            ref={gridMeasureRef}
-            className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
-          >
-            <div className="relative" ref={fitRootRef}>
-            {activeBreakpoint !== 'xs' && gridWidth ? (
-              <SectionBands
-                layouts={responsiveLayouts[activeBreakpoint]}
-                dashboardCharts={gridDashboardCharts}
-                cols={REPORT_COLS[activeBreakpoint]}
-                rowH={reportRowHeight}
-                margin={getDashboardGridMargin(dashboard?.theme_config)}
-                width={gridWidth}
-              />
-            ) : null}
-            <ResponsiveReportGrid
-              className="layout"
-              layouts={responsiveLayouts}
-              breakpoints={REPORT_BREAKPOINTS}
-              cols={REPORT_COLS}
-              rowHeight={reportRowHeight}
-              margin={getDashboardGridMargin(dashboard?.theme_config)}
-              isDraggable={false}
-              isResizable={false}
-              compactType={null}
-              preventCollision={true}
-            >
-              {gridDashboardCharts.map(renderTileNode)}
-            </ResponsiveReportGrid>
-            </div>
-          </div>
-        )}
-      </section>
-    </ExportModeContext.Provider>
-  );
 
   if (printMode) {
     // Paper shell: no app chrome, no scroll container, white background.
@@ -2595,7 +2549,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
               ref={gridMeasureRef}
               className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
             >
-              <div className="relative">
+              <div className="relative" ref={fitRootRef}>
               {activeBreakpoint !== 'xs' && gridWidth ? (
                 <SectionBands
                   layouts={responsiveLayouts[activeBreakpoint]}

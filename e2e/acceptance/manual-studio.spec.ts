@@ -309,7 +309,8 @@ async function publicAt(ctx: BrowserContext, url: string, r: Result, prefix: str
           const tile = item.querySelector('[data-widget-type="hero_strip"], [data-widget-type="text"], [data-widget-type="narrative"], [data-tile-kind="kpi"]') as HTMLElement | null;
           if (!tile) return [];
           const inner = tile.querySelector('.dashboard-report-header, .dashboard-narrative') as HTMLElement | null ?? tile;
-          return inner.scrollHeight > inner.clientHeight + 3 ? [item.getAttribute('data-grid-item-id')] : [];
+          const kind = tile.getAttribute('data-widget-type') ?? tile.getAttribute('data-tile-kind');
+          return inner.scrollHeight > inner.clientHeight + 3 ? [`${item.getAttribute('data-grid-item-id')}:${kind}:${inner.scrollHeight}/${inner.clientHeight}`] : [];
         }),
       };
     });

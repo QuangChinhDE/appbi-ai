@@ -124,22 +124,24 @@ export function useMeasuredContentRows(
     };
     const t1 = window.setTimeout(measure, 120);
     const t2 = window.setTimeout(measure, 1200);
-    // Content that changes after the first measure (a KPI's context line that
-    // arrives with the other tiles' data, a header's period) is measured again.
-    let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined' && root.current) {
-      ro = new ResizeObserver(schedule);
+    const t3 = window.setTimeout(measure, 3500);
+    // Content that changes after the first measure (a header's headline that
+    // arrives with the data, a KPI's context line) is measured again. Its
+    // BOX does not change (it fills its cell), so a size observer never sees
+    // it: the text itself changing is the signal (debounced).
+    let mo: MutationObserver | null = null;
+    if (typeof MutationObserver !== 'undefined' && root.current) {
+      mo = new MutationObserver(schedule);
       for (const item of Array.from(root.current.querySelectorAll<HTMLElement>('[data-grid-item-id]'))) {
         const tile = item.querySelector<HTMLElement>(CONTENT_SELECTOR);
-        const inner = tile?.firstElementChild as HTMLElement | null;
-        if (inner) ro.observe(inner);
+        if (tile) mo.observe(tile, { childList: true, subtree: true, characterData: true });
       }
     }
     return () => {
       cancelled = true;
-      window.clearTimeout(t1); window.clearTimeout(t2);
+      window.clearTimeout(t1); window.clearTimeout(t2); window.clearTimeout(t3);
       if (debounce != null) window.clearTimeout(debounce);
-      ro?.disconnect();
+      mo?.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, rowHeight, gapY, ...deps]);
