@@ -23,6 +23,17 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
+from app.services.filter_layered_merge import disclosed_applied_filters
+
+
+def chart_cache_identity(ctx, chart_id) -> list:
+    """What a cached per-chart result depends on: the enforced filters, the AI
+    column scope, and the chart's PAGE scope. A pack built without a page scope
+    (an editor's run) must never answer a public viewer who is bounded by one."""
+    from app.services.dashboard_ai_bot.summary_cache import scope_hash
+    return [*(getattr(ctx, "public_filters", None) or []),
+            {"__ai_scope__": scope_hash(getattr(ctx, "excluded_columns", None))},
+            {"__page_scope__": (getattr(ctx, "page_scope_by_chart", None) or {}).get(chart_id) or []}]
 from app.services.dashboard_ai_bot.insight_pack import (
     build_chart_manifest,
     build_insight_pack,
@@ -199,7 +210,7 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
             description=meta.get("description", ""),
             columns=columns,
             total_rows=total_rows,
-            filters_applied=ctx.public_filters,
+            filters_applied=disclosed_applied_filters(getattr(ctx, "public_filters", None))[0],
         )
         # On-screen vocabulary (configured measures + their aggregation, and
         # dimension labels) so the agent triages and names charts the way the
@@ -225,7 +236,8 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
         # documents only. The assistant then said the figure did not exist.
         "dashboard_name": getattr(ctx.dashboard, "name", "") or "",
         "dashboard_description": getattr(ctx.dashboard, "description", "") or "",
-        "filters_applied": ctx.public_filters,
+        "filters_applied": disclosed_applied_filters(getattr(ctx, "public_filters", None))[0],
+        **({"restricted_by_author": _withheld} if (_withheld := disclosed_applied_filters(getattr(ctx, "public_filters", None))[1]) else {}),
         # The report's page flow (DA's narrative). Read/overview FOLLOWING this
         # order, page by page — not as a flat chart dump. Names and ids only in
         # compact mode: the per-page chart lists repeat what `charts` already says.
@@ -393,8 +405,7 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
     # a pack built while a column was visible must not answer for a caller the column
     # is now hidden from. Folded into the filter hash so the key shape — and every
     # existing call site — stay exactly as they were.
-    cache_filters = [*(ctx.public_filters or []),
-                     {"__ai_scope__": scope_hash(getattr(ctx, "excluded_columns", None))}]
+    cache_filters = chart_cache_identity(ctx, chart_id)
 
     meta = ctx.chart_meta.get(chart_id, {})
 

@@ -670,6 +670,9 @@ class DashboardResponse(DashboardBase):
     # only — so a reader is told the report is filtered and by what. Read-only;
     # the server applies them. Hidden (🚫) link filters are never listed.
     public_link_locked_filters: Optional[List[Dict[str, Any]]] = None
+    # Editor only: the shared filters/pages/theme draft — its revision and who
+    # has unpublished edits in it (see dashboards._shared_draft_state).
+    shared_draft: Optional[Dict[str, Any]] = None
     available_filter_fields: Optional[List[Dict[str, Any]]] = None
     public_link_name: Optional[str] = None
     public_link_appearance: Optional[Dict[str, Any]] = None
@@ -833,6 +836,11 @@ class DashboardUpdateDraftFiltersRequest(BaseModel):
     # the caller's draft (it stays live until Publish); a tile only in the
     # caller's draft is deleted. Nothing is applied if any id is refused.
     remove_tile_ids: Optional[List[int]] = None
+    # The shared-draft revision this edit was made on (`shared_draft.rev` of
+    # the dashboard the editor loaded). A stale revision is refused (409): the
+    # filters/pages/theme draft is shared by every author, and replacing it
+    # from an old copy would silently drop a colleague's edit.
+    base_rev: Optional[str] = None
 
 
 # Query Execution Schemas

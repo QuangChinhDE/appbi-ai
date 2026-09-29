@@ -27,7 +27,20 @@ from app.services.dashboard_ai_bot.providers import (
     stream_gemini_singleshot,
     stream_openai,
 )
-from app.services.dashboard_ai_bot.thinking.tools import ToolContext, tool_get_chart_summary, tool_list_charts
+from app.services.dashboard_ai_bot.thinking.tools import (
+    ToolContext,
+    chart_cache_identity,
+    tool_get_chart_summary,
+    tool_list_charts,
+)
+
+
+def _recon_identity(ctx) -> list:
+    """The recon cache key's filter part: the enforced filters plus every
+    chart's page scope (a recon read without one never answers a viewer bound
+    by one)."""
+    return [*(ctx.public_filters or []),
+            {"__page_scope__": sorted((str(k), v) for k, v in (getattr(ctx, "page_scope_by_chart", None) or {}).items())}]
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +239,7 @@ def build_proactive_recon(ctx: ToolContext) -> dict:
             if isinstance(dashboard_id_for_cache, int) and isinstance(pack_data, dict):
                 put_cached_pack(
                     dashboard_id_for_cache,
-                    ctx.public_filters,
+                    chart_cache_identity(ctx, cid),
                     cid,
                     pack_data,
                 )
@@ -330,7 +343,7 @@ def build_proactive_recon_cached(ctx: ToolContext) -> dict:
     )
     dashboard_id = getattr(ctx.dashboard, "id", None)
     if isinstance(dashboard_id, int):
-        cached = get_cached_recon(dashboard_id, ctx.public_filters)
+        cached = get_cached_recon(dashboard_id, _recon_identity(ctx))
         if cached is not None:
             logger.debug("[perf] recon cache=HIT dashboard_id=%s", dashboard_id)
             return cached
@@ -342,7 +355,7 @@ def build_proactive_recon_cached(ctx: ToolContext) -> dict:
         len(recon.get("summaries") or []),
     )
     if isinstance(dashboard_id, int):
-        put_cached_recon(dashboard_id, ctx.public_filters, recon)
+        put_cached_recon(dashboard_id, _recon_identity(ctx), recon)
     return recon
 
 

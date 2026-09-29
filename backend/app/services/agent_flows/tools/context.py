@@ -268,6 +268,10 @@ class ToolContext:
     #: expires the dashboard — re-reading `dashboard.dashboard_charts` then
     #: reloads every raw row, draft tiles included. None: not built from tiles.
     served_table_ids: set[int] | None = None
+    #: Per chart, the page-scope hard bounds of the page(s) it is drawn on
+    #: (public links: `public._public_page_scope_by_chart`). Applied at the one
+    #: fetch boundary below, so no tool reads a chart wider than its page.
+    page_scope_by_chart: dict[int, list[dict]] = field(default_factory=dict)
     #: The CURRENT step's knowledge scope, set per step by the flow engine:
     #: ``{"doc_ids": [...], "metric_names": [...]}``. Empty/absent means the step
     #: may reach everything the report is entitled to.
@@ -321,6 +325,7 @@ class ToolContext:
         *,
         actor_type: str = "public_session",
         actor_ref: str | None = None,
+        page_scope_by_chart: dict[int, list[dict]] | None = None,
     ) -> "ToolContext":
         allowed: set[int] = set()
         served_tables: set[int] = set()
@@ -390,7 +395,19 @@ class ToolContext:
             actor_ref=actor_ref,
             excluded_columns=_resolve_excluded_columns(db, dashboard),
             served_table_ids=served_tables,
+            page_scope_by_chart=dict(page_scope_by_chart or {}),
         )
+
+    def disclosed_filters(self) -> tuple[list[dict], int]:
+        """The applied filters a tool may NAME, and how many are withheld.
+
+        `public_filters` is what is ENFORCED; this is what may be SAID. A 🚫
+        hidden constraint (dashboard, page or link) is applied and only counted.
+        Every tool that tells the model which filters ran reads this — the list
+        used to go out whole, hidden field and value included.
+        """
+        from app.services.filter_layered_merge import disclosed_applied_filters
+        return disclosed_applied_filters(self.public_filters)
 
     def adopt_scope(self, chart_ids: set[int], dataset_ids: list[int]) -> None:
         """Give a context its charts when there is no report to read them off.
@@ -617,6 +634,11 @@ def _fetch_chart_data(
     for f in extra_filters or []:
         if isinstance(f, dict):
             merged.append(dict(f))
+    # The chart's page scope — a model-added filter can narrow it, never undo it.
+    bounds = ctx.page_scope_by_chart.get(chart_id) if ctx.page_scope_by_chart else None
+    if bounds:
+        from app.services.filter_layered_merge import apply_page_scope_bounds
+        merged = apply_page_scope_bounds(merged, bounds)
 
     # The AI-scope exclusion set is part of the cache identity: flipping a
     # column's visibility must not be served a pre-exclusion payload.
@@ -696,11 +718,21 @@ def _fetch_chart_data(
             columns = [columns[i] for i in keep_idx]
             rows = [[r[i] if i < len(r) else None for i in keep_idx] for r in rows]
 
+    # What the model is TOLD ran: a 🚫 hidden constraint is applied above and
+    # never named here — only counted, so the answer can say the report author
+    # restricts the data without saying how (this list reached the model whole,
+    # hidden field and value included).
+    from app.services.filter_layered_merge import disclosable_filters
+    shown, withheld = disclosable_filters(merged)
     payload = {
         "columns": columns,
         "rows": rows,
-        "filters_applied": merged,
+        "filters_applied": [
+            {k: v for k, v in f.items() if not str(k).startswith("_")} for f in shown
+        ],
     }
+    if withheld:
+        payload["restricted_by_author"] = withheld
     if dropped:
         # Tell the caller (and through it the LLM) that something was withheld,
         # so it says "không được phép xem" instead of inventing a reason.

@@ -5,6 +5,19 @@ import type { ModuleCatalog } from '../messages';
 // podium labels), ExploreEditor (query-inspector debug labels).
 export const exploreCatalog: ModuleCatalog = {
   en: {
+    // Save scope — "Edit chart" from a report tile
+    'explore.saveScope.title': 'What are you changing?',
+    'explore.saveScope.usedIn': 'This chart is shown in {{count}} reports. Saving the shared chart changes all of them, including their published versions, right away.',
+    'explore.saveScope.usedHere': 'Saving the shared chart changes this report’s published version right away.',
+    'explore.saveScope.thisReport': 'this report',
+    'explore.saveScope.otherReports': '+ {{count}} report(s) you cannot open',
+    'explore.saveScope.reportOnly': 'Only this report',
+    'explore.saveScope.reportOnlyHint': 'Saves a copy and puts it in this tile as a draft. It appears when you publish the report; other reports keep the original.',
+    'explore.saveScope.shared': 'The shared chart',
+    'explore.saveScope.sharedHint': 'Updates the chart everywhere it is shown, published reports included.',
+    'explore.saveScope.cancel': 'Cancel',
+    'explore.saveScope.copyName': '{{name}} · {{report}}',
+    'explore.saveScope.savedForReport': 'Saved for this report as a draft. Publish the report to show it.',
     // AdvancedExploreCharts — empty-state prompts shown inside the chart tile
     'explore.advancedCharts.selectAxisAndValues': 'Select an axis and at least one value.',
     'explore.advancedCharts.radarNeedsThree': 'A radar chart needs at least 3 axes.',
@@ -410,6 +423,18 @@ export const exploreCatalog: ModuleCatalog = {
     'explore.chartType.NINE_BOX': '9-Box Grid',
   },
   vi: {
+    'explore.saveScope.title': 'Bạn đang sửa gì?',
+    'explore.saveScope.usedIn': 'Biểu đồ này đang có trong {{count}} báo cáo. Lưu biểu đồ dùng chung sẽ đổi tất cả, kể cả bản đã publish, ngay lập tức.',
+    'explore.saveScope.usedHere': 'Lưu biểu đồ dùng chung sẽ đổi ngay bản đã publish của báo cáo này.',
+    'explore.saveScope.thisReport': 'báo cáo này',
+    'explore.saveScope.otherReports': '+ {{count}} báo cáo bạn không mở được',
+    'explore.saveScope.reportOnly': 'Chỉ báo cáo này',
+    'explore.saveScope.reportOnlyHint': 'Lưu một bản sao và đặt vào ô này dưới dạng bản nháp. Hiện ra khi bạn publish báo cáo; các báo cáo khác giữ bản gốc.',
+    'explore.saveScope.shared': 'Biểu đồ dùng chung',
+    'explore.saveScope.sharedHint': 'Cập nhật biểu đồ ở mọi nơi đang hiển thị, kể cả báo cáo đã publish.',
+    'explore.saveScope.cancel': 'Huỷ',
+    'explore.saveScope.copyName': '{{name}} · {{report}}',
+    'explore.saveScope.savedForReport': 'Đã lưu cho báo cáo này dưới dạng bản nháp. Publish báo cáo để hiển thị.',
     'explore.advancedCharts.selectAxisAndValues': 'Chọn một trục và ít nhất một giá trị.',
     'explore.advancedCharts.radarNeedsThree': 'Biểu đồ radar cần ít nhất 3 trục.',
     'explore.advancedCharts.noFunnelStages': 'Không có giai đoạn phễu để hiển thị.',

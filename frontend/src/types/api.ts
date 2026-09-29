@@ -799,6 +799,9 @@ export interface Dashboard {
   // these fields — public endpoint strips them.
   draft_layouts?: Record<number, Record<string, any>> | null;
   has_draft?: boolean;
+  /** Editor only: the shared filters/pages/theme draft — its revision and the
+   *  OTHER authors with unpublished edits in it (Publish/Discard ask first). */
+  shared_draft?: { rev: string; has_changes: boolean; other_authors: string[] } | null;
 }
 
 export interface DashboardCreate {

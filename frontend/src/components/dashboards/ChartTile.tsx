@@ -1241,7 +1241,7 @@ function ChartTileBase({
               </span>
             )}
             <a
-              href={`/explore/${chartId}`}
+              href={`/explore/${chartId}?fromReport=${dashboardId}&tile=${dashboardChartId}`}
               target="_blank"
               rel="noreferrer"
               onMouseDown={e => e.stopPropagation()}
@@ -1306,7 +1306,7 @@ function ChartTileBase({
                       {t('dashboards.tile.viewDetails')}
                     </button>
                     <a
-                      href={`/explore/${chartId}`}
+                      href={`/explore/${chartId}?fromReport=${dashboardId}&tile=${dashboardChartId}`}
                       target="_blank"
                       rel="noreferrer"
                       onClick={() => setIsTileMenuOpen(false)}
@@ -1625,7 +1625,7 @@ function ChartTileBase({
                   {t('dashboards.tile.details')}
                 </button>
                 <a
-                  href={`/explore/${chartId}`}
+                  href={`/explore/${chartId}?fromReport=${dashboardId}&tile=${dashboardChartId}`}
                   target="_blank"
                   rel="noreferrer"
                   onMouseDown={e => e.stopPropagation()}

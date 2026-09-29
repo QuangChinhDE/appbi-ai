@@ -47,6 +47,17 @@ LAYER_VIEWER_FILTER = "viewer_filter"                    # viewer mini-pane over
 LAYER_DASHBOARD_FILTER_LOCKED = "dashboard_filter_locked"  # publicMode=locked/hidden — authoritative
 LAYER_LINK_LOCKED = "link_locked"                        # per-link locked — most authoritative
 LAYER_LINK_HIDDEN = "link_hidden"                        # drop field entirely
+LAYER_PAGE_SCOPE = "page_scope"                          # pages_config[p].filters — hard bound, applied after the merge
+LAYER_LINK_SCOPE = "link_scope"                          # per-link 'limit' allow-list — hard bound
+
+# Layers a viewer can never relax. A hard bound on the same field ANDs with
+# these instead of intersecting-with-fallback (a fallback could widen a lock).
+_AUTHORITATIVE_SOURCES = frozenset({LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED, LAYER_LINK_SCOPE})
+
+#: Marker on a merged entry whose field/value must never be shown to a public
+#: viewer or handed to a model that answers one (a 🚫 hidden constraint). The
+#: entry is still ENFORCED; only its disclosure is withheld.
+DISCLOSE_KEY = "_disclose"
 
 # Canonical priority order (Phase-H, PBI/RLS model). Walk this exact
 # list; later layers override earlier ones on the same field key.
@@ -331,21 +342,111 @@ def split_link_filters_locked_vs_hidden(
 # Keep this the ONLY implementation; callers must not re-derive it.
 # ---------------------------------------------------------------------------
 
-def link_entry_has_value(entry: Dict[str, Any]) -> bool:
-    """True when a public-link filter entry carries an enforceable value.
+LINK_ENTRY_ENFORCED = "enforced"
+LINK_ENTRY_EMPTY = "empty"
+LINK_ENTRY_MALFORMED = "malformed"
 
-    An ``in []`` / empty-list / empty-string / null value enforces nothing —
-    ``normalize_filter_conditions`` drops it with the ``empty_value`` diagnostic
-    inside ``merge_layered_filters``. Used to decide both (a) whether a hidden
-    entry should be promoted to the authoritative locked layer, and (b) whether
-    a locked field is "managed" (see ``link_managed_field_keys``).
+
+def _carries_a_constraint(entry: Dict[str, Any]) -> bool:
+    """The author put SOMETHING in this entry: a value, or a relative-date preset.
+
+    Item-wise: a cleared range ``["", ""]``, ``[""]`` or ``[None]`` holds nothing
+    — the "nothing picked" no-op, not a malformed lock. A whitespace-only string
+    was typed, so it counts (the engine rejects it: malformed, fail closed).
+    """
+    v = entry.get("value")
+    if isinstance(v, (list, tuple)):
+        has_value = any(x is not None and x != "" for x in v)
+    elif isinstance(v, dict):
+        has_value = len(v) > 0
+    else:
+        has_value = v not in (None, "")
+    preset = str(entry.get("datePreset") or entry.get("date_preset") or "").strip().lower()
+    return has_value or bool(preset and preset != "custom")
+
+
+def canonical_link_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """A link entry in the shape the chart engine reads.
+
+    The engine keys a condition on ``field`` (and infers ``semanticField`` from a
+    qualified ``field``, chart_service); the reverse was missing. A workboard-
+    managed link stores ``{datasetId, semanticField, operator, value}`` with no
+    ``field`` — so its role row-filter was dropped as ``no_field`` and every role
+    saw every row. Fill ``field`` from a qualified ``semanticField``.
+    """
+    if not isinstance(entry, dict) or entry.get("field"):
+        return entry
+    sem = entry.get("semanticField")
+    if isinstance(sem, str) and "." in sem.strip():
+        return {**entry, "field": sem.strip()}
+    return entry
+
+
+def link_entry_state(entry: Dict[str, Any]) -> str:
+    """What a public-link entry does, decided by the chart engine's own chokepoint.
+
+      - ``enforced``: ``normalize_filter_conditions`` keeps it — it constrains the
+        data exactly as the engine applies it (an ``is_null`` lock with no value,
+        a relative-date preset with no frozen value, a scalar ``in "SP"``).
+      - ``empty``: the author put nothing in it (no value, no preset). The
+        documented no-op: an empty lock behaves like no lock, and an empty
+        hidden entry is the field kill-marker (dashboard-53, 2026-06).
+      - ``malformed``: it carries a value or preset the engine cannot apply
+        (``between 5``, ``in 5``, an unknown preset). The author meant to
+        constrain and nothing would be applied, so the link must fail CLOSED
+        (see ``malformed_link_entries``) — never serve the unconstrained data.
+
+    A 'limit' scope entry is judged as the allow-list it is (``in`` over its
+    values, scalars accepted) — the operator the scope bound applies.
     """
     if not isinstance(entry, dict):
-        return False
-    v = entry.get("value")
-    if isinstance(v, (list, tuple, dict)):
-        return len(v) > 0
-    return v not in (None, "")
+        return LINK_ENTRY_EMPTY
+    entry = canonical_link_entry(entry)
+    if link_entry_is_scope(entry):
+        return LINK_ENTRY_ENFORCED if _to_allow_list(entry.get("value")) else LINK_ENTRY_EMPTY
+    op = str(entry.get("operator") or "").strip().lower()
+    if not _carries_a_constraint(entry) and op not in ("is_null", "is_not_null"):
+        # Nothing picked (``[]``, ``""``, ``{}``, no value): the no-op, however
+        # the engine would read the empty container.
+        return LINK_ENTRY_EMPTY
+    if normalize_filter_conditions([entry]):
+        return LINK_ENTRY_ENFORCED
+    return LINK_ENTRY_MALFORMED if _carries_a_constraint(entry) else LINK_ENTRY_EMPTY
+
+
+def link_entry_has_value(entry: Dict[str, Any]) -> bool:
+    """True when a public-link entry ENFORCES a constraint (``link_entry_state``).
+
+    The single rule shared by the structure strip (``link_managed_field_keys``),
+    the hidden→locked promotion and the scope bound — so what the page hides,
+    what the engine applies and what the reader is told can never disagree.
+    Before, this looked at the raw value only: a ``between 5`` lock stripped the
+    field's slicer and page filter while the engine dropped the lock itself
+    (wider data than the page scope), and an ``is_null`` lock kept an
+    interactive slicer that silently did nothing.
+    """
+    return link_entry_state(entry) == LINK_ENTRY_ENFORCED
+
+
+def malformed_link_entries(
+    link_filters_config: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Entries of a link that mean to constrain but cannot be applied.
+
+    A public request under such a link is refused (fail closed) and a link
+    carrying one cannot be saved — the alternative is serving data the author
+    meant to restrict.
+    """
+    return [
+        e for e in (link_filters_config or [])
+        if isinstance(e, dict) and link_entry_state(e) == LINK_ENTRY_MALFORMED
+    ]
+
+
+def _to_allow_list(value: Any) -> List[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(x) for x in value if x not in (None, "")]
+    return [str(value)] if value not in (None, "") else []
 
 
 def link_entry_is_scope(entry: Dict[str, Any]) -> bool:
@@ -390,10 +491,7 @@ def apply_link_scope_bounds(
     if not scopes:
         return list(merged)
 
-    def _to_list(value: Any) -> List[str]:
-        if isinstance(value, (list, tuple)):
-            return [str(x) for x in value if x not in (None, "")]
-        return [str(value)] if value not in (None, "") else []
+    _to_list = _to_allow_list
 
     out: List[Dict[str, Any]] = list(merged)
     out_by_key: Dict[tuple, Dict[str, Any]] = {}
@@ -413,7 +511,7 @@ def apply_link_scope_bounds(
                 **scope,
                 "operator": "in",
                 "value": allow,
-                "_layer_source": "link_scope",
+                "_layer_source": LAYER_LINK_SCOPE,
             }
             out.append(bounded)
             out_by_key[key] = bounded
@@ -428,8 +526,180 @@ def apply_link_scope_bounds(
             # meaningfully — replace it with the allow-list bound.
             existing["operator"] = "in"
             existing["value"] = allow
-        existing["_layer_source"] = "link_scope"
+        existing["_layer_source"] = LAYER_LINK_SCOPE
     return out
+
+
+# ---------------------------------------------------------------------------
+# Page scope — enforced by the SERVER, not by what the client chose to send.
+# ---------------------------------------------------------------------------
+
+DEFAULT_PAGE_ID = "page-1"
+
+
+def _public_mode(entry: Dict[str, Any]) -> str:
+    return str(entry.get("publicMode") or entry.get("public_mode") or "visible").lower()
+
+
+def page_scope_bounds(
+    pages_config: Optional[Sequence[Dict[str, Any]]],
+    page_ids: Sequence[str],
+    *,
+    exclude_field_keys: Optional[set[str]] = None,
+    dataset_id: Any = None,
+) -> List[Dict[str, Any]]:
+    """The hard bounds a page puts on the data of the charts drawn on it.
+
+    ``pages_config[p].filters`` ("filters on this page") are the author's
+    scope for that page. On a public link they used to reach the query only
+    because the viewer's page SENT them — a crafted request that left them out
+    got data beyond the page, and a page filter marked 🔒/🚫 was dropped by the
+    client and applied by nobody. They are now resolved here, from the stored
+    dashboard, for the page(s) the chart is on.
+
+    Every publicMode applies (visible/locked/hidden only decide disclosure; a
+    🚫 entry is tagged ``_disclose: False``). Entries the engine drops (empty,
+    invalid) are dropped here too — the builder drops them the same way.
+    Fields in ``exclude_field_keys`` (``link_replaced_field_keys``: the link's
+    condition replaces the page filter, as the served structure already shows)
+    are skipped. A filter on ANOTHER dataset than the chart's (``dataset_id``)
+    does not bound it — the engine could not apply it (the builder skips it the
+    same way). With several page ids the bounds of every page apply (AND).
+    """
+    wanted = {str(p).strip() for p in page_ids}
+    exclude = exclude_field_keys or set()
+    raw: List[Dict[str, Any]] = []
+    for page in pages_config or []:
+        if not isinstance(page, dict) or str(page.get("id") or "").strip() not in wanted:
+            continue
+        for f in page.get("filters") or []:
+            if not isinstance(f, dict):
+                continue
+            key = str(f.get("semanticField") or f.get("field") or "").strip().lower()
+            if key and key in exclude:
+                continue
+            if dataset_id is not None and f.get("datasetId") not in (None, "") and str(f.get("datasetId")) != str(dataset_id):
+                continue
+            raw.append({**f, "_layer_source": LAYER_PAGE_SCOPE, DISCLOSE_KEY: _public_mode(f) != "hidden"})
+    return normalize_filter_conditions(raw)
+
+
+def apply_page_scope_bounds(
+    merged: List[Dict[str, Any]],
+    bounds: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Bound merged filters by page scope — the server twin of the client's
+    ``applyScopeBound``.
+
+    Same field, both ``in`` lists, the existing one a viewer/default choice:
+    one filter = choice ∩ scope, an empty intersection falling back to the
+    scope (an out-of-scope pick is ignored, never escapes, never shows "all").
+    Anything else is ANDed (the engine keeps every runtime filter): never
+    wider than the scope. An authoritative lock on the same field is never
+    intersected-with-fallback (that could widen the lock) — it is ANDed.
+    """
+    out: List[Dict[str, Any]] = [dict(e) for e in merged]
+    for bound in bounds or []:
+        key = _filter_dedupe_key(bound)
+        idx = next(
+            (i for i, e in enumerate(out)
+             if _filter_dedupe_key(e) == key
+             and e.get("_layer_source") not in _AUTHORITATIVE_SOURCES
+             and e.get("_layer_source") != LAYER_PAGE_SCOPE),
+            None,
+        )
+        if (idx is not None and str(bound.get("operator")) == "in"
+                and str(out[idx].get("operator") or "").lower() == "in"):
+            allow = _to_allow_list(bound.get("value"))
+            picked = [v for v in (out[idx].get("value") or []) if str(v) in set(allow)]
+            out[idx] = {
+                **out[idx],
+                "value": picked if picked else list(bound.get("value") or []),
+                "_layer_source": LAYER_PAGE_SCOPE,
+                DISCLOSE_KEY: out[idx].get(DISCLOSE_KEY, True) is not False and bound.get(DISCLOSE_KEY) is not False,
+            }
+            continue
+        out.append(dict(bound))
+    return out
+
+
+def same_field_allow_list(
+    filters: Optional[Sequence[Dict[str, Any]]],
+    dataset_id: Any,
+    field_ref: str,
+) -> Optional[set[str]]:
+    """Values a hard ``in`` bound on ``field_ref`` allows (None: unbounded).
+
+    A slicer's dropdown self-strips its own field (so the cascade cannot pin
+    it), which also drops any HARD bound on that field — page scope, a 🔒/🚫
+    dashboard filter. The distinct endpoint re-applies them to the returned
+    values with this, the way it already does for a link 'limit' scope.
+    """
+    ref = str(field_ref or "").strip().lower()
+    allowed: Optional[set[str]] = None
+    for f in filters or []:
+        if not isinstance(f, dict) or str(f.get("operator") or "").lower() != "in":
+            continue
+        if f.get("_layer_source") not in (_AUTHORITATIVE_SOURCES | {LAYER_PAGE_SCOPE}):
+            continue
+        if dataset_id is not None and f.get("datasetId") not in (None, "") and str(f.get("datasetId")) != str(dataset_id):
+            continue
+        keys = {str(f.get(k) or "").strip().lower() for k in ("semanticField", "fieldKey", "field")}
+        if ref not in keys:
+            continue
+        vals = set(_to_allow_list(f.get("value")))
+        allowed = vals if allowed is None else (allowed & vals)
+    return allowed
+
+
+# ---------------------------------------------------------------------------
+# Disclosure — what a public viewer (or a model answering one) may be told.
+# ---------------------------------------------------------------------------
+
+def filter_is_disclosable(entry: Dict[str, Any]) -> bool:
+    return isinstance(entry, dict) and entry.get(DISCLOSE_KEY) is not False
+
+
+def disclosable_filters(
+    filters: Optional[Sequence[Dict[str, Any]]],
+) -> tuple[List[Dict[str, Any]], int]:
+    """(entries that may be named, count of withheld ones).
+
+    Enforcement uses the full list; anything that SAYS which filters ran — a
+    tool result, a scope note, a banner — uses this projection, so a 🚫 hidden
+    constraint is applied and never named. The withheld count lets an answer
+    say "restricted by the report author" without saying how.
+    """
+    shown: List[Dict[str, Any]] = []
+    withheld = 0
+    for f in filters or []:
+        if not isinstance(f, dict):
+            continue
+        if filter_is_disclosable(f):
+            shown.append(f)
+        else:
+            withheld += 1
+    return shown, withheld
+
+
+def disclosed_applied_filters(filters: Any) -> tuple[List[Dict[str, Any]], int]:
+    """``disclosable_filters`` for a tool result: the nameable entries without
+    internal markers, and the withheld count. Takes the ENFORCED list of any
+    context (``getattr(ctx, "public_filters", None)``) — tools run on duck-typed
+    contexts too, so this is a function, not a method."""
+    shown, withheld = disclosable_filters(filters if isinstance(filters, list) else [])
+    return [{k: v for k, v in f.items() if not str(k).startswith("_")} for f in shown], withheld
+
+
+def public_viewer_visible_entries(
+    items: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Filter-pane entries a public viewer may be SERVED: every mode but 🚫.
+
+    A 🔒 entry is served (read-only, it is announced); a 🚫 entry is enforced
+    from the stored dashboard and never leaves the server.
+    """
+    return [e for e in (items or []) if isinstance(e, dict) and _public_mode(e) != "hidden"]
 
 
 def link_managed_field_keys(
@@ -469,6 +739,34 @@ def link_managed_field_keys(
         if not key:
             continue
         if link_entry_has_value(entry) or bool(entry.get("hidden")):
+            keys.add(key)
+    return keys
+
+
+def link_replaced_field_keys(
+    link_filters_config: Optional[Sequence[Dict[str, Any]]],
+) -> set[str]:
+    """Fields where the link's condition REPLACES the page's own filter.
+
+    A lock carrying a value ("Region = South") is the author's per-link answer
+    for that field: it replaces the page filter on it, as it always has (the page
+    filter is not served either). A kill-marker removes the field outright.
+    Any other enforced lock — ``is_null``, a relative-date preset without a
+    value — only adds a condition: the page filter stays and they AND. (Treating
+    those as replacing would widen the data past the page scope.)
+    """
+    keys: set[str] = set()
+    for entry in link_filters_config or []:
+        if not isinstance(entry, dict) or link_entry_is_scope(entry):
+            continue
+        entry = canonical_link_entry(entry)
+        key = str(entry.get("semanticField") or entry.get("field") or "").strip().lower()
+        if not key:
+            continue
+        state = link_entry_state(entry)
+        v = entry.get("value")
+        carries_value = any(x is not None and x != "" for x in v) if isinstance(v, (list, tuple)) else v not in (None, "")
+        if (bool(entry.get("hidden")) and state == LINK_ENTRY_EMPTY) or (state == LINK_ENTRY_ENFORCED and carries_value):
             keys.add(key)
     return keys
 

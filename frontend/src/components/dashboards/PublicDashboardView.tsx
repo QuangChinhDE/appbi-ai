@@ -889,7 +889,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       type BatchEntry = { chartId: number; data: any; error: string | null; status?: number };
       let entries: BatchEntry[];
       try {
-        const resp = await publicDashboardApi.getChartsDataBatch(token, sessionToken, batchItems);
+        const resp = await publicDashboardApi.getChartsDataBatch(token, sessionToken, batchItems, pageId);
         const byId = new Map<number, { data?: any; error?: string; status?: number }>();
         for (const r of resp.results || []) byId.set(r.chart_id, r);
         entries = targetCharts.map((dc) => {
@@ -994,7 +994,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           );
           try {
             const data = await publicDashboardApi.getChartData(
-              token, dc.chart_id, session ?? undefined, requestFilters, chartGrainsRef.current[dc.chart_id],
+              token, dc.chart_id, session ?? undefined, requestFilters, chartGrainsRef.current[dc.chart_id], activePageId,
             );
             return { chartId: dc.chart_id, data };
           } catch {
@@ -1540,6 +1540,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     // into the slicer values too (not only into chart data). Without this a
     // public slicer offered values outside the page-filter scope.
     pageHiddenFilters,
+    activePageId,
   );
   const hasPendingFilterChanges = useMemo(
     () => JSON.stringify(draftViewerFilters) !== JSON.stringify(appliedViewerFilters),
@@ -1942,7 +1943,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         [...appliedViewerFilters, ...pageHiddenFilters], column,
       );
       const res = await publicDashboardApi.getFilterDistinctValues(
-        token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search,
+        token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search, undefined, activePageId,
       );
       return res.values ?? [];
     } catch {

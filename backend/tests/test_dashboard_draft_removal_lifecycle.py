@@ -334,3 +334,119 @@ def test_one_authors_publish_or_discard_keeps_another_authors_widget_edit(db):
     _publish(db, user=A)
     assert _builder_text(db, B)[0] == "B's words", "A's publish/discard dropped B's widget edit"
     assert _rows(db)[10].widget_config.get("text") == "hi", "A's publish published B's edit"
+
+
+# ── Editing a chart "for this report only" is a draft swap (DoD 1.3) ─────────
+
+def _with_published_chart_tile(db: Session) -> None:
+    from app.models.dataset import Dataset, DatasetTable
+    from app.models.models import ChartMetadata, ChartParameter
+    for table in (Dataset.__table__, DatasetTable.__table__, ChartMetadata.__table__, ChartParameter.__table__):
+        table.create(db.get_bind(), checkfirst=True)
+    db.add(Chart(id=601, name="Revenue", chart_type="BAR", config={}, dataset_table_id=71))
+    db.add(Chart(id=602, name="Revenue (this report)", chart_type="BAR", config={}, dataset_table_id=71))
+    db.add(DashboardChart(id=60, dashboard_id=1, chart_id=601, parameters={"grain": "month"},
+                          layout={"x": 0, "y": 20, "w": 18, "h": 12, "pageId": "p2"}))
+    db.commit()
+
+
+def _swap(db, tile_id, chart_id, user=A):
+    return api.swap_tile_chart_in_draft(1, tile_id, api._SwapTileChartRequest(chart_id=chart_id), db, user)
+
+
+def test_a_chart_edited_for_this_report_only_is_swapped_in_the_draft(db, monkeypatch):
+    """The shared chart is untouched; the public link keeps the published chart
+    until Publish; Discard puts the original back; the copy keeps the tile's
+    place, page and per-report parameters."""
+    monkeypatch.setattr(api, "require_view_access", lambda *a, **k: "full")
+    _with_published_chart_tile(db)
+    _swap(db, 60, 602)
+    rows = _rows(db)
+    copy = next(r for r in rows.values() if r.chart_id == 602)
+    assert copy.layout["pageId"] == "p2" and (copy.layout["x"], copy.layout["w"]) == (0, 18)
+    assert copy.parameters == {"grain": "month"}
+    public = {rows[i].chart_id for i in _public_ids(db) if rows[i].chart_id}
+    assert public == {601}, "the public link shows the unpublished copy, or lost the published chart"
+    builder = {rows[i].chart_id for i in _builder_ids(db, A) if i in rows and rows[i].chart_id}
+    assert builder == {602}, "the author does not see their copy in place of the original"
+    _discard(db)
+    assert {r.chart_id for r in _rows(db).values() if r.chart_id} == {601}, "Discard did not put the original back"
+    _swap(db, 60, 602)
+    _publish(db)
+    assert {r.chart_id for r in _rows(db).values() if r.chart_id} == {602}, "Publish did not make the swap"
+
+
+def test_chart_usage_names_only_the_reports_the_caller_may_see(monkeypatch, db):
+    from app.api import charts as charts_api
+    _with_published_chart_tile(db)
+    db.add(Dashboard(id=2, name="Private board"))
+    db.add(DashboardChart(id=61, dashboard_id=2, chart_id=601, layout={"x": 0, "y": 0, "w": 8, "h": 6}))
+    db.commit()
+    monkeypatch.setattr(charts_api, "require_view_access", lambda *a, **k: "full")
+    monkeypatch.setattr(charts_api, "get_effective_permission",
+                        lambda _db, _u, dash, _m: "none" if dash.id == 2 else "view")
+    usage = charts_api.get_chart_usage(601, db, A)
+    assert [r["name"] for r in usage["reports"]] == ["Fixture"] and usage["other_reports"] == 1
+
+
+# ── Co-authoring: the shared filters/pages/theme draft is never overwritten,
+#    published or discarded silently (DoD 1.4) ──────────────────────────────
+
+def _stage(db, user, **fields):
+    return api.update_dashboard_draft_filters(1, DashboardUpdateDraftFiltersRequest(**fields), db, user)
+
+
+def _rev(db, user):
+    db.expire_all()
+    return api._serialize_dashboard_with_draft(db, db.query(Dashboard).filter(Dashboard.id == 1).one(), user).shared_draft
+
+
+def test_a_stale_copy_of_the_shared_draft_cannot_overwrite_a_colleagues_edit(db):
+    base = _rev(db, A)["rev"]
+    _stage(db, A, filters_config=[{"field": "region", "operator": "in", "value": ["North"]}], base_rev=base)
+    with pytest.raises(HTTPException) as exc:
+        _stage(db, B, pages_config=[{"id": "p1", "name": "Overview"}], base_rev=base)  # B loaded before A saved
+    assert exc.value.status_code == 409 and exc.value.detail["code"] == "shared_draft_stale"
+    # Recoverable: B reloads (new revision, A's edit in it) and saves on top.
+    _stage(db, B, pages_config=[{"id": "p1", "name": "Overview"}], base_rev=_rev(db, B)["rev"])
+    assert _rev(db, B)["other_authors"] and _rev(db, A)["other_authors"]
+
+
+def test_publish_never_applies_a_colleagues_shared_edits_without_saying_so(db):
+    _stage(db, B, filters_config=[{"field": "region", "operator": "in", "value": ["South"]}])
+    with pytest.raises(HTTPException) as exc:
+        _publish(db, A)
+    assert exc.value.status_code == 409 and exc.value.detail["code"] == "shared_draft_other_authors"
+    assert exc.value.detail["authors"] == [B.full_name]
+    # Publish only mine: B's filter edit stays pending, live filters unchanged.
+    api.publish_dashboard_draft(1, api.PublishRequest(force=True, keep_shared=True), db, A)
+    db.expire_all()
+    assert (db.get(Dashboard, 1).filters_config or []) == []
+    assert _rev(db, B)["has_changes"], "keeping the shared draft dropped B's edit"
+    # Publish everything, having been shown whose edits it contains.
+    rev = _rev(db, A)["rev"]
+    api.publish_dashboard_draft(1, api.PublishRequest(force=True, shared_ack_rev=rev), db, A)
+    db.expire_all()
+    assert db.get(Dashboard, 1).filters_config[0]["value"] == ["South"]
+    assert not _rev(db, A)["has_changes"] and _rev(db, A)["rev"] != rev, "a stale copy would still be accepted after Publish"
+
+
+def test_discard_never_drops_a_colleagues_shared_edits_without_saying_so(db):
+    _stage(db, B, theme_config={"accent": "#123456"})
+    with pytest.raises(HTTPException) as exc:
+        _discard(db, A)
+    assert exc.value.status_code == 409 and exc.value.detail["action"] == "discard"
+    api.discard_dashboard_draft(1, db, A, api.DiscardRequest(keep_shared=True))
+    assert _rev(db, B)["has_changes"], "A's discard dropped B's theme edit"
+    api.discard_dashboard_draft(1, db, A, api.DiscardRequest(shared_ack_rev=_rev(db, A)["rev"]))
+    assert not _rev(db, B)["has_changes"]
+
+
+def test_a_single_author_publishes_and_discards_as_before(db):
+    _stage(db, A, filters_config=[{"field": "region", "operator": "in", "value": ["North"]}])
+    _publish(db, A)
+    db.expire_all()
+    assert db.get(Dashboard, 1).filters_config[0]["value"] == ["North"]
+    _stage(db, A, theme_config={"accent": "#000"})
+    _discard(db, A)
+    assert not _rev(db, A)["has_changes"]

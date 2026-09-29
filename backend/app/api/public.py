@@ -38,6 +38,7 @@ from app.services.dashboard_ai_bot.public_link_config import (
     web_search_enabled,
 )
 import uuid as _uuid
+from typing import Any
 
 from fastapi.responses import FileResponse
 
@@ -48,7 +49,19 @@ from app.services.embed_link_service import embed_policy_for_token, resolve_embe
 #: browser parser is a single implementation.
 from app.services.agent_flows.wire import event_to_envelope as _event_to_envelope
 from app.services.filter_layered_merge import (
+    DEFAULT_PAGE_ID,
+    DISCLOSE_KEY,
+    canonical_link_entry,
+    link_replaced_field_keys,
+    disclosed_applied_filters,
+    LINK_ENTRY_EMPTY,
+    link_entry_state,
     apply_link_scope_bounds,
+    apply_page_scope_bounds,
+    malformed_link_entries,
+    page_scope_bounds,
+    public_viewer_visible_entries,
+    same_field_allow_list,
     link_entry_has_value,
     link_entry_is_scope,
     link_filters_a_viewer_may_see,
@@ -658,6 +671,8 @@ def _build_public_chart_filters(
     link_filters_config: list[dict] | None,
     viewer_filters: list[dict] | None,
     *,
+    page_ids: list[str] | None = None,
+    chart_dataset_id: Any = None,
     context_for_log: str = "public_chart",
 ) -> list[dict]:
     """Phase-B (PBI-parity rework) — single layered merge for every
@@ -695,13 +710,20 @@ def _build_public_chart_filters(
     viewer_filters = _reattach_authoritative_date_presets(
         viewer_filters, _authoritative_date_presets(dash),
     )
-    raw_link = [item for item in (link_filters_config or []) if isinstance(item, dict)]
+    raw_link = [canonical_link_entry(item) for item in (link_filters_config or []) if isinstance(item, dict)]
     # Peel off 'limit' (allow-list scope) entries BEFORE the lock/hide split:
     # they must NOT land in the authoritative locked layer (which would override
     # the viewer's choice). Instead they BOUND the viewer's pick via
     # apply_link_scope_bounds AFTER the merge, keeping the slicer interactive.
     scope_link = [e for e in raw_link if link_entry_is_scope(e)]
-    non_scope_link = [e for e in raw_link if not link_entry_is_scope(e)]
+    # An EMPTY lock is the documented no-op on every path — the structure keeps
+    # the field's controls for it, so the data path must not apply it either.
+    # (An empty HIDDEN entry stays: it is the field kill-marker.)
+    non_scope_link = [
+        e for e in raw_link
+        if not link_entry_is_scope(e)
+        and (bool(e.get("hidden")) or link_entry_state(e) != LINK_ENTRY_EMPTY)
+    ]
     locked_link, hidden_link = split_link_filters_locked_vs_hidden(non_scope_link)
     # PBI-parity "Hide filter": a hidden link entry that carries a VALUE still
     # ENFORCES that value (the data IS filtered) — only its banner/control is
@@ -715,7 +737,9 @@ def _build_public_chart_filters(
     # `link_managed_field_keys` so the two sites can never disagree.
     enforced_hidden = [e for e in hidden_link if link_entry_has_value(e)]
     if enforced_hidden:
-        locked_link = [*locked_link, *enforced_hidden]
+        # Enforced, never named: a 🚫 entry's field/value is withheld from
+        # anything that SAYS which filters ran (see disclosable_filters).
+        locked_link = [*locked_link, *({**e, DISCLOSE_KEY: False} for e in enforced_hidden)]
         hidden_link = [e for e in hidden_link if not link_entry_has_value(e)]
     # Phase-H — split the dashboard filter pane by publicMode so locked/
     # hidden entries land in the authoritative tier (above the viewer
@@ -724,6 +748,11 @@ def _build_public_chart_filters(
     visible_filters, authoritative_filters = split_dashboard_filters_by_public_mode(
         list(getattr(dash, "filters_config", None) or [])
     )
+    authoritative_filters = [
+        {**f, DISCLOSE_KEY: False}
+        if str(f.get("publicMode") or f.get("public_mode") or "").lower() == "hidden" else f
+        for f in authoritative_filters
+    ]
     merge_diagnostics: list[dict] = []
     merged = merge_layered_filters(
         make_public_layers(
@@ -741,6 +770,17 @@ def _build_public_chart_filters(
     # (intersect) without removing the interactive slicer — enforced
     # server-side so a crafted request can't escape the allow-list.
     merged = apply_link_scope_bounds(merged, scope_link)
+    # Page scope — resolved HERE from the stored dashboard for the page(s) the
+    # chart is on, not trusted from the request. A field the link manages is
+    # skipped: its lock replaces the page filter, exactly as the served
+    # structure shows (see _shape_public_structure).
+    if page_ids:
+        merged = apply_page_scope_bounds(merged, page_scope_bounds(
+            getattr(dash, "pages_config", None) or [],
+            page_ids,
+            exclude_field_keys=link_replaced_field_keys(link_filters_config),
+            dataset_id=chart_dataset_id,
+        ))
     if merge_diagnostics:
         logger.info(
             "filter_merge context=%s dropped=%s",
@@ -813,63 +853,209 @@ def _dedupe_filters_by_field(filters: list[dict]) -> list[dict]:
     return [by_key[key] for key in order]
 
 
-def _strip_link_managed_filter_fields(
-    dash: Dashboard,
-    link_filters_config: list[dict] | None,
-) -> None:
-    """Remove fields this public link enforces or kills from viewer controls."""
-    hidden_link_keys = link_managed_field_keys(link_filters_config)
-    if not hidden_link_keys:
-        return
+def _public_page_ids(dash: Dashboard) -> list[str]:
+    """Page ids as the viewer resolves them (normalizeDashboardPages)."""
+    ids: list[str] = []
+    for page in getattr(dash, "pages_config", None) or []:
+        pid = str(page.get("id") or "").strip() if isinstance(page, dict) else ""
+        if pid and pid not in ids:
+            ids.append(pid)
+    return ids or [DEFAULT_PAGE_ID]
 
-    def _is_link_managed_field(entry: dict) -> bool:
-        if not isinstance(entry, dict):
-            return False
-        return (
-            (entry.get("semanticField") or entry.get("field") or "")
-            .strip()
-            .lower()
-        ) in hidden_link_keys
 
-    dash.slicers_config = [
-        s for s in (getattr(dash, "slicers_config", None) or [])
-        if not _is_link_managed_field(s)
-    ]
-    dash.filters_config = [
-        f for f in (dash.filters_config or [])
-        if not _is_link_managed_field(f)
-    ]
+def _tile_page_id(dc: DashboardChart) -> str:
+    """The page a tile is drawn on (getDashboardChartPageId)."""
+    layout = dc.layout if isinstance(dc.layout, dict) else {}
+    pid = layout.get("pageId")
+    return pid.strip() if isinstance(pid, str) and pid.strip() else DEFAULT_PAGE_ID
 
-    stripped_pages = []
+
+def _public_chart_page_ids(dash: Dashboard, chart_id: int, page_id: str | None) -> list[str]:
+    """The page(s) whose scope bounds a public request for ``chart_id``.
+
+    The viewer names the page it is showing; that page must be one the chart
+    is actually on (else 404 — a chart cannot be asked for "on" a page whose
+    scope is looser). Without a page (an older client, the AI, a briefing),
+    every page the chart is on applies: never wider than any of them.
+    """
+    pages = sorted({
+        _tile_page_id(dc) for dc in (dash.dashboard_charts or [])
+        if dc.chart_id == chart_id and not is_draft_only_item(dc)
+    })
+    if page_id:
+        if page_id not in pages:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found on this page.")
+        return [page_id]
+    return pages
+
+
+def _public_request_page_ids(dash: Dashboard, page_id: str | None) -> list[str]:
+    """The page a public request that is not about one chart runs under."""
+    pages = _public_page_ids(dash)
+    if page_id:
+        if page_id not in pages:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Page not found.")
+        return [page_id]
+    return [pages[0]]
+
+
+def _public_error_text(message: str, applied: list[dict] | None) -> str:
+    """An engine error as a public viewer may read it: verbatim (Phase-12.7 —
+    the author sharing the report needs the reason), unless it names the field
+    of a 🚫 hidden constraint, which is logged and replaced."""
+    hidden = {
+        str(f.get(k) or "").strip().lower()
+        for f in (applied or []) if isinstance(f, dict) and f.get(DISCLOSE_KEY) is False
+        for k in ("field", "semanticField")
+    } - {""}
+    low = (message or "").lower()
+    if any(h in low for h in hidden):
+        logger.warning("public chart error withheld (names a hidden filter): %s", message)
+        return "This chart could not be computed with the report's filters."
+    return message
+
+
+def _public_chart_payload(data: Any) -> Any:
+    """A chart result as an anonymous viewer receives it: without ``debug``.
+
+    ``debug`` carries the emitted SQL with every filter value inlined (🚫 hidden
+    link, dashboard and page constraints included) and the list of filters that
+    were dropped. The public page never reads it; the builder's own chart-data
+    endpoint still returns it.
+    """
+    if isinstance(data, dict):
+        return {**data, "debug": None}
+    if hasattr(data, "model_copy"):
+        return data.model_copy(update={"debug": None})
+    return data
+
+
+def _chart_dataset_id(dash: Dashboard, chart_id: int) -> Any:
+    """The dataset a chart is bound to (``semanticBinding.datasetId``) — the
+    one the engine checks a filter's ``datasetId`` against."""
+    for dc in dash.dashboard_charts or []:
+        if dc.chart_id == chart_id:
+            cfg = getattr(getattr(dc, "chart", None), "config", None)
+            binding = cfg.get("semanticBinding") if isinstance(cfg, dict) else None
+            if isinstance(binding, dict) and binding.get("datasetId") is not None:
+                return binding.get("datasetId")
+    return None
+
+
+def _public_page_scope_by_chart(dash: Dashboard, link_filters_config: list[dict] | None) -> dict[int, list[dict]]:
+    """Per chart, the page-scope bounds of every page it is on — for the AI,
+    which reads a chart without a page (never wider than any of its pages)."""
+    replaced = link_replaced_field_keys(link_filters_config)
+    out: dict[int, list[dict]] = {}
+    for chart_id in {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}:
+        bounds = page_scope_bounds(
+            getattr(dash, "pages_config", None) or [],
+            _public_chart_page_ids(dash, chart_id, None),
+            exclude_field_keys=replaced,
+            dataset_id=_chart_dataset_id(dash, chart_id),
+        )
+        if bounds:
+            out[chart_id] = bounds
+    return out
+
+
+def _refuse_malformed_link(link_filters_config: list[dict] | None) -> None:
+    """Fail CLOSED on a link constraint the engine cannot apply.
+
+    An entry that carries a value or preset but no applicable condition
+    (``between 5``, an unknown preset) would otherwise be dropped by the
+    engine — the viewer would get the data the author meant to restrict. New
+    links cannot be saved this way (``validate_public_link_filters``); a link
+    stored before that check is refused here, on every public path.
+    """
+    if malformed_link_entries(link_filters_config):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This shared link has a filter that cannot be applied. Ask the report owner to fix the link.",
+        )
+
+
+def _shaped_public_config(
+    dash: Dashboard, link_filters_config: list[dict] | None,
+) -> tuple[list[dict], list[dict], list]:
+    """What an anonymous viewer is served of the report's filter configuration:
+    ``(slicers_config, filters_config, pages_config)``.
+
+    - a field this link enforces or kills: removed from every control and page
+      filter (its lock replaces them; the data path skips the page bound too);
+    - a 🚫 hidden dashboard or page filter-pane entry: removed. It is applied
+      from the stored dashboard (_build_public_chart_filters / page scope); its
+      field and value never leave the server — not in the JSON, the state, the
+      DOM, the PDF or the AI context;
+    - 🔒 and visible entries stay (a lock is announced read-only).
+    """
+    managed = link_managed_field_keys(link_filters_config)
+    replaced = link_replaced_field_keys(link_filters_config)
+
+    def _key(entry: dict) -> str:
+        return (entry.get("semanticField") or entry.get("field") or "").strip().lower() if isinstance(entry, dict) else ""
+
+    def _managed(entry: dict) -> bool:
+        return _key(entry) in managed
+
+    def _replaced(entry: dict) -> bool:
+        # A page filter goes only where the link's condition REPLACES it — the
+        # data path skips exactly those (link_replaced_field_keys).
+        return _key(entry) in replaced
+
+    slicers = [s for s in (getattr(dash, "slicers_config", None) or []) if not _managed(s)]
+    filters = [f for f in public_viewer_visible_entries(dash.filters_config) if not _managed(f)]
+    pages = []
     for page in (dash.pages_config or []):
         if isinstance(page, dict):
             page = {**page}
             if page.get("slicers"):
-                page["slicers"] = [
-                    s for s in page["slicers"]
-                    if not _is_link_managed_field(s)
-                ]
+                page["slicers"] = [s for s in page["slicers"] if not _managed(s)]
             if page.get("filters"):
                 page["filters"] = [
-                    f for f in page["filters"]
-                    if not _is_link_managed_field(f)
+                    f for f in public_viewer_visible_entries(page["filters"]) if not _replaced(f)
                 ]
-        stripped_pages.append(page)
-    dash.pages_config = stripped_pages
+        pages.append(page)
+    return slicers, filters, pages
+
+
+def _shape_public_structure(dash: Dashboard, link_filters_config: list[dict] | None) -> None:
+    """Apply ``_shaped_public_config`` to the served dashboard.
+
+    set_committed_value: shapes the served copy only — never a pending change a
+    later flush in the same session could write back to the report (the old
+    strip assigned the attributes, which autoflush would have written).
+    """
+    from sqlalchemy.orm.attributes import set_committed_value as _set_committed
+    slicers, filters, pages = _shaped_public_config(dash, link_filters_config)
+    _set_committed(dash, "slicers_config", slicers)
+    _set_committed(dash, "filters_config", filters)
+    _set_committed(dash, "pages_config", pages)
 
 
 def _public_viewer_filter_inventory(dash: Dashboard) -> list[dict]:
-    """Fields the public viewer can actually see/control on this dashboard."""
-    top_bar_filters = list(dash.filters_config or [])
+    """Fields the public viewer can actually see/control on this dashboard.
+
+    Slicers, and filter-pane entries left VISIBLE. A 🔒/🚫 entry is not a
+    viewer control: offering it here put a hidden field into
+    `available_filter_fields` and let an anonymous viewer list its distinct
+    values.
+    """
+    def _visible(entries) -> list[dict]:
+        return [
+            e for e in (entries or []) if isinstance(e, dict)
+            and str(e.get("publicMode") or e.get("public_mode") or "visible").lower() == "visible"
+        ]
+
+    top_bar_filters = _visible(dash.filters_config)
     top_bar_slicers = list(getattr(dash, "slicers_config", None) or [])
     pages_filters_flat: list[dict] = []
     pages_slicers_flat: list[dict] = []
     for page in dash.pages_config or []:
         if not isinstance(page, dict):
             continue
-        for f in page.get("filters") or []:
-            if isinstance(f, dict):
-                pages_filters_flat.append(f)
+        for f in _visible(page.get("filters")):
+            pages_filters_flat.append(f)
         for s in page.get("slicers") or []:
             if isinstance(s, dict):
                 pages_slicers_flat.append(s)
@@ -994,6 +1180,7 @@ def _get_dashboard_by_token(
         # front of a business reader. This is the title the masthead shows and the
         # one stamped into an exported PDF.
         display_name = getattr(grant, "header", None) or grant_link.name
+        _refuse_malformed_link(grant_link.filters_config)
         return dash, grant_link.filters_config or [], display_name, grant_link.appearance_config or {}
 
     # Try new multi-link table first
@@ -1030,6 +1217,7 @@ def _get_dashboard_by_token(
             link.last_accessed_at = datetime.now(timezone.utc)
             db.commit()
             _reserve_after_commit(dash, load_dashboard)
+        _refuse_malformed_link(link.filters_config)
         return dash, link.filters_config or [], link.name, link.appearance_config or {}
 
     # Fallback to legacy share_token on Dashboard model
@@ -1039,6 +1227,7 @@ def _get_dashboard_by_token(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Shared dashboard not found or link has been revoked.",
         )
+    _refuse_malformed_link(dash.public_filters_config)
     return dash, dash.public_filters_config or [], dash.name, {}
 
 
@@ -1154,7 +1343,8 @@ def get_public_dashboard(
     # hasn't picked a value yet keeps the page-scope filter + slicer instead of
     # silently leaking MORE data than the page is scoped to (repro 2026-06-18 on
     # dashboard 53: empty Product lock leaked 303K → 11M / 2 → 8 products).
-    _strip_link_managed_filter_fields(dash, link_hidden_filters)
+    # 🚫 hidden dashboard/page entries are withheld here too (_shape_public_structure).
+    _shape_public_structure(dash, link_hidden_filters)
 
     # Phase-15.81 — TWO filter mechanisms surface differently:
     #
@@ -2915,6 +3105,10 @@ def get_public_filter_distinct_values(
         default=None,
         description="JSON-encoded list of additional viewer filter objects.",
     ),
+    page_id: str | None = Query(
+        default=None,
+        description="The page the viewer is showing; its page-scope filters are applied server-side.",
+    ),
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
 ):
@@ -2928,12 +3122,16 @@ def get_public_filter_distinct_values(
     # Match the allow-list exposed by GET /public/dashboards/{token}. For a
     # multi-link token, `public_filters` is the link's hidden/locked constraint
     # set; it must constrain the data query below, not replace the viewer-facing
-    # filter inventory.
-    _strip_link_managed_filter_fields(dash, public_filters)
+    # filter inventory. The merge below reads the STORED configuration, so the
+    # page scope and 🚫 entries still apply; only the allow-list is shaped.
+    from types import SimpleNamespace as _NS
+    _s, _f, _p = _shaped_public_config(dash, public_filters)
+    dash_for_inventory = _NS(slicers_config=_s, filters_config=_f, pages_config=_p,
+                             dashboard_charts=dash.dashboard_charts)
     public_filter_fields = _build_public_filter_fields(
         db,
-        dash,
-        _public_viewer_filter_inventory(dash),
+        dash_for_inventory,
+        _public_viewer_filter_inventory(dash_for_inventory),
     )
     allowed_field = next(
         (
@@ -2971,8 +3169,12 @@ def get_public_filter_distinct_values(
         dash,
         public_filters,
         sanitized_viewer_filters,
+        page_ids=_public_request_page_ids(dash, page_id),
         context_for_log=f"distinct_values:{token}:{dataset_id}:{field}",
     )
+    # The dropdown self-strips its own field, which also drops a HARD bound on
+    # it (page scope, a 🔒/🚫 dashboard filter): re-apply those to the values.
+    hard_allow = same_field_allow_list(combined_filters, dataset_id, field)
 
     try:
         # Fetch the FULL searched set (server-side search over the cached full
@@ -3007,6 +3209,8 @@ def get_public_filter_distinct_values(
         if scope_allow is not None:
             allow_set = {str(v) for v in scope_allow}
             values = [v for v in values if str(v) in allow_set]
+        if hard_allow is not None:
+            values = [v for v in values if str(v) in hard_allow]
         total = len(values)
         page = values[offset:offset + limit]
         return {
@@ -3014,7 +3218,9 @@ def get_public_filter_distinct_values(
             "values": page,
             "total": total,
             "has_more": (offset + limit) < total,
-            "dropped_filters": result.get("dropped_filters", []),
+            # Diagnostics name the filters that did not apply — 🚫 ones included.
+            # An anonymous viewer is not told (the builder's endpoint still is).
+            "dropped_filters": [],
         }
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -3044,6 +3250,10 @@ def get_public_chart_data(
     granularity: str | None = Query(
         default=None,
         description="#2 viewer date-hierarchy: re-bucket the time axis (raw|day|week|month|quarter|year).",
+    ),
+    page_id: str | None = Query(
+        default=None,
+        description="The page the viewer is showing; its page-scope filters are applied server-side.",
     ),
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
@@ -3096,6 +3306,8 @@ def get_public_chart_data(
         dash,
         public_filters,
         viewer_filters,
+        page_ids=_public_chart_page_ids(dash, chart_id, page_id),
+        chart_dataset_id=_chart_dataset_id(dash, chart_id),
         context_for_log=f"chart_data:{token}:{chart_id}",
     )
 
@@ -3105,23 +3317,24 @@ def get_public_chart_data(
     granularity_override = _grain if _grain in {"raw", "day", "week", "month", "quarter", "year"} else None
 
     try:
-        return ChartService.get_chart_data(
+        return _public_chart_payload(ChartService.get_chart_data(
             db,
             chart_id,
             extra_filters=combined_filters or None,
             filter_context="dashboard",
             granularity_override=granularity_override,
             snapshot_ttl_minutes=_resolve_public_snapshot_ttl(_chart_appearance),
-        )
+        ))
     except ValueError as exc:
         # Phase-12.7: previously this swallowed the engine's Vietnamese
         # message ("Bảng X chưa có relationship..." etc.) and returned a
         # generic "Chart data not found." 404 — making DAs sharing a
         # dashboard think the chart was missing rather than mis-
-        # configured. Forward the message verbatim with the right status.
+        # configured. Forward the message verbatim with the right status —
+        # unless it names a 🚫 hidden constraint's field (logged instead).
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail=_public_error_text(str(exc), combined_filters),
         )
     except Exception as exc:
         logger.exception("Public chart data error for token=%s chart=%s", token, chart_id)
@@ -3141,6 +3354,10 @@ class _PublicChartsBatchItem(BaseModel):
 
 class _PublicChartsBatchBody(BaseModel):
     items: list[_PublicChartsBatchItem]
+    # The page the viewer is showing. Its page-scope filters are applied by the
+    # server; a chart not on this page is refused. Absent (older client): every
+    # page each chart is on applies — never wider.
+    page_id: str | None = None
 
 
 @router.post("/dashboards/{token}/charts/data")
@@ -3170,6 +3387,7 @@ def get_public_charts_data_batch(
     valid_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id and not is_draft_only_item(dc)}
 
     items: list[dict] = []
+    filters_by_chart: dict[int, list[dict]] = {}
     not_found: list[int] = []
     build_errors: list[dict] = []
     seen: set[int] = set()
@@ -3179,6 +3397,11 @@ def get_public_charts_data_batch(
             continue
         seen.add(cid)
         if cid not in valid_ids:
+            not_found.append(cid)
+            continue
+        try:
+            chart_pages = _public_chart_page_ids(dash, cid, body.page_id)
+        except HTTPException:
             not_found.append(cid)
             continue
         # Isolate the filter build PER CHART. `get_charts_data_batch` already
@@ -3191,6 +3414,8 @@ def get_public_charts_data_batch(
             viewer_filters = [f for f in (it.filters or []) if isinstance(f, dict)]
             combined_filters = _build_public_chart_filters(
                 dash, public_filters, viewer_filters,
+                page_ids=chart_pages,
+                chart_dataset_id=_chart_dataset_id(dash, cid),
                 context_for_log=f"chart_data_batch:{token}:{cid}",
             )
         except Exception:
@@ -3201,6 +3426,7 @@ def get_public_charts_data_batch(
                 "status": 400,
             })
             continue
+        filters_by_chart[cid] = combined_filters
         _grain = str(it.granularity or "").strip().lower()
         grain = _grain if _grain in {"raw", "day", "week", "month", "quarter", "year"} else None
         items.append({
@@ -3221,11 +3447,11 @@ def get_public_charts_data_batch(
     results: list[dict] = []
     for r in raw_results:
         if r.get("ok"):
-            results.append({"chart_id": r["chart_id"], "data": r["data"]})
+            results.append({"chart_id": r["chart_id"], "data": _public_chart_payload(r["data"])})
         else:
             results.append({
                 "chart_id": r["chart_id"],
-                "error": r.get("error"),
+                "error": _public_error_text(str(r.get("error") or ""), filters_by_chart.get(r["chart_id"])),
                 "status": r.get("status", 500),
             })
     for cid in not_found:
@@ -3495,7 +3721,10 @@ def get_dashboard_ai_recon(
         combined_filters = _build_public_chart_filters(
             dash, public_filters, [], context_for_log="ai_recon",
         )
-        ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
+        ctx = ToolContext.from_dashboard(
+            db=db, dashboard=dash, public_filters=combined_filters,
+            page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
+        )
         recon = build_proactive_recon(ctx)
     except Exception:
         logger.exception("AI recon build error for token=%s", token)
@@ -3647,7 +3876,10 @@ def get_dashboard_ai_briefing_guess(
     )
 
     try:
-        ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
+        ctx = ToolContext.from_dashboard(
+            db=db, dashboard=dash, public_filters=combined_filters,
+            page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
+        )
         recon = build_proactive_recon(ctx)
         guess = guess_briefing_from_recon(
             recon,
@@ -3732,7 +3964,10 @@ async def post_dashboard_ai_briefing_brief(
         [item for item in viewer_filters_body if isinstance(item, dict)],
         context_for_log=f"ai_bot_briefing:{token}",
     )
-    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
+    ctx = ToolContext.from_dashboard(
+            db=db, dashboard=dash, public_filters=combined_filters,
+            page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
+        )
     recon = build_proactive_recon(ctx)
     user_prompt = build_executive_brief_user_prompt(
         briefing=briefing,
@@ -4185,7 +4420,10 @@ async def chat_dashboard_ai_agent(
         [item for item in viewer_filters_body if isinstance(item, dict)],
         context_for_log=f"ai_bot_chat_extra:{token}",
     )
-    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
+    ctx = ToolContext.from_dashboard(
+            db=db, dashboard=dash, public_filters=combined_filters,
+            page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
+        )
 
     # Phase A + B: parse briefing + state, default-construct if missing.
     from app.services.dashboard_ai_bot.thinking.briefing import Briefing as _Briefing
@@ -4253,7 +4491,9 @@ async def chat_dashboard_ai_agent(
             dashboard_name=dash.name or "Dashboard",
             dashboard_description=getattr(dash, "description", None),
             chart_count=len(getattr(ctx, "charts", []) or []),
-            filters_applied=combined_filters or [],
+            # What the model is TOLD: a 🚫 hidden constraint is applied through
+            # ctx.public_filters and never printed into the prompt.
+            filters_applied=disclosed_applied_filters(combined_filters)[0],
             max_tool_calls=8,
             report_context_note=report_note,
             # A FLOW DOES NOT NEED THE TOOL NARRATION.
@@ -4555,7 +4795,10 @@ async def explore_dashboard_ai_agent(
         [item for item in viewer_filters_body if isinstance(item, dict)],
         context_for_log=f"ai_bot_explore:{token}",
     )
-    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
+    ctx = ToolContext.from_dashboard(
+            db=db, dashboard=dash, public_filters=combined_filters,
+            page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
+        )
     # Guarded BEFORE the run starts. This endpoint fans one briefing out into a
     # multi-round exploration, so an instruction smuggled into `smart_goal` is
     # not read once — it is carried into every question the run generates.

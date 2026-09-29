@@ -42,6 +42,19 @@ export type DashboardEditLock = {
   pending_requests: Array<{ requester_key: string; name: string | null; email: string | null }>;
 };
 
+// The shared filters/pages/theme draft is edited by every author together; each
+// write names the revision it was made on and the server refuses a stale one
+// (409 `shared_draft_stale`) instead of silently replacing a colleague's edit.
+// The revision is read from every response that carries it.
+const sharedDraftRev = new Map<number, string>();
+function noteSharedDraft<T extends { id?: number; shared_draft?: { rev?: string } | null }>(d: T): T {
+  if (d && typeof d.id === 'number' && typeof d.shared_draft?.rev === 'string') sharedDraftRev.set(d.id, d.shared_draft.rev);
+  return d;
+}
+
+/** Raised when the shared draft moved on since this editor loaded it. */
+export const SHARED_DRAFT_CONFLICT_EVENT = 'appbi:shared-draft-conflict';
+
 export const dashboardApi = {
   getAll: async (): Promise<Dashboard[]> => {
     const response = await apiClient.get('/dashboards/');
@@ -50,7 +63,7 @@ export const dashboardApi = {
 
   getById: async (id: number): Promise<Dashboard> => {
     const response = await apiClient.get(`/dashboards/${id}`);
-    return response.data;
+    return noteSharedDraft(response.data);
   },
 
   create: async (data: DashboardCreate): Promise<Dashboard> => {
@@ -148,6 +161,13 @@ export const dashboardApi = {
   },
 
   /** Undo a draft removal: the same element, the same id, back in the draft. */
+  /** Show another chart in this tile's place, as a draft edit of this report:
+   *  Publish makes the swap, Discard undoes it (the shared chart is untouched). */
+  swapChartInDraft: async (dashboardId: number, dashboardChartId: number, chartId: number): Promise<Dashboard> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/charts/${dashboardChartId}/swap-chart`, { chart_id: chartId });
+    return response.data;
+  },
+
   restoreChart: async (dashboardId: number, dashboardChartId: number): Promise<Dashboard> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/charts/${dashboardChartId}/restore`);
     return response.data;
@@ -249,8 +269,20 @@ export const dashboardApi = {
       remove_tile_ids?: number[];
     }
   ): Promise<Dashboard> => {
-    const response = await apiClient.put(`/dashboards/${dashboardId}/draft-filters`, body);
-    return response.data;
+    const baseRev = sharedDraftRev.get(dashboardId);
+    try {
+      const response = await apiClient.put(`/dashboards/${dashboardId}/draft-filters`, {
+        ...body,
+        ...(baseRev !== undefined ? { base_rev: baseRev } : {}),
+      });
+      return noteSharedDraft(response.data);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      if (err?.response?.status === 409 && detail?.code === 'shared_draft_stale' && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(SHARED_DRAFT_CONFLICT_EVENT, { detail: { dashboardId, by: detail.by ?? null } }));
+      }
+      throw err;
+    }
   },
 
   // Phase-B17 — publish accepts an optimistic-concurrency guard. Pass the
@@ -258,18 +290,29 @@ export const dashboardApi = {
   // published meanwhile (unless force=true).
   publishDraft: async (
     dashboardId: number,
-    opts?: { tileBaseV?: Record<string, number> | null; force?: boolean },
+    opts?: { tileBaseV?: Record<string, number> | null; force?: boolean; sharedAckRev?: string; keepShared?: boolean },
   ): Promise<Dashboard> => {
+    // sharedAckRev / keepShared: the answer to 409 `shared_draft_other_authors`
+    // — publish other authors' shared edits too (the revision shown), or leave
+    // the shared draft pending and publish only this author's work.
     const body = opts
-      ? { tile_base_v: opts.tileBaseV ?? null, force: !!opts.force }
+      ? {
+        tile_base_v: opts.tileBaseV ?? null,
+        force: !!opts.force,
+        ...(opts.sharedAckRev !== undefined ? { shared_ack_rev: opts.sharedAckRev } : {}),
+        ...(opts.keepShared ? { keep_shared: true } : {}),
+      }
       : undefined;
     const response = await apiClient.post(`/dashboards/${dashboardId}/publish`, body);
-    return response.data;
+    return noteSharedDraft(response.data);
   },
 
-  discardDraft: async (dashboardId: number): Promise<Dashboard> => {
-    const response = await apiClient.post(`/dashboards/${dashboardId}/discard-draft`);
-    return response.data;
+  discardDraft: async (dashboardId: number, opts?: { sharedAckRev?: string; keepShared?: boolean }): Promise<Dashboard> => {
+    const body = opts
+      ? { ...(opts.sharedAckRev !== undefined ? { shared_ack_rev: opts.sharedAckRev } : {}), ...(opts.keepShared ? { keep_shared: true } : {}) }
+      : undefined;
+    const response = await apiClient.post(`/dashboards/${dashboardId}/discard-draft`, body);
+    return noteSharedDraft(response.data);
   },
 
   // Phase-B17/B19 — editor presence + per-page co-edit rights. Heartbeat reports

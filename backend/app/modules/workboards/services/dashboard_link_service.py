@@ -128,6 +128,9 @@ def _coerce_slot(entry: Any) -> Optional[Dict[str, Any]]:
         return None
     return {
         "datasetId": dataset_id,
+        # The engine keys a condition on `field` (a qualified ref is read as the
+        # semantic field too); without it the row filter was dropped (no_field).
+        "field": semantic_field,
         "semanticField": semantic_field,
         "operator": entry.get("operator") or "eq",
     }

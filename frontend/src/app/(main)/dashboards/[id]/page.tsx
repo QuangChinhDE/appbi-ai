@@ -19,7 +19,7 @@ import {
   usePublishDashboard,
   useDiscardDashboardDraft,
 } from '@/hooks/use-dashboards';
-import { dashboardApi } from '@/lib/api/dashboards';
+import { dashboardApi, SHARED_DRAFT_CONFLICT_EVENT } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { AiDesignPanel } from '@/components/dashboards/ai-design/AiDesignPanel';
@@ -483,6 +483,19 @@ function DashboardDetailPageInner() {
   const canEditResource = resPerms.canEdit && !studioPreview;
   // Phase-B17 — publish conflict (someone else published the SAME tiles).
   const [publishConflict, setPublishConflict] = useState<{ editor: string | null; tiles?: string[] } | null>(null);
+  // The shared filters/pages/theme draft holds another author's edits: Publish
+  // or Discard asks whether to include them (never silently).
+  const [sharedChoice, setSharedChoice] = useState<{ action: 'publish' | 'discard'; authors: string[]; rev: string; tileBaseV?: Record<string, number> } | null>(null);
+  // Someone changed the shared draft since this page loaded; a write was refused.
+  const [sharedStale, setSharedStale] = useState<{ by: string | null } | null>(null);
+  useEffect(() => {
+    const onConflict = (e: Event) => {
+      const detail = (e as CustomEvent<{ dashboardId: number; by: string | null }>).detail;
+      if (detail?.dashboardId === dashboardId) setSharedStale({ by: detail.by ?? null });
+    };
+    window.addEventListener(SHARED_DRAFT_CONFLICT_EVENT, onConflict);
+    return () => window.removeEventListener(SHARED_DRAFT_CONFLICT_EVENT, onConflict);
+  }, [dashboardId]);
   const updateDashboardMutation = useUpdateDashboard();
   const addChartMutation = useAddChartToDashboard();
   const removeChartMutation = useRemoveChartFromDashboard();
@@ -1829,7 +1842,10 @@ function DashboardDetailPageInner() {
       await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV });
       toast.success(t('dashboards.detail.publishedNewVersion'));
     } catch (err: any) {
-      if (err?.response?.status === 409) {
+      const detail = err?.response?.data?.detail;
+      if (err?.response?.status === 409 && detail?.code === 'shared_draft_other_authors') {
+        setSharedChoice({ action: 'publish', authors: detail.authors ?? [], rev: detail.rev, tileBaseV });
+      } else if (err?.response?.status === 409) {
         setPublishConflict({
           editor: err?.response?.data?.detail?.last_editor ?? null,
           tiles: err?.response?.data?.detail?.tiles ?? [],
@@ -1861,8 +1877,37 @@ function DashboardDetailPageInner() {
       try {
         await discardDraftMutation.mutateAsync(dashboardId);
         toast.success(t('dashboards.detail.revertedToPublished'));
-      } catch (err) {
-        toast.error(t('dashboards.detail.discardDraftFailed'));
+      } catch (err: any) {
+        const detail = err?.response?.data?.detail;
+        if (err?.response?.status === 409 && detail?.code === 'shared_draft_other_authors') {
+          setSharedChoice({ action: 'discard', authors: detail.authors ?? [], rev: detail.rev });
+        } else {
+          toast.error(t('dashboards.detail.discardDraftFailed'));
+        }
+      }
+    }
+  };
+
+  // The answer to "the shared draft also holds X's edits": include them, or
+  // act on this author's own work only and leave the shared draft pending.
+  const resolveSharedChoice = async (include: boolean) => {
+    const choice = sharedChoice;
+    setSharedChoice(null);
+    if (!choice) return;
+    const shared = include ? { sharedAckRev: choice.rev } : { keepShared: true };
+    try {
+      if (choice.action === 'publish') {
+        await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV: choice.tileBaseV, ...shared });
+        toast.success(t(include ? 'dashboards.detail.publishedNewVersion' : 'dashboards.detail.sharedChoice.publishedMine'));
+      } else {
+        await discardDraftMutation.mutateAsync({ dashboardId, ...shared });
+        toast.success(t(include ? 'dashboards.detail.revertedToPublished' : 'dashboards.detail.sharedChoice.discardedMine'));
+      }
+    } catch (err: any) {
+      if (err?.response?.status === 409) {
+        setPublishConflict({ editor: err?.response?.data?.detail?.last_editor ?? null, tiles: err?.response?.data?.detail?.tiles ?? [] });
+      } else {
+        toast.error(t(choice.action === 'publish' ? 'dashboards.detail.publishFailed' : 'dashboards.detail.discardDraftFailed'));
       }
     }
   };
@@ -4547,6 +4592,62 @@ function DashboardDetailPageInner() {
           removingChartId={removingChartId}
           onRemoveChart={handleRemoveChartFromManager}
         />
+
+        {/* Co-authoring — the shared filters/pages/theme draft holds another
+            author's edits: the author decides, with names, what happens to them. */}
+        {sharedChoice && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" data-testid="shared-draft-choice">
+            <div className="w-full max-w-sm rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-lg">
+              <h2 className="text-sm font-semibold text-text-primary">{t('dashboards.detail.sharedChoice.title')}</h2>
+              <p className="mt-1.5 text-[13px] leading-5 text-text-secondary">
+                {t('dashboards.detail.sharedChoice.body', { authors: sharedChoice.authors.join(', ') })}
+              </p>
+              <div className="mt-3 flex flex-col gap-2">
+                <button
+                  type="button"
+                  data-testid="shared-draft-mine"
+                  onClick={() => { void resolveSharedChoice(false); }}
+                  className="rounded-md bg-brand px-3 py-1.5 text-left text-[13px] font-medium text-white hover:opacity-90"
+                >
+                  {t(sharedChoice.action === 'publish' ? 'dashboards.detail.sharedChoice.publishMine' : 'dashboards.detail.sharedChoice.discardMine')}
+                </button>
+                <button
+                  type="button"
+                  data-testid="shared-draft-all"
+                  onClick={() => { void resolveSharedChoice(true); }}
+                  className="rounded-md border border-[rgb(var(--border-strong))] px-3 py-1.5 text-left text-[13px] font-medium text-text-primary hover:bg-surface-2"
+                >
+                  {t(sharedChoice.action === 'publish' ? 'dashboards.detail.sharedChoice.publishAll' : 'dashboards.detail.sharedChoice.discardAll', { authors: sharedChoice.authors.join(', ') })}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSharedChoice(null)}
+                  className="self-end rounded-md px-2.5 py-1.5 text-[13px] text-text-tertiary hover:text-text-primary"
+                >
+                  {t('dashboards.detail.conflictLater')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {sharedStale && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" data-testid="shared-draft-stale">
+            <div className="w-full max-w-sm rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-lg">
+              <h2 className="text-sm font-semibold text-text-primary">{t('dashboards.detail.sharedStale.title')}</h2>
+              <p className="mt-1.5 text-[13px] leading-5 text-text-secondary">
+                {t('dashboards.detail.sharedStale.body', { editor: sharedStale.by || t('dashboards.detail.someoneElse') })}
+              </p>
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <button type="button" onClick={() => setSharedStale(null)} className="rounded-md px-2.5 py-1.5 text-[13px] text-text-tertiary hover:text-text-primary">
+                  {t('dashboards.detail.conflictLater')}
+                </button>
+                <button type="button" onClick={() => window.location.reload()} className="rounded-md bg-brand px-3 py-1.5 text-[13px] font-medium text-white hover:opacity-90">
+                  {t('dashboards.detail.conflictReload')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Phase-B17 — publish conflict: someone else published since load. */}
         {publishConflict && (
