@@ -48,10 +48,17 @@ function scrollParentOf(el: HTMLElement | null): HTMLElement | null {
  */
 function useEdgeAutoScroll(anchor: React.RefObject<HTMLElement>) {
   const state = React.useRef<{ raf: number | null; x: number; y: number; box: HTMLElement | null } | null>(null);
+  // The pointer is tracked from the document itself while a drag is on: the
+  // grid's own drag callback did not report every move (measured: the loop ran
+  // but kept the position the drag started at), so it could never reach an edge.
+  const onPointer = React.useCallback((e: MouseEvent) => {
+    if (state.current && e.isTrusted !== false) { state.current.x = e.clientX; state.current.y = e.clientY; }
+  }, []);
   const stop = React.useCallback(() => {
     if (state.current?.raf) cancelAnimationFrame(state.current.raf);
     state.current = null;
-  }, []);
+    document.removeEventListener('mousemove', onPointer, true);
+  }, [onPointer]);
   const tick = React.useCallback(() => {
     const s = state.current;
     if (!s || !s.box) return;
@@ -73,8 +80,9 @@ function useEdgeAutoScroll(anchor: React.RefObject<HTMLElement>) {
   const start = React.useCallback((event?: MouseEvent) => {
     stop();
     state.current = { raf: null, x: event?.clientX ?? 0, y: event?.clientY ?? 0, box: scrollParentOf(anchor.current) };
+    document.addEventListener('mousemove', onPointer, true);
     state.current.raf = requestAnimationFrame(tick);
-  }, [anchor, stop, tick]);
+  }, [anchor, onPointer, stop, tick]);
   const move = React.useCallback((event?: MouseEvent) => {
     if (state.current && event) { state.current.x = event.clientX; state.current.y = event.clientY; }
   }, []);

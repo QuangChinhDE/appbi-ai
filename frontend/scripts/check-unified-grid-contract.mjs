@@ -742,6 +742,11 @@ check('dragging near the edge of a long report scrolls it', () => {
   assert(/onDragStart=\{[^}]*autoScroll\.start/.test(grid) && /onDrag=\{[^}]*autoScroll\.move/.test(grid), 'drag does not drive the auto-scroll');
   assert(/onResizeStart=\{[^}]*autoScroll\.start/.test(grid), 'resize does not drive the auto-scroll');
   assert(/dispatchEvent\(new MouseEvent\('mousemove'/.test(grid), 'the dragged tile does not follow the scroll');
+  // Measured on the production build: the grid's own onDrag did not report the
+  // pointer, so the loop never saw it reach an edge (0px). The pointer is read
+  // from the document while a drag is on.
+  assert(/document\.addEventListener\('mousemove', onPointer, true\)/.test(grid)
+    && /document\.removeEventListener\('mousemove', onPointer, true\)/.test(grid), 'the auto-scroll does not track the pointer itself');
   const body = grid.slice(grid.indexOf('function DashboardGridInner('));
   assert(body.indexOf('useEdgeAutoScroll(') > 0 && body.indexOf('useEdgeAutoScroll(') < body.indexOf('if (dashboardCharts.length === 0) {'),
     'the auto-scroll hook runs after the empty-page return');
