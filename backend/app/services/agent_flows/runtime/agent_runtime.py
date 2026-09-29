@@ -477,7 +477,11 @@ class AgentRuntime:
         """
         if self._previous_scope is not None:
             self.rctx.ctx.knowledge_scope = self._previous_scope
+        # MERGED, not replaced: the run's intent contract is written on the
+        # answering step's entry before the step runs (executor.run_flow).
+        prior = self.state.capability_trace.get(self.node.key) or {}
         self.state.capability_trace[self.node.key] = {
+            **({"intent": prior["intent"]} if prior.get("intent") else {}),
             **self.view.to_trace(), "final_rounds": self.final_rounds,
             **({"claim_review": self.claim_review} if self.claim_review else {}),
         }

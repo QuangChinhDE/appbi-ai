@@ -206,7 +206,9 @@ async def run_flow(
         except Exception:                                       # noqa: BLE001
             logger.warning("[flow] intent resolution failed", exc_info=True)
         if getattr(state, "intent", None):
-            state.capability_trace.setdefault("__intent__", {}).update(state.intent)
+            # On the ANSWERING step's trace — the one the Runs inspector shows the
+            # author next to the claim verdict it drives.
+            state.capability_trace.setdefault(rctx.answer_key, {})["intent"] = dict(state.intent)
 
     status = "ok"
     streamed_text = False

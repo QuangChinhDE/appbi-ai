@@ -125,3 +125,17 @@ def test_the_answering_step_is_told_what_was_resolved():
     assert "tỷ lệ chuyển đổi" in text and "KHÔNG có trong báo cáo" in text
     assert "Minas Gerais (MG)" in text and "2017-10" in text
     assert I.describe_for_prompt(I.empty_intent()) == "", "heuristic intent is never asserted to the model"
+
+
+def test_the_resolved_intent_is_on_the_answering_steps_trace(monkeypatch, undeclared):
+    """The author sees what the runtime decided was asked, next to the verdict."""
+    import test_publication_boundary as P
+
+    async def call(**kw):
+        return json.dumps({"measures": ["gmv"], "periods": [{"grain": "m", "year": 2018, "n": 7}]})
+    monkeypatch.setattr(I, "_model_call", call)
+    events = P._events(monkeypatch, undeclared, P._Model(obey=True))
+    env = next(e.extra["envelope"] for e in events if e.type == "result")
+    step = next(s for s in (env.get("trace") or {}).get("steps") or [] if s["key"] == "tl")
+    intent = (step.get("capabilities") or {}).get("intent") or {}
+    assert intent.get("source") == "model" and intent.get("measures") == ["gmv"]
