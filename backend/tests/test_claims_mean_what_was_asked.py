@@ -901,3 +901,22 @@ def test_a_breakdown_is_named_by_what_distinguishes_it(world):
 def test_a_two_digit_month_is_not_also_january():
     assert CC._periods("GMV tháng 10/2017 là 56808.84.") == {("m", 2017, 10)}
     assert CC._periods("tháng 10 và tháng 11 năm 2017") == {("m", 2017, 10), ("m", 2017, 11)}
+
+
+# ── live at 0abef689: list items, qualifier labels ───────────────────────────
+
+def test_a_list_item_inherits_the_member_its_header_names(world):
+    """Live 5072: "Tổng số đơn ở São Paulo …, bao gồm:" then "- Đã giao: 96,478 đơn"
+    — whole-report status counts presented as São Paulo's breakdown."""
+    ctx, state = world("São Paulo có bao nhiêu đơn hàng?", asked=("order_count",))
+    _value(state, 96478.0, "dataset_table_437.order_count")
+    text = "Số đơn hàng ở São Paulo như sau:\n- Đã giao: 96,478 đơn\n- Bị hủy: 625 đơn"
+    assert (96478.0, "whole_as_member") in _why(state, ctx, text)
+    other = "Báo cáo không tách theo bang. Trên toàn báo cáo:\n- Đã giao: 96,478 đơn"
+    assert _why(state, ctx, other) == []
+
+
+def test_the_number_of_an_asked_qualifier_is_a_label():
+    """Live 4961/4986: the 5 of "lượt đánh giá 5 sao" was withheld as a figure."""
+    assert CC._qualifier_numbers(["5sao"], "Không có số liệu về lượt đánh giá 5 sao.") == {5.0}
+    assert CC._qualifier_numbers(["5sao"], "Có 5 lượt đánh giá.") == set()

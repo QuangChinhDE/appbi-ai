@@ -472,6 +472,40 @@ def _given_a_meaning(sentence: str, question: str, asked: list[str] | None) -> b
                                for c in asked)
 
 
+def _qualifier_numbers(asked: list[str] | None, text: str) -> set[float]:
+    """Numbers that are PART of the asked qualifier as the answer writes it
+    ("5 sao" when the question asked about "5 sao") — labels, never figures.
+    Live 4961/4986: the 5 of "lượt đánh giá 5 sao" was withheld as a figure."""
+    import re
+
+    out: set[float] = set()
+    folded = _fold(text)
+    for c in asked or []:
+        m = re.fullmatch(r"(\d{1,3})([a-z]+)", c or "")
+        if m and re.search(rf"(?<![\d.,]){m.group(1)}\s*{m.group(2)}(?![^\W_])", folded):
+            out.add(float(m.group(1)))
+    return out
+
+
+def _with_header(text: str, value: float, sentence: str) -> str:
+    """The sentence of `value`, plus the line introducing it when it is a list item."""
+    def is_item(line: str) -> bool:
+        x = line.lstrip()
+        return x[:1] in ("-", "•", "*", "+") or (x[:1].isdigit() and x[1:3].lstrip()[:1] in (".", ")"))
+
+    core = (sentence or "").strip(" .")
+    if not core:
+        return sentence
+    lines = (text or "").split(chr(10))
+    for i, line in enumerate(lines):
+        if core in _fold(line) and is_item(line):
+            for prev in reversed(lines[:i]):
+                if prev.strip() and not is_item(prev):
+                    return _fold(prev) + " " + sentence
+            break
+    return sentence
+
+
 def _initials(words: list[str]) -> str | None:
     """"Minas Gerais" -> "mg": the code a multi-word name is usually stored as.
     Only for two or three words, so a long phrase never acts as a code."""
@@ -641,7 +675,10 @@ def check(state: Any, ctx: Any, text: str) -> dict:
     pending: list[tuple[float, bool]] = []
     question = str(getattr(ctx, "question", "") or "")
     asked_member = _asked_member(ctx, t, question)
+    labels = _qualifier_numbers(asked_member, text)
     for value, pct in claims:
+        if not pct and value in labels:
+            continue                     # the "5" of "5 sao" is a label, not a figure
         if pct:
             support = [e for e in ledger if e.get("ratio") and
                        (_close(value, float(e["value"])) or _close(value, float(e["value"]) * 100))]
@@ -687,7 +724,9 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                             "of": {"measure": support[0].get("measure"), "dimension": None,
                                    "member": support[0].get("member")}})
             continue
-        sentence = _sentence_of(text, value)
+        # A list item inherits the line that introduces it: "São Paulo có … đơn,
+        # bao gồm:" then "- Đã giao: 96,478" gives the item to São Paulo (live 5072).
+        sentence = _with_header(text, value, _sentence_of(text, value))
         # A MEMBER THE QUESTION NAMES IS WHAT IT ASKS ABOUT: "đơn ở trạng thái đã
         # giao (delivered)" is answered by order_count for member `delivered`,
         # whatever the resolver called the measure (acceptance: 96,478 withheld in
