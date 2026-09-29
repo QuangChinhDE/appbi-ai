@@ -35,6 +35,9 @@ import { ChartTile } from '@/components/dashboards/ChartTile';
 import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
+import { AddElementMenu } from '@/components/dashboards/AddElementMenu';
+import { ReportMetaProvider } from '@/lib/report-meta';
+import { widgetTypeLabel as WIDGET_TYPE_LABEL } from '@/components/dashboards/widget-forms';
 import { DashboardChartManagerModal } from '@/components/dashboards/DashboardChartManagerModal';
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
@@ -90,6 +93,7 @@ import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
 import { ArrangeBar, type TileFrame } from '@/components/dashboards/ArrangeBar';
 import { arrangeTiles, closeVacatedBand, nudgeTiles, placeBeside, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
+import { moveSection, resolveStructure, sectionForPosition, structureIssues, insertionFor, toStructTiles } from '@/lib/report-structure';
 import { pageFilterFacts, statePageFilterFact } from '@/lib/public-page-filters';
 import { settleStoredLayout } from '@/lib/grid-settle';
 import {
@@ -313,7 +317,8 @@ function DashboardDetailPageInner() {
   // itself is gone — the right-dock FilterPane (isFilterPaneOpen) replaces
   // it. Both states stay in sync via the menu close-out pattern.
   const [, setIsFilterPopoverOpen] = useState(false);
-  const [isWidgetSubmenuOpen, setIsWidgetSubmenuOpen] = useState(false);
+  const [isAddElementOpen, setIsAddElementOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [editingWidgetId, setEditingWidgetId] = useState<number | null>(null);
   // What-if parameter — which chart tile's bind modal is open (null = closed).
   const [bindingChartId, setBindingChartId] = useState<number | null>(null);
@@ -1556,7 +1561,7 @@ function DashboardDetailPageInner() {
   // toàn: drag/resize chỉ update React state, không gọi BE. User chủ
   // động click "Lưu nháp" / "Lưu & xuất bản" để persist.
   //
-  const handleLayoutChange = (newLayout: Layout[]) => {
+  const handleLayoutChange = (newLayout: Layout[], extra: Record<number, Record<string, any>> = {}) => {
     if (!serverDashboard) return;
     // One gesture = one chart: DashboardGrid forwards ONLY the moved tile, so we
     // touch exactly the charts in `newLayout` and never re-read/re-write siblings.
@@ -1568,10 +1573,23 @@ function DashboardDetailPageInner() {
     const prevOverrides = localLayoutOverridesRef.current;
     const nextOverrides: Record<number, Record<string, any>> = { ...prevOverrides };
     let changed = false;
-    for (const item of newLayout) {
+    // Structure keys that ride with the same gesture (a moved tile's section,
+    // a section materialized before its header moves): one undo step. A tile
+    // that only gets a structure key keeps its cell.
+    const extraOnly = Object.keys(extra).map(Number).filter((id) => !newLayout.some((l) => Number(l.i) === id));
+    const items = [...newLayout, ...extraOnly.map((id) => {
+      const l = resolveDashboardChartLayout(id, prevOverrides) as any;
+      return { i: String(id), x: Number(l?.x) || 0, y: Number(l?.y) || 0, w: Number(l?.w) || 1, h: Number(l?.h) || 1 } as Layout;
+    })];
+    for (const item of items) {
       const id = Number(item.i);
       const existing = serverDashboard.dashboard_charts?.find((dc) => dc.id === id);
       if (!existing) continue;
+      if (extra[id]) {
+        nextOverrides[id] = { ...mergeGridLayout(resolveDashboardChartLayout(id, prevOverrides), item), ...extra[id] };
+        changed = true;
+        continue;
+      }
       const baseline = resolveDashboardChartLayout(id, {});
       const atBaseline =
         baseline.x === item.x && baseline.y === item.y
@@ -1928,16 +1946,20 @@ function DashboardDetailPageInner() {
   };
 
   const handleAddWidget = useCallback(
-    async (widgetType: 'text' | 'countdown' | 'image' | 'shape' | 'parameter_switcher' | 'section_header' | 'callout' | 'hero_strip') => {
+    async (widgetType: 'text' | 'countdown' | 'image' | 'shape' | 'parameter_switcher' | 'section_header' | 'callout' | 'hero_strip' | 'narrative') => {
       if (!dashboard) return;
+      // What a new element says before the author writes anything — in the
+      // report's language, never a fixed Vietnamese placeholder in an English
+      // report. The report header states the report's own name/description
+      // (empty = live), never a typed figure.
       const defaults: Record<string, any> = {
-        text: { template: 'Hello {{today()}}', align: 'left', fontSize: 18 },
-        countdown: { target: new Date(Date.now() + 7 * 86400000).toISOString(), label: 'Time left' },
+        text: { template: t('dashboards.addElement.defaultText'), align: 'left' },
+        countdown: { target: new Date(Date.now() + 7 * 86400000).toISOString(), label: t('dashboards.addElement.defaultCountdown') },
         image: { url: '', fit: 'contain' },
-        shape: { kind: 'rect', color: '#facc15' },
+        shape: { kind: 'divider', color: '#cbd5e1' },
         parameter_switcher: {
           paramName: 'period',
-          label: 'Chu kỳ',
+          label: t('dashboards.addElement.defaultParamLabel'),
           layout: 'tabs',
           options: [
             { label: 'YTD', value: 'YTD' },
@@ -1945,56 +1967,58 @@ function DashboardDetailPageInner() {
             { label: 'Q2', value: 'Q2' },
           ],
         },
-        // Modern/SaaS "element" widgets (decorative inserts).
-        section_header: { eyebrow: 'KHU VỰC', title: 'Tiêu đề mục', subtitle: '' },
-        callout: { title: 'Chú thích', text: 'Nhập insight hoặc ghi chú cho khu vực này…', tone: 'accent' },
-        hero_strip: { title: dashboard.name || 'Tên báo cáo', subtitle: 'Mô tả ngắn về báo cáo', metric: '', metricLabel: '' },
+        section_header: { eyebrow: '', title: t('dashboards.addElement.defaultSection'), subtitle: '' },
+        callout: { title: t('dashboards.addElement.defaultCalloutTitle'), text: t('dashboards.addElement.defaultCalloutText'), tone: 'accent' },
+        hero_strip: { title: '', description: '', variant: 'banner', showPeriod: true, showContext: true },
+        narrative: { variant: 'summary', origin: 'author', items: [] },
       };
 
-      // Default footprint per widget type — picked so the widget is visible
-      // immediately after dropping (a 4×2 grid cell is too short for text/countdown).
+      // Default footprint per widget type on the 36-col grid.
       const sizeByType: Record<string, { w: number; h: number }> = {
-        // Text/heading widgets are almost always a one-line section header, so
-        // default to a slim band (1 grid row) instead of a 2-row box that leaves
-        // a big empty gap under the text. The DA can still stretch it for a
-        // multi-line note.
-        // In the finer 36-col grid (×3 of the old 12-col sizes so a widget keeps
-        // the same default footprint).
         text: { w: 12, h: 3 },
         countdown: { w: 12, h: 9 },
         image: { w: 12, h: 12 },
-        shape: { w: 12, h: 3 },
+        shape: { w: 36, h: 1 },
         parameter_switcher: { w: 12, h: 6 },
-        // Section header + hero span full width (36); callout is a small note.
         section_header: { w: 36, h: 3 },
         hero_strip: { w: 36, h: 6 },
         callout: { w: 12, h: 6 },
+        narrative: { w: 18, h: 6 },
       };
       const size = sizeByType[widgetType];
 
-      // Next free row on the active page. Whitespace the author left is kept:
-      // the widget goes below everything, never into a gap.
-      const charts = (dashboard.dashboard_charts ?? []).filter((dc) => {
-        const dcPage = (dc.layout as any)?.pageId ?? null;
-        return activePageId ? dcPage === activePageId : true;
+      // Where it goes: directly under the ONE selected element, in its section
+      // (the rows below move down to make room), else at the end of the page.
+      // Built from the layout the author sees (unsaved moves included).
+      const pageTiles = (dashboard.dashboard_charts ?? []).filter((dc) => {
+        const l = resolveDashboardChartLayout(dc.id, localLayoutOverridesRef.current) as any;
+        return activePageId ? (l?.pageId ?? null) === activePageId || (!l?.pageId && activePageId === dashboardPages[0]?.id) : true;
       });
-      const y = charts.reduce((acc, dc) => {
-        const l = dc.layout as any;
-        return Math.max(acc, Number(l?.y ?? 0) + Number(l?.h ?? 4));
-      }, 0);
-      const x = 0;
+      const structTiles = toStructTiles(pageTiles, (tid) => resolveDashboardChartLayout(tid, localLayoutOverridesRef.current));
+      const anchorId = selectedTileIds.length === 1 ? selectedTileIds[0] : null;
+      const spot = insertionFor(structTiles, widgetType === 'hero_strip' ? null : anchorId, size)
+        ?? insertionFor(structTiles, null, size)!;
+      // A report header opens the report: at the top, pushing the page down.
+      const rect = widgetType === 'hero_strip'
+        ? { x: 0, y: 0, w: size.w, h: size.h }
+        : spot.rect;
+      const pushed = widgetType === 'hero_strip'
+        ? structTiles.map((st) => ({ id: st.id, x: st.x, y: st.y + size.h, w: st.w, h: st.h }))
+        : spot.changed;
+      const sectionId = widgetType === 'section_header' || widgetType === 'hero_strip' ? null : spot.sectionId;
 
       try {
+        if (pushed.length > 0) {
+          handleLayoutChange(pushed.map((bx) => ({ i: String(bx.id), x: bx.x, y: bx.y, w: bx.w, h: bx.h })) as Layout[]);
+        }
         const updated = await dashboardApi.addWidget(
           dashboardId,
           widgetType,
           {
-            x,
-            y,
-            w: size.w,
-            h: size.h,
+            ...rect,
             pageId: activePageId ?? undefined,
             gv: GRID_VERSION, // sizeByType is already finer (36-col) — mark so it's not re-scaled on read
+            ...(sectionId != null ? { sectionId } : {}),
             // An addition is a draft change like any other: the public link
             // gets it on Publish, Discard deletes it.
             draftOnly: true,
@@ -2003,16 +2027,19 @@ function DashboardDetailPageInner() {
         );
         await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
         resetUndo(); // chart/widget set changed — prior layout undo entries are stale
-        // Open edit modal for the freshly-created widget — auto-increment id
-        // means the largest id in the response is the one we just inserted.
+        // The new element is selected and open in the inspector.
         const newest = (updated?.dashboard_charts ?? []).reduce<number | null>((acc, dc) => {
           if (dc.widget_type && dc.widget_type !== 'chart') {
             return acc === null || dc.id > acc ? dc.id : acc;
           }
           return acc;
         }, null);
-        if (newest !== null) setEditingWidgetId(newest);
-        toast.success(t('dashboards.detail.widgetAdded', { type: widgetType.replace('_', ' ') }));
+        if (newest !== null) {
+          setSelectedTileIds([newest]);
+          setFocusedTileId(newest);
+          setInspectorOpen(true);
+        }
+        toast.success(t('dashboards.addElement.added', { type: WIDGET_TYPE_LABEL(t, widgetType) }));
       } catch (err) {
         console.error('Failed to add widget:', err);
         const detail = (err as any)?.response?.data?.detail;
@@ -2022,7 +2049,7 @@ function DashboardDetailPageInner() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [dashboard, dashboardId, activePageId, queryClient],
+    [dashboard, dashboardId, activePageId, queryClient, selectedTileIds, dashboardPages],
   );
 
   const handleCrossFilterChange = useCallback((sourceChartId: number, filter: BaseFilter | null) => {
@@ -3016,6 +3043,14 @@ function DashboardDetailPageInner() {
     () => paramsToFilters(paramDefs, paramValues, resolvedAvailableColumns),
     [paramDefs, paramValues, resolvedAvailableColumns],
   );
+  // What the report header says about the context: the filters the charts are
+  // queried with right now, stated as a reader reads them.
+  const reportMeta = React.useMemo(() => ({
+    name: dashboard?.name,
+    description: dashboard?.description ?? null,
+    filterFacts: pageFilterFacts({ applied: effectivePageScopeFilters, pageHidden: [], locked: [] })
+      .map((f) => `${f.label}: ${statePageFilterFact(f, t)}`),
+  }), [dashboard?.name, dashboard?.description, effectivePageScopeFilters, t]);
   const effectiveFiltersWithParams = React.useMemo<BaseFilter[]>(
     () =>
       paramFilters.length
@@ -3426,6 +3461,37 @@ function DashboardDetailPageInner() {
     const was = boxes.find((b) => b.id === id);
     if (!was) { handleLayoutChange(items); return; }
     const dc = visibleDashboardCharts.find((d) => d.id === id);
+    // The page's structure as the author sees it (report-structure): geometry
+    // from the settled grid, membership from each tile's layout.
+    const geometry = new Map(boxes.map((b) => [b.id, b]));
+    const structTiles = toStructTiles(visibleDashboardCharts, (tid) => ({
+      ...(resolveDashboardChartLayout(tid, localLayoutOverridesRef.current) as any), ...geometry.get(tid),
+    }));
+    const structure = resolveStructure(structTiles);
+    const moved = item.x !== was.x || item.y !== was.y;
+    const resized = item.w !== was.w || item.h !== was.h;
+    // Membership stated before anything moves, so a structural gesture never
+    // re-reads another section from the new geometry (a legacy report's
+    // inferred sections are written down the first time).
+    const materialize = (): Record<number, Record<string, any>> => {
+      const out: Record<number, Record<string, any>> = {};
+      for (const t of structTiles) {
+        if (t.kind === 'section' || t.kind === 'header' || t.sectionId !== undefined) continue;
+        out[t.id] = { sectionId: structure.sectionOf.get(t.id) ?? null };
+      }
+      return out;
+    };
+    if (dc?.widget_type === 'section_header' && moved && !resized) {
+      // A section moves as a whole: its members keep their place under it.
+      const group = moveSection(structTiles, id, { x: item.x, y: item.y }, structure);
+      if (!group) {
+        toast.info(t('dashboards.arrange.lockedInWay', { title: tileTitle(id) }));
+        setGridRevision((n) => n + 1);
+        return;
+      }
+      handleLayoutChange(group.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })) as Layout[], materialize());
+      return;
+    }
     const result = resolveDrop(boxes, id, { x: item.x, y: item.y, w: item.w, h: item.h }, {
       from: { y: was.y, h: was.h },
       closeVacatedBand: isSlicerControl(dc),
@@ -3436,7 +3502,22 @@ function DashboardDetailPageInner() {
       setGridRevision((n) => n + 1);
       return;
     }
-    handleLayoutChange(result.changed.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })) as Layout[]);
+    // A moved element belongs to the section it now sits in (a resize never
+    // changes membership). Headers and the report header belong to none.
+    const extra: Record<number, Record<string, any>> = {};
+    const self = structTiles.find((st) => st.id === id);
+    if (moved && self && (self.kind === 'content' || self.kind === 'narrative')) {
+      const landed = result.changed.find((b) => b.id === id) ?? { ...was, ...item };
+      const after = structTiles.map((st) => {
+        const c = result.changed.find((b) => b.id === st.id);
+        return c ? { ...st, x: c.x, y: c.y } : st;
+      });
+      const target = sectionForPosition(after, landed.y, id);
+      if (target !== (structure.sectionOf.get(id) ?? null) || self.sectionId === undefined) {
+        Object.assign(extra, materialize(), { [id]: { sectionId: target } });
+      }
+    }
+    handleLayoutChange(result.changed.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })) as Layout[], extra);
   };
   const nudgeRef = React.useRef<(d: { dx: number; dy: number }) => void>(() => {});
   nudgeRef.current = (d) => commitArrange(nudgeTiles(pageBoxes(), selectedTileIds, d));
@@ -3992,7 +4073,7 @@ function DashboardDetailPageInner() {
               <div className="relative">
                 <button
                   data-testid="dashboard-more"
-                  onClick={() => { setIsMoreMenuOpen((v) => !v); setIsFilterPopoverOpen(false); setIsPagesMenuOpen(false); setIsWidgetSubmenuOpen(false); }}
+                  onClick={() => { setIsMoreMenuOpen((v) => !v); setIsFilterPopoverOpen(false); setIsPagesMenuOpen(false); }}
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)]"
                   title={t('dashboards.detail.moreOptions')}
                 >
@@ -4001,7 +4082,7 @@ function DashboardDetailPageInner() {
 
                 {isMoreMenuOpen && (
                   <>
-                    <div className="fixed inset-0 z-40" onClick={() => { setIsMoreMenuOpen(false); setIsWidgetSubmenuOpen(false); }} />
+                    <div className="fixed inset-0 z-40" onClick={() => { setIsMoreMenuOpen(false); }} />
                     <div className="absolute right-0 z-50 mt-1.5 w-56 overflow-y-auto max-h-[80vh] rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-1 py-1 shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]">
                       {/* Export */}
                       <button
@@ -4103,45 +4184,15 @@ function DashboardDetailPageInner() {
                             {t('dashboards.detail.importHtml')}
                           </button>
 
-                          {/* Widgets submenu */}
+                          {/* Adding content: the same palette as the toolbar's Add. */}
                           <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
                           <button
-                            onClick={() => setIsWidgetSubmenuOpen((v) => !v)}
+                            onClick={() => { setIsMoreMenuOpen(false); setIsAddElementOpen(true); }}
                             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                           >
                             <Plus className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             <span className="flex-1 text-left">{t('dashboards.detail.addWidget')}</span>
-                            <ChevronDown className={`h-3 w-3 transition-transform ${isWidgetSubmenuOpen ? 'rotate-180' : ''}`} />
                           </button>
-                          {isWidgetSubmenuOpen && (
-                            <div className="bg-[rgba(255,255,255,0.02)]">
-                              {([
-                                ['section_header', t('dashboards.detail.widgetSectionHeader')],
-                                ['hero_strip', t('dashboards.detail.widgetHeroStrip')],
-                                ['callout', t('dashboards.detail.widgetCallout')],
-                                ['text', t('dashboards.detail.widgetText')],
-                                ['countdown', t('dashboards.detail.widgetCountdown')],
-                                ['image', t('dashboards.detail.widgetImage')],
-                                ['shape', t('dashboards.detail.widgetShape')],
-                                ['parameter_switcher', t('dashboards.detail.widgetParamSwitcher')],
-                              ] as const).map(([k, label]) => (
-                                <button
-                                  key={k}
-                                  onClick={() => { handleAddWidget(k); setIsMoreMenuOpen(false); setIsWidgetSubmenuOpen(false); }}
-                                  className="flex w-full items-center gap-2.5 px-6 py-1.5 text-[12px] font-[510] text-text-tertiary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
-                                >
-                                  {label}
-                                </button>
-                              ))}
-                              <button
-                                type="button"
-                                onClick={() => { setIsAddSlicerOpen(true); setIsMoreMenuOpen(false); setIsWidgetSubmenuOpen(false); }}
-                                className="flex w-full items-center gap-2.5 px-6 py-1.5 text-[12px] font-[510] text-text-tertiary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
-                              >
-                                {t('dashboards.addSlicer.menu')}
-                              </button>
-                            </div>
-                          )}
                         </>
                       )}
                     </div>
@@ -4224,13 +4275,31 @@ function DashboardDetailPageInner() {
                 </button>
               )}
               {canEditThisPage && (
-                <button
-                  onClick={() => setIsAddChartModalOpen(true)}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white shadow-sm transition-colors hover:bg-brand-hover"
-                >
-                  <Plus className="h-3 w-3" />
-                  <span>{t('dashboards.detail.addChart')}</span>
-                </button>
+                <div className="relative">
+                  <button
+                    type="button"
+                    data-testid="add-element-open"
+                    aria-haspopup="dialog"
+                    aria-expanded={isAddElementOpen}
+                    onClick={() => setIsAddElementOpen((v) => !v)}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white shadow-sm transition-colors hover:bg-brand-hover"
+                  >
+                    <Plus className="h-3 w-3" />
+                    <span>{t('dashboards.addElement.open')}</span>
+                  </button>
+                  <AddElementMenu
+                    open={isAddElementOpen}
+                    onClose={() => setIsAddElementOpen(false)}
+                    insertionLabel={selectedTileIds.length === 1
+                      ? t('dashboards.addElement.insertAfter', { title: tileTitle(selectedTileIds[0]) })
+                      : t('dashboards.addElement.insertEnd')}
+                    onPick={(kind) => {
+                      if (kind === 'chart') setIsAddChartModalOpen(true);
+                      else if (kind === 'slicer') setIsAddSlicerOpen(true);
+                      else void handleAddWidget(kind);
+                    }}
+                  />
+                </div>
               )}
             </div>
           </div>
@@ -4406,6 +4475,7 @@ function DashboardDetailPageInner() {
         )}
         <div ref={canvasRootRef} data-dashboard-canvas-root="builder">
         {(
+          <ReportMetaProvider value={reportMeta}>
           <DashboardGrid
             dashboardId={dashboardId}
             dashboardCharts={visibleDashboardCharts}
@@ -4448,6 +4518,7 @@ function DashboardDetailPageInner() {
             onParamChange={handleParamChange}
             onBindParameter={canEditThisPage ? setBindingChartId : undefined}
           />
+          </ReportMetaProvider>
         )}
         </div>
         </ExportModeContext.Provider>

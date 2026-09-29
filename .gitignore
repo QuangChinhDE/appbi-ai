@@ -349,3 +349,4 @@ backend/tests/.testdata/
 !backend/tests/test_public_link_filter_disclosure.py
 !backend/tests/test_embed_link_claim_operator.py
 !backend/tests/test_public_filter_authority.py
+!backend/tests/test_report_content_widgets.py

@@ -70,6 +70,8 @@ import { citedTilesOf } from '@/lib/report-evidence';
 import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { auditRenderedTiles } from '@/lib/dashboard-presentation/render-audit';
 import { SectionBands } from './SectionBands';
+import { readingOrder, toStructTiles } from '@/lib/report-structure';
+import { ReportMetaProvider } from '@/lib/report-meta';
 import { ReportEvidenceProvider } from '@/lib/report-evidence';
 
 // Phase-B5 / Phase-B9 — responsive "Fit to width" grid for the public report.
@@ -1729,10 +1731,16 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   const tileKindById = new Map(visibleDashboardCharts.map((dc) => [
     String(dc.id), tileKindOf(dc.chart?.chart_type, dc.widget_type),
   ]));
+  const geometryById = new Map(layouts.map((l) => [l.i, l]));
   const responsiveLayouts = buildResponsiveReportLayouts(layouts, {
     kindOf: (item) => tileKindById.get(item.i) ?? 'chart',
     gridWidth,
     gridGap: getDashboardGridMargin(dashboard?.theme_config)[1],
+    // Sections read as a unit on a phone: header, then its members.
+    order: readingOrder(toStructTiles(visibleDashboardCharts, (id) => ({
+      ...((visibleDashboardCharts.find((dc) => dc.id === id)?.layout as any) ?? {}),
+      ...geometryById.get(String(id)),
+    }))).map(String),
   });
   const activeBreakpoint = reportBreakpointFor(gridWidth);
 
@@ -1984,6 +1992,24 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // floating on the page background and an image lost its border/rounding.
   // Pure-visual widgets (shape, which also draws line/divider) and the
   // self-framed parameter switcher stay frameless to avoid a double frame.
+  // What the report header says: the report's name/description and the
+  // filters this surface applies (the same wording as the PDF header).
+  // A reader cannot switch parameters on a published report (their charts are
+  // served as published); templates read each switcher's first option, the
+  // value the author's builder starts from.
+  const publicParams: Record<string, any> = {};
+  for (const dc of visibleDashboardCharts) {
+    if (dc.widget_type !== 'parameter_switcher') continue;
+    const c = (dc.widget_config ?? {}) as any;
+    const first = Array.isArray(c.options) && c.options.length ? c.options[0]?.value : undefined;
+    if (c.paramName && first !== undefined && publicParams[c.paramName] === undefined) publicParams[c.paramName] = first;
+  }
+  const reportMeta = {
+    name: presentationTitle,
+    description: dashboard?.description ?? null,
+    filterFacts: pageFilterFacts({ applied: appliedViewerFilters, pageHidden: pageHiddenFilters, locked: lockedBannerEntries })
+      .map((f) => `${f.locked ? '🔒 ' : ''}${f.label}: ${statePageFilterFact(f, t)}`),
+  };
   function renderWidgetNode(dashboardChart: DashboardChart) {
     const wtype = dashboardChart.widget_type;
     // `transparentBackground` (per-widget config) drops the card frame so the
@@ -1999,7 +2025,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           <div className="h-full w-full" data-tile-id={dashboardChart.id} data-tile-kind="widget" data-widget-type={wtype ?? undefined}>
             {isSlicerControl(dashboardChart)
               ? <GridSlicerTile tile={dashboardChart} binding={publicSlicerBinding} />
-              : <DashboardWidget widget={dashboardChart} />}
+              : <ReportMetaProvider value={reportMeta}><DashboardWidget widget={dashboardChart} params={publicParams} /></ReportMetaProvider>}
           </div>
         ) : (
           <div
@@ -2012,7 +2038,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
               borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))',
             }}
           >
-            <DashboardWidget widget={dashboardChart} />
+            <ReportMetaProvider value={reportMeta}><DashboardWidget widget={dashboardChart} params={publicParams} /></ReportMetaProvider>
           </div>
         )}
       </div>

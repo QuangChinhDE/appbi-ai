@@ -2,6 +2,7 @@
 
 import React from 'react';
 import type { Layout } from 'react-grid-layout';
+import { resolveStructure, toStructTiles } from '@/lib/report-structure';
 
 /**
  * The surface behind a group of tiles — shared by the builder grid and the
@@ -31,7 +32,7 @@ export function SectionBands({
   layouts, dashboardCharts, cols, rowH, margin, width,
 }: {
   layouts: Array<Pick<Layout, 'i' | 'x' | 'y' | 'w' | 'h'>>;
-  dashboardCharts: Array<{ id: number; widget_type?: string | null }>;
+  dashboardCharts: Array<{ id: number; widget_type?: string | null; widget_config?: any; layout?: any }>;
   cols: number;
   rowH: number;
   margin: [number, number];
@@ -40,20 +41,23 @@ export function SectionBands({
   const bands = React.useMemo(() => {
     if (!width || cols <= 1) return [];
     const [mx, my] = margin;
-    const typeById = new Map<string, string>(
-      dashboardCharts.map((dc) => [String(dc.id), String(dc.widget_type ?? 'chart')]),
-    );
-    const sorted = [...layouts].sort((a, b) => a.y - b.y || a.x - b.x);
-    const headers = sorted.filter((l) => typeById.get(l.i) === 'section_header');
-    if (!headers.length) return [];
+    const geometry = new Map(layouts.map((l) => [l.i, l]));
+    // Membership is the report's structure (stored on each member, inferred
+    // for a report saved before it existed) — laid over the geometry drawn
+    // here, which may be a projection (phone stack, tablet).
+    const tiles = dashboardCharts.filter((dc) => geometry.has(String(dc.id)));
+    const structure = resolveStructure(toStructTiles(tiles, (id) => ({
+      ...(tiles.find((t) => t.id === id)?.layout ?? {}),
+      ...geometry.get(String(id)),
+    })));
+    if (!structure.sections.length) return [];
 
     const colWidth = (width - mx * (cols + 1)) / cols;
     const out: { key: string; left: number; top: number; width: number; height: number }[] = [];
 
-    headers.forEach((header, idx) => {
-      const next = headers[idx + 1];
-      const members = sorted.filter((l) => l.y >= header.y && (next ? l.y < next.y : true));
-      if (members.length < 2) return; // a header with nothing under it is not a group
+    structure.sections.forEach((section) => {
+      if (section.members.length < 1) return; // a header with nothing under it is not a group
+      const members = [section.headerId, ...section.members].map((id) => geometry.get(String(id))!).filter(Boolean);
 
       const minX = Math.min(...members.map((l) => l.x));
       const maxX = Math.max(...members.map((l) => l.x + l.w));
@@ -65,7 +69,7 @@ export function SectionBands({
       const top = rowH * minY + (minY + 1) * my;
       const bottom = rowH * maxY + maxY * my;
       out.push({
-        key: header.i,
+        key: String(section.headerId),
         left: left - mx / 2,
         top: top - my / 2,
         width: (right - left) + mx,

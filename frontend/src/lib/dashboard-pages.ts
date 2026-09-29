@@ -297,10 +297,18 @@ export const STACK_MIN_HEIGHT_PX: Record<ResponsiveTileKind, number> = {
  */
 export function deriveStackedLayout<T extends { i?: string; x: number; y: number; w: number; h: number }>(
   layouts: T[],
-  opts?: { kindOf?: (item: T) => ResponsiveTileKind; rowPitchPx?: number; cols?: number },
+  opts?: { kindOf?: (item: T) => ResponsiveTileKind; rowPitchPx?: number; cols?: number; order?: string[] },
 ): T[] {
   if (!Array.isArray(layouts) || layouts.length === 0) return layouts;
-  const sorted = [...layouts].sort((a, b) => (a.y - b.y) || (a.x - b.x));
+  // The report's reading order when it has one (report-structure: the preamble,
+  // then each section header followed by ITS members), so a heading is never
+  // separated from what it introduces by a tile that merely sits higher.
+  const rank = new Map((opts?.order ?? []).map((id, n) => [id, n]));
+  const sorted = [...layouts].sort((a, b) => {
+    const ra = rank.get(String(a.i)); const rb = rank.get(String(b.i));
+    if (ra !== undefined && rb !== undefined && ra !== rb) return ra - rb;
+    return (a.y - b.y) || (a.x - b.x);
+  });
   const pitch = opts?.rowPitchPx && opts.rowPitchPx > 0 ? opts.rowPitchPx : 0;
   const cols = opts?.cols ?? 1;
   const heightOf = (item: T) => {
@@ -588,7 +596,7 @@ export const REPORT_RESPONSIVE_COLS = { lg: DASHBOARD_GRID_COLS, md: DASHBOARD_G
  */
 export function buildResponsiveReportLayouts<T extends { i: string; x: number; y: number; w: number; h: number }>(
   layouts: T[],
-  opts: { kindOf: (item: T) => ResponsiveTileKind; gridWidth?: number | null; gridGap?: number },
+  opts: { kindOf: (item: T) => ResponsiveTileKind; gridWidth?: number | null; gridGap?: number; order?: string[] },
 ): { lg: T[]; md: T[]; xs: T[] } {
   const gap = Number(opts.gridGap) || 0;
   const width = Number(opts.gridWidth) || 0;
@@ -597,7 +605,7 @@ export function buildResponsiveReportLayouts<T extends { i: string; x: number; y
   return {
     lg: layouts,
     md: deriveTabletLayout(layouts, { kindOf: opts.kindOf, referenceWidthPx: tabletRef }),
-    xs: deriveStackedLayout(layouts, { kindOf: opts.kindOf, rowPitchPx: stackPitch, cols: REPORT_RESPONSIVE_COLS.xs }),
+    xs: deriveStackedLayout(layouts, { kindOf: opts.kindOf, rowPitchPx: stackPitch, cols: REPORT_RESPONSIVE_COLS.xs, order: opts.order }),
   };
 }
 

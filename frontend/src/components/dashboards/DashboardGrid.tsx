@@ -20,6 +20,7 @@ import { useExportMode } from '@/lib/export-mode';
 import { useI18n } from '@/providers/LanguageProvider';
 import { ReportEvidenceProvider, citedTilesOf } from '@/lib/report-evidence';
 import { isSlicerControl } from '@/lib/slicer-placement';
+import { readingOrder, toStructTiles } from '@/lib/report-structure';
 
 // Non-responsive grid: a single 12-column layout that simply scales cell
 // width with the container. Avoiding ResponsiveGridLayout means opening
@@ -329,10 +330,15 @@ function DashboardGridInner({
     if (!isNarrow) return authoredLayouts;
     const kindById = new Map(dashboardCharts.map((dc) => [String(dc.id), tileKindOf(dc.chart?.chart_type, dc.widget_type)]));
     const gap = getDashboardGridMargin(themeConfig)[1];
+    const geometry = new Map(authoredLayouts.map((l) => [l.i, l]));
     return deriveStackedLayout(authoredLayouts, {
       kindOf: (item) => kindById.get(item.i) ?? 'chart',
       rowPitchPx: dashboardRowHeight(gap) + gap,
       cols: DASHBOARD_GRID_COLS,
+      order: readingOrder(toStructTiles(dashboardCharts, (id) => ({
+        ...((dashboardCharts.find((dc) => dc.id === id)?.layout as any) ?? {}),
+        ...geometry.get(String(id)),
+      }))).map(String),
     }).map((item) => ({ ...item, static: true }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNarrow, JSON.stringify(authoredLayouts), dashboardCharts, themeConfig]);
@@ -456,6 +462,8 @@ function DashboardGridInner({
           || dc.widget_type === 'section_header'
           || dc.widget_type === 'callout'
           || dc.widget_type === 'hero_strip'
+          // It draws its own frame (as on the published report): no second one.
+          || dc.widget_type === 'parameter_switcher'
         );
         // Per-widget "transparent background" also drops the card frame so the
         // dashboard bg shows through (text/image/countdown widgets).

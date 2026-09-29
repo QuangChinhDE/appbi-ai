@@ -6,6 +6,7 @@ import { renderTemplate } from '@/lib/dashboard-expression';
 import { renderMarkdown } from '@/lib/dashboard-markdown';
 import { useI18n } from '@/providers/LanguageProvider';
 import { NarrativeWidget } from './NarrativeWidget';
+import { ReportHeaderWidget } from './ReportHeaderWidget';
 
 type Props = {
   widget: DashboardChart;
@@ -39,7 +40,7 @@ export function DashboardWidget({ widget, params = {}, onParamChange, editing = 
         <ParameterSwitcherWidget
           config={cfg}
           value={params[cfg.paramName ?? '']}
-          onChange={(v) => onParamChange?.(cfg.paramName ?? '', v)}
+          onChange={onParamChange ? (v) => onParamChange(cfg.paramName ?? '', v) : undefined}
         />
       );
     case 'section_header':
@@ -47,7 +48,7 @@ export function DashboardWidget({ widget, params = {}, onParamChange, editing = 
     case 'callout':
       return <CalloutWidget config={cfg} />;
     case 'hero_strip':
-      return <HeroStripWidget config={cfg} />;
+      return <ReportHeaderWidget config={cfg} editing={editing} />;
     case 'narrative':
       return <NarrativeWidget config={cfg} editing={editing} />;
     case 'html_fragment':
@@ -74,7 +75,9 @@ function TextWidget({ config, params }: { config: any; params: Record<string, an
   const source = String(config.template ?? config.markdown ?? config.text ?? '');
   const rendered = renderTemplate(source, params);
   const align = (config.align ?? 'left') as 'left' | 'center' | 'right';
-  const fontSize = Number(config.fontSize ?? 14);
+  // The report's body size unless the author set one (an inline default used
+  // to override the type scale on every text block).
+  const fontSize = config.fontSize != null && config.fontSize !== '' ? Number(config.fontSize) : undefined;
   const color = config.color || undefined;
   const fontWeight = config.bold ? 600 : 400;
   // Border + bg + radius come from the outer tile wrapper (DashboardGrid /
@@ -323,47 +326,15 @@ function SectionHeaderWidget({ config }: { config: any }) {
   );
 }
 
-function HeroStripWidget({ config }: { config: any }) {
-  // `headline`/`subhead` is what the server normalizes a hero strip to; the
-  // older `title`/`subtitle` shape is still in stored dashboards. Reading only
-  // the second rendered an imported hero as an empty gradient box with its text
-  // sitting unused in the row -- the same key mismatch that made section
-  // headers and callouts come up blank.
-  const title = String(config.headline ?? config.title ?? '');
-  const subtitle = String(config.subhead ?? config.subtitle ?? '');
-  const metric = String(config.metric ?? '');
-  const metricLabel = String(config.metricLabel ?? '');
-  return (
-    <div
-      className="relative flex h-full w-full items-center justify-between gap-4 overflow-hidden rounded-2xl px-5 py-4"
-      style={{
-        background: `linear-gradient(120deg, color-mix(in srgb, ${ACCENT} 14%, transparent), transparent 70%)`,
-        border: `1px solid color-mix(in srgb, ${ACCENT} 18%, transparent)`,
-      }}
-    >
-      <span className="absolute left-0 top-0 h-full w-1" style={{ background: ACCENT }} />
-      <div className="min-w-0">
-        {title && <div className="truncate text-lg font-bold text-text-primary">{title}</div>}
-        {subtitle && <div className="mt-0.5 truncate text-xs text-text-secondary">{subtitle}</div>}
-      </div>
-      {metric && (
-        <div className="shrink-0 text-right">
-          <div className="text-2xl font-bold tabular-nums" style={{ color: ACCENT }}>{metric}</div>
-          {metricLabel && <div className="text-[10px] uppercase tracking-wide text-text-tertiary">{metricLabel}</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function CalloutWidget({ config }: { config: any }) {
   const title = String(config.title ?? '');
   const text = String(config.text ?? '');
-  const tone = String(config.tone ?? 'accent') as 'accent' | 'good' | 'warn' | 'bad';
+  const tone = String(config.tone ?? 'accent') as 'accent' | 'good' | 'warn' | 'bad' | 'neutral';
   const color =
     tone === 'good' ? 'var(--dashboard-good, #12b886)'
     : tone === 'warn' ? 'var(--dashboard-warn, #c77d12)'
     : tone === 'bad' ? 'var(--dashboard-bad, #e5604d)'
+    : tone === 'neutral' ? 'rgb(var(--text-tertiary))'
     : ACCENT;
   return (
     <div
@@ -406,6 +377,7 @@ function ParameterSwitcherWidget({
       {layout === 'dropdown' ? (
         <select
           value={value ?? ''}
+          disabled={!onChange}
           onChange={(e) => onChange?.(e.target.value)}
           className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5 text-sm"
         >
@@ -420,6 +392,9 @@ function ParameterSwitcherWidget({
           {options.map((o) => (
             <button
               key={o.value}
+              type="button"
+              disabled={!onChange}
+              aria-pressed={value === o.value}
               onClick={() => onChange?.(o.value)}
               className={`rounded-md px-2 py-1 text-xs font-medium transition ${
                 value === o.value

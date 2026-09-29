@@ -339,6 +339,11 @@ def normalize_narrative_config(config: dict) -> dict:
 SLICER_CONTROL_TREATMENTS = {"auto", "dropdown", "list", "buttons", "compact"}
 
 
+CALLOUT_TONES = frozenset({"accent", "good", "warn", "bad", "neutral"})
+CALLOUT_TONE_ALIASES = {"info": "accent", "success": "good", "warning": "warn", "danger": "bad"}
+REPORT_HEADER_VARIANTS = frozenset({"banner", "split", "minimal"})
+
+
 def normalize_dashboard_widget_config(widget_type: str | None, widget_config: Optional[dict]) -> dict:
     """Normalize MCP/spec widget aliases to the runtime config keys."""
     config = dict(widget_config or {})
@@ -380,19 +385,39 @@ def normalize_dashboard_widget_config(widget_type: str | None, widget_config: Op
             body = config.get("template")
         if body is not None:
             config["text"] = str(body)
+        # One vocabulary: the renderer's. The editor wrote good/warn/bad while
+        # this line only kept info/success/warning/danger — every tone a person
+        # picked was saved as "accent". Older spellings map onto it.
         tone = str(config.get("tone") or "accent").strip().lower()
-        config["tone"] = tone if tone in {"accent", "info", "success", "warning", "danger", "neutral"} else "accent"
+        tone = CALLOUT_TONE_ALIASES.get(tone, tone)
+        config["tone"] = tone if tone in CALLOUT_TONES else "accent"
 
     elif wt == "narrative":
         config = normalize_narrative_config(config)
 
     elif wt == "hero_strip":
-        headline = config.get("headline") or config.get("title") or config.get("text")
-        if headline is not None:
-            config["headline"] = str(headline)
-        sub = config.get("subhead") or config.get("subtitle")
-        if sub is not None:
-            config["subhead"] = str(sub)
+        # The report header. The editor writes title/description; imports and
+        # AI write headline/subhead. The editor's value wins (it is the edit),
+        # and ONE key is stored: keeping both let a stale `headline` shadow every
+        # later edit of the title (the edit saved, the header never changed).
+        # An empty title/description means "the report's own name/description".
+        for canonical, aliases in (("headline", ("title", "headline", "text")), ("subhead", ("description", "subtitle", "subhead"))):
+            present = [a for a in aliases if a in config]
+            if present:
+                config[canonical] = str(config.get(present[0]) or "")
+                for a in aliases:
+                    if a != canonical:
+                        config.pop(a, None)
+        variant = str(config.get("variant") or "banner").strip().lower()
+        config["variant"] = variant if variant in REPORT_HEADER_VARIANTS else "banner"
+        for flag in ("showPeriod", "showContext"):
+            if flag in config:
+                config[flag] = bool(config[flag])
+        finding = config.get("finding")
+        if finding is not None:
+            finding = str(finding).strip()
+            kind = finding.split(":", 1)[0]
+            config["finding"] = finding if (not finding or kind in NARRATIVE_FINDING_KINDS) and len(finding) <= 64 else ""
 
     elif wt == "html_fragment":
         # THE gate, not a second opinion. An analyze response round-trips
