@@ -12,6 +12,7 @@
 import axios from 'axios';
 import type { Dashboard } from '@/types/api';
 import type { BaseFilter } from '@/lib/filters';
+import type { ReaderOutcome } from '../notices';
 
 /** One server-side render job as the polling endpoint returns it. */
 export interface PublicExportJob {
@@ -346,7 +347,11 @@ export type AiAgentEvent =
   | { type: 'route'; mode: 'normal' | 'thinking'; auto: boolean; reasons: string[] }
   | { type: 'sources'; sources: { title?: string | null; url?: string | null }[] }
   | { type: 'status'; text: string; tool: string }
-  | { type: 'tool_result'; tool: string; ok: boolean; error?: string | null }
+  // `outcome` classifies the failure the way a READER reads it; `ok` stays
+  // the transport fact it always was. Optional so a frontend deployed ahead
+  // of the backend degrades to the old counting rather than to `undefined`.
+  | { type: 'tool_result'; tool: string; ok: boolean; outcome?: ReaderOutcome;
+      error?: string | null }
   | { type: 'reading_plan'; items: AiReadingPlanItem[]; overall_goal?: string | null }
   | { type: 'plan_step'; step_index: number; chart_id: number | null; status: AiPlanStepStatus }
   | ({ type: 'exploration_step' } & AiExplorationStep)

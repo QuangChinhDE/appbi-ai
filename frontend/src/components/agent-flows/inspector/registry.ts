@@ -12,6 +12,7 @@ import React from 'react';
 import type { NodeEditorProps } from './types';
 import { AgentEditor } from './editors/agent';
 import { ToolEditor } from './editors/tool';
+import { SkillEditor } from './editors/skill';
 import { ReportReadEditor } from './editors/report_read';
 import { KnowledgeEditor } from './editors/knowledge';
 import { WebEditor } from './editors/web';
@@ -28,6 +29,7 @@ import { DelayEditor } from './editors/delay';
 export const NODE_EDITORS: Record<string, React.ComponentType<NodeEditorProps>> = {
   agent: AgentEditor,
   tool: ToolEditor,
+  skill: SkillEditor,
   report_read: ReportReadEditor,
   knowledge: KnowledgeEditor,
   web: WebEditor,

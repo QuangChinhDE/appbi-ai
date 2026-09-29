@@ -25,8 +25,9 @@ import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep } from '@/lib/agentFlows';
+import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep, type ToolSpec, type ChildRun, type CapabilityTrace, type ClaimFlag, type StepBudget } from '@/lib/agentFlows';
 import { FlowCanvas } from './FlowCanvas';
+import { toolLabel } from './inspector/ToolPicker';
 import { ConversationsPanel } from './ConversationsPanel';
 import { noticeCandidates, noticeCandidatesHidden } from '@/lib/notices';
 import {
@@ -38,14 +39,19 @@ import {
 // would eventually disagree about what colour `partial` is.
 
 export function RunsTab(
-  { brainKey, onOpenNode }: {
+  { brainKey, onOpenNode, toolSpecs }: {
     brainKey: string;
     /** Open the node that produced a trace step in the Builder. Supplied by the
      *  Builder, which owns navigation — Runs stays read-only and does not route. */
     onOpenNode?: (nodeKey: string) => void;
+    /** Tool name → catalogue entry, so an unnamed Tool step is readable here for
+     *  the same reason it had to become readable on the canvas: `tool_2 · tool`
+     *  names the implementation and nothing an author recognises. Optional
+     *  because Runs is also reachable before the catalogue has loaded. */
+    toolSpecs?: Record<string, ToolSpec>;
   },
 ) {
-  const { t, locale } = useI18n();
+  const { t, locale, language } = useI18n();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -320,12 +326,14 @@ export function RunsTab(
         /* left: the conversation's turns · middle: the flow as it ran · right: the
            chosen step. The three panes were already here for a flat run list; a
            conversation just supplies a better left column. */
-        <div className="flex min-h-0 flex-1">
+        // BELOW 1024px THE THREE PANES STACK: at 390px the canvas was 0px wide
+        // and the step list and inspector sat off-screen. From lg up, side by side.
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row lg:overflow-hidden">
         {/* LEFT — every turn of this conversation, in order.
             A card per turn rather than table rows: the question is the only thing
             that identifies a turn to a person, and in a 360px column an aligned
             table truncates it worst of all. */}
-        <div className="flex w-[360px] flex-shrink-0 flex-col border-r border-[rgb(var(--border-line))]">
+        <div className="flex max-h-[45vh] w-full flex-shrink-0 flex-col border-b border-[rgb(var(--border-line))] lg:max-h-none lg:w-[360px] lg:border-b-0 lg:border-r">
           <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-[rgb(var(--border-line))] px-2 py-1.5">
             <Button size="sm" variant="ghost" onClick={closeConversation}>
               <ChevronLeft className="h-3.5 w-3.5" /> {t('agentFlows.conv.back')}
@@ -401,23 +409,23 @@ export function RunsTab(
             outcome painted onto it. Reused rather than rebuilt: a second
             renderer would drift from the first, and the shape a person debugs
             must be the shape they authored. */}
-        <div className="min-w-0 flex-1 overflow-auto bg-surface-2/30">
+        <div className="min-h-[40vh] min-w-0 flex-shrink-0 overflow-auto bg-surface-2/30 lg:min-h-0 lg:flex-1 lg:flex-shrink">
           {!detail ? (
             <p className="p-10 text-center text-caption text-text-tertiary">
               {t('agentFlows.runs.selectRun')}
             </p>
           ) : flowBody === null ? (
-            <p className="p-10 text-center text-caption text-text-tertiary">Đang tải luồng…</p>
+            <p className="p-10 text-center text-caption text-text-tertiary">{t('agentFlows.trace.loadingFlow')}</p>
           ) : !flowBody.length ? (
             <p className="p-10 text-center text-caption text-text-tertiary">
-              Không dựng được luồng của run này — bản v{detail.version} có thể đã bị xoá.
-              Các bước vẫn xem được ở khung bên phải.
+              {t('agentFlows.trace.flowGone', { version: String(detail.version) })}
             </p>
           ) : (
             <div className="p-4">
               <FlowCanvas
                 nodes={flowBody}
                 specs={specs}
+                toolSpecs={toolSpecs}
                 selectedKey={openStep}
                 answerKey={answerKey}
                 onSelect={setOpenStep}
@@ -432,7 +440,7 @@ export function RunsTab(
         {/* RIGHT — the node clicked on the canvas. Falls back to the run's own
             summary when nothing is selected, so the pane is never blank while a
             run is open. */}
-        <aside className="flex w-[420px] flex-shrink-0 flex-col overflow-auto border-l border-[rgb(var(--border-line))] bg-surface-1">
+        <aside className="flex w-full flex-shrink-0 flex-col overflow-auto border-t border-[rgb(var(--border-line))] bg-surface-1 lg:w-[420px] lg:border-l lg:border-t-0">
           {!detail ? (
             <p className="p-6 text-center text-caption text-text-tertiary">
               {t('agentFlows.runs.selectRun')}
@@ -441,7 +449,7 @@ export function RunsTab(
             <>
               <div className="border-b border-[rgb(var(--border-line))] px-3 py-2.5">
                 <div className="text-tiny font-strong uppercase tracking-wider text-text-quaternary">
-                  Bước đã chọn
+                  {t('agentFlows.runs.selectedStep')}
                 </div>
                 <div className="mt-0.5 flex items-center gap-2">
                   <StepMark status={selectedStep.status} />
@@ -462,7 +470,7 @@ export function RunsTab(
                   )}
                   <button type="button" onClick={() => setOpenStep(null)}
                     className="text-tiny text-text-tertiary hover:text-text-secondary">
-                    ← Cả run
+                    {t('agentFlows.runs.backToWholeRun')}
                   </button>
                 </div>
                 <div className="mt-1 text-tiny text-text-tertiary">
@@ -510,6 +518,18 @@ export function RunsTab(
                 {detail.version != null && <Badge size="xs" variant="neutral">v{detail.version}</Badge>}
               </div>
               <div className="p-3">
+                {detail.parent && (
+                  <a
+                    href={detail.parent.brain_key && detail.parent.id
+                      ? `/agent-flows?flow=${encodeURIComponent(detail.parent.brain_key)}&tab=runs&run=${detail.parent.id}`
+                      : undefined}
+                    className="mb-2 block rounded-md border border-brand/25 bg-brand/5 px-2.5 py-1.5 text-caption text-text-secondary hover:border-brand/50">
+                    {t('agentFlows.trace.parentRun', {
+                      flow: detail.parent.brain_key || '?',
+                      step: detail.parent.step_key ? ` (${detail.parent.step_key})` : '',
+                    })}
+                  </a>
+                )}
                 {/* Lifted to the top of the run summary: this is what somebody
                     who opened a run BECAUSE the answer looked wrong needs first.
                     Same detector as the builder's badge — it just was not on this
@@ -575,8 +595,7 @@ export function RunsTab(
                 )}
 
                 <p className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2 text-tiny text-text-tertiary">
-                  Bấm vào một bước trên sơ đồ để xem nó nhận gì, trả ra gì và chạy
-                  với cấu hình nào.
+                  {t('agentFlows.trace.clickStep')}
                 </p>
 
                 <Label className="mt-3">{t('agentFlows.runs.question')}</Label>
@@ -649,10 +668,10 @@ export function RunsTab(
 
                 <Label className="mt-3">{t('agentFlows.runs.cost')}</Label>
                 <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-2">
-                  <Money label="Vào" value={detail.usage.prompt_tokens} unit="token" />
-                  <Money label="Ra" value={detail.usage.completion_tokens} unit="token" />
-                  <Money label="Model" value={detail.usage.llm_calls} unit="lượt" />
-                  <Money label="Tool" value={detail.usage.tool_calls} unit="lượt" />
+                  <Money label={t('agentFlows.trace.tokensIn')} value={detail.usage.prompt_tokens} unit="token" />
+                  <Money label={t('agentFlows.trace.tokensOut')} value={detail.usage.completion_tokens} unit="token" />
+                  <Money label="Model" value={detail.usage.llm_calls} unit={t('agentFlows.trace.calls')} />
+                  <Money label="Tool" value={detail.usage.tool_calls} unit={t('agentFlows.trace.calls')} />
                   {/* Cost LAST and separately: it is the number an operator is
                       accountable for, and `null` says the provider did not
                       report a price rather than pretending the turn was free. */}
@@ -660,7 +679,7 @@ export function RunsTab(
                     {detail.usage.usd != null ? (
                       <b className="font-strong">${detail.usage.usd.toFixed(4)}</b>
                     ) : (
-                      <span className="text-tiny text-text-quaternary">chưa có giá</span>
+                      <span className="text-tiny text-text-quaternary">{t('agentFlows.trace.noPrice')}</span>
                     )}
                   </span>
                 </div>
@@ -678,7 +697,7 @@ export function RunsTab(
                     onClick={() => download(`run-${detail.id}.json`, detail)}
                     className="text-tiny text-text-quaternary underline-offset-2 hover:underline"
                   >
-                    Tải JSON cả run
+                    {t('agentFlows.trace.downloadRun')}
                   </button>
                 </div>
                 <div className="mt-1 overflow-hidden rounded-lg border border-[rgb(var(--border-line))]">
@@ -688,12 +707,13 @@ export function RunsTab(
                       <button
                         key={`${s.seq}-${s.key}`}
                         type="button"
+                        data-testid="run-step"
                         onClick={() => setOpenStep(s.key)}
                         className="flex w-full items-start gap-2 border-t border-[rgb(var(--border-line))] p-2 text-left transition first:border-t-0 hover:bg-surface-2"
                       >
                         <StepMark status={s.status} />
                         <div className="min-w-0 flex-1">
-                          <b className="block text-tiny font-medium">{s.name || s.key}</b>
+                          <b className="block text-tiny font-medium">{stepTitle(s, toolSpecs, language)}</b>
                           <span className="block text-tiny text-text-tertiary">
                             {s.type} · {s.ms ?? 0}ms
                             {s.prompt_tokens != null && ` · ${tok.toLocaleString()} token`}
@@ -715,6 +735,182 @@ export function RunsTab(
   );
 }
 
+/** What to call a step in the trace, most specific fact first.
+ *
+ *  The author's own name wins. Failing that, a Tool step is named by the tool it
+ *  CALLED — a fact the run already recorded, read here rather than re-derived, so
+ *  nothing about a stored run changes. A step that was skipped called nothing and
+ *  keeps its key, which is the truthful answer: there is no tool to name. */
+function stepTitle(
+  step: RunStep, toolSpecs: Record<string, ToolSpec> | undefined, language: 'en' | 'vi',
+): string {
+  if (step.name) return step.name;
+  if (step.type === 'tool') {
+    const called = step.tool_calls?.[0];
+    const spec = called ? toolSpecs?.[called] : undefined;
+    if (spec) return toolLabel(spec, language);
+    if (called) return called;
+  }
+  return step.key;
+}
+
+/** SKILLS THIS STEP RAN, each a run of its own. Opened in the Skill's own Runs
+ *  tab, where its steps are — the parent keeps only the link, so the two traces
+ *  cannot disagree. */
+/** A refusal or exclusion CODE, as a sentence the author can act on. Unknown
+ *  codes fall back to the code itself — it stays in the trace, never hidden. */
+function useReason() {
+  const { t } = useI18n();
+  return (code: string) => {
+    const key = `agentFlows.reason.${code}`;
+    const text = t(key);
+    return text && text !== key ? text : code;
+  };
+}
+
+function figure(f: ClaimFlag): string {
+  return `${f.value.toLocaleString()}${f.pct ? '%' : ''}`;
+}
+
+function ChildRuns({ runs }: { runs: ChildRun[] }) {
+  const { t } = useI18n();
+  return (
+    <div className="mt-1.5">
+      <div className="mb-1 text-tiny font-strong uppercase tracking-wider text-text-quaternary">
+        {t('agentFlows.trace.skillsRan', { count: runs.length })}
+      </div>
+      <div className="space-y-1">
+        {runs.map((c) => (
+          <a key={c.run_key}
+            href={`/agent-flows?flow=${encodeURIComponent(c.brain_key)}&tab=runs&run=${c.id}`}
+            className="flex flex-wrap items-center gap-1.5 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-1 text-tiny hover:border-brand/40">
+            <b className="font-mono text-text-secondary">{c.brain_key}</b>
+            <span className="text-text-tertiary">v{c.version ?? '?'}</span>
+            <span className="text-text-tertiary">· {t(`agentFlows.trace.invokedAs.${c.invoked_as || 'agent_capability'}`)}</span>
+            <span className={c.status === 'ok' ? 'text-success' : 'text-warning'}>· {c.status}</span>
+            <span className="text-text-quaternary">· {t('agentFlows.trace.childCost', { llm: c.llm_calls, tools: c.tool_calls, tokens: c.tokens })}</span>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** WHAT THIS STEP COULD SEE, AND WHAT IT TRIED. Granted vs eligible vs shown each
+ *  round, what it discovered, what it invoked and what was refused — the run-time
+ *  half of "What the AI sees". Every reason is a sentence, with its code kept. */
+function CapabilityView({ view }: { view: CapabilityTrace }) {
+  const { t } = useI18n();
+  const reason = useReason();
+  const rounds = view.visible_per_round || [];
+  const chars = view.schema_chars_per_round || [];
+  const excluded = Object.entries(view.excluded || {});
+  const hasView = (view.granted || []).length > 0;
+  const whyClaim = (f: ClaimFlag) => t(`agentFlows.claim.${f.why}`, {
+    what: [f.of?.member, f.of?.dimension, f.of?.measure].filter((x) => x && x !== '__time__').join(' / '),
+  });
+  return (
+    <div className="mt-1.5 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-1.5 text-tiny text-text-secondary">
+      <div className="mb-1 font-strong uppercase tracking-wider text-text-quaternary">
+        {t('agentFlows.trace.capabilities')}
+      </div>
+      {hasView && (
+        <p>
+          {t('agentFlows.trace.granted', { granted: view.granted.length, eligible: view.eligible.length })}
+          {' · '}
+          {view.shortlisted
+            ? (view.schema_budget
+              ? t('agentFlows.trace.routedBudget', { chars: view.schema_budget.toLocaleString() })
+              : t('agentFlows.trace.routedCount', { limit: view.limit }))
+            : t('agentFlows.trace.showsAll')}
+        </p>
+      )}
+      {rounds.map((r, i) => (
+        <p key={i} className="mt-0.5 text-text-tertiary">
+          {t('agentFlows.trace.round', { n: i + 1 })}
+          {chars[i] != null ? ` (${t('agentFlows.trace.schemaChars', { chars: chars[i].toLocaleString() })})` : ''}:{' '}
+          {r.length ? r.join(', ') : t('agentFlows.trace.answerRound')}
+        </p>
+      ))}
+      {(view.discoveries || []).map((d, i) => (
+        <p key={`d${i}`} className="mt-0.5">
+          {t('agentFlows.trace.discovery', { n: d.round, need: d.need || d.names.join(', ') })}{' '}
+          {d.loaded.length ? d.loaded.join(', ') : t('agentFlows.trace.nothingNew')}
+          {!!d.not_available.length && ` · ${t('agentFlows.trace.notAvailable')}: ${d.not_available.join(', ')}`}
+        </p>
+      ))}
+      {!view.discoveries?.length && !!view.discovered?.length && (
+        <p className="mt-0.5">{t('agentFlows.trace.discovered')}: {view.discovered.join(', ')}</p>
+      )}
+      {!!view.auto_loaded?.length && (
+        <p className="mt-0.5 text-text-tertiary">
+          {t('agentFlows.trace.autoLoaded')}:{' '}
+          {view.auto_loaded.map((a) => `${a.name} (${t('agentFlows.trace.round', { n: a.round })})`).join(', ')}
+        </p>
+      )}
+      {!!view.final_rounds && (
+        <p className="mt-0.5 text-text-tertiary">{t('agentFlows.trace.finalRounds', { count: view.final_rounds })}</p>
+      )}
+      {!!view.evidence?.length && (
+        <p className="mt-0.5 text-text-tertiary">
+          {t('agentFlows.trace.evidence')}: {view.evidence.map((e) => `${e.ref} (${e.tool})`).join(', ')}
+        </p>
+      )}
+      {!!view.invoked?.length && <p className="mt-0.5">{t('agentFlows.trace.invoked')}: {view.invoked.join(', ')}</p>}
+      {!!view.rejected?.length && (
+        <ul className="mt-0.5 space-y-0.5 text-warning">
+          {view.rejected.map((r, i) => (
+            <li key={i}>
+              {t('agentFlows.trace.refused')}: <b>{r.name}</b> — {reason(r.code)}{' '}
+              <code className="text-text-quaternary">{r.code}</code>
+            </li>
+          ))}
+        </ul>
+      )}
+      {!!excluded.length && (
+        <ul className="mt-0.5 space-y-0.5 text-text-quaternary">
+          {excluded.map(([n, why]) => (
+            <li key={n}>{t('agentFlows.trace.notShown')}: <b>{n}</b> — {reason(why)} <code>{why}</code></li>
+          ))}
+        </ul>
+      )}
+      {!!view.claim_review?.flagged?.length && (
+        <div className="mt-1 rounded bg-warning/5 p-1 text-warning">
+          <p className="font-strong">{t('agentFlows.trace.draftReturned')}</p>
+          <ul>{view.claim_review.flagged.map((f, i) => <li key={i}>{figure(f)} — {whyClaim(f)}</li>)}</ul>
+        </div>
+      )}
+      {!!view.claims?.flagged?.length && (
+        <div className="mt-1 rounded bg-danger/5 p-1 text-danger">
+          <p className="font-strong">{t('agentFlows.trace.claimsUnverified')}</p>
+          <ul>{view.claims.flagged.map((f, i) => <li key={i}>{figure(f)} — {whyClaim(f)}</li>)}</ul>
+          {!!view.claims.draft && (
+            <details className="mt-1 text-text-secondary">
+              <summary className="cursor-pointer">{t('agentFlows.trace.draftBeforeWithholding')}</summary>
+              <p className="mt-0.5 whitespace-pre-wrap break-words">{view.claims.draft}</p>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** WHERE THE BUDGET WENT, for this step: what it could spend when it started,
+ *  what it had to leave for the steps after it, and what it spent. */
+function BudgetLine({ budget }: { budget: StepBudget }) {
+  const { t } = useI18n();
+  return (
+    <p className="mt-1 text-tiny text-text-tertiary">
+      {t('agentFlows.trace.budget', {
+        llm: budget.llm_calls, tools: budget.tool_calls, start: budget.llm_available_at_start,
+      })}
+      {budget.llm_reserved_for_later > 0
+        ? ` ${t('agentFlows.trace.budgetReserved', { count: budget.llm_reserved_for_later })}` : ''}
+    </p>
+  );
+}
+
 /** One step, opened up: what it ran with, what it got, what it produced.
  *
  *  INPUT and OUTPUT sit next to each other on purpose. With only the output, a
@@ -726,6 +922,7 @@ export function RunsTab(
  *  Labelled with the version so nobody debugs yesterday's result against today's
  *  settings. */
 function StepInspector({ step, configSource }: { step: RunStep; configSource?: string }) {
+  const { t } = useI18n();
   const [tab, setTab] = React.useState<'config' | 'input' | 'output'>('input');
   const tok = (step.prompt_tokens ?? 0) + (step.completion_tokens ?? 0);
 
@@ -735,7 +932,7 @@ function StepInspector({ step, configSource }: { step: RunStep; configSource?: s
         {([
           ['input', 'INPUT'],
           ['output', 'OUTPUT'],
-          ['config', 'Cấu hình'],
+          ['config', t('agentFlows.trace.config')],
         ] as const).map(([k, label]) => (
           <button
             key={k}
@@ -752,14 +949,14 @@ function StepInspector({ step, configSource }: { step: RunStep; configSource?: s
         <span className="ml-auto flex items-center gap-2 text-tiny text-text-quaternary">
           {step.prompt_tokens != null ? (
             <>
-              <span>vào {(step.prompt_tokens ?? 0).toLocaleString()}</span>
-              <span>ra {(step.completion_tokens ?? 0).toLocaleString()}</span>
+              <span>{t('agentFlows.trace.tokensInLower', { n: (step.prompt_tokens ?? 0).toLocaleString() })}</span>
+              <span>{t('agentFlows.trace.tokensOutLower', { n: (step.completion_tokens ?? 0).toLocaleString() })}</span>
               <b className="text-text-tertiary">{tok.toLocaleString()} token</b>
             </>
           ) : (
             // NULL is not zero. A run recorded before per-step accounting genuinely
             // does not know its cost, and "0" would claim the step was free.
-            <span>chưa ghi token cho run này</span>
+            <span>{t('agentFlows.trace.noTokens')}</span>
           )}
         </span>
       </div>
@@ -791,7 +988,7 @@ function StepInspector({ step, configSource }: { step: RunStep; configSource?: s
           {!!step.tool_calls?.length && (
             <div className="mt-1.5">
               <div className="mb-1 text-tiny font-strong uppercase tracking-wider text-text-quaternary">
-                Công cụ đã gọi ({step.tool_calls.length})
+                {t('agentFlows.trace.toolsCalled', { count: step.tool_calls.length })}
               </div>
               <div className="flex flex-wrap gap-1">
                 {step.tool_calls.map((name, i) => (
@@ -803,6 +1000,9 @@ function StepInspector({ step, configSource }: { step: RunStep; configSource?: s
               </div>
             </div>
           )}
+          {!!step.children?.length && <ChildRuns runs={step.children} />}
+          {step.capabilities && <CapabilityView view={step.capabilities} />}
+          {step.budget && <BudgetLine budget={step.budget} />}
         </>
       )}
 
@@ -810,8 +1010,8 @@ function StepInspector({ step, configSource }: { step: RunStep; configSource?: s
         <>
           <p className="mb-1 text-tiny text-text-quaternary">
             {configSource?.startsWith('v')
-              ? `Cấu hình của bản ${configSource} — đúng bản đã chạy run này, không phải bản hiện tại.`
-              : (configSource || 'Không đọc được cấu hình của bản đã chạy.')}
+              ? t('agentFlows.trace.configOf', { version: String(configSource) })
+              : (configSource || t('agentFlows.trace.configUnreadable'))}
           </p>
           <ValueView
             filename={`buoc-${step.key}-cauhinh.json`}
@@ -893,11 +1093,12 @@ function asTable(v: unknown): { columns: string[]; rows: unknown[][] } | null {
 }
 
 function Scalar({ v }: { v: unknown }) {
+  const { t } = useI18n();
   if (v === null || v === undefined || v === '') {
-    return <span className="text-tiny italic text-text-quaternary">(trống)</span>;
+    return <span className="text-tiny italic text-text-quaternary">{t('agentFlows.trace.empty')}</span>;
   }
   if (typeof v === 'boolean') {
-    return <span className="text-tiny text-text-secondary">{v ? 'có' : 'không'}</span>;
+    return <span className="text-tiny text-text-secondary">{v ? t('agentFlows.trace.yes') : t('agentFlows.trace.no')}</span>;
   }
   return (
     <span className="whitespace-pre-wrap break-words text-tiny leading-5 text-text-secondary">
@@ -1012,6 +1213,7 @@ function download(name: string, data: unknown) {
 function ValueView({
   raw, empty, filename,
 }: { raw: string | null | undefined; empty: string; filename: string }) {
+  const { t } = useI18n();
   const [showRaw, setShowRaw] = React.useState(false);
   const text = (raw ?? '').trim();
 
@@ -1061,11 +1263,11 @@ function ValueView({
       <div className="flex items-center gap-2">
         <button type="button" onClick={() => setShowRaw((s) => !s)}
           className="text-tiny text-text-quaternary underline-offset-2 hover:underline">
-          {showRaw ? 'Xem dạng dễ đọc' : 'Xem JSON gốc'}
+          {showRaw ? t('agentFlows.trace.viewReadable') : t('agentFlows.trace.viewRaw')}
         </button>
         <button type="button" onClick={() => download(filename, parsed)}
           className="text-tiny text-text-quaternary underline-offset-2 hover:underline">
-          Tải JSON
+          {t('agentFlows.trace.downloadJson')}
         </button>
       </div>
 
@@ -1084,7 +1286,7 @@ function ValueView({
           {!!Object.keys(vars).length && (
             <section>
               <h4 className="mb-1 text-tiny font-strong uppercase tracking-wider text-text-quaternary">
-                Biến đã đặt tên
+                {t('agentFlows.trace.namedVars')}
               </h4>
               <div className="rounded bg-surface-1 p-2"><Value v={vars} /></div>
             </section>
@@ -1092,7 +1294,7 @@ function ValueView({
           {!!Object.keys(outs).length && (
             <section>
               <h4 className="mb-1 text-tiny font-strong uppercase tracking-wider text-text-quaternary">
-                Kết quả của các bước trước
+                {t('agentFlows.trace.priorOutputs')}
               </h4>
               <div className="rounded bg-surface-1 p-2"><Value v={outs} /></div>
             </section>

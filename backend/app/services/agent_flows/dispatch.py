@@ -262,7 +262,13 @@ def save_memory(
         # memory every turn. But the token still has to be checked, just afterwards:
         # a browser tab keeps one session key while moving between links, and two
         # links have two different data contracts. Memory from one must never be
-        # read on the other, so a token change RESETS the row rather than joining it.
+        # read on the other.
+        #
+        # A ROW OWNED BY ANOTHER LINK IS NOT THIS LINK'S TO CHANGE. Re-pointing its
+        # token (security acceptance F2, 422b8fd2) carried link A's stored
+        # transcript to link B — readable there through `GET /ai/session/<key>` —
+        # and took it away from A. Resetting it instead would let anyone who knows
+        # a key erase A's conversation. So this turn's memory is simply not kept.
         row = (
             db.query(AiChatSession)
             .filter(AiChatSession.session_key == session_key)
@@ -277,7 +283,8 @@ def save_memory(
             row = AiChatSession(token=token, session_key=session_key)
             db.add(row)
         elif row.token != token:
-            row.token = token
+            logger.info("[flow] session key belongs to another link; memory not kept")
+            return
 
         remembered = out.memory_delta.set
         # Which NODES may be skipped next turn, derived from the flow rather than
@@ -390,7 +397,33 @@ BLOCK_MESSAGES = {
     ),
     "binding_broken": "Trợ lý đang được cấu hình lại cho báo cáo này.",
     "not_published": "Trợ lý của link này chưa có bản phát hành nào.",
+    "v3_disabled": (
+        "Trợ lý này dùng tính năng Agent Flow V3 đang trong giai đoạn thử nghiệm và chưa được "
+        "mở cho người xem. / This assistant uses Agent Flow V3 features that are not yet "
+        "open to viewers."
+    ),
 }
+
+
+def v3_capabilities(flow: Any) -> list[str]:
+    """The V3-only capabilities a flow uses: Skill steps and `skill:` grants."""
+    from app.services.agent_flows.contract import SKILL_GRANT_PREFIX
+
+    found: list[str] = []
+    for n in flow.all_nodes():
+        if getattr(n, "type", "") == "skill":
+            found.append(f"skill step {getattr(n, 'key', '')}")
+        for g in getattr(n, "tools", None) or []:
+            if str(getattr(g, "tool", "") or "").startswith(SKILL_GRANT_PREFIX):
+                found.append(str(g.tool))
+    return found
+
+
+def v3_blocked_for_readers(flow: Any) -> bool:
+    """Pilot disabled (settings.AGENT_FLOW_V3_ENABLED false) and the flow needs V3."""
+    from app.core.config import settings
+
+    return not bool(getattr(settings, "AGENT_FLOW_V3_ENABLED", False)) and bool(v3_capabilities(flow))
 
 
 async def run_for_link(
@@ -413,11 +446,13 @@ async def run_for_link(
     run_id = new_run_id()
     binding, row, flow, problem = resolve_for_link(db, link=link, dashboard=dashboard)
 
+    if not problem and flow is not None and v3_blocked_for_readers(flow):
+        problem = "v3_disabled"
     if problem or flow is None or row is None:
         out = blocked(run_id, BLOCK_MESSAGES.get(problem, BLOCK_MESSAGES["not_configured"]), problem or "not_configured")
         _record_blocked(db, out, binding, question, session_key, link, dashboard)
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -523,6 +558,9 @@ async def run_for_link(
         async for ev in executor.run_flow(
             inp, flow=flow, ctx=ctx, api_key=api_key,
             base_system_prompt=base_system_prompt, db=db,
+            # The link's privacy choice binds every run this turn creates —
+            # including a Skill's child run.
+            store_content=bool(binding.store_question_content),
         ):
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
@@ -534,7 +572,7 @@ async def run_for_link(
                 # flow's real viewer traffic left no diagnostics in Runs at all —
                 # an author saw them only for questions they asked themselves,
                 # which is the opposite of where they are needed.
-                ev.extra["envelope"] = out.to_dict(notices=reader_notices(out.notices))
+                ev.extra["envelope"] = out.to_reader_dict()
                 save_memory(
                     db, session_key=session_key, token=getattr(link, "token", ""),
                     fp=fp, out=out, flow=flow,
@@ -678,6 +716,7 @@ def preview_step(
     provider: str = "",
     model: str = "",
     base_system_prompt: str = "",
+    db: Any = None,
 ) -> dict:
     """What ONE step will hand the model, for a question the author types.
 
@@ -730,7 +769,11 @@ def preview_step(
     rctx = executor.RunContext(
         inp=inp, flow=flow, ctx=ctx, api_key="",
         base_system_prompt=base_system_prompt,
-        answer_key=flow.answering_key(), db=None,
+        # THE DATABASE, for reads only: a granted Skill is resolved (and its
+        # lifecycle and sharing checked) exactly as a run resolves it. With
+        # `db=None` every Skill read as `skill_not_found` — found in the browser,
+        # on a flow whose real runs discover and call that Skill.
+        answer_key=flow.answering_key(), db=db,
     )
     out = agent_handler.preview(node, state, rctx)
     # EARLIER STEPS HAVE NOT RUN, and the preview must not imply they have. A step
@@ -969,7 +1012,7 @@ async def run_for_chat_thread(
         # the stream starting. Nothing to record it against, so it is said and dropped.
         out = blocked(run_id, direct_chat.BLOCK_MESSAGES["not_published"], "not_published")
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -983,7 +1026,7 @@ async def run_for_chat_thread(
             "thread_read_only",
         )
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -1003,7 +1046,15 @@ async def run_for_chat_thread(
         )
         _record_chat_blocked(db, out, thread, question)
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
+        yield AgentEvent(type="done")
+        return
+
+    if v3_blocked_for_readers(flow):
+        out = blocked(run_id, BLOCK_MESSAGES["v3_disabled"], "v3_disabled")
+        _record_chat_blocked(db, out, thread, question)
+        yield AgentEvent(type="text", text=out.answer.plain_text())
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -1085,7 +1136,7 @@ async def run_for_chat_thread(
                 # flow's real viewer traffic left no diagnostics in Runs at all —
                 # an author saw them only for questions they asked themselves,
                 # which is the opposite of where they are needed.
-                ev.extra["envelope"] = out.to_dict(notices=reader_notices(out.notices))
+                ev.extra["envelope"] = out.to_reader_dict()
                 save_memory(
                     db, session_key=thread.session_key, token=token,
                     fp=fp, out=out, flow=flow,

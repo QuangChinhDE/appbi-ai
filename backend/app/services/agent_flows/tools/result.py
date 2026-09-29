@@ -99,6 +99,15 @@ ErrorCode = Literal[
     "not_granted",         # the step was never given this tool
     "unknown_tool",        # no such tool
     "internal",            # a bug — the body raised
+    # ── governance (V3) ──
+    "risk_unknown",        # the tool never declared what it does to the world
+    "needs_approval",      # side_effect / destructive: no approval step exists yet
+    "capability_not_visible",  # granted, but not offered this turn — discover it first
+    # ── compute provenance (V3) ──
+    "evidence_ref_unknown",    # no result in this run carries that reference
+    "evidence_path_missing",   # the reference exists; nothing sits at that path
+    "evidence_not_numeric",    # the value there is not one finite number
+    "compute_invalid",         # the formula itself: syntax, operator, ÷0, overflow
 ]
 
 
@@ -251,6 +260,12 @@ _CODE_HINTS: tuple[tuple[str, ErrorCode], ...] = (
     ("not allowed", "bad_argument"),
     ("invalid expression", "bad_argument"),
     ("not in columns", "bad_argument"),
+    # A column the chart does not have is the caller's argument, not a warehouse
+    # refusal: as `query_failed` it read as retryable and the model repeated it.
+    ("not in chart columns", "bad_argument"),
+    ("is not a column", "bad_argument"),
+    ("unsupported op", "bad_argument"),
+    ("not supported", "bad_argument"),
     ("no data", "no_data"),
     ("failed to load", "query_failed"),
     ("raised", "internal"),

@@ -336,6 +336,10 @@ def tool_project_to_period_end(ctx: ToolContext, args: dict) -> dict:
         gap = projected - t
         needed = (t - to_date) / remaining if remaining else None
         payload.update({
+            # A caller target: what is derived from it is the caller's arithmetic;
+            # the report vouches for the run and the projection only.
+            "evidence_paths": ["to_date", "periods_so_far", "run_rate_per_period",
+                               "remaining_periods", "projected_total"],
             "target": round(t, 4),
             "projected_vs_target": round(gap, 4),
             "projected_attainment_pct": round(projected / t * 100.0, 2),

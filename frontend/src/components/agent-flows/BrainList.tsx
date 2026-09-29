@@ -40,7 +40,7 @@ import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   blankNode, deleteBrainVersion, getAuthoringPrompt, getBrain, importDraft, listBrains,
-  saveBrain,
+  saveBrain, starterFlow,
   type FlowType, slugifyBrainKey,
   type AuthoringPrompt,
   type BrainDetail,
@@ -90,6 +90,13 @@ function collapse(rows: BrainSummary[]): BrainRowModel[] {
   });
   return [...byKey.values()].sort((a, b) => a.latest.name.localeCompare(b.latest.name, 'vi'));
 }
+
+/** Which body a new flow starts life with.
+ *
+ *  `blank` is the original two-step seed. `bi_report` is the V1 starter. It is a
+ *  choice of CONTENT, not a mode of the product: both end at the same save call
+ *  and the same builder. */
+type CreatePreset = 'blank' | 'bi_report';
 
 export function BrainList({
   onOpen, canEdit,
@@ -144,8 +151,27 @@ export function BrainList({
    *  Before this every flow was seeded `report_read → agent` regardless, so every
    *  flow was born unable to run in Chat and nothing said so.
    */
-  const create = async (name: string, description: string, flowType: FlowType) => {
+  const create = async (
+    name: string, description: string, flowType: FlowType, preset: CreatePreset = 'blank',
+  ) => {
     const key = slugifyBrainKey(name);
+
+    // THE STARTER IS NOT A SECOND CREATION PATH. It produces a body and falls
+    // into the same `saveBrain` below, so a flow born from it is indistinguishable
+    // from one built by hand the moment it exists.
+    if (preset === 'bi_report') {
+      await saveBrain({
+        brain_key: key,
+        name: name.trim(),
+        description: description.trim() || t('agentFlows.list.starter.defaultDescription'),
+        flow_type: 'bot',
+        body: starterFlow(t),
+      });
+      setCreating(false);
+      onOpen(key);
+      return;
+    }
+
     const nodes: FlowNode[] = [];
     let writer: FlowNode;
 
@@ -187,7 +213,7 @@ export function BrainList({
    *  endpoint only reads and reports, so there is no second way for a flow to
    *  enter the system. What arrives here has already passed the real contract. */
   const createFromDraft = async (d: ImportedDraft) => {
-    const flowName = (d.name || '').trim() || 'Flow từ bản nháp';
+    const flowName = (d.name || '').trim() || t('agentFlows.list.create.ai.draftName');
     const key = slugifyBrainKey(flowName);
     await saveBrain({
       brain_key: key,
@@ -256,7 +282,7 @@ export function BrainList({
           />
         )}
         action={canEdit ? (
-          <Button size="sm" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setCreating(true)}>
+          <Button data-testid="new-flow" size="sm" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setCreating(true)}>
             {t('agentFlows.list.newBrain')}
           </Button>
         ) : undefined}
@@ -705,11 +731,16 @@ function CreateBrainModal({
   onClose, onCreate, onCreateFromDraft,
 }: {
   onClose: () => void;
-  onCreate: (name: string, description: string, flowType: FlowType) => Promise<void>;
+  onCreate: (
+    name: string, description: string, flowType: FlowType, preset: CreatePreset,
+  ) => Promise<void>;
   onCreateFromDraft: (d: ImportedDraft) => Promise<void>;
 }) {
   const { t } = useI18n();
-  const [mode, setMode] = React.useState<'blank' | 'ai'>('blank');
+  // STARTER FIRST, AND SELECTED. An author who has never built a flow was
+  // previously handed a blank canvas or told to go and prompt a third-party model.
+  // The default is now the one route that ends in a working assistant.
+  const [mode, setMode] = React.useState<'starter' | 'blank' | 'ai'>('starter');
   const [flowType, setFlowType] = React.useState<FlowType>('bot');
   const [name, setName] = React.useState('');
   const [description, setDescription] = React.useState('');
@@ -735,7 +766,13 @@ function CreateBrainModal({
     setBusy(true);
     setError(null);
     try {
-      await onCreate(name, description, flowType);
+      await onCreate(
+        name, description,
+        // A report assistant IS a bot flow — there is no second answer, so the
+        // starter does not ask a question it already knows.
+        mode === 'starter' ? 'bot' : flowType,
+        mode === 'starter' ? 'bi_report' : 'blank',
+      );
     } catch (e) {
       setError(detailMsg(e) || t('agentFlows.list.create.failed'));
       setBusy(false);
@@ -749,7 +786,7 @@ function CreateBrainModal({
     try {
       setDraft(await importDraft(pasted, name.trim() || undefined));
     } catch (e) {
-      setError(detailMsg(e) || 'Không đọc được bản nháp');
+      setError(detailMsg(e) || t('agentFlows.list.create.ai.unreadable'));
     } finally { setChecking(false); }
   };
 
@@ -772,7 +809,7 @@ function CreateBrainModal({
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
     } catch {
-      setError('Trình duyệt chặn copy — bôi đen ô bên dưới rồi Ctrl+C.');
+      setError(t('agentFlows.list.create.ai.copyBlocked'));
     }
   };
 
@@ -789,30 +826,35 @@ function CreateBrainModal({
           <Button variant="secondary" size="sm" disabled={busy} onClick={onClose}>
             {t('agentFlows.list.create.cancel')}
           </Button>
-          {mode === 'blank' ? (
-            <Button size="sm" loading={busy} onClick={() => void submit()}>
+          {mode !== 'ai' ? (
+            <Button data-testid="create-submit" size="sm" loading={busy} onClick={() => void submit()}>
               {t('agentFlows.list.create.submit')}
             </Button>
           ) : (
             <Button size="sm" loading={busy} disabled={!draft?.ok}
                     onClick={() => void createFromDraft()}>
-              Tạo flow từ bản nháp
+              {t('agentFlows.list.create.fromDraft')}
             </Button>
           )}
         </div>
       )}
     >
       <div className="space-y-3.5">
-        {/* Two ways in. The AI path is not a different product — it produces the
-            same flow the builder would, then hands it to the same editor. */}
+        {/* Three ways in, and they are not peers. The starter is the route a
+            pilot author is expected to take; the other two are for somebody who
+            already knows what they want to build. Neither of them is removed —
+            the hierarchy is the whole change. */}
         <div className="flex gap-1 rounded-lg bg-surface-2 p-1">
           {([
-            ['blank', 'Tự dựng'],
-            ['ai', 'Nhờ AI viết giúp'],
+            ['starter', t('agentFlows.list.create.mode.starter')],
+            ['blank', t('agentFlows.list.create.mode.blank')],
+            ['ai', t('agentFlows.list.create.mode.ai')],
           ] as const).map(([m, label]) => (
             <button
               key={m}
               type="button"
+              data-testid={`create-mode-${m}`}
+              aria-pressed={mode === m}
               onClick={() => { setMode(m); setError(null); }}
               className={cn(
                 'flex-1 rounded-md px-2 py-1.5 text-caption transition',
@@ -824,14 +866,44 @@ function CreateBrainModal({
           ))}
         </div>
 
-        <FieldGroup label={t('agentFlows.list.create.name')} required={mode === 'blank'}>
+        {/* WHAT WILL EXIST IN A MOMENT, in the product's words.
+            Three steps are named because the author is about to see three cards
+            on a canvas, and a starter whose result cannot be predicted from the
+            dialog is just a differently-shaped blank page. */}
+        {mode === 'starter' && (
+          <div
+            data-testid="starter-summary"
+            className="rounded-lg border border-brand/25 bg-brand/5 p-3"
+          >
+            <p className="text-caption font-strong text-text-primary">
+              {t('agentFlows.list.starter.cardTitle')}
+            </p>
+            <p className="mt-1 text-tiny leading-snug text-text-secondary">
+              {t('agentFlows.list.starter.cardWhat')}
+            </p>
+            <ol className="mt-2 space-y-1">
+              {(['readName', 'gatherName', 'answerName'] as const).map((k, i) => (
+                <li key={k} className="flex gap-2 text-tiny leading-snug text-text-secondary">
+                  <span className="text-text-quaternary">{i + 1}.</span>
+                  <span>{t(`agentFlows.list.starter.${k}`)}</span>
+                </li>
+              ))}
+            </ol>
+            <p className="mt-2 text-tiny leading-snug text-text-tertiary">
+              {t('agentFlows.list.starter.cardNext')}
+            </p>
+          </div>
+        )}
+
+        <FieldGroup label={t('agentFlows.list.create.name')} required={mode !== 'ai'}>
           <Input
             autoFocus
+            data-testid="create-name"
             value={name}
             onChange={(e) => { setName(e.target.value); setError(null); }}
-            onKeyDown={(e) => { if (e.key === 'Enter' && mode === 'blank') void submit(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && mode !== 'ai') void submit(); }}
             placeholder={t('agentFlows.list.create.namePlaceholder')}
-            invalid={Boolean(error) && mode === 'blank' && !name.trim()}
+            invalid={Boolean(error) && mode !== 'ai' && !name.trim()}
           />
         </FieldGroup>
 
@@ -874,7 +946,7 @@ function CreateBrainModal({
           </FieldGroup>
         )}
 
-        {mode === 'blank' && (
+        {mode !== 'ai' && (
           <FieldGroup
             label={t('agentFlows.list.create.descriptionLabel')}
             description={t('agentFlows.list.create.descriptionHint')}
@@ -894,22 +966,22 @@ function CreateBrainModal({
               <li>
                 <div className="mb-1.5 flex items-center gap-2">
                   <StepDot n={1} />
-                  <b className="text-caption font-strong">Copy bản mô tả hệ thống</b>
+                  <b className="text-caption font-strong">{t('agentFlows.list.create.ai.step1')}</b>
                   {brief && (
                     <span className="text-tiny text-text-tertiary">
-                      {brief.stats.node_types} loại bước · {brief.stats.tools} công cụ
+                      {t('agentFlows.list.create.ai.stats', {
+                        types: brief.stats.node_types, tools: brief.stats.tools,
+                      })}
                     </span>
                   )}
                 </div>
                 <p className="mb-1.5 text-tiny leading-5 text-text-tertiary">
-                  Dán vào ChatGPT hoặc Claude, rồi mô tả nhu cầu của bạn bằng lời
-                  thường. Bản mô tả này liệt kê đúng những gì hệ thống chạy được,
-                  nên thứ nó viết ra sẽ dùng được ngay.
+                  {t('agentFlows.list.create.ai.step1Hint')}
                 </p>
                 <div className="flex gap-2">
                   <Button size="sm" variant="secondary" disabled={!brief}
                           onClick={() => void copyBrief()}>
-                    {copied ? '✓ Đã copy' : 'Copy bản mô tả'}
+                    {copied ? t('agentFlows.list.create.ai.copied') : t('agentFlows.list.create.ai.copy')}
                   </Button>
                   {!brief && <Loader2 className="h-4 w-4 animate-spin text-text-tertiary" />}
                 </div>
@@ -918,18 +990,18 @@ function CreateBrainModal({
               <li>
                 <div className="mb-1.5 flex items-center gap-2">
                   <StepDot n={2} />
-                  <b className="text-caption font-strong">Dán kết quả trợ lý trả về</b>
+                  <b className="text-caption font-strong">{t('agentFlows.list.create.ai.step2')}</b>
                 </div>
                 <Textarea
                   rows={5}
                   value={pasted}
                   onChange={(e) => { setPasted(e.target.value); setDraft(null); }}
-                  placeholder='Dán cả đoạn trợ lý trả lời cũng được — hệ thống tự tìm khối ```json'
+                  placeholder={t('agentFlows.list.create.ai.pastePlaceholder')}
                 />
                 <Button size="sm" variant="secondary" className="mt-1.5"
                         loading={checking} disabled={!pasted.trim()}
                         onClick={() => void checkDraft()}>
-                  Kiểm tra bản nháp
+                  {t('agentFlows.list.create.ai.check')}
                 </Button>
               </li>
             </ol>
@@ -937,13 +1009,13 @@ function CreateBrainModal({
             {draft && !draft.ok && (
               <div className="rounded-lg border border-danger/25 bg-danger/5 p-2.5">
                 <p className="mb-1 flex items-center gap-1.5 text-tiny font-medium text-danger">
-                  <AlertTriangle className="h-3.5 w-3.5" /> Bản nháp chưa dùng được
+                  <AlertTriangle className="h-3.5 w-3.5" /> {t('agentFlows.list.create.ai.draftBad')}
                 </p>
                 {draft.errors.map((e, i) => (
                   <p key={i} className="text-tiny leading-5 text-danger">{e}</p>
                 ))}
                 <p className="mt-1.5 text-tiny text-text-tertiary">
-                  Gửi nguyên đoạn lỗi này lại cho trợ lý và bảo nó sửa, rồi dán lại.
+                  {t('agentFlows.list.create.ai.draftBadHint')}
                 </p>
               </div>
             )}
@@ -952,7 +1024,9 @@ function CreateBrainModal({
               <div className="rounded-lg border border-success/30 bg-success/5 p-2.5">
                 <p className="mb-1.5 flex items-center gap-1.5 text-tiny font-medium text-success">
                   <Check className="h-3.5 w-3.5" />
-                  Đọc được: {draft.node_count} bước · bước trả lời “{draft.answer_node}”
+                  {t('agentFlows.list.create.ai.draftOk', {
+                    count: draft.node_count ?? 0, answer: draft.answer_node ?? '',
+                  })}
                 </p>
                 {/* WHAT IS STILL EMPTY, before creating rather than after.
                     The brief tells the assistant to leave every id blank, so a
@@ -962,7 +1036,7 @@ function CreateBrainModal({
                 {(draft.needs_attachment?.length || draft.todo?.length) ? (
                   <div className="mt-1.5 border-t border-success/20 pt-1.5">
                     <p className="mb-1 text-tiny font-medium text-text-secondary">
-                      Sau khi tạo, bạn cần gắn thêm:
+                      {t('agentFlows.list.create.ai.stillNeeded')}
                     </p>
                     {draft.needs_attachment?.map((n) => (
                       <p key={n.key} className="text-tiny leading-5 text-text-secondary">

@@ -42,6 +42,7 @@ from app.services.dashboard_ai_bot.thinking.tools import (
     _err,
     _round,
 )
+from app.services.dashboard_ai_bot.tool_context import resolve_column, resolve_value
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +287,26 @@ def _detect_measure_idx(columns: Sequence[str], rows: Sequence[Sequence[Any]]) -
     return numeric_indices[-1] if numeric_indices else None
 
 
+def _measure_idx(ctx: Any, args: dict, columns: Sequence[str], rows: Sequence[Sequence[Any]]) -> int | None:
+    """Which numeric column a tool measures.
+
+    Holdout 6044: chart 692 carries total_revenue AND orders_with_items; asked for
+    revenue, compare_periods took the LAST numeric column and reported the order
+    count's -24.52% (the claim check withheld it as another measure's). In order:
+    the caller's `measure` argument; the ONE numeric column naming a measure the
+    turn resolved (`ctx.asked_measures`); the last numeric column, as before.
+    """
+    fallback = _detect_measure_idx(columns, rows)
+    numeric = [i for i in range(len(columns))
+               if [n for n in (_to_number(r[i]) for r in rows if i < len(r)) if n is not None]]
+    wanted = resolve_column((args or {}).get("measure"), list(columns))
+    if wanted is not None and columns.index(wanted) in numeric:
+        return columns.index(wanted)
+    asked = {str(m).lower() for m in (getattr(ctx, "asked_measures", None) or [])}
+    hits = [i for i in numeric if str(columns[i]).rsplit(".", 1)[-1].lower() in asked]
+    return hits[0] if len(hits) == 1 else fallback
+
+
 def _detect_dim_idx(
     columns: Sequence[str],
     rows: Sequence[Sequence[Any]],
@@ -319,6 +340,26 @@ def _detect_dim_idx(
 # worsening / flat) and a one-line narrative the LLM can lift verbatim.
 
 
+def _period_label(asked: str, points: list[tuple[str, float]]) -> str:
+    """The chart's own label for the period `asked` names.
+
+    Exact spelling first. Otherwise the ONE label denoting the same period
+    ("12/2017", "tháng 12/2017" → "2017-12"): holdout run 5663 compared December
+    with November by writing the month the way the question did, and every call
+    was refused — as `chart_not_found`, a code that sent the model looking for a
+    different chart. A label that is not unique (a daily axis) is never guessed.
+    """
+    if any(x == asked for x, _ in points):
+        return asked
+    from app.services.time_semantics import named_periods
+
+    want = named_periods(asked)
+    if len(want) != 1:
+        return asked
+    hits = [x for x, _ in points if named_periods(x) == want]
+    return hits[0] if len(hits) == 1 else asked
+
+
 def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     chart_id = args.get("chart_id")
     if not isinstance(chart_id, int):
@@ -342,10 +383,10 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     if not rows or not columns:
         return _err("chart has no data to compare")
 
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
-        return _err("need at least one dimension and one numeric column")
+        return _err("need at least one dimension and one numeric column", code="not_applicable")
     if mode != "custom":
         # Peek at the actual dimension labels. If none look date-like, period
         # comparison simply doesn't apply to this chart — say so definitively
@@ -365,7 +406,8 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                 f"chart's dimension '{columns[dim_idx]}' is categorical "
                 f"(e.g. {', '.join(sample_labels[:5]) or 'n/a'}), not a time "
                 "axis — period-over-period comparison is not applicable to this "
-                "chart. Do not retry with custom periods."
+                "chart. Do not retry with custom periods.",
+                code="not_applicable",
             )
         if looks_like_time_name(columns[dim_idx]):
             pass  # the name settles the GRAIN; automatic modes may proceed
@@ -373,7 +415,8 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
             return _err(
             f"chart's dimension '{columns[dim_idx]}' does not look like a "
             "time series; use mode='custom' with explicit period_a/period_b "
-            f"chosen from the available labels: {', '.join(sample_labels)}"
+            f"chosen from the available labels: {', '.join(sample_labels)}",
+            code="not_applicable",
         )
 
     # Sort by dim ascending (assumes ISO-ish labels)
@@ -389,7 +432,7 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
             continue
         points.append((str(x), y))
     if len(points) < 2:
-        return _err("need at least 2 time points to compare")
+        return _err("need at least 2 time points to compare", code="not_applicable")
 
     # A SEVERE LOW EDGE IS A QUESTION, NOT AN ANSWER.
     #
@@ -420,6 +463,8 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
         period_b = str(args.get("period_b") or "")
         if not period_a or not period_b:
             return _err("mode=custom requires period_a and period_b")
+        period_a = _period_label(period_a, points)
+        period_b = _period_label(period_b, points)
         a_val = next((y for x, y in points if x == period_a), None)
         b_val = next((y for x, y in points if x == period_b), None)
         if a_val is None or b_val is None:
@@ -430,7 +475,8 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                 f"period not found in chart: a={period_a!r}, b={period_b!r}. "
                 f"Available labels are: {', '.join(shown)}{more}. "
                 "Pick period_a/period_b from this exact list, or if none are "
-                "time periods this chart has no time axis — stop and tell the user."
+                "time periods this chart has no time axis — stop and tell the user.",
+                code="period_not_in_chart",
             )
         return _ok(_attach_delta_unit(
             ctx, chart_id, columns[measure_idx],
@@ -588,7 +634,7 @@ def tool_describe_distribution(ctx: ToolContext, args: dict) -> dict:
     if not rows or not columns:
         return _err("chart has no data")
 
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     if measure_idx is None:
         return _err("no numeric measure column found")
 
@@ -947,7 +993,7 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
     if not rows:
         return _err("chart has no data")
 
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     if measure_idx is None:
         return _err("no numeric measure detected")
 
@@ -1173,6 +1219,19 @@ def _changepoint(points: list[tuple[str, float]], measure: str, chart_id: int) -
 # layered on top of the existing chart filters.
 
 
+def _no_match_note(column: str, match: Any, values: list[Any]) -> str:
+    """What a filter that matched nothing means — NOT that the value is zero."""
+    shown: list[str] = []
+    for v in values:
+        if v is not None and str(v) not in shown:
+            shown.append(str(v))
+        if len(shown) >= 30:
+            break
+    return (f"No row has {column} = {match!r}. This is NOT a zero value: the data "
+            f"writes this column as {', '.join(shown)}. Retry with one of these values, "
+            "or say the report has no row for it — never report 0.")
+
+
 def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
     chart_id = args.get("chart_id")
     column = args.get("column")
@@ -1207,9 +1266,12 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
 
     columns = data["columns"]
     rows = data["rows"]
+    column = resolve_column(column, columns) or column
     if column not in columns:
-        return _err(f"column '{column}' not in chart columns {columns}")
+        return _err(f"column '{column}' not in chart columns {columns}", code="bad_argument")
     col_idx = columns.index(column)
+    if op in ("eq", "ne"):
+        match = resolve_value(ctx, match, [r[col_idx] for r in rows if col_idx < len(r)])
 
     def _matches(v: Any) -> bool:
         if v is None:
@@ -1241,9 +1303,10 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
             "n_rows_matching": 0,
             "rows": [],
             "totals": None,
+            "note": _no_match_note(column, match, [r[col_idx] for r in rows if col_idx < len(r)]),
         })
 
-    measure_idx = _detect_measure_idx(columns, filtered)
+    measure_idx = _measure_idx(ctx, args, columns, filtered)
     totals: dict[str, Any] | None = None
     if measure_idx is not None:
         nums = [_to_number(r[measure_idx]) for r in filtered if measure_idx < len(r)]
@@ -1348,8 +1411,8 @@ def _is_truthy(v: Any) -> bool | None:
 
 
 def _row_passes_filter(row: list, columns: list[str], flt: dict) -> bool:
-    col = flt.get("column")
-    if not isinstance(col, str) or col not in columns:
+    col = resolve_column(flt.get("column"), columns)
+    if col is None:
         return True  # unknown column → no-op, do not silently drop rows
     idx = columns.index(col)
     val = row[idx] if idx < len(row) else None
@@ -1479,9 +1542,10 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
     rows: list[list] = data["rows"]
 
     # Validate group_by columns exist
+    group_by = [resolve_column(g, columns) or g for g in group_by]
     for g in group_by:
         if g not in columns:
-            return _err(f"group_by column {g!r} not in chart columns {columns}")
+            return _err(f"group_by column {g!r} not in chart columns {columns}", code="bad_argument")
     group_indices = [columns.index(g) for g in group_by]
 
     # Validate aggregations
@@ -1499,27 +1563,45 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
                 return _err(f"column='*' only valid with op='count' (got {op!r})")
         elif not isinstance(col, str):
             return _err("aggregation.column must be a string")
-        elif col not in columns:
-            return _err(f"aggregation column {col!r} not in chart columns {columns}")
+        elif (resolve_column(col, columns) or col) not in columns:
+            return _err(f"aggregation column {col!r} not in chart columns {columns}", code="bad_argument")
         else:
-            col_idx = columns.index(col)
+            col_idx = columns.index(resolve_column(col, columns) or col)
         out_name = str(a.get("as") or "").strip() or (
             f"{op}_*" if col_idx is None else f"{op}_{columns[col_idx]}"
         )
         parsed_aggs.append({"op": op, "col_idx": col_idx, "out": out_name, "src": col})
 
     # Apply pre-filters (the agent can reuse the same filter dict shape)
+    no_match = ""
     pre_filters = args.get("filters") or []
     if not isinstance(pre_filters, list):
         return _err("filters must be a list of {column, op, value} dicts")
     if pre_filters:
-        rows = [
+        resolved = []
+        for f in pre_filters:
+            if isinstance(f, dict) and str(f.get("op") or "eq").lower() in ("eq", "neq", "ne"):
+                c = resolve_column(f.get("column"), columns)
+                if c is not None:
+                    i = columns.index(c)
+                    f = {**f, "value": resolve_value(ctx, f.get("value"), [r[i] for r in rows if i < len(r)])}
+            resolved.append(f)
+        pre_filters = resolved
+        kept = [
             r for r in rows
             if all(_row_passes_filter(r, columns, f) for f in pre_filters if isinstance(f, dict))
         ]
+        if not kept:
+            first = next((f for f in pre_filters if isinstance(f, dict)), {})
+            c = resolve_column(first.get("column"), columns)
+            if c is not None:
+                i = columns.index(c)
+                no_match = _no_match_note(c, first.get("value"), [r[i] for r in rows if i < len(r)])
+        rows = kept
 
     if not rows:
         return _ok({
+            **({"note": no_match} if no_match else {}),
             "chart_id": chart_id,
             "group_by": group_by,
             "aggregations": [{"op": a["op"], "column": a["src"], "as": a["out"]} for a in parsed_aggs],
@@ -1684,11 +1766,13 @@ def tool_explain_change(ctx: ToolContext, args: dict) -> dict:
 
     columns: list[str] = data["columns"]
     rows: list[list] = data["rows"]
+    breakdown = resolve_column(breakdown, columns) or breakdown
+    split_column = resolve_column(split_column, columns) or split_column
     if breakdown not in columns:
-        return _err(f"breakdown '{breakdown}' is not a column. Available: {columns}")
+        return _err(f"breakdown '{breakdown}' is not a column. Available: {columns}", code="bad_argument")
     if split_column not in columns:
-        return _err(f"split_column '{split_column}' is not a column. Available: {columns}")
-    measure_idx = _detect_measure_idx(columns, rows)
+        return _err(f"split_column '{split_column}' is not a column. Available: {columns}", code="bad_argument")
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     if measure_idx is None:
         return _err("no numeric measure column detected in this chart")
     b_idx = columns.index(breakdown)
@@ -1801,7 +1885,7 @@ def tool_forecast_measure(ctx: ToolContext, args: dict) -> dict:
 
     columns: list[str] = data["columns"]
     rows: list[list] = data["rows"]
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need at least one dimension and one numeric column")
@@ -1913,7 +1997,7 @@ def tool_analyze_trend(ctx: ToolContext, args: dict) -> dict:
         return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
     columns, rows = data["columns"], data["rows"]
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need a numeric measure and a dimension")
@@ -2008,9 +2092,10 @@ def tool_segment_compare(ctx: ToolContext, args: dict) -> dict:
         return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
     columns, rows = data["columns"], data["rows"]
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
     if measure_idx is None:
         return _err("no numeric measure detected in this chart")
+    dimension = resolve_column(dimension, columns) or dimension
     if dimension and dimension in columns:
         dim_idx = columns.index(dimension)
     else:

@@ -114,6 +114,25 @@ class AgentBrainVersion(Base):
     #: parent table; see this module's docstring for why there isn't one.
     flow_type = Column(String(8), nullable=False, default="bot", index=True)
 
+    #: SKILL LIFECYCLE, per immutable version — separate from `status`.
+    #:
+    #: `status` says which version is the live one; this says whether a version
+    #: may still be INVOKED. A published parent pins an exact Skill version for
+    #: reproducibility, and that pin must not mean "runs forever": a version with
+    #: a security, data-access, compliance or logic defect has to be stoppable
+    #: without rewriting every parent and without silently moving them to a newer
+    #: version (services/agent_flows/skills.py):
+    #:
+    #:   NULL / active  invocable
+    #:   deprecated     existing pins keep running, with a notice; nothing new pins it
+    #:   disabled       refused at every invocation, pinned or not
+    #:
+    #: The body is never touched, so a stopped version stays explainable.
+    lifecycle = Column(String(16), nullable=True)
+    lifecycle_reason = Column(Text, nullable=True)
+    lifecycle_by = Column(String(255), nullable=True)
+    lifecycle_at = Column(DateTime(timezone=True), nullable=True)
+
     __table_args__ = (
         UniqueConstraint("brain_key", "version", name="uq_agent_brain_version"),
         Index("ix_agent_brain_key_status", "brain_key", "status"),

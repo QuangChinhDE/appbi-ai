@@ -94,3 +94,13 @@ def test_ordinary_correct_answers_stay_quiet(answer, evidence):
     """Regression net: the formats the product actually produces must not start
     warning because of the two changes above."""
     assert verify_answer(answer, evidence).unmatched == []
+
+
+def test_a_bare_month_name_is_a_label_not_a_figure():
+    """Browser, run 3775: "so với tháng 7, GMV tháng 8 …" was read as figures 7
+    and 8 and a correct −5.23% shipped under "1 con số không khớp"."""
+    from app.services.dashboard_ai_bot.verifier import extract_answer_claims
+
+    got = [v for v, _ in extract_answer_claims(
+        "So với tháng 7, GMV tháng 8 đã giảm 55,419.56, tức -5.23%. Có 12 tháng dữ liệu.")]
+    assert got == [55419.56, -5.23, 12.0]
