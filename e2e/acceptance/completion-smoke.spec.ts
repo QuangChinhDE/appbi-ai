@@ -239,7 +239,6 @@ test('A manual builder: frame, a control next to a chart in a full row, drag aut
   await publishUi(page);
   await shot(page, r, 'A-manual-builder-1440');
   const token = await linkFor(request, id);
-  r.metrics.token_prefix = token.slice(0, 4);
   const pub = await publicAt(context, token, 1440, 2600);
   const pubFrame = await pub.locator(`[data-grid-item-id="${catId}"] [data-tile-frame]`).first().getAttribute('data-tile-frame').catch(() => null);
   check(r, 'the published report draws the chart as the author framed it', pubFrame === 'subtle', String(pubFrame));
