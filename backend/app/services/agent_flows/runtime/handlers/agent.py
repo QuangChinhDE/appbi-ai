@@ -1064,6 +1064,14 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
             f"trả lời bằng {lang}. Giá trị dữ liệu (tên danh mục, tên bang…) giữ "
             "nguyên như trong báo cáo, không dịch."
         )
+    # WHAT THE QUESTION ASKS FOR, as the runtime resolved it (the intent contract)
+    # — told to every step that works on the reader's question, so a follow-up's
+    # "tháng trước" is the resolved month and an absent quantity is said to be
+    # absent instead of substituted.
+    if not getattr(rctx, "skill_stack", ()):
+        from app.services.agent_flows.runtime import intent as intent_mod
+
+        parts.append(intent_mod.describe_for_prompt(getattr(state, "intent", None) or {}, _locale_of(rctx)))
     return "\n\n".join(p for p in parts if p)
 
 

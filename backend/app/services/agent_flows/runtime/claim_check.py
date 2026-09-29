@@ -26,6 +26,7 @@ to; the check only ever fires on a POSITIVE contradiction or a missing source.
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any
 
@@ -146,6 +147,15 @@ def target_of(state: Any, ctx: Any) -> dict:
         if (len(sm) <= 3 and sm in words) or (len(sm) > 3 and sm in _squash(question)):
             member = sm
             break
+    # THE INTENT CONTRACT, when the runtime resolved one (runtime/intent.py): its
+    # measures and breakdown were chosen from the report's own vocabulary against
+    # the question, so they replace the re-derived ones.
+    intent = getattr(state, "intent", None) or {}
+    if intent.get("source") == "model":
+        if intent.get("measures"):
+            measures = set(intent["measures"])
+        if intent.get("dimension") and not _is_time(intent["dimension"]):
+            dim_key = intent["dimension"]
     return {"measures": {m for m in measures if m}, "dimension": dim_key, "member": member}
 
 
@@ -390,6 +400,20 @@ def _asked_member(ctx: Any, t: dict, question: str) -> list[str] | None:
     total were both published as São Paulo's; total reviews as 5-star reviews."""
     import re
 
+    intent = t.get("intent") or {}
+    if intent.get("source") == "model" and intent.get("members"):
+        cands: list[str] = []
+        for m in intent["members"]:
+            said = str(m.get("said") or "")
+            cands.append(_squash(said))
+            if m.get("code"):
+                cands.append(_squash(m["code"]))
+            ini = _initials(said.split())
+            if ini:
+                cands.append(ini)
+        cands = [c for c in dict.fromkeys(cands) if len(c) >= 2]
+        if cands:
+            return cands
     found = _asked_member_by_cue(ctx, t, question)
     if found:
         return found
@@ -470,6 +494,18 @@ def _given_a_meaning(sentence: str, question: str, asked: list[str] | None) -> b
         return True
     return bool(asked) and any((_names(sentence, c) if len(c) <= 3 else c in _squash(sentence))
                                for c in asked)
+
+
+def _words_in_clause(text: str, value: float, words: set[str]) -> bool:
+    """Does the CLAUSE carrying `value` (split on . ; , too) contain all `words`?"""
+    import re
+
+    from app.services.dashboard_ai_bot.verifier import extract_answer_claims
+
+    for clause in re.split(r"(?<=[.!?;,])\s+|\n+", text or ""):
+        if any(_close(value, v) for v, _ in extract_answer_claims(clause)):
+            return words <= set(re.findall(r"[^\W\d_]{2,}", _fold(clause)))
+    return False
 
 
 def _qualifier_numbers(asked: list[str] | None, text: str) -> set[float]:
@@ -674,7 +710,18 @@ def check(state: Any, ctx: Any, text: str) -> dict:
     # all-time totals was published).
     pending: list[tuple[float, bool]] = []
     question = str(getattr(ctx, "question", "") or "")
-    asked_member = _asked_member(ctx, t, question)
+    intent = getattr(state, "intent", None) or {}
+    asked_member = _asked_member(ctx, {**t, "intent": intent}, question)
+    # The quantity the question asks for when the report does not measure it —
+    # only as the MODEL-resolved contract says so, and only its distinctive words
+    # (never the report's own vocabulary: "tỷ lệ" is in it, "chuyển đổi" is not).
+    absent_words: set[str] = set()
+    if intent.get("source") == "model" and intent.get("absent") and not intent.get("measures"):
+        vocab = _report_vocabulary(ctx)
+        absent_words = {w for w in re.findall(r"[^\W\d_]{2,}", _fold(intent["absent"]))
+                        if _squash(w) not in vocab}
+    intent_periods = {tuple(p) for p in (intent.get("periods") or [])} \
+        if intent.get("source") == "model" else set()
     labels = _qualifier_numbers(asked_member, text)
     for value, pct in claims:
         if not pct and value in labels:
@@ -715,7 +762,7 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         # 56808.84" — another month's row, live runs 4849/4874).
         # Only for a figure that IS one period's row: whole totals and changes keep
         # the question's own periods (the sentence's dates would misjudge them).
-        asked_periods = _periods(question)
+        asked_periods = _periods(question) or intent_periods
         if not asked_periods and support and all(
                 _is_time(e.get("dimension")) and e.get("member") for e in support):
             asked_periods = _periods(_sentence_of(text, value))
@@ -740,6 +787,14 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         if all(reasons):
             e = support[0]
             flagged.append({"value": value, "pct": pct, "why": reasons[0],
+                            "of": {k: e.get(k) for k in ("measure", "dimension", "member")}})
+            continue
+        if absent_words and _words_in_clause(text, value, absent_words):
+            # Asked for a quantity the report does not measure; this figure's
+            # clause gives it that name (live 4164/4879/4928/5051: the on-time
+            # rate published as the website conversion rate).
+            e = support[0]
+            flagged.append({"value": value, "pct": pct, "why": "measure_absent",
                             "of": {k: e.get(k) for k in ("measure", "dimension", "member")}})
             continue
         attributed = _misattributed(support, asked_member, sentence)
@@ -785,6 +840,8 @@ _WHY = {
     "whole_as_member": ("là số của TOÀN BỘ báo cáo — báo cáo không có số liệu này theo chiều "
                         "được hỏi; nếu giữ, phải nói rõ đó là tổng toàn bộ"),
     "wrong_direction": "câu nói chiều ngược với dấu của con số đã tính (tăng ↔ giảm)",
+    "measure_absent": ("gọi con số bằng một đại lượng mà báo cáo không đo — đừng gán số của đại "
+                       "lượng khác cho nó; nói rõ báo cáo không có số này"),
     "wrong_period": ("là số của một kỳ khác (hoặc của toàn bộ thời gian), không phải của kỳ được "
                      "hỏi — tìm biểu đồ có số đo này THEO KỲ (list_charts / resolve_chart_candidates) "
                      "và đọc đúng kỳ được hỏi; chỉ khi không có biểu đồ nào như vậy mới nói là không có"),

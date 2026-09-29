@@ -172,6 +172,7 @@ jobs:
             tests/test_skill_surfaces_found_in_the_browser.py \
             tests/test_claims_mean_what_was_asked.py \
             tests/test_publication_boundary.py \
+            tests/test_intent_contract.py \
             tests/test_analytical_tool_semantics.py \
             tests/test_tool_certification_matrix.py \
             tests/test_capability_serviced_the_intent.py \

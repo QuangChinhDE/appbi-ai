@@ -318,6 +318,9 @@ class RunState:
     #: The answering step ran out of tool calls and was made to answer anyway —
     #: its "no data" may be the budget's, not the data's (acceptance journey J12).
     tool_budget_reached: bool = False
+    #: The Question Intent Contract for this turn (runtime/intent.py): what was
+    #: asked — measures, absent quantity, breakdown, members, periods, baseline.
+    intent: dict[str, Any] = field(default_factory=dict)
 
     #: Set by a Stop node, or by the executor when the budget runs out.
     stopped: bool = False

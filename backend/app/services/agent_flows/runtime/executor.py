@@ -188,6 +188,26 @@ async def run_flow(
         store_content=bool(store_content),
     )
 
+    # THE QUESTION INTENT CONTRACT — what this turn asks for, resolved ONCE, before
+    # any node runs (docs/features/agent-flow-v3-pilot/intent-contract.md). Not for
+    # a Skill's child run: it answers the Skill's typed inputs, not the reader.
+    if not skill_stack:
+        from app.services.agent_flows.runtime import intent as intent_mod
+        from app.services.dashboard_ai_bot.govern_doc_followup import prior_user_question
+
+        try:
+            previous = prior_user_question(list(inp.conversation.history or []))
+        except Exception:                                       # noqa: BLE001
+            previous = ""
+        try:
+            state.intent = await intent_mod.resolve(
+                state, ctx, question=inp.question.text(), previous=previous or "",
+                provider=inp.runtime.provider, api_key=api_key, model=inp.runtime.model)
+        except Exception:                                       # noqa: BLE001
+            logger.warning("[flow] intent resolution failed", exc_info=True)
+        if getattr(state, "intent", None):
+            state.capability_trace.setdefault("__intent__", {}).update(state.intent)
+
     status = "ok"
     streamed_text = False
     try:
