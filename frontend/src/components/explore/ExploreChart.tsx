@@ -873,8 +873,13 @@ function buildDataLabelContent(opts: {
    *  {dimension} token explicitly instead of grabbing `Object.keys()[0]`
    *  which broke when BE returned rows with measure-first ordering. */
   xField?: string;
+  /** The rows this series labels. With them, an upright bar series decides
+   *  its fit ONCE, on its widest label: all its bars state their value, or
+   *  none does (a narrow tile otherwise kept a few short labels — one "R$1M"
+   *  over one bar reads as if that bar were special). */
+  rows?: any[];
 }): (props: any) => React.ReactNode {
-  const { resolved, seriesKey, seriesLabel, style, registry, orientation, xField } = opts;
+  const { resolved, seriesKey, seriesLabel, style, registry, orientation, xField, rows } = opts;
   if (!resolved) return () => null;
   const { position, rotation, fontSize, fontColor, background, backgroundColor, autoHideOverlap } = resolved;
   // Phase-15.84 bugfix — format precedence:
@@ -924,6 +929,19 @@ function buildDataLabelContent(opts: {
     }
     return formatNumber(value, styleForLabel, seriesKey);
   };
+  let widestChars: number | null = null;
+  const widestLabelChars = () => {
+    if (widestChars === null) {
+      widestChars = 0;
+      for (const row of rows ?? []) {
+        const v = row?.[seriesKey];
+        if (v === null || v === undefined || v === '') continue;
+        const t = formatLabel(v, row);
+        if (t && t.length > widestChars) widestChars = t.length;
+      }
+    }
+    return widestChars;
+  };
 
   return (props: any) => {
     // Phase-15.84 bugfix — Recharts puts geometry on EITHER `props.viewBox`
@@ -961,8 +979,11 @@ function buildDataLabelContent(opts: {
       // A value label wider than its bar's slot lands on the neighbouring bars
       // (a narrow tile: "R$302.6K" over three bars). Show it only when it fits
       // the bar plus the gap either side — hidden labels keep the value in the
-      // tooltip. An author-rotated label is theirs to place.
-      if (rotation === 0 && width > 0 && approxWidth > width * 1.6 + 4) return null;
+      // tooltip. An author-rotated label is theirs to place. Judged on the
+      // series' widest label when the rows are known, so the series is
+      // labelled whole or not at all.
+      const fitWidth = Math.max(approxWidth, widestLabelChars() * fontSize * 0.6);
+      if (rotation === 0 && width > 0 && fitWidth > width * 1.6 + 4) return null;
       cx = x + width / 2;
       switch (position) {
         case 'top':       cy = y - 4; break;
@@ -1008,7 +1029,7 @@ function buildDataLabelContent(opts: {
 
     // Collision check (optional). Skip labels overlapping any already-
     // placed label this frame.
-    const bbox: LabelBBox = {
+    let bbox: LabelBBox = {
       x: textAnchor === 'middle' ? cx - approxWidth / 2 : textAnchor === 'end' ? cx - approxWidth : cx,
       y: cy - approxHeight + 2,
       width: approxWidth,
@@ -1020,9 +1041,22 @@ function buildDataLabelContent(opts: {
       // own slot. Collision check skips the entry being placed; checks
       // every other entry currently in the map.
       const slotKey = `${seriesKey}:${(props as any).index ?? 0}`;
-      for (const [otherKey, placed] of registry) {
-        if (otherKey === slotKey) continue;
-        if (rectsOverlap(placed, bbox)) return null;
+      const collides = (b: LabelBBox) => {
+        for (const [otherKey, placed] of registry) {
+          if (otherKey !== slotKey && rectsOverlap(placed, b)) return true;
+        }
+        return false;
+      };
+      if (collides(bbox)) {
+        // A label above an upright bar that meets its neighbour's (two bars of
+        // about the same height) lifts one line instead of vanishing: one bar
+        // without its value among labelled ones reads as "no value".
+        const aboveBar = orientation === 'vertical' && rotation === 0
+          && !['bottom', 'inside', 'center', 'insideTop', 'insideBottom'].includes(position as string);
+        const lifted = { ...bbox, y: bbox.y - approxHeight };
+        if (!aboveBar || lifted.y < 0 || collides(lifted)) return null;
+        bbox = lifted;
+        cy -= approxHeight;
       }
       registry.set(slotKey, bbox);
     }
@@ -2196,6 +2230,7 @@ function ExploreChartInner({
       // Phase-15.88 — pass chart's x-axis dimension field so template
       // {dimension} token resolves reliably (vs the old first-key trick).
       xField,
+      rows: sortedCategoricalData,
     });
   };
   // Marker (dot) visibility — Power BI / Tableau parity.

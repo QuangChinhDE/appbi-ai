@@ -1785,8 +1785,11 @@
 .dashboard-report-header__title { margin: 0; font-size: var(--dash-font-reportTitle, 30px); font-weight: var(--dash-weight-reportTitle, 700); line-height: 1.12; letter-spacing: -.015em; text-wrap: balance; }
 .dashboard-report-header__title.is-placeholder { opacity: .35; }
 .dashboard-report-header__description { margin: 0; font-size: var(--dash-font-narrative, 14px); line-height: 1.5; opacity: .8; max-width: 78ch; }
-.dashboard-report-header__meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: var(--dash-font-meta, 11.5px); font-weight: 500; opacity: .72; }
-.dashboard-report-header__meta > span + span::before { content: '·'; margin-right: 14px; opacity: .6; }
+.dashboard-report-header__meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: var(--dash-font-meta, 11.5px); font-weight: 500; opacity: .72; overflow: hidden; }
+/* The separator hangs in the gap LEFT of each item. The first item of every
+   line has its dot outside the box, clipped: a wrapped line never starts "·". */
+.dashboard-report-header__meta > span { position: relative; }
+.dashboard-report-header__meta > span::before { content: '·'; position: absolute; left: -9px; opacity: .6; }
 .dashboard-report-header__headline p { margin: 0; font-size: calc(var(--dash-font-narrative, 14px) * 1.15); line-height: 1.45; font-weight: 550; max-width: 60ch; }
 .dashboard-report-header__headline[data-finding-state="pending"] p,
 .dashboard-report-header__headline[data-finding-state="unavailable"] p { opacity: .55; font-style: italic; font-weight: 400; }

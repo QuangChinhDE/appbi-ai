@@ -57,7 +57,7 @@ export const exploreCatalog: ModuleCatalog = {
     'explore.podium.runnerUp': 'Runner-up',
     'explore.podium.rank': 'Rank {{n}}',
     // ExploreEditor — date-drill control
-    'explore.dateDrill.groupByTime': '▾ Group by time',
+    'explore.dateDrill.groupByTime': 'Group by time',
     'explore.dateDrill.groupByLabel': 'Group by',
     'explore.dateDrill.disable': '× Off',
     'explore.dateDrill.enableHint': 'Time drill: temporarily change the chart’s time-grouping level (Year/Quarter/Month/Week/Day). The Granularity in the Style tab is the default.',
@@ -472,7 +472,7 @@ export const exploreCatalog: ModuleCatalog = {
     'explore.podium.winner': 'Quán quân',
     'explore.podium.runnerUp': 'Á quân',
     'explore.podium.rank': 'Hạng {{n}}',
-    'explore.dateDrill.groupByTime': '▾ Gom theo thời gian',
+    'explore.dateDrill.groupByTime': 'Gom theo thời gian',
     'explore.dateDrill.groupByLabel': 'Gom theo',
     'explore.dateDrill.disable': '× Tắt',
     'explore.dateDrill.enableHint': 'Drill thời gian: tạm đổi cấp gom thời gian (Năm/Quý/Tháng/Tuần/Ngày) cho biểu đồ. Granularity ở tab Style là mặc định.',

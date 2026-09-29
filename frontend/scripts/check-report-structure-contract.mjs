@@ -427,6 +427,18 @@ check('paper has no motion: a chart fade-in is never captured half-way', () => {
   assert(/animation: none !important; transition: none !important;/.test(pdf), 'the PDF clone keeps animations (charts printed washed out)');
 });
 
+check('an upright bar series states every value or none, judged on its widest label', () => {
+  const chart = source('components/explore/ExploreChart.tsx');
+  assert(/const fitWidth = Math\.max\(approxWidth, widestLabelChars\(\) \* fontSize \* 0\.6\);/.test(chart)
+      && /fitWidth > width \* 1\.6 \+ 4\) return null;/.test(chart),
+    'the bar-label fit is decided label by label (a narrow tile keeps one stray short label)');
+  assert(/const dataLabelContent = [\s\S]{0,1600}rows: sortedCategoricalData,/.test(chart),
+    'the chart labels are not given the rows they label, so the widest label is unknown');
+  assert(/const lifted = \{ \.\.\.bbox, y: bbox\.y - approxHeight \};/.test(chart)
+      && /if \(!aboveBar \|\| lifted\.y < 0 \|\| collides\(lifted\)\) return null;/.test(chart),
+    'a bar label that meets its neighbour vanishes instead of lifting (one bar left without its value)');
+});
+
 check('clicking a selected element keeps it selected; empty canvas and Escape clear', () => {
   const src = source('app/(main)/dashboards/[id]/page.tsx');
   assert(/current\.length === 1 && current\[0\] === id \? current : \[id\]/.test(src), 'a second click deselects the element (a new chart then lands at the end of the page)');
