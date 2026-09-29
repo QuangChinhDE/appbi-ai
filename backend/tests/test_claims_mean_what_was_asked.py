@@ -1145,3 +1145,34 @@ def test_a_qualifier_the_question_names_is_a_label(world):
         "dimension": "dataset_table_441.customer_state", "item": "SP", "value": 60.29,
         "rank": 2, "group_count": 27}}, {"chart_id": 724})
     assert (5.0, "unsupported") not in _why(state, ctx, "Tỷ lệ đánh giá 5 sao của bang SP là 60.29.")
+
+
+def test_two_measures_called_equal_that_the_evidence_says_are_not(world):
+    """Live 85fc3626 g3_gmv_minus_rev: "GMV và doanh thu sản phẩm đều có giá trị bằng
+    nhau là 13,591,643.70" — revenue's figure also claimed as GMV (15,843,553.24 was
+    read). Controls: the two figures stated apart stand; their difference stands."""
+    ctx, state = world("GMV lớn hơn doanh thu sản phẩm bao nhiêu?", asked=("gmv", "total_revenue"))
+    _value(state, 15843553.24, "dataset_table_438.gmv")
+    _value(state, 13591643.70, "dataset_table_438.total_revenue")
+    assert _why(state, ctx, "GMV và doanh thu sản phẩm đều có giá trị bằng nhau là 13,591,643.70.")
+    assert _why(state, ctx, "GMV là 15,843,553.24 và doanh thu sản phẩm là 13,591,643.70.") == []
+    # Existing contract: a worked-out figure shows its operands.
+    assert _why(state, ctx, "GMV (15,843,553.24) lớn hơn doanh thu sản phẩm (13,591,643.70) "
+                            "là 2,251,909.54.") == []
+
+
+def test_shares_of_one_whole_add_up(world):
+    """Live 85fc3626 g3_top3_share: the top three categories' combined 25.76% was
+    withheld (sums of ratios were refused). Shares of ONE whole add; a wrong sum is
+    still flagged."""
+    ctx, state = world("Top 3 danh mục chiếm bao nhiêu phần trăm doanh thu?", asked=("total_revenue",))
+    for item, v, pct in (("health_beauty", 1258681.34, 9.26), ("watches_gifts", 1205005.68, 8.87),
+                         ("bed_bath_table", 1036988.68, 7.63)):
+        _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+            "chart_id": CATEGORY_CHART, "measure": "dataset_table_438.total_revenue",
+            "dimension": "dataset_table_445.product_category_name_english", "item": item,
+            "value": v, "share_pct": pct, "total": 13591643.70, "group_count": 72}},
+            {"chart_id": CATEGORY_CHART})
+    good = "Top 3 chiếm 25.76%: health_beauty 9.26%, watches_gifts 8.87%, bed_bath_table 7.63%."
+    assert (25.76, "unsupported") not in _why(state, ctx, good)
+    assert (30.1, "unsupported") in _why(state, ctx, good.replace("25.76%", "30.1%"))

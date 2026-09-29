@@ -654,6 +654,46 @@ def _is_average_measure(key: str | None) -> bool:
                                         "score", "share"))
 
 
+_EQUAL_WORDS = ("bang nhau", "nhu nhau", "giong nhau", "deu co gia tri", "deu la", "equal",
+                "the same", "identical", "equals")
+
+
+def _measures_named(ctx: Any, clause: str, keys: set[str]) -> set[str]:
+    """Which of the ledger's measures the clause names: a key word of 3+ letters
+    ("gmv") or a two-syllable pair from that measure's own chart titles."""
+    import re
+
+    from app.services.agent_flows.runtime import intent as I
+
+    words = set(re.findall(r"[0-9a-z]+", _fold(clause).replace("_", " ")))
+    pairs = I._terms(clause, singles=False)
+    names = (I.vocabulary(ctx).get("measure_names") or {}) if ctx is not None else {}
+    out = set()
+    for k in keys:
+        toks = {t for t in str(k).lower().split("_") if len(t) >= 3 and t not in I._GENERIC}
+        titled = I._terms(" | ".join(names.get(k, [])), singles=False)
+        if (toks and toks <= words) or (pairs & titled):
+            out.add(k)
+    return out
+
+
+def _false_equality(ctx: Any, clause: str, ledger: list[dict]) -> str | None:
+    """The measure a clause wrongly calls equal to another, or None."""
+    if not clause or not _has_words(clause, _EQUAL_WORDS):
+        return None
+    whole: dict[str, float] = {}
+    for e in ledger:
+        if e.get("measure") and not e.get("dimension") and not e.get("member") and not e.get("count"):
+            whole.setdefault(e["measure"], float(e["value"]))
+    named = sorted(_measures_named(ctx, clause, set(whole)))
+    if len(named) < 2:
+        return None
+    vals = [whole[m] for m in named]
+    if max(vals) - min(vals) > 0.005 * max(abs(v) for v in vals):
+        return named[0]
+    return None
+
+
 def _framed_as_population(sentence: str, value: float) -> bool:
     import re
 
@@ -707,9 +747,35 @@ def _resolve_derived(pending, claims, flagged, in_evidence, text, changes=(), le
             out.append({"value": value, "pct": pct, "why": "unsupported"})
             continue
         ok = _derived(value, operands, text) if pct else _derived_plain(value, operands)
+        if not ok and pct and _sum_of_shares(value, claims, ledger, bad):
+            ok = True
         if not ok:
             out.append({"value": value, "pct": pct, "why": "unsupported"})
     return out
+
+
+def _sum_of_shares(value: float, claims, ledger, bad) -> bool:
+    """A percentage that is the SUM of 2-4 stated shares of ONE whole — the same
+    measure and breakdown, distinct members (live 85fc3626 g3_top3_share: the top
+    three categories' 9.26 + 8.87 + 7.63 = 25.76% was withheld; shares of one whole
+    add, other ratios do not)."""
+    from itertools import combinations
+
+    shares = []
+    for v, p in claims:
+        if not p or not v or any(_close(v, b) for b in bad):
+            continue
+        for e in ledger:
+            if e.get("ratio") and e.get("member") and _close(v, float(e["value"])):
+                shares.append((v, e.get("measure"), e.get("dimension"), e.get("member")))
+                break
+    for k in (2, 3, 4):
+        for combo in combinations(shares, k):
+            if len({(m, d) for _, m, d, _ in combo}) != 1 or len({x for *_, x in combo}) != k:
+                continue
+            if abs(sum(v for v, *_ in combo) - value) <= 0.05:
+                return True
+    return False
 
 
 def _same_scope(a: dict, b: dict) -> bool:
@@ -954,6 +1020,14 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             flagged.append({"value": value, "pct": pct, "why": "whole_as_breakdown",
                             "of": {"measure": support[0].get("measure"), "dimension": None,
                                    "member": None}})
+            continue
+        # TWO MEASURES CALLED EQUAL THAT THE EVIDENCE SAYS ARE NOT. Live 85fc3626
+        # g3_gmv_minus_rev: "GMV và doanh thu sản phẩm đều có giá trị bằng nhau là
+        # 13,591,643.70" — the revenue figure also claimed as GMV (15,843,553.24 read).
+        eq = _false_equality(ctx, _clause_of(text, value), ledger)
+        if eq:
+            flagged.append({"value": value, "pct": pct, "why": "other_measure",
+                            "of": {"measure": eq, "dimension": None, "member": None}})
             continue
         whole_only = all(not e.get("dimension") and not e.get("member") for e in support)
         # A RANK ANSWER CARRIES A MEMBER'S FIGURE. Live a2d2e68b/a7354461 (link 39):
