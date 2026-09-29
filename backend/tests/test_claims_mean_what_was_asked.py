@@ -1191,3 +1191,27 @@ def test_a_grouped_charts_mean_is_the_per_group_average(world):
     assert _why(state, ctx, f"Trung bình mỗi bang có {mean:,.2f} đơn hàng.") == []
     assert (float(total), "aggregation_mismatch") in _why(
         state, ctx, f"Trung bình mỗi bang có {total:,} đơn hàng.")
+
+
+def test_a_measures_words_are_never_the_member_asked_about(world):
+    """Live 3bf8e3f3 P0 (g8_refuse_then_orders, 5 of 10 runs): "Vậy theo số đơn hàng
+    thì bang nào nhiều nhất?" — "số" was a cue of customer_state ("Số đơn theo
+    bang"), "đơn hàng" became the state asked about, and SP's correct 41,746 was
+    withheld as another member's; the answer fell back to the previous refusal.
+    The report's own single-value tile "Số đơn hàng" makes those words a measure's.
+    Controls: a real member after the real cue is still read, and another state's
+    figure given to it is still flagged."""
+    ctx, state = world("Vậy theo số đơn hàng thì bang nào nhiều nhất?", asked=("order_count",))
+    ctx.allowed_chart_ids.add(680)
+    ctx.chart_meta[680] = {"name": "Olist · Số đơn hàng · page-1",
+                           "fields": {"measures": [{"field": "dataset_table_437.order_count"}], "dimensions": []}}
+    _rec(state, "rank_values", {"ok": True, "kind": "ranking", "data": {
+        "chart_id": STATE_ORDERS_CHART, "measure": "dataset_table_437.order_count",
+        "dimension": "dataset_table_441.customer_state", "order": "desc", "total": 69613.0, "group_count": 4,
+        "items": [{"label": "SP", "value": 41746.0, "rank": 1}, {"label": "RJ", "value": 12852.0, "rank": 2}]}},
+        {"chart_id": STATE_ORDERS_CHART})
+    assert _why(state, ctx, "Theo số đơn hàng, SP là bang nhiều nhất với 41,746 đơn hàng.") == []
+    t = {"member": None, "measures": ["order_count"], "dimension": "customer_state", "intent": {}}
+    assert CC._asked_member(ctx, t, "Số đơn của bang Minas Gerais là bao nhiêu?") == ["minasgerais", "mg"]
+    ctx.question = "Số đơn của bang Minas Gerais là bao nhiêu?"
+    assert (12852.0, "other_member") in _why(state, ctx, "Bang Minas Gerais có 12,852 đơn.")

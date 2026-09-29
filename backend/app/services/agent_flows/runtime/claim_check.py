@@ -367,6 +367,13 @@ def _asked_member_by_cue(ctx: Any, t: dict, question: str) -> list[str] | None:
         # "theo" are in every breakdown's titles ("Số đơn theo bang"), and "hủy đơn
         # của bang SP" read "của" as the asked member (found by the regression suite).
         cues -= others
+        # NOR DOES A MEASURE'S WORD: the title of a single-value tile ("Số đơn hàng",
+        # "Tổng doanh thu") names a measure, never a breakdown — "số" made "Số đơn của
+        # bang Minas Gerais" ask about the state "đơn của" (found by the regression
+        # for live 3bf8e3f3 g8_refuse_then_orders).
+        for meta in (getattr(ctx, "chart_meta", None) or {}).values():
+            if not (((meta or {}).get("fields") or {}).get("dimensions")):
+                cues -= set(re.findall(r"[^\W_]+", _fold(str((meta or {}).get("name") or ""))))
     except Exception:                                           # noqa: BLE001
         return None
     words = re.findall(r"\(|\)|[^\W_]+", _fold(question))
