@@ -94,7 +94,12 @@ def charts_for(intent: dict, vocab: dict, limit: int = 3) -> list[dict]:
             if dim:
                 return 0 if dims == [dim] else 1 if dim in dims else 3
             if intent.get("periods"):
-                return 0 if any(looks_like_time_name(d) for d in dims) and len(dims) == 1 else 2
+                # The grain asked: a month is read from a monthly chart, not a
+                # weekday one (`day_name` is time-like too; live 0d335866 run 7429).
+                grain = {"m": "month", "q": "quarter", "y": "year"}.get(str(intent["periods"][0][0]), "")
+                if len(dims) == 1 and grain and grain in dims[0]:
+                    return 0
+                return 1 if any(looks_like_time_name(d) for d in dims) and len(dims) == 1 else 2
             return 0 if not dims else 2
         for cid, dims, title in sorted(rows, key=rank)[:limit]:
             if rank((cid, dims, title)) < 3:
@@ -506,6 +511,13 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
         vocab["members"] = member_values(ctx, vocab["dimensions"], vocab["coverage"])
     except Exception:                                           # noqa: BLE001
         vocab["members"] = {}
+    # The report's range reaches the model ONLY for a relative period. Offered on
+    # every turn, it dated dateless questions: "Tổng GMV là bao nhiêu?" came back
+    # with periods [2018-09] and was answered with September's 166.46 (live 0d335866).
+    relative = asks_relative_period(question, previous)
+    coverage = vocab["coverage"]
+    if not relative:
+        vocab["coverage"] = {}
     try:
         raw = await asyncio.wait_for(
             _model_call(provider=provider, api_key=api_key, model=model, system=_SYSTEM,
@@ -516,6 +528,12 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
         floor["notes"].append("model resolution unavailable")
         return floor
     model = validate(_parse(raw), vocab)
+    vocab["coverage"] = coverage
+    from app.services.time_semantics import named_periods
+
+    if model.get("periods") and not (named_periods(question) or relative or model.get("followup")):
+        model["notes"].append(f"period not asked: {model['periods']}")
+        model["periods"] = []
     better = titled_measure(question, model.get("measures") or [], vocab)
     if better:
         model["notes"].append(f"measure by the question's own words: {better} "

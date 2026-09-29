@@ -328,3 +328,23 @@ def test_a_breakdown_or_range_not_asked_is_not_asserted():
                             {"members": [{"said": "SP", "code": "SP"}]})
     assert not I.asks_relative_period("Tỷ lệ giao đúng hẹn tháng 3/2018 là bao nhiêu?", "")
     assert I.asks_relative_period("GMV tháng gần nhất so với tháng trước thay đổi thế nào?", "")
+
+
+def test_a_period_the_question_does_not_ask_is_dropped(monkeypatch, world):
+    """Live 0d335866 run 7442: "Tổng GMV (hàng + ship) là bao nhiêu?" resolved to
+    periods [2018-09] and was answered with September's 166.46."""
+    ctx, state = world("Tổng GMV (hàng + ship) là bao nhiêu?")
+
+    async def call(**kw):
+        return json.dumps({"measures": ["gmv"], "periods": [{"grain": "m", "year": 2018, "n": 9}]})
+    monkeypatch.setattr(I, "_model_call", call)
+    monkeypatch.setattr(I, "vocabulary", lambda c: {"measures": {"gmv": "Gmv"}, "dimensions": {}})
+    got = asyncio.run(I.resolve(state, ctx, question=ctx.question, previous="", provider="openai",
+                                api_key="k", model="m"))
+    assert got["periods"] == [] and any("period not asked" in n for n in got["notes"])
+
+
+def test_a_month_is_read_from_the_monthly_chart():
+    rows = {"measures": ["order_count"], "dimension": None, "periods": [("m", 2018, 10)]}
+    v = {"carriers": {"order_count": [(705, ["day_name"], "Đơn theo ngày"), (726, ["year_month"], "Số đơn theo tháng")]}}
+    assert I.charts_for(rows, v)[0]["chart_id"] == 726

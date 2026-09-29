@@ -515,9 +515,31 @@ def tool_total_measure(ctx: ToolContext, args: dict) -> dict:
     # The rule the guard actually encodes is "do not combine these ACROSS rows".
     # With nothing to combine, there is nothing to get wrong.
     if not info["additive"] and len(values) > 1:
+        # WHERE TO GO INSTEAD. Refused without a route, the model gave up ("order_count
+        # cannot be aggregated") or quoted average_across_rows as the answer (live
+        # 0d335866 runs 7455/7476/7429). The whole is a single-value chart of this
+        # measure; one member's value is a row of THIS chart.
+        from app.services.agent_flows.tools.dimension_gate import field_key
+
+        key = field_key(columns[m_idx])
+        tiles = [f"{cid} ({(meta or {}).get('name') or ''})".strip()
+                 for cid, meta in sorted((getattr(ctx, "chart_meta", None) or {}).items())
+                 if cid != chart_id and cid in (getattr(ctx, "allowed_chart_ids", None) or set())
+                 and not ((meta or {}).get("fields") or {}).get("dimensions")
+                 and any(field_key(str(m.get("field") or "")) == key
+                         for m in (((meta or {}).get("fields") or {}).get("measures") or [])
+                         if isinstance(m, dict))]
         return R.err(
             measure_meta.additivity_error(info),
             code="not_applicable",
+            recovery=(
+                ("The report's WHOLE figure is on a single-value chart: "
+                 + ", ".join(tiles[:3]) + " — call total_measure with that chart_id. "
+                 if tiles else "")
+                + "ONE member's value is a row of this chart: share_of (item=the member) or "
+                "smart_drilldown; the top/bottom members: rank_values. Never answer with "
+                "average_across_rows — it is not the asked figure."
+            ),
             detail={
                 "measure": columns[m_idx],
                 "aggregation": info["agg"],
