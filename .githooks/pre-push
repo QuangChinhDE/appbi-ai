@@ -18,6 +18,13 @@ set -uo pipefail
 
 [ -n "${PREFLIGHT_SKIP:-}" ] && { echo "preflight: skipped (PREFLIGHT_SKIP set)"; exit 0; }
 
+# A HOOK'S GIT ENVIRONMENT MUST NOT REACH THE TESTS. Git exports GIT_DIR and
+# friends to hooks; the safety-system tests create throwaway repos with plain
+# `git init/commit/config`, and with GIT_DIR inherited those landed in the REAL
+# repository: the branch being pushed was deleted, core.bare was set on the
+# shared config, user.name became `t` (found 2026-09-28, Agent Flow V3 push).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root" || exit 1
 
