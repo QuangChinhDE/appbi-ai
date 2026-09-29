@@ -851,5 +851,7 @@ def test_a_seller_states_figure_is_not_the_customer_states(world):
     _rec(state, "get_chart_summary", summary, {"chart_id": 703})
     got = _why(state, ctx, "Doanh thu của bang Minas Gerais là 1,011,564.74.")
     assert got and got[0][0] == 1011564.74, got
-    assert _why(state, ctx, "Doanh thu của người bán ở bang MG (theo bang người bán) là 1,011,564.74.") == [] \
-        or True  # the seller framing is judged by the dimension rule, asserted separately below
+    from app.services.agent_flows.runtime import claim_scope
+    [row] = [e for e in claim_scope.describe("get_chart_summary", summary, chart_dims=state.chart_dims)
+             if e["value"] == 1011564.74]
+    assert row["member"] == "MG" and row["dimension"] == "seller_state", "a summary row keeps its member"
