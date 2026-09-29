@@ -367,3 +367,25 @@ def test_a_links_flow_assignment_is_a_separate_resource_from_the_link():
         "the assignment now also lives on the link; the modal's two-write dance "
         f"should be revisited: {sorted(leaked)}"
     )
+
+
+def test_every_link_scoped_agent_flow_route_checks_the_report():
+    """Object level, not module level. Security acceptance F3 (422b8fd2): a user
+    refused `GET /dashboards/67` read link 38/39's binding — flow, chart allowlist,
+    capability flags — through `GET /agent-flows/bindings/link/{id}`, the one link
+    route that checked only the module. Every route that takes a link id must reach
+    `_link_and_dashboard` (the report's own ownership + share check)."""
+    import inspect
+
+    from app.modules.agent_flows import api
+
+    checked, missing = 0, []
+    for route in api.router.routes:
+        path = getattr(route, "path", "")
+        if "{link_id}" not in path:
+            continue
+        checked += 1
+        if "_link_and_dashboard(" not in inspect.getsource(route.endpoint):
+            missing.append((sorted(route.methods or []), path))
+    assert checked >= 3, f"found only {checked} link routes; the walk is blind"
+    assert not missing, missing

@@ -262,7 +262,13 @@ def save_memory(
         # memory every turn. But the token still has to be checked, just afterwards:
         # a browser tab keeps one session key while moving between links, and two
         # links have two different data contracts. Memory from one must never be
-        # read on the other, so a token change RESETS the row rather than joining it.
+        # read on the other.
+        #
+        # A ROW OWNED BY ANOTHER LINK IS NOT THIS LINK'S TO CHANGE. Re-pointing its
+        # token (security acceptance F2, 422b8fd2) carried link A's stored
+        # transcript to link B — readable there through `GET /ai/session/<key>` —
+        # and took it away from A. Resetting it instead would let anyone who knows
+        # a key erase A's conversation. So this turn's memory is simply not kept.
         row = (
             db.query(AiChatSession)
             .filter(AiChatSession.session_key == session_key)
@@ -277,7 +283,8 @@ def save_memory(
             row = AiChatSession(token=token, session_key=session_key)
             db.add(row)
         elif row.token != token:
-            row.token = token
+            logger.info("[flow] session key belongs to another link; memory not kept")
+            return
 
         remembered = out.memory_delta.set
         # Which NODES may be skipped next turn, derived from the flow rather than
@@ -417,7 +424,7 @@ async def run_for_link(
         out = blocked(run_id, BLOCK_MESSAGES.get(problem, BLOCK_MESSAGES["not_configured"]), problem or "not_configured")
         _record_blocked(db, out, binding, question, session_key, link, dashboard)
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -537,7 +544,7 @@ async def run_for_link(
                 # flow's real viewer traffic left no diagnostics in Runs at all —
                 # an author saw them only for questions they asked themselves,
                 # which is the opposite of where they are needed.
-                ev.extra["envelope"] = out.to_dict(notices=reader_notices(out.notices))
+                ev.extra["envelope"] = out.to_reader_dict()
                 save_memory(
                     db, session_key=session_key, token=getattr(link, "token", ""),
                     fp=fp, out=out, flow=flow,
@@ -977,7 +984,7 @@ async def run_for_chat_thread(
         # the stream starting. Nothing to record it against, so it is said and dropped.
         out = blocked(run_id, direct_chat.BLOCK_MESSAGES["not_published"], "not_published")
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -991,7 +998,7 @@ async def run_for_chat_thread(
             "thread_read_only",
         )
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -1011,7 +1018,7 @@ async def run_for_chat_thread(
         )
         _record_chat_blocked(db, out, thread, question)
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -1093,7 +1100,7 @@ async def run_for_chat_thread(
                 # flow's real viewer traffic left no diagnostics in Runs at all —
                 # an author saw them only for questions they asked themselves,
                 # which is the opposite of where they are needed.
-                ev.extra["envelope"] = out.to_dict(notices=reader_notices(out.notices))
+                ev.extra["envelope"] = out.to_reader_dict()
                 save_memory(
                     db, session_key=thread.session_key, token=token,
                     fp=fp, out=out, flow=flow,

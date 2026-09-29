@@ -611,6 +611,22 @@ class FlowOutput(_Model):
             out["notices"] = [n.model_dump(mode="json") for n in notices]
         return out
 
+    def to_reader_dict(self) -> dict[str, Any]:
+        """The envelope as a READER receives it: the answer, its citations and the
+        reader's notices — never the author's trace, usage or session state.
+
+        Security acceptance F1 (run at 422b8fd2): a public link sent the whole
+        `trace`, and a withheld figure's draft rode in it
+        (`trace.steps[].capabilities.claims.draft`) while the answer showed it
+        hidden. What the claim check withholds from the answer is withheld from the
+        wire; the recorded run keeps every field for the author's Runs tab.
+        """
+        out = self.to_dict(notices=reader_notices(self.notices))
+        out["trace"] = Trace().model_dump(mode="json")
+        out["usage"] = Usage().model_dump(mode="json")
+        out["memory_delta"] = MemoryDelta().model_dump(mode="json")
+        return out
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Constructors — so no caller hand-builds a shape and gets it subtly wrong

@@ -1059,8 +1059,12 @@ def _usable_flow(db: Session, user: User, brain_key: str) -> Flow:
 
 @router.get("/bindings/link/{link_id}")
 def get_binding(
-    link_id: int, db: Session = Depends(get_db), _: User = Depends(can_assign)
+    link_id: int, db: Session = Depends(get_db), user: User = Depends(can_assign)
 ) -> dict[str, Any]:
+    # The report, not just the module (security acceptance F3, 422b8fd2): a user
+    # refused `GET /dashboards/67` read link 38/39's flow, chart allowlist and
+    # capability flags here. The sibling endpoints already check it.
+    _link_and_dashboard(db, link_id, user)
     binding = binding_service.get_for_link(db, link_id)
     if binding is None:
         return {"binding": None}
