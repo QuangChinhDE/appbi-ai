@@ -224,6 +224,15 @@ async def run_flow(
             # On the ANSWERING step's trace — the one the Runs inspector shows the
             # author next to the claim verdict it drives.
             state.capability_trace.setdefault(rctx.answer_key, {})["intent"] = dict(state.intent)
+            # THE BREAKDOWN THE LINK CANNOT DELIVER FOR THIS MEASURE is known before any
+            # tool runs (live 3bf8e3f3 P0 g2): the gap opens here and closes only on a
+            # result grouped by it that carries the asked measure.
+            try:
+                gap = intent_mod.breakdown_gap(state.intent, intent_mod.vocabulary(ctx))
+                if gap and not state.dimension_gap:
+                    state.dimension_gap = {**gap, "label": "", "satisfied": False}
+            except Exception:                                   # noqa: BLE001
+                logger.warning("[flow] breakdown gap check failed", exc_info=True)
 
     status = "ok"
     streamed_text = False

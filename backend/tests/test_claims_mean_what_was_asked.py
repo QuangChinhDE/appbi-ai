@@ -1215,3 +1215,157 @@ def test_a_measures_words_are_never_the_member_asked_about(world):
     assert CC._asked_member(ctx, t, "Số đơn của bang Minas Gerais là bao nhiêu?") == ["minasgerais", "mg"]
     ctx.question = "Số đơn của bang Minas Gerais là bao nhiêu?"
     assert (12852.0, "other_member") in _why(state, ctx, "Bang Minas Gerais có 12,852 đơn.")
+
+
+def test_a_change_over_a_suspected_incomplete_edge_needs_its_caveat(world):
+    """Live 3bf8e3f3 (P0 g6, run 8117): "GMV tháng gần nhất 2018-09 giảm 99,98%" over
+    a month of 16 orders (none delivered) — the tool's note that the edge may be
+    incomplete was dropped. Controls: the same change WITH the caveat stands, the
+    observed value alone stands, and the month-on-month over the two complete months
+    before it (which does not stand on the edge) is untouched."""
+    ctx, state = world(MOM_Q, asked=("gmv",))
+    edge = {"ok": True, "kind": "comparison", "data": {
+        "chart_id": MONTHLY, "measure": "dataset_table_438.gmv",
+        "current": {"label": "2018-09", "value": 166.46},
+        "baseline": {"label": "2018-08", "value": 1003308.47},
+        "delta": -1003142.01, "pct_change": -99.98, "verdict": "worsening",
+        "edge_period": "2018-09", "edge_completeness": "suspected_incomplete",
+        "observed_latest": {"label": "2018-09", "value": 166.46}}}
+    _rec(state, "compare_periods", edge, {"chart_id": MONTHLY, "mode": "custom"})
+    bare = "GMV tháng 2018-09 giảm 99,98% so với tháng 2018-08."
+    assert (99.98, "edge_unqualified") in [(abs(v), w) for v, w in _why(state, ctx, bare)]
+    said = bare + " Lưu ý: tháng 2018-09 có thể chưa đầy đủ dữ liệu."
+    assert all(w != "edge_unqualified" for _, w in _why(state, ctx, said))
+    assert all(w != "edge_unqualified" for _, w in _why(state, ctx, "GMV tháng 2018-09 quan sát được là 166.46."))
+    ctx, state = world(MOM_Q, asked=("gmv",))
+    stable = _compare(1003308.47, 1058728.03, -5.23)
+    stable["data"].update({"edge_completeness": "suspected_incomplete",
+                           "observed_latest": {"label": "2018-09", "value": 166.46}})
+    _rec(state, "compare_periods", stable, {"chart_id": MONTHLY, "mode": "mom"})
+    assert _why(state, ctx, "GMV tháng 2018-07 so với 2018-06 giảm 5,23%.") == []
+
+
+def test_a_breakdown_is_not_answered_from_another_measures_members(world):
+    """Live 3bf8e3f3 (P0 g2, link 39): "Bang nào có doanh thu cao nhất?" with no
+    revenue-by-state chart in scope was answered "SP" — read from ORDERS by state.
+    The gap opened from the intent closes only on revenue by state; while it is open,
+    a state named only by another measure's ranking is sent back. Controls: the honest
+    refusal passes, and once revenue by state is read the same member is its own."""
+    from app.services.agent_flows.runtime import agent_runtime as AR
+
+    ctx, state = world(STATE_Q, asked=("total_revenue",))
+    state.dimension_gap = {"requested": "customer_state", "measures": ["total_revenue"],
+                           "label": "", "satisfied": False}
+    orders = {"ok": True, "kind": "ranking", "data": {
+        "chart_id": STATE_ORDERS_CHART, "measure": "dataset_table_437.order_count",
+        "dimension": "dataset_table_441.customer_state", "order": "desc", "total": 69613.0, "group_count": 4,
+        "items": [{"label": "SP", "value": 41746.0, "rank": 1}]}}
+    _rec(state, "rank_values", orders, {"chart_id": STATE_ORDERS_CHART})
+    AR._note_dimension_outcome(state, orders)
+    assert state.dimension_gap["satisfied"] is False
+    assert CC.borrowed_members(state, "Bang có doanh thu cao nhất là SP.") == ["SP"]
+    assert CC.borrowed_members(state, "Báo cáo này không có doanh thu theo bang, nên không xác định được.") == []
+    AR._note_dimension_outcome(state, {"ok": True, "data": {"measure": "t.total_revenue",
+                                                            "dimension": "t.customer_state"}})
+    assert state.dimension_gap["satisfied"] is True
+    assert CC.borrowed_members(state, "Bang có doanh thu cao nhất là SP.") == []
+
+
+class _StateModel:
+    """Answers the state question from ORDERS by state; told why, admits it."""
+
+    def __init__(self, obey=True):
+        self.obey = obey
+        self.reviews: list[str] = []
+
+    def stream(self):
+        async def fake(*, provider, api_key, model, system_prompt, messages, tools):
+            last = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), ""))
+            if "KHÔNG có biểu đồ nào có" in last:
+                self.reviews.append(last)
+            if tools and not [m for m in messages if m.get("role") == "tool"]:
+                yield AgentEvent(type="tool_call", tool_call_id="t1", tool_name="rank_values",
+                                 tool_args={"chart_id": STATE_ORDERS_CHART})
+            elif self.reviews and self.obey:
+                yield AgentEvent(type="text", text="Báo cáo này không có doanh thu theo bang, nên không trả lời được.")
+            else:
+                yield AgentEvent(type="text", text="Bang có doanh thu cao nhất là SP.")
+            yield AgentEvent(type="usage", extra={"prompt_tokens": 5, "completion_tokens": 2})
+        return fake
+
+
+def test_the_run_admits_a_breakdown_its_scope_cannot_deliver(monkeypatch, undeclared):
+    """Whole run, live 3bf8e3f3 P0 g2: no revenue-by-state chart in scope; the model
+    answers "SP" from orders by state. The intent opens the gap, the draft goes back
+    once, and the reader is told the breakdown is unavailable. Control: a model that
+    will not fix it still gets the requested_breakdown_unavailable notice."""
+    import json
+
+    from app.services.agent_flows.runtime import intent as I
+
+    calls = []
+
+    async def intent_call(**kw):
+        calls.append(1)
+        return json.dumps({"measures": ["total_revenue"], "dimension": "customer_state", "members": [],
+                           "periods": [], "absent": None, "baseline": None, "followup": False})
+    monkeypatch.setattr(I, "_model_call", intent_call)
+    monkeypatch.setattr(CC, "_question_measures", lambda ctx, q: {"total_revenue"})
+    orders = {"ok": True, "kind": "ranking", "data": {
+        "chart_id": STATE_ORDERS_CHART, "measure": "dataset_table_437.order_count",
+        "dimension": "dataset_table_441.customer_state", "order": "desc", "total": 69613.0, "group_count": 4,
+        "items": [{"label": "SP", "value": 41746.0, "rank": 1}]}}
+    monkeypatch.setattr(tool_registry, "execute", lambda ctx, name, args, allowed=None, use_cache=True: orders)
+    q = "Bang nào có doanh thu cao nhất?"
+
+    def run(model):
+        monkeypatch.setattr(AH, "_stream", model.stream())
+        ctx = H._Ctx([684, 685, 686, 687])
+        ctx.chart_meta = undeclared([684, 685, 686, 687], q).chart_meta
+        body = {"answer_node": "tl", "nodes": [{
+            "key": "tl", "name": "tl", "type": "agent", "prompt": "Trả lời câu hỏi.", "max_tool_calls": 6,
+            "tools": [{"tool": "rank_values"}]}]}
+        flow = Flow.model_validate({**upgrade_body(copy.deepcopy(body), key="fx_g2", name="fx_g2"),
+                                    "key": "fx_g2", "name": "fx_g2"})
+        env = H._envelope({"envelope": {"question": {"raw": q}, "runtime": {
+            "provider": "openai", "model": "m", "budget": {"max_llm_calls": 8, "max_tool_calls": 10,
+                                                            "max_seconds": 60}}}})
+
+        async def go():
+            out = None
+            async for ev in executor.run_flow(FlowInput.model_validate(env), flow=flow, ctx=ctx,
+                                              api_key="k", base_system_prompt="BASE"):
+                if ev.type == "result":
+                    out = ev.extra.get("envelope")
+            return out or {}
+        return asyncio.run(go())
+
+    good = _StateModel(obey=True)
+    env = run(good)
+    assert calls, "the model intent path must run (not the heuristic fallback)"
+    assert len(good.reviews) == 1 and "total_revenue" in good.reviews[0]
+    assert "SP" not in _answer(env)
+    stubborn = _StateModel(obey=False)
+    env = run(stubborn)
+    assert any(n.get("code") == "requested_breakdown_unavailable" for n in env.get("notices") or [])
+
+
+def test_no_figure_stands_in_for_a_period_the_data_does_not_have(world):
+    """Live 3bf8e3f3 (P0 g5, 2 of 5 runs): "Doanh thu tháng 12/2025 là bao nhiêu?" —
+    "Số liệu 13,591,643.7 … là tổng doanh thu toàn kỳ" was published beside the
+    refusal. Framed as the whole period it passes when the asked period EXISTS; when
+    it lies outside the data it is a substitute answer. Controls: the honest refusal
+    that states the data's range passes; without the fact, the framing still passes."""
+    from app.services.agent_flows.runtime import intent as I
+
+    q = "Doanh thu tháng 12/2025 là bao nhiêu?"
+    ctx, state = world(q, asked=("total_revenue",))
+    _value(state, 13591643.70, "dataset_table_438.total_revenue")
+    outside = {"asked": [["m", 2025, 12]], "data_from": "2016-09", "data_to": "2018-10"}
+    base = {**I.empty_intent(), "source": "model", "measures": ["total_revenue"], "periods": [("m", 2025, 12)]}
+    sub = "Không có số cho tháng 12/2025. Tổng doanh thu toàn kỳ là 13,591,643.70."
+    state.intent = {**base, "periods_outside_data": outside}
+    assert (13591643.7, "period_absent") in _why(state, ctx, sub)
+    assert _why(state, ctx, "Dữ liệu của báo cáo chỉ có từ 2016-09 đến 2018-10, nên không có doanh thu tháng 12/2025.") == []
+    state.intent = base
+    assert (13591643.7, "period_absent") not in _why(state, ctx, sub)

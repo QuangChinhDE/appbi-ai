@@ -283,7 +283,14 @@ def _describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None
         between = [str((data.get(side) or {}).get("label") or "") for side in ("current", "baseline")
                    if isinstance(data.get(side), dict)]
         change = _whole(data, measure, ("delta",)) + _ratio_fields(data, measure=measure)
-        return out + [{**e, "dimension": "__time__", "periods": between} for e in change]
+        # A CHANGE THAT STANDS ON AN EDGE THE TOOL SUSPECTS. Only when the edge is one
+        # of the two periods compared (a mom over the complete periods before it does
+        # not stand on it).
+        edge = data.get("edge_period") or (data.get("observed_latest") or {}).get("label")
+        on_edge = (data.get("edge_completeness") in ("suspected_incomplete", "proven_incomplete")
+                   and edge in between)
+        return out + [{**e, "dimension": "__time__", "periods": between,
+                       **({"edge": str(edge)} if on_edge else {})} for e in change]
     if name in ("compare_segments", "segment_compare") or ("segment_a" in data and "segment_b" in data):
         out = []
         for side in ("segment_a", "segment_b"):

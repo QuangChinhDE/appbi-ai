@@ -701,6 +701,12 @@ def _false_equality(ctx: Any, clause: str, ledger: list[dict]) -> str | None:
     return None
 
 
+#: Words that say a period may not be complete (folded).
+_EDGE_CAVEAT_WORDS = ("chua day du", "khong day du", "chua hoan chinh", "chua tron", "khong tron",
+                      "mot phan", "chua ket thuc", "bat thuong", "thieu du lieu", "co the chua",
+                      "incomplete", "partial", "not complete", "unusually low", "may not be complete")
+
+
 def _framed_as_population(sentence: str, value: float) -> bool:
     import re
 
@@ -988,6 +994,14 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         # 56808.84" — another month's row, live runs 4849/4874).
         # Only for a figure that IS one period's row: whole totals and changes keep
         # the question's own periods (the sentence's dates would misjudge them).
+        # THE ASKED PERIOD IS NOT IN THE DATA: no measure figure answers it, however
+        # it is framed — the all-period total offered "for reference" is the
+        # workaround the publication boundary refuses (live 3bf8e3f3 P0 g5).
+        if intent.get("periods_outside_data") and support and any(
+                e.get("measure") and not e.get("count") for e in support):
+            flagged.append({"value": value, "pct": pct, "why": "period_absent",
+                            "of": {"measure": support[0].get("measure"), "dimension": None, "member": None}})
+            continue
         asked_periods = _periods(question) or intent_periods
         if not asked_periods and support and all(
                 _is_time(e.get("dimension")) and e.get("member") for e in support):
@@ -1035,6 +1049,15 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         if eq:
             flagged.append({"value": value, "pct": pct, "why": "other_measure",
                             "of": {"measure": eq, "dimension": None, "member": None}})
+            continue
+        # A CHANGE OVER A PERIOD THE TOOL SAYS MAY BE INCOMPLETE is stated with that
+        # caveat. Live 3bf8e3f3 (P0 g6, run 8117): "GMV tháng gần nhất 2018-09 giảm
+        # 99,98%" over a month of 16 orders, none delivered — the tool's own note
+        # was dropped. The observed value may be said; the change needs the caveat.
+        if all(e.get("edge") for e in support) and not _has_words(text, _EDGE_CAVEAT_WORDS):
+            e = support[0]
+            flagged.append({"value": value, "pct": pct, "why": "edge_unqualified",
+                            "of": {"measure": e.get("measure"), "dimension": None, "member": e.get("edge")}})
             continue
         whole_only = all(not e.get("dimension") and not e.get("member") for e in support)
         # A RANK ANSWER CARRIES A MEMBER'S FIGURE. Live a2d2e68b/a7354461 (link 39):
@@ -1105,6 +1128,12 @@ _WHY = {
     "whole_as_member": ("là số của TOÀN BỘ báo cáo — báo cáo không có số liệu này theo chiều "
                         "được hỏi; nếu giữ, phải nói rõ đó là tổng toàn bộ"),
     "wrong_direction": "câu nói chiều ngược với dấu của con số đã tính (tăng ↔ giảm)",
+    "period_absent": ("được đưa ra cho một kỳ mà dữ liệu KHÔNG có (kỳ được hỏi nằm ngoài phạm vi "
+                      "thời gian của báo cáo) — nói rõ là không có số cho kỳ đó, không thay bằng "
+                      "số của kỳ khác hay tổng toàn kỳ"),
+    "edge_unqualified": ("là mức thay đổi so với một kỳ mà công cụ cho biết có thể CHƯA ĐẦY ĐỦ — "
+                         "nói rõ điều đó bên cạnh con số, hoặc so sánh hai kỳ trọn vẹn trước đó "
+                         "(compare_periods mode=mom)"),
     "aggregation_mismatch": ("là một TỔNG, nhưng câu trả lời gọi nó là trung bình/mỗi đơn vị — lấy "
                              "đúng số đo trung bình (biểu đồ AOV/trung bình) hoặc tính bằng compute "
                              "từ tổng và số lượng cùng phạm vi"),
@@ -1120,6 +1149,39 @@ _WHY = {
                      "hỏi — tìm biểu đồ có số đo này THEO KỲ (list_charts / resolve_chart_candidates) "
                      "và đọc đúng kỳ được hỏi; chỉ khi không có biểu đồ nào như vậy mới nói là không có"),
 }
+
+
+def borrowed_members(state: Any, text: str) -> list[str]:
+    """Members of the asked breakdown the draft names while the run holds that
+    breakdown ONLY for other measures (an open measure gap from the intent).
+    Live 3bf8e3f3 (P0 g2, link 39): "Bang nào có doanh thu cao nhất?" with no
+    revenue-by-state chart in scope was answered "SP" — read from orders by state.
+    Structured facts: the gap and the ledger's members; the text is only searched
+    for those members' own labels."""
+    gap = getattr(state, "dimension_gap", None) or {}
+    if not gap.get("measures") or gap.get("satisfied"):
+        return []
+    from app.services.agent_flows.tools.dimension_gate import field_key
+
+    dim = field_key(str(gap.get("requested") or ""))
+    wanted = set(gap.get("measures") or [])
+    seen: list[str] = []
+    for e in getattr(state, "claim_ledger", None) or []:
+        m = e.get("member")
+        if m and field_key(str(e.get("dimension") or "")) == dim and e.get("measure") not in wanted \
+                and m not in seen and _names(text, m):
+            seen.append(m)
+    return seen[:5]
+
+
+def borrowed_member_message(gap: dict, members: list[str]) -> str:
+    return (
+        "Kiểm tra trước khi trả lời: trong phạm vi báo cáo này KHÔNG có biểu đồ nào có "
+        f"{', '.join(gap.get('measures') or [])} theo {gap.get('requested')}. "
+        f"{', '.join(members)} chỉ xuất hiện trong thứ hạng của MỘT SỐ ĐO KHÁC, nên không phải "
+        "câu trả lời cho điều được hỏi. Nói thẳng là báo cáo này không trả lời được theo chiều "
+        "đó; có thể nêu số đo khác nếu gọi rõ tên nó. Trả lời bằng ngôn ngữ của câu hỏi."
+    )
 
 
 def review_message(flagged: list[dict], target: dict) -> str:
