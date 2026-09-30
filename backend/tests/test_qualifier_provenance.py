@@ -97,6 +97,20 @@ def test_an_undeclared_unit_cannot_be_asserted(written):
     )
 
 
+@pytest.mark.parametrize("prose", [
+    "Tổng doanh thu là 13.591.643,7. Các số liệu đều đồng nhất giữa ba biểu đồ.",
+    "Doanh thu và GMV tăng đồng thời, đạt 13.591.643,7.",
+    "Số hợp đồng là 1.204.",
+    "Cộng đồng người bán có 3.095 nhà bán.",
+])
+def test_dong_inside_an_ordinary_word_is_not_a_currency(prose):
+    """Live 11fd7f21 (browser, link 39): "Các số liệu đều đồng nhất" drew the unit
+    notice on a correct answer that named no currency. "đồng" is a currency only
+    after an amount; the positive cases above ("1.258.681,34 đồng") still fire."""
+    assert "unit" not in kinds(check(prose, [NO_UNIT]))
+    assert "unit" in kinds(check("Doanh thu 5 triệu đồng.", [NO_UNIT]))
+
+
 def test_a_declared_currency_is_preserved():
     """The rule must not cost a right answer its unit."""
     v = check("Doanh thu là 1.258.681,34 BRL.", [DECLARED_BRL])

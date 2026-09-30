@@ -207,42 +207,68 @@ def test_the_stored_thread_replay_scrubs_notice_facts():
     assert "reader_notice_dict(n)" in inspect.getsource(direct_chat)
 
 
-def _flow(nodes):
-    from app.services.agent_flows.contract import Flow
-
-    return Flow.model_validate({"key": "f", "name": "f", "answer_node": nodes[-1]["key"], "nodes": nodes})
-
-
-def test_v3_capabilities_are_off_for_readers_until_the_pilot_opens(monkeypatch):
-    """Merge mode "pilot disabled": a flow using a Skill (step or grant) is refused
-    on reader paths while settings.AGENT_FLOW_V3_ENABLED is false; a flow without
-    V3 capabilities is untouched; setting it true opens the pilot."""
+def test_the_reader_rollout_policy_is_one_decision_for_every_reader(monkeypatch):
+    """Pilot brief §7 (replaces the Skill-only AGENT_FLOW_V3_ENABLED switch, which let
+    a flow with no Skill through the uncertified runtime): off = nobody, pilot = the
+    cohort only, all = everybody; an unknown mode fails closed."""
     from app.core.config import settings
-    from app.services.agent_flows import dispatch
+    from app.services.agent_flows import pilot
 
-    plain = _flow([{"key": "a", "type": "agent", "prompt": "x", "tools": [{"tool": "total_measure"}]}])
-    granted = _flow([{"key": "a", "type": "agent", "prompt": "x",
-                      "tools": [{"tool": "total_measure"}, {"tool": "skill:so_sanh"}]}])
-    assert dispatch.v3_capabilities(plain) == []
-    assert dispatch.v3_capabilities(granted) == ["skill:so_sanh"]
-    monkeypatch.setattr(settings, "AGENT_FLOW_V3_ENABLED", False, raising=False)
-    assert dispatch.v3_blocked_for_readers(granted) and not dispatch.v3_blocked_for_readers(plain)
-    monkeypatch.setattr(settings, "AGENT_FLOW_V3_ENABLED", True, raising=False)
-    assert not dispatch.v3_blocked_for_readers(granted)
+    def setp(mode, links="", users=""):
+        monkeypatch.setattr(settings, "AGENT_FLOW_READER_MODE", mode, raising=False)
+        monkeypatch.setattr(settings, "AGENT_FLOW_PILOT_LINK_IDS", links, raising=False)
+        monkeypatch.setattr(settings, "AGENT_FLOW_PILOT_USERS", users, raising=False)
+
+    setp("pilot", "39, 170", "Pilot@Example.com")
+    assert pilot.reader_decision(link_id=39) is None
+    assert pilot.reader_decision(link_id=41) == "pilot_not_enrolled"
+    assert pilot.reader_decision(user_email="pilot@example.com") is None
+    assert pilot.reader_decision(user_email="other@example.com") == "pilot_not_enrolled"
+    assert pilot.reader_decision() == "pilot_not_enrolled"
+    setp("pilot")
+    assert pilot.reader_decision(link_id=39) == "pilot_not_enrolled", "empty cohort serves nobody"
+    setp("off", "39", "pilot@example.com")
+    assert pilot.reader_decision(link_id=39) == "reader_mode_off"
+    assert pilot.reader_decision(user_email="pilot@example.com") == "reader_mode_off"
+    setp("all")
+    assert pilot.reader_decision(link_id=41) is None
+    setp("yes please")
+    assert pilot.reader_decision(link_id=39) == "reader_mode_off", "unknown mode fails closed"
 
 
-def test_both_reader_paths_are_gated_and_the_author_path_is_not():
+def test_both_reader_paths_ask_the_policy_and_studio_test_does_not():
     import inspect
 
     from app.core.config import Settings
     from app.services.agent_flows import dispatch
 
-    assert Settings.model_fields["AGENT_FLOW_V3_ENABLED"].default is False, "off by default"
+    assert Settings.model_fields["AGENT_FLOW_READER_MODE"].default == "pilot"
+    assert Settings.model_fields["AGENT_FLOW_PILOT_LINK_IDS"].default == ""
     src = inspect.getsource(dispatch)
     for fn in ("run_for_link", "run_for_chat_thread"):
         body = src[src.index("async def %s(" % fn):]
         body = body[:body.index("\nasync def ", 10)] if "\nasync def " in body[10:] else body
-        assert "v3_blocked_for_readers(" in body, fn
+        assert "_reader_gate(" in body, fn
     preview = src[src.index("async def run_preview("):]
     preview = preview[:preview.index("\nasync def ", 10)]
-    assert "v3_blocked_for_readers(" not in preview, "Studio Test keeps running V3 flows"
+    assert "_reader_gate(" not in preview, "Studio Test is the author's path"
+
+
+def test_every_agent_flow_path_runs_on_the_certified_default_model(monkeypatch):
+    """The pilot is certified on one model: a link's own model wins, else the
+    deployment's AGENT_FLOW_DEFAULT_MODEL (OpenAI only), else the adapter default.
+    Direct Chat passed no model at all and always ran on gpt-4o-mini."""
+    import inspect
+
+    from app.core.config import settings
+    from app.services.agent_flows import dispatch
+
+    monkeypatch.setattr(settings, "AGENT_FLOW_DEFAULT_MODEL", "gpt-4.1", raising=False)
+    assert dispatch._runtime_model("", "openai") == "gpt-4.1"
+    assert dispatch._runtime_model("", "") == "gpt-4.1"
+    assert dispatch._runtime_model("gpt-4o", "openai") == "gpt-4o", "the link's own model wins"
+    assert dispatch._runtime_model("", "anthropic") == "", "not an OpenAI model for another vendor"
+    monkeypatch.setattr(settings, "AGENT_FLOW_DEFAULT_MODEL", "", raising=False)
+    assert dispatch._runtime_model("", "openai") == "", "unset: today's adapter default"
+    src = inspect.getsource(dispatch)
+    assert src.count("_runtime_model(model, provider)") == 3, "link, chat and studio all use it"

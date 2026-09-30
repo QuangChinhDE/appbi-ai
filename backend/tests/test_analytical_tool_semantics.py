@@ -660,3 +660,42 @@ def test_a_distinct_count_refusal_says_where_the_figure_is(stub, monkeypatch):
     res = DER.tool_total_measure(C(), {"chart_id": 1})
     assert res["ok"] is False and res["error_code"] == "not_applicable", res
     assert "680" in res["recovery"] and "average_across_rows" in res["recovery"], res["recovery"]
+
+
+def test_a_distinct_count_is_shared_when_the_groups_partition_the_whole(stub, monkeypatch):
+    """Live 3ac706e6 g3_cancel_share: each order has ONE status, so canceled orders
+    are a share of all orders; refused as non-additive, the answer said it could not
+    be computed. Proved by a single-value chart equal to the sum of the groups;
+    overlapping groups (sum != whole) stay refused."""
+    from app.services.agent_flows.tools.packs import measure_meta
+
+    groups = [("delivered", 96478.0), ("shipped", 1107.0), ("canceled", 625.0), ("other", 1231.0)]
+    monkeypatch.setattr(measure_meta, "describe_measure", lambda ctx, cid, m: {
+        "additive": False, "agg": "count_distinct", "format_kind": "number", "unit": None})
+
+    def fetch(ctx, cid, **kw):
+        if cid == 680:
+            return {"columns": ["t.order_count"], "rows": [[whole["v"]]], "filters_applied": []}
+        return chart(groups, dim="t.order_status", measure="t.order_count")
+    for module in (DER,):
+        monkeypatch.setattr(module, "_fetch_chart_data", fetch)
+
+    class C(Ctx):
+        allowed_chart_ids = {1, 680}
+        chart_meta = {680: {"name": "Số đơn hàng", "fields": {
+            "measures": [{"field": "t.order_count"}], "dimensions": []}}}
+    whole = {"v": 99441.0}
+    got = ok(DER.tool_share_of(C(), {"chart_id": 1, "item": "canceled"}))
+    assert abs(got["share_pct"] - 0.63) < 0.01 and "partition" in got["share_basis"], got
+    whole["v"] = 80000.0                                  # overlapping groups: no proof
+    got = ok(DER.tool_share_of(C(), {"chart_id": 1, "item": "canceled"}))
+    assert got["share_pct"] is None, got
+
+
+def test_a_member_named_in_other_words_gets_a_retry_route(stub):
+    """Live 85fc3626 g3_cc_share: "Thẻ tín dụng" refused with the values only in
+    detail; the model gave up instead of retrying with credit_card."""
+    stub([("credit_card", 12.0), ("boleto", 3.0)], dim="t.payment_type", measure="t.total_payment")
+    res = DER.tool_share_of(Ctx(), {"chart_id": 1, "item": "Thẻ tín dụng"})
+    assert res["ok"] is False and res["error_code"] == "no_data", res
+    assert "credit_card" in res["recovery"] and "retry" in res["recovery"], res

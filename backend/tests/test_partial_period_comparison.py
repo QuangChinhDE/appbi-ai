@@ -219,6 +219,24 @@ def test_custom_mode_is_untouched_because_the_caller_named_both_periods(_stub):
     assert data["baseline"]["label"] == "2024-12"
 
 
+def test_custom_mode_still_says_what_is_known_about_the_edge(_stub):
+    """Live 3bf8e3f3 (P0 g6, run 8117): the flow resolved "tháng gần nhất" to the low
+    final month itself and named both periods; custom skipped the edge check and the
+    collapse was published as a fact. The caller's periods and the numbers stay
+    exactly as named; the edge facts are stated beside them. Controls: a custom pair
+    that does not touch the edge claims nothing, and a declared cutoff proves it."""
+    data = run("custom", period_a="2025-01", period_b="2024-12")["data"]
+    assert (data["current"]["label"], data["current"]["value"]) == ("2025-01", 1.0)
+    assert data["edge_period"] == "2025-01"
+    assert data["edge_completeness"] == "suspected_incomplete"
+    assert data["observed_latest"] == {"label": "2025-01", "value": 1.0}
+    assert "có thể chưa đầy đủ" in data["note_partial"]
+    inner = run("custom", period_a="2024-12", period_b="2024-11")["data"]
+    assert "edge_completeness" not in inner and "note_partial" not in inner
+    _stub["filters"] = CUTOFF_FILTERS
+    assert run("custom", period_a="2025-01", period_b="2024-12")["data"]["edge_completeness"] == "proven_incomplete"
+
+
 def test_a_short_series_does_not_lose_its_only_points(_stub):
     """The helper refuses to trim below three points; the comparison must still
     produce an answer rather than an error."""

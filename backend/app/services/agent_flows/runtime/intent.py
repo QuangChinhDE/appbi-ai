@@ -32,6 +32,36 @@ def empty_intent() -> dict:
 
 # ── the report's own vocabulary ────────────────────────────────────────────────
 
+def _scoped_meta(ctx: Any) -> dict:
+    """The charts this turn may read. `chart_meta` is the whole report; a link's data
+    contract narrows `allowed_chart_ids`. Live 3bf8e3f3 (P0 g2, link 39): the intent
+    offered revenue-by-state charts 701/735 the link cannot read; the model tried
+    them, was refused, and answered from orders-by-state instead."""
+    metas = getattr(ctx, "chart_meta", None) or {}
+    allowed = getattr(ctx, "allowed_chart_ids", None)
+    if not allowed:
+        return metas
+    return {cid: meta for cid, meta in metas.items() if cid in allowed}
+
+
+def breakdown_gap(intent: dict, vocab: dict) -> dict | None:
+    """The asked measure BY the asked breakdown that no chart in scope carries —
+    {requested, measures} — or None. Structured facts only: the resolved intent and
+    the in-scope carriers; the breakdown itself may exist for other measures."""
+    from app.services.time_semantics import looks_like_time_name
+
+    dim = (intent or {}).get("dimension")
+    measures = list((intent or {}).get("measures") or [])
+    if not dim or not measures or looks_like_time_name(dim):
+        return None
+    carriers = vocab.get("carriers") or {}
+    if any(dim in dims for m in measures for _cid, dims, _t in carriers.get(m) or []):
+        return None
+    if dim not in (vocab.get("dimensions") or {}) and not any(carriers.get(m) for m in measures):
+        return None
+    return {"requested": dim, "measures": measures}
+
+
 def vocabulary(ctx: Any) -> dict:
     """{measures: {key: label}, dimensions: {key: [chart titles]},
     measures_by_dimension: {dim: [measure keys]}} from the charts in scope."""
@@ -42,7 +72,7 @@ def vocabulary(ctx: Any) -> dict:
     by_dim: dict[str, list[str]] = {}
     names: dict[str, list[str]] = {}
     carriers: dict[str, list[tuple[int, list[str], str]]] = {}
-    for cid, meta in (getattr(ctx, "chart_meta", None) or {}).items():
+    for cid, meta in _scoped_meta(ctx).items():
         fields = (meta or {}).get("fields") or {}
         labels = fields.get("label_by_field") or {}
         title = str((meta or {}).get("name") or "")
@@ -101,9 +131,13 @@ def charts_for(intent: dict, vocab: dict, limit: int = 3) -> list[dict]:
                     return 0
                 return 1 if any(looks_like_time_name(d) for d in dims) and len(dims) == 1 else 2
             return 0 if not dims else 2
-        for cid, dims, title in sorted(rows, key=rank)[:limit]:
-            if rank((cid, dims, title)) < 3:
-                out.append({"chart_id": cid, "measure": m, "by": dims, "title": title})
+        ranked = sorted(rows, key=rank)
+        fitting = [r for r in ranked if rank(r) < 3]
+        # No chart carries this measure by the asked breakdown: still name the
+        # measure's own charts (live 3ac706e6 run 7207 got none, searched with the
+        # breakdown and gave up) — the answer can then say the breakdown is absent.
+        for cid, dims, title in (fitting or ranked)[:limit]:
+            out.append({"chart_id": cid, "measure": m, "by": dims, "title": title})
     return out[: limit * 2]
 
 
@@ -178,8 +212,12 @@ def titled_measure(question: str, chosen: list[str], vocab: dict) -> str | None:
     return None
 
 
-_AGG_WORDS = {"avg": ("trung binh", "average", "avg", "mean", "binh quan"),
-              "rate": ("ty le", "rate", "phan tram", "percent", "percentage")}
+#: Only the AVERAGE is an aggregation the question can ask for by word. "Phần trăm",
+#: "tỷ lệ" and "share" ask for an OPERATION on a measure (its share of a whole), not
+#: for a rate measure: treated as "rate" they turned "Health & beauty chiếm bao nhiêu
+#: phần trăm doanh thu?" into on_time_rate and withheld every correct share (live
+#: 3ac706e6 runs 7240/7217/7261).
+_AGG_WORDS = {"avg": ("trung binh", "average", "avg", "mean", "binh quan")}
 
 
 def _asked_aggregation(question: str) -> str | None:
@@ -224,7 +262,22 @@ MEMBER_VALUES_PER_DIMENSION = 80
 MEMBER_READ_SECONDS = 3.0
 
 
-def member_values(ctx: Any, dimensions: dict, coverage: dict | None = None) -> dict[str, list[str]]:
+def _dimension_order(dimensions: dict, question: str) -> tuple[list[str], set[str]]:
+    """The breakdowns in reading order: those the question's own words name (through
+    the key or the titles of the charts grouped by it) first. Returns (order, named)."""
+    if not question:
+        return list(dimensions), set()
+    asked = _terms(question, singles=True)
+    score: dict[str, int] = {}
+    for dim, titles in dimensions.items():
+        own = _terms(" | ".join([str(dim).replace("_", " "), *[str(t) for t in titles or []]]), singles=True)
+        score[dim] = len(asked & own)
+    order = sorted(dimensions, key=lambda d: -score[d])
+    return order, {d for d in order if score[d] > 0}
+
+
+def member_values(ctx: Any, dimensions: dict, coverage: dict | None = None,
+                  question: str = "") -> dict[str, list[str]]:
     """{dimension key: [its values as the rows carry them]} for the non-time
     breakdowns in scope, read from one chart grouped by each alone. Never raises.
 
@@ -240,10 +293,18 @@ def member_values(ctx: Any, dimensions: dict, coverage: dict | None = None) -> d
 
     out: dict[str, list[str]] = {}
     started = time.monotonic()
-    metas = getattr(ctx, "chart_meta", None) or {}
-    for dim in dimensions:
+    metas = _scoped_meta(ctx)
+    # THE BREAKDOWN THE QUESTION NAMES IS READ FIRST, AND ALWAYS. Live 774b3341 run
+    # 7569, the third question after a restart: on a cold cache the 3 s budget ran
+    # out before payment_type, "Thẻ tín dụng" got no code, and the correct 78.34%
+    # credit_card share was withheld as another member's. Whether a correct figure
+    # is published must not depend on which charts happened to be cached.
+    order, named = _dimension_order(dimensions, question)
+    for dim in order:
         timed = looks_like_time_name(dim)
-        if (timed and coverage is None) or time.monotonic() - started > MEMBER_READ_SECONDS:
+        if timed and coverage is None:
+            continue
+        if dim not in named and time.monotonic() - started > MEMBER_READ_SECONDS:
             continue
         for cid, meta in metas.items():
             dims = [field_key(str(d.get("field") if isinstance(d, dict) else d))
@@ -461,8 +522,16 @@ _RELATIVE_CUES = ("gan nhat", "moi nhat", "hien tai", "thang nay", "thang truoc"
                   "previous", "this month", "current", "prior")
 
 
+#: "mỗi lần / mỗi đơn / mỗi khách" is PER UNIT, not a breakdown (live 3ac706e6 run
+#: 7207: "Trung bình mỗi lần thanh toán trả góp" kept a breakdown nobody asked for).
+_PER_UNIT_NOUNS = {"lan", "don", "khach", "nguoi", "san", "pham", "giao", "dich", "ky", "luot"}
+
+
 def _has_cue(text: str, cues) -> bool:
-    folded = " " + " ".join(_words(text)) + " "
+    ws = _words(text)
+    kept = [w for i, w in enumerate(ws)
+            if not (w == "moi" and i + 1 < len(ws) and ws[i + 1] in _PER_UNIT_NOUNS)]
+    folded = " " + " ".join(kept) + " "
     return any(f" {c} " in folded for c in cues)
 
 
@@ -508,7 +577,7 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
         return floor
     try:
         vocab["coverage"] = {}
-        vocab["members"] = member_values(ctx, vocab["dimensions"], vocab["coverage"])
+        vocab["members"] = member_values(ctx, vocab["dimensions"], vocab["coverage"], question)
     except Exception:                                           # noqa: BLE001
         vocab["members"] = {}
     # The report's range reaches the model ONLY for a relative period. Offered on
@@ -534,6 +603,17 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
     if model.get("periods") and not (named_periods(question) or relative or model.get("followup")):
         model["notes"].append(f"period not asked: {model['periods']}")
         model["periods"] = []
+    # A PERIOD RELATIVE TO THE DATA IS THE TOOL'S TO CHOOSE. Live 3ac706e6 run 7223
+    # (critical): "GMV tháng gần nhất so với tháng trước" was resolved to 2018-09 vs
+    # 2018-08 from the data's last row — a PARTIAL month; the Skill's compare_periods
+    # (mom) rightly compared the last complete months (2018-08 vs 2018-07, -5.23%),
+    # and that correct change was then judged "another period's". Kept as a hint;
+    # a follow-up relative to the previous question's explicit period keeps it.
+    relative_hint = []
+    if relative and model.get("periods") and not named_periods(question) and not named_periods(previous or ""):
+        relative_hint = list(model["periods"])
+        model["notes"].append(f"relative period left to the tools: {relative_hint}")
+        model["periods"] = []
     better = titled_measure(question, model.get("measures") or [], vocab)
     if better:
         model["notes"].append(f"measure by the question's own words: {better} "
@@ -547,6 +627,9 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
         model["notes"].append(f"dimension not asked: {model['dimension']}")
         model["dimension"] = None
     out = merge(model, floor, question)
+    if relative_hint:
+        out["periods"] = []
+        out["relative_hint"] = relative_hint
     if not model.get("dimension") and out.get("dimension") and not asks_breakdown(question, previous, out):
         out["dimension"] = None
     try:
@@ -558,7 +641,62 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
     # read as the question being about 2018-09 (live ccf8af44, "cho kỳ 2018-09").
     if vocab.get("coverage") and asks_relative_period(question, previous):
         out["coverage"] = {k: list(v) for k, v in vocab["coverage"].items()}
+    outside = periods_outside(out.get("periods") or [], vocab.get("coverage") or {})
+    if outside:
+        out["periods_outside_data"] = outside
     return out
+
+
+def _month_span(label: str) -> tuple[int, int] | None:
+    """A time label as rows carry it ("2018-09", "2018-Q3", "2018") → (first, last)
+    month index (year*12 + month-1), or None."""
+    import re
+
+    s = str(label or "").strip()
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})(?:-\d{1,2})?", s)
+    if m:
+        k = int(m.group(1)) * 12 + int(m.group(2)) - 1
+        return k, k
+    m = re.fullmatch(r"(\d{4})\s*-?\s*[Qq]([1-4])", s)
+    if m:
+        k = int(m.group(1)) * 12 + (int(m.group(2)) - 1) * 3
+        return k, k + 2
+    m = re.fullmatch(r"(\d{4})", s)
+    if m:
+        return int(s) * 12, int(s) * 12 + 11
+    return None
+
+
+def _period_span(p: tuple) -> tuple[int, int] | None:
+    if not p:
+        return None
+    if p[0] == "m":
+        k = p[1] * 12 + p[2] - 1
+        return k, k
+    if p[0] == "q":
+        k = p[1] * 12 + (p[2] - 1) * 3
+        return k, k + 2
+    if p[0] == "y":
+        return p[1] * 12, p[1] * 12 + 11
+    return None
+
+
+def periods_outside(periods: list, coverage: dict) -> dict | None:
+    """{"asked": [...], "data_from": first, "data_to": last} when EVERY asked period
+    lies outside the report's own time coverage, else None. Coverage is the first and
+    last label of the report's time breakdowns (`member_values`), a structured fact;
+    live 3bf8e3f3 (P0 g5): "Doanh thu tháng 12/2025" over data from 2016-09 to 2018-10
+    was answered with the all-period total, framed as "toàn kỳ"."""
+    spans = [s for s in (_month_span(a) for pair in (coverage or {}).values() for a in pair) if s]
+    asked = [s for s in (_period_span(tuple(p)) for p in periods or []) if s]
+    if not spans or not asked or len(asked) != len(periods or []):
+        return None
+    lo, hi = min(s[0] for s in spans), max(s[1] for s in spans)
+    if all(a[1] < lo or a[0] > hi for a in asked):
+        first = min((pair[0] for pair in coverage.values()), key=lambda x: (_month_span(x) or (10**9,))[0])
+        last = max((pair[1] for pair in coverage.values()), key=lambda x: (_month_span(x) or (-1, -1))[1])
+        return {"asked": [list(p) for p in periods], "data_from": first, "data_to": last}
+    return None
 
 
 def describe_for_prompt(intent: dict, locale: str = "vi") -> str:
@@ -572,6 +710,11 @@ def describe_for_prompt(intent: dict, locale: str = "vi") -> str:
         parts.append(f"đại lượng được hỏi \"{intent['absent']}\" có thể KHÔNG có trong báo cáo — "
                      "kiểm tra bằng công cụ trước khi kết luận; nếu đúng là không có thì nói rõ, "
                      "không thay bằng một đại lượng khác")
+    if intent.get("periods_outside_data"):
+        o = intent["periods_outside_data"]
+        parts.append(f"kỳ được hỏi NẰM NGOÀI dữ liệu của báo cáo (dữ liệu từ {o['data_from']} đến "
+                     f"{o['data_to']}): nói rõ là không có số cho kỳ đó; KHÔNG đưa số của kỳ khác "
+                     "hay tổng toàn kỳ để thay thế")
     if intent.get("dimension"):
         parts.append("chiều: " + intent["dimension"])
     if intent.get("members"):
@@ -581,6 +724,10 @@ def describe_for_prompt(intent: dict, locale: str = "vi") -> str:
         parts.append("kỳ: " + ", ".join(_label(p) for p in intent["periods"]))
     if intent.get("baseline"):
         parts.append("so với: " + _label(intent["baseline"]))
+    if intent.get("relative_hint"):
+        parts.append("kỳ được hỏi là TƯƠNG ĐỐI (gần nhất / trước đó): để công cụ chọn kỳ TRỌN VẸN gần "
+                     "nhất (compare_periods mode mom/qoq/yoy) và nêu đúng kỳ công cụ đã so sánh — kỳ cuối "
+                     "trong dữ liệu có thể chưa trọn kỳ")
     if intent.get("charts"):
         parts.append("biểu đồ đo đúng điều này (dùng chart_id này, không đoán): " + "; ".join(
             f"{c['chart_id']} = {c['title'] or c['measure']}" for c in intent["charts"][:4]))

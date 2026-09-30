@@ -1082,3 +1082,290 @@ def test_a_delivered_breakdown_still_answers(world):
     state.intent = _intent(measures=["gmv"], dimension="year_month")
     _months(state)
     assert _why(state, ctx, "GMV tháng 1/2018 là 1,107,301.89.") == []
+
+
+def test_a_rank_answer_carries_a_members_figure_not_the_total(world):
+    """Live a2d2e68b/a7354461 link 39: "Bang có doanh thu cao nhất là bang tương ứng với
+    tổng doanh thu là 13,591,643.7" — the report total given as the top state's
+    value, although the state breakdown WAS read. Controls: the top member's own
+    figure stands; the total framed as the population stands."""
+    ctx, state = world("Bang nào có nhiều đơn hàng nhất?", asked=("order_count",))
+    _states(ctx, state)
+    _value(state, 99441.0, "dataset_table_437.order_count")
+    assert (99441.0, "whole_as_member") in _why(
+        state, ctx, "Bang có nhiều đơn hàng nhất là bang tương ứng với tổng số đơn là 99,441.")
+    assert _why(state, ctx, "SP có nhiều đơn hàng nhất với 41,746 đơn.") == []
+    assert _why(state, ctx, "SP dẫn đầu với 41,746 đơn, trên tổng 99,441 đơn.") == []
+
+
+def test_a_total_is_never_the_per_unit_average(world):
+    """Live a7354461 g3_rev_per_order: "Doanh thu sản phẩm trung bình mỗi đơn là
+    13,591,643.70" — the total given as the per-order average. Controls: an average
+    measure framed as an average stands; the total in its own clause stands."""
+    ctx, state = world("Doanh thu trung bình mỗi đơn là bao nhiêu?", asked=("total_revenue", "aov"))
+    _value(state, 13591643.70, "dataset_table_438.total_revenue")
+    _value(state, 137.75, "dataset_table_438.aov")
+    assert (13591643.7, "aggregation_mismatch") in _why(
+        state, ctx, "Doanh thu sản phẩm trung bình mỗi đơn là 13,591,643.70.")
+    assert _why(state, ctx, "Giá trị đơn trung bình (AOV) là 137.75.") == []
+    assert _why(state, ctx, "Tổng doanh thu là 13,591,643.70.") == []
+
+
+def _five_star(state):
+    from app.services.agent_flows.runtime import intent as I
+
+    state.intent = {**I.empty_intent(), "source": "model", "measures": ["review_count"],
+                    "dimension": "review_score", "members": [{"said": "5 sao", "code": "5"}]}
+    _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+        "chart_id": 720, "measure": "dataset_table_440.review_count",
+        "dimension": "dataset_table_440.review_score", "item": "5", "value": 57328.0,
+        "rank": 1, "group_count": 5, "total": 99224.0, "share_pct": 57.78}}, {"chart_id": 720})
+    _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+        "chart_id": 720, "measure": "dataset_table_440.review_count",
+        "dimension": "dataset_table_440.review_score", "item": "1", "value": 11424.0,
+        "rank": 3, "group_count": 5, "total": 99224.0, "share_pct": 11.51}}, {"chart_id": 720})
+
+
+def test_a_one_character_resolved_code_is_the_asked_member(world):
+    """Live 3ac706e6 run 7208: review score "5" was dropped by the two-character floor
+    meant for spoken words; the correct 57,328 was withheld as another member's.
+    Control: the 1-star count given as the 5-star count is still caught."""
+    ctx, state = world("Có bao nhiêu lượt đánh giá 5 sao?", asked=("review_count",))
+    _five_star(state)
+    assert _why(state, ctx, "Có tổng cộng 57,328 lượt đánh giá 5 sao.") == []
+    assert _why(state, ctx, "Có tổng cộng 11,424 lượt đánh giá 5 sao.")
+
+
+def test_a_qualifier_the_question_names_is_a_label(world):
+    """Live 3ac706e6 run 7247: asked about SP's 5-star rate, the "5" of "5 sao" was
+    withheld as an unsupported figure."""
+    ctx, state = world("Tỷ lệ đánh giá 5 sao của bang SP là bao nhiêu?", asked=("pct_five_star",))
+    _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+        "chart_id": 724, "measure": "dataset_table_440.pct_five_star",
+        "dimension": "dataset_table_441.customer_state", "item": "SP", "value": 60.29,
+        "rank": 2, "group_count": 27}}, {"chart_id": 724})
+    assert (5.0, "unsupported") not in _why(state, ctx, "Tỷ lệ đánh giá 5 sao của bang SP là 60.29.")
+
+
+def test_two_measures_called_equal_that_the_evidence_says_are_not(world):
+    """Live 85fc3626 g3_gmv_minus_rev: "GMV và doanh thu sản phẩm đều có giá trị bằng
+    nhau là 13,591,643.70" — revenue's figure also claimed as GMV (15,843,553.24 was
+    read). Controls: the two figures stated apart stand; their difference stands."""
+    ctx, state = world("GMV lớn hơn doanh thu sản phẩm bao nhiêu?", asked=("gmv", "total_revenue"))
+    _value(state, 15843553.24, "dataset_table_438.gmv")
+    _value(state, 13591643.70, "dataset_table_438.total_revenue")
+    assert _why(state, ctx, "GMV và doanh thu sản phẩm đều có giá trị bằng nhau là 13,591,643.70.")
+    assert _why(state, ctx, "GMV là 15,843,553.24 và doanh thu sản phẩm là 13,591,643.70.") == []
+    # Existing contract: a worked-out figure shows its operands.
+    assert _why(state, ctx, "GMV (15,843,553.24) lớn hơn doanh thu sản phẩm (13,591,643.70) "
+                            "là 2,251,909.54.") == []
+
+
+def test_shares_of_one_whole_add_up(world):
+    """Live 85fc3626 g3_top3_share: the top three categories' combined 25.76% was
+    withheld (sums of ratios were refused). Shares of ONE whole add; a wrong sum is
+    still flagged."""
+    ctx, state = world("Top 3 danh mục chiếm bao nhiêu phần trăm doanh thu?", asked=("total_revenue",))
+    for item, v, pct in (("health_beauty", 1258681.34, 9.26), ("watches_gifts", 1205005.68, 8.87),
+                         ("bed_bath_table", 1036988.68, 7.63)):
+        _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+            "chart_id": CATEGORY_CHART, "measure": "dataset_table_438.total_revenue",
+            "dimension": "dataset_table_445.product_category_name_english", "item": item,
+            "value": v, "share_pct": pct, "total": 13591643.70, "group_count": 72}},
+            {"chart_id": CATEGORY_CHART})
+    good = "Top 3 chiếm 25.76%: health_beauty 9.26%, watches_gifts 8.87%, bed_bath_table 7.63%."
+    assert (25.76, "unsupported") not in _why(state, ctx, good)
+    assert (30.1, "unsupported") in _why(state, ctx, good.replace("25.76%", "30.1%"))
+
+
+def test_a_grouped_charts_mean_is_the_per_group_average(world):
+    """Live 774b3341 run 7612: "Trung bình mỗi bang có bao nhiêu đơn hàng?" — the
+    summary's avg over the states (3,683 = 99,441 / 27) was described as a whole
+    figure of order_count and withheld as a sum called an average. Control: the same
+    summary's TOTAL called the per-state average is still flagged."""
+    ctx, state = world("Trung bình mỗi bang có bao nhiêu đơn hàng?", asked=("order_count",))
+    pack = _pack(STATE_ORDERS_CHART, "Số đơn theo bang", STATE_COLS, STATE_ROWS)
+    _rec(state, "get_chart_summary", pack, {"chart_id": STATE_ORDERS_CHART})
+    mean = sum(r[1] for r in STATE_ROWS) / len(STATE_ROWS)
+    total = sum(r[1] for r in STATE_ROWS)
+    assert _why(state, ctx, f"Trung bình mỗi bang có {mean:,.2f} đơn hàng.") == []
+    assert (float(total), "aggregation_mismatch") in _why(
+        state, ctx, f"Trung bình mỗi bang có {total:,} đơn hàng.")
+
+
+def test_a_measures_words_are_never_the_member_asked_about(world):
+    """Live 3bf8e3f3 P0 (g8_refuse_then_orders, 5 of 10 runs): "Vậy theo số đơn hàng
+    thì bang nào nhiều nhất?" — "số" was a cue of customer_state ("Số đơn theo
+    bang"), "đơn hàng" became the state asked about, and SP's correct 41,746 was
+    withheld as another member's; the answer fell back to the previous refusal.
+    The report's own single-value tile "Số đơn hàng" makes those words a measure's.
+    Controls: a real member after the real cue is still read, and another state's
+    figure given to it is still flagged."""
+    ctx, state = world("Vậy theo số đơn hàng thì bang nào nhiều nhất?", asked=("order_count",))
+    ctx.allowed_chart_ids.add(680)
+    ctx.chart_meta[680] = {"name": "Olist · Số đơn hàng · page-1",
+                           "fields": {"measures": [{"field": "dataset_table_437.order_count"}], "dimensions": []}}
+    _rec(state, "rank_values", {"ok": True, "kind": "ranking", "data": {
+        "chart_id": STATE_ORDERS_CHART, "measure": "dataset_table_437.order_count",
+        "dimension": "dataset_table_441.customer_state", "order": "desc", "total": 69613.0, "group_count": 4,
+        "items": [{"label": "SP", "value": 41746.0, "rank": 1}, {"label": "RJ", "value": 12852.0, "rank": 2}]}},
+        {"chart_id": STATE_ORDERS_CHART})
+    assert _why(state, ctx, "Theo số đơn hàng, SP là bang nhiều nhất với 41,746 đơn hàng.") == []
+    t = {"member": None, "measures": ["order_count"], "dimension": "customer_state", "intent": {}}
+    assert CC._asked_member(ctx, t, "Số đơn của bang Minas Gerais là bao nhiêu?") == ["minasgerais", "mg"]
+    ctx.question = "Số đơn của bang Minas Gerais là bao nhiêu?"
+    assert (12852.0, "other_member") in _why(state, ctx, "Bang Minas Gerais có 12,852 đơn.")
+
+
+def test_a_change_over_a_suspected_incomplete_edge_needs_its_caveat(world):
+    """Live 3bf8e3f3 (P0 g6, run 8117): "GMV tháng gần nhất 2018-09 giảm 99,98%" over
+    a month of 16 orders (none delivered) — the tool's note that the edge may be
+    incomplete was dropped. Controls: the same change WITH the caveat stands, the
+    observed value alone stands, and the month-on-month over the two complete months
+    before it (which does not stand on the edge) is untouched."""
+    ctx, state = world(MOM_Q, asked=("gmv",))
+    edge = {"ok": True, "kind": "comparison", "data": {
+        "chart_id": MONTHLY, "measure": "dataset_table_438.gmv",
+        "current": {"label": "2018-09", "value": 166.46},
+        "baseline": {"label": "2018-08", "value": 1003308.47},
+        "delta": -1003142.01, "pct_change": -99.98, "verdict": "worsening",
+        "edge_period": "2018-09", "edge_completeness": "suspected_incomplete",
+        "observed_latest": {"label": "2018-09", "value": 166.46}}}
+    _rec(state, "compare_periods", edge, {"chart_id": MONTHLY, "mode": "custom"})
+    bare = "GMV tháng 2018-09 giảm 99,98% so với tháng 2018-08."
+    assert (99.98, "edge_unqualified") in [(abs(v), w) for v, w in _why(state, ctx, bare)]
+    said = bare + " Lưu ý: tháng 2018-09 có thể chưa đầy đủ dữ liệu."
+    assert all(w != "edge_unqualified" for _, w in _why(state, ctx, said))
+    assert all(w != "edge_unqualified" for _, w in _why(state, ctx, "GMV tháng 2018-09 quan sát được là 166.46."))
+    ctx, state = world(MOM_Q, asked=("gmv",))
+    stable = _compare(1003308.47, 1058728.03, -5.23)
+    stable["data"].update({"edge_completeness": "suspected_incomplete",
+                           "observed_latest": {"label": "2018-09", "value": 166.46}})
+    _rec(state, "compare_periods", stable, {"chart_id": MONTHLY, "mode": "mom"})
+    assert _why(state, ctx, "GMV tháng 2018-07 so với 2018-06 giảm 5,23%.") == []
+
+
+def test_a_breakdown_is_not_answered_from_another_measures_members(world):
+    """Live 3bf8e3f3 (P0 g2, link 39): "Bang nào có doanh thu cao nhất?" with no
+    revenue-by-state chart in scope was answered "SP" — read from ORDERS by state.
+    The gap opened from the intent closes only on revenue by state; while it is open,
+    a state named only by another measure's ranking is sent back. Controls: the honest
+    refusal passes, and once revenue by state is read the same member is its own."""
+    from app.services.agent_flows.runtime import agent_runtime as AR
+
+    ctx, state = world(STATE_Q, asked=("total_revenue",))
+    state.dimension_gap = {"requested": "customer_state", "measures": ["total_revenue"],
+                           "label": "", "satisfied": False}
+    orders = {"ok": True, "kind": "ranking", "data": {
+        "chart_id": STATE_ORDERS_CHART, "measure": "dataset_table_437.order_count",
+        "dimension": "dataset_table_441.customer_state", "order": "desc", "total": 69613.0, "group_count": 4,
+        "items": [{"label": "SP", "value": 41746.0, "rank": 1}]}}
+    _rec(state, "rank_values", orders, {"chart_id": STATE_ORDERS_CHART})
+    AR._note_dimension_outcome(state, orders)
+    assert state.dimension_gap["satisfied"] is False
+    assert CC.borrowed_members(state, "Bang có doanh thu cao nhất là SP.") == ["SP"]
+    assert CC.borrowed_members(state, "Báo cáo này không có doanh thu theo bang, nên không xác định được.") == []
+    AR._note_dimension_outcome(state, {"ok": True, "data": {"measure": "t.total_revenue",
+                                                            "dimension": "t.customer_state"}})
+    assert state.dimension_gap["satisfied"] is True
+    assert CC.borrowed_members(state, "Bang có doanh thu cao nhất là SP.") == []
+
+
+class _StateModel:
+    """Answers the state question from ORDERS by state; told why, admits it."""
+
+    def __init__(self, obey=True):
+        self.obey = obey
+        self.reviews: list[str] = []
+
+    def stream(self):
+        async def fake(*, provider, api_key, model, system_prompt, messages, tools):
+            last = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), ""))
+            if "KHÔNG có biểu đồ nào có" in last:
+                self.reviews.append(last)
+            if tools and not [m for m in messages if m.get("role") == "tool"]:
+                yield AgentEvent(type="tool_call", tool_call_id="t1", tool_name="rank_values",
+                                 tool_args={"chart_id": STATE_ORDERS_CHART})
+            elif self.reviews and self.obey:
+                yield AgentEvent(type="text", text="Báo cáo này không có doanh thu theo bang, nên không trả lời được.")
+            else:
+                yield AgentEvent(type="text", text="Bang có doanh thu cao nhất là SP.")
+            yield AgentEvent(type="usage", extra={"prompt_tokens": 5, "completion_tokens": 2})
+        return fake
+
+
+def test_the_run_admits_a_breakdown_its_scope_cannot_deliver(monkeypatch, undeclared):
+    """Whole run, live 3bf8e3f3 P0 g2: no revenue-by-state chart in scope; the model
+    answers "SP" from orders by state. The intent opens the gap, the draft goes back
+    once, and the reader is told the breakdown is unavailable. Control: a model that
+    will not fix it still gets the requested_breakdown_unavailable notice."""
+    import json
+
+    from app.services.agent_flows.runtime import intent as I
+
+    calls = []
+
+    async def intent_call(**kw):
+        calls.append(1)
+        return json.dumps({"measures": ["total_revenue"], "dimension": "customer_state", "members": [],
+                           "periods": [], "absent": None, "baseline": None, "followup": False})
+    monkeypatch.setattr(I, "_model_call", intent_call)
+    monkeypatch.setattr(CC, "_question_measures", lambda ctx, q: {"total_revenue"})
+    orders = {"ok": True, "kind": "ranking", "data": {
+        "chart_id": STATE_ORDERS_CHART, "measure": "dataset_table_437.order_count",
+        "dimension": "dataset_table_441.customer_state", "order": "desc", "total": 69613.0, "group_count": 4,
+        "items": [{"label": "SP", "value": 41746.0, "rank": 1}]}}
+    monkeypatch.setattr(tool_registry, "execute", lambda ctx, name, args, allowed=None, use_cache=True: orders)
+    q = "Bang nào có doanh thu cao nhất?"
+
+    def run(model):
+        monkeypatch.setattr(AH, "_stream", model.stream())
+        ctx = H._Ctx([684, 685, 686, 687])
+        ctx.chart_meta = undeclared([684, 685, 686, 687], q).chart_meta
+        body = {"answer_node": "tl", "nodes": [{
+            "key": "tl", "name": "tl", "type": "agent", "prompt": "Trả lời câu hỏi.", "max_tool_calls": 6,
+            "tools": [{"tool": "rank_values"}]}]}
+        flow = Flow.model_validate({**upgrade_body(copy.deepcopy(body), key="fx_g2", name="fx_g2"),
+                                    "key": "fx_g2", "name": "fx_g2"})
+        env = H._envelope({"envelope": {"question": {"raw": q}, "runtime": {
+            "provider": "openai", "model": "m", "budget": {"max_llm_calls": 8, "max_tool_calls": 10,
+                                                            "max_seconds": 60}}}})
+
+        async def go():
+            out = None
+            async for ev in executor.run_flow(FlowInput.model_validate(env), flow=flow, ctx=ctx,
+                                              api_key="k", base_system_prompt="BASE"):
+                if ev.type == "result":
+                    out = ev.extra.get("envelope")
+            return out or {}
+        return asyncio.run(go())
+
+    good = _StateModel(obey=True)
+    env = run(good)
+    assert calls, "the model intent path must run (not the heuristic fallback)"
+    assert len(good.reviews) == 1 and "total_revenue" in good.reviews[0]
+    assert "SP" not in _answer(env)
+    stubborn = _StateModel(obey=False)
+    env = run(stubborn)
+    assert any(n.get("code") == "requested_breakdown_unavailable" for n in env.get("notices") or [])
+
+
+def test_no_figure_stands_in_for_a_period_the_data_does_not_have(world):
+    """Live 3bf8e3f3 (P0 g5, 2 of 5 runs): "Doanh thu tháng 12/2025 là bao nhiêu?" —
+    "Số liệu 13,591,643.7 … là tổng doanh thu toàn kỳ" was published beside the
+    refusal. Framed as the whole period it passes when the asked period EXISTS; when
+    it lies outside the data it is a substitute answer. Controls: the honest refusal
+    that states the data's range passes; without the fact, the framing still passes."""
+    from app.services.agent_flows.runtime import intent as I
+
+    q = "Doanh thu tháng 12/2025 là bao nhiêu?"
+    ctx, state = world(q, asked=("total_revenue",))
+    _value(state, 13591643.70, "dataset_table_438.total_revenue")
+    outside = {"asked": [["m", 2025, 12]], "data_from": "2016-09", "data_to": "2018-10"}
+    base = {**I.empty_intent(), "source": "model", "measures": ["total_revenue"], "periods": [("m", 2025, 12)]}
+    sub = "Không có số cho tháng 12/2025. Tổng doanh thu toàn kỳ là 13,591,643.70."
+    state.intent = {**base, "periods_outside_data": outside}
+    assert (13591643.7, "period_absent") in _why(state, ctx, sub)
+    assert _why(state, ctx, "Dữ liệu của báo cáo chỉ có từ 2016-09 đến 2018-10, nên không có doanh thu tháng 12/2025.") == []
+    state.intent = base
+    assert (13591643.7, "period_absent") not in _why(state, ctx, sub)

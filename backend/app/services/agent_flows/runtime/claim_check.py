@@ -367,6 +367,13 @@ def _asked_member_by_cue(ctx: Any, t: dict, question: str) -> list[str] | None:
         # "theo" are in every breakdown's titles ("Số đơn theo bang"), and "hủy đơn
         # của bang SP" read "của" as the asked member (found by the regression suite).
         cues -= others
+        # NOR DOES A MEASURE'S WORD: the title of a single-value tile ("Số đơn hàng",
+        # "Tổng doanh thu") names a measure, never a breakdown — "số" made "Số đơn của
+        # bang Minas Gerais" ask about the state "đơn của" (found by the regression
+        # for live 3bf8e3f3 g8_refuse_then_orders).
+        for meta in (getattr(ctx, "chart_meta", None) or {}).values():
+            if not (((meta or {}).get("fields") or {}).get("dimensions")):
+                cues -= set(re.findall(r"[^\W_]+", _fold(str((meta or {}).get("name") or ""))))
     except Exception:                                           # noqa: BLE001
         return None
     words = re.findall(r"\(|\)|[^\W_]+", _fold(question))
@@ -425,15 +432,20 @@ def _asked_member(ctx: Any, t: dict, question: str) -> list[str] | None:
     intent = t.get("intent") or {}
     if intent.get("source") == "model" and intent.get("members"):
         cands: list[str] = []
+        codes: list[str] = []
         for m in intent["members"]:
             said = str(m.get("said") or "")
             cands.append(_squash(said))
             if m.get("code"):
-                cands.append(_squash(m["code"]))
+                codes.append(_squash(m["code"]))
             ini = _initials(said.split())
             if ini:
                 cands.append(ini)
-        cands = [c for c in dict.fromkeys(cands) if len(c) >= 2]
+        # A CODE RESOLVED AGAINST THE REPORT'S OWN VALUES IS NEVER NOISE, whatever its
+        # length: review score "5" was dropped by the two-character floor meant for
+        # spoken words, and the correct 57,328 five-star reviews were withheld as
+        # another member's (live 3ac706e6 run 7208).
+        cands = list(dict.fromkeys([c for c in codes if c] + [c for c in cands if len(c) >= 2]))
         if cands:
             return cands
     found = _asked_member_by_cue(ctx, t, question)
@@ -530,14 +542,20 @@ def _words_in_clause(text: str, value: float, words: set[str]) -> bool:
     return False
 
 
-def _qualifier_numbers(asked: list[str] | None, text: str) -> set[float]:
+def _qualifier_numbers(asked: list[str] | None, text: str, question: str = "") -> set[float]:
     """Numbers that are PART of the asked qualifier as the answer writes it
     ("5 sao" when the question asked about "5 sao") — labels, never figures.
-    Live 4961/4986: the 5 of "lượt đánh giá 5 sao" was withheld as a figure."""
+    Live 4961/4986: the 5 of "lượt đánh giá 5 sao" was withheld as a figure. Live
+    3ac706e6 run 7247: asked about SP's 5-star rate, the "5" of "5 sao" was withheld
+    — the qualifier was the QUESTION's words, not the asked member's; a small number
+    followed by the same word in the question and the answer is a label."""
     import re
 
     out: set[float] = set()
     folded = _fold(text)
+    for n, word in re.findall(r"(?<![\d.,])(\d{1,2})\s+([^\W\d_]{2,})", _fold(question or "")):
+        if re.search(rf"(?<![\d.,]){n}\s*{re.escape(word)}(?![^\W_])", folded):
+            out.add(float(n))
     for c in asked or []:
         m = re.fullmatch(r"(\d{1,3})([a-z]+)", c or "")
         if m and re.search(rf"(?<![\d.,]){m.group(1)}\s*{m.group(2)}(?![^\W_])", folded):
@@ -607,6 +625,88 @@ _OUT_OF = ("tren tong", "trong tong so", "tren tong so", "tren toan bo", "out of
            "of total", "of all")
 
 
+#: Words that ask for — or answer with — ONE member by rank.
+#: Vietnamese marks the superlative with "nhất" AFTER the noun ("nhiều đơn hàng nhất"),
+#: so the token itself is the cue, not a fixed phrase.
+_RANK_WORDS = ("nhat", "dan dau", "dung dau", "highest", "lowest", "most", "least", "largest",
+               "smallest", "leading", "best", "worst", "top")
+#: Words that make a figure an AVERAGE or a per-unit value.
+_PER_UNIT_WORDS = ("trung binh", "binh quan", "moi don", "moi don hang", "moi khach", "moi lan",
+                   "tren moi", "average", "avg", "mean", "per order", "per customer", "per unit",
+                   "per item", "on average")
+
+
+def _has_words(text: str, words) -> bool:
+    import re
+
+    folded = _fold(text or "")
+    return any(re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", folded) for w in words)
+
+
+def _clause_of(text: str, value: float) -> str:
+    """The clause (split on . ; , and line breaks) that carries `value`."""
+    import re
+
+    from app.services.dashboard_ai_bot.verifier import extract_answer_claims
+
+    for clause in re.split(r"(?<=[.!?;,])\s+|\n+", text or ""):
+        if any(_close(value, v) for v, _ in extract_answer_claims(clause)):
+            return clause
+    return ""
+
+
+def _is_average_measure(key: str | None) -> bool:
+    k = f"_{str(key or '').lower()}_"
+    return any(f"_{w}_" in k for w in ("avg", "average", "mean", "aov", "per", "rate", "pct", "ratio",
+                                        "score", "share"))
+
+
+_EQUAL_WORDS = ("bang nhau", "nhu nhau", "giong nhau", "deu co gia tri", "deu la", "equal",
+                "the same", "identical", "equals")
+
+
+def _measures_named(ctx: Any, clause: str, keys: set[str]) -> set[str]:
+    """Which of the ledger's measures the clause names: a key word of 3+ letters
+    ("gmv") or a two-syllable pair from that measure's own chart titles."""
+    import re
+
+    from app.services.agent_flows.runtime import intent as I
+
+    words = set(re.findall(r"[0-9a-z]+", _fold(clause).replace("_", " ")))
+    pairs = I._terms(clause, singles=False)
+    names = (I.vocabulary(ctx).get("measure_names") or {}) if ctx is not None else {}
+    out = set()
+    for k in keys:
+        toks = {t for t in str(k).lower().split("_") if len(t) >= 3 and t not in I._GENERIC}
+        titled = I._terms(" | ".join(names.get(k, [])), singles=False)
+        if (toks and toks <= words) or (pairs & titled):
+            out.add(k)
+    return out
+
+
+def _false_equality(ctx: Any, clause: str, ledger: list[dict]) -> str | None:
+    """The measure a clause wrongly calls equal to another, or None."""
+    if not clause or not _has_words(clause, _EQUAL_WORDS):
+        return None
+    whole: dict[str, float] = {}
+    for e in ledger:
+        if e.get("measure") and not e.get("dimension") and not e.get("member") and not e.get("count"):
+            whole.setdefault(e["measure"], float(e["value"]))
+    named = sorted(_measures_named(ctx, clause, set(whole)))
+    if len(named) < 2:
+        return None
+    vals = [whole[m] for m in named]
+    if max(vals) - min(vals) > 0.005 * max(abs(v) for v in vals):
+        return named[0]
+    return None
+
+
+#: Words that say a period may not be complete (folded).
+_EDGE_CAVEAT_WORDS = ("chua day du", "khong day du", "chua hoan chinh", "chua tron", "khong tron",
+                      "mot phan", "chua ket thuc", "bat thuong", "thieu du lieu", "co the chua",
+                      "incomplete", "partial", "not complete", "unusually low", "may not be complete")
+
+
 def _framed_as_population(sentence: str, value: float) -> bool:
     import re
 
@@ -660,9 +760,35 @@ def _resolve_derived(pending, claims, flagged, in_evidence, text, changes=(), le
             out.append({"value": value, "pct": pct, "why": "unsupported"})
             continue
         ok = _derived(value, operands, text) if pct else _derived_plain(value, operands)
+        if not ok and pct and _sum_of_shares(value, claims, ledger, bad):
+            ok = True
         if not ok:
             out.append({"value": value, "pct": pct, "why": "unsupported"})
     return out
+
+
+def _sum_of_shares(value: float, claims, ledger, bad) -> bool:
+    """A percentage that is the SUM of 2-4 stated shares of ONE whole — the same
+    measure and breakdown, distinct members (live 85fc3626 g3_top3_share: the top
+    three categories' 9.26 + 8.87 + 7.63 = 25.76% was withheld; shares of one whole
+    add, other ratios do not)."""
+    from itertools import combinations
+
+    shares = []
+    for v, p in claims:
+        if not p or not v or any(_close(v, b) for b in bad):
+            continue
+        for e in ledger:
+            if e.get("ratio") and e.get("member") and _close(v, float(e["value"])):
+                shares.append((v, e.get("measure"), e.get("dimension"), e.get("member")))
+                break
+    for k in (2, 3, 4):
+        for combo in combinations(shares, k):
+            if len({(m, d) for _, m, d, _ in combo}) != 1 or len({x for *_, x in combo}) != k:
+                continue
+            if abs(sum(v for v, *_ in combo) - value) <= 0.05:
+                return True
+    return False
 
 
 def _same_scope(a: dict, b: dict) -> bool:
@@ -816,7 +942,7 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                         if _squash(w) not in vocab}
     intent_periods = {tuple(p) for p in (intent.get("periods") or [])} \
         if intent.get("source") == "model" else set()
-    labels = _qualifier_numbers(asked_member, text)
+    labels = _qualifier_numbers(asked_member, text, question)
     # A BREAKDOWN ASKED, NONE DELIVERED. Live a2d2e68b: "điểm đánh giá trung bình
     # theo từng tháng là 4.0864" (the all-time average) and "tổng doanh thu của người
     # bán theo bang là 13,591,643.7" (the report total) — one whole figure given as
@@ -868,6 +994,14 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         # 56808.84" — another month's row, live runs 4849/4874).
         # Only for a figure that IS one period's row: whole totals and changes keep
         # the question's own periods (the sentence's dates would misjudge them).
+        # THE ASKED PERIOD IS NOT IN THE DATA: no measure figure answers it, however
+        # it is framed — the all-period total offered "for reference" is the
+        # workaround the publication boundary refuses (live 3bf8e3f3 P0 g5).
+        if intent.get("periods_outside_data") and support and any(
+                e.get("measure") and not e.get("count") for e in support):
+            flagged.append({"value": value, "pct": pct, "why": "period_absent",
+                            "of": {"measure": support[0].get("measure"), "dimension": None, "member": None}})
+            continue
         asked_periods = _periods(question) or intent_periods
         if not asked_periods and support and all(
                 _is_time(e.get("dimension")) and e.get("member") for e in support):
@@ -907,6 +1041,46 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             flagged.append({"value": value, "pct": pct, "why": "whole_as_breakdown",
                             "of": {"measure": support[0].get("measure"), "dimension": None,
                                    "member": None}})
+            continue
+        # TWO MEASURES CALLED EQUAL THAT THE EVIDENCE SAYS ARE NOT. Live 85fc3626
+        # g3_gmv_minus_rev: "GMV và doanh thu sản phẩm đều có giá trị bằng nhau là
+        # 13,591,643.70" — the revenue figure also claimed as GMV (15,843,553.24 read).
+        eq = _false_equality(ctx, _clause_of(text, value), ledger)
+        if eq:
+            flagged.append({"value": value, "pct": pct, "why": "other_measure",
+                            "of": {"measure": eq, "dimension": None, "member": None}})
+            continue
+        # A CHANGE OVER A PERIOD THE TOOL SAYS MAY BE INCOMPLETE is stated with that
+        # caveat. Live 3bf8e3f3 (P0 g6, run 8117): "GMV tháng gần nhất 2018-09 giảm
+        # 99,98%" over a month of 16 orders, none delivered — the tool's own note
+        # was dropped. The observed value may be said; the change needs the caveat.
+        if all(e.get("edge") for e in support) and not _has_words(text, _EDGE_CAVEAT_WORDS):
+            e = support[0]
+            flagged.append({"value": value, "pct": pct, "why": "edge_unqualified",
+                            "of": {"measure": e.get("measure"), "dimension": None, "member": e.get("edge")}})
+            continue
+        whole_only = all(not e.get("dimension") and not e.get("member") for e in support)
+        # A RANK ANSWER CARRIES A MEMBER'S FIGURE. Live a2d2e68b/a7354461 (link 39):
+        # "Bang có doanh thu cao nhất là bang tương ứng với tổng doanh thu là
+        # 13,591,643.7" — the report total as the top state's value. Whether or not
+        # the breakdown was read, a whole-report figure cannot be the answer to
+        # "which member is highest" in the sentence that says so.
+        if whole_only and _has_words(question, _RANK_WORDS) and _has_words(sentence, _RANK_WORDS) \
+                and not _framed_as_population(sentence, value) \
+                and not _given_to_other_than_asked(_clause_of(text, value), None):
+            flagged.append({"value": value, "pct": pct, "why": "whole_as_member",
+                            "of": {"measure": support[0].get("measure"), "dimension": None, "member": None}})
+            continue
+        # A SUM IS NOT AN AVERAGE. Live a7354461 g3_rev_per_order: "Doanh thu … trung
+        # bình mỗi đơn là 13,591,643.70" — the total revenue given as the per-order
+        # average. The clause frames the figure per unit; its only support is a summed
+        # measure (not an average/rate measure, not a derived quotient).
+        clause = _clause_of(text, value)
+        if not pct and clause and _has_words(clause, _PER_UNIT_WORDS) and all(
+                not _is_average_measure(e.get("measure")) and not e.get("derived") and not e.get("ratio")
+                and not e.get("stat") for e in support):
+            flagged.append({"value": value, "pct": pct, "why": "aggregation_mismatch",
+                            "of": {k: support[0].get(k) for k in ("measure", "dimension", "member")}})
             continue
         attributed = _misattributed(support, asked_member, sentence)
         if attributed == "whole_as_member" and _framed_as_population(sentence, value):
@@ -954,6 +1128,15 @@ _WHY = {
     "whole_as_member": ("là số của TOÀN BỘ báo cáo — báo cáo không có số liệu này theo chiều "
                         "được hỏi; nếu giữ, phải nói rõ đó là tổng toàn bộ"),
     "wrong_direction": "câu nói chiều ngược với dấu của con số đã tính (tăng ↔ giảm)",
+    "period_absent": ("được đưa ra cho một kỳ mà dữ liệu KHÔNG có (kỳ được hỏi nằm ngoài phạm vi "
+                      "thời gian của báo cáo) — nói rõ là không có số cho kỳ đó, không thay bằng "
+                      "số của kỳ khác hay tổng toàn kỳ"),
+    "edge_unqualified": ("là mức thay đổi so với một kỳ mà công cụ cho biết có thể CHƯA ĐẦY ĐỦ — "
+                         "nói rõ điều đó bên cạnh con số, hoặc so sánh hai kỳ trọn vẹn trước đó "
+                         "(compare_periods mode=mom)"),
+    "aggregation_mismatch": ("là một TỔNG, nhưng câu trả lời gọi nó là trung bình/mỗi đơn vị — lấy "
+                             "đúng số đo trung bình (biểu đồ AOV/trung bình) hoặc tính bằng compute "
+                             "từ tổng và số lượng cùng phạm vi"),
     "whole_as_breakdown": ("là một số của TOÀN BỘ báo cáo, không phải số theo chiều được hỏi — "
                            "tìm biểu đồ có số đo này theo đúng chiều đó; nếu không có thì nói rõ "
                            "báo cáo không có số theo chiều này"),
@@ -966,6 +1149,39 @@ _WHY = {
                      "hỏi — tìm biểu đồ có số đo này THEO KỲ (list_charts / resolve_chart_candidates) "
                      "và đọc đúng kỳ được hỏi; chỉ khi không có biểu đồ nào như vậy mới nói là không có"),
 }
+
+
+def borrowed_members(state: Any, text: str) -> list[str]:
+    """Members of the asked breakdown the draft names while the run holds that
+    breakdown ONLY for other measures (an open measure gap from the intent).
+    Live 3bf8e3f3 (P0 g2, link 39): "Bang nào có doanh thu cao nhất?" with no
+    revenue-by-state chart in scope was answered "SP" — read from orders by state.
+    Structured facts: the gap and the ledger's members; the text is only searched
+    for those members' own labels."""
+    gap = getattr(state, "dimension_gap", None) or {}
+    if not gap.get("measures") or gap.get("satisfied"):
+        return []
+    from app.services.agent_flows.tools.dimension_gate import field_key
+
+    dim = field_key(str(gap.get("requested") or ""))
+    wanted = set(gap.get("measures") or [])
+    seen: list[str] = []
+    for e in getattr(state, "claim_ledger", None) or []:
+        m = e.get("member")
+        if m and field_key(str(e.get("dimension") or "")) == dim and e.get("measure") not in wanted \
+                and m not in seen and _names(text, m):
+            seen.append(m)
+    return seen[:5]
+
+
+def borrowed_member_message(gap: dict, members: list[str]) -> str:
+    return (
+        "Kiểm tra trước khi trả lời: trong phạm vi báo cáo này KHÔNG có biểu đồ nào có "
+        f"{', '.join(gap.get('measures') or [])} theo {gap.get('requested')}. "
+        f"{', '.join(members)} chỉ xuất hiện trong thứ hạng của MỘT SỐ ĐO KHÁC, nên không phải "
+        "câu trả lời cho điều được hỏi. Nói thẳng là báo cáo này không trả lời được theo chiều "
+        "đó; có thể nêu số đo khác nếu gọi rõ tên nó. Trả lời bằng ngôn ngữ của câu hỏi."
+    )
 
 
 def review_message(flagged: list[dict], target: dict) -> str:
