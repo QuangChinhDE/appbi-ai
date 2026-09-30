@@ -56,6 +56,22 @@ export interface SlicerControlBinding {
   dashboardPages?: { id: string; name: string }[];
   activePageId?: string;
   onUpdateSlicerScope?: React.ComponentProps<typeof DashboardFilterBar>['onUpdateSlicerScope'];
+  /** Slicers whose staged choice differs from what the report shows. A control
+   *  says so on itself, where the viewer is looking, not only in the bar. */
+  stagedIds?: Set<string>;
+  /** The page's one Apply, offered inside an open control too. */
+  onApply?: () => void;
+}
+
+/** Slicers whose staged entry differs from the applied one (by id). */
+export function stagedSlicerIds(draft: BaseFilter[], applied: BaseFilter[]): Set<string> {
+  const appliedById = new Map(applied.map((f) => [String(f.id ?? ''), JSON.stringify(f)]));
+  const out = new Set<string>();
+  for (const f of draft) {
+    const id = String(f.id ?? '');
+    if (appliedById.get(id) !== JSON.stringify(f)) out.add(id);
+  }
+  return out;
 }
 
 /** Room the list treatment's header, search and "select all" row take. */
@@ -180,6 +196,9 @@ function BoundSlicerTile({ tile, binding }: { tile: DashboardChart; binding: Sli
           dashboardPages={binding.dashboardPages}
           activePageId={binding.activePageId}
           onUpdateSlicerScope={binding.onUpdateSlicerScope}
+          stagedPending={binding.stagedIds?.has(String(slicer.id)) ?? false}
+          anyStagedPending={(binding.stagedIds?.size ?? 0) > 0}
+          onApplyStaged={binding.readOnly ? undefined : binding.onApply}
         />
       </div>
       {binding.editing && !hidden && (
@@ -307,24 +326,50 @@ export function FilterApplyBar({
   isApplying,
   onApply,
   onReset,
+  count,
 }: {
   visible: boolean;
   isApplying?: boolean;
   onApply: () => void;
   onReset?: () => void;
+  /** How many filters differ from what the report shows. */
+  count?: number;
 }) {
   const { t } = useI18n();
   if (!visible) return null;
+  const message = count && count > 1
+    ? t('dashboards.applyBar.pendingCount', { count })
+    : count === 1
+      ? t('dashboards.applyBar.pendingOne')
+      : t('dashboards.applyBar.pending');
   return (
     <div
       data-testid="filter-apply-bar"
       data-html2canvas-ignore
-      className="pointer-events-none sticky bottom-3 z-40 mt-3 flex justify-center px-2"
+      // On a phone the assistant's bubble sits bottom-right: the bar rises
+      // above it instead of putting Apply under it.
+      className="pointer-events-none sticky bottom-[76px] z-40 mt-3 flex justify-center px-2 sm:bottom-4"
     >
-      <div className="pointer-events-auto flex max-w-full items-center gap-2 rounded-full border border-brand/30 bg-surface-1 px-3 py-1.5 text-[12px] shadow-xl">
-        <span className="truncate text-text-secondary">{t('dashboards.applyBar.pending')}</span>
+      {/* Inverse on purpose: a report is white cards on a light page, and a
+          white pill over a white chart disappeared. A dark bar that rises in
+          reads as "something is waiting for you", on any theme. */}
+      <div
+        role="status"
+        aria-live="polite"
+        className="filter-apply-bar-rise pointer-events-auto flex max-w-full items-center gap-3 rounded-xl bg-slate-900 py-2 pl-4 pr-2 text-[13px] text-white shadow-2xl ring-1 ring-black/10"
+      >
+        <span aria-hidden className="relative flex h-2.5 w-2.5 shrink-0">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-400" />
+        </span>
+        <span className="hidden min-w-0 truncate text-white/90 sm:inline">{message}</span>
+        <span className="min-w-0 truncate text-white/90 sm:hidden">{t('dashboards.applyBar.pendingShort', { count: Math.max(1, count ?? 1) })}</span>
         {onReset && (
-          <button type="button" onClick={onReset} className="shrink-0 rounded-full px-2 py-0.5 text-text-tertiary hover:bg-surface-2">
+          <button
+            type="button"
+            onClick={onReset}
+            className="shrink-0 rounded-lg px-1.5 py-1 text-white/70 hover:bg-white/10 hover:text-white sm:px-2.5"
+          >
             {t('dashboards.applyBar.reset')}
           </button>
         )}
@@ -333,7 +378,7 @@ export function FilterApplyBar({
           data-testid="filter-apply-bar-apply"
           onClick={onApply}
           disabled={isApplying}
-          className="shrink-0 rounded-full bg-brand px-3 py-0.5 font-medium text-white hover:bg-brand-hover disabled:opacity-60"
+          className="shrink-0 rounded-lg bg-brand px-4 py-1.5 text-[13px] font-semibold text-white shadow-sm hover:bg-brand-hover disabled:opacity-60"
         >
           {t('dashboards.applyBar.apply')}
         </button>

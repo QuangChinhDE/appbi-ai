@@ -595,6 +595,37 @@ check('a reader can always tell what filters the page: locks, page filters and c
   assert(!/Đang lọc theo:|Xem chi tiết'|Bộ lọc nâng cao có sẵn/.test(pv), 'the public filter banner is hard-coded Vietnamese');
 });
 
+check('a staged filter choice says so where it was made, and the one Apply is offered there and cannot be missed', () => {
+  const tile = source('components/dashboards/GridSlicerTile.tsx');
+  const bar = source('components/dashboards/DashboardFilterBar.tsx');
+  // Both surfaces tell each control whether its choice is applied, and lend it the page's Apply.
+  for (const [name, file] of [['public', 'components/dashboards/PublicDashboardView.tsx'], ['builder', 'app/(main)/dashboards/[id]/page.tsx']]) {
+    const src = source(file);
+    assert(/stagedSlicerIds\(/.test(src) && /stagedIds[=:]/.test(src) && /onApply[=:]\{?\s*\(\)\s*=>/.test(src),
+      `the ${name} surface does not tell its controls which choices are staged, or lends them no Apply`);
+    assert(/<FilterApplyBar[\s\S]{0,400}count=\{/.test(src), `the ${name} Apply bar does not say how many filters changed`);
+  }
+  assert(/stagedPending=\{binding\.stagedIds\?\.has\(String\(slicer\.id\)\)/.test(tile), 'a grid control is not told its own choice is staged');
+  assert(/onApplyStaged=\{binding\.readOnly \? undefined : binding\.onApply\}/.test(tile), 'a read-only control offers Apply, or none does');
+  // The control marks itself; its open menu carries Apply and closes on it.
+  assert(/stagedPending\s*\n?\s*\/\/[^\n]*\n\s*\? 'border-amber-500/.test(bar) && /data-slicer-staged=/.test(bar),
+    'a control with a staged choice looks the same as an applied one');
+  assert(/data-testid="slicer-menu-apply"[\s\S]{0,200}onClick=\{\(\) => \{ onApplyStaged\(\); setPopoverOpen\(false\); \}\}/.test(bar),
+    'the open control offers no Apply, or it leaves the menu open');
+  // The bar is inverse (a white pill over white charts disappeared) and says the report is still old.
+  assert(/filter-apply-bar-rise[^"]*bg-slate-900/.test(tile) && !/rounded-full border border-brand\/30 bg-surface-1/.test(tile),
+    'the Apply bar is back to a white pill that blends into the report');
+  assert(/applyBar\.pendingCount/.test(tile) && /applyBar\.pendingOne/.test(tile), 'the Apply bar does not count the changes');
+  // stagedSlicerIds: a changed or new entry is staged, an unchanged one is not.
+  const m = tile.match(/export function stagedSlicerIds[\s\S]*?\n\}/);
+  assert(m, 'stagedSlicerIds is missing');
+  const fn = new Function(`${m[0].replace(/^export /, '').replace(/: BaseFilter\[\]/g, '').replace(/: Set<string>/, '').replace(/new Set<string>\(\)/, 'new Set()')}; return stagedSlicerIds;`)();
+  const applied = [{ id: 'a', value: [] }, { id: 'b', value: ['x'] }];
+  const staged = fn([{ id: 'a', value: ['2016'] }, { id: 'b', value: ['x'] }, { id: 'c', value: ['y'] }], applied);
+  assert([...staged].sort().join(',') === 'a,c', `staged ids are wrong: ${[...staged]}`);
+  assert(fn(applied, applied).size === 0, 'an unchanged page reports staged choices');
+});
+
 check('a control that draws nothing for a viewer leaves no blank band — and moves nothing locked', () => {
   const arrange = load('lib/grid-arrange.ts');
   const b = (id, x, y, w, h, locked = false) => ({ id, x, y, w, h, locked });

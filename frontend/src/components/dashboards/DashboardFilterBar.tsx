@@ -258,6 +258,12 @@ interface DashboardFilterBarProps {
   bare?: boolean;
   /** How the bare control is drawn (see lib/slicer-placement resolveTreatment). */
   treatment?: ResolvedTreatment;
+  /** A grid control whose choice is staged but not applied yet. */
+  stagedPending?: boolean;
+  /** Some control on the page has a staged choice. */
+  anyStagedPending?: boolean;
+  /** The page's one Apply, offered in the control's open menu. */
+  onApplyStaged?: () => void;
   /** The page's other slicers, for the "no values with these filters" hint a
    *  bare control cannot see on its own. */
   siblingFilters?: BaseFilter[];
@@ -303,6 +309,9 @@ export function DashboardFilterBar({
   onRegisterAddSlicer,
   bare = false,
   treatment,
+  stagedPending = false,
+  anyStagedPending = false,
+  onApplyStaged,
   siblingFilters,
 }: DashboardFilterBarPropsWithExtras) {
   const { t } = useI18n();
@@ -738,6 +747,9 @@ export function DashboardFilterBar({
           treatment,
           onUpdateWidth: undefined,
           distributeChildren: false,
+          stagedPending,
+          anyStagedPending,
+          onApplyStaged,
         }))}
       </div>
     );
@@ -1192,6 +1204,12 @@ interface FilterCardProps {
   fill?: boolean;
   /** How a grid control is drawn; undefined = the bar's own rule. */
   treatment?: ResolvedTreatment;
+  /** A grid control whose choice is staged but not applied yet. */
+  stagedPending?: boolean;
+  /** Some control on the page has a staged choice. */
+  anyStagedPending?: boolean;
+  /** The page's one Apply, offered in the control's open menu. */
+  onApplyStaged?: () => void;
 }
 
 interface DashboardFilterBarPropsWithExtras extends DashboardFilterBarProps {
@@ -1248,6 +1266,9 @@ function FilterCard({
   onUpdateWidth,
   fill = false,
   treatment,
+  stagedPending = false,
+  anyStagedPending = false,
+  onApplyStaged,
 }: FilterCardProps) {
   const { t } = useI18n();
   const typeLabel: Record<FilterType, string> = {
@@ -1913,11 +1934,23 @@ function FilterCard({
         className={`dashboard-slicer relative flex flex-col gap-0.5 rounded-lg border bg-surface-1 px-3 py-2 transition-colors ${fill ? 'justify-center overflow-hidden' : ''} ${
           popoverOpen
             ? 'border-brand ring-1 ring-brand/30'
-            : hasValue
-              ? 'border-brand/45'
-              : 'border-[rgb(var(--border-line))]'
+            : stagedPending
+              // Chosen but not applied: the report still shows the old data.
+              ? 'border-amber-500 ring-2 ring-amber-400/30'
+              : hasValue
+                ? 'border-brand/45'
+                : 'border-[rgb(var(--border-line))]'
         }`}
+        data-slicer-staged={stagedPending ? '' : undefined}
       >
+        {stagedPending && (
+          <span
+            className="pointer-events-none absolute right-1.5 top-1.5 z-10 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-surface-1"
+            title={t('dashboards.slicerControl.staged')}
+            aria-label={t('dashboards.slicerControl.staged')}
+            role="img"
+          />
+        )}
         {/* Right-edge width drag handle (editor, Top mode). Custom
             pointer-drag → live FE width; commit to draft on release. */}
         {canResizeCard && (
@@ -2026,6 +2059,22 @@ function FilterCard({
           className="dashboard-slicer-menu fixed z-[9999] overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-xl"
         >
           {cardContent}
+          {onApplyStaged && (
+            // The page's one Apply, where the choice was just made. It applies
+            // every staged control, exactly like the bar at the bottom.
+            <div className="sticky bottom-0 z-10 flex items-center justify-between gap-2 border-t border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+              <span className="min-w-0 truncate text-[11px] text-text-tertiary">{t('dashboards.slicerControl.applyHint')}</span>
+              <button
+                type="button"
+                data-testid="slicer-menu-apply"
+                disabled={!anyStagedPending}
+                onClick={() => { onApplyStaged(); setPopoverOpen(false); }}
+                className="shrink-0 rounded-md bg-brand px-3 py-1 text-xs font-semibold text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {t('dashboards.applyBar.apply')}
+              </button>
+            </div>
+          )}
         </div>,
         document.body,
       )}

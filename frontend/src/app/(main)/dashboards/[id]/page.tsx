@@ -96,7 +96,7 @@ import {
   mergeGridLayout,
   dashboardRowHeight,
 } from '@/lib/dashboard-pages';
-import { GridSlicerTile, FilterApplyBar, SlicerControlScope } from '@/components/dashboards/GridSlicerTile';
+import { GridSlicerTile, FilterApplyBar, SlicerControlScope, stagedSlicerIds } from '@/components/dashboards/GridSlicerTile';
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
 import { ArrangeBar, type TileFrame } from '@/components/dashboards/ArrangeBar';
 import { arrangeTiles, closeVacatedBand, nudgeTiles, placeBeside, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
@@ -3791,6 +3791,13 @@ function DashboardDetailPageInner() {
   const hasPendingSlicerChanges = JSON.stringify(draftGlobalSlicers) !== JSON.stringify(appliedGlobalSlicers)
     || JSON.stringify(draftPageSlicers) !== JSON.stringify(activePageSlicers)
     || JSON.stringify(draftSlicerClusterLayout) !== JSON.stringify(appliedSlicerClusterLayout);
+  // Which controls hold a choice the canvas does not show yet.
+  const stagedControlIds = hasPendingSlicerChanges
+    ? stagedSlicerIds(
+      [...(draftGlobalSlicers as BaseFilter[]), ...(draftPageSlicers as BaseFilter[])],
+      [...(appliedGlobalSlicers as BaseFilter[]), ...(activePageSlicers as BaseFilter[])],
+    )
+    : new Set<string>();
 
   // Phase-B22 — hybrid export: tables as real text+links (all rows), other
   // charts as images, paginated legibly, with an applied-filters header.
@@ -4634,6 +4641,8 @@ function DashboardDetailPageInner() {
             filtersHere={controlFiltersHere}
             editing={canEditThisPage}
             onChange={handleControlChange}
+            stagedIds={stagedControlIds}
+            onApply={() => handleApplyFilters('all')}
             onTreatmentChange={canEditThisPage ? handleSlicerTreatmentChange : undefined}
             onRemoveControl={canEditThisPage ? (id: number) => { void removeSlicerControlRef.current(id); } : undefined}
             onDeleteFilter={canEditResource ? handleDeleteSlicerFilter : undefined}
@@ -4834,6 +4843,7 @@ function DashboardDetailPageInner() {
           visible={placedSlicerIdsOnPage.size > 0 && hasPendingSlicerChanges && !isExportingPdf && !studioPreview}
           isApplying={isApplyingFilters}
           onApply={() => handleApplyFilters('all')}
+          count={stagedControlIds.size}
           onReset={() => {
             setDraftGlobalSlicers(appliedGlobalSlicers);
             setDraftPageSlicers(activePageSlicers);

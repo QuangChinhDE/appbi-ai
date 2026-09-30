@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
-import { GridSlicerTile, FilterApplyBar, type SlicerControlBinding } from '@/components/dashboards/GridSlicerTile';
+import { GridSlicerTile, FilterApplyBar, stagedSlicerIds, type SlicerControlBinding } from '@/components/dashboards/GridSlicerTile';
 import { isSlicerControl, placedSlicerIds, replaceSlicerById, slicerIdOfControl } from '@/lib/slicer-placement';
 import { withoutAbsentControls } from '@/lib/grid-arrange';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
@@ -1553,6 +1553,11 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     () => JSON.stringify(draftViewerFilters) !== JSON.stringify(appliedViewerFilters),
     [appliedViewerFilters, draftViewerFilters],
   );
+  // Which controls hold a choice the report does not show yet.
+  const stagedViewerIds = useMemo(
+    () => (hasPendingFilterChanges ? stagedSlicerIds(draftViewerFilters, appliedViewerFilters) : new Set<string>()),
+    [appliedViewerFilters, draftViewerFilters, hasPendingFilterChanges],
+  );
   // Slicer controls placed on this page's grid (lib/slicer-placement) draw
   // their slicer there; the filter bar shows the rest. The viewer's filters are
   // the only state either one edits — the same staged list, the same Apply.
@@ -1988,6 +1993,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     fetchServerDistinct: fetchPublicServerDistinct,
     // Only to say what a control filters (its tooltip) — no scope editing here.
     dashboardPages: dashboardPages.map((p) => ({ id: p.id, name: p.name })),
+    stagedIds: stagedViewerIds,
+    onApply: () => { void handleApplyFilters(); },
   };
 
   /**
@@ -2641,6 +2648,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           isApplying={isApplyingFilters}
           onApply={handleApplyFilters}
           onReset={handleResetFilters}
+          count={stagedViewerIds.size}
         />
         </div>{/* /scroll region */}
         </>
