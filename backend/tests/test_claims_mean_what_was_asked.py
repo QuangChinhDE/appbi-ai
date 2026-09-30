@@ -1082,3 +1082,136 @@ def test_a_delivered_breakdown_still_answers(world):
     state.intent = _intent(measures=["gmv"], dimension="year_month")
     _months(state)
     assert _why(state, ctx, "GMV tháng 1/2018 là 1,107,301.89.") == []
+
+
+def test_a_rank_answer_carries_a_members_figure_not_the_total(world):
+    """Live a2d2e68b/a7354461 link 39: "Bang có doanh thu cao nhất là bang tương ứng với
+    tổng doanh thu là 13,591,643.7" — the report total given as the top state's
+    value, although the state breakdown WAS read. Controls: the top member's own
+    figure stands; the total framed as the population stands."""
+    ctx, state = world("Bang nào có nhiều đơn hàng nhất?", asked=("order_count",))
+    _states(ctx, state)
+    _value(state, 99441.0, "dataset_table_437.order_count")
+    assert (99441.0, "whole_as_member") in _why(
+        state, ctx, "Bang có nhiều đơn hàng nhất là bang tương ứng với tổng số đơn là 99,441.")
+    assert _why(state, ctx, "SP có nhiều đơn hàng nhất với 41,746 đơn.") == []
+    assert _why(state, ctx, "SP dẫn đầu với 41,746 đơn, trên tổng 99,441 đơn.") == []
+
+
+def test_a_total_is_never_the_per_unit_average(world):
+    """Live a7354461 g3_rev_per_order: "Doanh thu sản phẩm trung bình mỗi đơn là
+    13,591,643.70" — the total given as the per-order average. Controls: an average
+    measure framed as an average stands; the total in its own clause stands."""
+    ctx, state = world("Doanh thu trung bình mỗi đơn là bao nhiêu?", asked=("total_revenue", "aov"))
+    _value(state, 13591643.70, "dataset_table_438.total_revenue")
+    _value(state, 137.75, "dataset_table_438.aov")
+    assert (13591643.7, "aggregation_mismatch") in _why(
+        state, ctx, "Doanh thu sản phẩm trung bình mỗi đơn là 13,591,643.70.")
+    assert _why(state, ctx, "Giá trị đơn trung bình (AOV) là 137.75.") == []
+    assert _why(state, ctx, "Tổng doanh thu là 13,591,643.70.") == []
+
+
+def _five_star(state):
+    from app.services.agent_flows.runtime import intent as I
+
+    state.intent = {**I.empty_intent(), "source": "model", "measures": ["review_count"],
+                    "dimension": "review_score", "members": [{"said": "5 sao", "code": "5"}]}
+    _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+        "chart_id": 720, "measure": "dataset_table_440.review_count",
+        "dimension": "dataset_table_440.review_score", "item": "5", "value": 57328.0,
+        "rank": 1, "group_count": 5, "total": 99224.0, "share_pct": 57.78}}, {"chart_id": 720})
+    _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+        "chart_id": 720, "measure": "dataset_table_440.review_count",
+        "dimension": "dataset_table_440.review_score", "item": "1", "value": 11424.0,
+        "rank": 3, "group_count": 5, "total": 99224.0, "share_pct": 11.51}}, {"chart_id": 720})
+
+
+def test_a_one_character_resolved_code_is_the_asked_member(world):
+    """Live 3ac706e6 run 7208: review score "5" was dropped by the two-character floor
+    meant for spoken words; the correct 57,328 was withheld as another member's.
+    Control: the 1-star count given as the 5-star count is still caught."""
+    ctx, state = world("Có bao nhiêu lượt đánh giá 5 sao?", asked=("review_count",))
+    _five_star(state)
+    assert _why(state, ctx, "Có tổng cộng 57,328 lượt đánh giá 5 sao.") == []
+    assert _why(state, ctx, "Có tổng cộng 11,424 lượt đánh giá 5 sao.")
+
+
+def test_a_qualifier_the_question_names_is_a_label(world):
+    """Live 3ac706e6 run 7247: asked about SP's 5-star rate, the "5" of "5 sao" was
+    withheld as an unsupported figure."""
+    ctx, state = world("Tỷ lệ đánh giá 5 sao của bang SP là bao nhiêu?", asked=("pct_five_star",))
+    _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+        "chart_id": 724, "measure": "dataset_table_440.pct_five_star",
+        "dimension": "dataset_table_441.customer_state", "item": "SP", "value": 60.29,
+        "rank": 2, "group_count": 27}}, {"chart_id": 724})
+    assert (5.0, "unsupported") not in _why(state, ctx, "Tỷ lệ đánh giá 5 sao của bang SP là 60.29.")
+
+
+def test_two_measures_called_equal_that_the_evidence_says_are_not(world):
+    """Live 85fc3626 g3_gmv_minus_rev: "GMV và doanh thu sản phẩm đều có giá trị bằng
+    nhau là 13,591,643.70" — revenue's figure also claimed as GMV (15,843,553.24 was
+    read). Controls: the two figures stated apart stand; their difference stands."""
+    ctx, state = world("GMV lớn hơn doanh thu sản phẩm bao nhiêu?", asked=("gmv", "total_revenue"))
+    _value(state, 15843553.24, "dataset_table_438.gmv")
+    _value(state, 13591643.70, "dataset_table_438.total_revenue")
+    assert _why(state, ctx, "GMV và doanh thu sản phẩm đều có giá trị bằng nhau là 13,591,643.70.")
+    assert _why(state, ctx, "GMV là 15,843,553.24 và doanh thu sản phẩm là 13,591,643.70.") == []
+    # Existing contract: a worked-out figure shows its operands.
+    assert _why(state, ctx, "GMV (15,843,553.24) lớn hơn doanh thu sản phẩm (13,591,643.70) "
+                            "là 2,251,909.54.") == []
+
+
+def test_shares_of_one_whole_add_up(world):
+    """Live 85fc3626 g3_top3_share: the top three categories' combined 25.76% was
+    withheld (sums of ratios were refused). Shares of ONE whole add; a wrong sum is
+    still flagged."""
+    ctx, state = world("Top 3 danh mục chiếm bao nhiêu phần trăm doanh thu?", asked=("total_revenue",))
+    for item, v, pct in (("health_beauty", 1258681.34, 9.26), ("watches_gifts", 1205005.68, 8.87),
+                         ("bed_bath_table", 1036988.68, 7.63)):
+        _rec(state, "share_of", {"ok": True, "kind": "value", "data": {
+            "chart_id": CATEGORY_CHART, "measure": "dataset_table_438.total_revenue",
+            "dimension": "dataset_table_445.product_category_name_english", "item": item,
+            "value": v, "share_pct": pct, "total": 13591643.70, "group_count": 72}},
+            {"chart_id": CATEGORY_CHART})
+    good = "Top 3 chiếm 25.76%: health_beauty 9.26%, watches_gifts 8.87%, bed_bath_table 7.63%."
+    assert (25.76, "unsupported") not in _why(state, ctx, good)
+    assert (30.1, "unsupported") in _why(state, ctx, good.replace("25.76%", "30.1%"))
+
+
+def test_a_grouped_charts_mean_is_the_per_group_average(world):
+    """Live 774b3341 run 7612: "Trung bình mỗi bang có bao nhiêu đơn hàng?" — the
+    summary's avg over the states (3,683 = 99,441 / 27) was described as a whole
+    figure of order_count and withheld as a sum called an average. Control: the same
+    summary's TOTAL called the per-state average is still flagged."""
+    ctx, state = world("Trung bình mỗi bang có bao nhiêu đơn hàng?", asked=("order_count",))
+    pack = _pack(STATE_ORDERS_CHART, "Số đơn theo bang", STATE_COLS, STATE_ROWS)
+    _rec(state, "get_chart_summary", pack, {"chart_id": STATE_ORDERS_CHART})
+    mean = sum(r[1] for r in STATE_ROWS) / len(STATE_ROWS)
+    total = sum(r[1] for r in STATE_ROWS)
+    assert _why(state, ctx, f"Trung bình mỗi bang có {mean:,.2f} đơn hàng.") == []
+    assert (float(total), "aggregation_mismatch") in _why(
+        state, ctx, f"Trung bình mỗi bang có {total:,} đơn hàng.")
+
+
+def test_a_measures_words_are_never_the_member_asked_about(world):
+    """Live 3bf8e3f3 P0 (g8_refuse_then_orders, 5 of 10 runs): "Vậy theo số đơn hàng
+    thì bang nào nhiều nhất?" — "số" was a cue of customer_state ("Số đơn theo
+    bang"), "đơn hàng" became the state asked about, and SP's correct 41,746 was
+    withheld as another member's; the answer fell back to the previous refusal.
+    The report's own single-value tile "Số đơn hàng" makes those words a measure's.
+    Controls: a real member after the real cue is still read, and another state's
+    figure given to it is still flagged."""
+    ctx, state = world("Vậy theo số đơn hàng thì bang nào nhiều nhất?", asked=("order_count",))
+    ctx.allowed_chart_ids.add(680)
+    ctx.chart_meta[680] = {"name": "Olist · Số đơn hàng · page-1",
+                           "fields": {"measures": [{"field": "dataset_table_437.order_count"}], "dimensions": []}}
+    _rec(state, "rank_values", {"ok": True, "kind": "ranking", "data": {
+        "chart_id": STATE_ORDERS_CHART, "measure": "dataset_table_437.order_count",
+        "dimension": "dataset_table_441.customer_state", "order": "desc", "total": 69613.0, "group_count": 4,
+        "items": [{"label": "SP", "value": 41746.0, "rank": 1}, {"label": "RJ", "value": 12852.0, "rank": 2}]}},
+        {"chart_id": STATE_ORDERS_CHART})
+    assert _why(state, ctx, "Theo số đơn hàng, SP là bang nhiều nhất với 41,746 đơn hàng.") == []
+    t = {"member": None, "measures": ["order_count"], "dimension": "customer_state", "intent": {}}
+    assert CC._asked_member(ctx, t, "Số đơn của bang Minas Gerais là bao nhiêu?") == ["minasgerais", "mg"]
+    ctx.question = "Số đơn của bang Minas Gerais là bao nhiêu?"
+    assert (12852.0, "other_member") in _why(state, ctx, "Bang Minas Gerais có 12,852 đơn.")

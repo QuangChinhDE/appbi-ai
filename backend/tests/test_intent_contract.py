@@ -348,3 +348,75 @@ def test_a_month_is_read_from_the_monthly_chart():
     rows = {"measures": ["order_count"], "dimension": None, "periods": [("m", 2018, 10)]}
     v = {"carriers": {"order_count": [(705, ["day_name"], "Đơn theo ngày"), (726, ["year_month"], "Số đơn theo tháng")]}}
     assert I.charts_for(rows, v)[0]["chart_id"] == 726
+
+
+def test_a_share_question_does_not_ask_for_a_rate_measure():
+    """Live 3ac706e6 runs 7240/7217/7261: "Health & beauty chiếm bao nhiêu phần trăm
+    doanh thu?" was overridden to on_time_rate ("phần trăm" read as a rate measure)
+    and every correct share was withheld."""
+    v = {"measures": {"total_revenue": "Total revenue", "on_time_rate": "On time rate"},
+         "dimensions": {}, "measure_names": {
+             "total_revenue": ["Olist · Doanh thu theo danh mục"],
+             "on_time_rate": ["Olist · Tỷ lệ giao đúng hẹn theo tháng"]}}
+    assert I.titled_measure("Health & beauty chiếm bao nhiêu phần trăm doanh thu?",
+                            ["total_revenue"], v) is None
+
+
+def test_a_period_relative_to_the_data_is_left_to_the_tools(monkeypatch, world):
+    """Live 3ac706e6 run 7223 (critical): "GMV tháng gần nhất so với tháng trước" was
+    resolved to 2018-09 (a partial month) vs 2018-08 and the Skill's correct
+    2018-08 vs 2018-07 change was judged another period's. A follow-up relative to
+    the previous question's explicit month keeps its resolved period."""
+    ctx, state = world("GMV tháng gần nhất so với tháng trước thay đổi bao nhiêu phần trăm?")
+
+    async def call(**kw):
+        return json.dumps({"measures": ["gmv"], "periods": [{"grain": "m", "year": 2018, "n": 9},
+                                                             {"grain": "m", "year": 2018, "n": 8}]})
+    monkeypatch.setattr(I, "_model_call", call)
+    monkeypatch.setattr(I, "vocabulary", lambda c: {"measures": {"gmv": "Gmv"}, "dimensions": {}})
+    got = asyncio.run(I.resolve(state, ctx, question=ctx.question, previous="", provider="openai",
+                                api_key="k", model="m"))
+    assert got["periods"] == [] and got["relative_hint"] == [("m", 2018, 9), ("m", 2018, 8)]
+    assert "TRỌN VẸN" in I.describe_for_prompt(got)
+
+    async def follow(**kw):
+        return json.dumps({"measures": ["gmv"], "followup": True,
+                           "periods": [{"grain": "m", "year": 2017, "n": 10}]})
+    monkeypatch.setattr(I, "_model_call", follow)
+    got = asyncio.run(I.resolve(state, ctx, question="Còn tháng trước đó thì sao?",
+                                previous="GMV tháng 11/2017 là bao nhiêu?", provider="openai",
+                                api_key="k", model="m"))
+    assert got["periods"] == [("m", 2017, 10)]
+
+
+def test_per_unit_mỗi_is_not_a_breakdown():
+    assert not I.asks_breakdown("Trung bình mỗi lần thanh toán trả góp bao nhiêu kỳ?", "", {})
+    assert I.asks_breakdown("Doanh thu mỗi tháng thế nào?", "", {})
+
+
+def test_the_breakdown_the_question_names_is_read_even_when_the_budget_is_spent(monkeypatch):
+    """Live 774b3341 run 7569, the third question after a restart: on a cold cache
+    the member-read budget ran out before payment_type, "Thẻ tín dụng" got no code
+    and the correct 78.34% credit_card share was withheld as another member's. The
+    breakdown the question's words name is read first and always; the others stay
+    bounded by the budget."""
+    from app.services.agent_flows.tools import context as C
+
+    class Ctx:
+        chart_meta = {7: {"fields": {"dimensions": [{"field": "t.customer_state"}]}},
+                      8: {"fields": {"dimensions": [{"field": "t.payment_type"}]}}}
+    read = []
+
+    def fetch(ctx, cid, **kw):
+        read.append(cid)
+        if cid == 8:
+            return {"columns": ["t.payment_type", "t.total_payment"], "rows": [["credit_card", 1.0], ["boleto", 2.0]]}
+        return {"columns": ["t.customer_state", "t.gmv"], "rows": [["SP", 1.0]]}
+    monkeypatch.setattr(C, "_fetch_chart_data", fetch)
+    monkeypatch.setattr(I, "MEMBER_READ_SECONDS", -1.0)
+    dims = {"customer_state": ["Olist · Doanh thu theo bang"], "payment_type": ["Olist · Thanh toán theo hình thức"]}
+    got = I.member_values(Ctx(), dims, None, "Thẻ tín dụng chiếm bao nhiêu phần trăm tổng tiền thanh toán?")
+    assert got == {"payment_type": ["credit_card", "boleto"]} and read == [8], (got, read)
+    # No breakdown named: the budget bounds every read, as before.
+    read.clear()
+    assert I.member_values(Ctx(), dims, None, "Tổng là bao nhiêu?") == {} and read == []

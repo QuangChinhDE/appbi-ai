@@ -1057,6 +1057,16 @@ def _usable_flow(db: Session, user: User, brain_key: str) -> Flow:
     return resolved[1]
 
 
+@router.get("/pilot")
+def reader_pilot_policy(user: User = Depends(can_assign)) -> dict[str, Any]:
+    """The reader rollout policy in force (services/agent_flows/pilot.py): mode,
+    enrolled links, cohort size. Read-only — the policy is deployment configuration,
+    so turning the pilot on or off is a deploy, recorded where deploys are."""
+    from app.services.agent_flows import pilot
+
+    return pilot.describe(getattr(user, "email", None))
+
+
 @router.get("/bindings/link/{link_id}")
 def get_binding(
     link_id: int, db: Session = Depends(get_db), user: User = Depends(can_assign)
