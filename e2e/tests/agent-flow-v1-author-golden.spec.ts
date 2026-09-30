@@ -1,5 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
-import { deleteFlow, openFlowList, sweepLeftovers } from './_helpers';
+import { deleteFlow, openFlowList, sweepLeftovers, withE2eKey } from './_helpers';
 
 /**
  * The V1 author journey, end to end, as a pilot author walks it.
@@ -336,7 +336,7 @@ test.describe('V1 author golden journey @critical', () => {
       const key = `e2e_goldenrun_${STAMP}`;
       // DETERMINISTIC ON PURPOSE. `set_var` and `tool` need no model, so this
       // proves the Runs surface without making the gate depend on a vendor.
-      const saved = await request.put(BRAINS, {
+      const saved = await request.put(BRAINS, await withE2eKey(request, {
         data: {
           brain_key: key, name: 'E2E golden run',
           body: {
@@ -351,7 +351,7 @@ test.describe('V1 author golden journey @critical', () => {
             answer_node: 'answer',
           },
         },
-      });
+      }));
       expect(saved.status(), await saved.text()).toBeLessThan(400);
 
       try {

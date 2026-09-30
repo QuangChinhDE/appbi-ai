@@ -129,3 +129,38 @@ def _extract_error_detail(body: bytes) -> str:
         return str(obj.get("error", {}).get("message") or obj)[:300]
     except Exception:
         return body.decode(errors="replace")[:300]
+
+
+#: Gemini's OpenAI-compatible endpoint. Chat Completions with streaming tool calls,
+#: so an Agent Flow step on Gemini runs the same tool loop as one on OpenAI.
+GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+
+async def stream_gemini(
+    *,
+    api_key: str,
+    system_prompt: str,
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    model: str = GEMINI_MODEL,
+    max_tokens: int = 2048,
+) -> AsyncGenerator[AgentEvent, None]:
+    """Gemini WITH tool calling, through the OpenAI-compatible endpoint.
+
+    The single-shot adapter above ignores `tools`: an Agent step granted tools
+    would have silently lost every one of them on Gemini. This one keeps them.
+    The key travels as a Bearer header, never in the URL.
+    """
+    from app.services.dashboard_ai_bot.providers.openai_provider import stream_openai
+
+    async for ev in stream_openai(
+        api_key=api_key,
+        system_prompt=system_prompt,
+        messages=messages,
+        tools=tools,
+        model=model or GEMINI_MODEL,
+        max_tokens=max_tokens,
+        base_url=GEMINI_OPENAI_BASE_URL,
+        vendor="gemini",
+    ):
+        yield ev

@@ -42,6 +42,8 @@ _RESOURCE_TO_MODULE: Dict[str, str] = {
     # brain list came back empty right after a brain was saved and published.
     "agent_brain": "agent_flows",
     "chat_thread": "chat",
+    # AI provider keys are managed from the Agent Flow module and gated by it.
+    "ai_credential": "agent_flows",
 }
 
 

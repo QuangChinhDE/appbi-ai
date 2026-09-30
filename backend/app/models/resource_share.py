@@ -32,6 +32,9 @@ class ResourceType(str, enum.Enum):
     #: goes through the flow's own share. `CHAT_SESSION` above is an older, unused
     #: value and is not this — it was never wired to anything.
     CHAT_THREAD = "chat_thread"
+    #: A stored AI provider key (`ai_provider_credentials`). A share lets the
+    #: recipient USE the key in their own Agent Flow steps; no share ever reveals it.
+    AI_CREDENTIAL = "ai_credential"
 
 
 class SharePermission(str, enum.Enum):

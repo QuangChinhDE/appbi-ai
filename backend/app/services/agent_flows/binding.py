@@ -362,19 +362,18 @@ def preflight(
             "message": "Flow có bước tra cứu web nhưng link này đang tắt — bước đó sẽ bị bỏ qua.",
         })
 
-    # 5 — a node pinned to a vendor the link has no key for fails on the first
-    #     real question, in front of a viewer. Caught here instead.
-    cfg = (link.appearance_config or {}) if link is not None else {}
-    link_provider = str((cfg or {}).get("ai_bot_provider") or "").strip().lower()
-    for node in flow.agent_nodes():
-        if node.provider != "inherit" and not node.api_key_enc:
-            if link_provider and node.provider != link_provider:
-                warnings.append({
-                    "code": "provider_mismatch",
-                    "key": node.key,
-                    "message": f"Bước “{node.name or node.key}” chạy trên {node.provider} "
-                               f"nhưng link cấu hình {link_provider} và bước không có token riêng.",
-                })
+    # 5 — EVERY MODEL STEP NEEDS A USABLE KEY OF ITS OWN. The link supplies none
+    #     any more (not its `ai_bot_key`, not the viewer's, not the server's), so a
+    #     step without one would fail on the first real question, in front of a
+    #     viewer. An error, not a warning: there is nothing for it to fall back to.
+    from app.services.agent_flows.credentials import StoredCredentials
+
+    for problem in StoredCredentials(db).problems(flow):
+        errors.append({
+            "code": "missing_credential",
+            "key": problem["step_key"],
+            "message": problem["message"],
+        })
 
     # 6 — HOW LONG THIS WILL TAKE, on the model the link actually uses.
     #
@@ -390,7 +389,7 @@ def preflight(
     # a link configured for `gpt-4o` was costed at 4 seconds a call instead of 18,
     # and this warning, whose entire job is to catch a ninety-second answer, stayed
     # quiet. `effective_model` is now the one rule both sides read.
-    slowest_model, seconds_each = _slowest_model(flow, cfg)
+    slowest_model, seconds_each = _slowest_model(flow)
     worst_seconds = estimate["max_llm_calls"] * seconds_each
     if worst_seconds > contract.budget.max_seconds:
         warnings.append({
@@ -520,38 +519,18 @@ def _seconds_per_call(model: str) -> int:
     )
 
 
-def _slowest_model(flow: Flow, cfg: dict | None) -> tuple[str, int]:
+def _slowest_model(flow: Flow) -> tuple[str, int]:
     """The slowest model any step of this flow will actually run on.
 
-    WORST CASE ACROSS STEPS, not "the link's model". A flow mixes models: a cheap
-    classifier on `gpt-4o` and an answering step pinned to `gpt-5` is a sensible
-    design, and its wait is set by the `gpt-5` calls. Asking the link alone gave the
-    wrong answer in both directions — silent when a step pinned something slow,
-    and falsely alarmed when a step pinned something fast.
-
-    `effective_model` decides per step, so this and the runtime cannot disagree
-    about which model a step uses; the only thing added here is the max.
+    WORST CASE ACROSS STEPS. A flow mixes models: a cheap classifier on `gpt-4o`
+    and an answering step on `gpt-5` is a sensible design, and its wait is set by
+    the `gpt-5` calls. Each step names its own model, so the steps are the whole
+    answer — the link has no model to add to the set.
     """
-    from app.services.agent_flows.models_catalogue import effective_model
-
-    link_provider = str((cfg or {}).get("ai_bot_provider") or "").strip().lower()
-    link_model = str((cfg or {}).get("ai_bot_model") or "").strip().lower()
-
-    # THE MAX IS OVER THE STEPS, NOT OVER THE STEPS AND THE LINK.
-    #
-    # Seeding this from the link's model looked harmless and reintroduced half the
-    # bug: a flow whose every step pins `gpt-4o` on a link configured for `gpt-5`
-    # never makes a `gpt-5` call, and costing it at 18 seconds is the same false
-    # alarm in the other direction. The link's model enters this set the only way it
-    # legitimately can — through a step that INHERITS it.
-    used = [
-        effective_model(node.provider, node.model, link_provider, link_model)[1]
-        for node in flow.agent_nodes()
-    ]
+    used = [str(node.model or "").strip().lower() for node in flow.model_steps()]
     if not used:
-        # No agent step means no model call at all, so there is nothing to cost. The
-        # link's model is reported for the message's sake only.
-        return link_model, _seconds_per_call(link_model)
+        # No model step means no model call at all, so there is nothing to cost.
+        return "", 0
     worst = max(used, key=_seconds_per_call)
     return worst, _seconds_per_call(worst)
 

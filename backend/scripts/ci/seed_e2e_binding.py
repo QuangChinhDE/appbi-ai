@@ -47,6 +47,13 @@ TOKEN = "e2e-agent-flow-binding-fixture"
 BRAIN_KEY = "e2e_fixture_bound_flow"
 CHART = "E2E Agent Flow fixture chart"
 
+#: The FAKE key the flow's one step names. Every model step must reference a
+#: stored AI key, or publishing and binding are refused ("chưa có AI key"). The
+#: secret is deliberately invalid: no spec here calls a model. Same name as the
+#: e2e helper `withE2eKey`, so both reuse one row.
+KEY_NAME = "e2e fake openai key"
+FAKE_SECRET = "sk-e2e-fake-key-never-valid-000000000000"
+
 #: A flow with NO data requirements, so `preflight` has nothing to resolve beyond
 #: the chart scope. The spec reads the binding, not what a run of this would say.
 BODY = {
@@ -56,6 +63,23 @@ BODY = {
     ],
     "answer_node": "tra_loi",
 }
+
+
+def _fake_key_id(db, user) -> int:
+    """The e2e fake OpenAI key, made through the real AI Keys service once."""
+    from app.models.ai_provider_credential import AiProviderCredential
+    from app.services.agent_flows import credentials as creds
+
+    row = (
+        db.query(AiProviderCredential)
+        .filter(AiProviderCredential.owner_id == user.id,
+                AiProviderCredential.name == KEY_NAME,
+                AiProviderCredential.deleted_at.is_(None))
+        .first()
+    )
+    if row is not None:
+        return row.id
+    return int(creds.create(db, user, name=KEY_NAME, provider="openai", secret=FAKE_SECRET)["id"])
 
 
 def main() -> int:
@@ -122,11 +146,24 @@ def main() -> int:
         except Exception:
             existing = {}
         published = str(existing.get("status") or "").lower() == "published"
-        version = int(existing.get("version") or 0) if published else 0
+        # A version published before steps carried AI keys cannot be bound any
+        # more (its step has no key) — reusing it would make the seed fail on a
+        # database that ran an older copy of this script. Cut a new one instead.
+        keyed = all(
+            n.get("credential_id")
+            for n in ((existing.get("body") or {}).get("nodes") or [])
+            if n.get("type") in ("agent", "coordinate")
+        )
+        version = int(existing.get("version") or 0) if (published and keyed) else 0
         if not version:
+            body = {**BODY, "nodes": [
+                {**n, "provider": "openai", "model": "gpt-4o-mini",
+                 "credential_id": _fake_key_id(db, user)}
+                for n in BODY["nodes"]
+            ]}
             reg.save_draft(
                 db, user, brain_key=BRAIN_KEY, name="E2E bound flow",
-                description="Fixture", body=BODY, actor_email=EMAIL,
+                description="Fixture", body=body, actor_email=EMAIL,
                 # `save_draft` accepts only "bot"/"chat" and falls back to the
             # default otherwise; a report link wants the default, and naming a
             # type it would discard only reads as though it did something.

@@ -4480,31 +4480,15 @@ async def chat_dashboard_ai_agent(
             detail="AI bot is not enabled for this shared link.",
         )
 
-    # The brain is resolved BEFORE the credential, because whether a credential is
-    # required at all is a property of the brain: one whose every step carries its own
-    # token needs nothing from the link. Resolving credentials first made that
-    # impossible — the link 400'd on "no key" before anyone looked at what the brain
-    # already had.
-    from app.services.agent_flows.dispatch import flow_supplies_credentials
-
-    # Resolved through the BINDING, so a link pinned to an older version is judged on
-    # the version it actually runs rather than on whatever is published.
-    _brain_self_sufficient = flow_supplies_credentials(db, token=token)
-
-    try:
-        effective_key, provider, model = resolve_public_ai_credentials(
-            appearance_config,
-            x_user_ai_key=x_user_ai_key,
-            x_user_ai_provider=x_user_ai_provider,
-            x_user_ai_model=x_user_ai_model,
-            missing_key_detail="X-User-Ai-Key header is required for AI chat.",
-        )
-    except HTTPException:
-        if not _brain_self_sufficient:
-            raise
-        # Every step brings its own token and names its own vendor, so there is
-        # nothing for a step to inherit and no key to demand from the viewer.
-        effective_key, provider, model = "", "", None
+    # NO CREDENTIAL IS RESOLVED HERE, and `X-User-Ai-Key` is not read for chat.
+    #
+    # Every chat turn on this endpoint runs the link's bound Agent Flow, and every
+    # step of that flow runs on its OWN stored key (services/agent_flows/
+    # credentials.py) — not the viewer's pasted key, not the link's `ai_bot_key`,
+    # not the server's environment. A flow without usable keys is refused inside
+    # `run_for_link` with a sentence for the viewer. The telemetry row records no
+    # provider or model: each step chose its own.
+    provider, model = None, None
 
     web_search_flag = web_search_enabled(appearance_config)
     # Depth is no longer a link setting. It is a property of the way of thinking
@@ -4649,7 +4633,6 @@ async def chat_dashboard_ai_agent(
                 _m["content"] = _guard.normalized_question
                 break
 
-    captured_key = effective_key
     # Merge link-level public filters with viewer-applied slicer filters
     # from the dashboard UI through the shared layered-merge helper.
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
@@ -4774,10 +4757,6 @@ async def chat_dashboard_ai_agent(
                 # passed in testing only because a script sets the header by hand.
                 session_key=(body.session_key or x_public_session or ""),
                 filters=combined_filters or [],
-                # Fallback only. A node carrying its own token ignores this.
-                api_key=captured_key,
-                provider=provider,
-                model=model,
                 base_system_prompt=_base_prompt,
             ).__aiter__()
         timed_out = False

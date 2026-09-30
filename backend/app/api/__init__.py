@@ -45,6 +45,11 @@ if settings.METADATA_CATALOG_ENABLED:
     from app.modules.metadata_catalog.api import router as metadata_catalog_router
     api_router.include_router(metadata_catalog_router)
 
+    # AI Keys for Agent Flow steps. Mounted BEFORE the Studio router so its fixed
+    # prefix `/agent-flows/credentials` is never taken by a pattern route there.
+    from app.modules.agent_flows.credentials_api import router as agent_flow_credentials_router
+    api_router.include_router(agent_flow_credentials_router)
+
     # Agent Flows: its own router with its own key. Publishing a brain changes what
     # a live report says, so it must not ride on a knowledge-authoring grant.
     from app.modules.agent_flows.api import router as agent_flows_router

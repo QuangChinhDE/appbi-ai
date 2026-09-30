@@ -347,6 +347,10 @@ features:
     files:
       - backend/app/services/agent_flows/**
       - backend/app/modules/agent_flows/api.py
+      # AI Keys: the stored provider credentials every model step runs on
+      # (services/agent_flows/credentials.py is already covered by the glob above).
+      - backend/app/modules/agent_flows/credentials_api.py
+      - backend/app/models/ai_provider_credential.py
       - frontend/src/lib/agentFlows.ts
       - frontend/src/components/agent-flows/**
       # The ONE answer renderer, shared by the Studio test panel, the dashboard
@@ -405,7 +409,8 @@ features:
                executor, run_flow, "tool node", report_read]
     invariants: [agent_flow_container_topology, agent_flow_answer_parity]
     required_tests: [agent_flow_contract, agent_flow_replay, agent_flow_container,
-                     agent_flow_surface, agent_flow_evidence, tier1_oracles_execute]
+                     agent_flow_surface, agent_flow_evidence, tier1_oracles_execute,
+                     agent_flow_credentials]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -443,6 +448,9 @@ tests:
   # (they import app.services.agent_flows), not by filename.
   # ADOPTED 2026-09-20 by dependency tracing, not by filename. Both were committed
   # and referenced by no runner, and both guard something Waves 1-2 stand on.
+  agent_flow_credentials:
+    run: "pytest backend/tests/test_ai_provider_credentials.py backend/tests/test_ai_credential_providers.py backend/tests/test_node_registry_first_load_race.py"
+    locks: "a model step runs only on its own stored AI key: encrypted or refused, never returned by any API, assigned only by someone who may use it, re-checked against its grantor on every run, no fallback to the link / viewer / server key; each vendor dispatches to an adapter that keeps its tools; the node registry survives parallel first use"
   agent_flow_evidence:
     run: "pytest backend/tests/test_verifier_false_alarms.py"
     locks: "the number verifier Agent Flow's evidence check calls at executor.py:1094 and agent.py:629 — a false alarm there re-flags correct answers, a missed one lets an invented figure through"

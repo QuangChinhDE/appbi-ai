@@ -97,7 +97,7 @@ def _run(monkeypatch, body, rec, *, llm=12, locale="vi", question="Doanh thu thá
     async def go():
         out = None
         async for ev in executor.run_flow(FlowInput.model_validate(env), flow=flow, ctx=H._Ctx([41]),
-                                          api_key="k", base_system_prompt="BASE_FULL_CONTRACT"):
+                                          credentials=H.fixed_credentials("k"), base_system_prompt="BASE_FULL_CONTRACT"):
             if ev.type == "result":
                 out = ev.extra.get("envelope")
         return out or {}
@@ -228,7 +228,7 @@ def test_a_specialist_reads_its_brief_straight_after_the_question(monkeypatch):
 
     async def go():
         async for _ in executor.run_flow(FlowInput.model_validate(env), flow=flow, ctx=H._Ctx([41]),
-                                         api_key="k", base_system_prompt="BASE"):
+                                         credentials=H.fixed_credentials("k"), base_system_prompt="BASE"):
             pass
 
     asyncio.run(go())

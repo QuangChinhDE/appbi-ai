@@ -17,7 +17,7 @@
  */
 import {
   AlertTriangle, ArrowLeft, Check, LayoutDashboard, Loader2, Maximize2,
-  MessagesSquare, Minus, Play, Plus, Puzzle, Redo2, Save, Send, Trash2, Undo2, X,
+  KeyRound, MessagesSquare, Minus, Play, Plus, Puzzle, Redo2, Save, Send, Trash2, Undo2, X,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { FlowActivation } from './FlowActivation';
@@ -32,7 +32,8 @@ import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
-  blankNode, branchCoverage, brainImpact, canDropInto, findNode, getBrain, insertNode,
+  blankNode, branchCoverage, brainImpact, canDropInto, defaultCredentialFor, findNode, getBrain, insertNode,
+  isModelStep,
   isBranching, isContainer,
   listAttachable, listNodeSpecs, listProviders, listSkills, listToolPacks, moveNode,
   publishBrain, removeNode,
@@ -46,6 +47,8 @@ import {
 } from '@/lib/agentFlows';
 
 import { ActivityTab } from './ActivityTab';
+import { useAiKeys } from './aiKeys/AiKeysContext';
+import { stepHasUsableKey } from './inspector/ModelPicker';
 import { FlowCanvas } from './FlowCanvas';
 import { NodeInspector } from './NodeInspector';
 import { NodeLibrary } from './NodeLibrary';
@@ -380,12 +383,52 @@ export function BrainBuilder({
 
   const onInsert = (target: InsertTarget) => setInsertAt(target);
 
+  // MODEL STEPS WITHOUT A KEY THIS AUTHOR CAN SEE AS USABLE. There is nothing for
+  // such a step to fall back to, so the header says how many and a click goes
+  // straight to the first one. The server is still the judge (a key shared to
+  // the flow's author but not to me shows here too, and runs fine).
+  const aiKeys = useAiKeys();
+  const keyless = React.useMemo(
+    () => (aiKeys.loaded
+      ? walkNodes(body.nodes).filter(isModelStep)
+        .filter((n) => !stepHasUsableKey(n.credential_id, n.provider, aiKeys.credentials))
+      : []),
+    [aiKeys.loaded, aiKeys.credentials, body.nodes],
+  );
+  // Keyless steps that would take the author's default for their provider. One
+  // click assigns them all — what every flow written before AI Keys needs once.
+  // An explicit edit the author then saves, never a run-time fallback.
+  const assignable = React.useMemo(
+    () => keyless.filter((n) => defaultCredentialFor(n.provider || 'openai', aiKeys.credentials) != null),
+    [keyless, aiKeys.credentials],
+  );
+  const assignDefaults = () => {
+    let next = body.nodes;
+    for (const n of assignable) {
+      const id = defaultCredentialFor(n.provider || 'openai', aiKeys.credentials);
+      if (id != null) next = replaceNode(next, n.key, { ...n, credential_id: id } as FlowNode);
+    }
+    mutate(next);
+  };
+  const goToKeyless = () => {
+    setSelected(keyless[0].key);
+    // The key line sits below the prompt and tools; selecting the step alone left
+    // it far below the fold, so bring it into view once the inspector renders.
+    window.setTimeout(() => {
+      document.querySelector('[data-testid="agent-model-picker"], [data-testid="coordinate-model-picker"]')
+        ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 80);
+  };
+
   const addNode = (type: NodeType) => {
     if (!insertAt) return;
     const node = blankNode(type, body.nodes, {
       agentPrompt: t('agentFlows.defaults.agentPrompt'),
       pathA: t('agentFlows.defaults.pathA'),
       pathB: t('agentFlows.defaults.pathB'),
+      // A new model step starts on the author's default OpenAI key, so adding a
+      // step never means re-entering one.
+      credentialId: defaultCredentialFor('openai', aiKeys.credentials),
     });
     mutate(insertNode(body.nodes, insertAt, node));
     setInsertAt(null);
@@ -712,6 +755,34 @@ export function BrainBuilder({
             </IconBtn>
           </div>
         )}
+        {keyless.length > 0 && (
+          // COMPACT: the sticky right group already competes with the tab strip at
+          // 1440, so the chip is a count; the full sentence and the step names are
+          // in its title.
+          <button
+            type="button"
+            data-testid="builder-keyless"
+            title={`${t('agentFlows.builder.keylessCount', { count: keyless.length })}: ${keyless.map((n) => n.name || n.key).join(', ')}`}
+            onClick={goToKeyless}
+            className="flex items-center gap-1 rounded-full border border-warning/25 bg-warning/5 px-2 py-px text-tiny text-warning hover:bg-warning/10"
+          >
+            <KeyRound className="h-3 w-3" /> {t('agentFlows.builder.keylessShort', { count: keyless.length })}
+          </button>
+        )}
+        {canEdit && assignable.length > 0 && (
+          <button
+            type="button"
+            data-testid="builder-assign-default-keys"
+            title={t('agentFlows.builder.assignDefaultKeysHint', { count: assignable.length })}
+            onClick={assignDefaults}
+            className="rounded-full border border-brand/30 px-2 py-px text-tiny text-brand hover:bg-brand/5"
+          >
+            {t('agentFlows.builder.assignDefaultKeys')}
+          </button>
+        )}
+        <IconBtn onClick={() => aiKeys.open()} label={t('agentFlows.aiKeys.title')} testId="ai-keys-open">
+          <KeyRound className="h-3.5 w-3.5" />
+        </IconBtn>
         <Button data-testid="builder-test" variant="secondary" size="xs" onClick={() => setTestOpen(true)}>
           <Play className="h-3 w-3" /> {t('agentFlows.builder.test')}
         </Button>
@@ -1044,13 +1115,14 @@ function PublishDialog({
 /** A square icon button. Small enough that a label would double its width, so the
  *  name lives in the tooltip and in `aria-label` rather than nowhere. */
 function IconBtn({
-  onClick, label, disabled, children,
+  onClick, label, disabled, children, testId,
 }: {
-  onClick: () => void; label: string; disabled?: boolean; children: React.ReactNode;
+  onClick: () => void; label: string; disabled?: boolean; children: React.ReactNode; testId?: string;
 }) {
   return (
     <button
       type="button"
+      data-testid={testId}
       onClick={onClick}
       disabled={disabled}
       title={label}

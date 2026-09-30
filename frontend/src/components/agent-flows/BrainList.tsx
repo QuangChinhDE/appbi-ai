@@ -20,11 +20,12 @@
  */
 import {
   AlertTriangle, Brain, Calendar, Check, ChevronRight, Copy, Layers, Link2, Loader2,
-  MessagesSquare, Plus, Share2, Trash2,
+  KeyRound, MessagesSquare, Plus, Share2, Trash2,
 } from 'lucide-react';
 import React from 'react';
 
 import { AppModalShell } from '@/components/common/AppModalShell';
+import { useAiKeys } from './aiKeys/AiKeysContext';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
@@ -39,7 +40,8 @@ import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
-  blankNode, deleteBrainVersion, getAuthoringPrompt, getBrain, importDraft, listBrains,
+  blankNode, defaultCredentialFor, deleteBrainVersion, getAuthoringPrompt, getBrain, importDraft,
+  isModelStep, listBrains, walkNodes,
   saveBrain, starterFlow,
   type FlowType, slugifyBrainKey,
   type AuthoringPrompt,
@@ -105,6 +107,7 @@ export function BrainList({
   canEdit: boolean;
 }) {
   const { t } = useI18n();
+  const aiKeys = useAiKeys();
   const [rows, setRows] = React.useState<BrainSummary[] | null>(null);
   const [search, setSearch] = React.useState('');
   const [status, setStatus] = React.useState<StatusFilter>('all');
@@ -165,7 +168,7 @@ export function BrainList({
         name: name.trim(),
         description: description.trim() || t('agentFlows.list.starter.defaultDescription'),
         flow_type: 'bot',
-        body: starterFlow(t),
+        body: starterFlow(t, defaultCredentialFor('openai', aiKeys.credentials)),
       });
       setCreating(false);
       onOpen(key);
@@ -175,9 +178,10 @@ export function BrainList({
     const nodes: FlowNode[] = [];
     let writer: FlowNode;
 
+    const credentialId = defaultCredentialFor('openai', aiKeys.credentials);
     if (flowType === 'bot') {
       const reader = blankNode('report_read', []);
-      writer = blankNode('agent', [reader]) as FlowNode;
+      writer = blankNode('agent', [reader], { credentialId }) as FlowNode;
       nodes.push({ ...reader, name: t('agentFlows.list.seed.readerName') } as FlowNode);
       nodes.push({
         ...writer,
@@ -185,7 +189,7 @@ export function BrainList({
         prompt: t('agentFlows.list.seed.writerPrompt'),
       } as FlowNode);
     } else {
-      writer = blankNode('agent', []) as FlowNode;
+      writer = blankNode('agent', [], { credentialId }) as FlowNode;
       nodes.push({
         ...writer,
         name: t('agentFlows.list.seed.chatWriterName'),
@@ -235,13 +239,25 @@ export function BrainList({
       // duplicating a draft you are iterating on is the common case.
       const source = await getBrain(row.latest.brain_key, row.latest.version);
       const name = `${source.name} (${t('agentFlows.list.duplicateSuffix')})`;
+      // A copy is a NEW flow of mine: a key on a step that I may not use would be
+      // refused on save, so it is dropped here and the step says "no key" instead.
+      const usable = new Set(aiKeys.credentials.map((c) => c.id));
+      const body = JSON.parse(JSON.stringify(source.body)) as FlowBody;
+      let dropped = 0;
+      for (const n of walkNodes(body.nodes)) {
+        if (isModelStep(n) && n.credential_id != null && !usable.has(n.credential_id)) {
+          n.credential_id = null;
+          dropped += 1;
+        }
+      }
       await saveBrain({
         brain_key: slugifyBrainKey(name),
         name,
         description: source.description,
-        body: source.body,
+        body,
       });
       toast.success(t('agentFlows.list.duplicateSuccess'));
+      if (dropped) toast.info(t('agentFlows.list.duplicateKeysDropped', { count: dropped }));
       await reload();
     } catch (e) {
       toast.error(detailMsg(e) || t('agentFlows.list.duplicateFailed'));
@@ -281,11 +297,24 @@ export function BrainList({
             storageKey="agent-flows-overview"
           />
         )}
-        action={canEdit ? (
-          <Button data-testid="new-flow" size="sm" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setCreating(true)}>
-            {t('agentFlows.list.newBrain')}
-          </Button>
-        ) : undefined}
+        action={(
+          <div className="flex items-center gap-2">
+            <Button
+              data-testid="ai-keys-open"
+              size="sm"
+              variant="secondary"
+              leadingIcon={<KeyRound className="h-3.5 w-3.5" />}
+              onClick={() => aiKeys.open()}
+            >
+              {t('agentFlows.aiKeys.title')}
+            </Button>
+            {canEdit && (
+              <Button data-testid="new-flow" size="sm" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setCreating(true)}>
+                {t('agentFlows.list.newBrain')}
+              </Button>
+            )}
+          </div>
+        )}
         isLoading={rows === null}
         loadingText={t('agentFlows.list.loading')}
         searchPlaceholder={t('agentFlows.list.searchPlaceholder')}

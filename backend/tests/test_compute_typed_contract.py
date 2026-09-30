@@ -180,7 +180,7 @@ def _run_flow(monkeypatch, body, model=None, db=None):
     async def go():
         out = None
         async for ev in executor.run_flow(FlowInput.model_validate(env), flow=flow, ctx=H._Ctx([41, 42]),
-                                          api_key="k", base_system_prompt="BASE", db=db,
+                                          credentials=H.fixed_credentials("k"), base_system_prompt="BASE", db=db,
                                           on_state=lambda s: holder.setdefault("s", s)):
             if ev.type == "result":
                 out = ev.extra.get("envelope")

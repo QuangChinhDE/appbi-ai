@@ -1,4 +1,4 @@
-"""Which model an Agent step may run on, and where its credential comes from.
+"""Which models an Agent step may run on.
 
 WHY A CATALOGUE AND NOT A FREE TEXT BOX
 ---------------------------------------
@@ -8,139 +8,99 @@ a tier vocabulary (`fast`/`balanced`/`deep`) that was looked up in a table holdi
 different names, so the control did nothing at all and nobody noticed for weeks.
 So the models are listed, and a step may only name one of these.
 
-The list is deliberately short — the current flagship, the cheap one, and the
+The list is deliberately short — the cheap one, the balanced one and the
 reasoning one per vendor. It is not a mirror of every model each vendor ships,
 because a picker with forty entries makes the author guess anyway.
 
-WHERE THE API KEY IS *NOT*
---------------------------
-Not in the step, and not in the brain.
+WHAT A STEP CHOOSES, AND WHERE ITS KEY COMES FROM
+-------------------------------------------------
+A step chooses a PROVIDER and one of that provider's MODELS — that is the whole
+choice the builder offers. Its key is a stored credential the step references by
+id (`services/agent_flows/credentials.py`): encrypted, owned by a user, shareable,
+never inside the flow body and never returned by any API.
 
-A brain is shareable and exportable. If a step carried its own key, sharing a brain
-would hand over the key, and exporting one would write it into a file somebody
-mails around. So a step names a PROVIDER and a MODEL; the credential is resolved at
-run time from what the deployment holds for that provider.
-
-That is a deliberate limit worth stating plainly: two brains cannot bill to two
-different OpenAI accounts. If per-brain billing is genuinely wanted, the right shape
-is a stored credential resource — encrypted, permissioned, referenced by id, the way
-datasource credentials already work here — and NOT a token field on a step. Adding
-the field would be quick and would leak keys through the share dialog on the first
-day somebody used it.
+There is no "inherit the link's model" any more, and no key from the server's
+environment. Both were fallbacks that made a step run on something nobody chose
+for it — including another vendor's key.
 """
 from __future__ import annotations
 
 from typing import Literal
 
-Provider = Literal["openai"]
+Provider = Literal["openai", "anthropic", "gemini"]
 
-#: ONE VENDOR, DECIDED BY THE OPERATOR.
-#:
-#: The catalogue listed OpenAI, Anthropic and Gemini. The operator's decision is
-#: that this product runs on OpenAI and the deployment supplies the token from
-#: its own environment, so the other two are removed rather than left visible and
-#: unusable — a picker offering a vendor nobody will ever hold a key for is a
-#: 404 waiting for the first real question.
-#:
-#: This is NOT the same thing as hiding an option because today's server lacks a
-#: key; that would break brain portability and is why `has_key` exists below
-#: instead. This is the allowlist of what the product supports at all, which is
-#: what this table has always been.
-#:
-#: Restoring a vendor is: put its entry back here and give the deployment a key.
-#: Checked before removing — no stored flow pinned anything but `inherit`, so
-#: nothing existing had to be migrated.
-#:
+PROVIDERS: tuple[str, ...] = ("openai", "anthropic", "gemini")
+
 #: `label` is what the builder shows; `tier_hint` lets a picker group them without
 #: reintroducing the tier vocabulary as a stored value — the step stores the MODEL
 #: NAME, so what runs is exactly what the author chose.
+#:
+#: OpenAI names verified against the live `/v1/models` list on 2026-09-30.
 MODELS: dict[str, list[dict[str, str]]] = {
     "openai": [
         {"model": "gpt-4o-mini", "label": "GPT-4o mini", "tier_hint": "fast"},
         {"model": "gpt-4o", "label": "GPT-4o", "tier_hint": "balanced"},
+        # The model the reader pilot is certified on (AGENT_FLOW_DEFAULT_MODEL).
+        {"model": "gpt-4.1", "label": "GPT-4.1", "tier_hint": "balanced"},
         {"model": "gpt-5", "label": "GPT-5", "tier_hint": "deep"},
+    ],
+    #: ONE CLAUDE MODEL, ON PURPOSE. Claude Sonnet 5.5 and Opus 5.5 always think,
+    #: and a tool loop on them must send each thinking block back unchanged and
+    #: never rewrite earlier turns. `stream_anthropic` drops thinking blocks and
+    #: flattens the tool history on an agent's final round, so on those models a
+    #: step would fail with a 400 on its second round. Haiku 4.5 does not think
+    #: unless asked, which is the behaviour the adapter was built and used for.
+    #: Adding the 5.5 models is: carry thinking blocks through the tool loop,
+    #: then verify with a real key.
+    "anthropic": [
+        {"model": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "tier_hint": "fast"},
+    ],
+    "gemini": [
+        {"model": "gemini-2.5-flash", "label": "Gemini 2.5 Flash", "tier_hint": "fast"},
+        {"model": "gemini-2.5-pro", "label": "Gemini 2.5 Pro", "tier_hint": "deep"},
     ],
 }
 
-#: What a step gets when the author expresses no preference: whatever the link is
-#: already configured with. A brain is reusable across links, so "inherit" is the
-#: setting that keeps it reusable — pinning a provider ties the brain to
-#: deployments that hold a key for that vendor.
-INHERIT = "inherit"
+LABELS: dict[str, str] = {
+    "openai": "OpenAI",
+    "anthropic": "Anthropic (Claude)",
+    "gemini": "Google Gemini",
+}
+
+#: What a new step, and a stored step written before steps chose their own model,
+#: runs on. `gpt-4o-mini` is what every such step actually ran on: the deployment
+#: set no `AGENT_FLOW_DEFAULT_MODEL` and the adapter default is this model.
+DEFAULT_PROVIDER = "openai"
+DEFAULT_MODEL = "gpt-4o-mini"
 
 
 def known_model(provider: str, model: str) -> bool:
     return any(m["model"] == model for m in MODELS.get(provider, []))
 
 
-def effective_model(
-    node_provider: str, node_model: str, link_provider: str, link_model: str
-) -> tuple[str, str]:
-    """Which provider and model a step will ACTUALLY run on. THE one definition.
-
-    THIS WAS WRITTEN IN TWO PLACES AND THEY DISAGREED.
-    The runtime (`handlers/agent._resolve_model`) prefers the node's own pin and
-    falls back to the link. The preflight guard that warns "this flow is too slow
-    for the link's time budget" read the LINK's model and nothing else — so a flow
-    whose steps pin `gpt-5` on a link configured for `gpt-4o` was costed at 4
-    seconds per call instead of 18, and the warning that exists precisely to catch
-    a ninety-second answer stayed silent. The reverse case is just as wrong: a
-    `gpt-4o` node on a `gpt-5` link raised a slow-model warning about calls that
-    were never going to be slow.
-    """
-    if node_provider != INHERIT and node_model:
-        return node_provider, node_model
-    return link_provider, link_model or ""
+def default_model(provider: str) -> str:
+    models = MODELS.get(provider) or []
+    return models[0]["model"] if models else ""
 
 
-def _deployment_has_key(provider: str) -> bool:
-    """Does THIS deployment hold a credential for that vendor right now?
+def legacy_default_model() -> str:
+    """The model a legacy `inherit` step is brought forward to.
 
-    The token is the operator's, set in the server's environment — never on a
-    step and never on a brain, for the reason in this module's docstring. So this
-    is the single thing that decides whether any Agent step can run at all.
+    The operator's `AGENT_FLOW_DEFAULT_MODEL` when it names a catalogued OpenAI
+    model — that is what those steps ran on — else `gpt-4o-mini`.
     """
     try:
         from app.core.config import settings
 
-        attr = {"openai": "OPENAI_API_KEY"}.get(provider)
-        return bool(attr and (getattr(settings, attr, "") or "").strip())
-    except Exception:  # noqa: BLE001 — the picker must render without settings
-        return False
+        configured = str(getattr(settings, "AGENT_FLOW_DEFAULT_MODEL", "") or "").strip()
+    except Exception:  # noqa: BLE001
+        configured = ""
+    return configured if known_model(DEFAULT_PROVIDER, configured) else DEFAULT_MODEL
 
 
 def catalogue() -> list[dict]:
-    """For the builder's model picker. Includes `inherit` as a first-class choice
-    rather than an empty option, because "use the link's model" is a decision an
-    author makes on purpose, not the absence of one.
-
-    WHAT `has_key` IS FOR, NOW THAT THERE IS ONE VENDOR
-    --------------------------------------------------
-    It no longer decides whether to offer a choice — there is only one. It
-    answers the question that replaced it: the deployment supplies the token, so
-    if `OPENAI_API_KEY` is unset, EVERY Agent step in every flow is dead, and the
-    author should learn that while building rather than from a viewer's blank
-    answer. One flag, stated where the model is chosen.
-    """
-    out: list[dict] = [{
-        "provider": INHERIT,
-        "label": "Theo cấu hình của link",
-        "models": [],
-        "has_key": True,
-        "note": "Dùng model đã cấu hình cho link. Token do máy chủ cung cấp.",
-    }]
-    labels = {"openai": "OpenAI"}
-    for prov, models in MODELS.items():
-        has_key = _deployment_has_key(prov)
-        out.append({
-            "provider": prov,
-            "label": labels.get(prov, prov),
-            "models": list(models),
-            "has_key": has_key,
-            "note": "Token lấy từ cấu hình máy chủ — không cần nhập ở đây."
-            if has_key else (
-                "Máy chủ CHƯA có OPENAI_API_KEY — mọi bước AI sẽ lỗi cho tới khi "
-                "khoá được đặt trong .env của máy chủ."
-            ),
-        })
-    return out
+    """For the builder's two selects: provider, then that provider's models."""
+    return [
+        {"provider": prov, "label": LABELS.get(prov, prov), "models": list(models)}
+        for prov, models in MODELS.items()
+    ]

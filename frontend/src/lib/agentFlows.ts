@@ -19,7 +19,14 @@
  */
 import { apiClient } from './api-client';
 
-export type Provider = 'inherit' | 'openai' | 'anthropic' | 'gemini';
+/** The vendor a model step runs on. Chosen by the author, always — there is no
+ *  "inherit the link's model" and no key from the server's environment. */
+export type Provider = 'openai' | 'anthropic' | 'gemini';
+
+/** What a new step starts on: the cheapest OpenAI model, as every step did before
+ *  steps chose their own. Mirrors `models_catalogue.DEFAULT_*`. */
+export const DEFAULT_PROVIDER: Provider = 'openai';
+export const DEFAULT_MODEL = 'gpt-4o-mini';
 
 // ── Node library (server-generated) ─────────────────────────────────────────
 export type NodeCategory = 'ai' | 'data' | 'logic' | 'flow' | 'utility';
@@ -111,7 +118,34 @@ export interface ProviderGroup {
   provider: Provider;
   label: string;
   models: { model: string; label: string; tier_hint: string }[];
-  note: string;
+}
+
+/** A stored AI key, as any client may see it. There is no field for the secret —
+ *  the server never returns it; `key_hint` is its last four characters. */
+export interface AiCredential {
+  id: number;
+  name: string;
+  provider: Provider;
+  provider_label: string;
+  key_hint: string;
+  is_default: boolean;
+  mine: boolean;
+  owner: { id: string; email: string; name: string } | null;
+  permission: 'view' | 'edit' | 'full';
+  created_at: string | null;
+  updated_at: string | null;
+  last_used_at: string | null;
+  last_test_at: string | null;
+  last_test_ok: boolean | null;
+  last_test_error: string | null;
+  usage_count: number | null;
+}
+
+export interface AiCredentialUsage {
+  brain_key: string;
+  flow_name: string;
+  step_key: string;
+  step_name: string;
 }
 
 export interface AttachableItem {
@@ -213,12 +247,11 @@ export interface AgentNode extends BaseNode {
    *  measured on a coverage harness it sent a plain lookup down the forecast
    *  branch. */
   choice_hints?: Record<string, string>;
-  /** Read-only, from the server: is a token stored for this node. The value itself
-   *  is never returned, so `api_key` empty means KEEP and erasing needs its own
-   *  flag. */
-  has_api_key?: boolean;
-  api_key?: string;
-  api_key_clear?: boolean;
+  /** The step's key, BY REFERENCE: an AI Keys id. Never a secret. */
+  credential_id?: number | null;
+  /** Server-set on save: who assigned the key. Sent back unchanged; the server
+   *  ignores whatever a client puts here. */
+  credential_granted_by?: string;
 }
 
 export interface ReportReadNode extends BaseNode {
@@ -340,10 +373,11 @@ export interface Specialist {
 export interface CoordinateNode extends BaseNode {
   type: 'coordinate';
   prompt?: string;
-  provider?: string;
+  /** The planner's vendor, model and key — the same choice an Agent step makes. */
+  provider?: Provider;
   model?: string;
-  api_key?: string;
-  api_key_clear?: boolean;
+  credential_id?: number | null;
+  credential_granted_by?: string;
   specialists: Specialist[];
   /** Ceiling on ONE plan. Each extra specialist is another model call for the
    *  same question, so this is a cost control, not a preference. */
@@ -885,6 +919,62 @@ export async function listSkills(): Promise<SkillSummary[]> {
 export async function listProviders(): Promise<ProviderGroup[]> {
   const { data } = await apiClient.get<{ providers: ProviderGroup[] }>(`${BASE}/models`);
   return data.providers || [];
+}
+
+// ── AI Keys ─────────────────────────────────────────────────────────────────
+// Stored, encrypted provider keys that model steps reference by id. The secret is
+// write-only: it goes up on create / replace and never comes back.
+export async function listCredentials(provider?: Provider): Promise<AiCredential[]> {
+  const { data } = await apiClient.get<{ credentials: AiCredential[] }>(
+    `${BASE}/credentials`, { params: provider ? { provider } : {} });
+  return data.credentials || [];
+}
+
+export async function createCredential(body: {
+  name: string; provider: Provider; secret: string; is_default?: boolean;
+}): Promise<AiCredential> {
+  const { data } = await apiClient.post<AiCredential>(`${BASE}/credentials`, body);
+  return data;
+}
+
+/** `secret` blank or absent = keep the stored one. */
+export async function updateCredential(id: number, body: {
+  name?: string; secret?: string; is_default?: boolean;
+}): Promise<AiCredential> {
+  const { data } = await apiClient.patch<AiCredential>(`${BASE}/credentials/${id}`, body);
+  return data;
+}
+
+export async function credentialUsage(id: number): Promise<AiCredentialUsage[]> {
+  const { data } = await apiClient.get<{ affected: AiCredentialUsage[] }>(`${BASE}/credentials/${id}/usage`);
+  return data.affected || [];
+}
+
+export async function deleteCredential(id: number): Promise<AiCredentialUsage[]> {
+  const { data } = await apiClient.delete<{ affected: AiCredentialUsage[] }>(`${BASE}/credentials/${id}`);
+  return data.affected || [];
+}
+
+export async function testCredential(id: number): Promise<{ ok: boolean; error: string | null; latency_ms: number }> {
+  const { data } = await apiClient.post<{ ok: boolean; error: string | null; latency_ms: number }>(
+    `${BASE}/credentials/${id}/test`);
+  return data;
+}
+
+/** The key a NEW step of `provider` starts on: the author's own default for it,
+ *  else the only usable key of that provider, else none. A picker convenience —
+ *  the runtime never falls back to a default. */
+export function defaultCredentialFor(provider: Provider, credentials: AiCredential[]): number | null {
+  const mine = credentials.filter((c) => c.provider === provider && c.mine);
+  const own = mine.find((c) => c.is_default) || (mine.length === 1 ? mine[0] : undefined);
+  if (own) return own.id;
+  const any = credentials.filter((c) => c.provider === provider);
+  return any.length === 1 ? any[0].id : null;
+}
+
+/** Steps that call a model and therefore need a key. */
+export function isModelStep(n: FlowNode): n is AgentNode | CoordinateNode {
+  return n.type === 'agent' || n.type === 'coordinate';
 }
 
 export async function listAttachable(): Promise<Attachable> {
@@ -1588,6 +1678,8 @@ export interface BlankNodeLabels {
   agentPrompt?: string;
   pathA?: string;
   pathB?: string;
+  /** The key a new model step starts on (`defaultCredentialFor`), or none. */
+  credentialId?: number | null;
 }
 
 export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLabels = {}): FlowNode {
@@ -1595,7 +1687,8 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
   const base = { key, name: '' };
   switch (type) {
     case 'agent':
-      return { ...base, type, prompt: labels.agentPrompt || 'Describe what this step should do.', provider: 'inherit',
+      return { ...base, type, prompt: labels.agentPrompt || 'Describe what this step should do.',
+        provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL, credential_id: labels.credentialId ?? null,
         max_tool_calls: 8, output_format: 'chat', context_policy: 'question', tools: [], knowledge: [] };
     case 'tool':
       return { ...base, type: 'tool', tool: '', inputs: {},
@@ -1627,7 +1720,8 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
       // Two lanes, because one specialist is not a coordination problem and the
       // contract refuses it. Each starts with a blank `when` the author must fill:
       // the planner reads that line and nothing else to choose.
-      return { ...base, type, prompt: '', provider: 'inherit', max_specialists: 3,
+      return { ...base, type, prompt: '', provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL,
+        credential_id: labels.credentialId ?? null, max_specialists: 3,
         specialists: [
           { key: 'chuyen_gia_1', name: '', when: '', body: [] },
           { key: 'chuyen_gia_2', name: '', when: '', body: [] },
@@ -1716,6 +1810,8 @@ const STARTER_TOOLS: string[] = [
  */
 export function starterFlow(
   t: (key: string, values?: Record<string, string | number>) => string,
+  /** The author's OpenAI key to start both model steps on, or none. */
+  credentialId: number | null = null,
 ): FlowBody {
   const read: FlowNode = {
     key: 'doc_bao_cao',
@@ -1736,7 +1832,9 @@ export function starterFlow(
     type: 'agent',
     name: t('agentFlows.list.starter.gatherName'),
     prompt: t('agentFlows.list.starter.gatherPrompt'),
-    provider: 'inherit',
+    provider: DEFAULT_PROVIDER,
+    model: DEFAULT_MODEL,
+    credential_id: credentialId,
     max_tool_calls: 8,
     output_format: 'chat',
     context_policy: 'question',
@@ -1748,7 +1846,9 @@ export function starterFlow(
     type: 'agent',
     name: t('agentFlows.list.starter.answerName'),
     prompt: t('agentFlows.list.starter.answerPrompt'),
-    provider: 'inherit',
+    provider: DEFAULT_PROVIDER,
+    model: DEFAULT_MODEL,
+    credential_id: credentialId,
     // Not zero: the contract's lower bound is 1. The step is given no tools, so
     // the budget is unreachable either way — this is the schema's floor, not a
     // quiet allowance.

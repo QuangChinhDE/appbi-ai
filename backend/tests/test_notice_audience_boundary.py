@@ -255,20 +255,33 @@ def test_both_reader_paths_ask_the_policy_and_studio_test_does_not():
 
 
 def test_every_agent_flow_path_runs_on_the_certified_default_model(monkeypatch):
-    """The pilot is certified on one model: a link's own model wins, else the
-    deployment's AGENT_FLOW_DEFAULT_MODEL (OpenAI only), else the adapter default.
-    Direct Chat passed no model at all and always ran on gpt-4o-mini."""
+    """The pilot is certified on one model, and every path must run what the step
+    names — the same on a link, in Direct Chat and in Studio.
+
+    Rewritten when stored AI keys replaced the link/server key. Before, each path
+    passed a run-wide model (`dispatch._runtime_model`) for steps that inherited
+    it, and Direct Chat once passed none. Steps now always name their own model, so
+    no path carries a run-wide one; AGENT_FLOW_DEFAULT_MODEL decides only what a
+    step written before that change is brought forward to — and only when it names
+    a catalogued OpenAI model."""
     import inspect
 
     from app.core.config import settings
     from app.services.agent_flows import dispatch
+    from app.services.agent_flows.contract import Flow, upgrade_body
+
+    def legacy_model():
+        body = upgrade_body({"nodes": [{"type": "agent", "key": "a", "name": "a",
+                                        "prompt": "p", "provider": "inherit"}]})
+        return Flow.model_validate({**body, "key": "k", "name": "k"}).nodes[0].model
 
     monkeypatch.setattr(settings, "AGENT_FLOW_DEFAULT_MODEL", "gpt-4.1", raising=False)
-    assert dispatch._runtime_model("", "openai") == "gpt-4.1"
-    assert dispatch._runtime_model("", "") == "gpt-4.1"
-    assert dispatch._runtime_model("gpt-4o", "openai") == "gpt-4o", "the link's own model wins"
-    assert dispatch._runtime_model("", "anthropic") == "", "not an OpenAI model for another vendor"
+    assert legacy_model() == "gpt-4.1", "the certified model is what a legacy step runs on"
+    monkeypatch.setattr(settings, "AGENT_FLOW_DEFAULT_MODEL", "not-a-model", raising=False)
+    assert legacy_model() == "gpt-4o-mini", "an uncatalogued value never reaches a step"
     monkeypatch.setattr(settings, "AGENT_FLOW_DEFAULT_MODEL", "", raising=False)
-    assert dispatch._runtime_model("", "openai") == "", "unset: today's adapter default"
+    assert legacy_model() == "gpt-4o-mini", "unset: what those steps actually ran on"
+
     src = inspect.getsource(dispatch)
-    assert src.count("_runtime_model(model, provider)") == 3, "link, chat and studio all use it"
+    assert "_runtime_model" not in src, "no path carries a run-wide model any more"
+    assert "AGENT_FLOW_DEFAULT_MODEL" not in src

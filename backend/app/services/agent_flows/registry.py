@@ -124,7 +124,10 @@ def _row_dict(
     }
     if include_body:
         upgraded = upgrade_body(row.body or {}, key=row.brain_key, name=row.name)
-        out["body"] = _redact_credentials(upgraded)
+        # No redaction step: a stored body holds no secret — a step carries only
+        # `credential_id`, a reference — and `upgrade_body` drops the retired
+        # per-step key fields from any body written before that was true.
+        out["body"] = upgraded
         flow = parse_flow(row)
         if flow is None:
             # A stored flow too broken to parse is still one an author must be able
@@ -141,99 +144,6 @@ def _row_dict(
             out["node_count"] = len(flow.all_nodes())
             out["requirements"] = flow.requirements.model_dump(mode="json")
             out["answer_node"] = flow.answering_key()
-    return out
-
-
-def _redact_credentials(body: dict[str, Any]) -> dict[str, Any]:
-    """The body as the API may emit it: no key material, in any form.
-
-    Ciphertext is not the secret, but shipping it makes the flow's JSON worth
-    stealing and it would ride along in an export file. Each agent node reports
-    `has_api_key` instead, and the builder renders that as "đã lưu".
-
-    Walks the TREE, not a flat list — a credential on an agent inside a loop inside
-    a branch is exactly as sensitive as one at the top level, and the old flat pass
-    would have emitted it.
-    """
-    if not isinstance(body, dict):
-        return {}
-
-    def clean_nodes(nodes: Any) -> Any:
-        if not isinstance(nodes, list):
-            return nodes
-        out: list[Any] = []
-        for node in nodes:
-            if not isinstance(node, dict):
-                out.append(node)
-                continue
-            n = dict(node)
-            if n.get("type", "agent") == "agent":
-                n["has_api_key"] = bool(n.get("api_key_enc"))
-            n.pop("api_key_enc", None)
-            n.pop("api_key", None)
-            n.pop("api_key_clear", None)
-            # Canonical traversal. The hand-written lane list here walked
-            # body/fallback/paths/cases and NOT `specialists`, so a credential on
-            # an Agent inside a Coordinate specialist was emitted by the API.
-            out.append(map_raw_children(n, clean_nodes))
-        return out
-
-    out = dict(body)
-    out["nodes"] = clean_nodes(out.get("nodes"))
-    return out
-
-
-def _carry_credentials(db: Session, brain_key: str, body: dict[str, Any]) -> dict[str, Any]:
-    """Fold each agent node's credential into the shape that gets stored.
-
-      api_key_clear → drop it
-      api_key (new) → encrypt it
-      neither       → CARRY FORWARD what the same node key had before
-
-    The carry-forward is the whole reason this exists. The builder is never sent the
-    stored key, so it cannot send it back; without carrying, every ordinary save —
-    renaming a node, editing a prompt — would wipe every credential and the flow
-    would start failing with nothing in the diff to explain it.
-    """
-    from app.core.crypto import encrypt_value
-
-    previous: dict[str, str] = {}
-    prior = (
-        db.query(AgentBrainVersion)
-        .filter(AgentBrainVersion.brain_key == brain_key)
-        .order_by(AgentBrainVersion.version.desc())
-        .first()
-    )
-    if prior is not None and isinstance(prior.body, dict):
-        for node in _walk_raw(upgrade_body(prior.body).get("nodes") or []):
-            if node.get("api_key_enc"):
-                previous[str(node.get("key"))] = str(node["api_key_enc"])
-
-    def fold(nodes: Any) -> Any:
-        if not isinstance(nodes, list):
-            return nodes
-        out: list[Any] = []
-        for node in nodes:
-            if not isinstance(node, dict):
-                out.append(node)
-                continue
-            n = dict(node)
-            n.pop("has_api_key", None)
-            fresh = str(n.pop("api_key", "") or "").strip()
-            clear = bool(n.pop("api_key_clear", False))
-            if n.get("type", "agent") == "agent":
-                if clear:
-                    n["api_key_enc"] = ""
-                elif fresh:
-                    n["api_key_enc"] = encrypt_value(fresh)
-                elif not n.get("api_key_enc"):
-                    n["api_key_enc"] = previous.get(str(n.get("key")), "")
-            n = map_raw_children(n, fold)
-            out.append(n)
-        return out
-
-    out = dict(body)
-    out["nodes"] = fold(out.get("nodes"))
     return out
 
 
@@ -390,10 +300,27 @@ def save_draft(
 ) -> dict[str, Any]:
     """Validate, check what it may attach, then UPSERT the open draft."""
     body = upgrade_body(body, key=brain_key, name=name)
-    # Credentials are folded BEFORE validation, so the contract validates the node
-    # that will actually be stored — including `_credential_is_usable`, which must
-    # see a carried-forward key the request never mentioned.
-    body = _carry_credentials(db, brain_key, body)
+
+    latest = (
+        db.query(AgentBrainVersion)
+        .filter(AgentBrainVersion.brain_key == brain_key)
+        .order_by(AgentBrainVersion.version.desc())
+        .first()
+    )
+    # EVERY STEP'S KEY IS CHECKED AND ATTRIBUTED HERE, before validation, against
+    # the version this save replaces: a key the step already had is carried with
+    # its original grantor; a new one must be usable by this author, who becomes
+    # its grantor. See `credentials.apply_assignments`.
+    from app.services.agent_flows import credentials as credentials_service
+
+    try:
+        body = credentials_service.apply_assignments(
+            db, user,
+            prior_body=upgrade_body(latest.body or {}, key=brain_key) if latest is not None else None,
+            body=body,
+        )
+    except credentials_service.CredentialError as exc:
+        raise BrainError(exc.status, exc.detail)
 
     # STRICT HERE, TOLERANT ON READ. The models ignore unknown fields so an older
     # stored flow still loads; saving must not inherit that, or a misspelled field
@@ -420,12 +347,6 @@ def save_draft(
     if problems:
         raise BrainError(403, " ".join(problems))
 
-    latest = (
-        db.query(AgentBrainVersion)
-        .filter(AgentBrainVersion.brain_key == brain_key)
-        .order_by(AgentBrainVersion.version.desc())
-        .first()
-    )
     existing_owner = latest.owner_email if latest is not None else None
     # Captured BEFORE the row is mutated: the activity summary diffs against what
     # was there a moment ago, and once `row.body` is reassigned the "before" is gone.
@@ -521,13 +442,23 @@ def publish(
     # SKILL RULES ARE NOT ACKNOWLEDGEABLE. A cycle or a chain past the depth limit
     # cannot run however the author feels about it, and a Skill without a
     # contract has nothing an Agent could be shown.
+    from app.services.agent_flows import credentials as credentials_service
     from app.services.agent_flows import skills as skills_service
 
     hard = skills_service.publish_problems(db, row, flow)
+    # NEITHER IS A STEP WITH NO USABLE KEY. It has nothing to fall back to — not
+    # the link's key, not the server's — so it would fail every question.
+    hard += [
+        p["message"] for p in credentials_service.StoredCredentials(db).problems(flow)
+    ]
     if hard:
+        # EVERYTHING AT ONCE. Refusing on the first class of problem and the next
+        # class on the next attempt makes the author publish three times to learn
+        # three things; the acknowledgeable problems are listed here too.
         raise BrainError(
             409,
-            "Chưa phát hành được:" + "".join(chr(10) + "• " + p for p in hard),
+            "Chưa phát hành được:" + "".join(
+                chr(10) + "• " + p for p in hard + flow.blocking_problems()),
         )
     # PIN EVERY SKILL REFERENCE to the exact version live now, in the body that
     # becomes this immutable published row — so publishing Skill v2 later never

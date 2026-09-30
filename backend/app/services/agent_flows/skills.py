@@ -807,7 +807,11 @@ async def invoke_skill(
     yield AgentEvent(type="status", text=f"Đang chạy Skill {row.name or skill_key}…")
     envelope: dict = {}
     async for ev in executor.run_flow(
-        child_inp, flow=skill_flow, ctx=child_ctx, api_key=rctx.api_key,
+        # The Skill's steps run on THEIR OWN keys: the resolver looks up each
+        # step's `credential_id` and re-checks whoever assigned it, so handing it
+        # down passes no key — only the way to look one up.
+        child_inp, flow=skill_flow, ctx=child_ctx,
+        credentials=getattr(rctx, "credentials", None),
         base_system_prompt=rctx.base_system_prompt, db=db,
         budget=budget, skill_stack=(*stack, ident), on_state=keep_state,
         store_content=bool(getattr(rctx, "store_content", True)),

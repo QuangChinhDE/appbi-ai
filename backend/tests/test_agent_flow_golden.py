@@ -50,6 +50,7 @@ from app.services.agent_flows.runtime import executor  # noqa: E402
 from app.services.agent_flows.runtime.handlers import agent as agent_handler  # noqa: E402
 from app.services.dashboard_ai_bot.events import AgentEvent  # noqa: E402
 import app.services.agent_flows.tools.registry as tool_registry  # noqa: E402
+from replay_harness import fixed_credentials  # noqa: E402
 
 
 # ── harness ───────────────────────────────────────────────────────────────────
@@ -142,7 +143,7 @@ def run(flow: Flow, **over: Any) -> dict:
         out = None
         async for ev in executor.run_flow(
             FlowInput.model_validate(envelope(**over)), flow=flow, ctx=Ctx(),
-            api_key="k", base_system_prompt="BASE",
+            credentials=fixed_credentials("k"), base_system_prompt="BASE",
         ):
             if ev.type == "result":
                 out = ev.extra.get("envelope")
@@ -2794,44 +2795,41 @@ def test_one_renderer_for_a_value_becoming_text():
 
 
 def test_one_rule_for_which_model_a_step_runs_on():
-    """The runtime preferred the node's pin; the slow-model guard read only the link.
+    """The runtime and the slow-model guard must agree on each step's model.
 
-    A flow pinning `gpt-5` on a `gpt-4o` link was costed at 4 seconds a call instead
-    of 18, so the warning whose whole job is to catch a ninety-second answer stayed
-    silent. The reverse was equally wrong.
+    They once did not: the runtime preferred a step's pin, the guard read only the
+    link, so a flow pinning `gpt-5` on a `gpt-4o` link was costed at 4 seconds a call
+    instead of 18. Steps now ALWAYS name their own model — there is no link model
+    to inherit — so the one rule is "the step's own", and both readers use it.
+    (Rewritten when stored AI keys replaced the link/server key: the old version
+    asserted `effective_model`'s inherit branch, which no longer exists.)
     """
+    from types import SimpleNamespace
+
     from app.services.agent_flows.binding import _slowest_model
-    from app.services.agent_flows.models_catalogue import effective_model
+    from app.services.agent_flows.runtime.agent_runtime import _resolve_model
 
-    # The shared rule: a pin wins, otherwise inherit.
-    assert effective_model("openai", "gpt-5", "openai", "gpt-4o") == ("openai", "gpt-5")
-    assert effective_model("inherit", "", "openai", "gpt-4o") == ("openai", "gpt-4o")
-
-    fast = {"ai_bot_provider": "openai", "ai_bot_model": "gpt-4o"}
-    slow = {"ai_bot_provider": "openai", "ai_bot_model": "gpt-5"}
-
-    # The measured failure: one step pins a reasoning model on a fast link.
     pinned_slow = build([
         {"key": "a", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-5"},
-        {"key": "b", "type": "agent", "prompt": "p"},
+        {"key": "b", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-4o"},
     ], answer_node="b")
-    assert _slowest_model(pinned_slow, fast) == ("gpt-5", 18)
+    assert _slowest_model(pinned_slow) == ("gpt-5", 18)
+    rctx = SimpleNamespace(inp=None)
+    assert [_resolve_model(n, rctx) for n in pinned_slow.agent_nodes()] == [
+        ("openai", "gpt-5"), ("openai", "gpt-4o")]
 
-    # The other direction: every step pins something fast, so no `gpt-5` call ever
-    # happens and costing it as one is the same false alarm reversed. Seeding the
-    # max from the link's model reintroduced exactly this.
+    # Every step fast: no `gpt-5` call happens, so none is costed.
     pinned_fast = build([
         {"key": "a", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-4o"},
         {"key": "b", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-4o"},
     ], answer_node="b")
-    assert _slowest_model(pinned_fast, slow) == ("gpt-4o", 4)
+    assert _slowest_model(pinned_fast) == ("gpt-4o", 4)
 
-    # A step that INHERITS is how the link's model legitimately enters the set.
-    mixed = build([
-        {"key": "a", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-4o"},
-        {"key": "b", "type": "agent", "prompt": "p"},
-    ], answer_node="b")
-    assert _slowest_model(mixed, slow) == ("gpt-5", 18)
+    # A step written before steps chose their own model is brought forward to what
+    # it actually ran on, and costed as that.
+    legacy = build([{"key": "a", "type": "agent", "prompt": "p", "provider": "inherit"}],
+                   answer_node="a")
+    assert _resolve_model(legacy.agent_nodes()[0], rctx) == ("openai", "gpt-4o-mini")
 
 
 def test_one_definition_of_output_a_viewer_can_be_shown():

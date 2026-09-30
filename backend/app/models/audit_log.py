@@ -50,6 +50,11 @@ class AuditAction(str, enum.Enum):
     AGENT_FLOW_RESTORED = "agent_flow_restored"
     AGENT_FLOW_DELETED = "agent_flow_deleted"
     AGENT_FLOW_ASSIGNED = "agent_flow_assigned"
+    # A stored AI key that Agent Flow steps bill to. Created, changed (name, secret
+    # rotated, default) and deleted are recorded; the secret itself never is.
+    AI_CREDENTIAL_CREATED = "ai_credential_created"
+    AI_CREDENTIAL_UPDATED = "ai_credential_updated"
+    AI_CREDENTIAL_DELETED = "ai_credential_deleted"
     AGENT_FLOW_UNASSIGNED = "agent_flow_unassigned"
     # A person accepted / rejected a change AI Design PROPOSED to a report's
     # content or meaning (sort order, a title). Presentation edits are not

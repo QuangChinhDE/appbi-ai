@@ -7,6 +7,7 @@ import { Input, Textarea } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { HintText, SectionTitle } from '../../shared';
 import { Advanced, Field, NumberField, Select } from '../fields';
+import { ModelPicker } from '../ModelPicker';
 import { ToolPicker } from '../ToolPicker';
 import { WhatTheAiSees } from '../WhatTheAiSees';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -201,33 +202,20 @@ export function AgentEditor(props: NodeEditorProps) {
               onChange={(knowledge) => set({ knowledge } as Partial<FlowNode>)}
             />
           </div>
-          <Advanced
-            name="model"
-            title={t('agentFlows.inspector.model')}
-            subtitle={t('agentFlows.adv.modelSubtitle')}
-          >
-            <Select
-              value={node.provider || 'inherit'}
-              onChange={(v) => set({ provider: v as never, model: v === 'inherit' ? '' : node.model } as Partial<FlowNode>)}
-              options={providers.map((p) => ({ value: p.provider, label: p.label }))}
-            />
-            {node.provider && node.provider !== 'inherit' && (
-              <div className="mt-1.5">
-                <Select
-                  value={node.model || ''}
-                  onChange={(v) => set({ model: v } as Partial<FlowNode>)}
-                  options={[
-                    { value: '', label: t('agentFlows.inspector.chooseModel') },
-                    ...(providers.find((p) => p.provider === node.provider)?.models || [])
-                      .map((m) => ({ value: m.model, label: m.label })),
-                  ]}
-                />
-              </div>
-            )}
-            <HintText>
-              {t('agentFlows.inspector.modelHint')}
-            </HintText>
-          </Advanced>
+          {/* NOT FOLDED AWAY. A step with no key cannot run, and there is nothing
+              for it to fall back to — so the choice sits in plain view. */}
+          <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
+            <SectionTitle>{t('agentFlows.inspector.model')}</SectionTitle>
+            <div className="mt-2">
+              <ModelPicker
+                testId="agent-model-picker"
+                value={node}
+                providers={providers}
+                onChange={(patch) => set(patch as Partial<FlowNode>)}
+              />
+            </div>
+            <HintText>{t('agentFlows.inspector.modelHint')}</HintText>
+          </div>
         </>
     </>
   );

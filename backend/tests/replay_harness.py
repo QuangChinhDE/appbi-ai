@@ -247,7 +247,7 @@ def run_fixture(fixture: dict, monkeypatch) -> dict:
         out = None
         async for ev in executor.run_flow(
             FlowInput.model_validate(env), flow=flow, ctx=ctx,
-            api_key="k", base_system_prompt="BASE",
+            credentials=fixed_credentials("k"), base_system_prompt="BASE",
         ):
             if ev.type == "result":
                 out = ev.extra.get("envelope")
@@ -405,3 +405,28 @@ def diff(expected: dict, actual: dict, path: str = "") -> list[str]:
     if expected != actual:
         out.append(f"{path or '<root>'}: {expected!r} → {actual!r}")
     return out
+
+
+class FixedCredentials:
+    """Gives every model step the same fake key — for driving the engine in tests.
+
+    A real run resolves each step's own stored key (`credentials.StoredCredentials`);
+    the engine takes a resolver, not a key, so a test supplies this one. Provider and
+    model are the STEP's own, exactly as the real resolver returns them.
+    """
+
+    def __init__(self, key: str = "k") -> None:
+        self.key = key
+
+    def for_node(self, node):
+        from app.services.agent_flows.credentials import ResolvedCredential
+
+        return ResolvedCredential(
+            provider=str(getattr(node, "provider", "") or "openai"),
+            model=str(getattr(node, "model", "") or ""),
+            api_key=self.key,
+        )
+
+
+def fixed_credentials(key: str = "k") -> FixedCredentials:
+    return FixedCredentials(key)

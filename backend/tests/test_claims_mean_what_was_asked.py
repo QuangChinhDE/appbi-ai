@@ -305,7 +305,7 @@ def _flow_run(monkeypatch, undeclared, model):
     async def go():
         out = None
         async for ev in executor.run_flow(FlowInput.model_validate(env), flow=flow, ctx=ctx,
-                                          api_key="k", base_system_prompt="BASE"):
+                                          credentials=H.fixed_credentials("k"), base_system_prompt="BASE"):
             if ev.type == "result":
                 out = ev.extra.get("envelope")
         return out or {}
@@ -1334,7 +1334,7 @@ def test_the_run_admits_a_breakdown_its_scope_cannot_deliver(monkeypatch, undecl
         async def go():
             out = None
             async for ev in executor.run_flow(FlowInput.model_validate(env), flow=flow, ctx=ctx,
-                                              api_key="k", base_system_prompt="BASE"):
+                                              credentials=H.fixed_credentials("k"), base_system_prompt="BASE"):
                 if ev.type == "result":
                     out = ev.extra.get("envelope")
             return out or {}

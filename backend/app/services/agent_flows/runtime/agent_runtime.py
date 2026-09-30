@@ -249,19 +249,13 @@ def _source_label(source: dict) -> str:
 # ═══ Model and scope resolution ══════════════════════════════════════════════
 
 def _resolve_model(node: AgentNode, rctx: Any) -> tuple[str, str]:
-    """The node's provider/model, or the link's when it inherits.
+    """The step's provider and model — its own, always.
 
-    Delegates rather than deciding: the preflight guard needs the same answer to
-    cost the flow, and when it had its own copy it read only the link's model — so
-    a flow pinning a reasoning model on a fast link was costed at a quarter of what
-    it takes. One rule, both readers.
+    There was a second answer here ("the link's, when the step inherits") and the
+    preflight cost guard once read a different one from the runtime. A step now
+    names both itself, so there is nothing left for two readers to disagree on.
     """
-    from app.services.agent_flows.models_catalogue import effective_model
-
-    return effective_model(
-        node.provider, node.model,
-        rctx.inp.runtime.provider, rctx.inp.runtime.model,
-    )
+    return node.provider, node.model
 
 
 def _apply_scope(ctx: Any, node: AgentNode) -> None:
@@ -398,12 +392,14 @@ class AgentRuntime:
         self.rctx = rctx
         self._stream = stream
         self._status_label = status_label
-        self.provider, self.model = _resolve_model(node, rctx)
-        self.api_key = node.resolved_api_key() or rctx.api_key
-        if not self.api_key:
-            # An error event rather than a raise: the chain continues, and a later
-            # node with its own token can still produce an answer.
-            raise RuntimeError(f"chưa có token để gọi {self.provider or 'nhà cung cấp'}")
+        # THE STEP'S OWN KEY, from the store, or the step fails naming why. Raised
+        # (a `RuntimeError` subclass) so the executor records the error on this
+        # step and the rest of the chain continues.
+        credentials = getattr(rctx, "credentials", None)
+        if credentials is None:
+            raise RuntimeError(f"Bước “{node.name or node.key}” chưa có AI key để chạy.")
+        resolved = credentials.for_node(node)
+        self.provider, self.model, self.api_key = resolved.provider, resolved.model, resolved.api_key
         self.is_answering = node.key == rctx.answer_key
         #: The author's grant for this step. `registry.execute()` refuses anything
         #: outside it, whatever the model names.

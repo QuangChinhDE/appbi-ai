@@ -266,7 +266,7 @@ def _run(monkeypatch, model, grant, *, limit=8):
     async def go():
         out = None
         async for ev in executor.run_flow(FlowInput.model_validate(env), flow=flow, ctx=H._Ctx([41]),
-                                          api_key="k", base_system_prompt="BASE"):
+                                          credentials=H.fixed_credentials("k"), base_system_prompt="BASE"):
             if ev.type == "result":
                 out = ev.extra.get("envelope")
         return out or {}

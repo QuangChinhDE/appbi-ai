@@ -35,6 +35,19 @@ _RESOURCE_MODEL_MAP = {
 }
 
 
+def register_share_resource(
+    resource_type: ResourceType, model: type, module: str, lookup_field: str = "id",
+) -> None:
+    """Declare a shareable resource from OUTSIDE core.
+
+    `core` is a leaf layer: it must not import the models of a feature. A feature
+    that adds a shareable resource registers it here from its own service module
+    instead (the AI Keys store does, in `services/agent_flows/credentials.py`), so
+    the share endpoints serve it without this file knowing its model.
+    """
+    _RESOURCE_MODEL_MAP[resource_type] = (model, module, lookup_field)
+
+
 def require_share_access(
     db: Session,
     current_user: User,
