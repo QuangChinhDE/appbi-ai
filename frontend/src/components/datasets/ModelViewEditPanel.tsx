@@ -2081,14 +2081,14 @@ function MeasureRow({
             đa bảng
           </span>
         )}
-        {/* Phase-14: surface filter-context flag — these measures emit
-            SQL window aggregates instead of GROUP BY aggregates. */}
+        {/* A legacy measure with filter context: the engine refuses it (see
+            FilterContextUnsupported), so the header says so. */}
         {(measure.context_modifiers?.length ?? 0) > 0 && (
           <span
-            className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 font-emphasis uppercase shrink-0"
-            title="Measure dùng filter context — engine emit SQL OVER (PARTITION BY)"
+            className="text-[9px] px-1 py-0.5 rounded bg-danger/10 text-danger font-emphasis uppercase shrink-0"
+            title="Measure dùng ngữ cảnh lọc (ALL / ALLEXCEPT / USERELATIONSHIP) — chưa được hỗ trợ, chart dùng measure này sẽ bị từ chối"
           >
-            ngữ cảnh
+            không hỗ trợ
           </span>
         )}
         {hasErrors && (
@@ -2737,11 +2737,12 @@ function MeasureRow({
             if (filters.length > 0) whereParts.push(`${filters.length} filter`);
             if (measure.where_sql) whereParts.push('WHERE bổ sung');
             const whereHint = whereParts.length > 0 ? ` (với ${whereParts.join(' + ')})` : '';
-            const ctxHint = (measure.context_modifiers?.length ?? 0) > 0
-              ? ' OVER (...)' : '';
-            const preview = mode === 'formula'
-              ? valueExpr  // formula returns raw expression
-              : `${aggFn}(${valueExpr})${ctxHint}`;
+            const refused = (measure.context_modifiers?.length ?? 0) > 0;
+            const preview = refused
+              ? 'bị từ chối — ngữ cảnh lọc chưa được hỗ trợ'
+              : mode === 'formula'
+                ? valueExpr  // formula returns raw expression
+                : `${aggFn}(${valueExpr})`;
             return (
               <div className="rounded-md bg-surface-2 px-2.5 py-1.5 text-[10px]">
                 <span className="font-emphasis text-text-tertiary uppercase tracking-wide">Sẽ compile thành: </span>
