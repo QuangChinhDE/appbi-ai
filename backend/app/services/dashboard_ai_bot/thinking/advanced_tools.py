@@ -478,9 +478,31 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                 "time periods this chart has no time axis — stop and tell the user.",
                 code="period_not_in_chart",
             )
-        return _ok(_attach_delta_unit(
-            ctx, chart_id, columns[measure_idx],
-            _compare_pair(a_val, b_val, period_a, period_b, columns[measure_idx])))
+        pair = _compare_pair(a_val, b_val, period_a, period_b, columns[measure_idx])
+        # NAMING A PERIOD DOES NOT MAKE IT COMPLETE. `custom` keeps the caller's two
+        # periods — but the facts about the edge are facts about the data, not about
+        # the mode. Live 3bf8e3f3 (P0 g6, run 8117): asked "tháng gần nhất", the flow
+        # resolved it to 2018-09 itself and called the Skill with both periods named;
+        # custom skipped the edge check and "-99.98%" was published as a business
+        # fact over a month holding 16 orders, none delivered. The value is kept;
+        # what is known about the edge is said beside it, as in every other mode.
+        edge = points[-1][0] if low_edge_last else (points[0][0] if low_edge_first else None)
+        if edge in (period_a, period_b):
+            proven = proven_last if edge == points[-1][0] else proven_first
+            pair["observed_latest"] = observed_latest
+            pair["edge_period"] = edge
+            pair["edge_completeness"] = "proven_incomplete" if proven else "suspected_incomplete"
+            pair["edge_completeness_basis"] = (
+                "declared_filter_upper_bound" if proven else "low_outlier_vs_median")
+            pair["note_partial"] = (
+                f"Kỳ {edge} thấp bất thường so với các kỳ khác. "
+                + ("Bộ lọc đang áp cắt kỳ này trước khi nó kết thúc, nên đây KHÔNG phải kết quả cả kỳ. "
+                   if proven else
+                   "Không có bằng chứng nào ở đây nói kỳ này thiếu dữ liệu — một kỳ chưa đầy đủ "
+                   "và một sụt giảm thật cho ra cùng con số. ")
+                + "Nếu nêu mức thay đổi này, phải nói rõ kỳ đó có thể chưa đầy đủ; hoặc so sánh "
+                  "hai kỳ trước đó (mode=mom).")
+        return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], pair))
 
     # COMPLETE PERIODS from here on. The partial edge is not hidden — it is
     # named in the payload below — but it is not the headline `current` either.

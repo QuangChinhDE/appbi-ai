@@ -420,3 +420,47 @@ def test_the_breakdown_the_question_names_is_read_even_when_the_budget_is_spent(
     # No breakdown named: the budget bounds every read, as before.
     read.clear()
     assert I.member_values(Ctx(), dims, None, "Tổng là bao nhiêu?") == {} and read == []
+
+
+def test_the_vocabulary_is_the_links_scope_and_a_missing_pair_is_a_gap():
+    """Live 3bf8e3f3 (P0 g2, link 39): the link's contract has no revenue-by-state
+    chart, but the intent offered 701/735 from the whole report; the model was refused
+    twice and answered from orders by state. The vocabulary is what the link may read,
+    and revenue BY state is a gap there even though the state breakdown exists."""
+    class Ctx:
+        chart_meta = {
+            679: {"name": "Tổng doanh thu", "fields": {"measures": [{"field": "t.total_revenue"}], "dimensions": []}},
+            687: {"name": "Số đơn theo bang", "fields": {"measures": [{"field": "t.order_count"}],
+                                                        "dimensions": [{"field": "t.customer_state"}]}},
+            701: {"name": "Doanh thu theo bang", "fields": {"measures": [{"field": "t.total_revenue"}],
+                                                           "dimensions": [{"field": "t.customer_state"}]}},
+        }
+        allowed_chart_ids = {679, 687}
+    asked = {"measures": ["total_revenue"], "dimension": "customer_state", "periods": []}
+    v = I.vocabulary(Ctx())
+    assert [c for c, *_ in v["carriers"]["total_revenue"]] == [679]
+    assert all(c["chart_id"] != 701 for c in I.charts_for(asked, v))
+    assert I.breakdown_gap(asked, v) == {"requested": "customer_state", "measures": ["total_revenue"]}
+    # Controls: in scope it is no gap; orders by state is none either; no breakdown asked, none.
+    Ctx.allowed_chart_ids = {679, 687, 701}
+    assert I.breakdown_gap(asked, I.vocabulary(Ctx())) is None
+    Ctx.allowed_chart_ids = {679, 687}
+    assert I.breakdown_gap({**asked, "measures": ["order_count"]}, I.vocabulary(Ctx())) is None
+    assert I.breakdown_gap({**asked, "dimension": None}, I.vocabulary(Ctx())) is None
+
+
+def test_a_period_outside_the_data_is_known_from_the_reports_own_coverage():
+    """Live 3bf8e3f3 (P0 g5): "Doanh thu tháng 12/2025" over data from 2016-09 to
+    2018-10 was answered with the all-period total. Whether the asked period exists is
+    a structured fact — the report's first and last time label — never the model's."""
+    cov = {"year_month": ("2016-09", "2018-10")}
+    got = I.periods_outside([("m", 2025, 12)], cov)
+    assert got == {"asked": [["m", 2025, 12]], "data_from": "2016-09", "data_to": "2018-10"}
+    assert I.periods_outside([("m", 2018, 3)], cov) is None
+    assert I.periods_outside([("y", 2018)], cov) is None
+    assert I.periods_outside([("q", 2016, 1)], cov) is not None and I.periods_outside([("q", 2016, 3)], cov) is None
+    assert I.periods_outside([("m", 2025, 12), ("m", 2018, 3)], cov) is None     # one asked period exists
+    assert I.periods_outside([("m", 2025, 12)], {}) is None                        # no coverage, no claim
+    assert I.periods_outside([("y", 2020)], {"year_quarter": ("2016-Q3", "2018-Q4")}) is not None
+    line = I.describe_for_prompt({"source": "model", "periods_outside_data": got})
+    assert "NẰM NGOÀI" in line and "2016-09" in line and "2018-10" in line

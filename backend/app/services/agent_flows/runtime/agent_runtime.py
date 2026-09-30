@@ -161,6 +161,11 @@ def _note_dimension_outcome(state: RunState, result: Any) -> None:
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     got = field_key(str(data.get("dimension") or ""))
     if got and got == field_key(str(state.dimension_gap.get("requested") or "")):
+        # A GAP OPENED FOR A MEASURE closes only on that measure: orders by state do
+        # not deliver revenue by state (live 3bf8e3f3 P0 g2).
+        wanted = state.dimension_gap.get("measures")
+        if wanted and field_key(str(data.get("measure") or "")) not in set(wanted):
+            return
         state.dimension_gap["satisfied"] = True
 
 
@@ -535,6 +540,13 @@ class AgentRuntime:
         if not self.is_answering or self.claim_review or not text.strip() or not self.can_ask():
             return ""
         from app.services.agent_flows.runtime import claim_check
+
+        borrowed = claim_check.borrowed_members(self.state, text)
+        if borrowed:
+            gap = self.state.dimension_gap
+            self.claim_review = {"flagged": [], "borrowed_members": borrowed,
+                                 "target": {"dimension": gap.get("requested"), "measures": gap.get("measures")}}
+            return claim_check.borrowed_member_message(gap, borrowed)
 
         try:
             result = claim_check.check(self.state, getattr(self.rctx, "ctx", None), text)

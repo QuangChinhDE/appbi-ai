@@ -32,6 +32,36 @@ def empty_intent() -> dict:
 
 # ── the report's own vocabulary ────────────────────────────────────────────────
 
+def _scoped_meta(ctx: Any) -> dict:
+    """The charts this turn may read. `chart_meta` is the whole report; a link's data
+    contract narrows `allowed_chart_ids`. Live 3bf8e3f3 (P0 g2, link 39): the intent
+    offered revenue-by-state charts 701/735 the link cannot read; the model tried
+    them, was refused, and answered from orders-by-state instead."""
+    metas = getattr(ctx, "chart_meta", None) or {}
+    allowed = getattr(ctx, "allowed_chart_ids", None)
+    if not allowed:
+        return metas
+    return {cid: meta for cid, meta in metas.items() if cid in allowed}
+
+
+def breakdown_gap(intent: dict, vocab: dict) -> dict | None:
+    """The asked measure BY the asked breakdown that no chart in scope carries —
+    {requested, measures} — or None. Structured facts only: the resolved intent and
+    the in-scope carriers; the breakdown itself may exist for other measures."""
+    from app.services.time_semantics import looks_like_time_name
+
+    dim = (intent or {}).get("dimension")
+    measures = list((intent or {}).get("measures") or [])
+    if not dim or not measures or looks_like_time_name(dim):
+        return None
+    carriers = vocab.get("carriers") or {}
+    if any(dim in dims for m in measures for _cid, dims, _t in carriers.get(m) or []):
+        return None
+    if dim not in (vocab.get("dimensions") or {}) and not any(carriers.get(m) for m in measures):
+        return None
+    return {"requested": dim, "measures": measures}
+
+
 def vocabulary(ctx: Any) -> dict:
     """{measures: {key: label}, dimensions: {key: [chart titles]},
     measures_by_dimension: {dim: [measure keys]}} from the charts in scope."""
@@ -42,7 +72,7 @@ def vocabulary(ctx: Any) -> dict:
     by_dim: dict[str, list[str]] = {}
     names: dict[str, list[str]] = {}
     carriers: dict[str, list[tuple[int, list[str], str]]] = {}
-    for cid, meta in (getattr(ctx, "chart_meta", None) or {}).items():
+    for cid, meta in _scoped_meta(ctx).items():
         fields = (meta or {}).get("fields") or {}
         labels = fields.get("label_by_field") or {}
         title = str((meta or {}).get("name") or "")
@@ -263,7 +293,7 @@ def member_values(ctx: Any, dimensions: dict, coverage: dict | None = None,
 
     out: dict[str, list[str]] = {}
     started = time.monotonic()
-    metas = getattr(ctx, "chart_meta", None) or {}
+    metas = _scoped_meta(ctx)
     # THE BREAKDOWN THE QUESTION NAMES IS READ FIRST, AND ALWAYS. Live 774b3341 run
     # 7569, the third question after a restart: on a cold cache the 3 s budget ran
     # out before payment_type, "Thẻ tín dụng" got no code, and the correct 78.34%
@@ -611,7 +641,62 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
     # read as the question being about 2018-09 (live ccf8af44, "cho kỳ 2018-09").
     if vocab.get("coverage") and asks_relative_period(question, previous):
         out["coverage"] = {k: list(v) for k, v in vocab["coverage"].items()}
+    outside = periods_outside(out.get("periods") or [], vocab.get("coverage") or {})
+    if outside:
+        out["periods_outside_data"] = outside
     return out
+
+
+def _month_span(label: str) -> tuple[int, int] | None:
+    """A time label as rows carry it ("2018-09", "2018-Q3", "2018") → (first, last)
+    month index (year*12 + month-1), or None."""
+    import re
+
+    s = str(label or "").strip()
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})(?:-\d{1,2})?", s)
+    if m:
+        k = int(m.group(1)) * 12 + int(m.group(2)) - 1
+        return k, k
+    m = re.fullmatch(r"(\d{4})\s*-?\s*[Qq]([1-4])", s)
+    if m:
+        k = int(m.group(1)) * 12 + (int(m.group(2)) - 1) * 3
+        return k, k + 2
+    m = re.fullmatch(r"(\d{4})", s)
+    if m:
+        return int(s) * 12, int(s) * 12 + 11
+    return None
+
+
+def _period_span(p: tuple) -> tuple[int, int] | None:
+    if not p:
+        return None
+    if p[0] == "m":
+        k = p[1] * 12 + p[2] - 1
+        return k, k
+    if p[0] == "q":
+        k = p[1] * 12 + (p[2] - 1) * 3
+        return k, k + 2
+    if p[0] == "y":
+        return p[1] * 12, p[1] * 12 + 11
+    return None
+
+
+def periods_outside(periods: list, coverage: dict) -> dict | None:
+    """{"asked": [...], "data_from": first, "data_to": last} when EVERY asked period
+    lies outside the report's own time coverage, else None. Coverage is the first and
+    last label of the report's time breakdowns (`member_values`), a structured fact;
+    live 3bf8e3f3 (P0 g5): "Doanh thu tháng 12/2025" over data from 2016-09 to 2018-10
+    was answered with the all-period total, framed as "toàn kỳ"."""
+    spans = [s for s in (_month_span(a) for pair in (coverage or {}).values() for a in pair) if s]
+    asked = [s for s in (_period_span(tuple(p)) for p in periods or []) if s]
+    if not spans or not asked or len(asked) != len(periods or []):
+        return None
+    lo, hi = min(s[0] for s in spans), max(s[1] for s in spans)
+    if all(a[1] < lo or a[0] > hi for a in asked):
+        first = min((pair[0] for pair in coverage.values()), key=lambda x: (_month_span(x) or (10**9,))[0])
+        last = max((pair[1] for pair in coverage.values()), key=lambda x: (_month_span(x) or (-1, -1))[1])
+        return {"asked": [list(p) for p in periods], "data_from": first, "data_to": last}
+    return None
 
 
 def describe_for_prompt(intent: dict, locale: str = "vi") -> str:
@@ -625,6 +710,11 @@ def describe_for_prompt(intent: dict, locale: str = "vi") -> str:
         parts.append(f"đại lượng được hỏi \"{intent['absent']}\" có thể KHÔNG có trong báo cáo — "
                      "kiểm tra bằng công cụ trước khi kết luận; nếu đúng là không có thì nói rõ, "
                      "không thay bằng một đại lượng khác")
+    if intent.get("periods_outside_data"):
+        o = intent["periods_outside_data"]
+        parts.append(f"kỳ được hỏi NẰM NGOÀI dữ liệu của báo cáo (dữ liệu từ {o['data_from']} đến "
+                     f"{o['data_to']}): nói rõ là không có số cho kỳ đó; KHÔNG đưa số của kỳ khác "
+                     "hay tổng toàn kỳ để thay thế")
     if intent.get("dimension"):
         parts.append("chiều: " + intent["dimension"])
     if intent.get("members"):
