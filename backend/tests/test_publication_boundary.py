@@ -56,7 +56,7 @@ def _events(monkeypatch, undeclared, model):
     async def go():
         seen = []
         async for ev in executor.run_flow(FlowInput.model_validate(env), flow=flow, ctx=ctx,
-                                          api_key="k", base_system_prompt="BASE"):
+                                          credentials=H.fixed_credentials("k"), base_system_prompt="BASE"):
             seen.append(ev)
         return seen
     return asyncio.run(go())
@@ -131,7 +131,7 @@ def test_a_typed_metric_delta_nothing_produced_is_withheld_everywhere(monkeypatc
 
     async def go():
         return [ev async for ev in orig(FlowInput.model_validate(env), flow=flow, ctx=ctx,
-                                        api_key="k", base_system_prompt="BASE")]
+                                        credentials=H.fixed_credentials("k"), base_system_prompt="BASE")]
     events = asyncio.run(go())
     result = next(e.extra["envelope"] for e in events if e.type == "result")
     blocks = (result.get("answer") or {}).get("blocks") or []
@@ -171,7 +171,7 @@ def test_the_fallback_answer_goes_through_the_boundary_too(monkeypatch, undeclar
 
     async def go():
         return [ev async for ev in executor.run_flow(FlowInput.model_validate(env), flow=flow, ctx=ctx,
-                                                     api_key="k", base_system_prompt="BASE")]
+                                                     credentials=H.fixed_credentials("k"), base_system_prompt="BASE")]
     events = asyncio.run(go())
     published = _answer(events) + "".join(e.text or "" for e in events if e.type == "text")
     assert "Doanh thu" in published, "the fallback prose is still used"

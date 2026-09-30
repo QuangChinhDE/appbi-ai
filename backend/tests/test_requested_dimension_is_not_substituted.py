@@ -427,7 +427,7 @@ def test_the_executor_puts_this_turns_question_on_the_context():
         async def go():
             async for _ in executor.run_flow(
                 FlowInput.model_validate(env), flow=flow, ctx=ctx,
-                api_key="k", base_system_prompt="BASE"):
+                credentials=H.fixed_credentials("k"), base_system_prompt="BASE"):
                 pass
         asyncio.run(go())
     finally:

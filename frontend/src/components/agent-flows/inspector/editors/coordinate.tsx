@@ -5,8 +5,9 @@ import React from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { Input, Textarea } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
-import { HintText } from '../../shared';
+import { HintText, SectionTitle } from '../../shared';
 import { Field, NumberField } from '../fields';
+import { ModelPicker } from '../ModelPicker';
 import { useI18n } from '@/providers/LanguageProvider';
 import { slugifyBrainKey } from '@/lib/agentFlows';
 import type { NodeEditorProps } from '../types';
@@ -25,11 +26,25 @@ export function CoordinateEditor(props: NodeEditorProps) {
   // free; a file reached only through `NODE_EDITORS.coordinate` has the same
   // guarantee from a different place, and says so once instead of per field.
   const node = props.node as CoordinateNode;
-  void language; void spec; void toolPacks; void providers; void attachable;
+  void language; void spec; void toolPacks; void attachable;
   void brainKey; void flowType; void isAnswerNode; void seeing; void setSeeing;
   return (
     <>
         <>
+          {/* The planner is a model call on the coordinator's own key — the same
+              choice an Agent step makes. It had no picker, so it could only ever
+              run on whatever the link or the server held. */}
+          <div className="mb-3">
+            <SectionTitle>{t('agentFlows.inspector.coordinateModel')}</SectionTitle>
+            <div className="mt-2">
+              <ModelPicker
+                testId="coordinate-model-picker"
+                value={node}
+                providers={providers}
+                onChange={(patch) => set(patch as Partial<FlowNode>)}
+              />
+            </div>
+          </div>
           <Field
             label={t('agentFlows.inspector.coordinatePrompt')}
             hint={t('agentFlows.inspector.coordinatePromptHint')}

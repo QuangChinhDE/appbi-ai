@@ -53,7 +53,14 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.services.agent_flows.models_catalogue import INHERIT, MODELS, known_model
+from app.services.agent_flows.models_catalogue import (
+    DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
+    MODELS,
+    default_model,
+    known_model,
+    legacy_default_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -322,19 +329,18 @@ class AgentNode(BaseNode):
     #: and the analysis guardrails, and a chain of replacement prompts would drop all
     #: of them without a trace.
     prompt: str
-    provider: str = INHERIT
-    model: str = ""
-    #: THIS NODE'S OWN CREDENTIAL. Three fields for one secret, because a secret the
-    #: server never gives back needs more than one field to be editable at all.
-    #:
-    #:   api_key        WRITE-ONLY plaintext from the builder; encrypted on save.
-    #:   api_key_enc    What is persisted: Fernet ciphertext (`_enc:` prefix).
-    #:   api_key_clear  Remove the stored key — because "left empty" has to mean
-    #:                  KEEP (the builder cannot resend a value it was never shown),
-    #:                  so erasing needs a separate word.
-    api_key: str = ""
-    api_key_enc: str = ""
-    api_key_clear: bool = False
+    #: The vendor and model this step runs on — chosen by the author, always.
+    #: There is no "inherit": a step that ran on whatever its link or the server
+    #: happened to hold ran on something nobody chose for it.
+    provider: str = DEFAULT_PROVIDER
+    model: str = DEFAULT_MODEL
+    #: THE STEP'S KEY, BY REFERENCE. An `AiProviderCredential` id — never a secret.
+    #: Resolved at run time by `credentials.StoredCredentials`; no fallback exists.
+    credential_id: int | None = None
+    #: Who assigned `credential_id` — the person whose right to use the key every
+    #: run re-checks. Set by the server on save (`credentials.apply_assignments`);
+    #: a value sent by a client is discarded.
+    credential_granted_by: str = ""
     tools: list[ToolGrant] = Field(default_factory=list)
     knowledge: list[KnowledgeAttachment] = Field(default_factory=list)
     max_tool_calls: int = Field(default=8, ge=1, le=MAX_TOOL_CALLS)
@@ -414,51 +420,8 @@ class AgentNode(BaseNode):
 
     @model_validator(mode="after")
     def _model_is_real(self) -> "AgentNode":
-        """A model no provider serves is a 404 on the first real question, and the
-        viewer sees a dead chat rather than an error. Refused at save time."""
-        if self.provider == INHERIT:
-            if self.model:
-                raise ValueError("bước theo cấu hình của link thì không đặt model riêng")
-            return self
-        if self.provider not in MODELS:
-            raise ValueError(f"nhà cung cấp không hỗ trợ: {self.provider}")
-        if not known_model(self.provider, self.model):
-            allowed = ", ".join(m["model"] for m in MODELS[self.provider])
-            raise ValueError(
-                f"model '{self.model}' không có trong danh sách của {self.provider}. "
-                f"Chọn một trong: {allowed}"
-            )
+        _check_model_choice(self)
         return self
-
-    @model_validator(mode="after")
-    def _credential_is_usable(self) -> "AgentNode":
-        """A node-level key with no provider named cannot be dispatched safely: the
-        link's vendor is unknown when the author pastes the token, and sending an
-        Anthropic key to whichever vendor a link happens to use fails in front of a
-        viewer. Refused at save time instead."""
-        if (self.api_key or self.api_key_enc) and self.provider == INHERIT:
-            raise ValueError(
-                "bước có token riêng thì phải chọn nhà cung cấp cụ thể "
-                "(token của OpenAI không dùng được trên link chạy Gemini)"
-            )
-        return self
-
-    def resolved_api_key(self) -> str:
-        """The node's own key in the clear, or "" when it has none.
-
-        Decryption failure returns "" rather than raising: a rotated ENCRYPTION_KEY
-        must degrade to "this node falls back to the link's key", not to a traceback
-        inside a streaming answer.
-        """
-        if not self.api_key_enc:
-            return ""
-        try:
-            from app.core.crypto import decrypt_value
-
-            return decrypt_value(self.api_key_enc) or ""
-        except Exception:  # noqa: BLE001
-            logger.warning("[flow] node '%s' credential will not decrypt", self.key)
-            return ""
 
     def tool_names(self) -> list[str]:
         out: list[str] = []
@@ -796,11 +759,12 @@ class CoordinateNode(BaseNode):
     type: Literal["coordinate"] = "coordinate"
     #: What the planner is told it is choosing FOR. Appended to the planning prompt.
     prompt: str = ""
-    provider: str = INHERIT
-    model: str = ""
-    api_key: str = ""
-    api_key_enc: str = ""
-    api_key_clear: bool = False
+    #: The planner's vendor, model and key — the same choice an Agent step makes,
+    #: because the planning call is a model call like any other.
+    provider: str = DEFAULT_PROVIDER
+    model: str = DEFAULT_MODEL
+    credential_id: int | None = None
+    credential_granted_by: str = ""
     #: `validate_default=True` IS THE FIX, and the bug it closes was reachable.
     #:
     #: A pydantic field validator does NOT run when the field falls back to its
@@ -820,6 +784,11 @@ class CoordinateNode(BaseNode):
     #: Empty means the coordinator simply produces nothing and the flow continues,
     #: which is the honest outcome and lets the answering step say so.
     fallback: list["Node"] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _planner_model_is_real(self) -> "CoordinateNode":
+        _check_model_choice(self)
+        return self
 
     @field_validator("specialists")
     @classmethod
@@ -1424,10 +1393,15 @@ class Flow(_Model):
         """
         return self.answer_node or (self.nodes[-1].key if self.nodes else "")
 
+    def model_steps(self) -> list[Any]:
+        """Every step, anywhere in the tree, that calls a model: Agent and the
+        Coordinate planner. The set that needs a key."""
+        return [n for n in self.all_nodes() if isinstance(n, (AgentNode, CoordinateNode))]
+
     def steps_missing_credentials(self) -> list[str]:
-        """Agent nodes that would have to borrow the link's token. Empty means this
-        flow is self-sufficient, which is what lets a link run it with no key."""
-        return [n.key for n in self.agent_nodes() if not n.api_key_enc]
+        """Model steps with no key assigned at all. Whether an assigned key is still
+        USABLE needs the database and is `credentials.StoredCredentials.problems`."""
+        return [n.key for n in self.model_steps() if not n.credential_id]
 
     def bound_sources(self) -> list[KnowledgeAttachment]:
         """Everything this flow may read, across its nodes, deduplicated.
@@ -1857,12 +1831,72 @@ def upgrade_body(body: dict[str, Any], *, key: str = "", name: str = "") -> dict
         out["nodes"] = nodes
     out.pop("steps", None)
     out.pop("schema", None)
+    out["nodes"] = _upgrade_model_steps(out.get("nodes"))
     out["schema_version"] = 2
     if key:
         out["key"] = key
     if name:
         out["name"] = name
     return out
+
+
+#: Fields a model step carried before keys became stored credentials. Dropped on
+#: read: none held a key in any stored flow when they were retired (measured), and a
+#: field the contract no longer knows must not be written back.
+_RETIRED_CREDENTIAL_FIELDS = ("api_key", "api_key_enc", "api_key_clear", "has_api_key")
+
+
+def _upgrade_model_steps(nodes: Any) -> Any:
+    """Bring every Agent / Coordinate step, at any depth, to "provider + model + key id".
+
+    A step written as `provider: "inherit"` ran on whatever the link or the server
+    held — in practice OpenAI `gpt-4o-mini`. It is brought forward to exactly that,
+    WITHOUT a key: the author assigns one, and until then the step says so instead
+    of quietly spending a key nobody chose for it.
+    """
+    if not isinstance(nodes, list):
+        return nodes
+    out: list[Any] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            out.append(node)
+            continue
+        n = dict(node)
+        if str(n.get("type") or "agent") in ("agent", "coordinate"):
+            for f in _RETIRED_CREDENTIAL_FIELDS:
+                n.pop(f, None)
+            provider = str(n.get("provider") or "").strip().lower()
+            if provider in ("", "inherit"):
+                n["provider"] = DEFAULT_PROVIDER
+                if not str(n.get("model") or "").strip():
+                    n["model"] = legacy_default_model()
+        out.append(map_raw_children(n, _upgrade_model_steps))
+    return out
+
+
+def _check_model_choice(node: Any) -> None:
+    """A model no provider serves is a 404 on the first real question, and the
+    viewer sees a dead chat rather than an error. Refused at save time.
+
+    An empty model means the provider's first catalogued one — so a body written
+    by hand or by an outside model that names only a vendor still saves, on the
+    cheapest model of that vendor, rather than failing on a field it never set.
+    """
+    provider = str(node.provider or "").strip().lower()
+    if provider not in MODELS:
+        raise ValueError(
+            f"nhà cung cấp không hỗ trợ: {node.provider or '(trống)'}. "
+            f"Chọn một trong: {', '.join(MODELS)}"
+        )
+    object.__setattr__(node, "provider", provider)
+    model = str(node.model or "").strip() or default_model(provider)
+    if not known_model(provider, model):
+        allowed = ", ".join(m["model"] for m in MODELS[provider])
+        raise ValueError(
+            f"model '{model}' không có trong danh sách của {provider}. "
+            f"Chọn một trong: {allowed}"
+        )
+    object.__setattr__(node, "model", model)
 
 
 def _tool_specs(names: set[str]) -> list[Any]:
@@ -1955,7 +1989,7 @@ _REPORT_NAME_RE = re.compile(
 
 #: Emitted by the API in a redacted body and round-tripped by the builder.
 #: Rejecting what we ourselves produced would make saving impossible.
-_AUTHORING_PASSTHROUGH = {"has_api_key"}
+_AUTHORING_PASSTHROUGH: set[str] = set()
 
 
 def _node_classes() -> dict[str, Any]:

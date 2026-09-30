@@ -25,6 +25,7 @@ import os
 from typing import Any
 
 import pytest
+from replay_harness import fixed_credentials  # noqa: E402
 
 if not os.environ.get("DATABASE_URL"):
     os.environ["DATABASE_URL"] = "sqlite:///./test_tool_node.db"
@@ -100,7 +101,7 @@ def run(flow: Flow, ctx=None, **over) -> dict:
         out = None
         async for ev in executor.run_flow(
             FlowInput.model_validate(_envelope(**over)), flow=flow, ctx=ctx or Ctx(),
-            api_key="k", base_system_prompt="BASE",
+            credentials=fixed_credentials("k"), base_system_prompt="BASE",
         ):
             if ev.type == "result":
                 out = ev.extra.get("envelope")

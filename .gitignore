@@ -316,6 +316,9 @@ backend/tests/.testdata/
 !backend/tests/test_diagnostics_tell_the_truth.py
 !backend/tests/test_tree_validation_is_canonical.py
 !backend/tests/test_nested_specialist_credentials.py
+!backend/tests/test_ai_provider_credentials.py
+!backend/tests/test_ai_credential_providers.py
+!backend/tests/test_node_registry_first_load_race.py
 !backend/tests/test_authoring_is_strict.py
 !backend/tests/test_asset_resolution.py
 !backend/tests/test_context_handoff.py

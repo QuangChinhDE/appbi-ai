@@ -98,8 +98,10 @@ class RunContext:
     #: `ToolContext`, already narrowed to the binding's allowed charts and scope by
     #: the caller. Handlers read it; nothing here writes to it.
     ctx: Any
-    #: Fallback credential for nodes that carry none of their own.
-    api_key: str = ""
+    #: Where every model step gets its key: `credentials.StoredCredentials` in a
+    #: real run. `for_node(node)` returns the step's own provider, model and key,
+    #: or raises `CredentialUnavailable`. There is no run-wide fallback key.
+    credentials: Any = None
     base_system_prompt: str = ""
     #: Key of the node whose text streams to the viewer.
     answer_key: str = ""
@@ -119,12 +121,37 @@ class RunContext:
     skill_lookup: Any = None
 
 
+def _intent_credential(flow: Flow, credentials: Any) -> tuple[str, str, str]:
+    """The key the turn's intent pass runs on: the ANSWERING step's, else the first
+    model step's that resolves. `("", "", "")` when none does — then the heuristics
+    decide, exactly as when the model call fails.
+
+    The model is that provider's fast one, not the step's: intent is a short
+    classification, and it ran on `gpt-4o-mini` before steps chose their own model.
+    Putting it on a step's reasoning model would spend its whole timeout thinking.
+    """
+    from app.services.agent_flows.models_catalogue import default_model
+
+    if credentials is None:
+        return "", "", ""
+    steps = flow.model_steps()
+    answer = flow.answering_key()
+    steps.sort(key=lambda n: n.key != answer)
+    for node in steps:
+        try:
+            got = credentials.for_node(node)
+        except Exception:                                       # noqa: BLE001
+            continue
+        return got.provider, got.api_key, default_model(got.provider) or got.model
+    return "", "", ""
+
+
 async def run_flow(
     inp: FlowInput,
     *,
     flow: Flow,
     ctx: Any,
-    api_key: str = "",
+    credentials: Any = None,
     base_system_prompt: str = "",
     db: Any = None,
     budget: Any = None,
@@ -180,7 +207,7 @@ async def run_flow(
         inp=inp,
         flow=flow,
         ctx=ctx,
-        api_key=api_key,
+        credentials=credentials,
         base_system_prompt=base_system_prompt,
         answer_key=flow.answering_key(),
         db=db,
@@ -200,9 +227,10 @@ async def run_flow(
         except Exception:                                       # noqa: BLE001
             previous = ""
         try:
+            provider, key, model = _intent_credential(flow, credentials)
             state.intent = await intent_mod.resolve(
                 state, ctx, question=inp.question.text(), previous=previous or "",
-                provider=inp.runtime.provider, api_key=api_key, model=inp.runtime.model)
+                provider=provider, api_key=key, model=model)
         except Exception:                                       # noqa: BLE001
             logger.warning("[flow] intent resolution failed", exc_info=True)
         try:
@@ -747,6 +775,12 @@ async def _run_node(
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)[:300]
             logger.warning("[flow] node '%s' attempt %s failed: %s", node.key, attempt, exc)
+            from app.services.agent_flows.credentials import CredentialUnavailable
+
+            if isinstance(exc, CredentialUnavailable):
+                # A missing or revoked key does not appear by asking again: no
+                # retry, and the error already names the step and the reason.
+                break
             if isinstance(exc, StepBudgetExhausted):
                 budget_refused = True
                 # Retrying cannot conjure calls the rest of the flow is owed. Said
@@ -1047,7 +1081,10 @@ async def _run_coordinate(
         ),
         provider=node.provider,
         model=node.model,
-        api_key_enc=node.api_key_enc,
+        # The planner is the coordinator's own model call, on the coordinator's
+        # own key — carried with its grantor, so the run re-checks the same person.
+        credential_id=node.credential_id,
+        credential_granted_by=node.credential_granted_by,
         context_policy="question",
     )
 

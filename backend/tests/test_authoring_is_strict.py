@@ -104,10 +104,30 @@ def test_a_correct_flow_produces_no_errors():
     assert errs(body([agent()])) == []
 
 
-def test_a_redacted_body_can_be_sent_back_unchanged():
-    """The API emits `has_api_key`; the builder round-trips it. Rejecting the
-    payload we ourselves produced would make saving impossible."""
-    assert errs(body([agent(has_api_key=True)])) == []
+def test_a_body_from_before_stored_keys_can_be_sent_back_unchanged():
+    """A builder tab opened before this change still holds `has_api_key` (what the
+    API used to emit) and may send it back. The save path upgrades the body BEFORE
+    the strict check, and the upgrade drops the retired per-step key fields — so
+    that save succeeds instead of failing on a field we ourselves produced.
+
+    Replaces `test_a_redacted_body_can_be_sent_back_unchanged`, which locked the
+    same round-trip for the `has_api_key` passthrough this change retired."""
+    from app.services.agent_flows.contract import upgrade_body
+
+    legacy = body([agent(has_api_key=True, api_key_enc="", provider="inherit")])
+    assert errs(upgrade_body(legacy)) == []
+
+
+def test_a_step_cannot_be_given_a_raw_key_on_the_authoring_path():
+    """No field on a step may carry a secret. The retired `api_key` is dropped by
+    the upgrade (never stored), and `credential_id` is a reference, not a key."""
+    from app.services.agent_flows.contract import upgrade_body
+
+    upgraded = upgrade_body(body([agent(api_key="sk-should-never-be-stored")]))
+    assert "sk-should-never-be-stored" not in repr(upgraded)
+    flow = Flow.model_validate(upgraded)
+    assert not hasattr(flow.nodes[0], "api_key")
+    assert flow.nodes[0].credential_id is None
 
 
 def test_reading_a_stored_legacy_body_stays_tolerant():

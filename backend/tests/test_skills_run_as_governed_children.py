@@ -184,7 +184,7 @@ def _run(monkeypatch, db, body, model, *, ctx=None, envelope=None, budget=None, 
 
     async def go():
         out = None
-        async for ev in executor.run_flow(inp, flow=flow, ctx=ctx, api_key="k",
+        async for ev in executor.run_flow(inp, flow=flow, ctx=ctx, credentials=H.fixed_credentials("k"),
                                           base_system_prompt="BASE", db=db, budget=budget,
                                           store_content=store_content,
                                           on_state=lambda s: holder.setdefault("state", s)):

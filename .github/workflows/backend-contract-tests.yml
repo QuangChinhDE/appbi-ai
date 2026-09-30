@@ -154,6 +154,9 @@ jobs:
             tests/test_diagnostics_tell_the_truth.py \
             tests/test_tree_validation_is_canonical.py \
             tests/test_nested_specialist_credentials.py \
+            tests/test_ai_provider_credentials.py \
+            tests/test_ai_credential_providers.py \
+            tests/test_node_registry_first_load_race.py \
             tests/test_asset_resolution.py \
             tests/test_context_handoff.py \
             tests/test_verifier_false_alarms.py \

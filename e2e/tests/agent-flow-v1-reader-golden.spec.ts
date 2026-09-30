@@ -1,5 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
-import { deleteFlow, sweepLeftovers } from './_helpers';
+import { deleteFlow, sweepLeftovers, withE2eKey } from './_helpers';
 
 /**
  * The V1 reader journey, in a logged-out browser, on the surface a reader uses.
@@ -83,7 +83,7 @@ test.describe('V1 reader golden journey @critical', () => {
     const token = link.token;
     if (!linkId || !token) return;
 
-    const saved = await request.put(BRAINS, {
+    const saved = await request.put(BRAINS, await withE2eKey(request, {
       data: {
         brain_key: KEY,
         name: 'E2E reader golden',
@@ -113,7 +113,7 @@ test.describe('V1 reader golden journey @critical', () => {
           answer_node: 'tra_loi',
         },
       },
-    });
+    }));
     expect(saved.status(), await saved.text()).toBeLessThan(400);
     const published = await request.post(`${BRAINS}/${KEY}/1/publish`);
     expect(published.status(), await published.text()).toBeLessThan(400);

@@ -1286,8 +1286,8 @@ async def test_flow(
         db=db, dashboard=dashboard, public_filters=[],
         actor_type="user", actor_ref=_actor(user),
     )
-    cfg = link.appearance_config or {}
-    api_key, provider, model = _link_credentials(cfg)
+    # Every step runs on its own stored key; the link's key is not consulted.
+    _require_keys(db, flow)
 
     envelope: dict | None = None
     run_row_id: int | None = None
@@ -1296,7 +1296,6 @@ async def test_flow(
         dashboard=dashboard, ctx=ctx, question=body.question,
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
-        api_key=api_key, provider=provider, model=model,
         brain_row=row,
     ):
         if ev.type == "result":
@@ -1377,23 +1376,15 @@ async def test_flow_on_report(
     binding = binding_service.ephemeral_binding(flow, dashboard)
 
     from app.services.agent_flows.dispatch import run_preview
-    from app.services.dashboard_ai_bot.public_link_config import deployment_key
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     ctx = ToolContext.from_dashboard(
         db=db, dashboard=dashboard, public_filters=[],
         actor_type="user", actor_ref=_actor(user),
     )
-    # The deployment's own token, resolved by the same helper the public bot uses.
-    # There is no link here to carry a key, and asking an author to paste one to
-    # test their own flow is the friction this endpoint removes.
-    api_key, provider = deployment_key()
-    if not api_key:
-        raise HTTPException(
-            status_code=409,
-            detail="Máy chủ chưa có API key cho AI — chưa test được. "
-                   "Đặt OPENAI_API_KEY rồi thử lại.",
-        )
+    # Every step runs on its own stored key — refused here, naming each step that
+    # has none, rather than run until the first keyless step fails.
+    _require_keys(db, flow)
 
     envelope: dict | None = None
     run_row_id: int | None = None
@@ -1403,7 +1394,6 @@ async def test_flow_on_report(
         dashboard=dashboard, ctx=ctx, question=body.question,
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
-        api_key=api_key, provider=provider, model="",
         brain_row=row,
     ):
         if ev.type == "result":
@@ -1485,7 +1475,6 @@ async def test_flow_as_chat(
     from app.services.agent_flows import direct_chat
     from app.services.agent_flows.dispatch import chat_base_prompt, run_preview
     from app.services.agent_flows.permissions import chart_scope, run_scope
-    from app.services.dashboard_ai_bot.public_link_config import deployment_key
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     # SHAPE FIRST, and reported rather than refused. A flow mid-build usually has
@@ -1501,13 +1490,7 @@ async def test_flow_as_chat(
     scope = run_scope(db, row, flow, None)
     ctx.adopt_scope(chart_scope(db, scope), scope.get("dataset_ids") or [])
 
-    api_key, provider = deployment_key()
-    if not api_key:
-        raise HTTPException(
-            status_code=409,
-            detail="Máy chủ chưa có API key cho AI — chưa test được. "
-                   "Đặt OPENAI_API_KEY rồi thử lại.",
-        )
+    _require_keys(db, flow)
 
     envelope: dict | None = None
     run_row_id: int | None = None
@@ -1517,7 +1500,6 @@ async def test_flow_as_chat(
         dashboard=None, ctx=ctx, question=body.question,
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
-        api_key=api_key, provider=provider, model="",
         base_system_prompt=chat_base_prompt(ctx),
         brain_row=row,
     ):
@@ -1607,7 +1589,6 @@ def preview_step(
     from app.services.agent_flows import direct_chat
     from app.services.agent_flows.dispatch import preview_step as _preview
     from app.services.agent_flows.permissions import chart_scope, run_scope
-    from app.services.dashboard_ai_bot.public_link_config import deployment_key
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     # WHICH SURFACE THIS PREVIEW IS FOR — the flow's own declaration, not the
@@ -1642,9 +1623,8 @@ def preview_step(
             actor_type="user", actor_ref=_actor(user),
         )
         binding = binding_service.ephemeral_binding(flow, dashboard)
-    # The model NAMES only — no key is needed and none is read: this endpoint
-    # assembles inputs and never calls a provider.
-    _key, provider = deployment_key()
+    # No key is needed and none is read: this endpoint assembles inputs and never
+    # calls a provider. The step names its own provider and model.
     # THE SAME BASE PROMPT THE VIEWER PATH BUILDS. A preview showing a different
     # base would be describing a run that does not happen, and the base is most of
     # what the model reads — the citation contract, the language rule, the report's
@@ -1679,7 +1659,7 @@ def preview_step(
             flow=flow, version=detail["version"], node_key=node_key,
             binding=binding, dashboard=dashboard, ctx=ctx,
             question=body.question or "", history=body.history,
-            provider=provider, model="", base_system_prompt=base_prompt, db=db,
+            base_system_prompt=base_prompt, db=db,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1774,34 +1754,16 @@ def test_node(
     return preview
 
 
-def _link_credentials(cfg: dict) -> tuple[str, str, str]:
-    """The credential a link runs on: its own if it has one, else the deployment's.
+def _require_keys(db: Session, flow: Flow) -> None:
+    """409 before a test starts, naming each model step with no usable key.
 
-    THE FALLBACK IS THE POINT. Per-link keys came first; the deployment key came
-    later and is now how this install is configured — one token in the environment,
-    every link using it. Nothing updated this resolver, so testing a flow ON A LINK
-    failed with "chưa có token để gọi openai" while the same flow tested on a bare
-    report answered fine. Same deployment, same model, same question: the only
-    difference was which of two code paths resolved the key.
-
-    A link's own key still wins where one is set, because a deployment may
-    deliberately bill one link separately. Never returned to any client either way.
+    THE ONE WAY A TEST GETS ITS KEYS. There used to be three: the link's key with a
+    fallback to the server's, the server's alone, and "the server's if a step lacks
+    its own". Each step now runs on its own stored key, and nothing else.
     """
-    provider = str((cfg or {}).get("ai_bot_provider") or "").strip().lower()
-    model = str((cfg or {}).get("ai_bot_model") or "")
-    raw = str((cfg or {}).get("ai_bot_key") or "")
-    key = raw
-    if raw.startswith("_enc:"):
-        try:
-            from app.core.crypto import decrypt_value
+    from app.services.agent_flows import credentials as credentials_service
 
-            key = decrypt_value(raw) or ""
-        except Exception:  # noqa: BLE001
-            logger.warning("[flow] link credential will not decrypt")
-            key = ""
-    if not key:
-        from app.services.dashboard_ai_bot.public_link_config import deployment_key
-
-        key, dep_provider = deployment_key()
-        provider = provider or dep_provider
-    return key, provider, model
+    try:
+        credentials_service.require_usable(db, flow, action="test")
+    except credentials_service.CredentialError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)

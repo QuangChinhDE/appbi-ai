@@ -26,6 +26,7 @@ import { hasPermission, usePermissions } from '@/hooks/use-permissions';
 import { useI18n } from '@/providers/LanguageProvider';
 import { resolveFlowId } from '@/lib/agentFlows';
 
+import { AiKeysProvider } from './aiKeys/AiKeysContext';
 import { BrainBuilder } from './BrainBuilder';
 import { BrainList } from './BrainList';
 
@@ -90,17 +91,23 @@ export function AgentFlowsPage() {
     );
   }
 
-  if (openKey !== null) {
-    return (
-      <BrainBuilder
-        brainKey={openKey}
-        canEdit={canEdit}
-        canPublish={canPublish}
-        onBack={backToList}
-      />
-    );
-  }
-  return <BrainList canEdit={canEdit} onOpen={openFlow} />;
+  // ONE list of AI keys for the module: the catalogue's manager and every step
+  // picker in the builder read the same one, so a key added anywhere shows up
+  // everywhere at once.
+  return (
+    <AiKeysProvider canEdit={canEdit}>
+      {openKey !== null ? (
+        <BrainBuilder
+          brainKey={openKey}
+          canEdit={canEdit}
+          canPublish={canPublish}
+          onBack={backToList}
+        />
+      ) : (
+        <BrainList canEdit={canEdit} onOpen={openFlow} />
+      )}
+    </AiKeysProvider>
+  );
 }
 
 export default AgentFlowsPage;

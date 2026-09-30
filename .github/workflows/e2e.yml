@@ -59,7 +59,7 @@ jobs:
       DB_NAME: appbi
       DB_USER: appbi
       DB_PASSWORD: appbi
-      DATASOURCE_ENCRYPTION_KEY: ""
+      # DATASOURCE_ENCRYPTION_KEY is generated per run by a step below (AI Keys).
       ENVIRONMENT: test
 
       # ONE SECRET, OR THE FRONTEND CANNOT READ WHAT THE BACKEND SIGNED.
@@ -137,6 +137,18 @@ jobs:
       - name: Install backend dependencies
         working-directory: backend
         run: pip install -r requirements.txt
+
+      # AI KEYS ARE STORED ENCRYPTED, OR NOT AT ALL.
+      #
+      # Agent Flow steps run only on keys from the AI Keys store, and the store
+      # refuses to save one when DATASOURCE_ENCRYPTION_KEY is empty (it would
+      # otherwise hold the secret in plaintext). Specs that publish or test a flow
+      # therefore give its steps a FAKE key, which needs a working store. The key
+      # is generated per run, so no key material lives in this file.
+      - name: Generate a throwaway encryption key
+        working-directory: backend
+        run: |
+          echo "DATASOURCE_ENCRYPTION_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> "$GITHUB_ENV"
 
       - name: Build the schema
         working-directory: backend

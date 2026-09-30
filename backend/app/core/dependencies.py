@@ -393,6 +393,7 @@ _MODEL_TO_RESOURCE_TYPE = {
     # flow silently fell through to "not shared".
     "AgentBrainVersion": ResourceType.AGENT_BRAIN,
     "AgentFlowChatThread": ResourceType.CHAT_THREAD,
+    "AiProviderCredential": ResourceType.AI_CREDENTIAL,
 }
 
 _MODEL_TO_MODULE = {
@@ -404,6 +405,7 @@ _MODEL_TO_MODULE = {
     "GovernKnowledgeDoc": "govern",
     "AgentBrainVersion": "agent_flows",
     "AgentFlowChatThread": "chat",
+    "AiProviderCredential": "agent_flows",
 }
 
 

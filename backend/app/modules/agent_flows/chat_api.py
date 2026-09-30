@@ -36,7 +36,6 @@ from app.services.agent_flows import chat_quota, direct_chat, reader_capability
 from app.services.agent_flows import dispatch
 from app.services.agent_flows.tools.context import CHAT_USER, ToolContext
 from app.services.agent_flows.wire import event_to_envelope
-from app.services.dashboard_ai_bot.public_link_config import deployment_key
 
 logger = logging.getLogger("app.agent_flows.chat")
 
@@ -301,21 +300,16 @@ async def send_message(
 
     row, flow, problem = direct_chat.resolve_for_chat(db, user, thread.brain_key)
 
-    # A flow whose every step carries its own key needs nothing from the deployment.
-    # Asked before demanding one, so a self-sufficient flow is not blocked by a
-    # server that happens to have no OPENAI_API_KEY.
-    # The provider travels WITH the key. A node set to `inherit` has nothing to
-    # inherit otherwise, and the runtime's vendor dispatch fails on an empty provider
-    # string with "nhà cung cấp không hỗ trợ" — an error that reads like a
-    # configuration problem when it is really a dropped return value.
-    api_key, provider = "", ""
-    if flow is not None and flow.steps_missing_credentials():
-        api_key, provider = deployment_key()
-        if not api_key:
+    # EVERY STEP RUNS ON ITS OWN STORED KEY — refused here, before the stream opens,
+    # when any step has none it can use. There is no server key to fall back to.
+    if flow is not None:
+        from app.services.agent_flows.credentials import StoredCredentials
+
+        if StoredCredentials(db).problems(flow):
             raise HTTPException(
                 status_code=409,
-                detail="Máy chủ chưa có API key cho AI — chưa chat được. "
-                       "Liên hệ quản trị viên để cấu hình.",
+                detail="Trợ lý này chưa được cấu hình AI key nên chưa chat được. "
+                       "Vui lòng liên hệ tác giả của trợ lý.",
             )
 
     history = direct_chat.history_turns(db, thread)
@@ -343,8 +337,6 @@ async def send_message(
         ctx=ctx,
         question=body.question,
         history=history,
-        api_key=api_key,
-        provider=provider,
         locale="vi",
     )
 

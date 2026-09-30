@@ -79,7 +79,7 @@ def _run_env(monkeypatch, body, *, llm, tools, web=False, tool_fn=None, model=No
     async def go():
         out = None
         async for ev in executor.run_flow(FlowInput.model_validate(env), flow=B._flow(body),
-                                          ctx=H._Ctx([41], web_search=web), api_key="k",
+                                          ctx=H._Ctx([41], web_search=web), credentials=H.fixed_credentials("k"),
                                           base_system_prompt="BASE", db=db):
             if ev.type == "result":
                 out = ev.extra.get("envelope")

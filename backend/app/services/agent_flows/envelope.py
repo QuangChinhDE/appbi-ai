@@ -259,10 +259,14 @@ class Budget(_Model):
 
 
 class RuntimeInfo(_Model):
-    """What a step that inherits its model falls back to. Never a credential (L4)."""
+    """The run's ceilings. Never a credential (L4).
 
-    provider: str = ""
-    model: str = ""
+    It used to carry a provider and model for steps that "inherited" the link's.
+    Steps now name their own provider, model and stored key, so there is nothing
+    to inherit and nothing here for a step to fall back to. An older envelope that
+    still carries those fields is read fine — unknown fields are dropped (L2).
+    """
+
     budget: Budget = Field(default_factory=Budget)
 
 

@@ -14,7 +14,6 @@ from typing import Any, AsyncGenerator
 
 from app.services.agent_flows.contract import AgentNode
 from app.services.agent_flows.envelope import Answer, Notice
-from app.services.agent_flows.models_catalogue import INHERIT
 from app.services.agent_flows.qualifiers import check_qualifiers
 from app.services.agent_flows.runtime.nodes import NodeSpec
 from app.services.agent_flows.runtime.state import RunState
@@ -1304,14 +1303,17 @@ async def _stream(
     """Dispatch to the vendor adapter. The one place a provider name is interpreted."""
     from app.services.dashboard_ai_bot.providers import (
         stream_anthropic,
-        stream_gemini_singleshot,
+        stream_gemini,
         stream_openai,
     )
 
+    # Gemini runs through its OpenAI-compatible endpoint (`stream_gemini`), which
+    # keeps tool calling. The native single-shot adapter ignores `tools`, so an
+    # Agent step on it silently lost every capability it was granted.
     fn = {
         "openai": stream_openai,
         "anthropic": stream_anthropic,
-        "gemini": stream_gemini_singleshot,
+        "gemini": stream_gemini,
     }.get((provider or "").strip().lower())
     if fn is None:
         raise RuntimeError(f"nhà cung cấp không hỗ trợ: {provider or '(chưa đặt)'}")

@@ -357,18 +357,20 @@ def resolve_for_link(
 
 
 def flow_supplies_credentials(db: Session, *, token: str) -> bool:
-    """Does the flow on this link bring its own API keys?
+    """Does this link run an Agent Flow — so its viewer never brings an API key?
 
-    Asked in TWO places — the endpoint that 400s on "no key", and the public payload
-    flag that decides whether the viewer is shown a "paste your API key" panel — and
-    they must agree. A per-node token that the runtime honours but the panel does not
-    know about leaves the viewer stuck at a gate in front of a working bot.
+    The public payload flag that decides whether a viewer is shown a "paste your API
+    key" panel reads this. A flow NEVER takes a viewer's key: each of its steps runs
+    on its own stored key, and a flow without usable keys is refused with a sentence
+    ("chưa được cấu hình AI key"). So a bound flow is answer enough — asking the
+    viewer for a key the run would ignore is the gate-in-front-of-a-working-bot
+    failure this function was first written to remove.
 
     Resolved through the BINDING, so a link pinned to an older version is judged on
     the version it actually runs.
 
-    Fails CLOSED: anything unexpected means the viewer is asked for a key rather than
-    dropped into a chat that cannot call anything.
+    False when there is no binding or its flow cannot be resolved: then nothing on
+    this link runs a flow, and the panel is the link's own business.
     """
     try:
         from app.models.models import DashboardPublicLink
@@ -384,7 +386,7 @@ def flow_supplies_credentials(db: Session, *, token: str) -> bool:
         if bind is None:
             return False
         resolved = reg.resolve_version(db, bind.brain_key, bind.pinned_version)
-        return bool(resolved and not resolved[1].steps_missing_credentials())
+        return bool(resolved)
     except Exception:  # noqa: BLE001
         logger.warning("[flow] credential self-sufficiency check failed", exc_info=True)
         return False
@@ -397,6 +399,12 @@ BLOCK_MESSAGES = {
     ),
     "binding_broken": "Trợ lý đang được cấu hình lại cho báo cáo này.",
     "not_published": "Trợ lý của link này chưa có bản phát hành nào.",
+    #: What a VIEWER is told. The step-by-step reason is recorded in Runs for the
+    #: author; a viewer can do nothing with a step name.
+    "missing_credential": (
+        "Trợ lý của báo cáo này chưa được cấu hình AI key. "
+        "Vui lòng liên hệ người quản lý báo cáo."
+    ),
 }
 
 
@@ -405,26 +413,23 @@ def _disclosed(filters):
     return disclosed_applied_filters(filters or [])[0]
 
 
-def _runtime_model(model: Any, provider: Any) -> str:
-    """The model an Agent Flow run uses: the link's / request's, else the deployment's
-    Agent Flow default (settings.AGENT_FLOW_DEFAULT_MODEL, OpenAI only), else the
-    provider adapter's own default ("" — today's behaviour). A node's own `model`
-    still wins inside the executor. The pilot is certified on ONE model: without
-    this, public links ran on their own setting and Direct Chat always on the
-    adapter default (gpt-4o-mini), the model the live eval failed on."""
-    from app.core.config import settings
-
-    if model:
-        return str(model)
-    default = str(getattr(settings, "AGENT_FLOW_DEFAULT_MODEL", "") or "").strip()
-    return default if default and str(provider or "openai").lower() in ("", "openai") else ""
-
-
 def _reader_gate(*, link_id: Any = None, user_email: Any = None) -> str | None:
     """The reader rollout policy (services/agent_flows/pilot.py) for this turn."""
     from app.services.agent_flows import pilot
 
     return pilot.reader_decision(link_id=link_id, user_email=user_email)
+
+
+def _credential_block(db: Session, flow: Flow) -> tuple[Any, list[dict]]:
+    """The run's key resolver, and every model step whose key cannot be used.
+
+    Asked BEFORE the run starts, so a flow with one keyless step is refused with a
+    sentence instead of running up to that step and failing in front of a reader.
+    """
+    from app.services.agent_flows.credentials import StoredCredentials
+
+    credentials = StoredCredentials(db)
+    return credentials, credentials.problems(flow)
 
 
 def _block_message(code: str) -> str:
@@ -443,19 +448,27 @@ async def run_for_link(
     history: list[dict] | None = None,
     session_key: str = "",
     filters: list[dict] | None = None,
-    api_key: str = "",
-    provider: str = "",
-    model: str = "",
     base_system_prompt: str = "",
     locale: str = "vi",
 ) -> AsyncGenerator[AgentEvent, None]:
-    """One turn on a public link. Always ends with `result`, even when blocked."""
+    """One turn on a public link. Always ends with `result`, even when blocked.
+
+    Every model step runs on its OWN stored key. The link's `ai_bot_key`, a key the
+    viewer pasted and the server's environment are not consulted — a flow without
+    usable keys is refused with `missing_credential`.
+    """
     run_id = new_run_id()
     binding, row, flow, problem = resolve_for_link(db, link=link, dashboard=dashboard)
 
     # THE READER ROLLOUT POLICY — for every flow, not only those with a Skill.
     if not problem and flow is not None:
         problem = _reader_gate(link_id=getattr(link, "id", None)) or problem
+    credentials = None
+    if not problem and flow is not None:
+        credentials, missing = _credential_block(db, flow)
+        if missing:
+            problem = "missing_credential"
+            logger.info("[flow] link run refused: %s", "; ".join(m["message"] for m in missing))
     if problem or flow is None or row is None:
         out = blocked(run_id, _block_message(problem or "not_configured"), problem or "not_configured")
         _record_blocked(db, out, binding, question, session_key, link, dashboard)
@@ -552,22 +565,14 @@ async def run_for_link(
         ),
         binding=binding_info,
         memory=memory,
-        runtime=RuntimeInfo(
-            # Coerced at the boundary. The link's stored model is nullable and the
-            # envelope's types are fixed by design (L1: a field that is present
-            # always has the same type) — so the None-to-"" translation belongs
-            # here, once, rather than loosening the contract for every consumer.
-            provider=provider or "",
-            model=_runtime_model(model, provider),
-            budget=BudgetEnvelope(**contract.budget.model_dump()),
-        ),
+        runtime=RuntimeInfo(budget=BudgetEnvelope(**contract.budget.model_dump())),
     )
 
     recorded = False
     started = datetime.now(timezone.utc)
     try:
         async for ev in executor.run_flow(
-            inp, flow=flow, ctx=ctx, api_key=api_key,
+            inp, flow=flow, ctx=ctx, credentials=credentials,
             base_system_prompt=base_system_prompt, db=db,
             # The link's privacy choice binds every run this turn creates —
             # including a Skill's child run.
@@ -667,8 +672,6 @@ def _studio_input(
     binding_info: Any,
     memory: Any,
     contract: Any,
-    provider: str,
-    model: str,
 ) -> FlowInput:
     """The ENVELOPE a studio turn runs on — one definition, two callers.
 
@@ -700,14 +703,7 @@ def _studio_input(
         report=report,
         binding=binding_info,
         memory=memory or MemoryInfo(),
-        runtime=RuntimeInfo(
-            # Coerced at the boundary. The link's stored model is nullable and the
-            # envelope's types are fixed by design (L1: a field that is present
-            # always has the same type) — so the None-to-"" translation belongs
-            # here, once, rather than loosening the contract for every consumer.
-            provider=provider or "", model=_runtime_model(model, provider),
-            budget=BudgetEnvelope(**contract.budget.model_dump()),
-        ),
+        runtime=RuntimeInfo(budget=BudgetEnvelope(**contract.budget.model_dump())),
     )
 
 
@@ -724,8 +720,6 @@ def preview_step(
     ctx: Any,
     question: str,
     history: list[dict] | None = None,
-    provider: str = "",
-    model: str = "",
     base_system_prompt: str = "",
     db: Any = None,
 ) -> dict:
@@ -767,7 +761,6 @@ def preview_step(
         run_id=new_run_id(), question=question, history=history, session_key="",
         report=report, binding_info=binding_info, memory=None,
         contract=binding_service.contract_of(binding),
-        provider=provider, model=model,
     )
     state = RunState(
         vars=inp.seed_vars(),
@@ -778,7 +771,8 @@ def preview_step(
         ),
     )
     rctx = executor.RunContext(
-        inp=inp, flow=flow, ctx=ctx, api_key="",
+        # No resolver: a preview calls no model, so it needs no key.
+        inp=inp, flow=flow, ctx=ctx, credentials=None,
         base_system_prompt=base_system_prompt,
         # THE DATABASE, for reads only: a granted Skill is resolved (and its
         # lifecycle and sharing checked) exactly as a run resolves it. With
@@ -820,12 +814,13 @@ async def run_preview(
     question: str,
     session_key: str = "",
     history: list[dict] | None = None,
-    api_key: str = "",
-    provider: str = "",
-    model: str = "",
     base_system_prompt: str = "",
 ) -> AsyncGenerator[AgentEvent, None]:
     """Test the DRAFT against a real binding, as the author.
+
+    Runs on each step's stored key, like a real run. The endpoints refuse with
+    `missing_credential` before calling this, so an author learns which step lacks
+    a key without spending a partial run to find out.
 
     Against a binding rather than a bare dashboard, because "does this flow work" is
     not a question about a flow — it is a question about a flow ON A LINK, and the
@@ -897,10 +892,11 @@ async def run_preview(
     inp = _studio_input(
         run_id=run_id, question=question, history=history, session_key=session_key,
         report=report, binding_info=binding_info, memory=memory, contract=contract,
-        provider=provider, model=model,
     )
+    from app.services.agent_flows.credentials import StoredCredentials
+
     async for ev in executor.run_flow(
-        inp, flow=flow, ctx=ctx, api_key=api_key,
+        inp, flow=flow, ctx=ctx, credentials=StoredCredentials(db),
         base_system_prompt=base_system_prompt, db=db,
     ):
         if ev.type == "result":
@@ -973,9 +969,6 @@ async def run_for_chat_thread(
     ctx: Any,
     question: str,
     history: list[dict] | None = None,
-    api_key: str = "",
-    provider: str = "",
-    model: str = "",
     base_system_prompt: str = "",
     locale: str = "vi",
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -1062,8 +1055,18 @@ async def run_for_chat_thread(
         return
 
     gate = _reader_gate(user_email=getattr(user, "email", None))
+    credentials = None
+    if not gate:
+        credentials, missing = _credential_block(db, flow)
+        if missing:
+            gate = "missing_credential"
+            logger.info("[flow] chat run refused: %s", "; ".join(m["message"] for m in missing))
     if gate:
-        out = blocked(run_id, _block_message(gate), gate)
+        message = (
+            "Trợ lý này chưa được cấu hình AI key. Vui lòng liên hệ tác giả của trợ lý."
+            if gate == "missing_credential" else _block_message(gate)
+        )
+        out = blocked(run_id, message, gate)
         _record_chat_blocked(db, out, thread, question)
         yield AgentEvent(type="text", text=out.answer.plain_text())
         yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
@@ -1124,18 +1127,14 @@ async def run_for_chat_thread(
         filters=FiltersInfo(fingerprint=fp),
         binding=binding_info,
         memory=memory,
-        runtime=RuntimeInfo(
-            provider=provider or "",
-            model=_runtime_model(model, provider),
-            budget=BudgetEnvelope(**contract.budget.model_dump()),
-        ),
+        runtime=RuntimeInfo(budget=BudgetEnvelope(**contract.budget.model_dump())),
     )
 
     recorded = False
     started = datetime.now(timezone.utc)
     try:
         async for ev in executor.run_flow(
-            inp, flow=flow, ctx=ctx, api_key=api_key,
+            inp, flow=flow, ctx=ctx, credentials=credentials,
             base_system_prompt=base_system_prompt, db=db,
         ):
             if ev.type == "result":

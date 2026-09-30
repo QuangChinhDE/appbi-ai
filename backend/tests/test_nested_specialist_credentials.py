@@ -13,8 +13,22 @@ was invisible to every raw-tree count and key scan.
 
 INVARIANT: there is ONE raw-tree traversal and it is shape-driven, so a lane a
 future container type introduces is walked without anyone remembering to add it.
+
+WHAT CHANGED (stored AI keys). A step no longer holds a key at all: it holds a
+`credential_id` reference to an encrypted `AiProviderCredential` row. The same
+invariant is now asserted on the new mechanism — a legacy per-step key anywhere in
+the tree is dropped on read (so it can never be emitted), and every pass over a
+step's `credential_id` (export strip, carry-forward on save, usage) reaches the
+nested lanes too. The former `_redact_credentials` is gone: there is nothing left
+in a body to redact.
 """
-from app.services.agent_flows.registry import _redact_credentials, _walk_raw
+from app.services.agent_flows.contract import upgrade_body
+from app.services.agent_flows.credentials import (
+    _model_nodes_raw,
+    apply_assignments,
+    strip_assignments,
+)
+from app.services.agent_flows.registry import _walk_raw
 
 
 def agent(key, **kw):
@@ -40,39 +54,92 @@ def blob(x):
     return repr(x)
 
 
-# ── the leak ─────────────────────────────────────────────────────────────────
+# ── the leak: a legacy per-step key is never emitted, at any depth ───────────
 
 def test_a_nested_specialist_credential_is_never_emitted():
-    out = _redact_credentials(body_with_nested_secret())
+    out = upgrade_body(body_with_nested_secret())
     assert "NESTED_SECRET" not in blob(out), (
         "ciphertext from inside specialists[].body reached the API payload"
     )
 
 
 def test_a_coordinate_fallback_credential_is_never_emitted():
-    out = _redact_credentials(body_with_nested_secret())
+    out = upgrade_body(body_with_nested_secret())
     assert "FALLBACK_SECRET" not in blob(out)
 
 
 def test_the_coordinators_own_credential_is_never_emitted():
-    out = _redact_credentials(body_with_nested_secret())
+    out = upgrade_body(body_with_nested_secret())
     assert "COORDINATOR_OWN_SECRET" not in blob(out)
 
 
 def test_no_credential_field_survives_anywhere_in_the_tree():
-    out = _redact_credentials(body_with_nested_secret())
+    out = upgrade_body(body_with_nested_secret())
     text = blob(out)
-    for field in ("api_key_enc", "api_key_clear", "'api_key'"):
-        assert field not in text, f"{field} survived redaction"
+    for field in ("api_key_enc", "api_key_clear", "'api_key'", "has_api_key"):
+        assert field not in text, f"{field} survived the upgrade"
 
 
-def test_the_nested_node_still_reports_that_it_has_a_key():
-    """Redaction must not also hide that a credential EXISTS — the builder shows
-    "đã lưu" from this flag, and losing it looks like the key was deleted."""
-    out = _redact_credentials(body_with_nested_secret())
-    nested = [n for n in _walk_raw(out["nodes"]) if n.get("key") == "nested"]
-    assert nested, "the nested agent was not even present in the redacted body"
-    assert nested[0].get("has_api_key") is True
+# ── the reference: every pass over credential_id reaches nested lanes ───────
+
+def body_with_nested_refs():
+    """Coordinate (own key) -> Specialist -> Agent (key), plus a fallback Agent."""
+    return {"nodes": [{
+        "type": "coordinate", "key": "coord", "name": "coord", "prompt": "p",
+        "provider": "openai", "model": "gpt-4o-mini",
+        "credential_id": 11, "credential_granted_by": "owner@x",
+        "specialists": [
+            {"key": "sp1", "name": "sp1", "when": "khi hỏi doanh thu",
+             "body": [agent("nested", provider="openai", model="gpt-4o-mini",
+                            credential_id=12, credential_granted_by="owner@x")]},
+            {"key": "sp2", "name": "sp2", "when": "khi hỏi tài liệu", "body": []},
+        ],
+        "fallback": [agent("fb", provider="openai", model="gpt-4o-mini",
+                           credential_id=13, credential_granted_by="owner@x")],
+    }]}
+
+
+def test_every_model_step_is_found_inside_specialists_and_fallback():
+    keys = {n.get("key") for n in _model_nodes_raw(body_with_nested_refs()["nodes"])}
+    assert keys == {"coord", "nested", "fb"}, keys
+
+
+def test_export_strips_the_key_reference_at_every_depth():
+    out = strip_assignments(body_with_nested_refs())
+    for n in _model_nodes_raw(out["nodes"]):
+        assert n.get("credential_id") is None, n.get("key")
+        assert "credential_granted_by" not in n, n.get("key")
+
+
+def test_an_unchanged_nested_key_is_carried_with_its_grantor():
+    """An ordinary save of a co-edited flow must not drop, or re-attribute, the key
+    on a step inside a specialist — the old flat pass never reached it at all."""
+    prior = body_with_nested_refs()
+    sent = body_with_nested_refs()
+    # A client may send any grantor; the server ignores it for an unchanged id.
+    for n in _model_nodes_raw(sent["nodes"]):
+        n["credential_granted_by"] = "attacker@x"
+
+    class _NoDb:
+        def query(self, *a, **k):
+            return self
+
+        def filter(self, *a, **k):
+            return self
+
+        def first(self):
+            from types import SimpleNamespace
+            return SimpleNamespace(provider="openai", deleted_at=None, name="k")
+
+    out = apply_assignments(_NoDb(), SimpleUser(), prior_body=prior, body=sent)
+    got = {n["key"]: (n["credential_id"], n["credential_granted_by"])
+           for n in _model_nodes_raw(out["nodes"])}
+    assert got == {"coord": (11, "owner@x"), "nested": (12, "owner@x"), "fb": (13, "owner@x")}
+
+
+class SimpleUser:
+    id = "u1"
+    email = "editor@x"
 
 
 # ── the walker every other guard is built on ─────────────────────────────────

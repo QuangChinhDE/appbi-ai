@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { deleteFlow, sweepLeftovers } from './_helpers';
+import { deleteFlow, sweepLeftovers, withE2eKey } from './_helpers';
 
 /**
  * Gate 3 — the two surfaces a person actually talks to.
@@ -87,7 +87,7 @@ test.describe('published bot surface @critical', () => {
       test.skip(!linkId, 'no link with a binding on this deployment');
 
       const key = `e2e_bot_${Date.now()}`;
-      const save = await request.put(BRAINS, {
+      const save = await request.put(BRAINS, await withE2eKey(request, {
         data: {
           brain_key: key, name: 'E2E bot surface',
           body: {
@@ -101,7 +101,7 @@ test.describe('published bot surface @critical', () => {
             answer_node: 'answer',
           },
         },
-      });
+      }));
       expect(save.status(), await save.text()).toBeLessThan(400);
 
       const run = await request.post(`${BRAINS}/${key}/test`, {

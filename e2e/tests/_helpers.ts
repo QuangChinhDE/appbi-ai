@@ -137,3 +137,45 @@ export async function openFlowList(page: any): Promise<void> {
     + `body starts: ${JSON.stringify(body.replace(/\s+/g, ' ').slice(0, 120))}`,
   ).toBeVisible();
 }
+
+
+// ── AI Keys ──────────────────────────────────────────────────────────────────
+// Every model step runs on a key from the AI Keys store, and a flow whose steps
+// have none is refused by Test and Publish. These specs exercise deterministic
+// steps and must not spend on a vendor, so they give model steps a FAKE key: the
+// agent step then fails at the vendor (as it did when CI had no key at all) while
+// every step before it runs and is traced.
+export const CREDENTIALS = `${API}/api/v1/agent-flows/credentials`;
+const E2E_KEY_NAME = 'e2e fake openai key';
+let e2eKey: number | null = null;
+
+export async function e2eCredentialId(request: any): Promise<number> {
+  if (e2eKey != null) return e2eKey;
+  const listed = await request.get(CREDENTIALS);
+  expect(listed.status(), await listed.text()).toBe(200);
+  const found = ((await listed.json()).credentials ?? []).find((k: any) => k.name === E2E_KEY_NAME && k.mine);
+  if (found) return (e2eKey = found.id as number);
+  const created = await request.post(CREDENTIALS, {
+    data: { name: E2E_KEY_NAME, provider: 'openai', secret: 'sk-e2e-fake-key-never-valid-000000000000' },
+  });
+  expect(created.status(), await created.text()).toBe(201);
+  return (e2eKey = (await created.json()).id as number);
+}
+
+/** A copy of a save payload whose Agent / Coordinate steps, at any depth, carry
+ *  the e2e fake key unless they already name one. */
+export async function withE2eKey<T>(request: any, payload: T): Promise<T> {
+  const id = await e2eCredentialId(request);
+  const walk = (v: any): any => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (!v || typeof v !== 'object') return v;
+    const out: any = {};
+    for (const [k, x] of Object.entries(v)) out[k] = walk(x);
+    if ((out.type === 'agent' || out.type === 'coordinate') && out.credential_id == null) {
+      out.credential_id = id;
+      if (!out.provider || out.provider === 'inherit') out.provider = 'openai';
+    }
+    return out;
+  };
+  return walk(payload);
+}
