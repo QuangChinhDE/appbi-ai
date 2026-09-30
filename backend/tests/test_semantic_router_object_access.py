@@ -88,8 +88,10 @@ def _view(vid, name, table_id, dims):
 @pytest.fixture()
 def db():
     engine = create_engine("sqlite://", future=True)
+    from app.models.models import Chart
+
     Base.metadata.create_all(engine, tables=[
-        Dataset.__table__, DatasetTable.__table__,
+        Dataset.__table__, DatasetTable.__table__, Chart.__table__,
         SemanticView.__table__, SemanticModel.__table__, SemanticExplore.__table__,
     ])
     with Session(engine) as s:
@@ -253,3 +255,36 @@ def test_a_new_context_modifier_is_refused_on_save_but_a_legacy_one_can_stay_or_
     # … and removing it is.
     assert _status(api.update_view, 101, SemanticViewUpdate(measures=[_measure()]), db, owner) == 200
     assert not (db.get(SemanticView, 101).measures[0].get("context_modifiers") or [])
+
+
+# ── SEM-P1-002 / P1-003: the relationship write path is strict ──────────────
+
+
+def test_add_model_join_is_strict_and_persists_the_primary_key_before_the_join(db, shares):
+    import json
+
+    from app.api import datasets as dapi
+
+    owner = _user(OWNER, "edit")
+    base = {"from_view_id": 101, "to_view_id": 102, "from_column": "customer_id", "to_column": "id"}
+    for bad in ({"cardinality": "garbage"}, {"relationship": "sideways"}, {"is_active": "maybe"},
+                {"force": "yes"}, {"cross_filter": "diagonal"}, {"primary_key_on_to_view": "id"}):
+        with pytest.raises(HTTPException) as exc:
+            dapi.add_model_join(1, {**base, **bad}, db, owner)
+        assert exc.value.status_code == 400, bad  # used to default to many_to_one / True / single
+
+    # A primary key naming a missing column is refused and the join is NOT
+    # written half-way (the PK used to be applied after the join, its failure
+    # swallowed into a warning).
+    before = json.dumps(db.get(SemanticExplore, 1).joins, sort_keys=True)
+    with pytest.raises(HTTPException):
+        dapi.add_model_join(1, {**base, "primary_key_on_to_view": ["no_such_col"]}, db, owner)
+    db.expire_all()
+    assert json.dumps(db.get(SemanticExplore, 1).joins, sort_keys=True) == before
+
+    dapi.add_model_join(1, {**base, "cardinality": "many_to_one", "is_active": "false",
+                            "primary_key_on_to_view": ["id"]}, db, owner)
+    db.expire_all()
+    assert db.get(SemanticView, 102).primary_key == ["id"]
+    (j,) = [j for j in db.get(SemanticExplore, 1).joins if j.get("view") == "customers"]
+    assert j["is_active"] is False and j["cardinality"] == j["relationship"] == "many_to_one"

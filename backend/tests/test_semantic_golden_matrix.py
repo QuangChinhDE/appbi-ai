@@ -173,6 +173,9 @@ MODELS = {
         "g_events__ts__date_dim", "ts", "date",
         sql_on="${APPBI_LOCAL_DATE(${TABLE}.ts|Asia/Ho_Chi_Minh)} = ${g_events__ts__date_dim}.date",
     )]},
+    # A role-playing relationship through an ALIAS (not a per-column date-dim):
+    # the alias is its own node for grouping and filtering (SEM-P2-002).
+    "alias": {"g_sales": [{**J("g_calendar", "ship_date", "date"), "name": "g_ship", "alias": "g_ship"}]},
     "composite": {"g_shop_sales": [J(
         "g_shops", "region_code", "region_code",
         sql_on="${TABLE}.region_code = ${g_shops}.region_code AND ${TABLE}.store_code = ${g_shops}.store_code",
@@ -431,3 +434,39 @@ def test_time_grain_and_calendar_bucket_an_instant_on_the_same_local_day(world):
     assert as_map(run(world, "tz", "g_events", ["g_events__ts__date_dim.month"], ["g_events.ev_amount"])) == {
         6: 7, 7: 5,
     }
+
+
+# ── aliased role-playing join (SEM-P2-002) ───────────────────────────────────
+
+
+def test_an_aliased_role_playing_join_groups_and_filters_through_its_alias(world):
+    assert as_map(run(world, "alias", "g_sales", ["g_ship.year"], ["g_sales.revenue"])) == {
+        2023: 100, 2024: 200, 2025: 700, None: 50,
+    }
+    assert run(world, "alias", "g_sales", [], ["g_sales.revenue"],
+               {"g_ship.year": {"operator": "eq", "value": 2025}}) == [(700,)]
+
+
+# ── model writes are serialised across workers (SEM-P1-005) ──────────────────
+
+
+def test_the_model_write_lock_is_held_against_other_connections(world):
+    """`lock_dataset_model_for_write` takes a transaction-scoped advisory lock:
+    while this session holds it, another connection cannot take it (the drift
+    resync on another worker waits instead of merging onto stale rows)."""
+    from app.services.dataset_model_service import _MODEL_WRITE_LOCK_NS, lock_dataset_model_for_write
+
+    db, models = world
+    dataset_id = db.get(SemanticModel, models["tz"]).dataset_id
+    lock_dataset_model_for_write(db, dataset_id)
+    other = sa.create_engine(os.environ["DATABASE_URL"])
+    try:
+        with other.connect() as c:
+            got = c.execute(sa.text("SELECT pg_try_advisory_xact_lock(:ns, :k)"),
+                            {"ns": _MODEL_WRITE_LOCK_NS, "k": int(dataset_id)}).scalar()
+            assert got is False
+            free = c.execute(sa.text("SELECT pg_try_advisory_xact_lock(:ns, :k)"),
+                             {"ns": _MODEL_WRITE_LOCK_NS, "k": int(dataset_id) + 1_000_000}).scalar()
+            assert free is True, "another dataset's model is not blocked"
+    finally:
+        other.dispose()

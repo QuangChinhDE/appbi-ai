@@ -272,3 +272,16 @@ def test_calendar_join_and_time_grain_share_one_local_date_expression(dialect):
 
     assert expand_local_date_macros("${APPBI_LOCAL_DATE(t.ts|Asia/Ho_Chi_Minh)}", dialect) == \
         local_date_sql("t.ts", "Asia/Ho_Chi_Minh", dialect)
+
+
+# ── SEM-P2-008 an unresolved binding on a modeled table is re-hydrated ──────
+
+
+def test_a_modeled_table_with_an_empty_binding_is_rehydrated_not_sent_live(db):
+    from app.services.chart_service import _rehydrate_binding_for_modeled_table
+
+    binding = _rehydrate_binding_for_modeled_table(db, db.get(DatasetTable, 11), {})
+    assert binding and binding["baseViewName"] == "orders"
+    db.add(DatasetTable(id=13, dataset_id=1, display_name="raw", source_table_name="raw"))
+    db.commit()
+    assert _rehydrate_binding_for_modeled_table(db, db.get(DatasetTable, 13), {}) is None,         "a table with no semantic view has nothing to re-hydrate (live is correct there)"
