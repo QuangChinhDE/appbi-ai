@@ -221,7 +221,10 @@ jobs:
             tests/test_public_link_filter_disclosure.py \
             tests/test_embed_link_claim_operator.py \
             tests/test_public_filter_authority.py \
-            tests/test_report_content_widgets.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
+            tests/test_report_content_widgets.py \
+            tests/test_semantic_router_object_access.py \
+            tests/test_semantic_state_contracts.py \
+            tests/test_semantic_error_contracts.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
       # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
       #
       # The step below reports failures. Nothing reported SUCCESS, so a
@@ -373,3 +376,28 @@ jobs:
 
       - name: GATE — Explore preview == Dashboard tile parity (same query, both BE paths)
         run: python scripts/test_explore_dashboard_parity.py
+
+      # The semantic engine's VALUE matrix: every case executes its SQL on this
+      # Postgres and compares rows with a hand-computed answer (star, 3-role
+      # date, diamond, galaxy at different grains, chasm, M:N bridge, composite
+      # key, timezone). It refuses to run on anything but Postgres, so it can
+      # never pass by skipping.
+      - name: GATE — semantic golden value matrix (executed on Postgres)
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_semantic_golden_matrix.py
+
+      # Slicer cascade on the seeded fixture: Postgres values against a truth
+      # from the raw tables, and the BigQuery SQL shape (one INNER JOIN
+      # semi-join; nothing BigQuery rejects).
+      - name: GATE — distinct cascade values + BigQuery semi-join shape
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_distinct_cascade_semijoin.py
+
+      # Every saved fixture chart's SQL on Postgres AND BigQuery vs the
+      # committed baseline (tests/golden_sql/snowflake_ci.json).
+      - name: GATE — generated SQL non-regression (Postgres + BigQuery)
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_golden_sql_non_regression.py

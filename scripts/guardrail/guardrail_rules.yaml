@@ -515,26 +515,25 @@ tests:
   stop_gate_decision:
     run: "pytest scripts/ci/test_stop_gate.py"
     locks: "Stop hook: green allows, FAILED blocks every time (including on retry), UNVERIFIED blocks once then allows, infrastructure failure never becomes green, override stays explicit"
-  # `status: missing` = the harness this entry describes is NOT in the repository.
-  # Verified 2026-09-15: these four were never committed (git log --diff-filter=AD
-  # finds nothing), so they only ever existed on the machine that wrote them. The
-  # entries are KEPT rather than deleted because they still document what the gate
-  # for that risk should be — but a gate nobody can run must not be presented as
-  # coverage. `scripts/ci/guardrail_check.py --health` treats a declared-missing
-  # entry as a known gap and an UNdeclared one as a regression, so restoring any of
-  # these means deleting its `status:` line and nothing else.
+  # Until 2026-09-30 these three (and error_contracts below) were `status: missing`
+  # / `untracked`: the harnesses were never committed and only ever existed on the
+  # machine that wrote them. The semantic-core remediation restored each as a
+  # TRACKED suite that CI runs (backend-contract-tests.yml: integration-golden for
+  # the Postgres ones, unit for error_contracts). The original harnesses targeted
+  # local datasets (ds113) that no fresh clone has; the restored gates lock the
+  # same risks on fixtures CI builds itself.
   distinct_cascade_bq:
-    status: missing
-    run: "CI_FIXTURE_SEED=1 DB_HOST=appbi-db python backend/scripts/verify_distinct_cascade_bigquery.py"
-    locks: "distinct cascade emits INNER JOIN semi-join on BigQuery — no correlated EXISTS / OR-of-INs / IN-over-aggregated; PG values correct"
+    requires: postgres-fixture
+    run: "pytest backend/tests/test_distinct_cascade_semijoin.py"
+    locks: "slicer distinct cascade: members offered through ANY shared fact equal a truth computed from the raw fixture tables (Postgres, executed); on BigQuery the SQL is one INNER JOIN semi-join over a UNION DISTINCT key set — no correlated EXISTS, no IN (SELECT …), no OR-of-INs, backticked identifiers. BigQuery EXECUTION of that shape is verified against a real warehouse, not claimed from SQL"
   galaxy_golden:
-    status: missing
-    run: "python backend/scripts/verify_galaxy_golden.py"
-    locks: "14 golden numbers + 7 distinct-cascade + 4 public strict cascade (ds113 galaxy)"
+    requires: postgres
+    run: "pytest backend/tests/test_semantic_golden_matrix.py"
+    locks: "semantic VALUE matrix executed on Postgres against hand-computed answers: star (NULL member, base invariance, NULL contract of negations), role-playing date x3 (a fanned Date filter collapses onto the main calendar or refuses), diamond refused and deterministic once a route is inactive, galaxy at different grains (time grain survives the calendar rebind; Top-N, sort and a measure filter apply to the stitched rows), chasm refused + shared-dim stitch, M:N bridge refused, composite key, timezone local-day agreement between time grain and calendar"
   golden_sql:
-    status: missing
-    run: "python scratchpad/golden_sql_harness.py  (+ committed baselines)"
-    locks: "non-regression of every saved chart's generated SQL on Postgres + BigQuery"
+    requires: postgres-fixture
+    run: "pytest backend/tests/test_golden_sql_non_regression.py"
+    locks: "every saved chart of the CI snowflake fixture generates the committed SQL on Postgres AND BigQuery (BigQuery re-typed in-session with execution stubbed; a refusal is part of the baseline). Re-baseline only deliberately: GOLDEN_SQL_CAPTURE=1"
   filter_matrix:
     requires: postgres-fixture
     run: "python backend/scripts/regression_filter_matrix.py --verify --tag snowflake"
@@ -564,9 +563,8 @@ tests:
     run: "pytest backend/tests/test_phase1_relationship_metadata.py"
     locks: "cardinality normalize, bidirectional edges, BFS path, ambiguity"
   error_contracts:
-    status: untracked
-    run: "pytest backend/tests/test_phase15_error_contracts.py"
-    locks: "ValueError→400, VN messages, two-path implicit-measure hint"
+    run: "pytest backend/tests/test_semantic_error_contracts.py"
+    locks: "semantic refusals are ValueErrors (so every endpoint answers 400) in Vietnamese, naming the field/view and where to fix it (ambiguous route, unsupported context modifier, unknown operator, aggregate-incompatible measure filter, unreachable view); GET /charts/{id}/data and POST /semantic/query map ValueError→400 and anything else→500, the latter logged with explore + dialect. Asserted on behaviour — replaces the untracked source-grep suite"
   explore_dashboard_parity:
     requires: postgres-fixture
     run: "python backend/scripts/test_explore_dashboard_parity.py"

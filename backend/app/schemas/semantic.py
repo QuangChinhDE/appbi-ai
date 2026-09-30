@@ -354,6 +354,9 @@ class JoinDefinition(BaseModel):
     type: Literal["left", "inner", "right", "full"] = "left"
     sql_on: str  # SQL join condition, can use ${view.field} placeholders
     relationship: Optional[Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"]] = None
+    # Canonical cardinality — the value the engine and grain guard read. It was
+    # not declared here, so a join re-saved through this schema silently lost it.
+    cardinality: Optional[Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"]] = None
     from_view: Optional[str] = None
     from_column: Optional[str] = None
     to_column: Optional[str] = None

@@ -135,6 +135,22 @@ _INVERT_CARDINALITY = {
 }
 
 
+def canonical_cardinality(raw: str | None) -> str | None:
+    """STRICT canonical form: the canonical value for a known spelling
+    (``N:1``, ``many-to-one``…), ``None`` for empty OR unknown input.
+
+    Anything that decides whether a join is safe (grain guard) or accepts a
+    relationship from a caller (write paths) must use this — never the lenient
+    :func:`normalize_cardinality`, which turns unknown text into ``many_to_one``
+    and would let an unverified relationship be trusted as non-fanning."""
+    if raw is None:
+        return None
+    key = str(raw).strip().lower().replace("-", "_")
+    if not key:
+        return None
+    return _CARDINALITY_ALIASES.get(key)
+
+
 def normalize_cardinality(raw: str | None) -> str:
     """Map any input form (1:N, many-to-one, etc.) to canonical value.
 
@@ -149,6 +165,61 @@ def normalize_cardinality(raw: str | None) -> str:
 def invert_cardinality(c: str | None) -> str:
     """Cardinality of the reverse edge — symmetric for 1:1 and N:M."""
     return _INVERT_CARDINALITY.get(normalize_cardinality(c), "many_to_one")
+
+
+class AmbiguousJoinPathError(ValueError):
+    """Two or more equally short join routes with DIFFERENT meaning reach the
+    same target (e.g. sales→customers→regions vs sales→stores→regions). Picking
+    one would make the number depend on which relationship was created first,
+    so the query is refused until the model disambiguates (an inactive
+    relationship or an aliased role-played join)."""
+
+    def __init__(self, target: str, routes: list[str]):
+        self.target = target
+        self.routes = routes
+        super().__init__(
+            f"Có {len(routes)} đường join ngắn nhất khác nhau tới '{target}': "
+            + " | ".join(routes)
+            + ". Kết quả sẽ phụ thuộc đường nào được chọn, nên truy vấn bị từ chối. "
+            "Trong Data Model, đánh dấu Inactive một quan hệ, hoặc dùng alias (role-playing) "
+            "để chỉ rõ đường cần dùng."
+        )
+
+
+_CANON_ON_PAIR_RE = __import__("re").compile(
+    r"\$\{TABLE\}\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$\{[^}]+\}\.([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+
+def _edge_signature(edge: "JoinEdge") -> tuple:
+    """Direction-independent identity of the relationship an edge walks: the
+    two node ids and the key-column pairs. A forward edge and the synthetic
+    reverse of the SAME relationship share a signature, so they are one route,
+    not an ambiguity."""
+    pairs: set = set()
+    sql_on = str(edge.sql_on or "").strip()
+    if sql_on:
+        found = _CANON_ON_PAIR_RE.findall(sql_on)
+        remainder = _CANON_ON_PAIR_RE.sub("", sql_on).replace("AND", "").replace("and", "").strip()
+        if found and not remainder:
+            for fc, tc in found:
+                pairs.add(frozenset({(edge.from_node, fc), (edge.to_node, tc)}))
+        else:
+            return (frozenset({edge.from_node, edge.to_node}), ("sql", " ".join(sql_on.split())))
+    elif edge.from_column and edge.to_column:
+        pairs.add(frozenset({(edge.from_node, edge.from_column), (edge.to_node, edge.to_column)}))
+    return (frozenset({edge.from_node, edge.to_node}), frozenset(pairs))
+
+
+def _route_signature(path: "JoinPath") -> tuple:
+    return tuple(_edge_signature(s.edge) for s in path.steps)
+
+
+def _route_label(path: "JoinPath") -> str:
+    if not path.steps:
+        return "(base)"
+    nodes = [path.steps[0].edge.from_node] + [s.edge.to_node for s in path.steps]
+    return " → ".join(nodes)
 
 
 @dataclass(frozen=True)
@@ -420,6 +491,34 @@ class SemanticJoinResolver:
 
         return None
 
+    def distinct_routes(self, target_node: str) -> list[JoinPath]:
+        """Equal-length shortest paths to ``target_node`` that walk DIFFERENT
+        relationships (one representative per route; forward/reverse edges of
+        the same relationship collapse into one). The first entry is the path
+        :meth:`resolve_path` returns."""
+        seen: set = set()
+        out: list[JoinPath] = []
+        for p in self.resolve_paths(target_node):
+            sig = _route_signature(p)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            out.append(p)
+        return out
+
+    def resolve_unique_path(self, target_node: str) -> JoinPath | None:
+        """The single shortest path to ``target_node``, or ``None`` when it is
+        unreachable. Raises :class:`AmbiguousJoinPathError` when two or more
+        shortest routes with different relationships exist — every consumer that
+        EMITS SQL must use this (or apply its own disambiguation first), so the
+        answer never depends on relationship-creation order."""
+        routes = self.distinct_routes(target_node)
+        if not routes:
+            return None
+        if len(routes) > 1:
+            raise AmbiguousJoinPathError(target_node, [_route_label(r) for r in routes])
+        return routes[0]
+
     def resolve_paths(self, target_node: str) -> list[JoinPath]:
         """All equal-length shortest paths from base_node to target_node.
 
@@ -590,5 +689,6 @@ __all__ = [
     "JoinStep",
     "JoinPath",
     "SemanticJoinResolver",
+    "canonical_cardinality",
     "reachable_fields_for_model",
 ]

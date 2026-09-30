@@ -64,3 +64,28 @@ def pattern_predicate(
     if operator == "ends_with":
         return f"{expr} LIKE '%{esc}' ESCAPE '\\'"
     raise ValueError(f"not a pattern operator: {operator!r}")
+
+
+def regex_predicate(
+    expr: str,
+    value: object,
+    dialect: str | None,
+    quote: Callable[[str], str],
+) -> str:
+    """`expr` contains a match of the regular expression `value` (unanchored).
+
+    Each engine has its own spelling; `SIMILAR TO` is NOT one of them — it is
+    an anchored SQL pattern where `.` is literal, so on Postgres it returned a
+    plausible, wrong row set for an ordinary regex. An engine without a known
+    spelling is refused rather than guessed."""
+    d = (dialect or "").lower()
+    lit = quote(str(value))
+    if d == "bigquery":
+        return f"REGEXP_CONTAINS({expr}, {lit})"
+    if d in ("postgresql", "postgres", ""):
+        return f"{expr} ~ {lit}"
+    if d == "duckdb":
+        return f"regexp_matches({expr}, {lit})"
+    if d == "mysql":
+        return f"{expr} REGEXP {lit}"
+    raise ValueError(f"Toán tử 'matches_regex' chưa được hỗ trợ trên {dialect}.")

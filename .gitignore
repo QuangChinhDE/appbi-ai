@@ -388,3 +388,9 @@ backend/_verify_gate.db
 !backend/tests/test_embed_link_claim_operator.py
 !backend/tests/test_public_filter_authority.py
 !backend/tests/test_report_content_widgets.py
+!backend/tests/test_semantic_error_contracts.py
+!backend/tests/test_distinct_cascade_semijoin.py
+!backend/tests/test_golden_sql_non_regression.py
+!backend/tests/test_semantic_state_contracts.py
+!backend/tests/test_semantic_golden_matrix.py
+!backend/tests/test_semantic_router_object_access.py

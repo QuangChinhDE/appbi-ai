@@ -219,23 +219,28 @@ def test_postgres_report_filter_is_byte_for_byte_unchanged(operator):
     assert "STRPOS" not in sql and "STARTS_WITH" not in sql
 
 
-MEASURE_SHAPES = {
-    "contains": "revenue.status LIKE '%' || '50%_off' || '%'",
-    "starts_with": "revenue.status LIKE '50%_off' || '%'",
-    "ends_with": "revenue.status LIKE '%' || '50%_off'",
-}
+@pytest.mark.parametrize("dialect, shapes", [("bigquery", BQ_SHAPES), ("postgresql", PG_SHAPES)])
+@pytest.mark.parametrize("operator", PATTERN_OPERATORS)
+def test_measure_filter_matches_literally_like_the_report_filter(dialect, shapes, operator):
+    """A measure's own filter uses the SAME pattern helper as the report WHERE.
 
-
-@pytest.mark.parametrize("dialect", ["bigquery", "postgresql"])
-@pytest.mark.parametrize("operator", list(MEASURE_SHAPES))
-def test_measure_filter_shape_is_unchanged_and_valid_on_bigquery(dialect, operator):
-    """A measure's own filter keeps its concatenated LIKE (no ESCAPE clause, so
-    GoogleSQL accepts it). Changing it would move saved measure numbers, which a
-    release-closure change must not do silently; its known gaps (wildcards,
-    not_contains) are recorded in manual-studio/release.md."""
+    It used to concatenate `LIKE '%' || value || '%'`: a "%" or "_" in the value
+    acted as a wildcard, and `not_contains` rendered nothing, so the measure
+    silently summed every row (1000 instead of 700 in the audit fixture).
+    Deliberately changed in the semantic-core remediation: a saved measure whose
+    value contains % or _ now matches it literally, as the report filter does."""
     sql = _measure_filter_sql(dialect, operator)
-    assert MEASURE_SHAPES[operator] in sql, sql
-    assert "ESCAPE" not in sql, sql
+    assert shapes[operator] in sql, sql
+    assert "|| '%'" not in sql and "'%' ||" not in sql, sql
+    if dialect == "bigquery":
+        assert "ESCAPE" not in sql and " LIKE " not in sql, sql
+
+
+def test_measure_filter_rejects_an_unknown_operator():
+    """An operator the renderer does not know used to leave the measure
+    UNFILTERED. It is refused instead."""
+    with pytest.raises(ValueError):
+        _measure_filter_sql("bigquery", "regex_match")
 
 
 @pytest.mark.parametrize("operator, expected", [

@@ -1363,6 +1363,154 @@ def _render_step_join_condition(
     return None
 
 
+def _semantic_definition_signature(db: Session, model_id) -> str | None:
+    """Content hash of everything a semantic chart's SQL is generated from.
+
+    The model's views (name, table SQL, dimensions, measures, primary key) and
+    the dataset tables behind them (source, transformations, type overrides,
+    enabled). Joins are covered by `_model_join_sig`. Content-keyed, not
+    timestamp-keyed: equal definitions give an equal key, any edit gives a new
+    one. `None` only when there is no model — never on a lookup error, which
+    would silently collapse different definitions onto one key."""
+    if not model_id:
+        return None
+    import hashlib
+    import json
+
+    from app.models.dataset import DatasetTable
+    from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
+
+    model = db.query(SemanticModel).filter(SemanticModel.id == model_id).first()
+    if model is None:
+        return None
+    tables = []
+    if model.dataset_id is not None:
+        tables = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == model.dataset_id)
+            .order_by(DatasetTable.id)
+            .all()
+        )
+    table_ids = [t.id for t in tables]
+    names: set[str] = set()
+    for e in db.query(SemanticExplore).filter(SemanticExplore.model_id == model_id).all():
+        names.add(str(e.base_view_name or ""))
+        for j in e.joins or []:
+            if isinstance(j, dict) and j.get("view"):
+                names.add(str(j["view"]))
+    views_q = db.query(SemanticView)
+    if table_ids:
+        views = views_q.filter(
+            (SemanticView.dataset_table_id.in_(table_ids))
+            | ((SemanticView.dataset_table_id.is_(None)) & (SemanticView.name.in_(sorted(names))))
+        ).order_by(SemanticView.id).all()
+    else:
+        views = views_q.filter(SemanticView.name.in_(sorted(names))).order_by(SemanticView.id).all()
+    payload = {
+        "views": [
+            [v.id, v.name, v.sql_table_name, v.dataset_table_id, v.dimensions or [],
+             v.measures or [], getattr(v, "primary_key", None)]
+            for v in views
+        ],
+        "tables": [
+            [t.id, t.source_kind, t.source_table_name, t.source_query, t.transformations,
+             t.type_overrides, t.enabled, t.datasource_id]
+            for t in tables
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+_FANNING_CARDINALITIES = {"one_to_many", "many_to_many"}
+_CANON_STEP_ON_RE = re.compile(r"^\s*\$\{TABLE\}\.(\w+)\s*=\s*\$\{(\w+)\}\.(\w+)\s*$")
+
+
+def _live_edge_fans_out(edge) -> bool:
+    """True when walking `edge` can match several rows per source row."""
+    return str(getattr(edge, "cardinality", "") or "").strip().lower() in _FANNING_CARDINALITIES
+
+
+def _live_edge_key_pair(edge) -> tuple[str, str] | None:
+    """(source column, target column) of a single-equality join, else None."""
+    sql_on = str(edge.sql_on or "").strip()
+    if not sql_on:
+        if edge.from_column and edge.to_column:
+            return edge.from_column, edge.to_column
+        return None
+    m = _CANON_STEP_ON_RE.match(sql_on)
+    if m and m.group(2) in {edge.to_node, edge.to_view}:
+        return m.group(1), m.group(3)
+    return None
+
+
+def _build_live_semi_join(
+    db: Session,
+    datasource,
+    tail_steps: list,
+    *,
+    from_alias: str,
+    semi_alias: str,
+    field_def: dict,
+    semantic_name: str,
+    filt: dict,
+    get_view,
+    target_node: str,
+) -> str:
+    """`LEFT JOIN (SELECT DISTINCT key ... WHERE <filter>) ON from.col = key`.
+
+    The filter is evaluated on the related rows and only the set of matching
+    keys comes back, so one base row stays one row however many related rows
+    match: "the base row has a related row that passes the filter", the same
+    meaning as the engine's EXISTS filter. Non-correlated, so BigQuery accepts
+    it. Anything this cannot express exactly raises instead of guessing."""
+    from app.services.live_query_service import _build_where_clause, _dialect_for_ds_type
+
+    def _refuse(reason: str) -> ValueError:
+        return ValueError(
+            f"Filter trên '{target_node}.{semantic_name}' đi qua quan hệ 1-nhiều và không "
+            f"áp được chính xác ({reason}) — truy vấn bị từ chối thay vì nhân bản dòng."
+        )
+
+    first_pair = _live_edge_key_pair(tail_steps[0].edge)
+    if not first_pair:
+        raise _refuse("quan hệ không phải một cặp cột bằng nhau")
+    relations: list[str] = []
+    for i, step in enumerate(tail_steps):
+        view = get_view(step.edge.to_view)
+        relation = _build_live_relation_for_semantic_view(db, datasource, view) if view else None
+        if not relation:
+            raise _refuse(f"không dựng được bảng '{step.edge.to_view}'")
+        alias = f"{semi_alias}_t{i}"
+        if i == 0:
+            relations.append(f"{_wrap_live_sql_relation(relation)} AS {alias}")
+            continue
+        cond = _render_step_join_condition(
+            step.edge, from_alias=f"{semi_alias}_t{i - 1}", to_alias=alias,
+        )
+        if not cond:
+            raise _refuse(f"thiếu điều kiện join tới '{step.edge.to_view}'")
+        relations.append(f"INNER JOIN {_wrap_live_sql_relation(relation)} AS {alias} ON {cond}")
+    last_alias = f"{semi_alias}_t{len(tail_steps) - 1}"
+    field_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias)
+    if not field_expr:
+        raise _refuse("không dựng được biểu thức của field")
+    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+    pred = _build_where_clause(
+        [{**filt, "field": "__sem_semi_value"}], _dialect_for_ds_type(ds_type),
+    )
+    if not pred:
+        raise _refuse("filter không có điều kiện")
+    src_col, key_col = first_pair
+    return (
+        f"LEFT JOIN (SELECT DISTINCT _q._k AS _k FROM ("
+        f"SELECT {semi_alias}_t0.{key_col} AS _k, {field_expr} AS __sem_semi_value "
+        f"FROM {' '.join(relations)}) AS _q WHERE {pred}) AS {semi_alias} "
+        f"ON {from_alias}.{src_col} = {semi_alias}._k"
+    )
+
+
 def _adapt_live_sql_for_semantic_filters(
     db: Session,
     datasource,
@@ -1494,17 +1642,31 @@ def _adapt_live_sql_for_semantic_filters(
             effective_filters.append(filt)
             continue
 
-        path = resolver.resolve_path(target_node)
+        # Two different shortest routes to the filter's view would each give a
+        # different answer; picking the first one silently is refused (the
+        # engine's FROM/EXISTS builders refuse the same way).
+        path = resolver.resolve_unique_path(target_node)
         if path is None:
             # not reachable — skip this filter for this chart
             continue
+
+        # A LEFT JOIN is only safe while every step is to-one from the base's
+        # side. The first step that fans out (1:N, M:N, or an N:1 walked in
+        # reverse) would repeat base rows once per related row and inflate
+        # every aggregate — so from there on the filter becomes a semi-join on
+        # the DISTINCT matching keys instead of a join.
+        steps = list(path.steps)
+        fan_idx = next(
+            (i for i, st in enumerate(steps) if _live_edge_fans_out(st.edge)), None
+        )
+        prefix_steps = steps if fan_idx is None else steps[:fan_idx]
 
         # Materialize each step. Use stable alias based on path prefix so
         # shared prefixes reuse the same JOIN.
         prev_alias = "_appbi_base"
         last_alias = prev_alias
         path_failed = False
-        for step in path.steps:
+        for step in prefix_steps:
             cache_key = (prev_alias, step.edge.to_node)
             existing_alias = materialized_steps.get(cache_key)
             if existing_alias is not None:
@@ -1570,6 +1732,23 @@ def _adapt_live_sql_for_semantic_filters(
             None,
         )
         if not field_def:
+            continue
+
+        if fan_idx is not None:
+            semi_alias = f"_appbi_sem_semi_{next_join_index}"
+            next_join_index += 1
+            join_clauses.append(_build_live_semi_join(
+                db, datasource, steps[fan_idx:],
+                from_alias=last_alias, semi_alias=semi_alias,
+                field_def=field_def, semantic_name=semantic_name, filt=filt,
+                get_view=_get_view, target_node=target_node,
+            ))
+            projection_alias = f"__sem_filter_{next_projection_index}"
+            next_projection_index += 1
+            projected_fields.append({"expr": f"{semi_alias}._k", "alias": projection_alias})
+            effective_filters.append({
+                "field": projection_alias, "operator": "is_not_null", "value": None,
+            })
             continue
 
         rendered_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias)
@@ -2439,10 +2618,17 @@ def _execute_semantic_chart_runtime(
             _model_join_sig = _hl.sha256(_join_sig_src.encode("utf-8")).hexdigest()[:16]
     except Exception:  # noqa: BLE001 — cache-key aug must never break a chart
         _model_join_sig = None
+    # The DEFINITIONS the SQL is generated from are part of the result's
+    # identity too: a measure edited from SUM to AVG, a dimension's SQL, a
+    # primary key, or a table transformation all change the number with the
+    # same chart config. Keyed on content, so an edit on any worker changes the
+    # key everywhere at once (the shared cache is cross-worker) — no TTL wait.
+    _model_def_sig = _semantic_definition_signature(db, model_id)
     cache_role_config = {
         "_semantic_chart_runtime": True,
         # Relationship-graph identity — busts the cache on any join edit.
         "_model_join_sig": _model_join_sig,
+        "_model_def_sig": _model_def_sig,
         "_dimensions": dimension_refs,
         "_measures": measure_refs,
         "_agg_overrides": agg_overrides,
@@ -3151,6 +3337,40 @@ def _apply_role_overrides(config: dict, role_overrides: dict | None) -> None:
             role_config["metrics"] = [{"field": metric.strip(), "agg": "sum"}]
 
 
+def _rehydrate_binding_for_modeled_table(db: Session, db_table, chart_config) -> dict | None:
+    """The resolved binding of a dataset table that has a semantic view, else None."""
+    from app.models.dataset import DatasetTable
+    from app.models.semantic import SemanticModel, SemanticView
+    from app.services.chart_semantic_service import resolve_chart_semantic_binding
+
+    if not isinstance(db_table, DatasetTable) or getattr(db_table, "id", None) is None:
+        return None
+    if is_generated_calendar_table(db_table):
+        return None
+    has_view = (
+        db.query(SemanticView.id).filter(SemanticView.dataset_table_id == db_table.id).first()
+        is not None
+    )
+    has_model = (
+        db.query(SemanticModel.id).filter(SemanticModel.dataset_id == db_table.dataset_id).first()
+        is not None
+    )
+    if not (has_view and has_model):
+        return None
+    resolved = resolve_chart_semantic_binding(
+        db, int(db_table.id), chart_config if isinstance(chart_config, dict) else {},
+        auto_generate=False,
+    )
+    if isinstance(resolved, dict) and str(resolved.get("baseViewName") or "").strip():
+        logger.warning(
+            "[strict-semantic] chart_id=%s had an unresolved binding on modeled table %s — "
+            "re-hydrated to base=%s",
+            _pbi_current_chart_id(), db_table.id, resolved.get("baseViewName"),
+        )
+        return resolved
+    return None
+
+
 def _execute_chart_runtime_for_table(
     db: Session,
     datasource,
@@ -3260,6 +3480,18 @@ def _execute_chart_runtime_for_table(
         or _binding_semantic_fields(binding)
         or _binding_semantic_measure_fields(binding)
     )
+    if not custom_sql and not _model_backed:
+        # SEM-P2-008 — an empty/unresolved binding is not proof that the table
+        # has no semantic definitions: hydration upstream can fail and leave it
+        # blank. When the table DOES have a view in its dataset's model, resolve
+        # the binding here and take the semantic path; the single-table live
+        # builder would ignore every declared measure filter and relationship.
+        _rehydrated = _rehydrate_binding_for_modeled_table(db, db_table, chart_config)
+        if _rehydrated:
+            binding = _rehydrated
+            chart_config = {**(chart_config or {}), "semanticBinding": binding}
+            base_view_name_for_routing = str(binding.get("baseViewName") or "").strip()
+            _model_backed = True
     if not custom_sql and _model_backed and not needs_semantic_runtime:
         logger.info(
             "[strict-semantic] forcing semantic runtime chart_id=%s base=%s "

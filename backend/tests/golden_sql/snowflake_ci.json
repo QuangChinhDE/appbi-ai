@@ -1,0 +1,34 @@
+{
+ "[snow] Deal amount total": {
+  "bigquery": "SELECT SUM(dataset_table_190.amount) AS dataset_table_190_amount FROM (SELECT * FROM `.bcfix.bc_deal`) AS dataset_table_190 LIMIT 10000000",
+  "postgresql": "SELECT SUM(dataset_table_190.amount) AS dataset_table_190_amount FROM (SELECT * FROM \"bcfix\".\"bc_deal\") AS dataset_table_190 LIMIT 10000000"
+ },
+ "[snow] M revenue (declared)": {
+  "bigquery": "SELECT SUM(dataset_table_193.amount) AS dataset_table_193_total_revenue FROM (SELECT * FROM `.bcfix.bc_revenue`) AS dataset_table_193 LIMIT 10000000",
+  "postgresql": "SELECT SUM(dataset_table_193.amount) AS dataset_table_193_total_revenue FROM (SELECT * FROM \"bcfix\".\"bc_revenue\") AS dataset_table_193 LIMIT 10000000"
+ },
+ "[snow] M revenue per owner (cross-table measure)": {
+  "bigquery": "SELECT dataset_table_188.crm_name AS dataset_table_188_crm_name, SUM(dataset_table_193.amount) AS dataset_table_193_total_revenue FROM (SELECT * FROM `.bcfix.bc_owner`) AS dataset_table_188 LEFT JOIN (SELECT * FROM `.bcfix.bc_revenue`) AS dataset_table_193 ON dataset_table_188.bc_key = dataset_table_193.bc_key GROUP BY 1 LIMIT 10000000",
+  "postgresql": "SELECT dataset_table_188.crm_name AS dataset_table_188_crm_name, SUM(dataset_table_193.amount) AS dataset_table_193_total_revenue FROM (SELECT * FROM \"bcfix\".\"bc_owner\") AS dataset_table_188 LEFT JOIN (SELECT * FROM \"bcfix\".\"bc_revenue\") AS dataset_table_193 ON dataset_table_188.bc_key = dataset_table_193.bc_key GROUP BY 1 LIMIT 10000000"
+ },
+ "[snow] activity duration total": {
+  "bigquery": "SELECT SUM(dataset_table_192.duration) AS dataset_table_192_duration FROM (SELECT * FROM `.bcfix.bc_activity`) AS dataset_table_192 LIMIT 10000000",
+  "postgresql": "SELECT SUM(dataset_table_192.duration) AS dataset_table_192_duration FROM (SELECT * FROM \"bcfix\".\"bc_activity\") AS dataset_table_192 LIMIT 10000000"
+ },
+ "[snow] grain rev by deal-title (chasm)": {
+  "bigquery": "ERROR: ValueError",
+  "postgresql": "ERROR: ValueError"
+ },
+ "[snow] revenue by owner": {
+  "bigquery": "SELECT dataset_table_188.crm_name AS dataset_table_188_crm_name, SUM(dataset_table_193.amount) AS dataset_table_193_amount FROM (SELECT * FROM `.bcfix.bc_revenue`) AS dataset_table_193 LEFT JOIN (SELECT * FROM `.bcfix.bc_owner`) AS dataset_table_188 ON dataset_table_193.bc_key = dataset_table_188.bc_key GROUP BY 1 LIMIT 10000000",
+  "postgresql": "SELECT dataset_table_188.crm_name AS dataset_table_188_crm_name, SUM(dataset_table_193.amount) AS dataset_table_193_amount FROM (SELECT * FROM \"bcfix\".\"bc_revenue\") AS dataset_table_193 LEFT JOIN (SELECT * FROM \"bcfix\".\"bc_owner\") AS dataset_table_188 ON dataset_table_193.bc_key = dataset_table_188.bc_key GROUP BY 1 LIMIT 10000000"
+ },
+ "[snow] revenue total": {
+  "bigquery": "SELECT SUM(dataset_table_193.amount) AS dataset_table_193_amount FROM (SELECT * FROM `.bcfix.bc_revenue`) AS dataset_table_193 LIMIT 10000000",
+  "postgresql": "SELECT SUM(dataset_table_193.amount) AS dataset_table_193_amount FROM (SELECT * FROM \"bcfix\".\"bc_revenue\") AS dataset_table_193 LIMIT 10000000"
+ },
+ "[snow] scatter rev-vs-kpi by owner": {
+  "bigquery": "WITH _mf0 AS ( SELECT dataset_table_188.crm_name AS dataset_table_188_crm_name, SUM(dataset_table_193.amount) AS dataset_table_193_total_revenue FROM (SELECT * FROM `.bcfix.bc_revenue`) AS dataset_table_193 LEFT JOIN (SELECT * FROM `.bcfix.bc_owner`) AS dataset_table_188 ON dataset_table_193.bc_key = dataset_table_188.bc_key GROUP BY 1 LIMIT 10000000 ), _mf1 AS ( SELECT dataset_table_188.crm_name AS dataset_table_188_crm_name, AVG(dataset_table_188.kpi) AS dataset_table_188_avg_kpi FROM (SELECT * FROM `.bcfix.bc_owner`) AS dataset_table_188 GROUP BY 1 LIMIT 10000000 ), _skel AS ( SELECT dataset_table_188_crm_name FROM _mf0 UNION DISTINCT SELECT dataset_table_188_crm_name FROM _mf1 ) SELECT _skel.dataset_table_188_crm_name AS dataset_table_188_crm_name, _mf0.dataset_table_193_total_revenue AS dataset_table_193_total_revenue, _mf1.dataset_table_188_avg_kpi AS dataset_table_188_avg_kpi FROM _skel LEFT JOIN _mf0 ON (_skel.dataset_table_188_crm_name = _mf0.dataset_table_188_crm_name OR (_skel.dataset_table_188_crm_name IS NULL AND _mf0.dataset_table_188_crm_name IS NULL)) LEFT JOIN _mf1 ON (_skel.dataset_table_188_crm_name = _mf1.dataset_table_188_crm_name OR (_skel.dataset_table_188_crm_name IS NULL AND _mf1.dataset_table_188_crm_name IS NULL)) ORDER BY dataset_table_188_crm_name ASC NULLS LAST LIMIT 10000000",
+  "postgresql": "WITH _mf0 AS ( SELECT dataset_table_188.crm_name AS dataset_table_188_crm_name, SUM(dataset_table_193.amount) AS dataset_table_193_total_revenue FROM (SELECT * FROM \"bcfix\".\"bc_revenue\") AS dataset_table_193 LEFT JOIN (SELECT * FROM \"bcfix\".\"bc_owner\") AS dataset_table_188 ON dataset_table_193.bc_key = dataset_table_188.bc_key GROUP BY 1 LIMIT 10000000 ), _mf1 AS ( SELECT dataset_table_188.crm_name AS dataset_table_188_crm_name, AVG(dataset_table_188.kpi) AS dataset_table_188_avg_kpi FROM (SELECT * FROM \"bcfix\".\"bc_owner\") AS dataset_table_188 GROUP BY 1 LIMIT 10000000 ), _skel AS ( SELECT dataset_table_188_crm_name FROM _mf0 UNION DISTINCT SELECT dataset_table_188_crm_name FROM _mf1 ) SELECT _skel.dataset_table_188_crm_name AS dataset_table_188_crm_name, _mf0.dataset_table_193_total_revenue AS dataset_table_193_total_revenue, _mf1.dataset_table_188_avg_kpi AS dataset_table_188_avg_kpi FROM _skel LEFT JOIN _mf0 ON (_skel.dataset_table_188_crm_name = _mf0.dataset_table_188_crm_name OR (_skel.dataset_table_188_crm_name IS NULL AND _mf0.dataset_table_188_crm_name IS NULL)) LEFT JOIN _mf1 ON (_skel.dataset_table_188_crm_name = _mf1.dataset_table_188_crm_name OR (_skel.dataset_table_188_crm_name IS NULL AND _mf1.dataset_table_188_crm_name IS NULL)) ORDER BY dataset_table_188_crm_name ASC NULLS LAST LIMIT 10000000"
+ }
+}

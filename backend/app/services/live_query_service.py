@@ -42,8 +42,7 @@ class LiveBaseQueryPlan:
     output_columns: List[str]
 
 
-from app.services.sql_pattern import pattern_predicate
-
+from app.services.sql_pattern import pattern_predicate, regex_predicate
 # ── SQL dialect helpers ──────────────────────────────────────────────────────
 
 def _quote_identifier(name: str, dialect: str) -> str:
@@ -686,6 +685,7 @@ def _build_where_clause(filters: list, dialect: str) -> str:
     for f in normalize_filter_conditions(filters):
         field = f.get("field", "")
         op = normalize_filter_operator(f.get("operator"))
+        op = {"date_eq": "eq", "date_between": "between"}.get(op, op)
         value = f.get("value")
         if not field:
             continue
@@ -746,15 +746,45 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             )
             if vals:
                 parts.append(f"{qf} NOT IN ({vals})")
-        elif op in ("like", "contains", "not_contains", "starts_with") and value is not None:
+        elif op in ("like", "contains", "not_contains", "starts_with", "ends_with") and value is not None:
             # One shape per dialect (app/services/sql_pattern): BigQuery has no
-            # LIKE … ESCAPE, so it gets STRPOS / STARTS_WITH.
+            # LIKE … ESCAPE, so it gets STRPOS / STARTS_WITH / ENDS_WITH.
             parts.append(pattern_predicate(qf, op, value, dialect, lambda s: _sql_literal(s)))
+        elif op == "matches_regex" and value_present(value):
+            parts.append(regex_predicate(qf, value, dialect, lambda s: _sql_literal(s)))
+        elif op == "not_between" and isinstance(value, list) and len(value) >= 2:
+            lo, hi = value[0], value[1]
+            bf = _num(qf, cal, lo, hi)
+            if value_present(lo) and value_present(hi):
+                parts.append(f"{bf} NOT BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}")
+            elif value_present(lo):
+                parts.append(f"{bf} < {_sql_literal(lo)}")
+            elif value_present(hi):
+                parts.append(f"{bf} > {_sql_literal(hi)}")
         elif op == "is_null":
             parts.append(f"{qf} IS NULL")
         elif op == "is_not_null":
             parts.append(f"{qf} IS NOT NULL")
+        elif op not in _LIVE_HANDLED_OPERATORS:
+            # An operator no branch renders used to vanish here and the query
+            # ran UNFILTERED — a plausible number that answers another
+            # question. Refused, as the semantic engine refuses it.
+            raise ValueError(
+                f"Filter không áp được: toán tử '{op}' không được hỗ trợ cho '{field}'."
+            )
     return " AND ".join(parts)
+
+
+# Operators the branches above render (a branch may still skip a filter whose
+# value is incomplete — that is the documented "empty filter = no filter").
+_LIVE_HANDLED_OPERATORS = frozenset({
+    "eq", "neq", "gt", "gte", "lt", "lte", "between", "not_between", "in", "not_in",
+    "like", "contains", "not_contains", "starts_with", "ends_with", "matches_regex",
+    "is_null", "is_not_null",
+    # Not predicates: chart_service._top_n_from_filters turns them into
+    # ORDER BY + LIMIT before the query is built (the engine skips them too).
+    "top_n", "bottom_n",
+})
 
 
 # ── Aggregation query builder (dialect-aware) ────────────────────────────────

@@ -1673,6 +1673,136 @@ def schedule_model_drift_check(dataset_id: int) -> None:
     _threading.Thread(target=_run, name=f"model-drift-{dataset_id}", daemon=True).start()
 
 
+_MODEL_WRITE_LOCK_NS = 0x5E3A  # advisory-lock namespace: "semantic model of dataset N"
+
+
+def lock_dataset_model_for_write(db: Session, dataset_id: int) -> None:
+    """Serialize writers of ONE dataset's semantic model, across workers.
+
+    The background drift resync reads every view, merges, and writes back. Run
+    concurrently with a user's save (or with the same resync on another worker)
+    it could write a merge computed from rows read BEFORE that save — a lost
+    update — or create a table's view twice. This takes a transaction-scoped
+    advisory lock for the dataset (released at commit/rollback) and re-reads the
+    dataset's views and explores FOR UPDATE, so the caller merges onto the
+    latest committed rows and a concurrent plain UPDATE waits for it.
+
+    Postgres only; other engines (the SQLite unit tier) have one writer."""
+    bind = db.get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+        return
+    from sqlalchemy import text as _text
+
+    db.execute(
+        _text("SELECT pg_advisory_xact_lock(:ns, :k)"),
+        {"ns": _MODEL_WRITE_LOCK_NS, "k": int(dataset_id)},
+    )
+    table_ids = [
+        int(r[0]) for r in db.query(DatasetTable.id).filter(DatasetTable.dataset_id == dataset_id).all()
+    ]
+    if table_ids:
+        (
+            db.query(SemanticView)
+            .filter(SemanticView.dataset_table_id.in_(table_ids))
+            .populate_existing()
+            .with_for_update()
+            .all()
+        )
+    model_ids = [
+        int(r[0]) for r in db.query(SemanticModel.id).filter(SemanticModel.dataset_id == dataset_id).all()
+    ]
+    if model_ids:
+        (
+            db.query(SemanticExplore)
+            .filter(SemanticExplore.model_id.in_(model_ids))
+            .populate_existing()
+            .with_for_update()
+            .all()
+        )
+
+
+_TABLE_COL_REF_RE = re.compile(r"\$\{TABLE\}\.\s*\"?(\w+)\"?")
+
+
+def _definition_column_refs(defn: dict) -> set[str]:
+    """Physical columns of the view's OWN table a dimension/measure reads.
+
+    `${TABLE}.col` in `sql`, a bare-identifier `sql`, `source_columns`, and an
+    own-view (unqualified) measure-filter field. Expression / formula measures
+    reference other MEASURES (checked by the measure validator), not columns."""
+    refs: set[str] = set()
+    sql = str(defn.get("sql") or "").strip()
+    if sql and sql != "*":
+        if sql.isidentifier():
+            refs.add(sql)
+        refs.update(_TABLE_COL_REF_RE.findall(sql))
+    for c in defn.get("source_columns") or []:
+        if isinstance(c, str) and c and "." not in c:
+            refs.add(c)
+    for f in defn.get("filters") or []:
+        field = str((f or {}).get("field") or "").strip() if isinstance(f, dict) else ""
+        if field and "." not in field:
+            refs.add(field)
+    return {r.lower() for r in refs}
+
+
+def dangling_model_references(db: Session, dataset_id: int) -> list[dict]:
+    """Every definition in the dataset's model that names a column its table no
+    longer has: dimension/measure SQL, measure source_columns and filters,
+    primary-key columns, and join key columns on either side.
+
+    A dangling reference is not self-healed by a resync (user definitions are
+    merge-preserved), so it is reported, and a query touching it fails at the
+    warehouse. Tables without a column cache are skipped (unknown ≠ dangling)."""
+    tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+    cols_by_table = {
+        t.id: {c.lower() for c in cache_column_names(t.columns_cache)}
+        for t in tables
+        if t.columns_cache and not is_generated_calendar_table(t)
+    }
+    if not cols_by_table:
+        return []
+    views = db.query(SemanticView).filter(SemanticView.dataset_table_id.in_(list(cols_by_table))).all()
+    cols_by_view = {v.name: cols_by_table[v.dataset_table_id] for v in views}
+    out: list[dict] = []
+
+    def _flag(kind: str, view: str, name: str, column: str) -> None:
+        out.append({"kind": kind, "view": view, "name": name, "column": column})
+
+    for v in views:
+        cols = cols_by_view[v.name]
+        # A dimension named after a column is how the model mirrors it; a
+        # computed dimension's own name is not a column, its SQL refs are.
+        for d in v.dimensions or []:
+            if isinstance(d, dict):
+                for c in _definition_column_refs(d) - cols:
+                    _flag("dimension", v.name, str(d.get("name")), c)
+        for m in v.measures or []:
+            if isinstance(m, dict):
+                for c in _definition_column_refs(m) - cols:
+                    _flag("measure", v.name, str(m.get("name")), c)
+        for c in [c for c in (getattr(v, "primary_key", None) or []) if isinstance(c, str)]:
+            if c.lower() not in cols:
+                _flag("primary_key", v.name, v.name, c)
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    for e in (model.explores if model else []):
+        for j in e.joins or []:
+            if not isinstance(j, dict):
+                continue
+            src = str(j.get("from_view") or e.base_view_name or "")
+            dst = str(j.get("view") or "")
+            name = str(j.get("alias") or j.get("name") or dst)
+            src_cols = [c for c in (j.get("from_columns") or [j.get("from_column")]) if c]
+            dst_cols = [c for c in (j.get("to_columns") or [j.get("to_column")]) if c]
+            for c in src_cols:
+                if src in cols_by_view and str(c).lower() not in cols_by_view[src]:
+                    _flag("join", src, name, c)
+            for c in dst_cols:
+                if dst in cols_by_view and str(c).lower() not in cols_by_view[dst]:
+                    _flag("join", dst, name, c)
+    return out
+
+
 def _dim_signature(dims) -> set:
     """(name, type) signature of a dimension list — so a TYPE change on an
     existing column counts as drift, not just add/remove (issue #11)."""
@@ -1713,20 +1843,15 @@ def _model_views_drifted(db: Session, dataset_id: int) -> bool:
         expected_dims, _ = _classify_columns(t.columns_cache, auto_generate_measures=auto_measures)
         if _dim_signature(expected_dims) != _dim_signature(view.dimensions):
             return True  # issue #11: name-or-type change
-        # Stale measure: a user/auto measure referencing a column no longer in
-        # columns_cache. Column-name presence check (cheap, no SQL parse).
-        col_names = {
-            str(c.get("name")) for c in (t.columns_cache.get("columns") or [])
-            if isinstance(c, dict) and c.get("name")
-        }
-        for m in (view.measures or []):
-            if not isinstance(m, dict):
-                continue
-            msql = str(m.get("sql") or "")
-            if msql in ("", "*"):
-                continue  # COUNT(*) etc. — no column dependency
-            # a plain column measure (sql == a bare column name) whose column is gone
-            if msql.isidentifier() and msql not in col_names:
+        # Stale definition: a measure/dimension referencing a column no longer
+        # in columns_cache — `${TABLE}.col` inside its SQL, source_columns and
+        # own-view filter fields, not only a bare-column `sql`. The cache comes
+        # in two shapes ({"columns": [...]} and a bare list); reading only the
+        # dict shape raised on the list one, and the background check swallowed
+        # it, so drift on those tables was never detected.
+        col_names = {c.lower() for c in cache_column_names(t.columns_cache)}
+        for defn in [*(view.measures or []), *(view.dimensions or [])]:
+            if isinstance(defn, dict) and _definition_column_refs(defn) - col_names:
                 return True
     return False
 
@@ -1752,6 +1877,8 @@ def _sync_dataset_model_structure(
     if str(getattr(dataset_obj, "purpose", None) or "reporting").strip().lower() == "operational":
         logger.info("[model] skip semantic-model sync for dataset %s (operational — OLTP/live branch)", dataset_id)
         return {"skipped": True, "reason": "operational", "views_created": 0, "views_updated": 0, "explores_created": 0}
+
+    lock_dataset_model_for_write(db, dataset_id)
 
     tables: List[DatasetTable] = (
         db.query(DatasetTable)
@@ -2123,6 +2250,27 @@ def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
     }
 
 
+def cache_column_names(columns_cache) -> set[str]:
+    """Column names recorded in a DatasetTable.columns_cache.
+
+    The cache is polymorphic across writers: a bare list of column dicts, or a
+    dict carrying them under ``"columns"``. Readers that only handled the dict
+    form silently saw NO columns for list-shaped caches."""
+    if isinstance(columns_cache, dict):
+        items = columns_cache.get("columns") or []
+    elif isinstance(columns_cache, list):
+        items = columns_cache
+    else:
+        items = []
+    out: set[str] = set()
+    for c in items:
+        if isinstance(c, dict):
+            n = str(c.get("name") or "").strip()
+            if n:
+                out.add(n)
+    return out
+
+
 def set_view_primary_key(
     db: Session,
     view_id: int,
@@ -2164,12 +2312,8 @@ def set_view_primary_key(
             known = set(declared)
             if view.dataset_table_id is not None:
                 tbl = db.query(DatasetTable).filter(DatasetTable.id == view.dataset_table_id).first()
-                if tbl and isinstance(tbl.columns_cache, dict):
-                    cached = tbl.columns_cache.get("columns") or []
-                    for c in cached:
-                        n = str((c or {}).get("name") or "").strip()
-                        if n:
-                            known.add(n)
+                if tbl is not None:
+                    known |= cache_column_names(tbl.columns_cache)
             unknown = [c for c in cols if c not in known]
             if unknown:
                 raise ValueError(
@@ -2269,13 +2413,16 @@ def add_join(
     # table. `relationship` is only ever a MIRROR of cardinality (kept for legacy
     # readers) — never an independent value that can diverge.
     from app.services.semantic_join_resolver import (
-        ALLOWED_CARDINALITY, normalize_cardinality,
+        ALLOWED_CARDINALITY, canonical_cardinality,
     )
     raw_card = cardinality if cardinality is not None else relationship
-    cardinality_canonical = normalize_cardinality(raw_card)
+    # STRICT: an unknown or empty value is refused. The lenient normaliser used
+    # to turn anything (even "garbage") into many_to_one, which the grain guard
+    # then trusted as non-fanning.
+    cardinality_canonical = canonical_cardinality(raw_card)
     if cardinality_canonical not in ALLOWED_CARDINALITY:
         raise ValueError(
-            f"Invalid cardinality {cardinality!r}; allowed: {sorted(ALLOWED_CARDINALITY)}"
+            f"Cardinality không hợp lệ: {raw_card!r}. Chọn một trong: {sorted(ALLOWED_CARDINALITY)}"
         )
     # Validate cross_filter explicitly so callers (incl. MCP tools) get a clear
     # error instead of silent fallback to 'single'.
@@ -2435,6 +2582,14 @@ def add_join(
     else:
         joins.append(new_join)
 
+    # Phase-1 — declare the PK on the join target view in the same call (the
+    # relationship dialog captures it alongside the join). Applied BEFORE the
+    # join is written: an invalid PK fails the request instead of being
+    # reported as an "ignored" warning next to a relationship that saved.
+    pk_result = None
+    if primary_key_on_to_view:
+        pk_result = set_view_primary_key(db, to_view_id, primary_key_on_to_view)
+
     explore.joins = joins
     db.commit()
     db.refresh(explore)
@@ -2446,16 +2601,6 @@ def add_join(
             "cross_filter='both' on many_to_many relationship may cause ambiguous "
             "filter propagation. Consider introducing a bridge table instead."
         )
-
-    # Phase-1 — optionally declare PK on the join target view in the same call.
-    # Convenient for relationship dialogs that capture PK alongside the join.
-    pk_result = None
-    if primary_key_on_to_view:
-        try:
-            pk_result = set_view_primary_key(db, to_view_id, primary_key_on_to_view)
-        except ValueError as exc:
-            # Don't fail the join creation — surface as warning instead.
-            warnings.append(f"primary_key_on_to_view ignored: {exc}")
 
     response: dict = {
         "explore_id": explore.id,
@@ -2585,6 +2730,86 @@ SELECT
         "is_unique_non_null": is_unique_non_null if has_profiled_values else None,
         "has_profiled_values": has_profiled_values,
     }
+
+
+def validate_direct_explore_joins(
+    db: Session,
+    dataset_id: int | None,
+    base_view_name: str,
+    joins: list[dict],
+) -> list[dict]:
+    """The checks `add_join` makes, for joins written as a whole list.
+
+    The direct semantic API (`routers/semantic.py`) replaces an explore's joins
+    wholesale. It used to store them unchecked: an unknown cardinality, a view
+    from another dataset, or a column that does not exist all went straight to
+    storage, and the resolver then read the missing cardinality as many-to-one
+    (non-fanning). Returns the joins with `relationship` and `cardinality`
+    mirrored to one canonical value; raises ValueError on anything invalid."""
+    from app.services.semantic_join_resolver import ALLOWED_CARDINALITY, canonical_cardinality
+
+    if dataset_id is None:
+        views_by_name: dict[str, SemanticView] = {
+            v.name: v for v in db.query(SemanticView).filter(SemanticView.dataset_table_id.is_(None)).all()
+        }
+    else:
+        table_ids = [
+            int(t.id) for t in db.query(DatasetTable.id).filter(DatasetTable.dataset_id == dataset_id).all()
+        ]
+        views_by_name = {
+            v.name: v
+            for v in db.query(SemanticView).filter(SemanticView.dataset_table_id.in_(table_ids)).all()
+        } if table_ids else {}
+    # Views reachable by alias inside this list (role-playing) count as known.
+    out: list[dict] = []
+    for raw in joins or []:
+        j = dict(raw)
+        view_name = str(j.get("view") or "").strip()
+        from_name = str(j.get("from_view") or "").strip() or base_view_name
+        if view_name not in views_by_name:
+            raise ValueError(f"Join tới view '{view_name}' không thuộc dataset của explore này.")
+        if from_name not in views_by_name:
+            raise ValueError(f"Join từ view '{from_name}' không thuộc dataset của explore này.")
+        card_raw = j.get("cardinality")
+        rel_raw = j.get("relationship")
+        card = canonical_cardinality(card_raw) if card_raw not in (None, "") else None
+        rel = canonical_cardinality(rel_raw) if rel_raw not in (None, "") else None
+        if card_raw not in (None, "") and card is None:
+            raise ValueError(f"Cardinality không hợp lệ: {card_raw!r}.")
+        if rel_raw not in (None, "") and rel is None:
+            raise ValueError(f"Relationship không hợp lệ: {rel_raw!r}.")
+        if card and rel and card != rel:
+            raise ValueError(
+                f"Join '{j.get('name') or view_name}': cardinality={card} mâu thuẫn relationship={rel}."
+            )
+        final = card or rel
+        if final not in ALLOWED_CARDINALITY:
+            raise ValueError(
+                f"Join '{j.get('name') or view_name}' thiếu cardinality — khai báo một trong "
+                f"{sorted(ALLOWED_CARDINALITY)} (không mặc định many_to_one)."
+            )
+        j["cardinality"] = final
+        j["relationship"] = final
+        from_cols = [c for c in (j.get("from_columns") or []) if c] or (
+            [j["from_column"]] if j.get("from_column") else []
+        )
+        to_cols = [c for c in (j.get("to_columns") or []) if c] or (
+            [j["to_column"]] if j.get("to_column") else []
+        )
+        if len(from_cols) != len(to_cols):
+            raise ValueError(f"Join '{j.get('name') or view_name}': số cột hai phía không khớp.")
+        from_fields = _field_names_for_view(views_by_name[from_name])
+        to_fields = _field_names_for_view(views_by_name[view_name])
+        for c in from_cols:
+            if c not in from_fields:
+                raise ValueError(f"Column '{c}' does not exist on view '{from_name}'")
+        for c in to_cols:
+            if c not in to_fields:
+                raise ValueError(f"Column '{c}' does not exist on view '{view_name}'")
+        if not from_cols and not str(j.get("sql_on") or "").strip():
+            raise ValueError(f"Join '{j.get('name') or view_name}' không có điều kiện join.")
+        out.append(j)
+    return out
 
 
 def suggest_join_relationship(

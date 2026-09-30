@@ -590,21 +590,54 @@ def expand_local_date_macros(sql: str, dialect: str | None) -> str:
     d = (dialect or "").strip().lower()
 
     def _one(m: "re.Match[str]") -> str:
-        expr = m.group(1).strip()
-        tz = m.group(2).strip()
-        if not _TZ_NAME_RE.fullmatch(tz):
-            return f"CAST({expr} AS DATE)"
-        if d == "bigquery":
-            return f"DATE({expr}, '{tz}')"
-        if d in ("postgresql", "duckdb"):
-            # naive timestamps are stored as UTC instants in our pipeline —
-            # interpret as UTC, then shift to the calendar timezone.
-            return f"CAST(({expr} AT TIME ZONE 'UTC' AT TIME ZONE '{tz}') AS DATE)"
-        if d == "mysql":
-            return f"DATE(CONVERT_TZ({expr}, 'UTC', '{tz}'))"
-        return f"CAST({expr} AS DATE)"
+        return local_date_sql(m.group(1).strip(), m.group(2).strip(), d)
 
     return _LOCAL_DATE_MACRO_RE.sub(_one, sql)
+
+
+def local_date_sql(expr: str, tz: str, dialect: str | None) -> str:
+    """The calendar date, in timezone `tz`, of the instant `expr`.
+
+    The ONE rule for "which local day does this event belong to" — used by the
+    calendar join (via the macro above) and by time-grain bucketing, so a chart
+    grouped by month and a chart grouped by the calendar's month put a
+    near-midnight event in the same bucket. Unknown tz or dialect → plain CAST."""
+    d = (dialect or "").strip().lower()
+    if not _TZ_NAME_RE.fullmatch(str(tz or "")):
+        return f"CAST({expr} AS DATE)"
+    if d == "bigquery":
+        return f"DATE({expr}, '{tz}')"
+    if d in ("postgresql", "duckdb"):
+        # naive timestamps are stored as UTC instants in our pipeline —
+        # interpret as UTC, then shift to the calendar timezone.
+        return f"CAST(({expr} AT TIME ZONE 'UTC' AT TIME ZONE '{tz}') AS DATE)"
+    if d == "mysql":
+        return f"DATE(CONVERT_TZ({expr}, 'UTC', '{tz}'))"
+    return f"CAST({expr} AS DATE)"
+
+
+_INSTANT_PHYSICAL_TYPES = frozenset({"timestamp", "timestamptz", "timestamp_tz", "timestamp with time zone"})
+
+
+def is_instant_column(physical_type: str | None, column_type: str | None) -> bool:
+    """TIMESTAMP-like columns are instants (convertible between timezones); a
+    wall-clock DATETIME/DATE carries no timezone. Keyed on the PHYSICAL type —
+    BigQuery TIMESTAMP is often value-sampled as semantic "datetime"."""
+    phys = str(physical_type or "").strip().lower().split("(", 1)[0].strip()
+    ctype = str(column_type or "").strip().lower()
+    return phys in _INSTANT_PHYSICAL_TYPES or (not phys and ctype == "timestamp")
+
+
+def effective_calendar_timezone(dataset) -> str | None:
+    """The dataset calendar's timezone when it is an explicit non-UTC IANA name
+    (the only case that shifts dates), else None."""
+    try:
+        tz = str(get_calendar_settings(dataset).get("timezone") or "").strip()
+    except Exception:  # noqa: BLE001 — unreadable settings = default (UTC)
+        return None
+    if tz and tz.upper() != "UTC" and _TZ_NAME_RE.fullmatch(tz):
+        return tz
+    return None
 
 
 def build_calendar_join_sql(
@@ -628,10 +661,7 @@ def build_calendar_join_sql(
     # no-op. TIMESTAMP/TIMESTAMPTZ are instants (tz-convertible); a genuine
     # wall-clock DATETIME/DATE carries no tz and keeps the plain CAST.
     tz = str(timezone or "").strip()
-    phys = str(physical_type or "").strip().lower().split("(", 1)[0].strip()
-    ctype = str(column_type or "").strip().lower()
-    _INSTANT_PHYS = {"timestamp", "timestamptz", "timestamp_tz", "timestamp with time zone"}
-    is_instant = phys in _INSTANT_PHYS or (not phys and ctype == "timestamp")
+    is_instant = is_instant_column(physical_type, column_type)
     if (
         tz and tz.upper() != "UTC" and is_instant
         and _TZ_NAME_RE.fullmatch(tz)

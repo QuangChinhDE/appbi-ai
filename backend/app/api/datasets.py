@@ -5915,8 +5915,19 @@ def update_dataset_explore(
             ]
             editable_joins = [
                 join for join in value
-                if not (join.get("managed") and join.get("origin") not in {"auto_fk", "auto_calendar"})
+                if isinstance(join, dict)
+                and not (join.get("managed") and join.get("origin") not in {"auto_fk", "auto_calendar"})
             ]
+            # Same structural checks as add_join (views of this dataset, real
+            # columns, a declared cardinality) — a wholesale write used to store
+            # anything, and a missing cardinality was later read as many-to-one.
+            from app.services.dataset_model_service import validate_direct_explore_joins
+            try:
+                editable_joins = validate_direct_explore_joins(
+                    db, dataset_id, explore.base_view_name, editable_joins,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
             setattr(explore, key, [*managed_joins, *editable_joins])
             continue
         setattr(explore, key, value)
@@ -6100,6 +6111,20 @@ def suggest_model_join(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _strict_optional_bool(raw, field: str, *, default: bool) -> bool:
+    """A JSON boolean, or its exact text form. Absent → ``default``.
+
+    Anything else is refused: ``bool("false")`` is True, so a lenient cast
+    turned an explicit "inactive" into an ACTIVE relationship."""
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and raw.strip().lower() in ("true", "false"):
+        return raw.strip().lower() == "true"
+    raise ValueError(f"{field} phải là true/false (nhận {raw!r})")
+
+
 @router.post(
     "/{dataset_id}/model/joins",
     summary="Add or update a relationship between two tables",
@@ -6132,14 +6157,19 @@ def add_model_join(
         alias_value = payload.get("alias")
         if alias_value is not None:
             alias_value = str(alias_value).strip() or None
-        # Phase-3b: optional is_active + cross_filter. Defaults preserved on
-        # service side so callers from older clients keep working.
-        raw_active = payload.get("is_active")
-        is_active = True if raw_active is None else bool(raw_active)
-        cross_filter = str(payload.get("cross_filter") or "single").strip().lower()
-        if cross_filter not in ("single", "both"):
-            cross_filter = "single"
-        force = bool(payload.get("force", False))
+        # Phase-3b: optional is_active + cross_filter. Absent → the documented
+        # defaults (active, single). PRESENT but malformed → rejected: `bool("false")`
+        # is True and an unknown cross_filter used to be rewritten to "single",
+        # so a caller's intent was silently replaced by a different relationship.
+        is_active = _strict_optional_bool(payload.get("is_active"), "is_active", default=True)
+        raw_cf = payload.get("cross_filter")
+        cross_filter = "single" if raw_cf is None else str(raw_cf)
+        force = _strict_optional_bool(payload.get("force"), "force", default=False)
+        raw_pk = payload.get("primary_key_on_to_view")
+        if raw_pk is not None and not (
+            isinstance(raw_pk, list) and all(isinstance(c, str) for c in raw_pk)
+        ):
+            raise ValueError("primary_key_on_to_view phải là danh sách tên cột")
         result = add_join(
             db,
             dataset_id=dataset_id,
@@ -6151,9 +6181,11 @@ def add_model_join(
             to_columns=to_columns,
             join_type=payload.get("join_type", "left"),
             relationship=payload.get("relationship", "many_to_one"),
+            cardinality=payload.get("cardinality"),
             alias=alias_value,
             is_active=is_active,
             cross_filter=cross_filter,
+            primary_key_on_to_view=raw_pk,
             force=force,
         )
         return result
