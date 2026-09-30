@@ -1,5 +1,11 @@
 ﻿'use client';
 
+import { sectionTitlesOf } from '@/lib/report-meta';
+import { fitLayoutToContent, useMeasuredContentRows } from '@/lib/responsive-fit';
+import { extractParamDefs } from '@/lib/dashboard-params';
+import { groupIntoPrintBands } from '@/lib/print-bands';
+import { planKeyForElement, PRINTABLE_ELEMENT_TYPES } from '@/lib/export-layout';
+import { widgetTypeLabel } from '@/components/dashboards/widget-forms';
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
@@ -17,6 +23,9 @@ import {
 } from 'lucide-react';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
+import { GridSlicerTile, FilterApplyBar, type SlicerControlBinding } from '@/components/dashboards/GridSlicerTile';
+import { isSlicerControl, placedSlicerIds, replaceSlicerById, slicerIdOfControl } from '@/lib/slicer-placement';
+import { withoutAbsentControls } from '@/lib/grid-arrange';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
@@ -30,8 +39,6 @@ import {
 } from '@/lib/export-mode';
 import { parsePrintRenderOptions, type PrintRenderOptions } from '@/lib/print-render';
 import { toast } from '@/lib/toast';
-import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
-import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -47,7 +54,10 @@ import {
   getDashboardChartPageId,
   getDashboardChartsForPage,
   normalizeDashboardPages,
-  deriveStackedLayout,
+  buildResponsiveReportLayouts,
+  reportBreakpointFor,
+  REPORT_RESPONSIVE_BREAKPOINTS,
+  REPORT_RESPONSIVE_COLS,
   computeReportRowHeight,
   dashboardRowHeight,
   DASHBOARD_GRID_COLS,
@@ -55,15 +65,26 @@ import {
   REPORT_STACK_BREAKPOINT,
 } from '@/lib/dashboard-pages';
 import { resolveStyleTokens } from '@/lib/dashboard-theme-tokens';
-import { applyScopeBound, dockLayoutClasses, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
+import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
 import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
-import { mergeSeedWithViewerSelections, resolvePublicPageFilterContext } from '@/lib/public-page-filters';
+import { mergeSeedWithViewerSelections, pageFilterFacts, resolvePublicPageFilterContext, statePageFilterFact, type PageFilterFact } from '@/lib/public-page-filters';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
+import { citedTilesOf } from '@/lib/report-evidence';
+import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
+import { auditRenderedTiles } from '@/lib/dashboard-presentation/render-audit';
+import { SectionBands } from './SectionBands';
+import { readingOrder, resolveStructure, toStructTiles } from '@/lib/report-structure';
+import { ReportMetaProvider } from '@/lib/report-meta';
+import { ReportEvidenceProvider } from '@/lib/report-evidence';
 
 // Phase-B5 / Phase-B9 — responsive "Fit to width" grid for the public report.
-// Two breakpoints ONLY:
+// (Now THREE breakpoints: a tablet band between them is derived by
+// `deriveTabletLayout`, which leaves the authored layout untouched unless a tile
+// would render below its readable width — see buildResponsiveReportLayouts.)
+// Originally two:
 //   • lg  (≥ REPORT_STACK_BREAKPOINT grid px): 12 columns, the EXACT authored
 //     layout — so a desktop resize stays in lg and never reflows/jumps. The row
 //     height scales WITH the grid width (see computeReportRowHeight) so tiles keep
@@ -74,10 +95,10 @@ import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 // auto-generates (and never reflows) a layout. compactType=null +
 // preventCollision preserve coordinates exactly as provided.
 const ResponsiveReportGrid = WidthProvider(Responsive);
-const REPORT_BREAKPOINTS = { lg: REPORT_STACK_BREAKPOINT, xs: 0 };
+const REPORT_BREAKPOINTS = REPORT_RESPONSIVE_BREAKPOINTS;
 // Finer grid: 36 cols on desktop/tablet (matches the builder; ×3-migrated coords
 // render identically). Phone stack stays 1-col.
-const REPORT_COLS = { lg: DASHBOARD_GRID_COLS, xs: 1 };
+const REPORT_COLS = REPORT_RESPONSIVE_COLS;
 
 // Measure an element's CONTENT width (excludes padding) via ResizeObserver and
 // keep it in state. Used to drive the report grid's proportional row height from
@@ -280,27 +301,6 @@ function getErrorMessage(error: any): string {
  * public chart-data endpoint allows 300 req/min, so 8 concurrent stays well
  * within budget even on a 20-tile dashboard with filter re-fetches.
  */
-/** Group dashboard tiles into their authored rows (same `y`), left to right. */
-function groupTilesIntoRows(charts: DashboardChart[]): DashboardChart[][] {
-  const sorted = [...charts].sort((a, b) => {
-    const ay = a.layout?.y ?? 0;
-    const by = b.layout?.y ?? 0;
-    if (ay !== by) return ay - by;
-    return (a.layout?.x ?? 0) - (b.layout?.x ?? 0);
-  });
-  const rows: DashboardChart[][] = [];
-  let currentY: number | null = null;
-  for (const chart of sorted) {
-    const y = chart.layout?.y ?? 0;
-    if (currentY === null || y !== currentY) {
-      rows.push([chart]);
-      currentY = y;
-    } else {
-      rows[rows.length - 1].push(chart);
-    }
-  }
-  return rows;
-}
 
 const CHART_FETCH_CONCURRENCY = 8;
 // PDF export retries a chart that failed to load before giving up and listing it
@@ -344,7 +344,7 @@ function formatSnapshotAsOf(value: string | null | undefined): string {
   });
 }
 
-export function PublicDashboardView({ variant = 'public' }: { variant?: 'public' | 'embed' }) {
+function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' | 'embed' }) {
   const params = useParams();
   const token = params.token as string;
   // Embed renders inside a host <iframe>: it grows to its content height and
@@ -352,6 +352,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // full-viewport app-shell the standalone /d page uses.
   const isEmbed = variant === 'embed';
   useParentResize(isEmbed);
+  const { t, locale } = useI18n();
 
   const [mounted, setMounted] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -456,15 +457,38 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // via onVisible; the fetch effect uses this set to gate which charts to request.
   const [visibleChartIds, setVisibleChartIds] = useState<Set<number>>(() => new Set());
   const [forceVisibleAll, setForceVisibleAll] = useState(false);
+  // Tiles a narrative block cites load with the page, not when scrolled to: a
+  // headline at the top must not say "updating" because its evidence is a
+  // chart below the fold.
+  const citedTileIds = useMemo(() => citedTilesOf(dashboard?.dashboard_charts), [dashboard?.dashboard_charts]);
   const publicContentRef = useRef<HTMLElement>(null);
   const gridSectionRef = useRef<HTMLElement>(null);
   // "Fit to width": measure the grid wrapper and scale the react-grid row height
   // with it, so tiles keep their authored aspect ratio from phone to TV. The
   // ref-callback attaches to whichever of the two grid branches is mounted.
   const [gridMeasureRef, gridWidth] = useContentWidth();
+  // The render-quality probe the e2e gate calls on the published report — the
+  // same DOM audit the builder's AI Design preview runs. Read-only, no network.
+  useEffect(() => {
+    (window as any).__APPBI_RENDER_AUDIT__ = () => auditRenderedTiles(document);
+    return () => { delete (window as any).__APPBI_RENDER_AUDIT__; };
+  }, []);
   // Finer grid: row height couples to the theme gap so the ×3-migrated layout
   // renders pixel-identical to the builder (see dashboardRowHeight).
   const reportRowHeight = computeReportRowHeight(gridWidth, getDashboardGridMargin(dashboard?.theme_config)[1]);
+  // Tablet and phone: headers, text and KPI cards take the height of what they
+  // say at that width (lib/responsive-fit) — a derived layout, never saved.
+  const fitRootRef = useRef<HTMLDivElement | null>(null);
+  const fitBreakpoint = reportBreakpointFor(gridWidth);
+  const measuredContentRows = useMeasuredContentRows(
+    fitRootRef,
+    {
+      enabled: !printMode && (gridWidth ?? 0) > 0 && fitBreakpoint !== 'lg',
+      rowHeight: reportRowHeight,
+      gapY: getDashboardGridMargin(dashboard?.theme_config)[1],
+    },
+    [gridWidth, currentPageId, chartData, dashboard?.dashboard_charts],
+  );
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
@@ -587,26 +611,35 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // shown a read-only "ⓘ Đang lọc theo …" line so they understand
   // the data scope. `hidden` entries do not appear here by design —
   // see docs/filter-semantics.md §2.2/§9.
-  const lockedBannerEntries = useMemo(() => {
-    const result: { field: string; label?: string; value: any }[] = [];
+  // Per page: a page's own locked filters belong to that page only (the PDF
+  // states each page's, not the active page's).
+  const lockedEntriesFor = useCallback((pageId: string) => {
+    const result: { field: string; label?: string; value: any; operator?: string; datePreset?: any }[] = [];
     const collect = (entries: any[]) => {
       for (const e of entries || []) {
         if (!e || typeof e !== 'object') continue;
         const mode = e.publicMode ?? 'visible';
         if (mode !== 'locked') continue;
         if (e.showBanner === false) continue;
-        result.push({ field: e.field, label: e.label, value: e.value });
+        result.push({ field: e.field, label: e.label, value: e.value, operator: e.operator, datePreset: e.datePreset });
       }
     };
     if (dashboard) {
       collect((dashboard as any).filters_config || []);
-      const page = dashboardPages.find((p) => p.id === activePageId);
+      const page = dashboardPages.find((p) => p.id === pageId);
       if (page) {
         collect((page as any).filters || []);
       }
+      // The link's locked (🔒) filters: enforced by the server, served read-only
+      // so the reader is told the report is filtered. Hidden (🚫) link filters
+      // are never served.
+      for (const e of ((dashboard as any).public_link_locked_filters || []) as any[]) {
+        if (e && typeof e === 'object' && e.field) result.push({ field: e.field, label: e.label ?? undefined, value: e.value, operator: e.operator, datePreset: e.datePreset });
+      }
     }
     return result;
-  }, [dashboard, dashboardPages, activePageId]);
+  }, [dashboard, dashboardPages]);
+  const lockedBannerEntries = useMemo(() => lockedEntriesFor(activePageId), [lockedEntriesFor, activePageId]);
 
   // Phase-F THẬT (PBI-parity rework) — override-allowed filters list
   // for the "Xem chi tiết" mini-pane. Entries with publicMode='visible'
@@ -856,7 +889,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       type BatchEntry = { chartId: number; data: any; error: string | null; status?: number };
       let entries: BatchEntry[];
       try {
-        const resp = await publicDashboardApi.getChartsDataBatch(token, sessionToken, batchItems);
+        const resp = await publicDashboardApi.getChartsDataBatch(token, sessionToken, batchItems, pageId);
         const byId = new Map<number, { data?: any; error?: string; status?: number }>();
         for (const r of resp.results || []) byId.set(r.chart_id, r);
         entries = targetCharts.map((dc) => {
@@ -961,7 +994,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
           );
           try {
             const data = await publicDashboardApi.getChartData(
-              token, dc.chart_id, session ?? undefined, requestFilters, chartGrainsRef.current[dc.chart_id],
+              token, dc.chart_id, session ?? undefined, requestFilters, chartGrainsRef.current[dc.chart_id], activePageId,
             );
             return { chartId: dc.chart_id, data };
           } catch {
@@ -1033,7 +1066,8 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     // the printed report would come out empty below the fold.
     const lazyIds = targetCharts
       .map((dc) => dc.chart_id)
-      .filter((id) => forceVisibleAll || visibleChartIds.has(id));
+      .filter((id) => forceVisibleAll || visibleChartIds.has(id)
+        || targetCharts.some((dc) => dc.chart_id === id && citedTileIds.has(dc.id)));
     if (lazyIds.length === 0) {
       // Nothing visible yet (initial mount before IntersectionObserver fires).
       // Skip — the visibility effect will trigger fetch as tiles report in.
@@ -1043,7 +1077,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState, {
       chartIds: lazyIds,
     });
-  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, filtersSeeded, forceVisibleAll, pageState, token, visibleChartIds]);
+  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, filtersSeeded, forceVisibleAll, pageState, token, visibleChartIds, citedTileIds]);
 
   const handlePasswordSubmit = useCallback(async (password: string) => {
     setAuthSubmitting(true);
@@ -1072,20 +1106,16 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     setAuthError(null);
   }, []);
 
-  // Phase-B22 — human-readable summary of the slicers/filters the viewer has
-  // applied, baked into each PDF page header so an exported report says which
-  // slice of data it represents.
-  const summarizeViewerFilters = useCallback((): string => {
-    if (!appliedViewerFilters.length) return '';
-    return appliedViewerFilters
-      .map((f) => {
-        const label = getFilterDisplayLabel(f);
-        const val = formatFilterValue((f as { value?: unknown }).value);
-        return val ? `${label}: ${val}` : label;
-      })
-      .filter(Boolean)
-      .join(' · ');
-  }, [appliedViewerFilters]);
+  // Phase-B22 — human-readable summary of the slicers/filters that shape a
+  // page, baked into THAT page's PDF header so an exported report says which
+  // slice of data each page represents. The export passes the page's own
+  // context (the one it fetched that page's data with); a page's filters are
+  // not the active page's.
+  const summarizeViewerFilters = useCallback((context?: { pageId: string; applied: BaseFilter[]; pageHidden: BaseFilter[] }): string => pageFilterFacts({
+    applied: context?.applied ?? appliedViewerFilters,
+    pageHidden: context?.pageHidden ?? pageHiddenFilters,
+    locked: context ? lockedEntriesFor(context.pageId) : lockedBannerEntries,
+  }).map((f) => `${f.locked ? '🔒 ' : ''}${f.label}: ${statePageFilterFact(f, t)}`).join(' · '), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, lockedEntriesFor, t]);
 
   /**
    * Server-side export: hand the request to the render worker and poll.
@@ -1234,7 +1264,20 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     try {
       const safeName = safePdfFilename(dashboard.public_link_name || dashboard.name, 'bao-cao');
       const storedSession = getPublicSession(token) ?? undefined;
-      const filtersSummary = summarizeViewerFilters();
+      // Each page's header states the filters that page's data was fetched
+      // with — the same merge ensurePageDataLoaded uses.
+      const filtersSummaryFor = (pageId: string) => {
+        const { controlSeed, hiddenFilters } = resolvePublicPageFilterContext(
+          dashboard as unknown as Record<string, unknown>,
+          dashboardPages,
+          pageId,
+        );
+        return summarizeViewerFilters({
+          pageId,
+          applied: mergeSeedWithViewerSelections(controlSeed, frozenViewerFilters),
+          pageHidden: hiddenFilters,
+        });
+      };
 
       // Fetch every chart of `pageId` with THAT page's filter context, retrying
       // the ones that fail; whatever is still broken is recorded as a warning.
@@ -1280,7 +1323,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
           failures.push({
             page: pageName,
             chart: chartNameById.get(id) || `Biểu đồ #${id}`,
-            reason: chartErrorsRef.current[id] || 'Không tải được dữ liệu',
+            reason: chartErrorsRef.current[id] || t('dashboards.readonlyChartTile.failedToLoad'),
           });
         }
       };
@@ -1289,7 +1332,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
       const pageSources = (chosen.length ? chosen : [{ id: activePageId, name: '' }]).map((p) => ({
         name: p.name,
-        filtersSummary,
+        filtersSummary: filtersSummaryFor(p.id),
         getRoot: async () => {
           setCurrentPageId(p.id);
           // Keep the on-screen state coherent with the page being captured (the
@@ -1313,6 +1356,14 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
 
       const { exportDashboardPdf } = await import('@/lib/export-pdf');
       const result = await exportDashboardPdf({
+        description: dashboard?.description ?? null,
+        locale,
+        labels: {
+          filters: t('dashboards.pdf.filters'),
+          exportedAt: t('dashboards.pdf.exportedAt'),
+          dataAsOf: t('dashboards.pdf.dataAsOf'),
+          snapshotNote: t('dashboards.pdf.snapshotNote'),
+        },
         filename: `${safeName}.pdf`,
         title: reportTitle,
         orientation: choices.orientation,
@@ -1405,11 +1456,16 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const planCandidates = useMemo(() => {
     const pageNameById = new Map(dashboardPages.map((pg) => [pg.id, pg.name]));
     return (dashboard?.dashboard_charts ?? [])
-      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id)
+      // Charts, and the report elements that print (header, headings, text,
+      // insights) — an arranged handout keeps the report's own words.
+      .filter((dc) => ((!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id)
+        || PRINTABLE_ELEMENT_TYPES.has(String(dc.widget_type)))
       .map((dc) => ({
-        chartId: dc.chart_id,
-        title: dc.chart?.name || `Biểu đồ #${dc.chart_id}`,
-        chartType: (dc.chart as { chart_type?: string } | undefined)?.chart_type,
+        chartId: dc.widget_type && dc.widget_type !== 'chart' ? planKeyForElement(dc.id) : dc.chart_id,
+        title: dc.widget_type && dc.widget_type !== 'chart'
+          ? String((dc.widget_config as any)?.title || (dc.widget_config as any)?.headline || (dc.widget_type === 'hero_strip' ? (dashboard?.public_link_name || dashboard?.name) : '') || widgetTypeLabel(t, dc.widget_type))
+          : dc.chart?.name || `#${dc.chart_id}`,
+        chartType: dc.widget_type && dc.widget_type !== 'chart' ? 'ELEMENT' : (dc.chart as { chart_type?: string } | undefined)?.chart_type,
         pageId: getDashboardChartPageId(dc.layout),
         pageName: pageNameById.get(getDashboardChartPageId(dc.layout)) || undefined,
         layout: {
@@ -1419,7 +1475,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
           h: Number(dc.layout?.h ?? 6),
         },
       }));
-  }, [dashboard?.dashboard_charts, dashboardPages]);
+  }, [dashboard?.dashboard_charts, dashboard?.name, dashboardPages, t]);
 
   /**
    * Load one page's chart data for the export arranger's previews.
@@ -1491,11 +1547,33 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     // into the slicer values too (not only into chart data). Without this a
     // public slicer offered values outside the page-filter scope.
     pageHiddenFilters,
+    activePageId,
   );
   const hasPendingFilterChanges = useMemo(
     () => JSON.stringify(draftViewerFilters) !== JSON.stringify(appliedViewerFilters),
     [appliedViewerFilters, draftViewerFilters],
   );
+  // Slicer controls placed on this page's grid (lib/slicer-placement) draw
+  // their slicer there; the filter bar shows the rest. The viewer's filters are
+  // the only state either one edits — the same staged list, the same Apply.
+  const placedViewerSlicerIds = useMemo(
+    () => placedSlicerIds(visibleDashboardCharts),
+    [visibleDashboardCharts],
+  );
+  const placedViewerFilters = useMemo(
+    () => draftViewerFilters.filter((f) => placedViewerSlicerIds.has(String(f.id ?? ''))),
+    [draftViewerFilters, placedViewerSlicerIds],
+  );
+  // What constrains this page that no control on it shows: a link or report
+  // lock, a filter the page carries, a slicer scoped to filter here without a
+  // control, or a slicer with no control on this page. A filtered page must
+  // never read as unfiltered.
+  const filterContextFacts = useMemo<PageFilterFact[]>(() => pageFilterFacts({
+    applied: appliedViewerFilters,
+    pageHidden: pageHiddenFilters,
+    locked: lockedBannerEntries,
+    withoutControl: new Set(appliedViewerFilters.map((f) => String(f.id ?? '')).filter((id) => !placedViewerSlicerIds.has(id))),
+  }), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, placedViewerSlicerIds]);
   const publicTheme = useMemo(
     () => buildPublicLinkTheme(dashboard?.public_link_appearance),
     [dashboard?.public_link_appearance],
@@ -1523,25 +1601,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // read-only, already filter/permission-scoped). Admin toggle, default on.
   const dataExportEnabled = appearance.allow_data_export;
   const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
-  const showFilterControls = viewerFiltersEnabled && availableFilterColumns.length > 0;
   const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
-  // The saved dock, honoured on the public link exactly as in the builder.
-  //
-  // This used to be a boolean for 'left' only, duplicated from the builder's
-  // own branch — so widening the builder to six docks would have silently left
-  // the public report on two. Both now read `dockLayoutClasses`, and a rail is
-  // left OR right rather than a hard-coded side.
-  // Same resolution as the builder: author placement first, then the theme's
-  // composition default.
-  const slicerDock = String(
-    (dashboard as any)?.slicer_cluster_layout?.position
-    ?? resolveStyleTokens(((dashboard as any)?.theme_config ?? null) as any).filterDock,
-  );
-  const slicerClusterIsRail = slicerDock === 'left' || slicerDock === 'right';
-  const slicerDockClasses = dockLayoutClasses(slicerDock);
-  // 'hidden' keeps the filter VALUES (they are merged server-side) and drops
-  // only the UI — the case a locked public link is built for.
-  const slicerDockHidden = slicerDock === 'hidden';
 
   const handleApplyFilters = useCallback(() => {
     setIsApplyingFilters(true);
@@ -1644,69 +1704,56 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // Render at STORED coordinates — NO liftLayoutToTop. The public report must be
   // pixel-WYSIWYG with the builder desktop: an intentional top gap the DA left is
   // preserved, not normalized away.
-  const layouts: Layout[] = visibleDashboardCharts.map((dashboardChart) => {
-    const layout = dashboardChart.layout;
-    return {
-      i: dashboardChart.id.toString(),
-      x: layout.x || 0,
-      y: layout.y || 0,
-      w: layout.w || 4,
-      h: layout.h || 4,
-    };
-  });
+  //
+  // One exception: a filter control that draws NOTHING for this viewer (its
+  // field is locked or hidden by the link, or its slicer's scope does not show
+  // it on this page) leaves no blank cell — its band closes, the builder's rule
+  // for a removed control (lib/grid-arrange withoutAbsentControls). Decided only
+  // once the viewer's filters are seeded, so the page never jumps. The filter
+  // itself still applies; the header says so (filterContextFacts).
+  const viewerSlicerIds = new Set(draftViewerFilters.map((f) => String(f.id ?? '')));
+  const absentControlIds = filtersSeeded
+    ? new Set(visibleDashboardCharts
+      .filter((dc) => isSlicerControl(dc) && !viewerSlicerIds.has(slicerIdOfControl(dc) ?? ''))
+      .map((dc) => dc.id))
+    : new Set<number>();
+  const gridDashboardCharts = absentControlIds.size
+    ? visibleDashboardCharts.filter((dc) => !absentControlIds.has(dc.id))
+    : visibleDashboardCharts;
+  const projectedBoxes = withoutAbsentControls(visibleDashboardCharts.map((dc) => ({
+    id: dc.id,
+    x: dc.layout.x || 0,
+    y: dc.layout.y || 0,
+    w: dc.layout.w || 4,
+    h: dc.layout.h || 4,
+    locked: Boolean((dc.layout as any)?.locked),
+  })), absentControlIds);
+  const layouts: Layout[] = projectedBoxes.map((b) => ({ i: b.id.toString(), x: b.x, y: b.y, w: b.w, h: b.h }));
 
-  // Phase-G — single SlicerCluster node reused in both placements:
-  // stacked above the grid (top) or as a left column (left). Defined
-  // here so it can sit beside the grid section in left mode.
-  const slicerClusterNode = showFilterControls ? (
-    <div className="[&>div]:mb-0">
-      <SlicerCluster
-        items={[
-          ...draftViewerFilters,
-          ...(((dashboard as any)?.slicers_config || []).filter(
-            (c: any) => c && typeof c === 'object' && c.type === 'image',
-          )),
-        ]}
-        onChildrenChange={(next) => {
-          setDraftViewerFilters(
-            (next as any[]).filter(
-              (c) => !(c && typeof c === 'object' && (c as any).type === 'image'),
-            ),
-          );
-        }}
-        layout={(dashboard as any)?.slicer_cluster_layout || null}
-        columns={availableFilterColumns}
-        columnChartCount={availableFilterChartCount}
-        distinctValues={resolvedDistinctValues}
-        distinctStatus={resolvedDistinctStatus}
-        // Type-to-search over the FULL cached distinct set for high-cardinality
-        // slicers on a public/embed link. Hits the BE result cache via the
-        // public endpoint (no per-keystroke BigQuery, no authed call).
-        fetchServerDistinct={async (column, search) => {
-          if (!column.datasetId || !column.semanticField) return [];
-          try {
-            // Cascade the search results by the viewer's other active filters
-            // + page-scope (same context the prefetch uses); self-strips this
-            // field so the dropdown never pins its own value.
-            const filterContext = getDistinctValueFilterContext(
-              [...appliedViewerFilters, ...pageHiddenFilters], column,
-            );
-            const res = await publicDashboardApi.getFilterDistinctValues(
-              token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search,
-            );
-            return res.values ?? [];
-          } catch {
-            return [];
-          }
-        }}
-        hasPendingChanges={hasPendingFilterChanges}
-        onApply={handleApplyFilters}
-        onReset={handleResetFilters}
-        isApplying={isApplyingFilters}
-        lockSlots
-      />
-    </div>
-  ) : null;
+  // Desktop is authored; tablet and phone are derived from it by the same rules
+  // the builder's narrow projection uses (lib/dashboard-pages).
+  // Plain computation, not a hook: it sits below early returns and is cheap.
+  const tileKindById = new Map(visibleDashboardCharts.map((dc) => [
+    String(dc.id), tileKindOf(dc.chart?.chart_type, dc.widget_type),
+  ]));
+  const geometryById = new Map(layouts.map((l) => [l.i, l]));
+  const responsiveLayouts = buildResponsiveReportLayouts(layouts, {
+    kindOf: (item) => tileKindById.get(item.i) ?? 'chart',
+    gridWidth,
+    gridGap: getDashboardGridMargin(dashboard?.theme_config)[1],
+    // Sections read as a unit on a phone: header, then its members.
+    order: readingOrder(toStructTiles(visibleDashboardCharts, (id) => ({
+      ...((visibleDashboardCharts.find((dc) => dc.id === id)?.layout as any) ?? {}),
+      ...geometryById.get(String(id)),
+    }))).map(String),
+  });
+  const activeBreakpoint = reportBreakpointFor(gridWidth);
+  if (activeBreakpoint !== 'lg') {
+    responsiveLayouts[activeBreakpoint] = fitLayoutToContent(
+      responsiveLayouts[activeBreakpoint], measuredContentRows, activeBreakpoint === 'xs' ? 'stack' : 'grow',
+    );
+  }
+
 
   /**
    * Does this surface offer PDF export?
@@ -1821,123 +1868,6 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     </nav>
   ) : null;
 
-  const filterBannerEl = (lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) ? (
-    <div
-      className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary"
-      style={publicTheme.neutralPillStyle}
-      data-public-locked-banner
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        {lockedBannerEntries.length > 0 ? (
-          <>
-            <span className="font-medium text-text-tertiary">ⓘ Đang lọc theo:</span>
-            {lockedBannerEntries.map((entry, i) => (
-              <span key={`${entry.field}-${i}`} className="inline-flex items-center gap-1">
-                <span className="opacity-70">🔒</span>
-                <span className="font-medium">{entry.label ?? entry.field}</span>
-                <span className="text-text-quaternary">=</span>
-                <span className="font-mono">
-                  {Array.isArray(entry.value)
-                    ? entry.value.slice(0, 3).join(', ') + (entry.value.length > 3 ? `, +${entry.value.length - 3}` : '')
-                    : String(entry.value ?? '')}
-                </span>
-              </span>
-            ))}
-          </>
-        ) : (
-          <span className="text-text-tertiary">Bộ lọc nâng cao có sẵn.</span>
-        )}
-        <button
-          type="button"
-          onClick={() => setIsMiniPaneOpen((v) => !v)}
-          className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
-        >
-          {isMiniPaneOpen ? 'Đóng' : 'Xem chi tiết'}
-        </button>
-      </div>
-      {isMiniPaneOpen && (
-        <div className="mt-3 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-          {lockedBannerEntries.length > 0 && (
-            <div className="space-y-1.5">
-              <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                Bộ lọc cố định (do người chia sẻ link cấu hình)
-              </div>
-              {lockedBannerEntries.map((entry, i) => (
-                <div key={`lock-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
-                  <span>🔒</span>
-                  <span className="font-medium">{entry.label ?? entry.field}</span>
-                  <span className="text-text-quaternary">=</span>
-                  <span className="font-mono text-text-secondary">
-                    {Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
-                  </span>
-                  <span className="ml-auto text-tiny text-text-quaternary">Read-only</span>
-                </div>
-              ))}
-            </div>
-          )}
-          {overridableFilterEntries.length > 0 && (
-            <div className={`${lockedBannerEntries.length > 0 ? 'mt-3 border-t border-[rgb(var(--border-line))] pt-3' : ''} space-y-1.5`}>
-              <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                Bộ lọc có thể chỉnh
-              </div>
-              {overridableFilterEntries.map((entry, i) => {
-                const currentDraft = draftViewerFilters.find(
-                  (f) => f.field === entry.field || f.semanticField === entry.semanticField,
-                );
-                const displayValue = currentDraft?.value ?? entry.value;
-                return (
-                  <div key={`ov-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
-                    <span>👁</span>
-                    <span className="font-medium">{entry.label ?? entry.field}</span>
-                    <span className="text-text-quaternary">=</span>
-                    <input
-                      type="text"
-                      value={Array.isArray(displayValue) ? displayValue.join(', ') : String(displayValue ?? '')}
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        const nextValue = raw.includes(',')
-                          ? raw.split(',').map((s) => s.trim()).filter(Boolean)
-                          : raw;
-                        setDraftViewerFilters((prev) => {
-                          const others = prev.filter(
-                            (f) => f.field !== entry.field && f.semanticField !== entry.semanticField,
-                          );
-                          return [
-                            ...others,
-                            {
-                              ...(currentDraft ?? {}),
-                              id: currentDraft?.id ?? `override-${entry.field}`,
-                              field: entry.field,
-                              semanticField: entry.semanticField,
-                              type: (currentDraft?.type ?? entry.type ?? 'dropdown') as any,
-                              operator: (currentDraft?.operator ?? 'in') as any,
-                              value: nextValue,
-                            } as any,
-                          ];
-                        });
-                      }}
-                      placeholder={Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
-                      className="ml-auto w-48 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-tiny outline-none focus:ring-1 focus:ring-brand"
-                    />
-                  </div>
-                );
-              })}
-              <div className="mt-2 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleApplyFilters()}
-                  disabled={!hasPendingFilterChanges}
-                  className="rounded border border-brand bg-brand px-3 py-1 text-tiny font-emphasis text-text-inverse transition-opacity disabled:opacity-50"
-                >
-                  Apply
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  ) : null;
 
   const filterLiveEl = showLiveState ? (
     <div className="flex flex-col gap-3">
@@ -2019,6 +1949,47 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     </div>
   ) : null;
 
+  // Type-to-search for a public slicer control (public endpoint only — no
+  // authed call on this surface).
+  const fetchPublicServerDistinct = async (column: ColumnInfo, search: string): Promise<string[]> => {
+    if (!column.datasetId || !column.semanticField) return [];
+    try {
+      // Cascade the search results by the viewer's other active filters
+      // + page-scope (same context the prefetch uses); self-strips this
+      // field so the dropdown never pins its own value.
+      const filterContext = getDistinctValueFilterContext(
+        [...appliedViewerFilters, ...pageHiddenFilters], column,
+      );
+      const res = await publicDashboardApi.getFilterDistinctValues(
+        token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search, undefined, activePageId,
+      );
+      return res.values ?? [];
+    } catch {
+      return [];
+    }
+  };
+
+  // What a slicer control on this page's grid is bound to. Only the viewer's
+  // own seed can be shown: a field the link locks or hides was stripped by the
+  // server, and a slicer its scope keeps off this page is not in the seed — both
+  // resolve to "missing", and a viewer sees nothing there.
+  const publicSlicerBinding: SlicerControlBinding = {
+    slicers: draftViewerFilters,
+    siblingFilters: draftViewerFilters,
+    visibleHere: () => true,
+    filtersHere: () => true,
+    editing: false,
+    readOnly: !viewerFiltersEnabled,
+    onChange: (next) => setDraftViewerFilters((prev) => replaceSlicerById(prev, next)),
+    columns: availableFilterColumns,
+    columnChartCount: availableFilterChartCount,
+    distinctValues: resolvedDistinctValues,
+    distinctStatus: resolvedDistinctStatus,
+    fetchServerDistinct: fetchPublicServerDistinct,
+    // Only to say what a control filters (its tooltip) — no scope editing here.
+    dashboardPages: dashboardPages.map((p) => ({ id: p.id, name: p.name })),
+  };
+
   /**
    * One tile, rendered identically wherever it lands: inside the interactive
    * react-grid-layout canvas, or inside the static print flow below. Extracted
@@ -2031,6 +2002,37 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // floating on the page background and an image lost its border/rounding.
   // Pure-visual widgets (shape, which also draws line/divider) and the
   // self-framed parameter switcher stay frameless to avoid a double frame.
+  // What the report header says: the link's title for its audience, the
+  // report's description, and the filters this surface applies (the same
+  // wording as the PDF header).
+  // A switcher states a value only where that value is what the page applies.
+  // The public data path does not turn a parameter into a chart filter or a
+  // what-if swap, so a switcher bound to a field, or one a chart is bound to,
+  // shows no selection here (it would state a filter the charts ignore). A
+  // text-only parameter is seeded like the builder: its default, else its
+  // first option.
+  const whatIfBound = new Set<string>();
+  for (const dc of visibleDashboardCharts) {
+    const bindings = ((dc.parameters ?? {}) as any)?.__whatifBindings;
+    if (Array.isArray(bindings)) for (const b of bindings) if (b?.param) whatIfBound.add(String(b.param));
+  }
+  const publicParams: Record<string, any> = {};
+  for (const def of extractParamDefs(visibleDashboardCharts)) {
+    if (def.field || whatIfBound.has(def.paramName) || publicParams[def.paramName] !== undefined) continue;
+    const seed = def.default ?? def.options[0]?.value;
+    if (seed !== undefined) publicParams[def.paramName] = seed;
+  }
+  const reportMeta = {
+    // The title the link presents to its audience (headline, else the link's
+    // name, else the report's) — the same as the masthead and the PDF: a
+    // publisher names the link for its readers, and the internal report name
+    // must not reappear in the header.
+    name: presentationTitle,
+    description: dashboard?.description ?? null,
+    filterFacts: pageFilterFacts({ applied: appliedViewerFilters, pageHidden: pageHiddenFilters, locked: lockedBannerEntries })
+      .map((f) => `${f.locked ? '🔒 ' : ''}${f.label}: ${statePageFilterFact(f, t)}`),
+    sectionTitleOf: sectionTitlesOf(visibleDashboardCharts, resolveStructure(toStructTiles(visibleDashboardCharts)).sectionOf),
+  };
   function renderWidgetNode(dashboardChart: DashboardChart) {
     const wtype = dashboardChart.widget_type;
     // `transparentBackground` (per-widget config) drops the card frame so the
@@ -2038,16 +2040,20 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     // the self-framed parameter switcher already take.
     const transparentWidget = ((dashboardChart.widget_config ?? {}) as Record<string, any>).transparentBackground === true;
     // Decorative "element" widgets draw their own styling → frameless (no card).
-    const selfStyled = wtype === 'section_header' || wtype === 'callout' || wtype === 'hero_strip';
+    const selfStyled = wtype === 'section_header' || wtype === 'callout' || wtype === 'hero_strip' || wtype === 'slicer';
     const frameless = wtype === 'shape' || wtype === 'parameter_switcher' || selfStyled || transparentWidget;
     return (
-      <div key={dashboardChart.id.toString()} className="h-full">
+      <div key={dashboardChart.id.toString()} data-grid-item-id={dashboardChart.id} className="h-full">
         {frameless ? (
-          <div className="h-full w-full">
-            <DashboardWidget widget={dashboardChart} />
+          <div className="h-full w-full" data-tile-id={dashboardChart.id} data-tile-kind="widget" data-widget-type={wtype ?? undefined}>
+            {isSlicerControl(dashboardChart)
+              ? <GridSlicerTile tile={dashboardChart} binding={publicSlicerBinding} />
+              : <ReportMetaProvider value={reportMeta}><DashboardWidget widget={dashboardChart} params={publicParams} /></ReportMetaProvider>}
           </div>
         ) : (
           <div
+            data-tile-id={dashboardChart.id}
+            data-tile-kind="widget"
             className="dashboard-tile h-full w-full overflow-hidden rounded-lg border bg-surface-1"
             style={{
               borderRadius: 'var(--dashboard-card-radius, 0.5rem)',
@@ -2055,7 +2061,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))',
             }}
           >
-            <DashboardWidget widget={dashboardChart} />
+            <ReportMetaProvider value={reportMeta}><DashboardWidget widget={dashboardChart} params={publicParams} /></ReportMetaProvider>
           </div>
         )}
       </div>
@@ -2076,10 +2082,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     const title = dashboardChart.layout.custom_title ?? '';
 
     return (
-      <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
+      <div key={dashboardChart.id.toString()} data-grid-item-id={dashboardChart.id} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
         <ChartErrorBoundary chartId={dashboardChart.chart_id}>
           <ReadonlyChartTile
             chart={chart}
+            dashboardChartId={dashboardChart.id}
             chartData={payload}
             error={chartError}
             title={title}
@@ -2091,7 +2098,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
             highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
             isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
             highlightData={null}
-            forceVisible={forceVisibleAll}
+            forceVisible={forceVisibleAll || citedTileIds.has(dashboardChart.id)}
             publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
             viewerGrain={chartGrains[dashboardChart.chart_id]}
             onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
@@ -2117,42 +2124,18 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // render and blow up with React #310 ("rendered more hooks than last time").
   // The grouping is a sort over a handful of tiles — memoising it would cost
   // more than it saves.
-  const printTileRows = printMode ? groupTilesIntoRows(visibleDashboardCharts) : [];
+  const printBands = printMode
+    ? groupIntoPrintBands(visibleDashboardCharts.map((dc) => ({
+      id: dc.id,
+      x: Number(dc.layout?.x) || 0,
+      y: Number(dc.layout?.y) || 0,
+      w: Number(dc.layout?.w) || DASHBOARD_GRID_COLS,
+      h: Number(dc.layout?.h) || 12,
+      kind: dc.widget_type ?? 'chart',
+      dc,
+    })))
+    : [];
 
-  const gridSectionEl = (
-    <ExportModeContext.Provider value={exportRenderMode || (printMode ? printRenderMode : false)}>
-      <section
-        ref={gridSectionRef}
-        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterIsRail ? 'min-w-0 flex-1' : 'w-full'}`}
-      >
-        {visibleDashboardCharts.length === 0 ? (
-          <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
-            <p className="text-caption text-text-tertiary">No charts on this page yet.</p>
-          </div>
-        ) : (
-          <div
-            ref={gridMeasureRef}
-            className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
-          >
-            <ResponsiveReportGrid
-              className="layout"
-              layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
-              breakpoints={REPORT_BREAKPOINTS}
-              cols={REPORT_COLS}
-              rowHeight={reportRowHeight}
-              margin={getDashboardGridMargin(dashboard?.theme_config)}
-              isDraggable={false}
-              isResizable={false}
-              compactType={null}
-              preventCollision={true}
-            >
-              {visibleDashboardCharts.map(renderTileNode)}
-            </ResponsiveReportGrid>
-          </div>
-        )}
-      </section>
-    </ExportModeContext.Provider>
-  );
 
   if (printMode) {
     // Paper shell: no app chrome, no scroll container, white background.
@@ -2173,29 +2156,44 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         <ExportModeContext.Provider value={printRenderMode}>
           <main className="w-full px-3 py-2" data-pdf-root="1">
             <section ref={gridSectionRef}>
-              {printTileRows.map((row, rowIndex) => (
-                <div
-                  key={`pdf-row-${rowIndex}`}
-                  className="pdf-print-row"
-                  style={{ display: 'flex', gap: `${rowGap}px`, marginBottom: `${rowGap}px` }}
-                >
-                  {row.map((dashboardChart) => (
-                    <div
-                      key={dashboardChart.id}
-                      style={{
-                        // Same fraction of the width the author gave the tile on
-                        // the (finer, 36-column) grid, so the sheet mirrors the
-                        // screen. Row height uses the finer per-gap row unit so a
-                        // ×3-migrated tile keeps its exact printed height.
-                        flex: `0 0 calc(${((dashboardChart.layout?.w ?? DASHBOARD_GRID_COLS) / DASHBOARD_GRID_COLS) * 100}% - ${rowGap}px)`,
-                        height: `${(dashboardChart.layout?.h ?? 12) * dashboardRowHeight(rowGap) + (((dashboardChart.layout?.h ?? 12) - 1) * rowGap)}px`,
-                      }}
-                    >
-                      {renderTileNode(dashboardChart)}
-                    </div>
-                  ))}
-                </div>
-              ))}
+              {printBands.map((band, bandIndex) => {
+                const rowH = dashboardRowHeight(rowGap);
+                const px = (rows: number) => rows * rowH + Math.max(0, rows - 1) * rowGap;
+                return (
+                  <div
+                    key={`pdf-band-${bandIndex}`}
+                    className="pdf-print-row"
+                    data-print-band={bandIndex}
+                    // A band prints whole on one sheet; a lone section heading
+                    // stays with the section it opens.
+                    style={{
+                      position: 'relative',
+                      height: `${px(band.rows)}px`,
+                      marginBottom: `${rowGap}px`,
+                      breakInside: 'avoid',
+                      pageBreakInside: 'avoid',
+                      ...(band.keepWithNext ? { breakAfter: 'avoid', pageBreakAfter: 'avoid' } : {}),
+                    }}
+                  >
+                    {band.tiles.map((tile) => (
+                      <div
+                        key={tile.id}
+                        style={{
+                          // The column and offset the author gave the tile on the
+                          // 36-column grid, so the sheet mirrors the screen.
+                          position: 'absolute',
+                          left: `calc(${(tile.x / DASHBOARD_GRID_COLS) * 100}%)`,
+                          width: `calc(${(tile.w / DASHBOARD_GRID_COLS) * 100}% - ${rowGap}px)`,
+                          top: `${tile.y === band.top ? 0 : px(tile.y - band.top) + rowGap}px`,
+                          height: `${px(tile.h)}px`,
+                        }}
+                      >
+                        {renderTileNode(tile.dc)}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             </section>
           </main>
         </ExportModeContext.Provider>
@@ -2222,48 +2220,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       <main ref={publicContentRef} className={isEmbed
         ? 'w-full min-w-0 flex flex-col gap-1 px-3 pt-3 pb-0 sm:px-4'
         : 'flex-1 min-w-0 overflow-hidden flex flex-col gap-1 px-3 pt-4 pb-0 sm:px-4 lg:px-6 lg:pt-5'}>
-        {slicerClusterIsRail ? (
-          /* ── LEFT app-shell ──────────────────────────────────────────────
-             When the author placed the slicer cluster on the LEFT, the report
-             becomes a 2-column shell: the brand mark + title sit ABOVE the
-             filter rail in the left column, while the page tabs, Export, and
-             the chart grid pull to the TOP of the right column. This removes
-             the full-width header band so nothing floats with dead space above
-             the rail (user ask). The rail is sticky so filters stay in view. */
-          <div className="mx-auto flex min-h-0 w-full flex-1 flex-col gap-3 lg:flex-row lg:items-stretch">
-            {/* Left column = brand+title (top, level with the page tabs) then
-                the filter rail. gap-4 = 2× the previous title↔filter spacing.
-                This column is a fixed flex sibling so it never scrolls away. */}
-            <aside className="flex w-full flex-shrink-0 flex-col gap-4 lg:w-[280px]">
-              <div className="flex items-start gap-2.5 px-1">
-                {brandMarkEl}
-                {titleEl}
-              </div>
-              {showFilterControls && (
-                <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm">
-                  {slicerClusterNode}
-                </div>
-              )}
-            </aside>
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
-                {pageTabsEl}
-                <div className="ml-auto shrink-0">{exportButtonEl}</div>
-              </div>
-              {(filterBannerEl || filterLiveEl) && (
-                <div className="shrink-0 space-y-2">
-                  {filterBannerEl}
-                  {filterLiveEl}
-                </div>
-              )}
-              {/* Only the charts scroll. */}
-              <div className={isEmbed ? 'pb-4' : 'min-h-0 flex-1 overflow-y-auto pb-4'}>
-                {gridSectionEl}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <>
+        <>
         {/* Phase-B7 — FLUSH report header (was a bordered/elevated card on a
             gray page = "web widget" look). A report masthead is flat with just
             a hairline divider; tiles are the only cards. Removes one nesting
@@ -2284,12 +2241,19 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               >
                 {presentationTitle}
               </h1>
+              {/* What the report is for — unless this page opens with a report
+                  header, which states it itself (no second copy). */}
+              {dashboard?.description && !visibleDashboardCharts.some((dc) => dc.widget_type === 'hero_strip') && (
+                <p className="mt-0.5 line-clamp-2 text-[12.5px] leading-snug text-text-secondary" data-public-description>
+                  {dashboard.description}
+                </p>
+              )}
               {snapshotAsOf && (
                 <p
                   className="mt-0.5 truncate text-[11px] text-text-tertiary"
-                  title={`Số liệu tính đến ${formatSnapshotAsOf(snapshotAsOf)}`}
+                  title={`${t('dashboards.pdf.dataAsOf')} ${formatSnapshotAsOf(snapshotAsOf)}`}
                 >
-                  Số liệu tính đến {formatSnapshotAsOf(snapshotAsOf)}
+                  {t('dashboards.pdf.dataAsOf')} {formatSnapshotAsOf(snapshotAsOf)}
                 </p>
               )}
             </div>
@@ -2350,12 +2314,10 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
             </nav>
           )}
 
-          {/* In LEFT mode the slicer cluster moves out to the side rail, so the
-              header filter block must NOT render just because showFilterControls
-              is true — otherwise it draws an empty divider + padding. Only render
-              it for the top-mode slicers, live state, or the locked/override
-              banners. */}
-          {((showFilterControls && !slicerClusterIsRail && !slicerDockHidden) || showLiveState || lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+          {/* The header carries only state (loading, cross-filter) and the
+              locked/override banners. Filter CONTROLS are elements of the report
+              grid; there is no filter area here. */}
+          {(showLiveState || filterContextFacts.length > 0 || overridableFilterEntries.length > 0) && (
             <div className="mt-2 space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
 
               {/* Phase-F THẬT (PBI-parity rework) — banner for locked
@@ -2363,46 +2325,49 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                   with locked entries (read-only, 🔒) plus override-allowed
                   entries (editable). See docs/filter-semantics.md §9 +
                   user-approved wireframe. */}
-              {(lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+              {(filterContextFacts.length > 0 || overridableFilterEntries.length > 0) && (
                 <div
                   className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary"
                   style={publicTheme.neutralPillStyle}
                   data-public-locked-banner
+                  data-filter-context
                 >
-                  <div className="flex flex-wrap items-center gap-2">
-                    {lockedBannerEntries.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    {filterContextFacts.length > 0 ? (
                       <>
-                        <span className="font-medium text-text-tertiary">ⓘ Đang lọc theo:</span>
-                        {lockedBannerEntries.map((entry, i) => (
-                          <span key={`${entry.field}-${i}`} className="inline-flex items-center gap-1">
-                            <span className="opacity-70">🔒</span>
-                            <span className="font-medium">{entry.label ?? entry.field}</span>
-                            <span className="text-text-quaternary">=</span>
-                            <span className="font-mono">
-                              {Array.isArray(entry.value)
-                                ? entry.value.slice(0, 3).join(', ') + (entry.value.length > 3 ? `, +${entry.value.length - 3}` : '')
-                                : String(entry.value ?? '')}
-                            </span>
+                        <span className="font-medium text-text-tertiary">{t('dashboards.filterContext.filteredBy')}</span>
+                        {filterContextFacts.map((fact) => (
+                          <span
+                            key={fact.key}
+                            className="inline-flex items-center gap-1"
+                            data-filter-fact={fact.locked ? 'locked' : 'applied'}
+                            title={fact.locked ? t('dashboards.filterContext.lockedTitle') : t('dashboards.filterContext.appliedTitle')}
+                          >
+                            {fact.locked && <span className="opacity-70" aria-hidden>🔒</span>}
+                            <span className="font-medium">{fact.label}:</span>
+                            <span>{statePageFilterFact(fact, t)}</span>
                           </span>
                         ))}
                       </>
                     ) : (
-                      <span className="text-text-tertiary">Bộ lọc nâng cao có sẵn.</span>
+                      <span className="text-text-tertiary">{t('dashboards.filterContext.adjustable')}</span>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => setIsMiniPaneOpen((v) => !v)}
-                      className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
-                    >
-                      {isMiniPaneOpen ? 'Đóng' : 'Xem chi tiết'}
-                    </button>
+                    {(lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => setIsMiniPaneOpen((v) => !v)}
+                        className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
+                      >
+                        {isMiniPaneOpen ? t('dashboards.filterContext.close') : t('dashboards.filterContext.details')}
+                      </button>
+                    )}
                   </div>
                   {isMiniPaneOpen && (
                     <div className="mt-3 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-3">
                       {lockedBannerEntries.length > 0 && (
                         <div className="space-y-1.5">
                           <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                            Bộ lọc cố định (do người chia sẻ link cấu hình)
+                            {t('dashboards.filterContext.lockedHeading')}
                           </div>
                           {lockedBannerEntries.map((entry, i) => (
                             <div key={`lock-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
@@ -2412,7 +2377,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                               <span className="font-mono text-text-secondary">
                                 {Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
                               </span>
-                              <span className="ml-auto text-tiny text-text-quaternary">Read-only</span>
+                              <span className="ml-auto text-tiny text-text-quaternary">{t('dashboards.filterContext.readOnly')}</span>
                             </div>
                           ))}
                         </div>
@@ -2420,7 +2385,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                       {overridableFilterEntries.length > 0 && (
                         <div className={`${lockedBannerEntries.length > 0 ? 'mt-3 border-t border-[rgb(var(--border-line))] pt-3' : ''} space-y-1.5`}>
                           <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                            Bộ lọc có thể chỉnh
+                            {t('dashboards.filterContext.adjustableHeading')}
                           </div>
                           {overridableFilterEntries.map((entry, i) => {
                             const currentDraft = draftViewerFilters.find(
@@ -2480,11 +2445,6 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                   )}
                 </div>
               )}
-
-              {/* Top mode renders the slicer cluster here (stacked
-                  above charts). Left mode renders it BESIDE the grid in
-                  the flex-row wrapper below instead. */}
-              {showFilterControls && !slicerClusterIsRail && !slicerDockHidden && slicerClusterNode}
 
               {showLiveState && (
                 <div className="flex flex-col gap-3">
@@ -2571,19 +2531,14 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
 
         {/* Only the chart region scrolls; the header above stays pinned. */}
         <div className={isEmbed ? 'pb-4' : 'min-h-0 flex-1 overflow-y-auto pb-4'}>
-        <div className={`mx-auto w-full ${slicerClusterIsRail ? `flex flex-col gap-3 lg:items-start ${slicerDock === 'right' ? 'lg:flex-row-reverse' : 'lg:flex-row'}` : slicerDockClasses.wrapper}`}>
-        {slicerClusterIsRail && showFilterControls && !slicerDockHidden && (
-          <div className="w-full flex-shrink-0 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm lg:sticky lg:top-3 lg:w-[280px]">
-            {slicerClusterNode}
-          </div>
-        )}
+        <div className="mx-auto w-full">
         {/* Phase-B7 — FLUSH canvas (no card frame): tiles sit directly on the
             page background like a PBI report canvas, not inside a second
             bordered panel. */}
         <ExportModeContext.Provider value={exportRenderMode}>
         <section
           ref={gridSectionRef}
-          className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterIsRail ? 'min-w-0 flex-1' : 'w-full'}`}
+        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} w-full`}
         >
           {visibleDashboardCharts.length === 0 ? (
             <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
@@ -2594,9 +2549,20 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               ref={gridMeasureRef}
               className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
             >
+              <div className="relative" ref={fitRootRef}>
+              {activeBreakpoint !== 'xs' && gridWidth ? (
+                <SectionBands
+                  layouts={responsiveLayouts[activeBreakpoint]}
+                  dashboardCharts={gridDashboardCharts}
+                  cols={REPORT_COLS[activeBreakpoint]}
+                  rowH={reportRowHeight}
+                  margin={getDashboardGridMargin(dashboard?.theme_config)}
+                  width={gridWidth}
+                />
+              ) : null}
               <ResponsiveReportGrid
                 className="layout"
-                layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
+                layouts={responsiveLayouts}
                 breakpoints={REPORT_BREAKPOINTS}
                 cols={REPORT_COLS}
                 rowHeight={reportRowHeight}
@@ -2606,7 +2572,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                 compactType={null}
                 preventCollision={true}
               >
-                {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
+                {gridDashboardCharts.map((dashboardChart: DashboardChart) => {
                   // Non-chart widgets (text/image/countdown/shape/parameter_switcher)
                   // skip the chart-fetch path and render via the shared DashboardWidget.
                   const isWidget = Boolean(
@@ -2623,10 +2589,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                   const title = dashboardChart.layout.custom_title ?? '';
 
                   return (
-                    <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
+                    <div key={dashboardChart.id.toString()} data-grid-item-id={dashboardChart.id} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
                       <ChartErrorBoundary chartId={dashboardChart.chart_id}>
                         <ReadonlyChartTile
                           chart={chart}
+                          dashboardChartId={dashboardChart.id}
                           chartData={payload}
                           error={chartError}
                           title={title}
@@ -2641,7 +2608,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                           highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
                           isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
                           highlightData={null}
-                          forceVisible={forceVisibleAll}
+                          forceVisible={forceVisibleAll || citedTileIds.has(dashboardChart.id)}
                           publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
                           viewerGrain={chartGrains[dashboardChart.chart_id]}
                           onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
@@ -2661,14 +2628,22 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                   );
                 })}
               </ResponsiveReportGrid>
+              </div>
             </div>
           )}
         </section>
         </ExportModeContext.Provider>
         </div>{/* /Phase-G left-vs-top slicer arrangement wrapper */}
+        {/* Controls placed on the grid stage their choice like the bar; this is
+            the one Apply for all of them. */}
+        <FilterApplyBar
+          visible={placedViewerFilters.length > 0 && viewerFiltersEnabled && hasPendingFilterChanges && !exportInProgressRef.current}
+          isApplying={isApplyingFilters}
+          onApply={handleApplyFilters}
+          onReset={handleResetFilters}
+        />
         </div>{/* /scroll region */}
-          </>
-        )}
+        </>
       </main>
 
       {/* Belt and braces: with export hidden on this surface the dialog must not
@@ -2699,3 +2674,14 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     </DashboardThemeProvider>
   );
 }
+
+/** Every tile and narrative block of one rendered report shares one evidence
+ *  store, so a sentence states exactly what its tile is showing. */
+export function PublicDashboardView(props: React.ComponentProps<typeof PublicDashboardViewInner>) {
+  return (
+    <ReportEvidenceProvider>
+      <PublicDashboardViewInner {...props} />
+    </ReportEvidenceProvider>
+  );
+}
+

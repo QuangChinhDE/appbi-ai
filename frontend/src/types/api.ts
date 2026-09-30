@@ -228,7 +228,12 @@ export type DashboardWidgetType =
   | 'hero_strip'
   // A block of imported source markup AppBI has no native visual for, kept as
   // sanitized static HTML instead of dropped.
-  | 'html_fragment';
+  | 'html_fragment'
+  // Words bound to findings computed from the report's own tiles (no stored numbers).
+  | 'narrative'
+  // A slicer's control on the grid: {slicerId, treatment}. Presentation only —
+  // the filter lives in slicers_config / pages_config[].slicers.
+  | 'slicer';
 
 export interface DashboardThemeConfig {
   mode?: 'light' | 'dark';
@@ -778,6 +783,9 @@ export interface Dashboard {
    *  FE merges them silently into every chart-data request alongside
    *  top-bar filters. */
   public_link_hidden_filters?: any[];
+  /** The link's LOCKED (🔒) filters that enforce a value — field, label, value
+   *  only — shown read-only so a reader knows the report is filtered. */
+  public_link_locked_filters?: Array<{ field: string; label?: string | null; value: unknown; operator?: string; semanticField?: string; datePreset?: string }>;
   pages_config?: DashboardPageConfig[];
   available_filter_fields?: DashboardFilterField[];
   public_link_name?: string | null;
@@ -791,6 +799,9 @@ export interface Dashboard {
   // these fields — public endpoint strips them.
   draft_layouts?: Record<number, Record<string, any>> | null;
   has_draft?: boolean;
+  /** Editor only: the shared filters/pages/theme draft — its revision and the
+   *  OTHER authors with unpublished edits in it (Publish/Discard ask first). */
+  shared_draft?: { rev: string; has_changes: boolean; other_authors: string[] } | null;
 }
 
 export interface DashboardCreate {
@@ -853,6 +864,13 @@ export interface ChartDebugInfo {
   dropped_filters?: DroppedFilterInfo[];
 }
 
+export interface TimeCompleteness {
+  field: string;
+  grain: string;
+  partial: { bucket: string; reason: 'in_progress' | 'edge_low_volume'; value?: number; median?: number }[];
+  rule?: { edge_low_volume_ratio?: number };
+}
+
 export interface ChartDataResponse {
   chart: Chart;
   data: Record<string, any>[];
@@ -861,6 +879,8 @@ export interface ChartDataResponse {
   warnings?: string[];
   /** Phase-15.9: debug payload, omitted on cache hits / older clients. */
   debug?: ChartDebugInfo;
+  /** Time-axis buckets that are not whole periods, with the rule that flagged them. */
+  time_completeness?: TimeCompleteness | null;
   meta?: {
     row_count?: number;
     execution_time_ms?: number;

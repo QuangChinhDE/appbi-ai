@@ -885,6 +885,46 @@ def dry_run_create_chart(
     )
 
 
+@router.get("/{chart_id}/usage")
+def get_chart_usage(
+    chart_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The reports that show this chart — what an edit to it would change.
+
+    A chart is a shared library object: saving it changes every report that
+    shows it, live, including their published state. The editor asks this
+    before saving from a report, so the author chooses between the shared chart
+    and a copy for one report. Reports the caller cannot view are counted, not
+    named.
+    """
+    chart = ChartService.get_by_id(db, chart_id)
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart with ID {chart_id} not found")
+    require_view_access(db, current_user, chart, "explore_charts")
+    from app.services.dashboard_service import is_draft_only_item
+    rows = db.query(DashboardChart).filter(DashboardChart.chart_id == chart_id).all()
+    by_dash: dict[int, list] = {}
+    for r in rows:
+        by_dash.setdefault(r.dashboard_id, []).append(r)
+    reports: list[dict] = []
+    hidden = 0
+    for dash in db.query(Dashboard).filter(Dashboard.id.in_(list(by_dash))).all() if by_dash else []:
+        if get_effective_permission(db, current_user, dash, "dashboards") == "none":
+            hidden += 1
+            continue
+        tiles = by_dash.get(dash.id, [])
+        reports.append({
+            "id": dash.id,
+            "name": dash.name,
+            "tiles": len(tiles),
+            "published": any(not is_draft_only_item(t) for t in tiles),
+        })
+    reports.sort(key=lambda d: (str(d["name"] or "").lower(), d["id"]))
+    return {"chart_id": chart_id, "reports": reports, "other_reports": hidden}
+
+
 @router.get("/{chart_id}", response_model=ChartResponse)
 def get_chart(
     chart_id: int,

@@ -1,0 +1,192 @@
+{
+ "note": "Integrated migration rehearsal on the #7 tree after the demo merge (single head 20260930_0001). Each scenario ran on its own COPY (CREATE DATABASE ... TEMPLATE of the rig database) or a fresh empty database in the temp Postgres, dropped afterwards. Script: scratch rx/mig_integrated.py + rx/mig_control.py.",
+ "tree_sha": "924d2a93",
+ "scenarios": {
+  "A_report_studio_lineage": {
+   "start": [
+    "20260929_0001"
+   ],
+   "up1_ran": 4,
+   "after_up1": [
+    "20260930_0001"
+   ],
+   "af_lifecycle_after_up1": true,
+   "content_unchanged_by_af_line": {
+    "tiles_equal": true,
+    "tiles": [
+     762,
+     762
+    ],
+    "dashboards_equal": true,
+    "dashboards": [
+     62,
+     62
+    ]
+   },
+   "down_0201_ran": 1,
+   "after_down_0201": [
+    "20260926_0201",
+    "20260929_0001"
+   ],
+   "af_lifecycle_kept": true,
+   "up2_ran": 1,
+   "content_after_rs_roundtrip": {
+    "tiles_equal": true,
+    "tiles": [
+     762,
+     762
+    ],
+    "dashboards_equal": true,
+    "dashboards": [
+     62,
+     62
+    ]
+   },
+   "down_0101_ran": 2,
+   "after_down_0101": [
+    "20260926_0101",
+    "20260929_0001"
+   ],
+   "up3_ran": 2,
+   "end": [
+    "20260930_0001"
+   ],
+   "content_after_full_rs_roundtrip": {
+    "tiles_equal": true,
+    "tiles": [
+     762,
+     762
+    ],
+    "dashboards_equal": true,
+    "dashboards": [
+     62,
+     62
+    ]
+   }
+  },
+  "B_agent_flow_lineage": {
+   "start": [
+    "20260929_0001"
+   ],
+   "pre_stack": [
+    "20260914_0002"
+   ],
+   "to_demo_today_ran": 2,
+   "demo_today": [
+    "20260926_0101"
+   ],
+   "to_demo_after_6_ran": 2,
+   "demo_after_6": [
+    "20260926_0201"
+   ],
+   "to_demo_after_7_ran": 3,
+   "end": [
+    "20260930_0001"
+   ],
+   "schema_equals_A": true,
+   "content_vs_A": {
+    "tiles_equal": false,
+    "tiles": [
+     762,
+     762
+    ],
+    "dashboards_equal": true,
+    "dashboards": [
+     62,
+     62
+    ]
+   }
+  },
+  "C_agent_flow_old_id": {
+   "start_recorded_old_id": [
+    "20260926_0001"
+   ],
+   "up_ran": 5,
+   "end": [
+    "20260930_0001"
+   ],
+   "schema_equals_A": true,
+   "content_vs_A": {
+    "tiles_equal": false,
+    "tiles": [
+     762,
+     762
+    ],
+    "dashboards_equal": true,
+    "dashboards": [
+     62,
+     62
+    ]
+   }
+  },
+  "D_fresh": {
+   "up_ran": 173,
+   "end": [
+    "20260930_0001"
+   ],
+   "schema_equals_A": true
+  },
+  "E_both_lines_recorded": {
+   "start_both_lines": [
+    "20260926_0001",
+    "20260926_0101"
+   ],
+   "up_ran": 4,
+   "end": [
+    "20260930_0001"
+   ],
+   "schema_equals_A": true
+  }
+ },
+ "all_end_at_head_same_schema": true,
+ "attribution_control": {
+  "ctrl_versions": [
+   "20260929_0001"
+  ],
+  "ctrl_vs_B": {
+   "tiles_equal": true,
+   "tiles": [
+    762,
+    762
+   ],
+   "dashboards_equal": true,
+   "dashboards": [
+    62,
+    62
+   ]
+  },
+  "A_vs_B": {
+   "tiles_equal": false,
+   "tiles": [
+    762,
+    762
+   ],
+   "dashboards_equal": true,
+   "dashboards": [
+    62,
+    62
+   ]
+  },
+  "A_vs_B_dashboards_with_moved_tiles": [
+   574
+  ],
+  "A_vs_B_moved_tile_count": 8
+ },
+ "reading": "B and C differ from A only in dashboard 574 (8 tiles shifted 3 rows): the Report Studio round trip below 20260929_0001 (the same 8 tiles as a7-migration-roundtrip.json). The control (RS line only, Agent Flow never applied) equals B tile for tile, so the Agent Flow line changes no report content.",
+ "F_fresh_head_below_both_and_back": {
+  "head": [
+   "20260930_0001"
+  ],
+  "down_ran": 7,
+  "after_down": [
+   "20260914_0002"
+  ],
+  "af_columns_left": [],
+  "up_ran": 7,
+  "end": [
+   "20260930_0001"
+  ],
+  "schema_equal_at_both_heads": true,
+  "note": "fresh database: head -> downgrade 20260914_0002 -> head"
+ }
+}

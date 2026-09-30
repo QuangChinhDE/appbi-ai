@@ -157,11 +157,22 @@ def validate_and_lock_filters(db: Session, dash: Dashboard, filters: list[dict])
             "field": match.get("field") or match.get("semanticField"),
             "semanticField": match.get("semanticField"),
             "datasetId": match.get("datasetId"),
-            "operator": "in" if isinstance(value, (list, tuple)) and op in ("in", "not_in", "eq") else op,
+            # A list under eq means "one of these"; an exclusion stays an exclusion
+            # (not_in was rewritten to in, so a claim excluding X showed only X).
+            "operator": "in" if isinstance(value, (list, tuple)) and op in ("in", "eq") else op,
             "value": list(value) if isinstance(value, (list, tuple)) else value,
             # value-bearing + not hidden => locked (link_managed_field_keys strips
             # the interactive slicer; _build_public_chart_filters enforces it).
         })
+        # A claim the chart engine would DROP (e.g. `between 5`) must not be
+        # stored: the link would restrict nothing. Same rule the public paths
+        # enforce (filter_layered_merge.link_entry_state).
+        from app.services.filter_layered_merge import LINK_ENTRY_ENFORCED, link_entry_state
+        if link_entry_state(locked[-1]) != LINK_ENTRY_ENFORCED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Filter '{raw_ref}' has a value that cannot be applied with operator '{op}'.",
+            )
     return locked
 
 

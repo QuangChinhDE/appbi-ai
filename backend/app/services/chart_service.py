@@ -11,6 +11,8 @@ from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 
+from app.services.chart_value_normalization import default_time_axis_sort, normalize_measure_values, time_completeness
+
 
 # [pbi-filter] correlation: track which chart_id is being rendered so
 # log lines emitted from deep inside the semantic engine (SQL emission,
@@ -2286,6 +2288,15 @@ def _execute_semantic_chart_runtime(
             chart_sorts = [{"field": _rank_ref, "direction": _dir}]
         effective_limit = max(1, _data_limit_n)
 
+    # A time axis is ordered by time. Without an ORDER BY the engine returns the
+    # buckets in whatever order the database grouped them (Postgres hash
+    # aggregate: 2017-02, 2017-06, 2017-05 …), and a line drawn through that
+    # order zig-zags across the axis. Sorting in the SQL, not after the fetch,
+    # keeps it right under a LIMIT and on every dialect. An explicit sort
+    # (Top-N above) wins; this only fills the gap.
+    if not chart_sorts:
+        chart_sorts = default_time_axis_sort(time_grains, qualify(role_config.get("timeField")) if role_config.get("timeField") else None, dimension_refs)
+
     # ── Window functions (running total / cumulative / YTD) ─────────────
     # The engine renders running_sum/running_avg/rank/... but the chart
     # runtime never forwarded them, so a DA could not build a YTD/running
@@ -2871,6 +2882,9 @@ def _execute_semantic_chart_runtime(
 
         alias_map = _spec.response_aliases  # computed once on the spec above
         rows = remap_semantic_engine_rows(rows, alias_map)
+        # Measures are numbers on the wire (Decimal would serialise as a string
+        # and the line renderer draws nothing). Dimensions are left alone.
+        rows = normalize_measure_values(rows, measure_refs)
 
         # PBI parity (2026-06) — harvest the engine's OWN structured filter drops.
         # `_build_where_clause` records two kinds of drop on the engine instance via
@@ -2910,6 +2924,15 @@ def _execute_semantic_chart_runtime(
             # Phase-3b: surface engine warnings (ambiguous join paths, etc.) so the
             # chart UI can banner them. List is empty in the happy path.
             "warnings": list(getattr(engine, "warnings", []) or []),
+            # Which buckets of a time axis are not whole periods (in progress, or
+            # a thin launch/cut-off edge). Nothing is dropped; readers and the
+            # report findings use this to avoid comparing a partial month.
+            "time_completeness": time_completeness(
+                rows,
+                next(iter(time_grains), None) if time_grains else None,
+                next(iter(time_grains.values()), None) if time_grains else None,
+                measure_refs[0] if measure_refs else None,
+            ),
             # Phase-15.9: debug payload for the Explore "Query" tab. The FE
             # inspector shows DA exactly what BE ran — picks up renamed
             # views, ambiguous joins, etc. without needing server logs.
@@ -3553,8 +3576,9 @@ class ChartService:
         return db.query(Chart).filter(Chart.name == name).first()
     
     @staticmethod
-    def create(db: Session, chart: ChartCreate, owner_id=None) -> Chart:
-        """Create a new chart."""
+    def create(db: Session, chart: ChartCreate, owner_id=None, *, commit: bool = True) -> Chart:
+        """Create a new chart. ``commit=False`` only flushes: the caller commits it
+        together with the rest of one change (a report-only copy and its swap)."""
         chart_name = chart.name.strip()
         if not chart_name:
             raise ValueError("Chart name cannot be empty")
@@ -3591,6 +3615,9 @@ class ChartService:
                 owner_id=owner_id,
             )
             db.add(db_chart)
+            if not commit:
+                db.flush()
+                return db_chart
             db.commit()
             db.refresh(db_chart)
             logger.info(f"Created chart: {chart_name}")
@@ -3624,6 +3651,11 @@ class ChartService:
         
         try:
             update_data = chart_update.model_dump(exclude_unset=True)
+            # A report-only copy stays one: Explore rebuilds the config from its
+            # own state, which does not carry this marker.
+            previous_copy = (db_chart.config or {}).get("reportCopy") if isinstance(db_chart.config, dict) else None
+            if previous_copy and isinstance(update_data.get("config"), dict) and "reportCopy" not in update_data["config"]:
+                update_data["config"] = {**update_data["config"], "reportCopy": previous_copy}
             for field, value in update_data.items():
                 if field == "chart_type" and value:
                     setattr(db_chart, field, ChartType(value.value))
@@ -3881,6 +3913,7 @@ class ChartService:
             return {
                 "chart": db_chart,
                 "data": result["data"],
+                "time_completeness": result.get("time_completeness"),
                 "pre_aggregated": result["pre_aggregated"],
                 "debug": _build_debug_response(result),
             }
@@ -3925,6 +3958,7 @@ class ChartService:
             return {
                 "chart": db_chart,
                 "data": result["data"],
+                "time_completeness": result.get("time_completeness"),
                 "pre_aggregated": result["pre_aggregated"],
                 "debug": _build_debug_response(result),
             }

@@ -400,6 +400,11 @@ BLOCK_MESSAGES = {
 }
 
 
+def _disclosed(filters):
+    from app.services.filter_layered_merge import disclosed_applied_filters
+    return disclosed_applied_filters(filters or [])[0]
+
+
 def _runtime_model(model: Any, provider: Any) -> str:
     """The model an Agent Flow run uses: the link's / request's, else the deployment's
     Agent Flow default (settings.AGENT_FLOW_DEFAULT_MODEL, OpenAI only), else the
@@ -530,6 +535,9 @@ async def run_for_link(
         ),
         report=report,
         filters=FiltersInfo(
+            # What the run is TOLD ran — a 🚫 hidden constraint is enforced by the
+            # tool context and never listed here (the fingerprint above still
+            # hashes the full set, so memory stays keyed on what was applied).
             applied=[
                 AppliedFilter(
                     field=str(f.get("field") or f.get("column") or ""),
@@ -537,7 +545,7 @@ async def run_for_link(
                     values=list(f.get("values") or ([f.get("value")] if f.get("value") is not None else [])),
                     scope=str(f.get("scope") or ""),
                 )
-                for f in (filters or [])
+                for f in _disclosed(filters)
                 if isinstance(f, dict)
             ],
             fingerprint=fp,

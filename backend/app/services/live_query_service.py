@@ -42,6 +42,8 @@ class LiveBaseQueryPlan:
     output_columns: List[str]
 
 
+from app.services.sql_pattern import pattern_predicate
+
 # ── SQL dialect helpers ──────────────────────────────────────────────────────
 
 def _quote_identifier(name: str, dialect: str) -> str:
@@ -744,18 +746,10 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             )
             if vals:
                 parts.append(f"{qf} NOT IN ({vals})")
-        elif op == "like" and value is not None:
-            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
-            parts.append(f"{qf} LIKE '%{esc}%' ESCAPE '\\'")
-        elif op == "contains" and value is not None:
-            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
-            parts.append(f"{qf} LIKE '%{esc}%' ESCAPE '\\'")
-        elif op == "not_contains" and value is not None:
-            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
-            parts.append(f"{qf} NOT LIKE '%{esc}%' ESCAPE '\\'")
-        elif op == "starts_with" and value is not None:
-            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
-            parts.append(f"{qf} LIKE '{esc}%' ESCAPE '\\'")
+        elif op in ("like", "contains", "not_contains", "starts_with") and value is not None:
+            # One shape per dialect (app/services/sql_pattern): BigQuery has no
+            # LIKE … ESCAPE, so it gets STRPOS / STARTS_WITH.
+            parts.append(pattern_predicate(qf, op, value, dialect, lambda s: _sql_literal(s)))
         elif op == "is_null":
             parts.append(f"{qf} IS NULL")
         elif op == "is_not_null":

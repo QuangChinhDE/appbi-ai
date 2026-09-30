@@ -156,6 +156,15 @@ jobs:
         working-directory: backend
         run: python scripts/ci/seed_e2e_binding.py
 
+      # The dashboard the presentation gate measures (dashboard-presentation.spec
+      # .ts): real rows through the Excel-upload service, charts through
+      # ChartService, a section header, a slicer and a fixed public link. The spec
+      # FAILS on CI when this is missing — a presentation gate that skips would
+      # report a pass for a check that never ran.
+      - name: Seed the presentation fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_presentation.py
+
       - name: Start the backend
         working-directory: backend
         run: |

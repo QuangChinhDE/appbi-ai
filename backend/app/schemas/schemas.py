@@ -2,7 +2,7 @@
 Pydantic schemas for request/response validation.
 """
 from pydantic import BaseModel, Field, ConfigDict, model_validator, field_serializer, field_validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from enum import Enum
 from uuid import UUID
@@ -408,6 +408,10 @@ class ChartMetadataResponse(ChartMetadataUpsert):
     """Schema for chart metadata response."""
     id: int
     chart_id: int
+    # The chart's written business description (AI-generated or user-edited).
+    # Read-only here; it is what the AI Design context uses to understand what
+    # a visual is FOR. Already stored — this only stops dropping it on the way out.
+    auto_description: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -526,6 +530,10 @@ class ChartDataResponse(BaseModel):
     # ignore the field, new clients display it. Never contains the raw
     # rows (those live in `data`); only metadata + the rendered SQL.
     debug: Optional[ChartDebugInfo] = None
+    # Time-axis buckets that are not whole periods (in progress / thin launch or
+    # cut-off edge). Only restates buckets already in `data`, with the rule that
+    # flagged them; None when the chart has no time grain.
+    time_completeness: Optional[Dict[str, Any]] = None
 
 
 # Dashboard Schemas
@@ -658,6 +666,13 @@ class DashboardResponse(DashboardBase):
     # filters_config here). FE merges them silently into chart-data
     # requests but never renders them in the top-bar slicer.
     public_link_hidden_filters: Optional[List[Dict[str, Any]]] = None
+    # The link's LOCKED (🔒) filters that enforce a value — field, label, value
+    # only — so a reader is told the report is filtered and by what. Read-only;
+    # the server applies them. Hidden (🚫) link filters are never listed.
+    public_link_locked_filters: Optional[List[Dict[str, Any]]] = None
+    # Editor only: the shared filters/pages/theme draft — its revision and who
+    # has unpublished edits in it (see dashboards._shared_draft_state).
+    shared_draft: Optional[Dict[str, Any]] = None
     available_filter_fields: Optional[List[Dict[str, Any]]] = None
     public_link_name: Optional[str] = None
     public_link_appearance: Optional[Dict[str, Any]] = None
@@ -718,14 +733,22 @@ class PresentationPlanRequest(BaseModel):
             "returns still cannot change any chart's data."
         ),
     )
-    focused_chart_id: Optional[int] = Field(
-        None,
+    granted_layer: Literal["style", "structure", "redesign"] = Field(
+        "style",
         description=(
-            "When set, the user clicked ONE visual and is restyling only it. The "
-            "plan must touch that visual's appearance and nothing else — no layout "
-            "move, no other tile, no theme."
+            "How much of the page the user's words handed over, inferred by the "
+            "client (style unless they asked to rearrange). Advisory for the "
+            "model; the client clamps the returned plan to it and enforces it."
         ),
     )
+    target_ids: Optional[List[int]] = Field(
+        None,
+        max_length=200,
+        description="The visuals the user selected. Empty/None = the whole page.",
+    )
+    # Accepted for older clients and ignored: a single focused chart is now a
+    # one-element `target_ids`.
+    focused_chart_id: Optional[int] = Field(None, exclude=True)
 
     @field_validator("images")
     @classmethod
@@ -802,7 +825,22 @@ class DashboardUpdateDraftFiltersRequest(BaseModel):
     filters_config: Optional[List[Dict[str, Any]]] = None
     slicers_config: Optional[List[Dict[str, Any]]] = None
     slicer_cluster_layout: Optional[Dict[str, Any]] = None
+    # The report theme, staged like the rest of the presentation: the editor
+    # sees it (overlaid on GET), public/embed keep the published theme, and
+    # POST /publish applies it in the SAME transaction as the layouts — so a
+    # dashboard is never published half-old, half-new.
+    theme_config: Optional[Dict[str, Any]] = None
     pages_config: Optional[List[Dict[str, Any]]] = None
+    # Tiles removed in the SAME draft change and the same transaction — the
+    # controls of a filter being deleted. A published tile is marked removed in
+    # the caller's draft (it stays live until Publish); a tile only in the
+    # caller's draft is deleted. Nothing is applied if any id is refused.
+    remove_tile_ids: Optional[List[int]] = None
+    # The shared-draft revision this edit was made on (`shared_draft.rev` of
+    # the dashboard the editor loaded). A stale revision is refused (409): the
+    # filters/pages/theme draft is shared by every author, and replacing it
+    # from an old copy would silently drop a colleague's edit.
+    base_rev: Optional[str] = None
 
 
 # Query Execution Schemas

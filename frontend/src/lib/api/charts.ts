@@ -40,6 +40,12 @@ export const chartApi = {
     return response.data;
   },
 
+  /** The reports that show this chart — what saving it would change, live. */
+  getUsage: async (id: number): Promise<{ chart_id: number; reports: Array<{ id: number; name: string; tiles: number; published: boolean }>; other_reports: number }> => {
+    const response = await apiClient.get(`/charts/${id}/usage`);
+    return response.data;
+  },
+
   update: async (id: number, data: ChartUpdate): Promise<Chart> => {
     const response = await apiClient.put(`/charts/${id}`, data);
     return response.data;

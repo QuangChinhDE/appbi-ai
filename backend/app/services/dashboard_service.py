@@ -1,8 +1,10 @@
 """
 CRUD service for dashboards.
 """
+import re
 from typing import List, Optional
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError
 
 from app.models import Dashboard, DashboardChart
@@ -92,6 +94,275 @@ def normalize_dashboard_theme_config(theme_config: Optional[dict]) -> Optional[d
     return normalized
 
 
+#: Finding kinds a narrative block may reference (frontend `report-findings.ts`).
+NARRATIVE_FINDING_KINDS = frozenset({
+    "kpi_value", "trend", "peak", "latest", "period_comparison", "top_item",
+    "concentration", "attainment", "partial_periods",
+})
+NARRATIVE_VARIANTS = frozenset({"headline", "summary", "callout", "chapter", "takeaway"})
+_FINDING_KEY_RE = re.compile(r"^([a-z_]+):(-?\d+)$")
+
+
+def is_draft_only_item(item) -> bool:
+    """A grid item added in a draft that has not been published (by AI Design,
+    a slicer control, or a manual Add).
+
+    Such items exist as real rows (so the editor can move, resize and lock them
+    like any tile) but are invisible to public/embed until Publish, and are
+    deleted by Discard.
+    """
+    layout = getattr(item, "layout", None)
+    return isinstance(layout, dict) and bool(layout.get("draftOnly"))
+
+
+# A tile's draft state lives in its layout and is stamped by the server only:
+#   draftOnly + draftOwner        — added in someone's draft, not published yet;
+#   draftRemoved + draftRemovedBy — published, removed in someone's draft.
+# Publish by that author applies it; Discard by that author reverts it; no other
+# author's view changes. A client never sets these keys: every layout a client
+# sends has them stripped (strip_draft_row_keys).
+DRAFT_ROW_KEYS = ("draftOnly", "draftOwner", "draftRemoved", "draftRemovedBy")
+
+
+def strip_draft_row_keys(layout: Optional[dict]) -> dict:
+    return {k: v for k, v in (layout or {}).items() if k not in DRAFT_ROW_KEYS}
+
+
+# Layout keys whose explicit null is a statement, not an absence: a tile whose
+# `sectionId` is null belongs to NO section; one without the key has its section
+# read from where it sits (a legacy report). Dropping the null turned "no
+# section" into "infer", and a chart that sat under a heading silently joined it
+# once the draft was saved.
+LAYOUT_NULL_MEANINGFUL_KEYS = frozenset({"sectionId"})
+
+
+def draft_layout_dump(layout) -> dict:
+    """A layout for the draft snapshot: unset optional fields dropped (as before),
+    but an explicit null kept where null has a meaning."""
+    out = layout.model_dump(exclude_none=True)
+    extra = getattr(layout, "model_extra", None) or {}
+    for key in LAYOUT_NULL_MEANINGFUL_KEYS:
+        if key in extra and extra[key] is None:
+            out[key] = None
+    return out
+
+
+def is_draft_only_by(item, user_key: str) -> bool:
+    """Added in THIS author's draft (an unowned legacy draft row counts as theirs)."""
+    layout = getattr(item, "layout", None)
+    return (isinstance(layout, dict) and bool(layout.get("draftOnly"))
+            and str(layout.get("draftOwner") or user_key) == user_key)
+
+
+def is_draft_removed_by(item, user_key: str) -> bool:
+    """Published, and removed in THIS author's draft."""
+    layout = getattr(item, "layout", None)
+    return (isinstance(layout, dict) and bool(layout.get("draftRemoved"))
+            and str(layout.get("draftRemovedBy") or "") == user_key)
+
+
+def remove_tile_in_draft(db: Session, row, user_key: str) -> str:
+    """Remove a tile the way a draft edit does. No commit: the caller commits,
+    so several removals (a filter and every control for it) are one transaction.
+
+    * added in this author's draft → deleted (it was never published);
+    * added in ANOTHER author's draft → refused: it is their unpublished work;
+    * published → marked removed in this author's draft. It stays live — the
+      public link and embed keep it — until this author publishes. Discard or
+      Undo clears the mark: the same row, the same id, still published.
+    """
+    if is_draft_only_item(row):
+        if not is_draft_only_by(row, user_key):
+            raise PermissionError("This element belongs to another author's unpublished draft.")
+        db.delete(row)
+        return "deleted"
+    layout = dict(row.layout or {})
+    layout["draftRemoved"] = True
+    layout["draftRemovedBy"] = user_key
+    row.layout = layout
+    flag_modified(row, "layout")
+    return "marked"
+
+
+def restore_tile_in_draft(row, user_key: str) -> bool:
+    """Undo this author's draft removal. No commit."""
+    if not is_draft_removed_by(row, user_key):
+        return False
+    row.layout = {k: v for k, v in (row.layout or {}).items() if k not in ("draftRemoved", "draftRemovedBy")}
+    flag_modified(row, "layout")
+    return True
+
+
+# ── Report-only chart copies ─────────────────────────────────────────────────
+# "Edit chart → only this report" makes a chart that exists FOR ONE REPORT. It
+# is marked on the chart (``config.reportCopy = {dashboardId}``) so the library
+# can say so, and so it never outlives its reason: when no tile uses it any more
+# (Discard of the swap, Publish of a newer copy, the report deleted) it is
+# deleted in the same transaction. A copy some other report now uses is kept.
+REPORT_COPY_KEY = "reportCopy"
+
+
+def is_report_copy_of(chart, dashboard_id) -> bool:
+    cfg = getattr(chart, "config", None)
+    mark = cfg.get(REPORT_COPY_KEY) if isinstance(cfg, dict) else None
+    return isinstance(mark, dict) and str(mark.get("dashboardId")) == str(dashboard_id)
+
+
+def drop_unreferenced_report_copies(db: Session, dashboard_id, chart_ids) -> List[int]:
+    """Delete, in the caller's transaction, the charts among ``chart_ids`` that
+    are this report's copies and that no tile (of any report) uses. No commit."""
+    from app.models import Chart
+    db.flush()
+    dropped: List[int] = []
+    for cid in sorted({int(c) for c in (chart_ids or []) if c}):
+        chart = db.get(Chart, cid)
+        if chart is None or not is_report_copy_of(chart, dashboard_id):
+            continue
+        if db.query(DashboardChart.id).filter(DashboardChart.chart_id == cid).first() is not None:
+            continue
+        db.delete(chart)
+        dropped.append(cid)
+    return dropped
+
+
+def swap_tile_chart_in_draft(db: Session, row, chart, user_key: str):
+    """Put ``chart`` in ``row``'s place as a DRAFT edit: a draft-only tile with the
+    same place, size, page and per-report settings, and ``row`` removed in this
+    author's draft. No commit — never both tiles, never neither."""
+    layout = strip_draft_row_keys(dict(row.layout or {}))
+    layout["draftOnly"] = True
+    layout["draftOwner"] = user_key
+    replacement = DashboardChart(
+        dashboard_id=row.dashboard_id,
+        chart_id=chart.id,
+        widget_type=row.widget_type,
+        widget_config=dict(row.widget_config or {}) if row.widget_config else row.widget_config,
+        parameters=dict(row.parameters or {}) if getattr(row, "parameters", None) else getattr(row, "parameters", None),
+        layout=layout,
+    )
+    remove_tile_in_draft(db, row, user_key)
+    db.add(replacement)
+    db.flush()
+    return replacement
+
+
+def _free_chart_name(db: Session, name: str, owner_id, exclude_chart_id=None) -> str:
+    from app.services.chart_service import _find_chart_name_conflict
+    base = (name or "Chart").strip() or "Chart"
+    candidate, n = base, 2
+    while _find_chart_name_conflict(db, candidate, owner_id=owner_id, exclude_chart_id=exclude_chart_id):
+        candidate, n = f"{base} ({n})", n + 1
+    return candidate
+
+
+def fork_chart_for_report(db: Session, dash, row, *, payload, user):
+    """"Edit chart → only this report" as ONE transaction (no commit here).
+
+    The copy is created with its metadata and parameter definitions and swapped
+    into the tile as a draft — before, the browser did create / metadata /
+    parameters / swap in four requests, and a failure after the first left a
+    stray chart in the library. When the tile already shows THIS author's
+    unpublished copy for this report, that copy is edited in place (no copy of a
+    copy). Returns ``(chart, tile)``.
+    """
+    from app.models import ChartMetadata, ChartParameter
+    from app.schemas import ChartCreate
+    from app.services.chart_semantic_service import with_chart_semantic_binding
+    user_key = str(user.id)
+    config = {**dict(payload.config or {}), REPORT_COPY_KEY: {"dashboardId": dash.id}}
+    current = getattr(row, "chart", None)
+    in_place = (
+        current is not None
+        and is_report_copy_of(current, dash.id)
+        and is_draft_only_by(row, user_key)
+        and db.query(DashboardChart.id).filter(DashboardChart.chart_id == current.id,
+                                               DashboardChart.id != row.id).first() is None
+    )
+    if in_place:
+        chart = current
+        chart.name = _free_chart_name(db, payload.name, chart.owner_id, exclude_chart_id=chart.id)
+        chart.description = payload.description
+        chart.dataset_table_id = payload.dataset_table_id
+        from app.models import ChartType
+        chart.chart_type = ChartType(payload.chart_type.value)
+        chart.config = with_chart_semantic_binding(db, payload.dataset_table_id, config, auto_generate=True)
+        flag_modified(chart, "config")
+        tile = row
+    else:
+        # A copy never carries the shared chart's bare name: in the library it
+        # must read as this report's version, not as the chart every report uses.
+        name = (payload.name or "").strip()
+        if current is not None and name.lower() == (current.name or "").strip().lower():
+            name = f"{name} ({dash.name})"
+        chart = ChartService.create(db, ChartCreate(
+            name=_free_chart_name(db, name, user.id),
+            description=payload.description,
+            dataset_table_id=payload.dataset_table_id,
+            chart_type=payload.chart_type,
+            config=config,
+        ), owner_id=user.id, commit=False)
+        tile = None
+    if payload.metadata is not None:
+        meta = db.query(ChartMetadata).filter(ChartMetadata.chart_id == chart.id).first()
+        values = payload.metadata.model_dump(exclude_unset=False)
+        if meta is None:
+            db.add(ChartMetadata(chart_id=chart.id, domain=values.get("domain"), intent=values.get("intent"),
+                                 metrics=values.get("metrics") or [], dimensions=values.get("dimensions") or [],
+                                 tags=values.get("tags") or []))
+        else:
+            for key, value in values.items():
+                setattr(meta, key, value)
+    db.query(ChartParameter).filter(ChartParameter.chart_id == chart.id).delete()
+    db.add_all([
+        ChartParameter(chart_id=chart.id, parameter_name=p.parameter_name, parameter_type=p.parameter_type,
+                       column_mapping=p.column_mapping, default_value=p.default_value, description=p.description)
+        for p in (payload.parameters or [])
+    ])
+    if tile is None:
+        tile = swap_tile_chart_in_draft(db, row, chart, user_key)
+    db.flush()
+    return chart, tile
+
+
+def normalize_narrative_config(config: dict) -> dict:
+    """The one shape a narrative block is stored in.
+
+    A narrative never stores a number: it stores WHICH findings it states
+    (`kind:dashboardChartId`) and the words around them. The values are
+    recomputed from the tiles' rows under the viewer's filters every time it is
+    rendered. Unknown keys are dropped; a malformed finding reference is dropped
+    rather than stored, so a block cannot point at something no renderer knows.
+    """
+    out: dict = {}
+    variant = str(config.get("variant") or "summary").strip().lower()
+    out["variant"] = variant if variant in NARRATIVE_VARIANTS else "summary"
+    for key, limit in (("eyebrow", 80), ("title", 200), ("prose", 1200), ("tone", 16)):
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()[:limit]
+    items = []
+    for item in config.get("items") or []:
+        ref = item.get("finding") if isinstance(item, dict) else item
+        m = _FINDING_KEY_RE.match(str(ref or "").strip())
+        if m and m.group(1) in NARRATIVE_FINDING_KINDS:
+            items.append({"finding": f"{m.group(1)}:{m.group(2)}"})
+    out["items"] = items[:8]
+    if config.get("transparentBackground") is True:
+        out["transparentBackground"] = True
+    if config.get("origin") in ("ai", "author"):
+        out["origin"] = config["origin"]
+    return out
+
+
+# How a slicer control may be drawn (see frontend lib/slicer-placement.ts).
+SLICER_CONTROL_TREATMENTS = {"auto", "dropdown", "list", "buttons", "compact"}
+
+
+CALLOUT_TONES = frozenset({"accent", "good", "warn", "bad", "neutral"})
+CALLOUT_TONE_ALIASES = {"info": "accent", "success": "good", "warning": "warn", "danger": "bad"}
+REPORT_HEADER_VARIANTS = frozenset({"banner", "split", "minimal"})
+
+
 def normalize_dashboard_widget_config(widget_type: str | None, widget_config: Optional[dict]) -> dict:
     """Normalize MCP/spec widget aliases to the runtime config keys."""
     config = dict(widget_config or {})
@@ -133,16 +404,39 @@ def normalize_dashboard_widget_config(widget_type: str | None, widget_config: Op
             body = config.get("template")
         if body is not None:
             config["text"] = str(body)
+        # One vocabulary: the renderer's. The editor wrote good/warn/bad while
+        # this line only kept info/success/warning/danger — every tone a person
+        # picked was saved as "accent". Older spellings map onto it.
         tone = str(config.get("tone") or "accent").strip().lower()
-        config["tone"] = tone if tone in {"accent", "info", "success", "warning", "danger", "neutral"} else "accent"
+        tone = CALLOUT_TONE_ALIASES.get(tone, tone)
+        config["tone"] = tone if tone in CALLOUT_TONES else "accent"
+
+    elif wt == "narrative":
+        config = normalize_narrative_config(config)
 
     elif wt == "hero_strip":
-        headline = config.get("headline") or config.get("title") or config.get("text")
-        if headline is not None:
-            config["headline"] = str(headline)
-        sub = config.get("subhead") or config.get("subtitle")
-        if sub is not None:
-            config["subhead"] = str(sub)
+        # The report header. The editor writes title/description; imports and
+        # AI write headline/subhead. The editor's value wins (it is the edit),
+        # and ONE key is stored: keeping both let a stale `headline` shadow every
+        # later edit of the title (the edit saved, the header never changed).
+        # An empty title/description means "the report's own name/description".
+        for canonical, aliases in (("headline", ("title", "headline", "text")), ("subhead", ("description", "subtitle", "subhead"))):
+            present = [a for a in aliases if a in config]
+            if present:
+                config[canonical] = str(config.get(present[0]) or "")
+                for a in aliases:
+                    if a != canonical:
+                        config.pop(a, None)
+        variant = str(config.get("variant") or "banner").strip().lower()
+        config["variant"] = variant if variant in REPORT_HEADER_VARIANTS else "banner"
+        for flag in ("showPeriod", "showContext"):
+            if flag in config:
+                config[flag] = bool(config[flag])
+        finding = config.get("finding")
+        if finding is not None:
+            finding = str(finding).strip()
+            kind = finding.split(":", 1)[0]
+            config["finding"] = finding if (not finding or kind in NARRATIVE_FINDING_KINDS) and len(finding) <= 64 else ""
 
     elif wt == "html_fragment":
         # THE gate, not a second opinion. An analyze response round-trips
@@ -167,6 +461,23 @@ def normalize_dashboard_widget_config(widget_type: str | None, widget_config: Op
                 notes.append(note)
         if notes:
             config["degraded"] = notes[:8]
+
+    elif wt == "slicer":
+        # A slicer CONTROL is presentation: which slicer it shows and how it
+        # looks. The filter itself (field, operator, value, scope) lives in
+        # slicers_config / pages_config[].slicers and is untouched by moving or
+        # restyling its control. So the stored config is rebuilt from an
+        # allow-list, never copied: a control that arrived carrying a field or
+        # a value would otherwise be a second, unguarded place a predicate
+        # could live.
+        slicer_id = str(config.get("slicerId") or "").strip()[:80]
+        treatment = str(config.get("treatment") or "auto").strip().lower()
+        if treatment not in SLICER_CONTROL_TREATMENTS:
+            treatment = "auto"
+        origin = config.get("origin")
+        config = {"slicerId": slicer_id, "treatment": treatment}
+        if origin in ("ai", "author"):
+            config["origin"] = origin
 
     elif wt == "shape":
         kind_value = config.get("kind")
@@ -308,12 +619,15 @@ class DashboardService:
     
     @staticmethod
     def delete(db: Session, dashboard_id: int) -> bool:
-        """Delete a dashboard."""
+        """Delete a dashboard — and, in the same commit, the charts that existed
+        only as ITS report-only copies and that no other report uses."""
         db_dashboard = DashboardService.get_by_id(db, dashboard_id)
         if not db_dashboard:
             return False
         
+        chart_ids = [dc.chart_id for dc in (db_dashboard.dashboard_charts or []) if dc.chart_id]
         db.delete(db_dashboard)
+        drop_unreferenced_report_copies(db, dashboard_id, chart_ids)
         db.commit()
         logger.info(f"Deleted dashboard: {db_dashboard.name}")
         return True

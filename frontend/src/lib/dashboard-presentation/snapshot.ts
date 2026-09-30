@@ -22,7 +22,12 @@ import {
   scaleGridLayoutForRender,
 } from '@/lib/dashboard-pages';
 import { buildCapabilitySchema, AI_ALLOWED_CHART_STYLE_KEYS } from './capabilities';
+import { buildVisualMeaning, EMPTY_MEANING } from './design-context';
+import type { FieldMetaIndex } from './design-context';
 import { inferPresentationRole, isDataVisual } from './roles';
+import { possibleFindingKinds } from '@/lib/report-findings';
+import { slicerIdOfControl } from '@/lib/slicer-placement';
+import { BLOCK_VARIANTS } from './types';
 import type {
   DashboardPresentationSnapshot,
   PresentationFingerprint,
@@ -47,6 +52,11 @@ function titleOf(tile: DashboardChart): string {
   if (typeof custom === 'string' && custom.trim()) return custom.trim();
   const widgetTitle = (tile.widget_config as any)?.title ?? (tile.widget_config as any)?.text;
   if (typeof widgetTitle === 'string' && widgetTitle.trim()) return widgetTitle.trim();
+  // The title the reader SEES on the tile (the tile title rule: custom title,
+  // then the chart's configured title, then its name). The internal chart name
+  // ("Olist · Revenue by month (3)") is not a heading anyone should read.
+  const configured = (tile.chart as any)?.config?.styleConfig?.chartTitle ?? (tile.chart as any)?.config?.title;
+  if (typeof configured === 'string' && configured.trim()) return configured.trim();
   return String(tile.chart?.name ?? '').trim() || `Visual ${tile.id}`;
 }
 
@@ -128,9 +138,9 @@ export function buildPresentationFingerprint(tiles: DashboardChart[]): Presentat
 /** Which allow-listed style keys are meaningful for this chart type. Sending a
  *  donut's plan `barRadius` wastes tokens and invites nonsense. */
 function styleCapabilitiesFor(chartType: string, widgetType: string): string[] {
-  if (!isDataVisual(widgetType)) return ['transparentBackground'];
+  if (!isDataVisual(widgetType)) return [];
   const type = chartType.toUpperCase();
-  const common = ['transparentBackground', 'fontSize', 'chartTitleFontSize', 'palette', 'numberFormat', 'decimalPlaces'];
+  const common = ['tileFrame', 'chartSurface', 'fontSize', 'chartTitleFontSize', 'palette', 'numberFormat', 'decimalPlaces'];
   if (type === 'KPI' || type === 'GAUGE' || type === 'CARD') {
     return [...common, 'kpiBackgroundMode', 'kpiAccentColor', 'kpiAccentBorder', 'kpiGradientBg', 'kpiValueFontSize', 'kpiIconName', 'kpiIconColor'];
   }
@@ -168,34 +178,106 @@ export interface BuildSnapshotInput {
   pageCount: number;
   slicers: Array<Record<string, any>>;
   slicerDock: string;
+  /** Labels/types/descriptions from the dataset models the builder already
+   *  loaded. Optional: without it measure names are humanised instead. */
+  fieldMeta?: FieldMetaIndex;
+  /** Rows each loaded tile returned (counts only), so a table is sized to them. */
+  rowCountByTile?: Record<number, number>;
+}
+
+/** The allow-listed style keys a tile already carries on this dashboard. */
+function currentStyleOf(tile: DashboardChart): Record<string, unknown> {
+  const override = ((tile.layout as any)?.styleConfigOverride ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of AI_ALLOWED_CHART_STYLE_KEYS) {
+    if (override[key] !== undefined) out[key] = override[key];
+  }
+  return out;
 }
 
 export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardPresentationSnapshot {
   const { dashboard, tiles, pageId, pageName, pageCount, slicers, slicerDock } = input;
   const theme = (dashboard.theme_config ?? {}) as Record<string, any>;
+  // A slicer control is named by the slicer it shows, and a slicer knows where
+  // its control is. The field is never sent: the planner cannot change it.
+  const slicerLabelById = new Map((slicers ?? []).map((s, i) => [
+    String(s?.id ?? `slicer-${i + 1}`), String(s?.label ?? s?.name ?? `Filter ${i + 1}`),
+  ]));
+  const controlTileBySlicer = new Map<string, number>();
+  for (const tile of tiles) {
+    const sid = slicerIdOfControl(tile as any);
+    if (sid && !controlTileBySlicer.has(sid)) controlTileBySlicer.set(sid, tile.id);
+  }
 
-  const visuals: SnapshotVisual[] = tiles.map((tile) => {
-    // Read through the same upscaler the renderer uses, so a legacy 12-column
-    // tile is described to the planner at the coordinates it actually occupies.
-    const layout = (scaleGridLayoutForRender(tile.layout as any) ?? {}) as Record<string, any>;
+  // Reading order: top to bottom, left to right, in the coordinates the renderer
+  // actually draws (legacy 12-col tiles upscaled first).
+  const rendered = tiles.map((tile) => ({
+    tile,
+    layout: (scaleGridLayoutForRender(tile.layout as any) ?? {}) as Record<string, any>,
+  }));
+  const order = new Map<number, number>();
+  [...rendered]
+    .sort((a, b) => (Number(a.layout.y) || 0) - (Number(b.layout.y) || 0)
+      || (Number(a.layout.x) || 0) - (Number(b.layout.x) || 0)
+      || a.tile.id - b.tile.id)
+    .forEach((entry, index) => order.set(entry.tile.id, index + 1));
+
+  const statedSectionOf = (l: unknown): number | null | undefined => {
+    const raw = (l as { sectionId?: unknown } | null | undefined)?.sectionId;
+    if (raw === null) return null;
+    const n = Number(raw);
+    return raw !== undefined && raw !== '' && Number.isFinite(n) ? n : undefined;
+  };
+  const visuals: SnapshotVisual[] = rendered.map(({ tile, layout }) => {
     const chartType = chartTypeOf(tile);
     const widgetType = String(tile.widget_type ?? 'chart');
     const x = Number(layout.x) || 0;
     const y = Number(layout.y) || 0;
     const w = Number(layout.w) || 0;
     const h = Number(layout.h) || 0;
+    const meaning = isDataVisual(widgetType)
+      ? buildVisualMeaning({
+          chart: tile.chart as any,
+          // Base style ⊕ this dashboard's override — the same precedence the tile
+          // renders with, merged here without the renderer's normaliser.
+          styleConfig: {
+            ...(((tile.chart as any)?.config?.styleConfig ?? {}) as Record<string, unknown>),
+            ...(((tile.layout as any)?.styleConfigOverride ?? {}) as Record<string, unknown>),
+          },
+          fieldMeta: input.fieldMeta,
+        })
+      : EMPTY_MEANING;
+    const controlOf = widgetType === 'slicer' ? slicerIdOfControl(tile as any) : null;
     return {
       dashboardChartId: tile.id,
       chartType: chartType || (widgetType === 'chart' ? 'UNKNOWN' : widgetType.toUpperCase()),
-      title: titleOf(tile),
+      title: controlOf ? (slicerLabelById.get(controlOf) ?? 'Filter') : titleOf(tile),
       currentLayout: { x, y, w, h },
+      ...(statedSectionOf(tile.layout) !== undefined ? { sectionId: statedSectionOf(tile.layout) } : {}),
       displayRoleHint: inferPresentationRole({
         chartType, widgetType, w, y, gridColumns: DASHBOARD_GRID_COLS,
+        temporal: meaning.temporal, intent: meaning.intent,
       }),
       isWidget: !isDataVisual(widgetType),
       widgetType,
       styleCapabilities: styleCapabilitiesFor(chartType, widgetType),
       renderAspect: renderAspectFor(chartType, widgetType),
+      ...(typeof input.rowCountByTile?.[tile.id] === 'number' ? { rowCount: input.rowCountByTile[tile.id] } : {}),
+      readingOrder: order.get(tile.id) ?? 0,
+      locked: (tile.layout as any)?.locked === true,
+      meaning,
+      currentStyle: currentStyleOf(tile),
+      ...(isDataVisual(widgetType) ? {
+        findingKinds: possibleFindingKinds(
+          String(chartType || '').toUpperCase(),
+          meaning.temporal,
+          meaning.dimensions.length > 0,
+          meaning.measures[0]?.additive === true,
+          meaning.hasBenchmark,
+        ),
+      } : {}),
+      ...(widgetType === 'narrative' ? { block: blockOf(tile) } : {}),
+      ...(widgetType === 'section_header' ? { heading: headingOf(tile) } : {}),
     };
   });
 
@@ -205,12 +287,20 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
     // the planner has no use for it and no way to change it.
     displayLabel: String(slicer?.label ?? slicer?.name ?? `Filter ${index + 1}`),
     presentationType: String(slicer?.type ?? 'dropdown'),
-    currentPosition: slicerDock,
+    currentPosition: controlTileBySlicer.has(String(slicer?.id ?? `slicer-${index + 1}`)) ? 'grid' : slicerDock,
+    placedTileId: controlTileBySlicer.get(String(slicer?.id ?? `slicer-${index + 1}`)) ?? null,
+    // The same page rule the builder and the public link use: a 'custom' scope
+    // shows a control only where its matrix says so; anything else shows.
+    visibleHere: String(slicer?.scope ?? 'all') !== 'custom'
+      || Boolean(slicer?.pageScope?.[pageId]?.visible),
   }));
 
   return {
     dashboard: {
       name: String(dashboard.name ?? ''),
+      ...(typeof (dashboard as any).description === 'string' && (dashboard as any).description.trim()
+        ? { description: String((dashboard as any).description).trim().slice(0, 240) }
+        : {}),
       currentPageId: pageId,
       pageCount,
     },
@@ -225,5 +315,21 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
       cardTreatment: typeof theme.cardTreatment === 'string' ? theme.cardTreatment : undefined,
     },
     capabilities: buildCapabilitySchema(),
+  };
+}
+
+function headingOf(tile: DashboardChart): NonNullable<SnapshotVisual['heading']> {
+  const origin = ((tile as any).widget_config ?? {}).origin;
+  return origin === 'ai' || origin === 'author' ? { origin } : {};
+}
+
+function blockOf(tile: DashboardChart): NonNullable<SnapshotVisual['block']> {
+  const cfg = ((tile as any).widget_config ?? {}) as Record<string, any>;
+  const variant = BLOCK_VARIANTS.includes(cfg.variant) ? cfg.variant : 'summary';
+  return {
+    variant,
+    ...(cfg.origin === 'ai' || cfg.origin === 'author' ? { origin: cfg.origin } : {}),
+    ...((tile.layout as any)?.draftOnly ? { draftOnly: true } : {}),
+    findings: Array.isArray(cfg.items) ? cfg.items.map((i: any) => String(i?.finding ?? '')).filter(Boolean) : [],
   };
 }

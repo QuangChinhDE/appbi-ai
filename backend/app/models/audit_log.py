@@ -51,6 +51,11 @@ class AuditAction(str, enum.Enum):
     AGENT_FLOW_DELETED = "agent_flow_deleted"
     AGENT_FLOW_ASSIGNED = "agent_flow_assigned"
     AGENT_FLOW_UNASSIGNED = "agent_flow_unassigned"
+    # A person accepted / rejected a change AI Design PROPOSED to a report's
+    # content or meaning (sort order, a title). Presentation edits are not
+    # audited; a change to what a tile says is.
+    DASHBOARD_CONTENT_PROPOSAL_ACCEPTED = "dashboard_content_proposal_accepted"
+    DASHBOARD_CONTENT_PROPOSAL_REJECTED = "dashboard_content_proposal_rejected"
 
 
 class AuditSeverity(str, enum.Enum):

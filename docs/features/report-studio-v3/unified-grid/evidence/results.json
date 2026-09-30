@@ -1,0 +1,1386 @@
+{
+  "sha": "23f6b3c3b5ebeff0c5be1a91ac4dd024047f9d63",
+  "ranAt": "2026-09-28T17:07:10.113Z",
+  "results": {
+    "S1 grid-only creation": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the new report is a grid report (grid)",
+        "PASS — new report: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — new report: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — the new report's filter is a control on the grid (1)",
+        "PASS — no Canvas mode is offered",
+        "PASS — a write asking for Canvas is stored as grid (status 200, stored grid)",
+        "PASS — the tile moved down, leaving a gap above it (16,1264,1278,432 → 16,1456,1278,432)",
+        "PASS — after save and reload the gap is still there (no auto-pack, no jump) (16,1456,1278,432 vs 16,1456,1278,432)",
+        "PASS — no other tile moved"
+      ],
+      "metrics": {
+        "create_ms": 5549
+      },
+      "evidence": [
+        "s1-grid-only-builder-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S2 manual authoring": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — the page holds a KPI",
+        "PASS — the page holds a TIME_SERIES",
+        "PASS — the page holds a BAR",
+        "PASS — the page holds a PIE",
+        "PASS — the page holds a TABLE",
+        "PASS — the page holds a section_header",
+        "PASS — the page holds a callout",
+        "PASS — the page holds a text",
+        "PASS — the page holds a slicer",
+        "PASS — selecting two elements shows the Arrange tools",
+        "PASS — align left lines them up — or refuses and names the tile in the way (16,1968,1278,80 / 196,2064,415,176 → 16,1968,1278,80 / 16,2064,415,176)",
+        "PASS — Arrow key nudges the selected element (16,2064,415,176 → 52,2064,415,176)",
+        "PASS — Undo returns it exactly",
+        "PASS — Redo repeats it exactly",
+        "PASS — a nudge either moves into free space or is refused with the tile named — never overlaps",
+        "PASS — a locked element stays put",
+        "PASS — no coordinates or JSON are shown to the author"
+      ],
+      "metrics": {},
+      "evidence": [
+        "s2-elements-1440.jpg",
+        "s2-arranged-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S3 slicer add/move/resize/treatment": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — removing the only control of a band closes the band (band 96px)",
+        "PASS — control removed: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":0,\"inGrid\":0})",
+        "PASS — control removed: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":0,\"inGrid\":0})",
+        "PASS — the Slicer button says one filter has no control here",
+        "PASS — the control sits at the top of the page (16,16,272,80 (top 16))",
+        "PASS — the page moved down by one band to make room, keeping every gap (shift 96px)",
+        "PASS — control placed at the top: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — control placed at the top: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — Undo of a top placement removes the control and gives the band back",
+        "PASS — Redo places it at the top again, the page moved down by the same band",
+        "PASS — the new filter exists as a slicer entry (semantics), the control only names it ([{\"slicerId\":\"slicer-state\",\"treatment\":\"auto\",\"origin\":\"author\"},{\"slicerId\":\"gf-1790614240337\",\"treatment\":\"auto\",\"origin\":\"author\"}])",
+        "PASS — the control now sits beside the chart it is read with (16,1968,272,80 → 340,752,272,80 (chart 16,752,308,432))",
+        "PASS — a tall control shows its values as a list",
+        "PASS — the author can choose the control's display",
+        "PASS — every position survives save and reload",
+        "PASS — the display choice survives reload",
+        "PASS — s3-public at 1440px: no render defect",
+        "PASS — s3-public at 1440px: no sideways scroll",
+        "PASS — s3-public at 1440px: no control takes more than half the screen ([80,304])",
+        "PASS — s3-public at 1440px: every control is at least a usable size ([[284,80],[284,304]])",
+        "PASS — s3-public at 820px: no render defect",
+        "PASS — s3-public at 820px: no sideways scroll",
+        "PASS — s3-public at 820px: no control takes more than half the screen ([80,304])",
+        "PASS — s3-public at 820px: every control is at least a usable size ([[273,80],[273,304]])",
+        "PASS — s3-public at 390px: no render defect",
+        "PASS — s3-public at 390px: no sideways scroll",
+        "PASS — s3-public at 390px: no control takes more than half the screen ([72,277])",
+        "PASS — s3-public at 390px: every control is at least a usable size ([[310,72],[310,277]])"
+      ],
+      "metrics": {
+        "new_filter_label": "Product Category NameAll",
+        "slicer_entries": [
+          "Customer state",
+          "Product Category Name"
+        ],
+        "drag_gesture_ms": 484,
+        "publish_ms": 476
+      },
+      "evidence": [
+        "s3-slicers-builder-1440.jpg",
+        "s3-public-1440.jpg",
+        "s3-public-820.jpg",
+        "s3-public-390.jpg"
+      ],
+      "notes": []
+    },
+    "S4 filter parity": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — the control filters the report (KPIs change) (R$13.6M,98.7K,R$137.8,91.9%,4.1 → R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — move to the right: no chart data was re-queried (0 request(s))",
+        "PASS — move to the right: every KPI is identical (R$5.2M,41.4K,R$125.8,94.1%,4.2 vs R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — resize wider: no chart data was re-queried (0 request(s))",
+        "PASS — resize wider: every KPI is identical (R$5.2M,41.4K,R$125.8,94.1%,4.2 vs R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — restyle as buttons: no chart data was re-queried (0 request(s))",
+        "PASS — restyle as buttons: every KPI is identical (R$5.2M,41.4K,R$125.8,94.1%,4.2 vs R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — the table is identical after all three",
+        "PASS — every chart is queried with the same state filter (SP), nothing else ([{\"field\":\"customer_state\",\"operator\":\"in\",\"value\":[\"SP\"],\"semanticField\":\"dataset_table_3.customer_state\",\"datasetId\":1}])",
+        "PASS — after reload the numbers are the same",
+        "PASS — the published report at 1440px shows the same numbers (R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — the published report at 390px shows the same numbers (R$5.2M,41.4K,R$125.8,94.1%,4.2)"
+      ],
+      "metrics": {
+        "filter_apply_to_numbers_ms": 4109,
+        "filter_context_after": [
+          "[{\"field\":\"customer_state\",\"operator\":\"in\",\"value\":[\"SP\"],\"semanticField\":\"dataset_table_3.customer_state\",\"datasetId\":1}]"
+        ],
+        "publish_ms": 546,
+        "kpis": {
+          "unfiltered": [
+            "R$13.6M",
+            "98.7K",
+            "R$137.8",
+            "91.9%",
+            "4.1"
+          ],
+          "filtered": [
+            "R$5.2M",
+            "41.4K",
+            "R$125.8",
+            "94.1%",
+            "4.2"
+          ]
+        }
+      },
+      "evidence": [],
+      "notes": []
+    },
+    "S5 scope + visibility": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — builder: the control is shown to the author as hidden here",
+        "PASS — builder: it says it still filters this page",
+        "PASS — builder: the numbers are still filtered (scope, not placement, decides)",
+        "PASS — the same field cannot get a second slicer by accident (0)",
+        "PASS — page 2: the filter the scope shows here is listed as having no control",
+        "PASS — page 2: its control is placed on the grid",
+        "PASS — page 2: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — page 2: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — page 2: the control is live (the scope shows it here)",
+        "PASS — page 2: it carries the same value as page 1 (one filter, two controls)",
+        "PASS — back on page 1: its control is still the hidden one",
+        "PASS — back on page 1: the numbers are unchanged by the page switch",
+        "PASS — public page 1: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":0,\"inGrid\":0})",
+        "PASS — public page 1: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":0,\"inGrid\":0})",
+        "PASS — public page 1: no control for the hidden slicer",
+        "PASS — public page 1: its value still applies silently"
+      ],
+      "metrics": {
+        "publish_ms": 487
+      },
+      "evidence": [
+        "s5-public-page1-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S6 public locked filters": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — the open link shows the control",
+        "PASS — the locked link shows no control for the locked field",
+        "PASS — the locked link's numbers are the locked value (RJ), not all (R$13.6M,98.7K,R$137.8,91.9%,4.1 vs R$1.8M,12.8K,R$142.9,86.5%,3.9)",
+        "PASS — no editable control for the locked field anywhere on the page"
+      ],
+      "metrics": {
+        "probe": {
+          "sess": 0
+        }
+      },
+      "evidence": [
+        "s6-locked-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S7 AI redesign with slicers": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the design placed the filter on the page as a control (1)",
+        "PASS — every control the AI made is draft-only until Publish ({\"before\":[10205],\"after\":[{\"id\":10205,\"draftOnly\":false}]})",
+        "PASS — the published control the report already had is kept, not duplicated ([\"slicer-state\"])",
+        "PASS — an AI control names a slicer the report has, nothing else ([{\"slicerId\":\"slicer-state\",\"treatment\":\"auto\"}])",
+        "PASS — the numbers are unchanged by the redesign (R$13.6M,98.7K,R$137.8,91.9%,4.1 vs R$13.6M,98.7K,R$137.8,91.9%,4.1)",
+        "PASS — any text the AI added is bound to findings, never typed numbers ([])",
+        "PASS — no render defect after Apply"
+      ],
+      "metrics": {
+        "s7_preview_ms": 3591,
+        "panel": "AI Design\n\nDescribe the look you want. Your layout stays as you built it unless you ask to rearrange; charts and data never change.\n\nWhole page (Overview). Style-only unless you ask to move things — select visuals to narrow it.\n\nRedesign the whole page for a regional sales review: put the report's filters on the page as a filter band at the top, then the headline numbers, then the charts. Keep every number live.\n\nReorganized the page to prioritize filters and headline KPIs, followed by detailed charts, for a comprehensive regional sales review.\n\nPage recomposed\n\nMoved 11 visuals\nResized 13 visuals\nRestyled 11 visuals\nAdded 4 text block(s) bound to live findings\nTheme updated\n\nNEEDS YOUR APPROVAL\n\nThese change what a chart says, so they are applied only if you accept. Accepted changes are saved with the draft and recorded.\n\nSort this ranking by value, largest first\n\n1, 3, 5, 2→5, 4, 1, 3\n\nAccept\nReject\n\nPreviewing — nothing is saved yet\n\nPreview full report\nDiscard\nApply design",
+        "controls": {
+          "before": [
+            10205
+          ],
+          "after": [
+            {
+              "id": 10205,
+              "draftOnly": false
+            }
+          ]
+        }
+      },
+      "evidence": [
+        "s7-ai-builder-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S8 style-only keeps geometry": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — the preview moves or resizes nothing",
+        "PASS — after Apply every rectangle is unchanged, the control's too"
+      ],
+      "metrics": {
+        "s8_preview_ms": 5559
+      },
+      "evidence": [
+        "s8-style-applied-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S10 save/reload/undo/redo/publish": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — before Publish the public report has only the published control (the new one is draft only)",
+        "PASS — public before Publish: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — public before Publish: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — restyle applies",
+        "PASS — Undo restores the display (theme)",
+        "PASS — Redo restores the change",
+        "PASS — Undo of a move while a filter is active restores the place, not the filter",
+        "PASS — after reload the display is kept",
+        "PASS — after Publish the public report draws both controls",
+        "PASS — and draws the new one with the author's display",
+        "PASS — public after Publish: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — public after Publish: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})"
+      ],
+      "metrics": {
+        "publish_ms": 755
+      },
+      "evidence": [],
+      "notes": []
+    },
+    "S11 builder/public/embed/PDF parity": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — /d: same element count as the builder",
+        "PASS — /d: the control is drawn",
+        "PASS — /d: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — /d: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — /d: same numbers as the builder (R$5.2M,41.4K,R$125.8,94.1%,4.2 vs R$5.2M,41.4K,R$125.8,94.1%,4.2)",
+        "PASS — the export is a PDF",
+        "PASS — the export has nothing missing ([])",
+        "PASS — /embed: same element count as the builder",
+        "PASS — /embed: the control is drawn",
+        "PASS — /embed: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — /embed: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — /embed: same numbers as the builder (R$5.2M,41.4K,R$125.8,94.1%,4.2 vs R$5.2M,41.4K,R$125.8,94.1%,4.2)"
+      ],
+      "metrics": {
+        "publish_ms": 477,
+        "export_ms": 2741,
+        "export": {
+          "pages": 3,
+          "minPrintScale": 0.7521665486903157,
+          "warnings": []
+        }
+      },
+      "evidence": [
+        "s11-d-1440.jpg",
+        "s11-export.pdf",
+        "s11-embed-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S12 legacy + migration": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — report 846: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 846: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 846: the controls the migration made are on the grid (1 drawn, 0 made)",
+        "PASS — report 846: no tile overlaps",
+        "PASS — report 851: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 851: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 851: the controls the migration made are on the grid (1 drawn, 0 made)",
+        "PASS — report 851: no tile overlaps",
+        "PASS — report 842: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — report 842: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — report 842: the controls the migration made are on the grid (2 drawn, 0 made)",
+        "PASS — report 842: no tile overlaps",
+        "PASS — report 857: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 857: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 857: the controls the migration made are on the grid (1 drawn, 0 made)",
+        "PASS — report 857: no tile overlaps",
+        "PASS — report 813: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 813: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 813: the controls the migration made are on the grid (1 drawn, 0 made)",
+        "PASS — report 813: no tile overlaps",
+        "PASS — report 1: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 1: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 1: the controls the migration made are on the grid (1 drawn, 1 made)",
+        "PASS — report 1: no tile overlaps",
+        "PASS — report 5: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 5: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 5: the controls the migration made are on the grid (1 drawn, 1 made)",
+        "PASS — report 5: no tile overlaps",
+        "PASS — report 448: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 448: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 448: the controls the migration made are on the grid (1 drawn, 1 made)",
+        "PASS — report 448: no tile overlaps",
+        "PASS — report 858: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 858: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 858: the controls the migration made are on the grid (1 drawn, 0 made)",
+        "PASS — report 858: no tile overlaps",
+        "PASS — report 859: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 859: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 859: the controls the migration made are on the grid (1 drawn, 0 made)",
+        "PASS — report 859: no tile overlaps",
+        "PASS — report 604: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — report 604: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — report 604: the controls the migration made are on the grid (2 drawn, 0 made)",
+        "PASS — report 604: no tile overlaps",
+        "PASS — report 896: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 896: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — report 896: the controls the migration made are on the grid (1 drawn, 0 made)",
+        "PASS — report 896: no tile overlaps",
+        "PASS — baseline copy (builder): no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — baseline copy (builder): every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — baseline copy (public): no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — baseline copy (public): every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":1,\"inGrid\":1})",
+        "PASS — its public link draws the Customer-state control on the grid",
+        "PASS — the migrated report is a grid report",
+        "PASS — the migrated report's tiles do not overlap",
+        "PASS — every tile has a grid cell"
+      ],
+      "metrics": {
+        "migrated_bar_reports": [
+          846,
+          851,
+          842,
+          857,
+          813,
+          1,
+          5,
+          448,
+          858,
+          859,
+          604,
+          896,
+          900,
+          899,
+          441,
+          854,
+          3,
+          109,
+          108,
+          897,
+          901,
+          903,
+          574,
+          847,
+          477,
+          556,
+          442,
+          855,
+          659,
+          725,
+          856,
+          848,
+          839,
+          902,
+          2,
+          639,
+          850,
+          845,
+          904,
+          4,
+          447,
+          7,
+          8,
+          6,
+          628,
+          849,
+          841,
+          898
+        ]
+      },
+      "evidence": [
+        "s12-migrated-builder-1440.jpg"
+      ],
+      "notes": []
+    },
+    "S13 responsive": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — s13-public at 1440px: no render defect",
+        "PASS — s13-public at 1440px: no sideways scroll",
+        "PASS — s13-public at 1440px: no control takes more than half the screen ([80,80])",
+        "PASS — s13-public at 1440px: every control is at least a usable size ([[284,80],[284,80]])",
+        "PASS — s13-public at 820px: no render defect",
+        "PASS — s13-public at 820px: no sideways scroll",
+        "PASS — s13-public at 820px: no control takes more than half the screen ([80,80])",
+        "PASS — s13-public at 820px: every control is at least a usable size ([[253,80],[253,80]])",
+        "PASS — s13-public at 390px: no render defect",
+        "PASS — s13-public at 390px: no sideways scroll",
+        "PASS — s13-public at 390px: no control takes more than half the screen ([72,72])",
+        "PASS — s13-public at 390px: every control is at least a usable size ([[310,72],[310,72]])",
+        "PASS — narrowing to a phone keeps the viewer's selection",
+        "PASS — and the same numbers",
+        "PASS — the value menu fits a 390px screen ({\"x\":40,\"y\":244,\"width\":310,\"height\":339.5})"
+      ],
+      "metrics": {
+        "publish_ms": 712
+      },
+      "evidence": [
+        "s13-public-1440.jpg",
+        "s13-public-820.jpg",
+        "s13-public-390.jpg",
+        "s13-menu-390.jpg"
+      ],
+      "notes": []
+    },
+    "S14 performance": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — moving a control 4 times queried no chart data (0)",
+        "PASS — publish finished within the V3 range (≤ 5 s) (482 ms)",
+        "PASS — a move settles quickly (median ≤ 1500 ms including the gesture) (557,445,478,498)"
+      ],
+      "metrics": {
+        "drag_to_settled_ms": [
+          557,
+          445,
+          478,
+          498
+        ],
+        "longtask_probe": {
+          "po": true,
+          "tasks": []
+        },
+        "filter_apply_ms": 4448,
+        "publish_ms": 482,
+        "layout_after": [
+          16,
+          16,
+          272,
+          80
+        ]
+      },
+      "evidence": [],
+      "notes": []
+    },
+    "S9 AI report stays manually editable": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the AI-created control moves like any element (8,8,318,80 → 442,8,318,80)",
+        "PASS — the author can restyle an AI control",
+        "PASS — removing a control keeps the filter",
+        "PASS — after removing an AI control: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":0,\"inGrid\":0})",
+        "PASS — after removing an AI control: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":0,\"inGrid\":0})"
+      ],
+      "metrics": {},
+      "evidence": [
+        "s9-ai-then-manual-1440.jpg"
+      ],
+      "notes": []
+    },
+    "L slicer benchmark": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — placing a NEW date control leaves the numbers as they were (it starts at all dates) (R$13.6M,98.7K,R$137.8,91.9%,4.1 vs R$13.6M,98.7K,R$137.8,91.9%,4.1)",
+        "PASS — every KPI still has data (R$13.6M,98.7K,R$137.8,91.9%,4.1)",
+        "PASS — the date control sits beside the headline, in its row (989,24,262,80 vs 24,24,941,219)",
+        "PASS — the date control's band closed behind it (the headline is at the top) (24,24,941,219)",
+        "PASS — the category control sits right above the KPIs (control 24,371,262,80, KPIs at 475)",
+        "PASS — the /Customer state/ control sits beside \"Revenue by state\" (346,1792,298,323 vs 24,1792,298,427)",
+        "PASS — a contextual control beside its chart lists its values (list)",
+        "PASS — benchmark builder: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":3,\"inGrid\":3})",
+        "PASS — benchmark builder: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":3,\"inGrid\":3})",
+        "PASS — the numbers are unchanged by every move (R$13.6M,98.7K,R$137.8,91.9%,4.1 vs R$13.6M,98.7K,R$137.8,91.9%,4.1)",
+        "PASS — the narrative says the same sentences ([\"Revenue peaked in Nov 2017 at R$ 1.0M.\",\"Revenue rose 610%, from R$ 120.3K in Jan 2017 to R$ 854.7K in Aug 2018.\",\"In Aug 2018, Revenue was R$ 854.7K, −4.6% on Jul 2018.\",\"credit_card leads Payment value with R$ 12.5M, 78% of the total.\",\"Avg delivery days fell 38.9%, from 12.6 in Jan 2017 to 7.73)",
+        "PASS — the render review finds nothing it did not find before",
+        "PASS — the benchmark has no render defect in the builder",
+        "PASS — L-benchmark-public at 1440px: no render defect",
+        "PASS — L-benchmark-public at 1440px: no sideways scroll",
+        "PASS — L-benchmark-public at 1440px: no control takes more than half the screen ([323,80,80])",
+        "PASS — L-benchmark-public at 1440px: every control is at least a usable size ([[311,323],[274,80],[274,80]])",
+        "PASS — L-benchmark-public at 820px: no render defect",
+        "PASS — L-benchmark-public at 820px: no sideways scroll",
+        "PASS — L-benchmark-public at 820px: no control takes more than half the screen ([323,80,80])",
+        "PASS — L-benchmark-public at 820px: every control is at least a usable size ([[283,323],[221,80],[221,80]])",
+        "PASS — L-benchmark-public at 390px: no render defect",
+        "PASS — L-benchmark-public at 390px: no sideways scroll",
+        "PASS — L-benchmark-public at 390px: no control takes more than half the screen ([296,72,72])",
+        "PASS — L-benchmark-public at 390px: every control is at least a usable size ([[294,296],[294,72],[294,72]])",
+        "PASS — L-benchmark-embed at 1440px: no render defect",
+        "PASS — L-benchmark-embed at 1440px: no sideways scroll",
+        "PASS — L-benchmark-embed at 1440px: no control takes more than half the screen ([323,80,80])",
+        "PASS — L-benchmark-embed at 1440px: every control is at least a usable size ([[315,323],[277,80],[277,80]])",
+        "PASS — L-benchmark-embed at 820px: no render defect",
+        "PASS — L-benchmark-embed at 820px: no sideways scroll",
+        "PASS — L-benchmark-embed at 820px: no control takes more than half the screen ([323,80,80])",
+        "PASS — L-benchmark-embed at 820px: every control is at least a usable size ([[283,323],[221,80],[221,80]])",
+        "PASS — L-benchmark-embed at 390px: no render defect",
+        "PASS — L-benchmark-embed at 390px: no sideways scroll",
+        "PASS — L-benchmark-embed at 390px: no control takes more than half the screen ([296,72,72])",
+        "PASS — L-benchmark-embed at 390px: every control is at least a usable size ([[294,296],[294,72],[294,72]])"
+      ],
+      "metrics": {
+        "narrative_before": [
+          "Revenue peaked in Nov 2017 at R$ 1.0M.",
+          "Revenue rose 610%, from R$ 120.3K in Jan 2017 to R$ 854.7K in Aug 2018.",
+          "In Aug 2018, Revenue was R$ 854.7K, −4.6% on Jul 2018.",
+          "credit_card leads Payment value with R$ 12.5M, 78% of the total.",
+          "Avg delivery days fell 38.9%, from 12.6 in Jan 2017 to 7.73 in Aug 2018."
+        ],
+        "category_above_kpis": {
+          "catId": "10307",
+          "before": {
+            "10290": [
+              24,
+              371,
+              405,
+              149
+            ],
+            "10291": [
+              453,
+              371,
+              405,
+              149
+            ],
+            "10292": [
+              881,
+              371,
+              405,
+              149
+            ],
+            "10293": [
+              24,
+              544,
+              619,
+              149
+            ],
+            "10294": [
+              24,
+              717,
+              941,
+              600
+            ],
+            "10295": [
+              24,
+              1341,
+              619,
+              427
+            ],
+            "10296": [
+              667,
+              1341,
+              619,
+              427
+            ],
+            "10297": [
+              24,
+              1792,
+              619,
+              427
+            ],
+            "10298": [
+              24,
+              2243,
+              1262,
+              496
+            ],
+            "10299": [
+              667,
+              1792,
+              619,
+              427
+            ],
+            "10300": [
+              667,
+              544,
+              619,
+              149
+            ],
+            "10301": [
+              24,
+              2867,
+              1262,
+              496
+            ],
+            "10302": [
+              24,
+              267,
+              298,
+              80
+            ],
+            "10303": [
+              24,
+              24,
+              941,
+              219
+            ],
+            "10304": [
+              989,
+              717,
+              298,
+              600
+            ],
+            "10305": [
+              24,
+              2763,
+              1262,
+              80
+            ],
+            "10306": [
+              989,
+              24,
+              262,
+              80
+            ],
+            "10307": [
+              24,
+              3387,
+              262,
+              80
+            ]
+          },
+          "after": {
+            "10290": [
+              24,
+              475,
+              405,
+              149
+            ],
+            "10291": [
+              453,
+              475,
+              405,
+              149
+            ],
+            "10292": [
+              881,
+              475,
+              405,
+              149
+            ],
+            "10293": [
+              24,
+              648,
+              619,
+              149
+            ],
+            "10294": [
+              24,
+              821,
+              941,
+              600
+            ],
+            "10295": [
+              24,
+              1445,
+              619,
+              427
+            ],
+            "10296": [
+              667,
+              1445,
+              619,
+              427
+            ],
+            "10297": [
+              24,
+              1896,
+              619,
+              427
+            ],
+            "10298": [
+              24,
+              2347,
+              1262,
+              496
+            ],
+            "10299": [
+              667,
+              1896,
+              619,
+              427
+            ],
+            "10300": [
+              667,
+              648,
+              619,
+              149
+            ],
+            "10301": [
+              24,
+              2971,
+              1262,
+              496
+            ],
+            "10302": [
+              24,
+              267,
+              298,
+              80
+            ],
+            "10303": [
+              24,
+              24,
+              941,
+              219
+            ],
+            "10304": [
+              989,
+              821,
+              298,
+              600
+            ],
+            "10305": [
+              24,
+              2867,
+              1262,
+              80
+            ],
+            "10306": [
+              989,
+              24,
+              262,
+              80
+            ],
+            "10307": [
+              24,
+              371,
+              262,
+              80
+            ]
+          },
+          "kpiTop": 371,
+          "kpiTop2": 475
+        },
+        "beside_Revenue by state": {
+          "chartId": "10297",
+          "ctlId": "10302",
+          "beforeDrag": {
+            "10290": [
+              24,
+              475,
+              405,
+              149
+            ],
+            "10291": [
+              453,
+              475,
+              405,
+              149
+            ],
+            "10292": [
+              881,
+              475,
+              405,
+              149
+            ],
+            "10293": [
+              24,
+              648,
+              619,
+              149
+            ],
+            "10294": [
+              24,
+              821,
+              941,
+              600
+            ],
+            "10295": [
+              24,
+              1445,
+              619,
+              427
+            ],
+            "10296": [
+              667,
+              1445,
+              619,
+              427
+            ],
+            "10297": [
+              24,
+              1896,
+              298,
+              427
+            ],
+            "10298": [
+              24,
+              2347,
+              1262,
+              496
+            ],
+            "10299": [
+              667,
+              1896,
+              619,
+              427
+            ],
+            "10300": [
+              667,
+              648,
+              619,
+              149
+            ],
+            "10301": [
+              24,
+              2971,
+              1262,
+              496
+            ],
+            "10302": [
+              24,
+              267,
+              298,
+              80
+            ],
+            "10303": [
+              24,
+              24,
+              941,
+              219
+            ],
+            "10304": [
+              989,
+              821,
+              298,
+              600
+            ],
+            "10305": [
+              24,
+              2867,
+              1262,
+              80
+            ],
+            "10306": [
+              989,
+              24,
+              262,
+              80
+            ],
+            "10307": [
+              24,
+              371,
+              262,
+              80
+            ]
+          },
+          "afterDrop": {
+            "10290": [
+              24,
+              371,
+              405,
+              149
+            ],
+            "10291": [
+              453,
+              371,
+              405,
+              149
+            ],
+            "10292": [
+              881,
+              371,
+              405,
+              149
+            ],
+            "10293": [
+              24,
+              544,
+              619,
+              149
+            ],
+            "10294": [
+              24,
+              717,
+              941,
+              600
+            ],
+            "10295": [
+              24,
+              1341,
+              619,
+              427
+            ],
+            "10296": [
+              667,
+              1341,
+              619,
+              427
+            ],
+            "10297": [
+              24,
+              1792,
+              298,
+              427
+            ],
+            "10298": [
+              24,
+              2243,
+              1262,
+              496
+            ],
+            "10299": [
+              667,
+              1792,
+              619,
+              427
+            ],
+            "10300": [
+              667,
+              544,
+              619,
+              149
+            ],
+            "10301": [
+              24,
+              2867,
+              1262,
+              496
+            ],
+            "10302": [
+              346,
+              1792,
+              298,
+              80
+            ],
+            "10303": [
+              24,
+              24,
+              941,
+              219
+            ],
+            "10304": [
+              989,
+              717,
+              298,
+              600
+            ],
+            "10305": [
+              24,
+              2763,
+              1262,
+              80
+            ],
+            "10306": [
+              989,
+              24,
+              262,
+              80
+            ],
+            "10307": [
+              24,
+              267,
+              262,
+              80
+            ]
+          },
+          "afterResize": {
+            "10290": [
+              24,
+              371,
+              405,
+              149
+            ],
+            "10291": [
+              453,
+              371,
+              405,
+              149
+            ],
+            "10292": [
+              881,
+              371,
+              405,
+              149
+            ],
+            "10293": [
+              24,
+              544,
+              619,
+              149
+            ],
+            "10294": [
+              24,
+              717,
+              941,
+              600
+            ],
+            "10295": [
+              24,
+              1341,
+              619,
+              427
+            ],
+            "10296": [
+              667,
+              1341,
+              619,
+              427
+            ],
+            "10297": [
+              24,
+              1792,
+              298,
+              427
+            ],
+            "10298": [
+              24,
+              2243,
+              1262,
+              496
+            ],
+            "10299": [
+              667,
+              1792,
+              619,
+              427
+            ],
+            "10300": [
+              667,
+              544,
+              619,
+              149
+            ],
+            "10301": [
+              24,
+              2867,
+              1262,
+              496
+            ],
+            "10302": [
+              346,
+              1792,
+              298,
+              323
+            ],
+            "10303": [
+              24,
+              24,
+              941,
+              219
+            ],
+            "10304": [
+              989,
+              717,
+              298,
+              600
+            ],
+            "10305": [
+              24,
+              2763,
+              1262,
+              80
+            ],
+            "10306": [
+              989,
+              24,
+              262,
+              80
+            ],
+            "10307": [
+              24,
+              267,
+              262,
+              80
+            ]
+          }
+        },
+        "publish_ms": 630
+      },
+      "evidence": [
+        "L-benchmark-builder-1440.jpg",
+        "L-benchmark-builder-820.jpg",
+        "L-benchmark-builder-390.jpg",
+        "L-benchmark-public-1440.jpg",
+        "L-benchmark-public-820.jpg",
+        "L-benchmark-public-390.jpg",
+        "L-benchmark-embed-1440.jpg",
+        "L-benchmark-embed-820.jpg",
+        "L-benchmark-embed-390.jpg"
+      ],
+      "notes": []
+    },
+    "F clear / remove control / delete filter": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — SP is applied",
+        "PASS — clearing the value unfilters the report",
+        "PASS — and keeps the control",
+        "PASS — removing the control keeps the filter entry",
+        "PASS — the Slicer button lists the filter as having no control",
+        "PASS — control removed: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":0,\"inGrid\":0})",
+        "PASS — control removed: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":0,\"inGrid\":0})",
+        "PASS — deleting the filter removes its entry ([])",
+        "PASS — and every control for it",
+        "PASS — after reload nothing points at the deleted filter",
+        "PASS — and the report is unfiltered"
+      ],
+      "metrics": {},
+      "evidence": [],
+      "notes": []
+    },
+    "U unified grid on a legacy report": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — legacy report (builder): no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — legacy report (builder): every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — the migrated controls start at the top, above the KPIs (16,16,272,80 / 304,16,272,80, KPIs at 112)",
+        "PASS — the first control lands between the KPIs and the next row (control 16,304,272,80, next 16,400,1278,80)",
+        "PASS — both controls share the row under the KPIs (16,208,272,80 / 304,208,272,80)",
+        "PASS — the emptied top band closed: the KPIs are the first row again (KPIs 16,16,16, top 16)",
+        "PASS — no whitespace is kept around the controls (KPIs end 192, controls 16,208,272,80, next 16,304,1278,80)",
+        "PASS — the rest of the page is where it was (above the controls up by the band, below unchanged) ({\"10322\":[112,16],\"10323\":[112,16],\"10324\":[112,16],\"10325\":[400,400],\"10326\":[400,400],\"10327\":[912,912],\"10328\":[912,912],\"10329\":[304,304],\"10330\":[16,208],\"10331\":[16,208]})",
+        "PASS — a control keeps its size (never inflated into a tall card) (80,80)",
+        "PASS — moving controls queried no chart data (0)",
+        "PASS — every KPI is identical after the moves",
+        "PASS — the table is identical after the moves",
+        "PASS — after the moves: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — after the moves: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — the value menu opens on top of the page, not clipped by the grid ({\"x\":104,\"y\":358,\"width\":300,\"height\":170})",
+        "PASS — clicking a value is not a drag",
+        "PASS — Undo returns the second control (and reopens the band)",
+        "PASS — Undo again returns the page exactly as it opened",
+        "PASS — Redo twice repeats both moves exactly",
+        "PASS — every position survives save and reload",
+        "PASS — both Studio frames settled",
+        "PASS — the Studio shows two frames (2)",
+        "PASS — Studio frame \"before\": no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — Studio frame \"before\": every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — Studio frame \"before\" draws the controls natively ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — Studio frame \"after\": no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — Studio frame \"after\": every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — Studio frame \"after\" draws the controls natively ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — discarding the preview leaves the author's layout",
+        "PASS — /d: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — /d: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — /d: the controls are drawn between the KPIs and the charts, as published ([[316,208,284,80],[16,208,284,80]])",
+        "PASS — /d: the same numbers as the builder",
+        "PASS — /embed: no filter area outside the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — /embed: every control is an element of the grid ({\"outside\":0,\"areas\":0,\"controls\":2,\"inGrid\":2})",
+        "PASS — /embed: the controls are drawn between the KPIs and the charts, as published ([[319,208,287,80],[16,208,287,80]])",
+        "PASS — /embed: the same numbers as the builder",
+        "PASS — U-public at 1440px: no render defect",
+        "PASS — U-public at 1440px: no sideways scroll",
+        "PASS — U-public at 1440px: no control takes more than half the screen ([80,80])",
+        "PASS — U-public at 1440px: every control is at least a usable size ([[284,80],[284,80]])",
+        "PASS — U-public at 820px: no render defect",
+        "PASS — U-public at 820px: no sideways scroll",
+        "PASS — U-public at 820px: no control takes more than half the screen ([80,80])",
+        "PASS — U-public at 820px: every control is at least a usable size ([[356,80],[356,80]])",
+        "PASS — U-public at 390px: no render defect",
+        "PASS — U-public at 390px: no sideways scroll",
+        "PASS — U-public at 390px: no control takes more than half the screen ([72,72])",
+        "PASS — U-public at 390px: every control is at least a usable size ([[147,72],[147,72]])",
+        "PASS — U-embed at 1440px: no render defect",
+        "PASS — U-embed at 1440px: no sideways scroll",
+        "PASS — U-embed at 1440px: no control takes more than half the screen ([80,80])",
+        "PASS — U-embed at 1440px: every control is at least a usable size ([[287,80],[287,80]])",
+        "PASS — U-embed at 820px: no render defect",
+        "PASS — U-embed at 820px: no sideways scroll",
+        "PASS — U-embed at 820px: no control takes more than half the screen ([80,80])",
+        "PASS — U-embed at 820px: every control is at least a usable size ([[356,80],[356,80]])",
+        "PASS — U-embed at 390px: no render defect",
+        "PASS — U-embed at 390px: no sideways scroll",
+        "PASS — U-embed at 390px: no control takes more than half the screen ([72,72])",
+        "PASS — U-embed at 390px: every control is at least a usable size ([[147,72],[147,72]])",
+        "PASS — the export is a PDF",
+        "PASS — the export has nothing missing ([])"
+      ],
+      "metrics": {
+        "legacy_source": 574,
+        "kpis": [
+          "1.7M",
+          "12.1K",
+          "$143.4"
+        ],
+        "drag1_ms": 659,
+        "drag2_ms": 443,
+        "publish_ms": 284,
+        "export": {
+          "pages": 3,
+          "minPrintScale": 0.7521665486903157,
+          "warnings": []
+        }
+      },
+      "evidence": [
+        "U-legacy-opened-1440.jpg",
+        "U-menu-open-1440.jpg",
+        "U-moved-builder-1440.jpg",
+        "U-studio-compare-1440.jpg",
+        "U-public-1440.jpg",
+        "U-public-820.jpg",
+        "U-public-390.jpg",
+        "U-embed-1440.jpg",
+        "U-embed-820.jpg",
+        "U-embed-390.jpg",
+        "U-export.pdf"
+      ],
+      "notes": []
+    },
+    "R1 removal is a draft edit": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — the builder no longer shows the removed control and chart",
+        "PASS — the draft bar offers Publish and Discard",
+        "PASS — before Publish the public link still has the control and the chart",
+        "PASS — Undo brings back THE SAME control and chart (same ids)",
+        "PASS — Discard brings back the removed control and chart",
+        "PASS — after remove → Undo nothing is left to publish",
+        "PASS — remove → Undo → Discard keeps the published control, still published ({\"x\":0,\"y\":0,\"w\":8,\"h\":3,\"gv\":2,\"pageId\":\"page-1\"})",
+        "PASS — and the public link still has it",
+        "PASS — after Publish the public link no longer has the control",
+        "PASS — the filter itself still applies — only its control went (R$13.6M,98.7K,R$137.8,91.9%,4.1 vs R$13.6M,98.7K,R$137.8,91.9%,4.1)"
+      ],
+      "metrics": {
+        "publish_ms": 422
+      },
+      "evidence": [
+        "R1-public-before-publish-1440.jpg",
+        "R1-public-after-publish-1440.jpg"
+      ],
+      "notes": []
+    },
+    "R2 manual additions are drafts": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the widget is added as a draft-only element ({\"i\":null,\"x\":0,\"y\":61,\"w\":12,\"h\":3,\"minW\":null,\"maxW\":null,\"minH\":null,\"maxH\":null,\"static\":false,\"pageId\":\"page-1\",\"xPx\":null,\"yPx\":null,\"wPx\":null,\"hPx\":null,\"z\":null,\"gv\":2,\"draftOnly\":true,\"draftOwner\":\"967a40e7-4e82-469b-9950-b035445629b6\"})",
+        "PASS — the public link does not show it before Publish",
+        "PASS — Discard deletes it"
+      ],
+      "metrics": {},
+      "evidence": [],
+      "notes": []
+    },
+    "R3 delete filter is one draft change": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — the builder draft no longer has the filter ([])",
+        "PASS — the public link keeps the filter control until Publish",
+        "PASS — Discard restores the filter and its control"
+      ],
+      "metrics": {},
+      "evidence": [],
+      "notes": []
+    },
+    "R4 filter context": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the baseline arrives with its Customer-state control on the grid",
+        "PASS — the locked link says it is filtered, and by what ([\"🔒Customer state:RJ\"])",
+        "PASS — the stripped control leaves no blank band above the report ({\"minTop\":16,\"absent\":0})",
+        "PASS — the hidden link's field and value are not in the served structure (0 hidden, 0 locked entries served)",
+        "PASS — the hidden link names no hidden filter ([])"
+      ],
+      "metrics": {},
+      "evidence": [
+        "R4-locked-link-1440.jpg"
+      ],
+      "notes": []
+    },
+    "R5 headings keep their content": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — round 1: \"Performance\" sits directly above a chart it introduces ({\"id\":\"10388\",\"top\":648,\"bottom\":1248,\"h\":600,\"kind\":\"data\",\"text\":\"Revenue over time @keyframes a\"})",
+        "PASS — round 1: the heading is a thin band, not a chart-sized block (80px)",
+        "PASS — round 1: no heading is repeated ([\"PerformanceRevenue and orders\",\"Detail\"])",
+        "PASS — round 2: \"Performance\" sits directly above a chart it introduces ({\"id\":\"10388\",\"top\":648,\"bottom\":1248,\"h\":600,\"kind\":\"data\",\"text\":\"Revenue over time @keyframes a\"})",
+        "PASS — round 2: the heading is a thin band, not a chart-sized block (80px)",
+        "PASS — round 2: no heading is repeated ([\"PerformanceRevenue and orders\",\"Detail\"])"
+      ],
+      "metrics": {
+        "round1": {
+          "heading": {
+            "id": "10392",
+            "top": 544,
+            "bottom": 624,
+            "h": 80,
+            "kind": "heading",
+            "text": "PerformanceRevenue and orders"
+          },
+          "next": {
+            "id": "10388",
+            "top": 648,
+            "bottom": 1248,
+            "h": 600,
+            "kind": "data",
+            "text": "Revenue over time @keyframes a"
+          },
+          "headings": [
+            "PerformanceRevenue and orders",
+            "Detail"
+          ]
+        },
+        "round2": {
+          "heading": {
+            "id": "10392",
+            "top": 544,
+            "bottom": 624,
+            "h": 80,
+            "kind": "heading",
+            "text": "PerformanceRevenue and orders"
+          },
+          "next": {
+            "id": "10388",
+            "top": 648,
+            "bottom": 1248,
+            "h": 600,
+            "kind": "data",
+            "text": "Revenue over time @keyframes a"
+          },
+          "headings": [
+            "PerformanceRevenue and orders",
+            "Detail"
+          ]
+        }
+      },
+      "evidence": [
+        "R5-executive-applied-twice-1440.jpg"
+      ],
+      "notes": []
+    },
+    "R6 place beside the selected element": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — with a chart selected, the picker offers \"Next to\" it (Next to “Olist · Revenue by category (302)”)",
+        "PASS — the control lands in the chart's row, beside it — no drag (340,752,272,80 vs 16,752,308,432)"
+      ],
+      "metrics": {
+        "place_beside_ms": 1502
+      },
+      "evidence": [
+        "R6-beside-1440.jpg"
+      ],
+      "notes": []
+    },
+    "R7 exclusion stated": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the lock is served with its operator ({\"field\":\"customer_state\",\"label\":\"Customer state\",\"value\":[\"SP\"],\"operator\":\"not_in\",\"semanticField\":\"dataset_table_3.customer_state\"})",
+        "PASS — the reader is told the page EXCLUDES SP — never \"Customer state: SP\" ([\"🔒Customer state:not SP\"])",
+        "PASS — an inclusion is stated as an inclusion ([\"🔒Customer state:SP\"])",
+        "PASS — the two links show different numbers (the exclusion is enforced as an exclusion) ([\"R$8.4M\",\"57.3K\",\"R$146.4\",\"90.3%\",\"4\"] vs [\"R$5.2M\",\"41.4K\",\"R$125.8\",\"94.1%\",\"4.2\"])"
+      ],
+      "metrics": {},
+      "evidence": [
+        "R7-excluding-link-1440.jpg"
+      ],
+      "notes": []
+    }
+  }
+}

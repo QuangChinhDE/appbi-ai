@@ -1,0 +1,25 @@
+{"phase":"frontend-down","kpisBefore":["491.2K","3.7K","$132.9"]}
+{
+ "phase": "frontend-down",
+ "fails": [
+  "net::ERR_CONNECTION_REFUSED /api/v1/datasets/2/model/distinct-values",
+  "net::ERR_CONNECTION_REFUSED /api/v1/dashboards/604/draft-filters",
+  "net::ERR_CONNECTION_REFUSED /api/v1/charts/5006/data",
+  "net::ERR_CONNECTION_REFUSED /api/v1/charts/5007/data",
+  "net::ERR_CONNECTION_REFUSED /api/v1/charts/5008/data",
+  "net::ERR_CONNECTION_REFUSED /api/v1/charts/5009/data"
+ ],
+ "statuses": [],
+ "tiles": [
+  "REVENUE Load data failed KPI Network Error Retry Details Explore",
+  "ORDERS Load data failed KPI Network Error Retry Details Explore",
+  "AVERAGE ORDER VALUE Load data failed KPI Network Error Retry Details E",
+  "Revenue over time Load data failed TIME SERIES Network Error Retry Det",
+  "Revenue by channel Load data failed PIE Network Error Retry Details Ex",
+  "Revenue by region Load data failed BAR Network Error Retry Details Exp",
+  "Sales detail Load data failed TABLE Network Error Retry Details Explor",
+  "Performance REVENUE AND ORDERS",
+  "REGION 2 North +1",
+  "CHANNEL All"
+ ]
+}

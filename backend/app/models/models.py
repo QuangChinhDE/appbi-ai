@@ -6,13 +6,14 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 from sqlalchemy.sql import func
 from datetime import datetime
 import enum
 import uuid
 
 from app.core.database import Base
+from app.models.grid_geometry import coerce_layout_mode, ensure_grid_cell
 
 
 class DataSourceType(str, enum.Enum):
@@ -179,7 +180,9 @@ class Dashboard(Base):
 
     pages_config = Column(JSON, nullable=True, default=list)
 
-    # Layout mode: "grid" (react-grid-layout, default) or "canvas" (free positioning)
+    # Layout mode. Always "grid": the grid is the only report layout. The
+    # column stays for old rows and old clients; `_only_grid` below coerces
+    # every write (see app/models/grid_geometry.py for why).
     layout_mode = Column(String(16), nullable=False, server_default="grid", default="grid")
     # Theme: {mode: "dark"|"light", accent: "#ffcc00", fontFamily: "...", cardStyle: "soft"|"sharp"}
     theme_config = Column(JSON, nullable=True, default=dict)
@@ -217,6 +220,10 @@ class Dashboard(Base):
     # optimistic-concurrency version so a second editor can't silently clobber
     # a publish made after they loaded.
     last_published_at = Column(DateTime(timezone=True), nullable=True)
+
+    @validates("layout_mode")
+    def _only_grid(self, _key, value):
+        return coerce_layout_mode(value)
 
     # Relationships
     # order_by id: dashboard_charts had NO deterministic order, so different
@@ -309,6 +316,7 @@ class DashboardChart(Base):
 
     # Layout information for react-grid-layout
     # Format: {x: 0, y: 0, w: 6, h: 4, xPx?, yPx?, wPx?, hPx?, z?}
+    # (pixels are legacy Canvas boxes: kept, never rendered)
     layout = Column(JSON, nullable=False)
 
     # Runtime parameter values for this chart instance in this dashboard
@@ -318,6 +326,11 @@ class DashboardChart(Base):
     # Relationships
     dashboard = relationship("Dashboard", back_populates="dashboard_charts")
     chart = relationship("Chart", back_populates="dashboard_charts")
+
+    @validates("layout")
+    def _drawable_on_grid(self, _key, value):
+        # A tile that arrives with only a Canvas pixel box gets its grid cell.
+        return ensure_grid_cell(value)
 
 
 class ChartMetadata(Base):

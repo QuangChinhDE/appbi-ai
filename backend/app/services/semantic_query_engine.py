@@ -14,6 +14,7 @@ from typing import List, Tuple, Dict, Any, Optional, Set
 from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticExplore, SemanticModel
 from app.services import physical_type_map as _ptm
+from app.services.sql_pattern import pattern_predicate
 from app.services.semantic_join_resolver import SemanticJoinResolver
 from app.schemas.semantic import (
     WindowFunctionDefinition,
@@ -2662,6 +2663,11 @@ class SemanticQueryEngine:
                 if _present(hi):
                     return f"{_numcast(field_sql, hi)} <= {_lit(hi)}"
                 return None
+            # Measure filters keep their own LIKE shape (valid GoogleSQL: no
+            # ESCAPE clause). KNOWN, deliberately not changed during release
+            # closure because it would move saved numbers: a value's % and _ act
+            # as wildcards here, and `not_contains` is not handled (the filter is
+            # dropped). See manual-studio/release.md.
             if operator == "contains":
                 return f"{field_sql} LIKE '%' || {_lit(value)} || '%'"
             if operator == "starts_with":
@@ -3850,15 +3856,12 @@ class SemanticQueryEngine:
                         f"valid on a date/numeric column."
                     )
                     continue
-                esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
-                if operator == "contains":
-                    conditions.append(f"{field_sql} LIKE '%{esc}%' ESCAPE '\\'")
-                elif operator == "not_contains":
-                    conditions.append(f"{field_sql} NOT LIKE '%{esc}%' ESCAPE '\\'")
-                elif operator == "starts_with":
-                    conditions.append(f"{field_sql} LIKE '{esc}%' ESCAPE '\\'")
-                else:  # ends_with
-                    conditions.append(f"{field_sql} LIKE '%{esc}' ESCAPE '\\'")
+                # One shape per dialect (app/services/sql_pattern): BigQuery has
+                # no LIKE … ESCAPE, so it gets STRPOS / STARTS_WITH / ENDS_WITH.
+                conditions.append(pattern_predicate(
+                    field_sql, operator, value, self.database_type,
+                    lambda s: "'" + s.replace("'", "''") + "'",
+                ))
                 continue
 
             # Scalar comparison operators.

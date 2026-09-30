@@ -27,6 +27,8 @@ export function usePublicFilterDistinctValues(
   // getDistinctValueFilterContext still self-strips, so a slicer that shares a
   // field with the page filter won't pin its own list.
   extraContextFilters: BaseFilter[] = [],
+  // The page being shown — the server bounds the values by that page's scope.
+  pageId?: string,
 ) {
   const activeSemanticDistinctTargets = useMemo(() => {
     if (!token || columns.length === 0 || filters.length === 0) {
@@ -67,7 +69,7 @@ export function usePublicFilterDistinctValues(
 
   const semanticDistinctQueries = useQueries({
     queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({
-      queryKey: ['public-filter-distinct', token, column.datasetId, column.semanticField, sessionToken ?? 'anon', filterContextKey],
+      queryKey: ['public-filter-distinct', token, column.datasetId, column.semanticField, sessionToken ?? 'anon', filterContextKey, pageId ?? ''],
       queryFn: () => publicDashboardApi.getFilterDistinctValues(
         token,
         column.datasetId!,
@@ -75,6 +77,9 @@ export function usePublicFilterDistinctValues(
         sessionToken,
         SLICER_DISTINCT_PREFETCH_LIMIT,
         filterContext,
+        undefined,
+        undefined,
+        pageId,
       ),
       enabled: Boolean(token && column.datasetId && column.semanticField),
       staleTime: 5 * 60 * 1000,
