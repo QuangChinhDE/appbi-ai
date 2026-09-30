@@ -402,3 +402,11 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_golden_sql_non_regression.py
+
+      # The same chart's VALUES on the saved-chart, dashboard-tile and public-link
+      # routes (real HTTP routes, fixture charts), unfiltered and under a filter
+      # locked on the link vs the same filter at runtime on the dashboard.
+      - name: GATE — cross-surface value parity (saved / dashboard / public)
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_surface_parity.py

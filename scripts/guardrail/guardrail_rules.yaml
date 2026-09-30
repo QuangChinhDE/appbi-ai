@@ -190,7 +190,7 @@ protected:
     # coverage this subsystem should have, and their absence is reported by
     # `guardrail_check.py --health` rather than hidden.
     required_tests: [measure_render, dialect_structural, semantic_state_contracts, filter_matrix,
-                     golden_sql, galaxy_golden, distinct_cascade_bq]
+                     golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity]
 
   - id: public_link_security
     label: "Public-link filter merge / access (data-exposure surface)"
@@ -559,6 +559,10 @@ tests:
   semantic_state_contracts:
     run: "pytest backend/tests/test_semantic_state_contracts.py"
     locks: "drift sees every column reference on both columns_cache shapes; the chart cache key changes with measure/PK/transformation definitions; the live WHERE renders or refuses every operator; a 1:N live filter is a DISTINCT-key semi-join (executed); measure-filter classification by model; unrenderable HAVING refuses; bare explore names and tableless views are model-scoped; one local-date rule for calendar join and time grain"
+  surface_parity:
+    requires: postgres-fixture
+    run: "pytest backend/tests/test_surface_parity.py"
+    locks: "the same fixture chart returns the same VALUES on GET /charts/{id}/data, the dashboard-tile context and the public link (real routes, anonymous public call), unfiltered and with a filter locked on the link vs the same filter at runtime; an empty-vs-empty parity is refused"
   semantic_health:
     run: "pytest backend/tests/test_semantic_health.py"
     locks: "SEM-P1-006: relationship one-side keys and declared PKs checked unique on the TRANSFORMED relation (derived from the model); a duplicate fails, blocks, and makes the publish gate refuse; a check that cannot run is unknown and never blocks; source quality / semantic health / snapshot health are separate layers; snapshot-vs-live row mismatch is reported"
