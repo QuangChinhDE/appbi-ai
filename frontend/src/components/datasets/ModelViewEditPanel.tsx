@@ -44,7 +44,6 @@ import {
   type MeasureFilter,
   type MeasureFilterOperator,
   type MeasureFormat,
-  type ContextModifier,
 } from '@/hooks/use-dataset-model';
 import {
   useDatasetDictionary,
@@ -986,72 +985,17 @@ function MeasureFilterRow({
   );
 }
 
-// ─── Filter Context Modifiers (Phase-14) ─────────────────────────────────────
+// ─── Filter Context (ALL / ALLEXCEPT / USERELATIONSHIP) — not supported ──────
 //
-// Renders the per-measure controls that turn a plain `SUM(amount)` into a
-// SQL window aggregate (`SUM(amount) OVER (...)`). This is the "Filter
-// Context" surface user mentioned — equivalent to PowerBI's
-// CALCULATE/ALL/ALLEXCEPT/USERELATIONSHIP combo, but expressed as
-// declarative modifiers that compile to SQL window functions on the BE.
-//
-// Hard rules (enforced both here and at BE save-time):
-//   - 'all' and 'all_except' are mutually exclusive on the same measure
-//     (they mean opposite things).
-//   - 'all_except' requires at least one keep_field.
-//   - 'use_relationship' requires a join_alias matching some
-//     JoinDefinition.alias in the dataset's explore.
-//
-// What this component is NOT: a DAX editor. We deliberately keep this to
-// 3 named patterns to stay within the project's "compile down to SQL"
-// philosophy. Adding more patterns would re-introduce the same
-// "user doesn't know which mechanism to pick" problem Phase-1 closed.
-
-/**
- * Phase-15.4 — Filter Context preset-first UI.
- *
- * Replaces the raw-checkbox UI (Phase-14) with 4 named presets that map
- * to PowerBI patterns DAs already know. The Phase-14 schema underneath is
- * unchanged — these presets just shape context_modifiers correctly so DA
- * doesn't have to learn the modifier vocabulary. Raw modifier UI is moved
- * to an "Advanced" disclosure for power users.
- *
- * Presets:
- *   1. None (default)         — measure stays a plain aggregate
- *   2. % of grand total       — [{type: "all"}]
- *   3. % within ... (kept dim)— [{type: "all_except", keep_fields: [<dim>]}]
- *   4. Use named relationship — [{type: "use_relationship", join_alias: ...}]
- *
- * Detection of "which preset is active" reads the current
- * context_modifiers and matches against these shapes. Custom shapes
- * (e.g. multiple all_except entries) flow through Advanced.
- */
-type FilterContextPreset = 'none' | 'grand_total' | 'within_kept' | 'use_relationship' | 'custom';
-
-function detectPreset(modifiers: ContextModifier[]): FilterContextPreset {
-  if (modifiers.length === 0) return 'none';
-  const onlyTypes = new Set(modifiers.map((m) => m.type));
-  if (modifiers.length === 1) {
-    const m = modifiers[0];
-    if (m.type === 'all') return 'grand_total';
-    if (m.type === 'all_except' && (m.keep_fields?.length ?? 0) >= 1) return 'within_kept';
-    if (m.type === 'use_relationship' && (m.join_alias ?? '').trim()) return 'use_relationship';
-  }
-  // Two-modifier safe combinations:
-  if (
-    modifiers.length === 2
-    && onlyTypes.has('use_relationship')
-    && (onlyTypes.has('all') || onlyTypes.has('all_except'))
-  ) {
-    // use_relationship is orthogonal — combine with all/all_except. Treat
-    // the "main" preset as the non-use_relationship entry.
-    const main = modifiers.find((m) => m.type !== 'use_relationship');
-    if (main?.type === 'all') return 'grand_total';
-    if (main?.type === 'all_except' && (main.keep_fields?.length ?? 0) >= 1) return 'within_kept';
-  }
-  return 'custom';
-}
-
-function FilterContextModifiers({
+// The semantic engine refuses a measure that carries context_modifiers: they
+// rendered as if unmodified (ALL did not remove the chart's filters; a
+// use_relationship measure was computed on the default date), so the number
+// looked right and was not. The backend also refuses NEW or CHANGED modifiers
+// on save. So this is no longer an authoring surface: a measure that already
+// has modifiers says why it will not run and offers to remove them; a measure
+// without them shows nothing. (For "% of total", use the percent_of_total
+// measure type; for role-playing dates, a join with an alias.)
+function FilterContextUnsupported({
   measure,
   canEdit,
   onChange,
@@ -1062,229 +1006,23 @@ function FilterContextModifiers({
 }) {
   const { t } = useI18n();
   const modifiers = measure.context_modifiers ?? [];
-  const preset = detectPreset(modifiers);
-  const [showAdvanced, setShowAdvanced] = useState(preset === 'custom');
-
-  const setModifiers = (next: ContextModifier[]) => {
-    onChange({
-      ...measure,
-      context_modifiers: next.length > 0 ? next : undefined,
-    });
-  };
-
-  // Pure helpers for shaping modifiers per preset. Preserve any existing
-  // use_relationship entry when switching between "main" presets — it's
-  // orthogonal.
-  const useRelEntry = modifiers.find((m) => m.type === 'use_relationship');
-  const useRelTail = useRelEntry ? [useRelEntry] : [];
-
-  const applyPreset = (next: FilterContextPreset, opts?: { keepField?: string; joinAlias?: string }) => {
-    switch (next) {
-      case 'none':
-        setModifiers([]);
-        return;
-      case 'grand_total':
-        setModifiers([{ type: 'all' }, ...useRelTail]);
-        return;
-      case 'within_kept': {
-        const existingKept = modifiers.find((m) => m.type === 'all_except')?.keep_fields ?? [];
-        const newField = opts?.keepField?.trim();
-        const next_keep = newField
-          ? [newField]  // single-field preset is the common case
-          : existingKept;
-        setModifiers([{ type: 'all_except', keep_fields: next_keep }, ...useRelTail]);
-        return;
-      }
-      case 'use_relationship': {
-        const alias = (opts?.joinAlias ?? useRelEntry?.join_alias ?? '').trim();
-        setModifiers([{ type: 'use_relationship', join_alias: alias }]);
-        return;
-      }
-      case 'custom':
-        // No-op — selecting "Advanced (custom)" means user wants to keep
-        // whatever they have and edit raw. Just flip the disclosure open.
-        setShowAdvanced(true);
-        return;
-    }
-  };
-
-  const hasAll = modifiers.some((m) => m.type === 'all');
-  const hasAllExcept = modifiers.some((m) => m.type === 'all_except');
-  const hasUseRel = modifiers.some((m) => m.type === 'use_relationship');
-  const keptField = modifiers.find((m) => m.type === 'all_except')?.keep_fields?.[0] ?? '';
-  const useRelAlias = useRelEntry?.join_alias ?? '';
-
-  const toggleAll = () => {
-    if (hasAll) {
-      setModifiers(modifiers.filter((m) => m.type !== 'all'));
-    } else {
-      const stripped = modifiers.filter((m) => m.type !== 'all_except');
-      setModifiers([...stripped, { type: 'all' }]);
-    }
-  };
-  const toggleAllExcept = () => {
-    if (hasAllExcept) {
-      setModifiers(modifiers.filter((m) => m.type !== 'all_except'));
-    } else {
-      const stripped = modifiers.filter((m) => m.type !== 'all');
-      setModifiers([...stripped, { type: 'all_except', keep_fields: [] }]);
-    }
-  };
-  const updateAllExceptKeep = (rawCsv: string) => {
-    const keep = rawCsv.split(',').map((s) => s.trim()).filter(Boolean);
-    setModifiers(
-      modifiers.map((m) => (m.type === 'all_except' ? { ...m, keep_fields: keep } : m)),
-    );
-  };
-  const toggleUseRel = () => {
-    if (hasUseRel) {
-      setModifiers(modifiers.filter((m) => m.type !== 'use_relationship'));
-    } else {
-      setModifiers([...modifiers, { type: 'use_relationship', join_alias: '' }]);
-    }
-  };
-  const updateJoinAlias = (alias: string) => {
-    setModifiers(
-      modifiers.map((m) => (m.type === 'use_relationship' ? { ...m, join_alias: alias.trim() } : m)),
-    );
-  };
-  const allExceptKeepCsv = (
-    modifiers.find((m) => m.type === 'all_except')?.keep_fields ?? []
-  ).join(', ');
-
+  if (modifiers.length === 0) return null;
+  const kinds = Array.from(new Set(modifiers.map((m) => m.type))).join(', ');
   return (
-    <div className="space-y-2 rounded-md border border-dashed border-[rgb(var(--border-line))] p-2">
-      <div className="flex items-center justify-between">
-        <div
-          className="text-[10px] font-medium uppercase tracking-wide text-text-tertiary"
-          title={t('datasets.filterContext.headerTitle')}
+    <div
+      className="space-y-1.5 rounded-md border border-danger/40 bg-danger/5 p-2 text-[11px] text-danger"
+      data-testid="filter-context-unsupported"
+    >
+      <div className="font-emphasis">{t('datasets.filterContext.unsupportedTitle', { kinds })}</div>
+      <div className="text-text-secondary">{t('datasets.filterContext.unsupportedBody')}</div>
+      {canEdit && (
+        <button
+          type="button"
+          onClick={() => onChange({ ...measure, context_modifiers: undefined })}
+          className="rounded border border-danger/40 px-2 py-0.5 text-[11px] font-medium hover:bg-danger/10"
         >
-          {t('datasets.filterContext.header')}
-        </div>
-        {preset !== 'none' && (
-          <span
-            className="rounded bg-purple-500/10 px-1.5 py-0.5 text-[9px] font-emphasis uppercase text-purple-600 dark:text-purple-400"
-            title={t('datasets.filterContext.activeBadgeTitle')}
-          >
-            {preset === 'custom' ? t('datasets.filterContext.custom') : t('datasets.filterContext.on')}
-          </span>
-        )}
-      </div>
-      {/* C2: the 3 big preset cards took a lot of vertical space for something
-          90% of measures leave at "Mặc định". Collapsed to a single dropdown.
-          B4's PowerBI/DAX names (ALL / ALLEXCEPT) ride inline in the option
-          labels so a PBI-literate DA still recognises them. The
-          USERELATIONSHIP preset stays out (schema-only) — reachable only via
-          "Tuỳ chỉnh chi tiết" below. */}
-      <select
-        disabled={!canEdit}
-        value={preset === 'custom' || preset === 'use_relationship' ? 'none' : preset}
-        onChange={(e) => {
-          const next = e.target.value as FilterContextPreset;
-          if (next === 'within_kept') applyPreset('within_kept', { keepField: keptField || '' });
-          else applyPreset(next);
-        }}
-        className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
-        title={t('datasets.filterContext.selectTitle')}
-      >
-        <option value="none">{t('datasets.filterContext.optNone')}</option>
-        <option value="grand_total">{t('datasets.filterContext.optGrandTotal')}</option>
-        <option value="within_kept">{t('datasets.filterContext.optWithinKept')}</option>
-      </select>
-
-      {/* Inline param for "within ..." preset — single-field common case. */}
-      {preset === 'within_kept' && (
-        <div className="rounded-md bg-surface-2 p-1.5 space-y-1">
-          <label className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
-            {t('datasets.filterContext.keepDim')}
-          </label>
-          <input
-            value={keptField}
-            onChange={(e) => applyPreset('within_kept', { keepField: e.target.value })}
-            placeholder="region"
-            disabled={!canEdit}
-            className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-          />
-          <p className="text-[10px] text-text-quaternary leading-tight">
-            {t('datasets.filterContext.keepDimHint')}
-          </p>
-        </div>
-      )}
-
-      {preset === 'use_relationship' && (
-        <div className="rounded-md bg-surface-2 p-1.5 space-y-1">
-          <label className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
-            Join alias
-          </label>
-          <input
-            value={useRelAlias}
-            onChange={(e) => applyPreset('use_relationship', { joinAlias: e.target.value })}
-            placeholder="creator"
-            disabled={!canEdit}
-            className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-          />
-          <p className="text-[10px] text-warning leading-tight">
-            ⚠ Schema-only ở Phase-14. Engine compile chưa wire alias —
-            follow-up phase sẽ làm. Save vẫn OK, runtime dùng default path.
-          </p>
-        </div>
-      )}
-
-      {/* Tuỳ chỉnh chi tiết — raw modifier checkboxes. Keep for power
-          users, hidden by default. Auto-opens if preset detector flagged
-          'custom' (a shape no preset matches). */}
-      <button
-        onClick={() => setShowAdvanced((v) => !v)}
-        className="text-[10px] text-text-tertiary hover:text-text-secondary flex items-center gap-1"
-      >
-        {showAdvanced ? '▼' : '▶'} Tuỳ chỉnh chi tiết
-      </button>
-
-      {showAdvanced && (
-        <div className="space-y-1.5 border-l-2 border-[rgb(var(--border-line))] pl-2">
-          <label className="flex cursor-pointer items-center gap-2 text-[11px] text-text-secondary">
-            <input type="checkbox" checked={hasAll} disabled={!canEdit} onChange={toggleAll} />
-            <span>Lấy tổng toàn bộ — bỏ mọi filter</span>
-          </label>
-          <label className="flex cursor-pointer items-start gap-2 text-[11px] text-text-secondary">
-            <input type="checkbox" checked={hasAllExcept} disabled={!canEdit} onChange={toggleAllExcept} className="mt-0.5" />
-            <span className="flex-1">
-              Giữ nhiều dim
-              {hasAllExcept && (
-                <input
-                  value={allExceptKeepCsv}
-                  onChange={(e) => updateAllExceptKeep(e.target.value)}
-                  placeholder="region, channel"
-                  disabled={!canEdit}
-                  className="mt-1 w-full rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-                />
-              )}
-            </span>
-          </label>
-
-          <label className="flex cursor-pointer items-start gap-2 text-[11px] text-text-secondary">
-            <input type="checkbox" checked={hasUseRel} disabled={!canEdit} onChange={toggleUseRel} className="mt-0.5" />
-            <span className="flex-1">
-              Dùng quan hệ alias
-              {hasUseRel && (
-                <input
-                  value={useRelAlias}
-                  onChange={(e) => updateJoinAlias(e.target.value)}
-                  placeholder="creator"
-                  disabled={!canEdit}
-                  className="mt-1 w-full rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-                />
-              )}
-            </span>
-          </label>
-
-          {hasAll && hasAllExcept && (
-            <div className="rounded-md border border-danger/40 bg-danger/5 p-1.5 text-[10px] text-danger">
-              Không thể đồng thời chọn "lấy tổng toàn bộ" và "giữ nhiều dim" —
-              hai pattern này mâu thuẫn nhau. Pick 1.
-            </div>
-          )}
-        </div>
+          {t('datasets.filterContext.remove')}
+        </button>
       )}
     </div>
   );
@@ -2960,13 +2698,10 @@ function MeasureRow({
             </div>
           )}
 
-          {/* Filter Context — only for aggregations that produce a numeric
-              total. COUNT / COUNT DISTINCT measure rows or entities, so
-              "% of total" / "% within group" produces confusing window
-              semantics (a row count divided by a row count is just 1.0
-              per group). Hide entirely for those types. */}
-          {measure.type !== 'count' && measure.type !== 'count_distinct' && (
-            <FilterContextModifiers
+          {/* Filter Context is not supported by the engine: a measure that
+              still carries modifiers is flagged here (and can be cleaned). */}
+          {(
+            <FilterContextUnsupported
               measure={measure}
               canEdit={canEdit}
               onChange={onChange}

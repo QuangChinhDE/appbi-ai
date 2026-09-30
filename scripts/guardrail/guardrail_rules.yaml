@@ -176,6 +176,7 @@ protected:
       - backend/app/services/chart_contracts.py
       - backend/app/services/chart_semantic_service.py
       - backend/app/services/chart_service.py   # carries the semantic-relation helpers the distinct cascade imports
+      - backend/app/services/semantic_health_service.py   # model assumptions checked on the data; gates publish
     directive: >
       DO NOT rewrite or replace the semantic layer. It is golden-proven
       (multi-fact fan-out, snowflake, calendar, measure isolation). Make the
@@ -188,7 +189,7 @@ protected:
     # distinct_cascade_bq remain declared (`status: missing`) — they describe the
     # coverage this subsystem should have, and their absence is reported by
     # `guardrail_check.py --health` rather than hidden.
-    required_tests: [measure_render, dialect_structural, filter_matrix,
+    required_tests: [measure_render, dialect_structural, semantic_state_contracts, filter_matrix,
                      golden_sql, galaxy_golden, distinct_cascade_bq]
 
   - id: public_link_security
@@ -310,6 +311,20 @@ features:
     keywords: [slicer, filter pane, "filters on this page", scope, "trang nay", distinctStatus]
     invariants: [fe_be_limit_pair]
     required_tests: [tsc, browser_verify]
+
+  - id: semantic_direct_api
+    label: "Direct semantic API (/semantic views, models, explores, query) — object-level access"
+    files: [backend/app/routers/semantic.py]
+    keywords: [semantic api, "/semantic", explore, "semantic query", permission, access]
+    invariants: []
+    required_tests: [semantic_router_access, error_contracts]
+
+  - id: semantic_health
+    label: "Semantic health (key uniqueness / dangling refs / snapshot parity) + publish gate"
+    files: [backend/app/services/semantic_health_service.py, backend/app/services/dataset_publish_service.py]
+    keywords: [quality, health, uniqueness, "primary key", cardinality, publish, snapshot parity]
+    invariants: []
+    required_tests: [semantic_health]
 
   - id: measures
     label: "Measures (expression/filters/ratio/context modifiers)"
@@ -538,6 +553,15 @@ tests:
     requires: postgres-fixture
     run: "python backend/scripts/regression_filter_matrix.py --verify --tag snowflake"
     locks: "fan-out→EXISTS, conformed-dim transitive filter, multi-hop, chasm fail-loud, cross-table measure re-anchor"
+  semantic_router_access:
+    run: "pytest backend/tests/test_semantic_router_object_access.py"
+    locks: "SEM-P1-004: every /semantic endpoint checks access to the object's DATASET (denied: stranger read/list/write/delete/query, view-share cannot write, module view caps an owner, dataset-less object needs datasets:full; allowed: owner); joins written wholesale are validated (other dataset's view, missing column, missing or contradictory cardinality); objects cannot move across datasets; context modifiers cannot be added or changed on save (a legacy one may stay unchanged or be removed)"
+  semantic_state_contracts:
+    run: "pytest backend/tests/test_semantic_state_contracts.py"
+    locks: "drift sees every column reference on both columns_cache shapes; the chart cache key changes with measure/PK/transformation definitions; the live WHERE renders or refuses every operator; a 1:N live filter is a DISTINCT-key semi-join (executed); measure-filter classification by model; unrenderable HAVING refuses; bare explore names and tableless views are model-scoped; one local-date rule for calendar join and time grain"
+  semantic_health:
+    run: "pytest backend/tests/test_semantic_health.py"
+    locks: "SEM-P1-006: relationship one-side keys and declared PKs checked unique on the TRANSFORMED relation (derived from the model); a duplicate fails, blocks, and makes the publish gate refuse; a check that cannot run is unknown and never blocks; source quality / semantic health / snapshot health are separate layers; snapshot-vs-live row mismatch is reported"
   locked_contract:
     run: "pytest backend/tests/test_locked_contract.py"
     locks: "agg-default=auto (not SUM), dropped-filter policy, grain validator, pivot semantics"
@@ -840,13 +864,13 @@ semantic_contract:
     - "backend/app/services/chart_semantic_service.py"
   files:
     backend/app/services/semantic_query_engine.py:
-      symbols: [SemanticQueryEngine, generate_sql, _render_measure, _build_filter_exists_clause, _render_symmetric_aggregate, _build_isolated_measure_subquery, _build_dimensioned_multifact_sql, _validate_group_grain, _coerce_typed_filter_value, _filter_type_family, _render_dimension_with_time_grain]
+      symbols: [SemanticQueryEngine, generate_sql, _render_measure, _build_filter_exists_clause, _render_symmetric_aggregate, _build_isolated_measure_subquery, _build_dimensioned_multifact_sql, _validate_group_grain, _coerce_typed_filter_value, _filter_type_family, _render_dimension_with_time_grain, _filter_targets_measure, _aggregate_predicate, _best_calendar_dim_candidates, _collapse_fanned_calendar_filters, _view_is_generated_calendar]
     backend/app/services/dataset_model_service.py:
-      symbols: [get_distinct_field_values, _build_distinct_sql, _emit_exists_for_single_path, _build_exists_for_path, _distinct_filter_targets_self]
+      symbols: [get_distinct_field_values, _build_distinct_sql, _emit_exists_for_single_path, _build_exists_for_path, _distinct_filter_targets_self, validate_direct_explore_joins, dangling_model_references, lock_dataset_model_for_write, cache_column_names]
     backend/app/services/semantic_join_resolver.py:
-      symbols: [SemanticJoinResolver, resolve_path, resolve_paths]
+      symbols: [SemanticJoinResolver, resolve_path, resolve_paths, resolve_unique_path, distinct_routes, AmbiguousJoinPathError, canonical_cardinality]
     backend/app/services/dataset_calendar_service.py:
-      symbols: [build_calendar_live_sql, is_generated_calendar_table]
+      symbols: [build_calendar_live_sql, is_generated_calendar_table, local_date_sql, is_instant_column]
     backend/app/services/type_override_service.py:
       symbols: [build_safe_cast_sql]
     backend/app/services/filter_propagation.py:
@@ -854,11 +878,13 @@ semantic_contract:
     backend/app/services/chart_contracts.py:
       symbols: [normalize_filter_conditions, normalize_filter_operator]
     backend/app/services/chart_service.py:
-      symbols: [_build_live_relation_for_semantic_view, _render_step_join_condition, _semantic_view_has_field, _wrap_live_sql_relation]
+      symbols: [_build_live_relation_for_semantic_view, _render_step_join_condition, _semantic_view_has_field, _wrap_live_sql_relation, _semantic_definition_signature, _build_live_semi_join, _rehydrate_binding_for_modeled_table]
     backend/app/services/chart_semantic_service.py:
       symbols: [resolve_chart_semantic_binding, with_chart_semantic_binding]
     backend/app/services/semantic_query_compiler.py:
       symbols: []   # entry module registered; no pinned symbols yet (add when known)
+    backend/app/services/semantic_health_service.py:
+      symbols: [evaluate, uniqueness_checks, publish_blockers, snapshot_parity_checks]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. PATCH-LEVEL POLICY — cross-cutting checks in validate_patch / explain_risk.

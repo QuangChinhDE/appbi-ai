@@ -270,7 +270,7 @@ def test_star_base_invariance(world):
 
 
 def test_star_null_contract_negations_exclude_missing_members(world):
-    """Documented contract (docs/filter-semantics.md §7a): a negated filter on a
+    """Documented contract (docs/features/semantic-core-remediation/spec.md (NULL contract)): a negated filter on a
     related dim keeps rows whose member passes it; a row with NO member (NULL
     key) passes no predicate, negations included — SQL three-valued logic, the
     same on the engine, EXISTS, live and distinct paths."""

@@ -219,3 +219,37 @@ def test_objects_cannot_be_moved_to_another_dataset(db, shares):
     assert _status(api.update_model, 1, SemanticModelUpdate(dataset_id=2), db, owner) == 400
     assert _status(api.update_view, 101, SemanticViewUpdate(dataset_table_id=21), db, owner) == 400
     assert _status(api.update_explore, 1, SemanticExploreUpdate(base_view_id=201), db, owner) == 400
+
+
+# ── context modifiers are not an authoring surface any more ─────────────────
+
+
+def _measure(**over):
+    from app.schemas.semantic import MeasureDefinition
+
+    base = {"name": "revenue", "type": "sum", "sql": "${TABLE}.amount"}
+    base.update(over)
+    return MeasureDefinition(**base)
+
+
+def test_a_new_context_modifier_is_refused_on_save_but_a_legacy_one_can_stay_or_go(db, shares):
+    owner = _user(OWNER, "edit")
+    # adding one: refused (the engine would refuse every chart on it)
+    assert _status(api.update_view, 101, SemanticViewUpdate(
+        measures=[_measure(context_modifiers=[{"type": "all"}])]), db, owner) == 400
+
+    # a legacy measure that already has one (written before this rule)
+    v = db.get(SemanticView, 101)
+    v.measures = [{"name": "revenue", "type": "sum", "sql": "${TABLE}.amount",
+                   "context_modifiers": [{"type": "all"}]}]
+    db.commit()
+    # saving it UNCHANGED (editing another field) is allowed …
+    assert _status(api.update_view, 101, SemanticViewUpdate(
+        measures=[_measure(label="Revenue", context_modifiers=[{"type": "all"}])]), db, owner) == 200
+    # … changing it is not …
+    assert _status(api.update_view, 101, SemanticViewUpdate(
+        measures=[_measure(context_modifiers=[{"type": "all_except", "keep_fields": ["status"]}])]),
+        db, owner) == 400
+    # … and removing it is.
+    assert _status(api.update_view, 101, SemanticViewUpdate(measures=[_measure()]), db, owner) == 200
+    assert not (db.get(SemanticView, 101).measures[0].get("context_modifiers") or [])

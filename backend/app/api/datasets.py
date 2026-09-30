@@ -330,6 +330,43 @@ def _validate_measure_dependencies(
                 known_join_aliases.add(alias)
 
     current_view_dims = dim_names_by_view.get(current_view_name, set())
+
+    # Context modifiers are not supported by the engine (it refuses a measure
+    # carrying them: they rendered as if absent). A save may keep a legacy
+    # measure's modifiers UNCHANGED — so the DA can still edit other fields or
+    # delete it — but may not add or change them.
+    def _mods_key(raw) -> str:
+        items = []
+        for mod in raw or []:
+            d = mod.model_dump() if hasattr(mod, "model_dump") else dict(mod or {})
+            items.append({k: v for k, v in d.items() if v not in (None, [], "")})
+        return json.dumps(items, sort_keys=True, default=str)
+
+    # `views` is this dataset's persisted views (loaded above); a view being
+    # created has none, so any modifier on it is new.
+    _persisted_view = next((v for v in views if v.name == current_view_name), None)
+    _persisted_mods = {
+        str((m or {}).get("name") or ""): _mods_key((m or {}).get("context_modifiers"))
+        for m in ((_persisted_view.measures if _persisted_view is not None else None) or [])
+        if isinstance(m, dict)
+    }
+    for measure in measures:
+        raw_mods = (
+            measure.context_modifiers
+            if hasattr(measure, "context_modifiers")
+            else measure.get("context_modifiers", [])
+        ) or []
+        if raw_mods and _mods_key(raw_mods) != _persisted_mods.get(measure_name(measure) or "", _mods_key([])):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Measure '{measure_name(measure) or '<unnamed>'}': ngữ cảnh lọc "
+                    "(ALL / ALLEXCEPT / USERELATIONSHIP) chưa được hỗ trợ — engine từ chối "
+                    "measure này khi chạy chart. Dùng measure kiểu percent_of_total cho % "
+                    "trên tổng, hoặc join có alias cho vai trò ngày khác."
+                ),
+            )
+
     for measure in measures:
         modifiers = (
             measure.context_modifiers
@@ -6301,6 +6338,25 @@ def get_quality_summary(
     ds = _get_dataset_or_404(db, dataset_id)
     require_view_access(db, current_user, ds, "datasets")
     return DatasetQualityService.get_summary(db, dataset_id)
+
+
+@router.get("/{dataset_id}/model/health")
+def get_model_health(
+    dataset_id: int,
+    execute: bool = Query(True, description="Run the checks that query the warehouse (key uniqueness, snapshot parity)."),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Source quality vs semantic health vs snapshot health, as separate layers.
+
+    Semantic checks are derived from the model (relationship one-side keys and
+    declared primary keys unique on the transformed relation; no dangling column
+    references). The ones marked `blocking` also gate Sync & Publish."""
+    from app.services import semantic_health_service
+
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_view_access(db, current_user, ds, "datasets")
+    return semantic_health_service.evaluate(db, dataset_id, execute=execute)
 
 
 @router.get("/{dataset_id}/quality/rules", response_model=List[QualityRuleResponse])

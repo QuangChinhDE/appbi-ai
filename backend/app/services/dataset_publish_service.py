@@ -662,4 +662,13 @@ def _validate_generation(db: Session, dataset_id: int, generation: Optional[int]
     model = db.query(sem.SemanticModel).filter(sem.SemanticModel.dataset_id == dataset_id).first()
     if model is None:
         return False, "Dataset chưa có semantic model — chạy Generate Model trước khi publish."
+    # Semantic health: a relationship declared many-to-one whose one-side key is
+    # not unique (or a declared primary key with duplicates) inflates every
+    # total that joins through it — silently. Refuse to publish that; the prior
+    # generation keeps serving. A check that could not run does not block.
+    from app.services.semantic_health_service import publish_blockers
+
+    blockers = publish_blockers(db, dataset_id)
+    if blockers:
+        return False, "Semantic health: " + " | ".join(blockers[:5])
     return True, None

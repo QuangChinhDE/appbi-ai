@@ -224,7 +224,8 @@ jobs:
             tests/test_report_content_widgets.py \
             tests/test_semantic_router_object_access.py \
             tests/test_semantic_state_contracts.py \
-            tests/test_semantic_error_contracts.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
+            tests/test_semantic_error_contracts.py \
+            tests/test_semantic_health.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
       # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
       #
       # The step below reports failures. Nothing reported SUCCESS, so a
