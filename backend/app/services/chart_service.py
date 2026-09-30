@@ -1406,7 +1406,17 @@ def _semantic_definition_signature(db: Session, model_id) -> str | None:
         ).order_by(SemanticView.id).all()
     else:
         views = views_q.filter(SemanticView.name.in_(sorted(names))).order_by(SemanticView.id).all()
+    dataset_settings = None
+    if model.dataset_id is not None:
+        from app.models.dataset import Dataset
+
+        ds_row = db.query(Dataset).filter(Dataset.id == model.dataset_id).first()
+        # The calendar settings (timezone) change the generated SQL of every
+        # time grain and calendar join; the rest of Dataset.settings is inert
+        # here but hashing it all is cheaper than being wrong about which key.
+        dataset_settings = getattr(ds_row, "settings", None)
     payload = {
+        "dataset_settings": dataset_settings,
         "views": [
             [v.id, v.name, v.sql_table_name, v.dataset_table_id, v.dimensions or [],
              v.measures or [], getattr(v, "primary_key", None)]
@@ -1452,9 +1462,7 @@ def _build_live_semi_join(
     *,
     from_alias: str,
     semi_alias: str,
-    field_def: dict,
-    semantic_name: str,
-    filt: dict,
+    items: list,
     get_view,
     target_node: str,
 ) -> str:
@@ -1467,9 +1475,11 @@ def _build_live_semi_join(
     it. Anything this cannot express exactly raises instead of guessing."""
     from app.services.live_query_service import _build_where_clause, _dialect_for_ds_type
 
+    names = ", ".join(sorted({str(name) for _f, name, _flt in items}))
+
     def _refuse(reason: str) -> ValueError:
         return ValueError(
-            f"Filter trên '{target_node}.{semantic_name}' đi qua quan hệ 1-nhiều và không "
+            f"Filter trên '{target_node}' ({names}) đi qua quan hệ 1-nhiều và không "
             f"áp được chính xác ({reason}) — truy vấn bị từ chối thay vì nhân bản dòng."
         )
 
@@ -1493,20 +1503,25 @@ def _build_live_semi_join(
             raise _refuse(f"thiếu điều kiện join tới '{step.edge.to_view}'")
         relations.append(f"INNER JOIN {_wrap_live_sql_relation(relation)} AS {alias} ON {cond}")
     last_alias = f"{semi_alias}_t{len(tail_steps) - 1}"
-    field_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias)
-    if not field_expr:
-        raise _refuse("không dựng được biểu thức của field")
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-    pred = _build_where_clause(
-        [{**filt, "field": "__sem_semi_value"}], _dialect_for_ds_type(ds_type),
-    )
-    if not pred:
-        raise _refuse("filter không có điều kiện")
+    dialect = _dialect_for_ds_type(ds_type)
+    projections: list[str] = []
+    preds: list[str] = []
+    for i, (field_def, semantic_name, filt) in enumerate(items):
+        field_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias)
+        if not field_expr:
+            raise _refuse(f"không dựng được biểu thức của field '{semantic_name}'")
+        value_col = f"__sem_semi_value_{i}"
+        projections.append(f"{field_expr} AS {value_col}")
+        pred = _build_where_clause([{**filt, "field": value_col}], dialect)
+        if not pred:
+            raise _refuse("filter không có điều kiện")
+        preds.append(pred)
     src_col, key_col = first_pair
     return (
         f"LEFT JOIN (SELECT DISTINCT _q._k AS _k FROM ("
-        f"SELECT {semi_alias}_t0.{key_col} AS _k, {field_expr} AS __sem_semi_value "
-        f"FROM {' '.join(relations)}) AS _q WHERE {pred}) AS {semi_alias} "
+        f"SELECT {semi_alias}_t0.{key_col} AS _k, {', '.join(projections)} "
+        f"FROM {' '.join(relations)}) AS _q WHERE {' AND '.join(preds)}) AS {semi_alias} "
         f"ON {from_alias}.{src_col} = {semi_alias}._k"
     )
 
@@ -1583,6 +1598,8 @@ def _adapt_live_sql_for_semantic_filters(
     join_clauses: list[str] = []
     projected_fields: list[dict[str, str]] = []
     effective_filters: list[dict] = []
+    # (anchor alias, target node, route) -> {"steps", "from_alias", "items"}
+    semi_groups: dict = {}
     next_join_index = 0
     next_projection_index = 0
 
@@ -1642,13 +1659,28 @@ def _adapt_live_sql_for_semantic_filters(
             effective_filters.append(filt)
             continue
 
-        # Two different shortest routes to the filter's view would each give a
-        # different answer; picking the first one silently is refused (the
-        # engine's FROM/EXISTS builders refuse the same way).
-        path = resolver.resolve_unique_path(target_node)
-        if path is None:
+        # Route choice — the SAME rule as the engine's filter EXISTS builder:
+        #   * one route → use it;
+        #   * several routes that each cross a 1:N hop (a filter on another fact
+        #     reaching this one through shared conformed dims) → every route is
+        #     applied, AND-ed, each as its own semi-join from the base;
+        #   * several forward to-one routes (a diamond: two meanings) → refused.
+        routes = resolver.distinct_routes(target_node)
+        if not routes:
             # not reachable — skip this filter for this chart
             continue
+        if len(routes) > 1:
+            if not all(any(_live_edge_fans_out(st.edge) for st in r.steps) for r in routes):
+                from app.services.semantic_join_resolver import AmbiguousJoinPathError, _route_label
+
+                raise AmbiguousJoinPathError(target_node, [_route_label(r) for r in routes])
+            route_plans = [(r, 0) for r in routes]           # (route, fan_idx): whole route is a semi-join
+        else:
+            only = routes[0]
+            route_plans = [(only, next(
+                (i for i, st in enumerate(only.steps) if _live_edge_fans_out(st.edge)), None
+            ))]
+        path, fan_idx = route_plans[0]
 
         # A LEFT JOIN is only safe while every step is to-one from the base's
         # side. The first step that fans out (1:N, M:N, or an N:1 walked in
@@ -1656,9 +1688,6 @@ def _adapt_live_sql_for_semantic_filters(
         # every aggregate — so from there on the filter becomes a semi-join on
         # the DISTINCT matching keys instead of a join.
         steps = list(path.steps)
-        fan_idx = next(
-            (i for i, st in enumerate(steps) if _live_edge_fans_out(st.edge)), None
-        )
         prefix_steps = steps if fan_idx is None else steps[:fan_idx]
 
         # Materialize each step. Use stable alias based on path prefix so
@@ -1735,20 +1764,21 @@ def _adapt_live_sql_for_semantic_filters(
             continue
 
         if fan_idx is not None:
-            semi_alias = f"_appbi_sem_semi_{next_join_index}"
-            next_join_index += 1
-            join_clauses.append(_build_live_semi_join(
-                db, datasource, steps[fan_idx:],
-                from_alias=last_alias, semi_alias=semi_alias,
-                field_def=field_def, semantic_name=semantic_name, filt=filt,
-                get_view=_get_view, target_node=target_node,
-            ))
-            projection_alias = f"__sem_filter_{next_projection_index}"
-            next_projection_index += 1
-            projected_fields.append({"expr": f"{semi_alias}._k", "alias": projection_alias})
-            effective_filters.append({
-                "field": projection_alias, "operator": "is_not_null", "value": None,
-            })
+            # Every filter on the same related view, through the same route,
+            # goes into ONE semi-join ("a related row passes ALL of them") —
+            # the engine folds a view's predicates into one EXISTS the same way.
+            # Two separate semi-joins would keep a base row whose related rows
+            # pass each filter on DIFFERENT rows.
+            from app.services.semantic_join_resolver import _edge_signature
+
+            for route, r_fan in route_plans:
+                r_steps = list(route.steps)
+                anchor = last_alias if route is path else "_appbi_base"
+                key = (anchor, target_node, tuple(_edge_signature(st.edge) for st in r_steps[r_fan:]))
+                group = semi_groups.setdefault(key, {
+                    "steps": r_steps[r_fan:], "from_alias": anchor, "items": [],
+                })
+                group["items"].append((field_def, semantic_name, filt))
             continue
 
         rendered_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias)
@@ -1759,6 +1789,21 @@ def _adapt_live_sql_for_semantic_filters(
         next_projection_index += 1
         projected_fields.append({"expr": rendered_expr, "alias": projection_alias})
         effective_filters.append({**filt, "field": projection_alias})
+
+    for (_anchor, target_node, _sig), group in semi_groups.items():
+        semi_alias = f"_appbi_sem_semi_{next_join_index}"
+        next_join_index += 1
+        join_clauses.append(_build_live_semi_join(
+            db, datasource, group["steps"],
+            from_alias=group["from_alias"], semi_alias=semi_alias,
+            items=group["items"], get_view=_get_view, target_node=target_node,
+        ))
+        projection_alias = f"__sem_filter_{next_projection_index}"
+        next_projection_index += 1
+        projected_fields.append({"expr": f"{semi_alias}._k", "alias": projection_alias})
+        effective_filters.append({
+            "field": projection_alias, "operator": "is_not_null", "value": None,
+        })
 
     if not join_clauses or not projected_fields:
         return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)

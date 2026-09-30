@@ -70,8 +70,8 @@ PHYSICAL = [
     # Monthly grain, one row mid-month (2024-06-15) that must land in June.
     "CREATE TABLE {s}.targets(id int, product_id int, month_start date, target numeric)",
     "INSERT INTO {s}.targets VALUES (1,1,'2024-03-01',50),(2,1,'2024-06-01',60),(3,2,'2024-06-15',70)",
-    "CREATE TABLE {s}.tickets(id int, customer_id int, priority text)",
-    "INSERT INTO {s}.tickets VALUES (1,1,'high'),(2,1,'low'),(3,2,'high')",
+    "CREATE TABLE {s}.tickets(id int, customer_id int, priority text, opened date)",
+    "INSERT INTO {s}.tickets VALUES (1,1,'high','2025-01-01'),(2,1,'low','2025-02-01'),(3,2,'high','2023-05-01')",
     # Composite key: store_code alone repeats across regions.
     "CREATE TABLE {s}.shops(region_code text, store_code text, name text)",
     "INSERT INTO {s}.shops VALUES ('N','1','N-one'),('S','1','S-one')",
@@ -111,7 +111,7 @@ VIEWS = {
     "g_targets": ("targets", _dims("id", "product_id", "month_start"), [
         {"name": "target", "type": "sum", "sql": "${TABLE}.target"},
     ]),
-    "g_tickets": ("tickets", _dims("id", "customer_id", "priority"), [
+    "g_tickets": ("tickets", _dims("id", "customer_id", "priority", "opened"), [
         {"name": "ticket_count", "type": "count", "sql": "${TABLE}.id"},
     ]),
     "g_shops": ("shops", _dims("region_code", "store_code", "name"), []),
@@ -165,6 +165,14 @@ MODELS = {
         "g_sales": [TO_PRODUCTS, CAL_ORDER], "g_targets": [TO_PRODUCTS, CAL_TGT], "g_products": [],
     },
     "chasm": {"g_sales": [TO_CUSTOMERS], "g_tickets": [TO_CUSTOMERS], "g_customers": []},
+    # Two facts share BOTH the customer dim and the calendar: from the dim's
+    # base, the calendar is reachable through either fact. The fact being
+    # summed decides the route (SEM review finding: this used to be refused).
+    "sibling_facts": {
+        "g_sales": [TO_CUSTOMERS, J("g_calendar", "order_date", "date")],
+        "g_tickets": [TO_CUSTOMERS, J("g_calendar", "opened", "date")],
+        "g_customers": [],
+    },
     "bridge": {
         "g_sales": [TO_PRODUCTS],
         "g_products": [J("g_product_tags", "id", "product_id", "one_to_many")],
@@ -470,3 +478,21 @@ def test_the_model_write_lock_is_held_against_other_connections(world):
             assert free is True, "another dataset's model is not blocked"
     finally:
         other.dispose()
+
+
+# ── sibling facts: the summed fact decides the route to a shared dim ─────────
+
+
+def test_a_shared_dim_reached_through_two_facts_follows_the_fact_being_summed(world):
+    by_sales_base = as_map(run(world, "sibling_facts", "g_sales", ["g_calendar.year"], ["g_sales.revenue"]))
+    assert by_sales_base == {2023: 100, 2024: 950}
+    # From the dim's base the calendar is two hops away through EITHER fact;
+    # the revenue must still be bucketed by the sale's own date.
+    assert as_map(run(world, "sibling_facts", "g_customers", ["g_calendar.year"], ["g_sales.revenue"])) == by_sales_base
+    assert as_map(run(world, "sibling_facts", "g_customers", ["g_calendar.year"], ["g_tickets.ticket_count"])) == {
+        2023: 1, 2025: 2,
+    }
+    # With no fact in the query there is no way to choose: refused (by the
+    # dims-only chasm guard, before any route is picked).
+    with pytest.raises(ValueError):
+        run(world, "sibling_facts", "g_customers", ["g_calendar.year"], [])

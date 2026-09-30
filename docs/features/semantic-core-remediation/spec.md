@@ -18,10 +18,19 @@ Postgres; the same matrix was executed on BigQuery), `test_semantic_state_contra
 - **Cardinality is declared, never assumed.** `many_to_one`, `one_to_one`,
   `one_to_many`, `many_to_many` (and their spelled aliases). An unknown or
   missing value is refused on write — it is not read as many-to-one.
-- **A SELECT-side dimension needs exactly one shortest route.** Identical
-  routes (the forward and reverse edge of one relationship) are one route. Two
-  different routes → `AmbiguousJoinPathError`, naming both; the fix is to mark
-  one relationship Inactive or use an alias.
+- **A SELECT-side dimension needs one determined route.** Identical routes
+  (the forward and reverse edge of one relationship, however the condition is
+  spelled) are one route. When several routes remain, the one through a view
+  the query already joins wins — revenue by the calendar goes through the fact
+  being summed, not a sibling fact that also reaches the calendar. Routes still
+  tied after that → `AmbiguousJoinPathError`, naming them; the fix is to mark
+  one relationship Inactive or use an alias. The order of view names never
+  decides.
+- **The chart's base view** defines the rows only when the chart groups BY it
+  (every base member is listed; a member with no facts shows blank; a fact row
+  with no member is not a member). Otherwise the number is base-invariant: a
+  KPI, or a chart grouped by other dims, is computed at the measure's own fact
+  grain (fact rows without a base member included).
 - **A filter on a related view** correlates to the deepest view already in the
   query (the measure's own fact). A tie at that depth:
   - all tied routes are forward many-to-one chains (a diamond:
@@ -34,6 +43,9 @@ Postgres; the same matrix was executed on BigQuery), `test_semantic_state_contra
 - **Grouping** by a dimension needs a non-fanning (many-to-one) path from each
   measure's fact. A chasm (a dim of another fact through a shared dim) and a
   many-to-many hop are refused (symmetric aggregates are OFF by default).
+- **The live filter path** (charts not on the engine) follows the same route
+  rule, and turns a filter through a 1:N hop into a DISTINCT-key semi-join —
+  one per route, with every filter on that related view inside it.
 - **The slicer's option list** (distinct cascade) is the exception by design:
   a member is offered when it has data through ANY route. It is an option
   list, never a number.
@@ -107,8 +119,9 @@ it would move every saved negated filter's number. Locked by
 
 - A chart's cached result is keyed by the content of every definition its SQL
   is generated from: joins, the model's views (dimensions, measures, primary
-  key, table SQL) and tables (source, transformations, type overrides). Any
-  edit changes the key on every worker at once.
+  key, table SQL), tables (source, transformations, type overrides) and the
+  dataset settings (calendar timezone). Any edit changes the key on every
+  worker at once.
 - Drift: a definition naming a column its table no longer has (measure/
   dimension SQL, `source_columns`, measure filters, primary key, join keys) is
   detected on both `columns_cache` shapes and reported
@@ -124,10 +137,13 @@ it would move every saved negated filter's number. Locked by
 quality (the quality rules, by reference), semantic health, snapshot health.
 Semantic checks are derived from the model and run on the transformed relation:
 every many-to-one / one-to-one relationship's one-side key and every declared
-primary key must be unique. A violation fails, is blocking, and makes Sync &
-Publish refuse (the prior generation keeps serving). A check that cannot run is
-`unknown` and never blocks. Snapshot-vs-live row mismatch is reported, not
-blocking.
+primary key must be unique. A duplicate one-side key fails, is blocking, and
+makes Sync & Publish refuse (the prior generation keeps serving); a declared PK
+no relationship relies on is reported, never blocking, and not scanned at
+publish. Each check runs under the datasource's own guard (BigQuery dry-run
+cost limit, statement timeout) on the live relation the generation was just
+built from; one that cannot run is `unknown` and never blocks. Snapshot-vs-live
+row mismatch is reported, not blocking.
 
 ## Known gaps (not silently wrong — listed so nobody assumes otherwise)
 

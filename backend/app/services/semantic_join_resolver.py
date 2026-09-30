@@ -186,28 +186,42 @@ class AmbiguousJoinPathError(ValueError):
         )
 
 
-_CANON_ON_PAIR_RE = __import__("re").compile(
-    r"\$\{TABLE\}\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$\{[^}]+\}\.([A-Za-z_][A-Za-z0-9_]*)"
-)
+_re = __import__("re")
+# One side of a key equality: `${TABLE}.col`, `${node}.col`, or LookML `${node.col}`.
+_ON_OPERAND = r"\$\{(TABLE|[A-Za-z_][A-Za-z0-9_]*)\}\.([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\}"
+_ON_EQUALITY_RE = _re.compile(rf"\s*(?:{_ON_OPERAND})\s*=\s*(?:{_ON_OPERAND})\s*")
 
 
 def _edge_signature(edge: "JoinEdge") -> tuple:
     """Direction-independent identity of the relationship an edge walks: the
     two node ids and the key-column pairs. A forward edge and the synthetic
     reverse of the SAME relationship share a signature, so they are one route,
-    not an ambiguity."""
-    pairs: set = set()
+    not an ambiguity — whichever spelling the condition uses (`${TABLE}.a =
+    ${v}.b`, the reverse order, or LookML `${v.a}`). A condition that is not an
+    AND of key equalities keeps its SQL text as its identity."""
+
+    def _node(ref: str) -> str:
+        if ref == "TABLE":
+            return edge.from_node
+        if ref in (edge.to_node, edge.to_view):
+            return edge.to_node
+        return ref
+
     sql_on = str(edge.sql_on or "").strip()
-    if sql_on:
-        found = _CANON_ON_PAIR_RE.findall(sql_on)
-        remainder = _CANON_ON_PAIR_RE.sub("", sql_on).replace("AND", "").replace("and", "").strip()
-        if found and not remainder:
-            for fc, tc in found:
-                pairs.add(frozenset({(edge.from_node, fc), (edge.to_node, tc)}))
-        else:
+    if not sql_on:
+        pairs = set()
+        if edge.from_column and edge.to_column:
+            pairs.add(frozenset({(edge.from_node, edge.from_column), (edge.to_node, edge.to_column)}))
+        return (frozenset({edge.from_node, edge.to_node}), frozenset(pairs))
+    pairs = set()
+    for part in _re.split(r"\s+AND\s+", sql_on, flags=_re.I):
+        m = _ON_EQUALITY_RE.fullmatch(part)
+        if not m:
             return (frozenset({edge.from_node, edge.to_node}), ("sql", " ".join(sql_on.split())))
-    elif edge.from_column and edge.to_column:
-        pairs.add(frozenset({(edge.from_node, edge.from_column), (edge.to_node, edge.to_column)}))
+        a1, c1, b1, d1, a2, c2, b2, d2 = m.groups()
+        left = (_node(a1 or b1), c1 or d1)
+        right = (_node(a2 or b2), c2 or d2)
+        pairs.add(frozenset({left, right}))
     return (frozenset({edge.from_node, edge.to_node}), frozenset(pairs))
 
 
@@ -496,15 +510,70 @@ class SemanticJoinResolver:
         relationships (one representative per route; forward/reverse edges of
         the same relationship collapse into one). The first entry is the path
         :meth:`resolve_path` returns."""
-        seen: set = set()
-        out: list[JoinPath] = []
-        for p in self.resolve_paths(target_node):
-            sig = _route_signature(p)
-            if sig in seen:
+        # Enumerated with duplicates collapsed DURING the walk: parallel edges of
+        # one relationship (a forward edge and its synthetic reverse, or the same
+        # relationship declared from both sides) would otherwise fill
+        # resolve_paths' 16-path cap and hide a second, genuinely different
+        # route — a silent single pick.
+        if target_node == self._base_node:
+            return [JoinPath(target_node=target_node, steps=[])]
+        primary = self.resolve_path(target_node)
+        if primary is None:
+            return []
+        max_depth = len(primary.steps)
+        depth: dict[str, int] = {self._base_node: 0}
+        incoming: dict[str, list[JoinEdge]] = {}
+        queue: deque[tuple[str, int]] = deque([(self._base_node, 0)])
+        while queue:
+            current, d = queue.popleft()
+            if d >= max_depth:
                 continue
-            seen.add(sig)
-            out.append(p)
-        return out
+            for edge in self._adj.get(current, []):
+                to = edge.to_node
+                if to in depth and depth[to] < d + 1:
+                    continue
+                if to not in depth:
+                    depth[to] = d + 1
+                    queue.append((to, d + 1))
+                if depth[to] == d + 1:
+                    bucket = incoming.setdefault(to, [])
+                    key = (edge.from_node, _edge_signature(edge))
+                    if all((e.from_node, _edge_signature(e)) != key for e in bucket):
+                        bucket.append(edge)
+
+        routes: list[list[JoinEdge]] = []
+        seen: set = set()
+        cap = 32
+
+        def _walk(node: str, acc: list[JoinEdge]) -> None:
+            if len(routes) >= cap:
+                return
+            if node == self._base_node:
+                seq = list(reversed(acc))
+                sig = tuple(_edge_signature(e) for e in seq)
+                if sig not in seen:
+                    seen.add(sig)
+                    routes.append(seq)
+                return
+            for edge in incoming.get(node, []):
+                acc.append(edge)
+                _walk(edge.from_node, acc)
+                acc.pop()
+
+        _walk(target_node, [])
+        if not routes:
+            return [primary]
+        # Keep resolve_path's route first (callers and messages expect it).
+        primary_sig = _route_signature(primary)
+        routes.sort(key=lambda seq: tuple(_edge_signature(e) for e in seq) != primary_sig)
+        return [
+            JoinPath(
+                target_node=target_node,
+                steps=[JoinStep(edge=e, alias_sql=f"_appbi_sem_join_{i}") for i, e in enumerate(seq)],
+                ambiguous=len(routes) > 1,
+            )
+            for seq in routes
+        ]
 
     def resolve_unique_path(self, target_node: str) -> JoinPath | None:
         """The single shortest path to ``target_node``, or ``None`` when it is

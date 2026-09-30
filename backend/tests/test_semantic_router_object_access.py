@@ -288,3 +288,29 @@ def test_add_model_join_is_strict_and_persists_the_primary_key_before_the_join(d
     assert db.get(SemanticView, 102).primary_key == ["id"]
     (j,) = [j for j in db.get(SemanticExplore, 1).joins if j.get("view") == "customers"]
     assert j["is_active"] is False and j["cardinality"] == j["relationship"] == "many_to_one"
+
+
+def test_a_role_played_calendar_view_of_this_model_can_be_rejoined_a_stray_one_cannot(db, shares):
+    owner = _user(OWNER, "edit")
+    db.add(SemanticView(id=401, name="orders__created__date_dim", sql_table_name="cal",
+                        dimensions=[{"name": "date", "type": "date", "sql": "${TABLE}.date"}], measures=[]))
+    db.add(SemanticView(id=402, name="elsewhere__day__date_dim", sql_table_name="cal",
+                        dimensions=[{"name": "date", "type": "date", "sql": "${TABLE}.date"}], measures=[]))
+    e = db.get(SemanticExplore, 1)
+    cal = {"name": "orders__created__date_dim", "view": "orders__created__date_dim", "type": "left",
+           "sql_on": "", "from_column": "id", "to_column": "date", "relationship": "many_to_one",
+           "cardinality": "many_to_one", "managed": True, "origin": "auto_calendar"}
+    e.joins = [*e.joins, cal]
+    db.commit()
+
+    keep = SemanticExploreUpdate(joins=[_join(), {**cal}])
+    assert _status(api.update_explore, 1, keep, db, owner) == 200
+    stray = SemanticExploreUpdate(joins=[_join(), {**cal, "name": "x", "view": "elsewhere__day__date_dim"}])
+    assert _status(api.update_explore, 1, stray, db, owner) == 400
+
+
+def test_a_view_cannot_be_repointed_and_an_explore_cannot_be_renamed_onto_another_view(db, shares):
+    owner = _user(OWNER, "edit")
+    assert _status(api.update_view, 101, SemanticViewUpdate(sql_table_name="hr.salaries"), db, owner) == 400
+    assert _status(api.update_explore, 1, SemanticExploreUpdate(base_view_name="legacy"), db, owner) == 400
+    assert _status(api.update_explore, 1, SemanticExploreUpdate(base_view_name="orders"), db, owner) == 200

@@ -116,8 +116,12 @@ def _views_by_name(db: Session, dataset_id: int) -> Dict[str, tuple]:
     return {v.name: (v, tables[v.dataset_table_id]) for v in views}
 
 
-def uniqueness_checks(db: Session, dataset_id: int, *, execute: bool = True) -> List[HealthCheck]:
-    """One-side keys of active M:1 / 1:1 relationships, and declared PKs."""
+def uniqueness_checks(
+    db: Session, dataset_id: int, *, execute: bool = True, include_primary_keys: bool = True,
+) -> List[HealthCheck]:
+    """One-side keys of active M:1 / 1:1 relationships (blocking), and declared
+    primary keys of other views (reported, never blocking: a PK a relationship
+    does not rely on changes no joined number)."""
     from app.services.semantic_join_resolver import canonical_cardinality
 
     views = _views_by_name(db, dataset_id)
@@ -136,7 +140,8 @@ def uniqueness_checks(db: Session, dataset_id: int, *, execute: bool = True) -> 
                 wanted.setdefault((dst, tuple(to_cols)), f"relationship {src} → {dst} ({card})")
             if card in ("one_to_many", "one_to_one") and frm_cols:
                 wanted.setdefault((src, tuple(frm_cols)), f"relationship {src} → {dst} ({card})")
-    for name, (view, _t) in views.items():
+    relationship_keys = set(wanted)
+    for name, (view, _t) in views.items() if include_primary_keys else []:
         pk = [c for c in (getattr(view, "primary_key", None) or []) if isinstance(c, str) and c]
         if pk:
             wanted.setdefault((name, tuple(pk)), f"primary key of {name}")
@@ -145,7 +150,8 @@ def uniqueness_checks(db: Session, dataset_id: int, *, execute: bool = True) -> 
     for (view_name, cols), why in sorted(wanted.items()):
         check = HealthCheck(
             id=f"unique:{view_name}:{','.join(cols)}", layer=LAYER_SEMANTIC, kind="key_unique",
-            subject=f"{view_name}({', '.join(cols)})", status="unknown", blocking=True,
+            subject=f"{view_name}({', '.join(cols)})", status="unknown",
+            blocking=(view_name, cols) in relationship_keys,
             evidence={"why": why},
         )
         pair = views.get(view_name)
@@ -273,5 +279,10 @@ def evaluate(db: Session, dataset_id: int, *, execute: bool = True) -> Dict[str,
 
 def publish_blockers(db: Session, dataset_id: int) -> List[str]:
     """Reasons Sync & Publish must refuse: semantic assumptions the data breaks."""
-    return [c.detail for c in uniqueness_checks(db, dataset_id, execute=True)
+    # Only the keys relationships rely on — a declared PK on a large fact is not
+    # scanned at publish time. Each check runs under the datasource's own guard
+    # (BigQuery dry-run cost limit, statement timeout); one that cannot run is
+    # `unknown` and does not block. The checks read the live relation the
+    # generation was just built from, moments earlier.
+    return [c.detail for c in uniqueness_checks(db, dataset_id, execute=True, include_primary_keys=False)
             if c.blocking and c.status == "fail"]

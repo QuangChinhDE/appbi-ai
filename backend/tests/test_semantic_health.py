@@ -188,3 +188,15 @@ def test_snapshot_row_mismatch_is_reported_on_the_snapshot_layer(db, warehouse):
     assert snap["status"] == "fail"
     (c,) = snap["checks"]
     assert c["evidence"]["snapshot_rows"] == 2 and c["evidence"]["live_rows"] == 3
+
+
+def test_a_declared_pk_that_no_relationship_uses_is_reported_but_never_blocks(db, warehouse):
+    from app.services import semantic_health_service as h
+
+    warehouse.execute("INSERT INTO orders VALUES (1, 2, 99)")  # order id 1 twice
+    v = db.get(SemanticView, 101)
+    v.primary_key = ["id"]
+    db.commit()
+    pk = [c for c in h.uniqueness_checks(db, 1) if c.subject == "orders(id)"]
+    assert pk and pk[0].status == "fail" and not pk[0].blocking
+    assert h.publish_blockers(db, 1) == [], "the publish gate does not even scan it"

@@ -2760,6 +2760,18 @@ def validate_direct_explore_joins(
             v.name: v
             for v in db.query(SemanticView).filter(SemanticView.dataset_table_id.in_(table_ids)).all()
         } if table_ids else {}
+        # Role-played calendar views (`…__date_dim`) have no table of their own;
+        # they belong to this dataset when its model already names them.
+        own_model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+        model_names: set[str] = set()
+        for e in (own_model.explores if own_model else []):
+            model_names.add(str(e.base_view_name or ""))
+            model_names.update(str(j.get("view") or "") for j in (e.joins or []) if isinstance(j, dict))
+        if model_names:
+            for v in db.query(SemanticView).filter(
+                SemanticView.dataset_table_id.is_(None), SemanticView.name.in_(sorted(model_names)),
+            ).all():
+                views_by_name.setdefault(v.name, v)
     # Views reachable by alias inside this list (role-playing) count as known.
     out: list[dict] = []
     for raw in joins or []:

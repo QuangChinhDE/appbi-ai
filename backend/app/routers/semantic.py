@@ -310,6 +310,18 @@ def update_view(
 
     update_data = view_update.model_dump(exclude_unset=True)
     if (
+        db_view.dataset_table_id is not None
+        and "sql_table_name" in update_data
+        and update_data["sql_table_name"] != db_view.sql_table_name
+    ):
+        # A dataset-backed view reads its table's relation (source, type
+        # overrides, transformations); a hand-written sql_table_name would read
+        # something the dataset neither shows nor governs.
+        raise HTTPException(
+            status_code=400,
+            detail="sql_table_name của view gắn bảng dataset được suy ra từ bảng — không sửa qua API này.",
+        )
+    if (
         "dataset_table_id" in update_data
         and update_data["dataset_table_id"] != db_view.dataset_table_id
     ):
@@ -655,6 +667,15 @@ def update_explore(
         if not new_base:
             raise HTTPException(status_code=404, detail="Base view not found")
         _check_view_belongs(db, new_base, model_dataset, base_view_name)
+    elif "base_view_name" in update_data:
+        # The name must stay the name of the explore's own base view: a
+        # mismatched name would make the model "own" a view it does not.
+        current = db.query(SemanticView).filter(SemanticView.id == db_explore.base_view_id).first()
+        if current is None or current.name != base_view_name:
+            raise HTTPException(
+                status_code=400,
+                detail="base_view_name phải là tên của base view hiện tại (đổi base view thì gửi base_view_id).",
+            )
 
     # Joins go through the same structural checks as the dataset endpoint.
     if "joins" in update_data and update_data["joins"] is not None:

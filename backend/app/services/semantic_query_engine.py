@@ -442,6 +442,13 @@ class SemanticQueryEngine:
                         and not _is_cross_table
                         and explore.base_view_name in _m1_safe
                         and _grp_views.issubset(_m1_safe | {explore.base_view_name})
+                        # "Preserve the base's members" only means something when
+                        # the base IS a row dimension. Grouped by something else
+                        # (a calendar reached through the fact), the base would
+                        # only drop the fact rows that have no base member — a
+                        # base-dependent number, the same defect the KPI guard
+                        # below fixes. Such a chart re-anchors like a KPI.
+                        and explore.base_view_name in _grp_views
                     ):
                         # The chart's BASE is itself on that M:1 spine (a
                         # dimension-table on the 1-side of the measure fact) and
@@ -3469,39 +3476,93 @@ class SemanticQueryEngine:
             candidate_nodes = set(self.views_cache.keys())
         else:
             candidate_nodes = set(target_views)
-        target_nodes = sorted(candidate_nodes - joined_nodes)
-        for target_node in target_nodes:
-            # Unique or refused: two shortest routes with different relationships
-            # (a diamond) raise AmbiguousJoinPathError instead of silently taking
-            # whichever relationship was created first.
-            path = resolver.resolve_unique_path(target_node)
-            if path is None:
-                # Phase-11: friendly Vietnamese message so DA hiểu cần thêm
-                # relationship. Tránh raw English engine identifier.
-                raise ValueError(
-                    f"Bảng \"{target_node}\" chưa có relationship tới base view "
-                    f"\"{explore.base_view_name}\". "
-                    f"Mở tab Data Model để định nghĩa join trước khi dùng field từ bảng này."
-                )
-            for step in path.steps:
-                edge = step.edge
-                if edge.to_node in joined_nodes:
+        from app.services.semantic_join_resolver import _edge_signature, _route_label
+
+        def _choose_route(target_node: str):
+            """(path, None) when the model + the FROM chain so far determine ONE
+            route; (None, tied_routes) on a tie; (None, None) if unreachable.
+
+            Same rule as the filter EXISTS builder: a route through a node the
+            query already joined (the measure's own fact) is preferred — revenue
+            by the calendar goes through the fact being summed, not through a
+            sibling fact that also reaches the calendar. Only routes still tied
+            at the deepest such anchor are a real ambiguity."""
+            routes = resolver.distinct_routes(target_node)
+            if not routes:
+                return None, None
+            if len(routes) == 1:
+                return routes[0], None
+
+            def _anchor(route) -> int:
+                idx = 0
+                for i, st in enumerate(route.steps):
+                    if st.edge.from_node in joined_nodes:
+                        idx = i
+                return idx
+
+            best = max(_anchor(r) for r in routes)
+            tails: dict = {}
+            for r in routes:
+                if _anchor(r) == best:
+                    tails.setdefault(tuple(_edge_signature(st.edge) for st in r.steps[best:]), r)
+            if len(tails) == 1:
+                return next(iter(tails.values())), None
+            return None, list(tails.values())
+
+        # Resolved in passes: a target still tied may become determined once
+        # another target has joined the node that disambiguates it (the order of
+        # the targets' NAMES must not decide the answer). A pass with no progress
+        # leaves only genuine ambiguity: refused (AmbiguousJoinPathError), never
+        # the first route.
+        pending = sorted(candidate_nodes - joined_nodes)
+        ties: dict = {}
+        while pending:
+            next_pending: list[str] = []
+            for target_node in pending:
+                if target_node in joined_nodes:
                     continue
-                join_view = self._get_view_for_node(edge.to_node)
-                join_table = self._snapshot_ref_for_view(join_view) or self._relation_sql_for_view(join_view) or edge.to_view
-                join_condition_rendered = self._render_edge_join_condition(edge)
-                if not join_condition_rendered:
+                path, tied = _choose_route(target_node)
+                if tied:
+                    ties[target_node] = tied
+                    next_pending.append(target_node)
+                    continue
+                if path is None:
+                    # Phase-11: friendly Vietnamese message so DA hiểu cần thêm
+                    # relationship. Tránh raw English engine identifier.
                     raise ValueError(
-                        f"Join from '{edge.from_node}' to '{edge.to_node}' is missing a SQL condition"
+                        f"Bảng \"{target_node}\" chưa có relationship tới base view "
+                        f"\"{explore.base_view_name}\". "
+                        f"Mở tab Data Model để định nghĩa join trước khi dùng field từ bảng này."
                     )
-                join_type = (edge.type or "left").upper()
-                from_clause += (
-                    f"\n{join_type} JOIN {join_table} AS {edge.to_node} "
-                    f"ON {join_condition_rendered}"
-                )
-                joined_nodes.add(edge.to_node)
+                ties.pop(target_node, None)
+                from_clause = self._append_route_joins(from_clause, path, joined_nodes)
+            if next_pending == pending:
+                first = next_pending[0]
+                raise AmbiguousJoinPathError(first, [_route_label(r) for r in ties[first]])
+            pending = next_pending
 
         return from_clause, joined_nodes
+
+    def _append_route_joins(self, from_clause: str, path, joined_nodes: set) -> str:
+        """Append the JOINs of `path` that are not in the FROM chain yet."""
+        for step in path.steps:
+            edge = step.edge
+            if edge.to_node in joined_nodes:
+                continue
+            join_view = self._get_view_for_node(edge.to_node)
+            join_table = self._snapshot_ref_for_view(join_view) or self._relation_sql_for_view(join_view) or edge.to_view
+            join_condition_rendered = self._render_edge_join_condition(edge)
+            if not join_condition_rendered:
+                raise ValueError(
+                    f"Join from '{edge.from_node}' to '{edge.to_node}' is missing a SQL condition"
+                )
+            join_type = (edge.type or "left").upper()
+            from_clause += (
+                f"\n{join_type} JOIN {join_table} AS {edge.to_node} "
+                f"ON {join_condition_rendered}"
+            )
+            joined_nodes.add(edge.to_node)
+        return from_clause
 
     # Semantic-audit 2026-07 (#1) — canonical equality template our join
     # builders emit (`${TABLE}.a = ${target}.b`, AND-joined for composite

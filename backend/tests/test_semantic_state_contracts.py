@@ -175,8 +175,8 @@ def test_live_filter_through_a_one_to_many_hop_is_a_semi_join_not_a_row_multipli
     join_sql = cs._build_live_semi_join(
         None, types.SimpleNamespace(type="postgresql"), [JoinStep(edge=edge, alias_sql="")],
         from_alias="_appbi_base", semi_alias="_appbi_sem_semi_0",
-        field_def={"name": "status", "sql": "status"}, semantic_name="status",
-        filt={"field": "orders.status", "operator": "eq", "value": "ok"},
+        items=[({"name": "status", "sql": "status"}, "status",
+                {"field": "orders.status", "operator": "eq", "value": "ok"})],
         get_view=lambda _n: view, target_node="orders",
     )
     sql = (f"SELECT _appbi_base.*, _appbi_sem_semi_0._k AS __sem_filter_0 "
@@ -202,9 +202,9 @@ def test_live_semi_join_refuses_a_key_it_cannot_split():
     with pytest.raises(ValueError):
         cs._build_live_semi_join(
             None, types.SimpleNamespace(type="postgresql"), [JoinStep(edge=edge, alias_sql="")],
-            from_alias="_appbi_base", semi_alias="s", field_def={"name": "f", "sql": "f"},
-            semantic_name="f", filt={"operator": "eq", "value": 1}, get_view=lambda _n: None,
-            target_node="b",
+            from_alias="_appbi_base", semi_alias="s",
+            items=[({"name": "f", "sql": "f"}, "f", {"operator": "eq", "value": 1})],
+            get_view=lambda _n: None, target_node="b",
         )
 
 
@@ -285,3 +285,86 @@ def test_a_modeled_table_with_an_empty_binding_is_rehydrated_not_sent_live(db):
     db.add(DatasetTable(id=13, dataset_id=1, display_name="raw", source_table_name="raw"))
     db.commit()
     assert _rehydrate_binding_for_modeled_table(db, db.get(DatasetTable, 13), {}) is None,         "a table with no semantic view has nothing to re-hydrate (live is correct there)"
+
+
+# ── live adapter: filters through 1:N are one semi-join per route; ties AND ──
+
+
+@pytest.fixture()
+def live_world(monkeypatch):
+    """customers (base) ← orders → products, customers ← tickets → products."""
+    engine = create_engine("sqlite://", future=True)
+    Base.metadata.create_all(engine, tables=[
+        Dataset.__table__, DatasetTable.__table__,
+        SemanticView.__table__, SemanticModel.__table__, SemanticExplore.__table__,
+    ])
+    dims = lambda *n: [{"name": x, "type": "string", "sql": x} for x in n]  # noqa: E731
+    with Session(engine) as s:
+        s.add(Dataset(id=9, name="live"))
+        for tid, name, cols in [(91, "customers", ("id",)), (92, "orders", ("id", "customer_id", "status", "channel", "product_id")),
+                                (93, "tickets", ("id", "customer_id", "product_id")), (94, "products", ("id", "name"))]:
+            s.add(DatasetTable(id=tid, dataset_id=9, display_name=name, source_table_name=name))
+            s.add(SemanticView(id=tid, name=name, dataset_table_id=tid, sql_table_name=name,
+                               dimensions=dims(*cols), measures=[]))
+        s.add(SemanticModel(id=9, name="live", dataset_id=9))
+        j = lambda v, fc: {"name": v, "view": v, "type": "left", "sql_on": "", "from_column": fc,  # noqa: E731
+                           "to_column": "id", "relationship": "many_to_one", "cardinality": "many_to_one"}
+        s.add(SemanticExplore(id=91, name="orders", model_id=9, base_view_id=92, base_view_name="orders",
+                              joins=[j("customers", "customer_id"), j("products", "product_id")]))
+        s.add(SemanticExplore(id=92, name="tickets", model_id=9, base_view_id=93, base_view_name="tickets",
+                              joins=[j("customers", "customer_id"), j("products", "product_id")]))
+        s.add(SemanticExplore(id=93, name="customers", model_id=9, base_view_id=91, base_view_name="customers", joins=[]))
+        s.commit()
+
+        con = sqlite3.connect(":memory:")
+        con.executescript(
+            "CREATE TABLE customers(id int); INSERT INTO customers VALUES (1),(2),(3);"
+            "CREATE TABLE orders(id int, customer_id int, status text, channel text, product_id int);"
+            "INSERT INTO orders VALUES (1,1,'returned','web',10),(2,1,'ok','shop',10),(3,2,'returned','shop',20),(4,3,'ok','shop',20);"
+            "CREATE TABLE tickets(id int, customer_id int, product_id int); INSERT INTO tickets VALUES (1,1,20),(2,3,20);"
+            "CREATE TABLE products(id int, name text); INSERT INTO products VALUES (10,'A'),(20,'B');"
+        )
+        from app.services import chart_service as cs
+        from app.services import dataset_relation_service as drs
+
+        monkeypatch.setattr(cs, "_normalize_runtime_filters_for_chart", lambda _c, f, **_k: list(f or []))
+        monkeypatch.setattr(cs, "_build_live_relation_for_semantic_view", lambda _db, _ds, v: v.sql_table_name)
+        monkeypatch.setattr(drs, "resolve_dataset_table_relation",
+                            lambda *_a, **_k: types.SimpleNamespace(sql="SELECT * FROM customers"))
+        yield s, con
+
+
+def _live_ids(live_world, filters):
+    from app.services import chart_service as cs
+    from app.services.live_query_service import _build_where_clause
+
+    db, con = live_world
+    sql, eff = cs._adapt_live_sql_for_semantic_filters(
+        db, types.SimpleNamespace(type="duckdb"), types.SimpleNamespace(),
+        {"semanticBinding": {"baseViewName": "customers", "modelId": 9}}, filters,
+    )
+    where = _build_where_clause(eff, "duckdb")
+    return [r[0] for r in con.execute(f"SELECT id FROM ({sql}) AS t WHERE {where} ORDER BY id").fetchall()]
+
+
+def test_two_filters_on_one_related_view_must_hold_on_the_same_related_row(live_world):
+    f = lambda fld, v: {"field": f"orders.{fld}", "semanticField": f"orders.{fld}", "operator": "eq", "value": v}  # noqa: E731
+    # customer 1 has a returned order (web) and a shop order — but no returned shop order.
+    assert _live_ids(live_world, [f("status", "returned"), f("channel", "shop")]) == [2]
+
+
+def test_a_filter_reaching_the_base_through_two_facts_applies_both_routes(live_world):
+    """products.name='B' from customers: via orders → {2, 3}; via tickets → {1, 3}.
+    Shared-dim propagation, as the engine does it: both, AND-ed → {3}."""
+    flt = {"field": "products.name", "semanticField": "products.name", "operator": "eq", "value": "B"}
+    assert _live_ids(live_world, [flt]) == [3]
+
+
+def test_cache_identity_changes_with_the_calendar_timezone(db):
+    from app.services.chart_service import _semantic_definition_signature as sig
+
+    before = sig(db, 1)
+    ds = db.get(Dataset, 1)
+    ds.settings = {"calendar_dimension": {"timezone": "Asia/Ho_Chi_Minh"}}
+    db.commit()
+    assert sig(db, 1) != before, "time-grain SQL depends on the calendar timezone"
