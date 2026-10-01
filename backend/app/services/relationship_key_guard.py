@@ -203,15 +203,17 @@ def verify_key_probes(probes: Iterable[dict], *, ds_type: str, config, namespace
     from app.core.config import settings
     from app.services import query_cache
     from app.services.datasource_service import DataSourceConnectionService
+    from app.services.semantic_join_resolver import SemanticRefusal
 
     ttl = float(getattr(settings, "LIVE_QUERY_CACHE_TTL", 300) or 300)
     for probe in probes or []:
         sql = probe.get("sql")
         if not sql:
-            raise ValueError(
+            raise SemanticRefusal(
                 f"Không xác minh được khoá của quan hệ {probe.get('label')} trên '{probe.get('view')}': "
                 f"{probe.get('reason') or 'không dựng được truy vấn kiểm tra'} — truy vấn bị từ chối "
-                "thay vì giả định khoá là duy nhất."
+                "thay vì giả định khoá là duy nhất.",
+                SemanticRefusal.UNVERIFIABLE_KEY,
             )
         cacheable = use_cache and bool(probe.get("immutable"))
         key = "keyprobe::" + hashlib.sha256(f"{namespace}|{ds_type}|{sql}".encode("utf-8")).hexdigest()
@@ -223,19 +225,21 @@ def verify_key_probes(probes: Iterable[dict], *, ds_type: str, config, namespace
                 _cols, rows, _ms = DataSourceConnectionService.execute_query(ds_type, config, sql, limit=None)
             except Exception as exc:  # noqa: BLE001 — unverifiable is refused, below
                 logger.warning("[keyprobe] could not verify %s: %s", probe.get("label"), exc)
-                raise ValueError(
+                raise SemanticRefusal(
                     f"Không xác minh được khoá của quan hệ {probe.get('label')} "
                     f"({', '.join(probe.get('columns') or [])} trên '{probe.get('view')}') là duy nhất — "
                     "truy vấn bị từ chối thay vì giả định N:1. "
-                    f"Chi tiết: {type(exc).__name__}: {str(exc)[:200]}"
+                    f"Chi tiết: {type(exc).__name__}: {str(exc)[:200]}",
+                    SemanticRefusal.UNVERIFIABLE_KEY,
                 ) from exc
             dup = bool(rows)
             if cacheable:
                 query_cache.set_shared(key, {"dup": dup}, ttl)
         if dup:
-            raise ValueError(
+            raise SemanticRefusal(
                 f"Quan hệ {probe.get('label')} khai báo N:1 nhưng khoá "
                 f"({', '.join(probe.get('columns') or [])}) trên '{probe.get('view')}' có giá trị bị lặp — "
                 "JOIN sẽ nhân dòng và số sẽ sai, nên truy vấn bị từ chối. Làm sạch dữ liệu, "
-                "đổi khoá, hoặc khai báo lại cardinality trong Data Model."
+                "đổi khoá, hoặc khai báo lại cardinality trong Data Model.",
+                SemanticRefusal.FANOUT_RISK,
             )

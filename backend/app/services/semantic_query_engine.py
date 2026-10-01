@@ -16,8 +16,8 @@ from app.models.semantic import SemanticView, SemanticExplore, SemanticModel
 from app.services import physical_type_map as _ptm
 from app.services.sql_pattern import pattern_predicate, regex_predicate
 from app.services.semantic_join_resolver import (
-    AmbiguousJoinPathError, SemanticJoinResolver, canonical_cardinality,
-    raise_for_invalid_relationships, read_join_contract,
+    AmbiguousJoinPathError, SemanticJoinResolver, SemanticRefusal, canonical_cardinality,
+    edge_propagates, raise_for_invalid_relationships, read_join_contract,
 )
 from app.schemas.semantic import (
     WindowFunctionDefinition,
@@ -245,6 +245,11 @@ class SemanticQueryEngine:
             self._calendar_ref_cache = False
             self._cal_live_sql_cache = False
             self._snap_rename_cache = None
+            # The observable plan of THIS query and its route memos.
+            self.query_plan = {}
+            self._filter_resolver_cache = {}
+            self._filter_root = None
+            self._calendar_candidates_memo = {}
         self.views_cache = {}
         self._resolver = None
         self._model = None
@@ -408,6 +413,7 @@ class SemanticQueryEngine:
             if _iso and len(_facts_all) >= 2:
                 self._isolated_measure_views = _iso
                 self._isolation_active = True
+                self._plan_note(strategy="isolate")
 
         # ── Dimensioned chart with cross-fact measure(s) — base-invariance ──
         # Two cases (both keep the measure at its OWN grain, PowerBI/Tableau):
@@ -491,7 +497,11 @@ class SemanticQueryEngine:
                         # grain / nested-WITH source) or when the base is not a
                         # dim-preserving anchor. KPI (no dims) also lands here.
                         _cal_view = self._find_calendar_dim_for_measure(_m_resolver, _m_view)
-                        _rebound = self._rebind_calendar_filters(dict(filters or {}), _cal_view)
+                        _rebound = self._rebind_calendar_filters(
+                            dict(filters or {}), _cal_view, measure_view=_m_view,
+                            tied=self._calendar_tie(_m_resolver, _m_view),
+                        )
+                        self._plan_note(strategy="reanchor", calendar={_m_view: _cal_view})
                         return self.generate_sql(
                             explore_name=_m_view,
                             dimensions=dimensions,
@@ -522,17 +532,19 @@ class SemanticQueryEngine:
                     # fan-out. Falls through to the normal build below.
                     self._isolated_measure_views = {_m_view}
                     self._isolation_active = True
+                    self._plan_note(strategy="isolate")
                 else:
                     # MIXED (some related + some unrelated dims), or a non-scalar
                     # measure with an unrelated dim, or a non-cross-table measure
                     # that can't re-anchor onto an unrelated dim. The legacy
                     # single-FROM build would JOIN through a chasm and FAN OUT →
                     # FAIL LOUD (wrong number must never render).
-                    raise ValueError(
+                    raise SemanticRefusal(
                         f"Measure trên bảng '{_m_view}' không thể nhóm/cắt theo dimension "
                         f"{sorted(_grp_unrelated)} một cách an toàn (không có đường M:1 — "
                         f"JOIN sẽ fan-out, ra số sai). Thêm/sửa quan hệ trong Data Model, "
-                        f"đổi dimension, hoặc qualify field."
+                        f"đổi dimension, hoặc qualify field.",
+                        SemanticRefusal.UNRELATED_GRAIN,
                     )
             elif (
                 _cross and len(_facts) >= 2
@@ -561,7 +573,7 @@ class SemanticQueryEngine:
             _fact_grains = {self._measure_fact_view(m) for m in measures}
             if len(_fact_grains) >= 2:
                 _reason = getattr(self, "_stitch_decline_reason", None)
-                raise ValueError(
+                raise SemanticRefusal(
                     "Không thể tính các measure từ nhiều bảng fact "
                     f"({', '.join(sorted(_fact_grains))}) theo cấu hình chart này "
                     "một cách an toàn — thiếu relationship / ambiguous path, hoặc "
@@ -569,7 +581,8 @@ class SemanticQueryEngine:
                     "fact sẽ fan-out và nhân SUM lên, nên engine từ chối render số "
                     "sai. Hãy thêm/sửa quan hệ trong Data Model, đổi dimension, "
                     "hoặc tách thành nhiều chart."
-                    + (f" Lý do cụ thể: {_reason}" if _reason else "")
+                    + (f" Lý do cụ thể: {_reason}" if _reason else ""),
+                    SemanticRefusal.FANOUT_RISK,
                 )
 
         # ── STRICT GRAIN (PowerBI): a measure may only be grouped/pivoted by a
@@ -789,14 +802,30 @@ class SemanticQueryEngine:
                     _mf = None
                 if _mf:
                     _measure_fact_views |= self._m1_reachable_views(_mf) | {_mf}
-            where_clause = self._build_where_clause(
-                where_filters, time_grains,
-                exists_views=exists_views,
-                explore=explore,
-                select_side_views=select_side_views,
-                joined_nodes=joined_nodes,
-                measure_fact_views=_measure_fact_views,
+            # Filter routes are walked from the query's FACT grain: the measure's
+            # fact when it is joined under another base (a chart grouped by a
+            # dimension table), else the base. The same filter then means the same
+            # thing whichever table the chart is based on.
+            _facts_here = {self._measure_fact_view(m) for m in (measures or [])}
+            _outer_filter_root = getattr(self, "_filter_root", None)
+            self._filter_root = (
+                next(iter(_facts_here))
+                if len(_facts_here) == 1 and next(iter(_facts_here)) in joined_nodes
+                else explore.base_view_name
             )
+            self._plan_note(fact_grains=sorted(_facts_here) or [explore.base_view_name],
+                            filter_root=self._filter_root)
+            try:
+                where_clause = self._build_where_clause(
+                    where_filters, time_grains,
+                    exists_views=exists_views,
+                    explore=explore,
+                    select_side_views=select_side_views,
+                    joined_nodes=joined_nodes,
+                    measure_fact_views=_measure_fact_views,
+                )
+            finally:
+                self._filter_root = _outer_filter_root
             having_clause = self._build_having_clause(
                 having_filters, time_grains,
                 measure_agg_overrides=measure_agg_overrides or {},
@@ -816,7 +845,9 @@ class SemanticQueryEngine:
         group_by_clause = self._build_group_by_clause(dimensions, measures, pivots, time_grains)
 
         # Build ORDER BY clause
-        order_by_clause = self._build_order_by_clause(sorts, measures, top_n)
+        order_by_clause = self._build_order_by_clause(
+            sorts, measures, top_n, group_dims=[d for d in dimensions if d not in (pivots or [])],
+        )
 
         # Build LIMIT clause. When the caller asks for "top N", that N takes
         # precedence over the generic chart limit: it's the user's explicit
@@ -872,6 +903,7 @@ class SemanticQueryEngine:
             sql.replace("\n", " ")[:1500],
         )
 
+        self._plan_note(strategy="single")
         return sql, column_names, pivot_metadata
 
     def _set_model_scope(self, model: Optional[SemanticModel]) -> None:
@@ -1886,11 +1918,12 @@ class SemanticQueryEngine:
             if isinstance(m, dict) and str((m or {}).get("type") or "").strip()
         })
         if _unsupported_mods:
-            raise ValueError(
+            raise SemanticRefusal(
                 f"Measure '{view_name}.{field_name}' dùng context modifier {_unsupported_mods} — "
                 "tính năng này chưa được hỗ trợ đúng ngữ nghĩa nên bị từ chối thay vì trả số sai. "
                 "Xoá context modifier khỏi measure trong Data Model (dùng measure kiểu "
-                "percent_of_total cho % trên tổng, hoặc join có alias cho role-playing)."
+                "percent_of_total cho % trên tổng, hoặc join có alias cho role-playing).",
+                SemanticRefusal.UNSUPPORTED_CONTEXT,
             )
 
         stored_measure_type = str(measure_def.get('type', 'count') or 'count').lower().strip()
@@ -2177,7 +2210,9 @@ class SemanticQueryEngine:
             # EXISTS builder binds it via the measure→Date edge on ONE event-
             # date column (the cheap path that already makes base=Date correct).
             cal_view = self._find_calendar_dim_for_measure(m_resolver, view_name)
-            filters = self._rebind_calendar_filters(filters, cal_view)
+            filters = self._rebind_calendar_filters(
+                filters, cal_view, measure_view=view_name, tied=self._calendar_tie(m_resolver, view_name),
+            )
             if cal_view:
                 reachable = m_resolver.reachable_nodes()
 
@@ -2204,7 +2239,9 @@ class SemanticQueryEngine:
                     if self._parse_field_ref(fr)[0] != view_name
                 }
                 _saved_resolver = self._resolver
+                _saved_root = getattr(self, "_filter_root", None)
                 self._resolver = m_resolver
+                self._filter_root = view_name
                 try:
                     where_sql = self._build_where_clause(
                         bound_filters,
@@ -2216,6 +2253,7 @@ class SemanticQueryEngine:
                     )
                 finally:
                     self._resolver = _saved_resolver
+                    self._filter_root = _saved_root
 
         body = f"SELECT {plain_agg} FROM {m_table} AS {view_name}"
         if where_sql:
@@ -2227,17 +2265,46 @@ class SemanticQueryEngine:
         measure view, or None. The calendar spine is a ``GENERATE_DATE_ARRAY``
         source; the standalone "Date" dim (no role-played ``__…_date_dim``
         suffix) is preferred over per-column role-played date dims, and the
-        shortest path wins ties."""
+        shortest path wins ties.
+
+        Only a UNIQUE best candidate is returned: when two date roles tie (two
+        role-played dims, two aliases of one calendar, no main calendar), which
+        one the measure's "Date" means is not decided by the model — the
+        caller refuses (see ``_calendar_tie``); the node-set order (which a
+        process restart changes) used to decide."""
         best = self._best_calendar_dim_candidates(m_resolver, m_view)
-        return best[0] if best else None
+        return best[0] if len(best) == 1 else None
+
+    def _calendar_tie(self, m_resolver, m_view: str) -> List[str]:
+        """The tied date roles of ``m_view`` (empty when one role is main, or
+        none is reachable)."""
+        best = self._best_calendar_dim_candidates(m_resolver, m_view)
+        return best if len(best) > 1 else []
 
     def _best_calendar_dim_candidates(self, m_resolver, m_view: str) -> List[str]:
         """Every calendar node tied for the best (main-first, shortest) score,
-        in discovery order. More than one means the choice is not determined by
-        the model — only by the order the relationships were created."""
+        sorted. More than one means the choice is not determined by the model —
+        only by the order the relationships were created. Memoised per query
+        (the main-calendar pick and the tie check ask the same question)."""
+        memo = getattr(self, "_calendar_candidates_memo", None)
+        if memo is None:
+            memo = self._calendar_candidates_memo = {}
+        key = (getattr(self._model, "id", None), getattr(m_resolver, "base_node", None), m_view)
+        if key not in memo:
+            memo[key] = self._compute_calendar_dim_candidates(m_resolver, m_view)
+        return list(memo[key])
+
+    def _compute_calendar_dim_candidates(self, m_resolver, m_view: str) -> List[str]:
         scored: List[Tuple[Tuple[int, int], str]] = []
+        # A calendar is the measure's only when it is one of ITS dimensions
+        # (many-to-one reachable): a main calendar reached through ANOTHER fact
+        # outranked the measure's own tied date roles and the Date filter was
+        # dropped (no route to it) instead of refused.
+        own = self._m1_reachable_views(m_view)
         for node in m_resolver.reachable_nodes():
             if node == m_view:
+                continue
+            if node not in own and (m_resolver.view_for_node(node) or node) not in own:
                 continue
             vname = m_resolver.view_for_node(node) or node
             view = self.views_cache.get(node) or self._find_view_by_name(vname)
@@ -2252,7 +2319,7 @@ class SemanticQueryEngine:
         if not scored:
             return []
         best_score = min(sc for sc, _ in scored)
-        return [n for sc, n in scored if sc == best_score]
+        return sorted(n for sc, n in scored if sc == best_score)
 
     def _is_calendar_dim_view(self, view_name: Optional[str]) -> bool:
         """True if ``view_name`` is a calendar/date dimension — either a
@@ -2313,17 +2380,26 @@ class SemanticQueryEngine:
     def _fact_own_calendar_view(self, fact: str, m_resolver) -> Optional[str]:
         """The calendar/date-dim view this fact OWNS (M:1-reachable, one hop).
         A fact with a single date column has exactly one date-dim (unambiguous);
-        if it exposes several, prefer the main calendar
-        (``_find_calendar_dim_for_measure``) else the first. Returns None when no
+        if it exposes several, the main calendar (``_find_calendar_dim_for_measure``).
+        Several with no single main → which date role a conformed "by month"
+        groups this fact by is not determined: refused (it used to take the
+        first of a set — a role chosen by hash order). Returns None when no
         calendar is reachable — then a calendar group dim is left unchanged and
         the unrelated-check declines the stitch, as before."""
-        cals = [v for v in self._m1_reachable_views(fact) if self._is_calendar_dim_view(v)]
+        cals = sorted(v for v in self._m1_reachable_views(fact) if self._is_calendar_dim_view(v))
         if not cals:
             return None
         if len(cals) == 1:
             return cals[0]
         main = self._find_calendar_dim_for_measure(m_resolver, fact)
-        return main if main in cals else cals[0]
+        if main in cals:
+            return main
+        raise SemanticRefusal(
+            f"Không ghép được measure của bảng '{fact}' theo Calendar chung: bảng có nhiều vai trò ngày "
+            f"({', '.join(cals)}) và không có Calendar chính — không xác định được nhóm theo ngày nào. "
+            "Nối bảng với Calendar chính trong Data Model, hoặc nhóm theo một vai trò ngày cụ thể.",
+            SemanticRefusal.AMBIGUOUS_ROUTE,
+        )
 
     def _build_dimensioned_multifact_sql(
         self,
@@ -2352,6 +2428,8 @@ class SemanticQueryEngine:
         """
         from collections import OrderedDict
         from app.services.semantic_join_resolver import SemanticJoinResolver as _R
+
+        self._plan_note(strategy="stitch")
 
         # Group measures by their TRUE fact grain (the source-column view for a
         # cross-table measure; declared view otherwise) — NOT the declared view.
@@ -2416,7 +2494,11 @@ class SemanticQueryEngine:
             # loud even though PowerBI renders it (conformed Date dimension).
             # Non-calendar dims are NOT rebound — a non-conformed dim on another
             # fact still trips the unrelated-check below (correct chasm refusal).
-            fact_cal = self._fact_own_calendar_view(fact, m_resolver)
+            fact_cal = (
+                self._fact_own_calendar_view(fact, m_resolver)
+                if any(self._is_calendar_dim_view(self._parse_field_ref(d)[0]) for d in dimensions)
+                else None
+            )
             fact_dims: List[str] = []
             cal_realias: List[Tuple[str, str]] = []   # (original_dim, rebound_dim)
             for d in dimensions:
@@ -2449,7 +2531,9 @@ class SemanticQueryEngine:
                 )
                 return None
             cal_view = self._find_calendar_dim_for_measure(m_resolver, fact)
-            rebound = self._rebind_calendar_filters(dict(row_filters), cal_view)
+            rebound = self._rebind_calendar_filters(
+                dict(row_filters), cal_view, measure_view=fact, tied=self._calendar_tie(m_resolver, fact),
+            )
             # Time grains are keyed by field ref. A calendar dim rebound onto
             # this fact's own calendar keeps its ORIGINAL grain — otherwise this
             # fact groups by raw day while the others group by month and the
@@ -2561,13 +2645,22 @@ class SemanticQueryEngine:
         order_parts: list[str] = []
         effective_limit = limit
         output_aliases = set(dim_aliases) | {self._safe_alias(m) for m in measures}
+
+        def _src(alias: str) -> str:
+            # Qualified by the relation that provides it: `_skel` and every fact
+            # CTE carry the same dimension column names, and MySQL resolves a
+            # name inside an ORDER BY EXPRESSION (`(x IS NULL), x`) against
+            # those columns — the bare alias was "ambiguous" there, so every
+            # multi-fact chart failed on MySQL.
+            return f"_skel.{alias}" if alias in dim_aliases else f"{alias_to_cte[alias]}.{alias}"
+
         if top_n and isinstance(top_n, dict) and top_n.get("field"):
             t_alias = self._safe_alias(str(top_n["field"]))
             if t_alias not in output_aliases:
                 raise ValueError(
                     f"Top-N theo '{top_n['field']}' không có trong kết quả của chart đa-fact này."
                 )
-            order_parts.append(self._order_term(t_alias, "DESC", nulls_last=True))
+            order_parts.append(self._order_term(_src(t_alias), "DESC", nulls_last=True))
             try:
                 n_value = int(top_n.get("n", 0))
             except (TypeError, ValueError):
@@ -2584,8 +2677,8 @@ class SemanticQueryEngine:
                     f"Sắp xếp theo '{s_field}' không có trong kết quả của chart đa-fact này."
                 )
             direction = "DESC" if str(s.get("direction") or "asc").lower() == "desc" else "ASC"
-            order_parts.append(self._order_term(s_alias, direction, nulls_last=True))
-        order_parts.extend(self._order_term(a, "ASC", nulls_last=True) for a in dim_aliases)
+            order_parts.append(self._order_term(_src(s_alias), direction, nulls_last=True))
+        order_parts.extend(self._order_term(_src(a), "ASC", nulls_last=True) for a in dim_aliases)
         sql += "\nORDER BY " + ", ".join(order_parts)
         if effective_limit:
             sql += f"\nLIMIT {effective_limit}"
@@ -2674,10 +2767,11 @@ class SemanticQueryEngine:
         if len(_cal_candidates) > 1:
             # No main calendar and several date roles equally close: which role
             # "the Date filter" means would be decided by creation order.
-            raise ValueError(
+            raise SemanticRefusal(
                 "Filter ngày áp lên nhiều cột ngày nhưng không có Calendar chính để chọn: "
                 f"các vai trò {sorted(_cal_candidates)} ngang nhau. Nối bảng với Calendar "
-                "chính trong Data Model, hoặc lọc trên một vai trò ngày cụ thể."
+                "chính trong Data Model, hoặc lọc trên một vai trò ngày cụ thể.",
+                SemanticRefusal.AMBIGUOUS_ROUTE,
             )
         cal_view = _cal_candidates[0] if _cal_candidates else None
         if not cal_view:
@@ -2685,11 +2779,12 @@ class SemanticQueryEngine:
             # this fact". AND-ing those roles is an intersection nobody asked for
             # (NULL-prone roles annihilate the result), so without a calendar
             # relationship to bind it to, refuse rather than return that number.
-            raise ValueError(
+            raise SemanticRefusal(
                 "Filter ngày áp lên nhiều cột ngày của cùng một bảng "
                 f"({', '.join(sorted({r for refs in per_field_refs.values() for r in refs}))}) "
                 "nhưng không tìm thấy quan hệ tới bảng Calendar để chọn một cột ngày. "
-                "Nối bảng này với Calendar trong Data Model, hoặc lọc trực tiếp trên một cột ngày."
+                "Nối bảng này với Calendar trong Data Model, hoặc lọc trực tiếp trên một cột ngày.",
+                SemanticRefusal.UNREACHABLE_VIEW,
             )
 
         out: Dict[str, Any] = {}
@@ -2738,11 +2833,21 @@ class SemanticQueryEngine:
         self,
         filters: Dict[str, Any],
         cal_view: Optional[str],
+        *,
+        measure_view: Optional[str] = None,
+        tied: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Re-point calendar-metadata filters at ``cal_view.<calendarField>`` so
         the generic WHERE/EXISTS builder binds them via the measure→Date edge
         (one event-date column) rather than the chart base's fanned columns.
-        Filters without calendar metadata pass through untouched."""
+        Filters without calendar metadata pass through untouched.
+
+        Only a filter written onto ANOTHER table's date column (the chart base's,
+        when the measure is evaluated at its own fact) moves. A filter already on
+        the measure's own date column (``measure_view``) names that role — a
+        Ship-date year stays the ship date; it used to move to the main (order)
+        calendar. A foreign filter with no single calendar to move to — the
+        measure's date roles tie (``tied``) — has no single meaning: refused."""
         if not filters:
             return filters
         out: Dict[str, Any] = {}
@@ -2762,7 +2867,16 @@ class SemanticQueryEngine:
             # bound — or refused — on its own column below.
             _role_lock = any(isinstance(d, dict) and d.get("_authoritative") and not d.get("_calendar_fan")
                              for d in defs)
-            if cal_view and cal_field and not _role_lock:
+            _own_role = bool(measure_view) and str(f_ref).split(".", 1)[0] == measure_view
+            if cal_field and not _role_lock and not _own_role and not cal_view and tied:
+                raise SemanticRefusal(
+                    f"Filter ngày '{f_ref}' cần gắn vào ngày của bảng '{measure_view}', nhưng bảng này có "
+                    f"nhiều vai trò ngày ngang nhau ({', '.join(sorted(tied))}) và không có Calendar chính "
+                    "— không xác định được filter áp lên ngày nào. Nối bảng với Calendar chính trong Data "
+                    "Model, hoặc lọc trên một vai trò ngày cụ thể.",
+                    SemanticRefusal.AMBIGUOUS_ROUTE,
+                )
+            if cal_view and cal_field and not _role_lock and not _own_role:
                 new_ref = f"{cal_view}.{cal_field}"
                 cleaned = []
                 for d in defs:
@@ -3064,20 +3178,29 @@ class SemanticQueryEngine:
         # membership through the relationship. Own-view filters stay a plain
         # predicate (byte-identical to before).
         if target_view and target_view != view_name:
+            # Correlated to the MEASURE's own rows: routes are walked from the
+            # measure's view, whatever the chart is based on.
+            _saved_root = getattr(self, "_filter_root", None)
+            self._filter_root = view_name
             try:
                 exists_sql = self._build_filter_exists_clause(
                     None, target_view, [pred], joined_nodes={view_name},
                 )
-            except AmbiguousJoinPathError:
-                # Two different routes reach the filter's view: the inline
-                # fallback would silently pick one. Refuse, like the WHERE path.
-                raise
-            except Exception:  # noqa: BLE001 — fall back to inline on any resolver error
-                exists_sql = None
+            finally:
+                self._filter_root = _saved_root
             if exists_sql:
                 return exists_sql
-            # EXISTS unavailable (unreachable view / nested CTE) → keep the
-            # legacy inline predicate so existing same-table cases are unchanged.
+            # No route the filter may travel from the measure's view. The old
+            # fallback emitted the predicate INLINE: it referenced the related
+            # view's alias in the outer query — a raw "missing FROM-clause"
+            # error, or, when the chart happened to join that view by another
+            # route, a filter meaning something else. Refused instead.
+            raise SemanticRefusal(
+                f"Measure filter trên '{field}' không áp được: bảng '{target_view}' không có quan hệ "
+                f"(lọc được) tới bảng của measure '{view_name}'. Thêm quan hệ trong Data Model hoặc sửa "
+                "filter của measure.",
+                SemanticRefusal.UNREACHABLE_VIEW,
+            )
         return pred
     
     def _render_pivoted_measure(
@@ -3554,68 +3677,99 @@ class SemanticQueryEngine:
             candidate_nodes = set(target_views)
         from app.services.semantic_join_resolver import _edge_signature, _route_label
 
-        def _choose_route(target_node: str):
-            """(path, None) when the model + the FROM chain so far determine ONE
-            route; (None, tied_routes) on a tie; (None, None) if unreachable.
+        def _nodes(path) -> set:
+            out = set()
+            for st in path.steps:
+                out.add(st.edge.from_node)
+                out.add(st.edge.to_node)
+            return out
 
-            Same rule as the filter EXISTS builder: a route through a node the
-            query already joined (the measure's own fact) is preferred — revenue
-            by the calendar goes through the fact being summed, not through a
-            sibling fact that also reaches the calendar. Only routes still tied
-            at the deepest such anchor are a real ambiguity."""
-            routes = resolver.distinct_routes(target_node)
+        def _tail_sig(steps) -> tuple:
+            return tuple(_edge_signature(st.edge) for st in steps)
+
+        def _routes_for(target_node: str):
+            """Every FORWARD chain (any length — two are two meanings) when the
+            target is a dimension of the base; else the shortest routes (a fact
+            reached in reverse under a dimension base)."""
+            fwd = resolver.forward_routes(target_node)
+            if fwd is None:
+                raise AmbiguousJoinPathError(target_node, ["(quá nhiều đường quan hệ — model cần alias)"])
+            fwd = [r for r in fwd if r.steps]
+            return fwd or resolver.distinct_routes(target_node)
+
+        def _decide(routes, required: set):
+            return self._pick_route(routes, required)
+
+        # Decided against EVERY node the query certainly joins — the base plus the
+        # route of each target that has only one — never against "whatever the
+        # names sorted before this one happened to join" (the order of view
+        # names decided a role diamond: customer + store + region took the
+        # customer's region because `customers` sorts before `stores`).
+        targets = sorted(candidate_nodes - joined_nodes)
+        chosen: dict = {}
+        tied: dict = {}
+        for target_node in targets:
+            routes = _routes_for(target_node)
             if not routes:
-                return None, None
+                # Phase-11: friendly Vietnamese message so DA hiểu cần thêm
+                # relationship. Tránh raw English engine identifier.
+                raise SemanticRefusal(
+                    f"Bảng \"{target_node}\" chưa có relationship tới base view "
+                    f"\"{explore.base_view_name}\". "
+                    f"Mở tab Data Model để định nghĩa join trước khi dùng field từ bảng này.",
+                    SemanticRefusal.UNREACHABLE_VIEW,
+                )
             if len(routes) == 1:
-                return routes[0], None
-
-            def _anchor(route) -> int:
-                idx = 0
-                for i, st in enumerate(route.steps):
-                    if st.edge.from_node in joined_nodes:
-                        idx = i
-                return idx
-
-            best = max(_anchor(r) for r in routes)
-            tails: dict = {}
-            for r in routes:
-                if _anchor(r) == best:
-                    tails.setdefault(tuple(_edge_signature(st.edge) for st in r.steps[best:]), r)
-            if len(tails) == 1:
-                return next(iter(tails.values())), None
-            return None, list(tails.values())
-
-        # Resolved in passes: a target still tied may become determined once
-        # another target has joined the node that disambiguates it (the order of
-        # the targets' NAMES must not decide the answer). A pass with no progress
-        # leaves only genuine ambiguity: refused (AmbiguousJoinPathError), never
-        # the first route.
-        pending = sorted(candidate_nodes - joined_nodes)
-        ties: dict = {}
-        while pending:
-            next_pending: list[str] = []
-            for target_node in pending:
-                if target_node in joined_nodes:
-                    continue
-                path, tied = _choose_route(target_node)
-                if tied:
-                    ties[target_node] = tied
-                    next_pending.append(target_node)
-                    continue
-                if path is None:
-                    # Phase-11: friendly Vietnamese message so DA hiểu cần thêm
-                    # relationship. Tránh raw English engine identifier.
-                    raise ValueError(
-                        f"Bảng \"{target_node}\" chưa có relationship tới base view "
-                        f"\"{explore.base_view_name}\". "
-                        f"Mở tab Data Model để định nghĩa join trước khi dùng field từ bảng này."
-                    )
-                ties.pop(target_node, None)
-                from_clause = self._append_route_joins(from_clause, path, joined_nodes)
-            if next_pending == pending:
-                first = next_pending[0]
-                raise AmbiguousJoinPathError(first, [_route_label(r) for r in ties[first]])
-            pending = next_pending
+                chosen[target_node] = routes[0]
+            else:
+                tied[target_node] = routes
+        required = set(joined_nodes)
+        for path in chosen.values():
+            required |= _nodes(path)
+        # A tie decided by another target's route widens `required` for the next
+        # pass; decisions of one pass use the same `required` (order-free).
+        decided_ties: list = []
+        while tied:
+            decided = {}
+            for target_node in sorted(tied):
+                path, _alt = _decide(tied[target_node], required)
+                if path is not None:
+                    decided[target_node] = path
+            if not decided:
+                break
+            for target_node, path in decided.items():
+                chosen[target_node] = path
+                decided_ties.append(target_node)
+                tied.pop(target_node)
+                required |= _nodes(path)
+        if tied:
+            first = sorted(tied)[0]
+            _p, alternatives = _decide(tied[first], required)
+            raise AmbiguousJoinPathError(first, [_route_label(r) for r in (alternatives or tied[first])])
+        # Every decision must still hold for the FINAL FROM chain: a route chosen
+        # before a later target joined its alternative's anchor is a tie.
+        for target_node in decided_ties:
+            path, alternatives = _decide(_routes_for(target_node), required)
+            if path is None or self._route_meaning(path, required) != self._route_meaning(chosen[target_node], required):
+                raise AmbiguousJoinPathError(
+                    target_node, [_route_label(r) for r in (alternatives or [path or chosen[target_node]])])
+        # One relationship per joined node: two chosen routes entering the same
+        # node through DIFFERENT relationships would give that alias two meanings
+        # (the FROM chain can join it only once) — refused, never first-wins.
+        entered_by: dict = {}
+        for target_node in sorted(chosen):
+            for st in chosen[target_node].steps:
+                sig = _edge_signature(st.edge)
+                prev = entered_by.setdefault(st.edge.to_node, (sig, chosen[target_node]))
+                if prev[0] != sig:
+                    raise AmbiguousJoinPathError(
+                        st.edge.to_node, [_route_label(prev[1]), _route_label(chosen[target_node])])
+        for target_node in sorted(chosen):
+            from_clause = self._append_route_joins(from_clause, chosen[target_node], joined_nodes)
+        plan = getattr(self, "query_plan", None)
+        if isinstance(plan, dict):
+            plan.setdefault("select_routes", {})[explore.base_view_name] = {
+                t: _route_label(chosen[t]) for t in sorted(chosen)}
 
         return from_clause, joined_nodes
 
@@ -3981,11 +4135,12 @@ class SemanticQueryEngine:
         # diagnostic. cross_filter='both' joins still synthesise reverse edges,
         # so legitimate bidirectional cross-fact filtering is preserved.
         _drop_gate_resolver = None
+        _gate_root = getattr(self, "_filter_root", None) or (explore.base_view_name if explore is not None else None)
         if self._model is not None and explore is not None:
             try:
                 from app.services.semantic_join_resolver import SemanticJoinResolver as _R2
                 _drop_gate_resolver = _R2(
-                    self.db, self._model, explore.base_view_name, bidirectional=False,
+                    self.db, self._model, _gate_root, bidirectional=False,
                 )
             except Exception:  # noqa: BLE001 — never block query build on resolver setup
                 _drop_gate_resolver = None
@@ -4131,7 +4286,7 @@ class SemanticQueryEngine:
                     if (
                         _drop_gate_resolver is not None
                         and explore is not None
-                        and view_name != explore.base_view_name
+                        and view_name != _gate_root
                     ):
                         try:
                             _strict_unreachable = not _drop_gate_resolver.resolve_paths(view_name)
@@ -4163,7 +4318,7 @@ class SemanticQueryEngine:
                             "reason": "unreachable_view",
                             "detail": (
                                 f"Filter view {view_name!r} has no single-direction "
-                                f"relationship path to base {explore.base_view_name!r}; "
+                                f"relationship path to base {_gate_root!r}; "
                                 f"ignored (PowerBI parity). Set cross_filter='both' on "
                                 f"the relationship to enable cross-fact propagation."
                             ),
@@ -4221,7 +4376,16 @@ class SemanticQueryEngine:
                     # expression for the requested calendar field. The
                     # base SQL already carries the right view alias + col
                     # name (matches Chart Explore's raw-column filter),
-                    # so we only add the calendar math on top.
+                    # so we only add the calendar math on top. An INSTANT under
+                    # a non-UTC calendar is first put on its LOCAL date — the
+                    # rule the calendar join and the time grains use — or a
+                    # near-midnight event is filtered into another day/year
+                    # than the one it is grouped into.
+                    _cal_tz = self._calendar_timezone()
+                    if _cal_tz and self._dimension_is_instant(field_ref):
+                        from app.services.dataset_calendar_service import local_date_sql
+
+                        field_sql = local_date_sql(field_sql, _cal_tz, (self.database_type or "").lower())
                     calendar_field_sql = _build_calendar_expr_from_base(
                         field_sql,
                         calendar_field_ref,
@@ -4561,7 +4725,7 @@ class SemanticQueryEngine:
         exists, or none anchors deeper than the base, the choice is identical to
         the prior ``resolve_path`` behaviour → no regression.
         """
-        resolver = self._resolver
+        resolver = self._filter_route_resolver()
         if resolver is None or not predicates:
             return None
 
@@ -4570,8 +4734,8 @@ class SemanticQueryEngine:
         def _anchor_idx(p) -> int:
             """Deepest index on ``p.steps`` whose hop SOURCE is already joined.
 
-            ``p.steps`` runs base→…→target; ``step.edge.from_node`` is the
-            closer-to-base side of each hop. The highest such index is the most
+            ``p.steps`` runs root→…→target; ``step.edge.from_node`` is the
+            closer-to-root side of each hop. The highest such index is the most
             specific (closest-to-target) correlation anchor available on ``p``.
             """
             idx = 0
@@ -4580,68 +4744,53 @@ class SemanticQueryEngine:
                     idx = i
             return idx
 
-        # Enumerate every equal-length shortest path and prefer the one with the
-        # deepest joined anchor. resolve_paths' first entry == resolve_path, so
-        # the single-path / no-deeper-anchor cases stay byte-identical to before.
-        # One representative per ROUTE (forward/reverse edges of the same
-        # relationship are one route, not an ambiguity).
-        candidate_paths = [p for p in (resolver.distinct_routes(target_node) or []) if p and p.steps]
-        if not candidate_paths:
-            single = resolver.resolve_path(target_node)
-            candidate_paths = [single] if (single and single.steps) else []
-        if not candidate_paths:
-            return None
-        # The query context disambiguates by ANCHOR DEPTH: a route through a
-        # view already in the FROM chain (the measure's own fact) scopes the
-        # filter to the measure's grain. What a tie at the best depth means is
-        # decided below (role ambiguity → refuse; shared-dim propagation → AND).
-        best_idx = max(_anchor_idx(c) for c in candidate_paths)
-        from app.services.semantic_join_resolver import (
-            AmbiguousJoinPathError, _edge_signature, _route_label,
-        )
-        # Routes that differ only BEFORE the anchor emit the same EXISTS body.
-        best: list = []
-        _seen_tails: set = set()
-        for c in candidate_paths:
-            if _anchor_idx(c) != best_idx:
-                continue
-            tail = tuple(_edge_signature(s.edge) for s in c.steps[best_idx:])
-            if tail in _seen_tails:
-                continue
-            _seen_tails.add(tail)
-            best.append(c)
-        # Two kinds of tie, with different answers:
-        #   * ROLE ambiguity — every tied route is a forward M:1 chain (sales →
-        #     customers → regions vs sales → stores → regions). Each route maps a
-        #     fact row to ONE member, and the two are different meanings
-        #     ("customer's region" vs "store's region"); their intersection is
-        #     neither. Refused.
-        #   * PROPAGATION through shared conformed dims — each tied route crosses
-        #     into another table through a 1:N hop (revenue → date ← deal and
-        #     revenue → owner ← deal, filtered on deal). A filter on the other
-        #     table restricts EACH shared dim, and the fact is filtered by all of
-        #     them: one EXISTS per route, AND-ed (golden G09–G11). Only when
-        #     anchored at the base; a deeper anchor scopes one measure's grain.
-        _fanning = (
-            lambda c: any(
-                canonical_cardinality(getattr(s.edge, "cardinality", None)) in ("one_to_many", "many_to_many")
-                for s in c.steps[best_idx:]
-            )
-        )
-        _propagation_tie = len(best) > 1 and best_idx == 0 and all(_fanning(c) for c in best)
-        if len(best) > 1 and not _propagation_tie:
-            raise AmbiguousJoinPathError(target_node, [_route_label(c) for c in best])
-        path, start_idx = best[0], best_idx
-        sub_steps = path.steps[start_idx:]
-        if not sub_steps:
-            return None
+        from app.services.semantic_join_resolver import _edge_signature, _route_label
 
-        # Lazy import to avoid a cross-module top-level cycle.
-        from app.services.dataset_model_service import relation_has_nested_cte
+        # FORWARD — the filter is on a dimension that describes a row the query
+        # already has: walked from the BASE first (the same chain the SELECT
+        # would use, so a filtered view means what a grouped one shows), then
+        # from the measure's fact when it is joined under another base. The
+        # picking rule is the FROM builder's (_pick_route): the meaning anchored
+        # closest to the target wins; a competing meaning is refused.
+        base_resolver = self._resolver
+        routes = None
+        for r in ([base_resolver] + ([resolver] if resolver is not base_resolver else [])):
+            fwd = r.forward_routes(target_node)
+            if fwd is None:
+                raise AmbiguousJoinPathError(target_node, ["(quá nhiều đường quan hệ — model cần alias)"])
+            fwd = [p for p in fwd if p.steps]
+            if fwd:
+                path, tied = self._pick_route(fwd, jn)
+                if path is None:
+                    raise AmbiguousJoinPathError(target_node, [_route_label(c) for c in tied])
+                routes = [path]
+                break
+        if routes is None:
+            # PROPAGATION — the view is another table reached through a 1:N hop
+            # (revenue → date ← deals and revenue → owner ← deals, filtered on
+            # deals): walked from the FACT grain, only over hops a filter may
+            # travel (toward a many side only when the relationship filters both
+            # ways; the bidirectional walk is never a filter path). The other
+            # table's filter restricts EACH shared dimension and the fact is
+            # filtered by all of them: one EXISTS per valid route, AND-ed,
+            # whatever the chart groups by.
+            candidate_paths = [p for p in (resolver.distinct_routes(target_node) or []) if p and p.steps]
+            valid = [c for c in candidate_paths
+                     if all(edge_propagates(s.edge) for s in c.steps[_anchor_idx(c):])]
+            if not valid:
+                return None
+            routes, _seen = [], set()
+            for c in valid:
+                tail = tuple(_edge_signature(s.edge) for s in c.steps[_anchor_idx(c):])
+                if tail not in _seen:
+                    _seen.add(tail)
+                    routes.append(c)
 
         def _emit(steps) -> str | None:
-            """Build one ``EXISTS (...)`` for a base→target sub-path; None if a
-            hop's relation can't be safely embedded (unknown view / nested CTE)."""
+            """Build one ``EXISTS (...)`` for a root→target sub-path; None if a
+            hop's view is unknown or has no join condition. (Nested-CTE sources
+            are embedded like any relation: BigQuery, Postgres, MySQL and DuckDB
+            all accept them inside a correlated EXISTS — verified on BigQuery.)"""
             pieces: list[str] = []
             correlation: str | None = None
             for idx, step in enumerate(steps):
@@ -4651,19 +4800,6 @@ class SemanticQueryEngine:
                 except ValueError:
                     return None
                 relation = self._snapshot_ref_for_view(join_view) or self._relation_sql_for_view(join_view) or edge.to_view
-                # Phase-B' — bail ONLY when a hop's relation embeds a *nested* CTE
-                # (the user's production case: `WITH a AS (WITH b AS (...))`
-                # wrapped as `(SELECT * FROM (WITH a AS (WITH b AS (...))) AS _src)`.
-                # BigQuery rejects THAT as `Syntax error: Unexpected keyword SELECT`.
-                # Single-level CTE wraps are BQ-safe (see relation_has_nested_cte).
-                if relation_has_nested_cte(relation):
-                    self.warnings.append(
-                        f"Filter on '{target_node}' dropped — view "
-                        f"'{edge.to_node}' is backed by a nested-CTE source_query "
-                        f"that cannot be safely embedded in an EXISTS subquery on "
-                        f"BigQuery. Refactor the source_query to a single-level CTE."
-                    )
-                    return None
                 condition = self._render_edge_join_condition(edge)
                 if not condition:
                     return None
@@ -4675,14 +4811,17 @@ class SemanticQueryEngine:
             body_where = [correlation, *predicates] if correlation else list(predicates)
             return "EXISTS (SELECT 1 " + " ".join(pieces) + " WHERE " + " AND ".join(body_where) + ")"
 
-        if _propagation_tie:
-            clauses = [_emit(c.steps) for c in best]
-            if any(c is None for c in clauses):
+        self._record_filter_routes(target_node, routes)
+        clauses = [_emit(c.steps[_anchor_idx(c):]) for c in routes]
+        if any(c is None for c in clauses):
+            if len(clauses) > 1:
                 # Dropping one route would filter through the others only — a
                 # narrower answer than the model means. Refuse instead.
-                raise AmbiguousJoinPathError(target_node, [_route_label(c) for c in best])
-            return "(" + " AND ".join(clauses) + ")"
-        return _emit(sub_steps)
+                raise AmbiguousJoinPathError(target_node, [_route_label(c) for c in routes])
+            return None
+        if len(clauses) == 1:
+            return clauses[0]
+        return "(" + " AND ".join(clauses) + ")"
     
     # ── Phase-B' (PBI-parity rework) — WHERE/HAVING split ─────────────
     #
@@ -4696,6 +4835,95 @@ class SemanticQueryEngine:
     # to WHERE (where it either no-op'd or returned wrong rows pre-agg).
     #
     # See docs/filter-semantics.md §4 for the spec.
+    @staticmethod
+    def _route_anchor(route, joined: set) -> int:
+        """Index of the deepest step whose SOURCE the query already joins."""
+        idx = 0
+        for i, st in enumerate(route.steps):
+            if st.edge.from_node in joined:
+                idx = i
+        return idx
+
+    @classmethod
+    def _route_meaning(cls, route, joined: set) -> tuple:
+        """The relationships a route takes FROM the nearest node the query joins
+        — what it means; the part before is the query's own FROM chain."""
+        from app.services.semantic_join_resolver import _edge_signature
+
+        return tuple(_edge_signature(st.edge) for st in route.steps[cls._route_anchor(route, joined):])
+
+    @classmethod
+    def _pick_route(cls, routes, joined: set):
+        """(route, None) when the query's context determines ONE meaning, else
+        (None, the competing routes). The one rule of the FROM builder and the
+        filter EXISTS builder:
+
+        * a route's meaning is its relationships from the NEAREST node the query
+          joins (the anchor) — grouped by customer, "region" is the customer's;
+        * the meaning anchored closest to the target wins; an equally close one
+          through other relationships, or a longer chain from the SAME anchor
+          (the sale's own region vs the customer's region, both from the sale),
+          is a second meaning → refused, never shortest-wins or first-wins;
+        * routes with one meaning: the one whose prefix the query already joins
+          (deterministic otherwise)."""
+        from app.services.semantic_join_resolver import _route_label
+
+        routes = [r for r in routes if r is not None]
+        if not routes:
+            return None, None
+        if any(not r.steps for r in routes):
+            return next(r for r in routes if not r.steps), None
+        info = []
+        for r in routes:
+            a = cls._route_anchor(r, joined)
+            info.append((r, a, len(r.steps) - a, r.steps[a].edge.from_node))
+        best_len = min(t for _r, _a, t, _n in info)
+        best_nodes = {n for _r, _a, t, n in info if t == best_len}
+        competing = [r for r, _a, t, n in info if t == best_len or n in best_nodes]
+        meanings: dict = {}
+        for r in competing:
+            meanings.setdefault(cls._route_meaning(r, joined), []).append(r)
+        if len(meanings) == 1:
+            group = next(iter(meanings.values()))
+            group.sort(key=lambda r: (
+                not all(st.edge.to_node in joined for st in r.steps[:cls._route_anchor(r, joined)]),
+                _route_label(r)))
+            return group[0], None
+        return None, [sorted(g, key=_route_label)[0] for g in meanings.values()]
+
+    def _filter_route_resolver(self):
+        """The resolver filter routes are walked with: rooted at the query's
+        fact grain (``_filter_root``), the base resolver when that IS the base."""
+        base = self._resolver
+        root = getattr(self, "_filter_root", None)
+        if base is None or not root or root == base.base_node:
+            return base
+        cache = getattr(self, "_filter_resolver_cache", None)
+        if cache is None:
+            cache = self._filter_resolver_cache = {}
+        key = (getattr(self._model, "id", None), root)
+        if key not in cache:
+            cache[key] = SemanticJoinResolver(self.db, self._model, root, bidirectional=True)
+        return cache[key]
+
+    def _plan_note(self, **items) -> None:
+        """Record a planning decision on the query plan (observable before any
+        SQL runs: fact grains, strategy, routes, calendar role). The first note
+        of a key wins — the top-level query's, not a nested sub-query's."""
+        plan = getattr(self, "query_plan", None)
+        if not isinstance(plan, dict):
+            plan = self.query_plan = {}
+        for key, value in items.items():
+            plan.setdefault(key, value)
+
+    def _record_filter_routes(self, target_node: str, routes) -> None:
+        from app.services.semantic_join_resolver import _route_label
+
+        plan = getattr(self, "query_plan", None)
+        if not isinstance(plan, dict):
+            plan = self.query_plan = {}
+        plan.setdefault("filter_routes", {})[target_node] = sorted(_route_label(r) for r in routes)
+
     def _split_filters_by_role(
         self,
         filters: Dict[str, Any],
@@ -4940,25 +5168,37 @@ class SemanticQueryEngine:
         self,
         sorts: List[Dict[str, str]],
         measures: List[str],
-        top_n: Optional[Dict[str, Any]]
+        top_n: Optional[Dict[str, Any]],
+        group_dims: Optional[List[str]] = None,
     ) -> str:
-        """Build ORDER BY clause"""
-        # If top_n specified, use it for ordering. NULLs never rank as "top".
+        """Build ORDER BY clause — the same rule as the multi-fact stitch, so a
+        Top-N / sort + LIMIT keeps the same rows whichever strategy answers:
+
+        * NULLs never rank first (NULLS LAST on every dialect — Postgres puts
+          them FIRST under DESC and BigQuery under ASC, so "the top 2" used to
+          start with the group that has no value on one dialect only);
+        * the group dimensions follow as a tie-break, so equal values never
+          leave WHICH row survives the LIMIT to the physical row order."""
+        tie_breaks = [self._safe_alias(d) for d in (group_dims or [])]
         if top_n:
-            field = top_n['field']
-            alias = self._safe_alias(field)
-            return f"ORDER BY {self._order_term(alias, 'DESC', nulls_last=True)}"
-        
+            alias = self._safe_alias(top_n['field'])
+            parts = [self._order_term(alias, 'DESC', nulls_last=True)]
+            parts += [self._order_term(a, 'ASC', nulls_last=True) for a in tie_breaks if a != alias]
+            return "ORDER BY " + ", ".join(parts)
+
         # Use explicit sorts
         if sorts:
             order_parts = []
+            used: set = set()
             for sort in sorts:
                 field = sort.get('field')
-                direction = sort.get('direction', 'asc').upper()
+                direction = "DESC" if str(sort.get('direction') or 'asc').upper() == "DESC" else "ASC"
                 alias = self._safe_alias(field)
-                order_parts.append(f"{alias} {direction}")
+                order_parts.append(self._order_term(alias, direction, nulls_last=True))
+                used.add(alias)
+            order_parts += [self._order_term(a, 'ASC', nulls_last=True) for a in tie_breaks if a not in used]
             return "ORDER BY " + ", ".join(order_parts)
-        
+
         return ""
     
     def _parse_field_ref(self, field_ref: str) -> Tuple[str, str]:
@@ -5123,12 +5363,13 @@ class SemanticQueryEngine:
             safe = self._m1_reachable_views(fact) | {fact}
             unsafe = sorted(v for v in group_views if v not in safe)
             if unsafe:
-                raise ValueError(
+                raise SemanticRefusal(
                     f"Measure trên bảng '{fact}' không thể nhóm/pivot theo "
                     f"dimension {unsafe} (không có đường M:1 — JOIN sẽ fan-out, "
                     f"ra số sai). Các chiều này thuộc bảng fact khác / chỉ nối "
                     f"qua shared dim (chasm). Đổi chiều, thêm quan hệ M:1 trong "
-                    f"Data Model, hoặc bỏ measure khỏi chart."
+                    f"Data Model, hoặc bỏ measure khỏi chart.",
+                    SemanticRefusal.UNRELATED_GRAIN,
                 )
 
     def _validate_dims_only_grain(self, base_view_name, dimensions, pivots) -> None:
@@ -5154,13 +5395,14 @@ class SemanticQueryEngine:
         safe = self._m1_reachable_views(base_view_name) | {base_view_name}
         unsafe = sorted(v for v in group_views if v not in safe)
         if unsafe:
-            raise ValueError(
+            raise SemanticRefusal(
                 f"Các cột {unsafe} thuộc bảng fact khác — không có đường M:1 từ "
                 f"bảng gốc '{base_view_name}'. Ghép cột từ nhiều bảng fact vào MỘT "
                 f"bảng/list (không có measure) sẽ JOIN chéo qua shared dim (chasm) "
                 f"→ nhân dòng (fan-out), ra số/hàng sai. Hãy: thêm measure để engine "
                 f"tách theo từng fact, tách thành nhiều chart, hoặc chỉ chọn cột từ "
-                f"MỘT bảng fact + các bảng dim của nó."
+                f"MỘT bảng fact + các bảng dim của nó.",
+                SemanticRefusal.FANOUT_RISK,
             )
 
     def _non_fanning_adjacency(self) -> dict[str, set[str]]:

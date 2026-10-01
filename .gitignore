@@ -402,3 +402,4 @@ backend/_verify_gate.db
 !backend/tests/test_public_authoritative_bounds_pg.py
 !backend/tests/test_publish_candidate_generation.py
 !backend/tests/test_pair1_baseline_parity.py
+!backend/tests/test_pair2_golden_topology_pg.py

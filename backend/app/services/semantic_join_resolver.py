@@ -116,6 +116,30 @@ class JoinEdge:
     # The FULL key ((from_col, to_col), ...) from the relationship contract —
     # from_column/to_column above are only its first pair.
     key_pairs: tuple = ()
+    # The RELATIONSHIP's cross_filter as authored. A synthetic reverse edge
+    # carries cross_filter="both" so the walk can use it, but whether a FILTER
+    # may travel it is the relationship's own setting (see edge_propagates).
+    # Empty → the edge's cross_filter.
+    rel_cross_filter: str = ""
+
+
+def edge_propagates(edge: "JoinEdge") -> bool:
+    """May a filter on ``edge.to_node`` restrict ``edge.from_node``'s rows?
+
+    Walking toward the ONE side (many-to-one, one-to-one) — always: a filter on
+    a dimension restricts the fact it describes. Walking toward a MANY side
+    (the reverse of a many-to-one, a one-to-many, a many-to-many) — only when
+    the relationship filters both ways (cross_filter "both"). A reverse edge
+    the resolver adds in bidirectional mode is a WALK, never a filter path."""
+    card = canonical_cardinality(getattr(edge, "cardinality", None))
+    if card in ("many_to_one", "one_to_one"):
+        return True
+    if card == "many_to_many" and not getattr(edge, "is_reverse", False):
+        # A many-to-many walked as DRAWN filters like a many-to-one: its far
+        # side restricts its near side (single direction is the recommended
+        # M:N setting). Walked in reverse it needs "both", like any 1:N walk.
+        return True
+    return (getattr(edge, "rel_cross_filter", "") or getattr(edge, "cross_filter", "")) == "both"
 
 
 # Canonical cardinality vocabulary + alias map (kept in this module so both
@@ -162,12 +186,36 @@ def invert_cardinality(c: str | None) -> str | None:
     return _INVERT_CARDINALITY.get(canon) if canon else None
 
 
-class AmbiguousJoinPathError(ValueError):
+class SemanticRefusal(ValueError):
+    """A query the semantic planner refuses ON PURPOSE, with a machine-readable
+    ``category`` (the message stays the user-facing, localized text — a
+    ValueError, HTTP 400). Tests and callers identify the semantic failure by
+    ``category``, never by matching the message or a warehouse error."""
+
+    AMBIGUOUS_ROUTE = "AMBIGUOUS_ROUTE"          # two routes / date roles, different meanings
+    UNRELATED_GRAIN = "UNRELATED_GRAIN"          # a dimension with no many-to-one path from a measure's fact
+    FANOUT_RISK = "FANOUT_RISK"                  # the only way to answer would multiply rows
+    UNSUPPORTED_CONTEXT = "UNSUPPORTED_CONTEXT"  # a context the engine cannot evaluate correctly
+    UNREACHABLE_VIEW = "UNREACHABLE_VIEW"        # no relationship path to a view the request needs
+    INVALID_RELATIONSHIP = "INVALID_RELATIONSHIP"
+    UNVERIFIABLE_KEY = "UNVERIFIABLE_KEY"
+
+    category = "REFUSED"
+
+    def __init__(self, message: str, category: str | None = None):
+        super().__init__(message)
+        if category:
+            self.category = category
+
+
+class AmbiguousJoinPathError(SemanticRefusal):
     """Two or more equally short join routes with DIFFERENT meaning reach the
     same target (e.g. sales→customers→regions vs sales→stores→regions). Picking
     one would make the number depend on which relationship was created first,
     so the query is refused until the model disambiguates (an inactive
     relationship or an aliased role-played join)."""
+
+    category = SemanticRefusal.AMBIGUOUS_ROUTE
 
     def __init__(self, target: str, routes: list[str]):
         self.target = target
@@ -499,9 +547,10 @@ def raise_for_invalid_relationships(resolver) -> None:
         return
     items = "; ".join(f"{b['from_view']} → {b['join']}: {', '.join(b['reasons'])}" for b in bad[:6])
     more = f" (và {len(bad) - 6} quan hệ khác)" if len(bad) > 6 else ""
-    raise ValueError(
+    raise SemanticRefusal(
         f"Model có quan hệ không hợp lệ nên truy vấn bị từ chối: {items}{more}. "
-        "Sửa hoặc xoá các quan hệ này trong Data Model."
+        "Sửa hoặc xoá các quan hệ này trong Data Model.",
+        SemanticRefusal.INVALID_RELATIONSHIP,
     )
 
 def _route_signature(path: "JoinPath") -> tuple:
@@ -692,6 +741,7 @@ class SemanticJoinResolver:
                         cross_filter="both",
                         cardinality=inv,
                         is_reverse=True,
+                        rel_cross_filter=edge.cross_filter,
                     )
                     self._adj.setdefault(reverse.from_node, []).append(reverse)
                     self._node_to_view.setdefault(reverse.to_node, reverse.to_view)
@@ -864,6 +914,55 @@ class SemanticJoinResolver:
             )
             for seq in routes
         ]
+
+    def forward_routes(self, target_node: str, *, max_depth: int = 8, cap: int = 64) -> list[JoinPath] | None:
+        """EVERY route from the base to ``target_node`` that walks only toward
+        one sides (many-to-one / one-to-one hops: each maps a base row to at
+        most one target row) — distinct relationship chains of ANY length, not
+        just the shortest, sorted (order-free). Two of them are two meanings of
+        the target ("the sale's region" vs "the customer's region"); whether the
+        query's context selects one is the caller's rule. ``None`` when more
+        than ``cap`` exist (the caller refuses rather than truncating)."""
+        if target_node == self._base_node:
+            return [JoinPath(target_node=target_node, steps=[])]
+        found: list[list[JoinEdge]] = []
+        seen: set = set()
+        overflow = False
+
+        def _dfs(node: str, acc: list, visited: set) -> None:
+            nonlocal overflow
+            if overflow:
+                return
+            if node == target_node:
+                sig = tuple(_edge_signature(e) for e in acc)
+                if sig not in seen:
+                    seen.add(sig)
+                    found.append(list(acc))
+                    overflow = len(found) > cap
+                return
+            if len(acc) >= max_depth:
+                return
+            for edge in self._adj.get(node, []):
+                if canonical_cardinality(edge.cardinality) not in ("many_to_one", "one_to_one"):
+                    continue
+                if edge.to_node in visited:
+                    continue
+                acc.append(edge)
+                visited.add(edge.to_node)
+                _dfs(edge.to_node, acc, visited)
+                visited.discard(edge.to_node)
+                acc.pop()
+
+        _dfs(self._base_node, [], {self._base_node})
+        if overflow:
+            return None
+        paths = [
+            JoinPath(target_node=target_node,
+                     steps=[JoinStep(edge=e, alias_sql=f"_appbi_sem_join_{i}") for i, e in enumerate(seq)],
+                     ambiguous=len(found) > 1)
+            for seq in found
+        ]
+        return sorted(paths, key=lambda pth: (len(pth.steps), _route_label(pth)))
 
     def resolve_unique_path(self, target_node: str) -> JoinPath | None:
         """The single shortest path to ``target_node``, or ``None`` when it is

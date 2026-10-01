@@ -222,7 +222,11 @@ def _run_engine(world, model, base, dims, measures, filters, kwargs, overrides=N
             snapshot_overrides=overrides, **kwargs,
         )
     except ValueError as exc:
-        return {"refused": type(exc).__name__}
+        # Pair #2 gave the planner's refusals a category (SemanticRefusal, still
+        # a ValueError). The pre-Pair-1 baseline recorded them as plain
+        # ValueError: the refusal is the same; its class name is not the oracle.
+        name = type(exc).__name__
+        return {"refused": "ValueError" if name == "SemanticRefusal" else name}
     ordered = bool(kwargs.get("sorts") or kwargs.get("top_n"))
     return {"rows": _rows(conn.execute(sa.text(sql)), ordered)}
 

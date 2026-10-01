@@ -291,8 +291,15 @@ def test_a_modeled_table_with_an_empty_binding_is_rehydrated_not_sent_live(db):
 
 
 @pytest.fixture()
-def live_world(monkeypatch):
-    """customers (base) ← orders → products, customers ← tickets → products."""
+def live_world(monkeypatch, request):
+    """customers (base) ← orders → products, customers ← tickets → products.
+
+    orders → customers and tickets → customers filter BOTH ways: a filter on a
+    fact restricts the customers base only through a relationship that says
+    so (Pair #2 — the live path follows the engine's route rule; a
+    single-direction relationship is a walk, never a filter path). A test asks
+    for single-direction ones with `parametrize("live_world", ["single"], indirect=True)`."""
+    cross = getattr(request, "param", "both")
     engine = create_engine("sqlite://", future=True)
     Base.metadata.create_all(engine, tables=[
         Dataset.__table__, DatasetTable.__table__,
@@ -308,7 +315,8 @@ def live_world(monkeypatch):
                                dimensions=dims(*cols), measures=[]))
         s.add(SemanticModel(id=9, name="live", dataset_id=9))
         j = lambda v, fc: {"name": v, "view": v, "type": "left", "sql_on": "", "from_column": fc,  # noqa: E731
-                           "to_column": "id", "relationship": "many_to_one", "cardinality": "many_to_one"}
+                           "to_column": "id", "relationship": "many_to_one", "cardinality": "many_to_one",
+                           "cross_filter": cross if v == "customers" else "single"}
         s.add(SemanticExplore(id=91, name="orders", model_id=9, base_view_id=92, base_view_name="orders",
                               joins=[j("customers", "customer_id"), j("products", "product_id")]))
         s.add(SemanticExplore(id=92, name="tickets", model_id=9, base_view_id=93, base_view_name="tickets",
@@ -344,13 +352,26 @@ def _live_ids(live_world, filters):
         {"semanticBinding": {"baseViewName": "customers", "modelId": 9}}, filters,
     )
     where = _build_where_clause(eff, "duckdb")
-    return [r[0] for r in con.execute(f"SELECT id FROM ({sql}) AS t WHERE {where} ORDER BY id").fetchall()]
+    # no enrichment (no related filter reached the base) → the base relation, as production does
+    relation = sql or "SELECT * FROM customers"
+    return [r[0] for r in con.execute(
+        f"SELECT id FROM ({relation}) AS t" + (f" WHERE {where}" if where else "") + " ORDER BY id").fetchall()]
 
 
 def test_two_filters_on_one_related_view_must_hold_on_the_same_related_row(live_world):
     f = lambda fld, v: {"field": f"orders.{fld}", "semanticField": f"orders.{fld}", "operator": "eq", "value": v}  # noqa: E731
     # customer 1 has a returned order (web) and a shop order — but no returned shop order.
     assert _live_ids(live_world, [f("status", "returned"), f("channel", "shop")]) == [2]
+
+
+@pytest.mark.parametrize("live_world", ["single"], indirect=True)
+def test_a_single_direction_relationship_never_carries_a_filter_on_the_live_path(live_world):
+    """Pair #2 (H2-06): the live adapter walked a bidirectional resolver, so a
+    filter on orders restricted the customers base through a SINGLE-direction
+    orders → customers relationship — while the engine (same request) ignored
+    it. Both now follow one rule: the filter does not reach the base."""
+    f = lambda fld, v: {"field": f"orders.{fld}", "semanticField": f"orders.{fld}", "operator": "eq", "value": v}  # noqa: E731
+    assert _live_ids(live_world, [f("status", "returned")]) == [1, 2, 3]
 
 
 def test_a_filter_reaching_the_base_through_two_facts_applies_both_routes(live_world):

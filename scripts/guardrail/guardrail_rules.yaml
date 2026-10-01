@@ -193,7 +193,7 @@ protected:
     required_tests: [measure_render, dialect_structural, semantic_state_contracts, filter_matrix,
                      golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity,
                      relationship_contract, relationship_contract_pg, pair1_baseline_parity,
-                     public_authoritative_bounds]
+                     public_authoritative_bounds, pair2_golden_topology]
 
   - id: public_link_security
     label: "Public-link filter merge / access (data-exposure surface)"
@@ -591,6 +591,10 @@ tests:
   publish_candidate_generation:
     run: "pytest backend/tests/test_publish_candidate_generation.py"
     locks: "Sync & Publish validates the relationship keys of the CANDIDATE generation's snapshot tables on their host (not the live source): a candidate built from duplicated data does not publish even when the live source was repaired, the previously published generation stays pinned, a clean published snapshot stays valid when the live source later decays, mixed-source tables are judged on the host, and every health result says what it checked (live_source / candidate_generation / published_generation + generation)"
+  pair2_golden_topology:
+    requires: postgres
+    run: "pytest backend/tests/test_pair2_golden_topology_pg.py"
+    locks: "resolver ↔ engine: one semantic request has one business interpretation — hand-computed values for star, snowflake, role diamond (customer+store+region refused, never the name-order pick), chasm, galaxy (a filter on another fact restricts through EVERY valid shared dimension, AND-ed, whatever the grouping; a single-direction relationship never carries a filter), three facts (a filter on one fact never leaks into another), role-playing dates (a tied date role is refused, never candidate[0]; an own-role filter keeps its role), composite key, M:N bridge, NULL keys, ties (Top-N / sort + LIMIT break ties by the group value, NULLs last); executed on Postgres and DuckDB; every case re-asked under relationship/explore/measure/dimension/filter order permutations, node-set order and a fresh graph gives the same rows or the same refusal category; a relationship edit changes the next query's route; the query plan names the strategy and the filter routes"
   pair1_baseline_parity:
     requires: postgres-fixture
     run: "pytest backend/tests/test_pair1_baseline_parity.py"
@@ -912,11 +916,11 @@ semantic_contract:
     - "backend/app/services/relationship_key_guard.py"
   files:
     backend/app/services/semantic_query_engine.py:
-      symbols: [SemanticQueryEngine, generate_sql, _render_measure, _build_filter_exists_clause, _render_symmetric_aggregate, _build_isolated_measure_subquery, _build_dimensioned_multifact_sql, _validate_group_grain, _coerce_typed_filter_value, _filter_type_family, _render_dimension_with_time_grain, _filter_targets_measure, _aggregate_predicate, _best_calendar_dim_candidates, _collapse_fanned_calendar_filters, _view_is_generated_calendar, _record_key_probe, key_probes]
+      symbols: [SemanticQueryEngine, generate_sql, _render_measure, _build_filter_exists_clause, _render_symmetric_aggregate, _build_isolated_measure_subquery, _build_dimensioned_multifact_sql, _validate_group_grain, _coerce_typed_filter_value, _filter_type_family, _render_dimension_with_time_grain, _filter_targets_measure, _aggregate_predicate, _best_calendar_dim_candidates, _collapse_fanned_calendar_filters, _view_is_generated_calendar, _record_key_probe, key_probes, _filter_route_resolver, _calendar_tie, _rebind_calendar_filters, _fact_own_calendar_view, _build_order_by_clause, _pick_route]
     backend/app/services/dataset_model_service.py:
       symbols: [get_distinct_field_values, _build_distinct_sql, _emit_exists_for_single_path, _build_exists_for_path, _distinct_filter_targets_self, validate_direct_explore_joins, dangling_model_references, lock_dataset_model_for_write, cache_column_names, add_join, remove_join, _remove_replaced_relationship, _tombstone_auto_key_joins, replace_explore_joins]
     backend/app/services/semantic_join_resolver.py:
-      symbols: [SemanticJoinResolver, resolve_path, resolve_paths, resolve_unique_path, distinct_routes, AmbiguousJoinPathError, canonical_cardinality, JoinContract, read_join_contract, join_is_usable, raise_for_invalid_relationships]
+      symbols: [SemanticJoinResolver, resolve_path, resolve_paths, resolve_unique_path, distinct_routes, AmbiguousJoinPathError, canonical_cardinality, JoinContract, read_join_contract, join_is_usable, raise_for_invalid_relationships, SemanticRefusal, edge_propagates, forward_routes]
     backend/app/services/dataset_calendar_service.py:
       symbols: [build_calendar_live_sql, is_generated_calendar_table, local_date_sql, is_instant_column]
     backend/app/services/type_override_service.py:

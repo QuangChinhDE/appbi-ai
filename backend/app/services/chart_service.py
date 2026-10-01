@@ -1559,6 +1559,23 @@ def _build_live_semi_join(
     )
 
 
+def _drop_unapplied_related_filters(filters: list, base_view_name: str) -> list:
+    """The filters a live chart can still apply itself: a filter on a RELATED
+    view the adapter could not route is not handed back — the base WHERE
+    builder would render it as a column the base does not have (an error on
+    Postgres; on DuckDB — Sheets / manual tables — an unknown double-quoted
+    name is a string literal: the predicate was FALSE and the chart came back
+    EMPTY, silently). An authoritative one is refused."""
+    kept = []
+    for f in filters or []:
+        ref = str((f or {}).get("semanticField") or (f or {}).get("fieldKey") or "").strip()
+        if ref and "." in ref and ref.split(".", 1)[0] != base_view_name:
+            refuse_unapplied_authoritative(f, "unreachable_view")
+            continue
+        kept.append(f)
+    return kept
+
+
 def _adapt_live_sql_for_semantic_filters(
     db: Session,
     datasource,
@@ -1627,7 +1644,8 @@ def _adapt_live_sql_for_semantic_filters(
         base_sql = resolve_dataset_table_relation(datasource, db_table).sql
     except Exception:
         logger.debug("Failed to build base live SQL for semantic runtime filters", exc_info=True)
-        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+        return None, _normalize_runtime_filters_for_chart(
+            chart_config, _drop_unapplied_related_filters(normalized_filters, base_view_name))
 
     # Track materialized join steps. Key = (from_alias_sql, to_node) so that
     # a path of length N spawns N JOINs but two filters that share a prefix
@@ -1702,22 +1720,38 @@ def _adapt_live_sql_for_semantic_filters(
             continue
 
         # Route choice — the SAME rule as the engine's filter EXISTS builder:
-        #   * one route → use it;
-        #   * several routes that each cross a 1:N hop (a filter on another fact
-        #     reaching this one through shared conformed dims) → every route is
-        #     applied, AND-ed, each as its own semi-join from the base;
-        #   * several forward to-one routes (a diamond: two meanings) → refused.
-        routes = resolver.distinct_routes(target_node)
+        #   * only routes a filter may travel: every hop toward a one side, or
+        #     toward a many side through a relationship that filters both ways
+        #     (the bidirectional walk is never a filter path — a single-direction
+        #     fact → dimension relationship does not filter the dimension);
+        #   * a forward to-one route (a dimension of the base) wins; two of them
+        #     (a diamond: two meanings) → refused;
+        #   * otherwise several routes that each cross a 1:N hop (a filter on
+        #     another fact reaching this one through shared conformed dims) →
+        #     every route is applied, AND-ed, each as its own semi-join.
+        from app.services.semantic_join_resolver import AmbiguousJoinPathError, _route_label, edge_propagates
+        from app.services.semantic_query_engine import SemanticQueryEngine
+
+        forward = resolver.forward_routes(target_node)
+        if forward is None:
+            raise AmbiguousJoinPathError(target_node, ["(quá nhiều đường quan hệ — model cần alias)"])
+        forward = [r for r in forward if r.steps]
+        if forward:
+            # a dimension of the base: every forward chain is a meaning; two of
+            # them (the sale's own region vs the customer's) → refused
+            only, tied = SemanticQueryEngine._pick_route(forward, {base_view_name})
+            if only is None:
+                raise AmbiguousJoinPathError(target_node, [_route_label(r) for r in tied])
+            routes = [only]
+        else:
+            routes = [r for r in resolver.distinct_routes(target_node)
+                      if all(edge_propagates(st.edge) for st in r.steps)]
         if not routes:
-            # not reachable — skip this filter for this chart (an
-            # authoritative constraint is refused instead)
+            # not reachable through a filter path — skip this filter for this
+            # chart (an authoritative constraint is refused instead)
             refuse_unapplied_authoritative(filt, "unreachable_view")
             continue
         if len(routes) > 1:
-            if not all(any(_live_edge_fans_out(st.edge) for st in r.steps) for r in routes):
-                from app.services.semantic_join_resolver import AmbiguousJoinPathError, _route_label
-
-                raise AmbiguousJoinPathError(target_node, [_route_label(r) for r in routes])
             route_plans = [(r, 0) for r in routes]           # (route, fan_idx): whole route is a semi-join
         else:
             only = routes[0]
@@ -1853,7 +1887,8 @@ def _adapt_live_sql_for_semantic_filters(
         })
 
     if not join_clauses or not projected_fields:
-        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+        return None, _normalize_runtime_filters_for_chart(
+            chart_config, _drop_unapplied_related_filters(normalized_filters, base_view_name))
 
     if live_probes:
         from app.services.relationship_key_guard import verify_key_probes

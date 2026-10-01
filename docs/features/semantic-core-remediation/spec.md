@@ -18,28 +18,47 @@ Postgres; the same matrix was executed on BigQuery), `test_semantic_state_contra
 - **Cardinality is declared, never assumed.** `many_to_one`, `one_to_one`,
   `one_to_many`, `many_to_many` (and their spelled aliases). An unknown or
   missing value is refused on write — it is not read as many-to-one.
-- **A SELECT-side dimension needs one determined route.** Identical routes
-  (the forward and reverse edge of one relationship, however the condition is
-  spelled) are one route. When several routes remain, the one through a view
-  the query already joins wins — revenue by the calendar goes through the fact
-  being summed, not a sibling fact that also reaches the calendar. Routes still
-  tied after that → `AmbiguousJoinPathError`, naming them; the fix is to mark
-  one relationship Inactive or use an alias. The order of view names never
-  decides.
+- **A SELECT-side dimension needs one determined meaning.** A dimension of
+  the base (reachable through many-to-one hops) has one meaning per FORWARD
+  relationship chain — of ANY length: a direct `sales → regions` and
+  `sales → customers → regions` are "the sale's region" and "the customer's
+  region", never "the shortest one". A route's meaning is its relationships
+  from the nearest view the query joins anyway (EVERY node of the query's
+  determined routes: the base plus each target with one meaning, decided once
+  and re-checked against the final FROM chain). The meaning anchored closest
+  to the view wins — customer + region takes the customer's region, revenue by
+  the calendar goes through the fact being summed. An equally close meaning
+  through other relationships, or a second chain from the same anchor, is
+  refused (`AmbiguousJoinPathError`, naming them; the fix is an Inactive
+  relationship or an alias). Identical routes (the forward and reverse edge of
+  one relationship, however the condition is spelled) are one route; two
+  routes entering one view through different relationships are refused. A
+  fact reached in reverse under a dimension base takes its shortest route. The
+  order of view names, relationships, explores or fields never decides.
 - **The chart's base view** defines the rows only when the chart groups BY it
   (every base member is listed; a member with no facts shows blank; a fact row
   with no member is not a member). Otherwise the number is base-invariant: a
   KPI, or a chart grouped by other dims, is computed at the measure's own fact
   grain (fact rows without a base member included).
-- **A filter on a related view** correlates to the deepest view already in the
-  query (the measure's own fact). A tie at that depth:
-  - all tied routes are forward many-to-one chains (a diamond:
-    sales → customers → regions vs sales → stores → regions) → **refused**:
-    "customer's region" and "store's region" are different meanings;
-  - the tied routes each cross a one-to-many hop, anchored at the base (a
-    filter on another fact reaching this one through shared conformed dims)
-    → **one EXISTS per route, AND-ed**: the other fact's filter restricts each
-    shared dimension, and this fact is filtered by all of them.
+- **A filter on a related view** means what the same view would show if it
+  were grouped:
+  - On a DIMENSION of a row the query has (forward chains): the SELECT rule
+    above, from the base first, then from the measure's fact when it is
+    joined under another base — grouped by customer, "region" is the
+    customer's; "customer's region" vs "store's region" with no context →
+    **refused** (role ambiguity).
+  - On ANOTHER table reached through a 1:N hop (revenue → date ← deals and
+    revenue → owner ← deals, filtered on deals): walked from the query's FACT
+    grain (an isolated measure and a measure-level filter: the measure's own
+    view), so it means the same thing whichever table the chart is based on →
+    **one EXISTS per valid route, AND-ed**, whatever the chart groups by: the
+    per-owner rows add up to the KPI.
+  - A route may carry the filter only if every hop does: toward a one side,
+    and along a many-to-many as drawn, always; toward a many side only when
+    that relationship's `cross_filter` is "both" (the resolver's
+    bidirectional walk is never a filter path). A filter with no valid route
+    is ignored with a `dropped_filters` diagnostic (refused when
+    authoritative).
 - **Grouping** by a dimension needs a non-fanning (many-to-one) path from each
   measure's fact. A chasm (a dim of another fact through a shared dim) and a
   many-to-many hop are refused (symmetric aggregates are OFF by default).
@@ -59,8 +78,20 @@ Postgres; the same matrix was executed on BigQuery), `test_semantic_state_contra
 - A "Date" filter fanned over several date roles of one fact binds to the
   **main** calendar (the fact's primary date relationship). With no main
   calendar — or several equally close roles — it is refused; roles are never
-  AND-ed.
-- A filter on one role (`ship_cal.year = 2025`) filters that role only.
+  AND-ed. "Main" is a UNIQUE best candidate, never the first of a set.
+- A filter on one role (`ship_cal.year = 2025`) filters that role only — also
+  when the measure is re-anchored, isolated or stitched: a calendar filter on
+  the measure's own date column keeps its column; only a filter written onto
+  ANOTHER table's date column moves to the measure's main calendar, and is
+  refused when the measure's date roles tie. A measure's calendar is one of
+  ITS dimensions (many-to-one reachable): a calendar reached through another
+  fact never counts.
+- A calendar filter rendered on a TIMESTAMP (instant) column under a non-UTC
+  calendar puts the instant on its LOCAL date first (`local_date_sql`) — the
+  rule of the calendar join and of time grains — so filtering and grouping
+  agree near midnight.
+- A multi-fact chart grouped by the calendar groups each fact by its own main
+  calendar; a fact whose date roles tie is refused.
 - Weeks are ISO weeks starting **Monday** on every dialect (BigQuery
   `WEEK(MONDAY)`), matching the calendar's `week_start_date`. The
   `week_start_day` dataset setting is not applied anywhere (see Known gaps).
@@ -70,6 +101,22 @@ Postgres; the same matrix was executed on BigQuery), `test_semantic_state_contra
 - Context modifiers (`all`, `all_except`, `use_relationship`) are **not
   supported**: a measure carrying them is refused at query time, and new or
   changed modifiers are refused on save.
+
+## Ordering and limits
+
+Top-N and every sort put NULLs last on every dialect and break ties by the
+group values (ascending), on the single-fact path and the multi-fact stitch
+alike — a LIMIT never keeps an arbitrary member of a tie. Top-N's N takes
+precedence over the chart's row limit.
+
+## Refusals
+
+Every planner refusal is a `SemanticRefusal` (a `ValueError`, HTTP 400, the
+message unchanged) with a `category`: `AMBIGUOUS_ROUTE`, `UNRELATED_GRAIN`,
+`FANOUT_RISK`, `UNSUPPORTED_CONTEXT`, `UNREACHABLE_VIEW`,
+`INVALID_RELATIONSHIP`, `UNVERIFIABLE_KEY`. The engine's `query_plan` names the
+strategy (single / reanchor / isolate / stitch), the fact grains, the filter
+root, the SELECT routes and the filter routes before any SQL runs.
 
 ## Filter operators
 
