@@ -1576,12 +1576,52 @@ def _drop_unapplied_related_filters(filters: list, base_view_name: str) -> list:
     return kept
 
 
+def _record_unapplied_live_filter(diagnostics, filt: dict, target_node: str, base_view_name: str) -> None:
+    """A related filter the model does not relate to this chart's table (no
+    filter path): not applied, and RECORDED — in the caller's dropped-filter
+    diagnostics (``_debug.dropped_filters``) and the log."""
+    logger.warning("[live-filter] %s ignored: no filter path from %r to %r (PowerBI parity)",
+                   filt.get("semanticField") or filt.get("field"), target_node, base_view_name)
+    _record_dropped_filter(
+        diagnostics, filt, "unreachable_view",
+        f"view {target_node!r} has no relationship path a filter may travel to {base_view_name!r}; ignored",
+    )
+
+
+def _record_unrenderable_live_filter(diagnostics, filt: dict, reason: str) -> None:
+    """A related filter the model relates to this chart's table, but whose
+    route the live adapter cannot render (the base or a joined relation, a
+    join condition): left out AND recorded (`no_join_path`) — the engine's
+    rule for the same case (the skip badge, `_debug.dropped_filters`), never
+    silent; an authoritative one is refused."""
+    refuse_unapplied_authoritative(filt, reason)
+    ref = filt.get("semanticField") or filt.get("fieldKey") or filt.get("field")
+    logger.warning("[live-filter] %s ignored: its relationship route cannot be rendered (%s)", ref, reason)
+    _record_dropped_filter(
+        diagnostics, filt, "no_join_path",
+        f"filter on {ref!r} ignored: its relationship route cannot be rendered ({reason}); check the "
+        "relationship in Data Model",
+    )
+
+
+def _refuse_unrenderable_live_filter(filt: dict, reason: str) -> None:
+    """A related filter on a FIELD the related view does not have or cannot
+    render: refused (as the engine refuses an unknown field)."""
+    refuse_unapplied_authoritative(filt, reason)
+    ref = filt.get("semanticField") or filt.get("fieldKey") or filt.get("field")
+    raise ValueError(
+        f"Filter '{ref}' không áp được cho chart này ({reason}) — từ chối trả kết quả thay vì ra số "
+        "chưa lọc. Kiểm tra field trong Data Model."
+    )
+
+
 def _adapt_live_sql_for_semantic_filters(
     db: Session,
     datasource,
     db_table,
     chart_config: dict | None,
     filters: list | None,
+    diagnostics: list | None = None,
 ) -> tuple[str | None, list[dict]]:
     """Wrap base SQL with multi-hop joins so dashboard filters that target
     fields on joined views can be applied.
@@ -1594,7 +1634,16 @@ def _adapt_live_sql_for_semantic_filters(
        deterministic SQL alias.
     3. Project the target field as `__sem_filter_N` on the wrapping SELECT
        and rewrite the filter to reference that projection alias.
+
+    Contract for a filter on a RELATED view (Pair #2): it is applied exactly;
+    or, when the model relates no filter path to the chart's table, it is
+    left out AND recorded in ``diagnostics`` (PowerBI parity, as the engine);
+    or — a path exists but cannot be rendered — the request is REFUSED. It is
+    never left out silently, and an authoritative one is never left out.
+    ``None`` SQL means no related filter needs a JOIN; the returned list is
+    the filters the caller still applies itself.
     """
+    # (the caller's own normalization already recorded input-level drops)
     normalized_filters = _normalize_runtime_filters_for_chart(
         chart_config,
         filters,
@@ -1612,7 +1661,7 @@ def _adapt_live_sql_for_semantic_filters(
     base_view_name = str(binding.get("baseViewName") or "").strip()
     model_id = binding.get("modelId")
     if not base_view_name:
-        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters, diagnostics=diagnostics)
 
     from app.models.semantic import SemanticModel, SemanticView
     from app.services.dataset_relation_service import resolve_dataset_table_relation
@@ -1644,8 +1693,17 @@ def _adapt_live_sql_for_semantic_filters(
         base_sql = resolve_dataset_table_relation(datasource, db_table).sql
     except Exception:
         logger.debug("Failed to build base live SQL for semantic runtime filters", exc_info=True)
-        return None, _normalize_runtime_filters_for_chart(
-            chart_config, _drop_unapplied_related_filters(normalized_filters, base_view_name))
+        # No base relation to JOIN the related views to: a related filter
+        # cannot be applied here — recorded (never silent), an authoritative
+        # one refused.
+        kept = []
+        for f in normalized_filters:
+            ref = str((f or {}).get("semanticField") or (f or {}).get("fieldKey") or "").strip()
+            if ref and "." in ref and ref.split(".", 1)[0] != base_view_name:
+                _record_unrenderable_live_filter(diagnostics, f, "no_base_relation")
+                continue
+            kept.append(f)
+        return None, _normalize_runtime_filters_for_chart(chart_config, kept)
 
     # Track materialized join steps. Key = (from_alias_sql, to_node) so that
     # a path of length N spawns N JOINs but two filters that share a prefix
@@ -1729,12 +1787,14 @@ def _adapt_live_sql_for_semantic_filters(
         #   * otherwise several routes that each cross a 1:N hop (a filter on
         #     another fact reaching this one through shared conformed dims) →
         #     every route is applied, AND-ed, each as its own semi-join.
-        from app.services.semantic_join_resolver import AmbiguousJoinPathError, _route_label, edge_propagates
+        from app.services.semantic_join_resolver import (
+            AmbiguousJoinPathError, RouteEnumerationIncomplete, _route_label, edge_propagates,
+        )
         from app.services.semantic_query_engine import SemanticQueryEngine
 
         forward = resolver.forward_routes(target_node)
         if forward is None:
-            raise AmbiguousJoinPathError(target_node, ["(quá nhiều đường quan hệ — model cần alias)"])
+            raise RouteEnumerationIncomplete(target_node)
         forward = [r for r in forward if r.steps]
         if forward:
             # a dimension of the base: every forward chain is a meaning; two of
@@ -1744,12 +1804,23 @@ def _adapt_live_sql_for_semantic_filters(
                 raise AmbiguousJoinPathError(target_node, [_route_label(r) for r in tied])
             routes = [only]
         else:
+            # the engine's propagation rule: every shortest route the filter may
+            # travel, AND-ed (enumerated completely: past the cap distinct_routes
+            # raises — never a partial set)
             routes = [r for r in resolver.distinct_routes(target_node)
-                      if all(edge_propagates(st.edge) for st in r.steps)]
+                      if r.steps and all(edge_propagates(st.edge) for st in r.steps)]
+            if not routes:
+                # a shorter route a filter may not travel never hides a valid one
+                routes = resolver.shortest_propagation_routes(target_node, {base_view_name})
+                if routes is None:
+                    raise RouteEnumerationIncomplete(target_node)
         if not routes:
-            # not reachable through a filter path — skip this filter for this
-            # chart (an authoritative constraint is refused instead)
+            # The model relates no filter path from this view to the chart's
+            # table: the filter does not apply to it (PowerBI parity — as the
+            # engine's drop gate) — recorded, never silent; an authoritative
+            # constraint is refused instead.
             refuse_unapplied_authoritative(filt, "unreachable_view")
+            _record_unapplied_live_filter(diagnostics, filt, target_node, base_view_name)
             continue
         if len(routes) > 1:
             route_plans = [(r, 0) for r in routes]           # (route, fan_idx): whole route is a semi-join
@@ -1819,14 +1890,14 @@ def _adapt_live_sql_for_semantic_filters(
             last_alias = new_alias
 
         if path_failed:
-            refuse_unapplied_authoritative(filt, "no_join_path")
+            _record_unrenderable_live_filter(diagnostics, filt, "no_join_path")
             continue
 
         # Resolve the field def on the target view
         target_view_name = resolver.view_for_node(target_node) or target_node
         target_view = _get_view(target_view_name)
         if target_view is None:
-            refuse_unapplied_authoritative(filt, "view_not_found")
+            _record_unrenderable_live_filter(diagnostics, filt, "view_not_found")
             continue
         field_def = next(
             (
@@ -1840,8 +1911,7 @@ def _adapt_live_sql_for_semantic_filters(
             None,
         )
         if not field_def:
-            refuse_unapplied_authoritative(filt, "field_not_on_view")
-            continue
+            _refuse_unrenderable_live_filter(filt, "field_not_on_view")
 
         if fan_idx is not None:
             # Every filter on the same related view, through the same route,
@@ -1863,8 +1933,7 @@ def _adapt_live_sql_for_semantic_filters(
 
         rendered_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias)
         if not rendered_expr:
-            refuse_unapplied_authoritative(filt, "field_not_renderable")
-            continue
+            _refuse_unrenderable_live_filter(filt, "field_not_renderable")
 
         projection_alias = f"__sem_filter_{next_projection_index}"
         next_projection_index += 1
@@ -1960,6 +2029,7 @@ def _build_row_filtered_live_relation_sql(
     filters: list[dict] | None,
     *,
     semantic_binding: dict[str, Any] | None = None,
+    diagnostics: list | None = None,
 ) -> str:
     from app.services.live_query_service import (
         _build_where_clause,
@@ -2001,6 +2071,7 @@ def _build_row_filtered_live_relation_sql(
             db_table,
             {"semanticBinding": semantic_binding},
             applicable_filters,
+            diagnostics=diagnostics,
         )
         if adapted_sql:
             relation_sql = adapted_sql
@@ -2022,6 +2093,7 @@ def _build_filtered_live_sql_for_dataset_table(
     *,
     visited_table_ids: list[int] | None = None,
     required_datasource_id: int | None = None,
+    diagnostics: list | None = None,
 ) -> tuple[Any, str]:
     from app.models.dataset import DatasetTable
     from app.models.models import DataSource
@@ -2058,6 +2130,7 @@ def _build_filtered_live_sql_for_dataset_table(
             proxy_table,
             normalized_filters,
             semantic_binding=_semantic_binding_for_runtime_table(db, table),
+            diagnostics=diagnostics,
         )
 
     if not is_derived_table(table):
@@ -2079,6 +2152,7 @@ def _build_filtered_live_sql_for_dataset_table(
             table,
             normalized_filters,
             semantic_binding=_semantic_binding_for_runtime_table(db, table),
+            diagnostics=diagnostics,
         )
 
     current_table_id = getattr(table, "id", None)
@@ -2149,6 +2223,7 @@ def _build_filtered_live_sql_for_dataset_table(
             dependency_table,
             normalized_filters,
             visited_table_ids=next_visited,
+            diagnostics=diagnostics,
             required_datasource_id=(
                 int(resolved_datasource.id)
                 if resolved_datasource is not None
@@ -2211,6 +2286,7 @@ def _build_filtered_live_sql_for_dataset_table(
         proxy_table,
         normalized_filters,
         semantic_binding=_semantic_binding_for_runtime_table(db, table),
+        diagnostics=diagnostics,
     )
 
 
@@ -3813,6 +3889,7 @@ def _execute_chart_runtime_for_table(
                     dataset_obj,
                     db_table,
                     combined_runtime_filters,
+                    diagnostics=live_filter_diagnostics,
                 )
                 return LiveQueryService.execute_chart_query_from_sql(
                     live_datasource,
@@ -3830,6 +3907,7 @@ def _execute_chart_runtime_for_table(
             )
             live_sql, live_filters = _adapt_live_sql_for_semantic_filters(
                 db, live_datasource, live_proxy_table, chart_config, raw_extra_filters,
+                diagnostics=live_filter_diagnostics,
             )
             if live_sql:
                 return LiveQueryService.execute_chart_query_from_sql(
@@ -3895,6 +3973,7 @@ def _execute_chart_runtime_for_table(
     # ── Physical table / SQL query: live query with semantic filter adaptation ──
     live_sql, live_filters = _adapt_live_sql_for_semantic_filters(
         db, datasource, db_table, chart_config, raw_extra_filters,
+        diagnostics=live_filter_diagnostics,
     )
     if live_sql:
         # Merge chart_base ⊕ runtime through the single fold so a dashboard

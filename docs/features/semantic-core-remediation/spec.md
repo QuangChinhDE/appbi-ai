@@ -31,10 +31,33 @@ Postgres; the same matrix was executed on BigQuery), `test_semantic_state_contra
   through other relationships, or a second chain from the same anchor, is
   refused (`AmbiguousJoinPathError`, naming them; the fix is an Inactive
   relationship or an alias). Identical routes (the forward and reverse edge of
-  one relationship, however the condition is spelled) are one route; two
-  routes entering one view through different relationships are refused. A
-  fact reached in reverse under a dimension base takes its shortest route. The
-  order of view names, relationships, explores or fields never decides.
+  one relationship, however the condition is spelled) are one route, and so are
+  chains that compose to the same key equalities — a pass-through dimension
+  over the same key (`sales → dim_product → products` on `product_id`
+  throughout IS `sales → products`): no refusal because another physical path
+  exists; the one with the fewest joins is used. Two routes entering one view
+  through different relationships are refused. The order of view names,
+  relationships, explores or fields never decides.
+- **The base never resolves a meaning.** Under a DIMENSION base the measure's
+  fact is reached in reverse, and every route to it is a meaning of the
+  question ("the region's sales" through `sales → regions` and through
+  `sales → customers → regions` — refused, as "sales by region" is from the
+  sales base); a view that is not a dimension of the base is reached by every
+  route that first descends to a fact and then ascends to the view. When the
+  base is a dimension of the measure's fact, that fact's own dimension chains
+  are meanings too, in ONE set with the base's: a customers-based chart's
+  "region" is the customer's AND the summed sale's own region — two meanings,
+  refused (the same request from the sales base is). Changing the chart's base
+  gives the same value or the same refusal; a shortest route never decides.
+- **Route sets are complete or refused.** Every route set that chooses a
+  MEANING (SELECT, a filter on a dimension, the calendar role) is enumerated
+  completely, any length, up to 8 hops and 64 routes. Past that bound — more
+  routes, or a route the rule allows that is longer — the query is refused
+  (`RouteEnumerationIncomplete`, category `ROUTE_LIMIT`), never answered from
+  the routes that happened to be seen first; a depth cut is never read as "no
+  route". Filter propagation (below) is enumerated completely too — past its
+  cap, refused. Shortest-path helpers otherwise remain only where no number
+  depends on them (reachability, the slicer option list).
 - **The chart's base view** defines the rows only when the chart groups BY it
   (every base member is listed; a member with no facts shows blank; a fact row
   with no member is not a member). Otherwise the number is base-invariant: a
@@ -51,8 +74,16 @@ Postgres; the same matrix was executed on BigQuery), `test_semantic_state_contra
     revenue → owner ← deals, filtered on deals): walked from the query's FACT
     grain (an isolated measure and a measure-level filter: the measure's own
     view), so it means the same thing whichever table the chart is based on →
-    **one EXISTS per valid route, AND-ed**, whatever the chart groups by: the
-    per-owner rows add up to the KPI.
+    **one EXISTS per route, AND-ed**, whatever the chart groups by: the
+    per-owner rows add up to the KPI. The routes are the most DIRECT ones —
+    every shortest route from the fact grain; when every shortest route
+    crosses a hop a filter may not travel, the shortest routes it MAY travel (a
+    single-direction relationship never hides a valid route). A longer route
+    relates the two tables through further relationships — another role of a
+    dimension (an order's items vs "the customer's geo = a seller's geo"), or a
+    relay through another fact's rows — and is not part of the filter. The set
+    is enumerated completely; past its cap the query is refused, never AND-ed
+    partially.
   - A route may carry the filter only if every hop does: toward a one side,
     and along a many-to-many as drawn, always; toward a many side only when
     that relationship's `cross_filter` is "both" (the resolver's
@@ -77,8 +108,12 @@ Postgres; the same matrix was executed on BigQuery), `test_semantic_state_contra
   role-played `…__<column>__date_dim` view), not from SQL text.
 - A "Date" filter fanned over several date roles of one fact binds to the
   **main** calendar (the fact's primary date relationship). With no main
-  calendar — or several equally close roles — it is refused; roles are never
-  AND-ed. "Main" is a UNIQUE best candidate, never the first of a set.
+  calendar — or several equally ranked roles — it is refused; roles are never
+  AND-ed. "Main" is a UNIQUE best candidate, never the first of a set: a
+  generated calendar before a role-played date dim, a date related to the
+  measure's view directly before a date of one of its dimensions; two dates of
+  dimensions tie whatever the length of their chains (a shorter chain is not a
+  reason to be "the" Date).
 - A filter on one role (`ship_cal.year = 2025`) filters that role only — also
   when the measure is re-anchored, isolated or stitched: a calendar filter on
   the measure's own date column keeps its column; only a filter written onto

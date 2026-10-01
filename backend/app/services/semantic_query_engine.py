@@ -16,8 +16,9 @@ from app.models.semantic import SemanticView, SemanticExplore, SemanticModel
 from app.services import physical_type_map as _ptm
 from app.services.sql_pattern import pattern_predicate, regex_predicate
 from app.services.semantic_join_resolver import (
-    AmbiguousJoinPathError, SemanticJoinResolver, SemanticRefusal, canonical_cardinality,
-    edge_propagates, raise_for_invalid_relationships, read_join_contract,
+    AmbiguousJoinPathError, RouteEnumerationIncomplete, SemanticJoinResolver, SemanticRefusal,
+    canonical_cardinality, edge_propagates, hop_is_to_one, raise_for_invalid_relationships,
+    read_join_contract,
 )
 from app.schemas.semantic import (
     WindowFunctionDefinition,
@@ -250,6 +251,7 @@ class SemanticQueryEngine:
             self._filter_resolver_cache = {}
             self._filter_root = None
             self._calendar_candidates_memo = {}
+            self._from_fact_views = set()
         self.views_cache = {}
         self._resolver = None
         self._model = None
@@ -419,11 +421,13 @@ class SemanticQueryEngine:
         # Two cases (both keep the measure at its OWN grain, PowerBI/Tableau):
         #   • SINGLE measure-fact M (≠ base): RE-ANCHOR the whole query at M
         #     (reuses the full verified engine incl pivot/window/calc). Group
-        #     dims/pivots unrelated to M → legacy path + warn.
+        #     dims/pivots unrelated to M → REFUSED (UNRELATED_GRAIN).
         #   • MULTIPLE measure-facts (mixed base+cross, or several cross-facts):
         #     sub-generate each fact independently (re-anchored) and STITCH on
-        #     the shared group dims (skeleton ∪ + NULL-safe LEFT JOINs). Pivot/
-        #     window/calc with multi-fact → legacy path (deferred).
+        #     the shared group dims (skeleton ∪ + NULL-safe LEFT JOINs). A stitch
+        #     that declines, and pivot/window/calc with multi-fact, are REFUSED
+        #     (FANOUT_RISK, the fail-loud guard below) — never the single-FROM
+        #     build, which would JOIN the facts and fan out.
         if (
             not _disable_isolation
             and not _reanchored
@@ -763,6 +767,11 @@ class SemanticQueryEngine:
                 from_clause = ""
                 joined_nodes = {explore.base_view_name}
             else:
+                # The facts whose rows the measures sum (not the isolated ones):
+                # under a dimension base, their own dimensions are meanings too.
+                self._from_fact_views = {
+                    self._measure_fact_view(m) for m in (measures or [])
+                } - set(getattr(self, "_isolated_measure_views", None) or ())
                 from_clause, joined_nodes = self._build_from_clause(
                     explore, target_views=select_side_views,
                 )
@@ -1760,11 +1769,12 @@ class SemanticQueryEngine:
             <value> ELSE NULL END`` wrapper so the aggregation only sees
             qualifying rows (Looker-style filtered measures).
 
-        Phase-14: when ``context_modifiers`` is non-empty AND a list of
-        ``active_dimensions`` (qualified `view.field`) is provided by the
-        caller, the measure is rendered as a window aggregate
-        (``agg(expr) OVER (PARTITION BY ...)``) so the modifier can mask
-        the chart's filter context. The function still returns a single
+        Phase-14 (NOT REACHED on any path today): a measure with
+        ``context_modifiers`` is refused above (UNSUPPORTED_CONTEXT) before this
+        point. The window-aggregate rendering below (``agg(expr) OVER
+        (PARTITION BY ...)``) is kept unreachable on purpose: it computed over
+        the already-FILTERED rows and did not remove the filter context, so it
+        must not be re-enabled without the context-removal engine. The function still returns a single
         SQL fragment — the GROUP-BY emitter excludes window-aggregated
         measures via a sibling helper (``measure_is_windowed``). When
         ``active_dimensions`` is None, modifiers are silently ignored
@@ -2075,10 +2085,8 @@ class SemanticQueryEngine:
         # view has a declared primary_key, dedupe fan-out via the Looker MD5
         # trick before aggregating. The helper returns None for any reason
         # ("not symmetric", "no PK", "flag off", "unknown dialect", ...) and
-        # we fall through to the legacy aggregate path. Context modifiers
-        # (Phase-14 window aggregates) are NOT compatible with the symmetric
-        # form — when both are present, symmetric wins (correctness over the
-        # OVER clause, which can't preserve PK identity).
+        # we fall through to the plain aggregate below. (Context modifiers
+        # never reach here — they are refused above, UNSUPPORTED_CONTEXT.)
         _symmetric_sql = self._render_symmetric_aggregate(
             view_name, base_sql, measure_type,
         )
@@ -2106,11 +2114,10 @@ class SemanticQueryEngine:
         else:
             agg_sql = f"SUM({base_sql})"  # Default fallback
 
-        # Phase-14: context_modifiers turn the aggregate into a window
-        # aggregate. Only applies when the caller passed active_dimensions
-        # (i.e. we know the query shape). Modifiers that don't change the
-        # window (currently only `use_relationship`, which affects JOIN
-        # path resolution rather than the OVER clause) are ignored here.
+        # Phase-14 window aggregates for context_modifiers — UNREACHABLE: a
+        # measure with any modifier was refused above (UNSUPPORTED_CONTEXT;
+        # the window over already-filtered rows gave wrong numbers and
+        # `use_relationship` was never applied). Do not route modifiers here.
         modifiers = list(measure_def.get('context_modifiers') or [])
         if modifiers and active_dimensions is not None:
             partition_clause = self._compute_context_partition(
@@ -2264,8 +2271,9 @@ class SemanticQueryEngine:
         """Return the node-id of the MAIN calendar dimension reachable from the
         measure view, or None. The calendar spine is a ``GENERATE_DATE_ARRAY``
         source; the standalone "Date" dim (no role-played ``__…_date_dim``
-        suffix) is preferred over per-column role-played date dims, and the
-        shortest path wins ties.
+        suffix) is preferred over per-column role-played date dims, and a
+        calendar related to the measure's view directly over one reached
+        through a dimension (never "the shortest chain").
 
         Only a UNIQUE best candidate is returned: when two date roles tie (two
         role-played dims, two aliases of one calendar, no main calendar), which
@@ -2282,7 +2290,7 @@ class SemanticQueryEngine:
         return best if len(best) > 1 else []
 
     def _best_calendar_dim_candidates(self, m_resolver, m_view: str) -> List[str]:
-        """Every calendar node tied for the best (main-first, shortest) score,
+        """Every calendar node tied for the best (main-first, own-date-first) score,
         sorted. More than one means the choice is not determined by the model —
         only by the order the relationships were created. Memoised per query
         (the main-calendar pick and the tie check ask the same question)."""
@@ -2313,9 +2321,15 @@ class SemanticQueryEngine:
             if not self._view_is_generated_calendar(view):
                 continue
             is_role_played = self._is_role_played_calendar_name(vname) or self._is_role_played_calendar_name(node)
-            path = m_resolver.resolve_path(node)
-            depth = len(path.steps) if path else 99
-            scored.append(((1 if is_role_played else 0, depth), node))
+            # The measure's OWN date relationship (a calendar related to its
+            # view directly) outranks a date of one of its dimensions; two
+            # dimension dates are a tie however long their chains — a shorter
+            # chain is not a reason for one date role to be "the" Date.
+            chains = m_resolver.forward_routes(node)
+            if chains is None:
+                raise RouteEnumerationIncomplete(node)
+            direct = any(len(c.steps) == 1 for c in chains)
+            scored.append(((1 if is_role_played else 0, 0 if direct else 1), node))
         if not scored:
             return []
         best_score = min(sc for sc, _ in scored)
@@ -2423,8 +2437,9 @@ class SemanticQueryEngine:
             SELECT _skel.dims, _mf0.m…, _mf1.m…
             FROM _skel LEFT JOIN _mf0 ON <null-safe dims> LEFT JOIN _mf1 ON …
 
-        Returns None (→ caller falls back to the legacy path) if any fact can't
-        relate to a group dim, so we never emit a wrong cross-product.
+        Returns None if any fact can't relate to a group dim (the reason in
+        ``_stitch_decline_reason``); the caller then REFUSES (FANOUT_RISK) —
+        there is no fallback that could emit a wrong cross-product.
         """
         from collections import OrderedDict
         from app.services.semantic_join_resolver import SemanticJoinResolver as _R
@@ -3687,15 +3702,80 @@ class SemanticQueryEngine:
         def _tail_sig(steps) -> tuple:
             return tuple(_edge_signature(st.edge) for st in steps)
 
+        routes_memo: dict = {}
+        base_name = explore.base_view_name
+        # The measures' facts under a DIMENSION base (the base is one of their
+        # dimensions): the rows the measure sums are theirs, so their own
+        # dimension chains are meanings of a view too.
+        fact_views = sorted(
+            f for f in (getattr(self, "_from_fact_views", None) or ())
+            if f and f != base_name and f in candidate_nodes and base_name in self._m1_reachable_views(f)
+        )
+
+        def _fact_rooted(target_node: str) -> list:
+            """Every forward chain from a fact of the query to the target,
+            reached through EVERY route of that fact from the base (the
+            choice among them is made with the rest, by `_pick_route`)."""
+            out = []
+            for fact in fact_views:
+                if fact == target_node:
+                    continue
+                tails = self._resolver_rooted(fact).forward_routes(target_node)
+                if tails is None:
+                    raise RouteEnumerationIncomplete(target_node)
+                for prefix in _base_routes_for(fact):
+                    prefix_nodes = _nodes(prefix) | {base_name}
+                    for tail in tails:
+                        if not tail.steps or (_nodes(tail) - {fact}) & prefix_nodes:
+                            continue    # not a simple route (it comes back through the prefix)
+                        steps = list(prefix.steps) + list(tail.steps)
+                        out.append(type(tail)(
+                            target_node=target_node,
+                            steps=[type(st)(edge=st.edge, alias_sql=f"_appbi_sem_join_{i}")
+                                   for i, st in enumerate(steps)],
+                        ))
+            return out
+
+        base_memo: dict = {}
+
+        def _base_routes_for(target_node: str):
+            """The target's routes from the base alone (no fact-rooted chains)."""
+            if target_node not in base_memo:
+                found_routes: list = []
+                for enumerate_routes in (resolver.forward_routes, resolver.descend_ascend_routes,
+                                         resolver.any_routes):
+                    found = enumerate_routes(target_node)
+                    if found is None:
+                        raise RouteEnumerationIncomplete(target_node)
+                    found_routes = [r for r in found if r.steps]
+                    if found_routes:
+                        break
+                base_memo[target_node] = found_routes
+            return base_memo[target_node]
+
         def _routes_for(target_node: str):
-            """Every FORWARD chain (any length — two are two meanings) when the
-            target is a dimension of the base; else the shortest routes (a fact
-            reached in reverse under a dimension base)."""
-            fwd = resolver.forward_routes(target_node)
-            if fwd is None:
-                raise AmbiguousJoinPathError(target_node, ["(quá nhiều đường quan hệ — model cần alias)"])
-            fwd = [r for r in fwd if r.steps]
-            return fwd or resolver.distinct_routes(target_node)
+            """The target's meanings — every route, of any length, of the
+            first kind that exists: FORWARD chains — of the base, and of the
+            measures' facts under a dimension base (a customers-based chart's
+            "region" is the customer's, and the summed SALE's own region is a
+            second meaning); else DESCEND-then-ASCEND routes (a fact under a
+            dimension base, and that fact's dimensions — "the region's sales"
+            through two chains is two meanings, as "sales by region" is from the
+            fact); else any route. Never a shortest pick; a set that cannot be
+            seen completely is refused (RouteEnumerationIncomplete)."""
+            if target_node in routes_memo:
+                return routes_memo[target_node]
+            out = list(_base_routes_for(target_node))
+            if out and all(hop_is_to_one(st.edge) for r in out for st in r.steps):
+                # a dimension of the base: the facts' own chains are meanings too
+                seen = {tuple(_edge_signature(st.edge) for st in r.steps) for r in out}
+                for r in _fact_rooted(target_node):
+                    sig = tuple(_edge_signature(st.edge) for st in r.steps)
+                    if sig not in seen:
+                        seen.add(sig)
+                        out.append(r)
+            routes_memo[target_node] = out
+            return out
 
         def _decide(routes, required: set):
             return self._pick_route(routes, required)
@@ -4754,29 +4834,50 @@ class SemanticQueryEngine:
         # closest to the target wins; a competing meaning is refused.
         base_resolver = self._resolver
         routes = None
-        for r in ([base_resolver] + ([resolver] if resolver is not base_resolver else [])):
-            fwd = r.forward_routes(target_node)
-            if fwd is None:
-                raise AmbiguousJoinPathError(target_node, ["(quá nhiều đường quan hệ — model cần alias)"])
-            fwd = [p for p in fwd if p.steps]
-            if fwd:
-                path, tied = self._pick_route(fwd, jn)
-                if path is None:
-                    raise AmbiguousJoinPathError(target_node, [_route_label(c) for c in tied])
-                routes = [path]
-                break
+        fwd: list = []
+        # A measure-level filter (no explore: its own grain) routes from the
+        # measure's view only — the chart's base is not part of its meaning.
+        roots = [resolver] if explore is None else (
+            [base_resolver] + ([resolver] if resolver is not base_resolver else []))
+        for r in roots:
+            found = r.forward_routes(target_node)
+            if found is None:
+                raise RouteEnumerationIncomplete(target_node)
+            fwd += [p for p in found if p.steps]
+        if fwd:
+            # ONE candidate set: a dimension of the chart's base AND a dimension
+            # of the fact the measure sums (when the fact is joined under
+            # another base) are both meanings — a customers-based chart filtered
+            # by "region": the customer's region and the summed sale's own
+            # region; the closest one to the query's views wins, a tie refused.
+            path, tied = self._pick_route(fwd, jn)
+            if path is None:
+                raise AmbiguousJoinPathError(target_node, [_route_label(c) for c in tied])
+            routes = [path]
         if routes is None:
             # PROPAGATION — the view is another table reached through a 1:N hop
             # (revenue → date ← deals and revenue → owner ← deals, filtered on
-            # deals): walked from the FACT grain, only over hops a filter may
-            # travel (toward a many side only when the relationship filters both
-            # ways; the bidirectional walk is never a filter path). The other
-            # table's filter restricts EACH shared dimension and the fact is
-            # filtered by all of them: one EXISTS per valid route, AND-ed,
-            # whatever the chart groups by.
+            # deals): the routes from the query's FACT grain that relate it to
+            # that table most DIRECTLY (every shortest one — a longer route
+            # relates the two tables through further relationships, typically
+            # another role of a dimension: an order's items vs "the customer's
+            # geo = a seller's geo"), only over hops a filter may travel (toward a
+            # many side only when the relationship filters both ways; the
+            # bidirectional walk is never a filter path). The other table's
+            # filter restricts EACH such route and the fact is filtered by all
+            # of them: one EXISTS per valid route, AND-ed, whatever the chart
+            # groups by. The set is enumerated completely — past its cap the
+            # query is refused (distinct_routes raises), never AND-ed partially.
             candidate_paths = [p for p in (resolver.distinct_routes(target_node) or []) if p and p.steps]
             valid = [c for c in candidate_paths
                      if all(edge_propagates(s.edge) for s in c.steps[_anchor_idx(c):])]
+            if not valid:
+                # every shortest route crosses a hop a filter may not travel —
+                # the most direct routes it MAY travel are the filter's (a
+                # single-direction relationship never hides a valid one)
+                valid = resolver.shortest_propagation_routes(target_node, set(jn))
+                if valid is None:
+                    raise RouteEnumerationIncomplete(target_node)
             if not valid:
                 return None
             routes, _seen = [], set()
@@ -4846,11 +4947,14 @@ class SemanticQueryEngine:
 
     @classmethod
     def _route_meaning(cls, route, joined: set) -> tuple:
-        """The relationships a route takes FROM the nearest node the query joins
-        — what it means; the part before is the query's own FROM chain."""
-        from app.services.semantic_join_resolver import _edge_signature
+        """What a route means FROM the nearest node the query joins (the part
+        before is the query's own FROM chain): its key-composition segments —
+        so ``sales → dim_product → products`` on ``product_id`` all the way IS
+        ``sales → products`` on ``product_id``, one meaning; a chain through
+        another column (``customers.region_id``) is a meaning of its own."""
+        from app.services.semantic_join_resolver import route_meaning_segments
 
-        return tuple(_edge_signature(st.edge) for st in route.steps[cls._route_anchor(route, joined):])
+        return route_meaning_segments(route.steps[cls._route_anchor(route, joined):])
 
     @classmethod
     def _pick_route(cls, routes, joined: set):
@@ -4864,8 +4968,10 @@ class SemanticQueryEngine:
           through other relationships, or a longer chain from the SAME anchor
           (the sale's own region vs the customer's region, both from the sale),
           is a second meaning → refused, never shortest-wins or first-wins;
-        * routes with one meaning: the one whose prefix the query already joins
-          (deterministic otherwise)."""
+        * routes with one meaning (identical relationships, or chains that
+          compose to the same key equalities): the one whose prefix the query
+          already joins, then the one with the fewest joins (deterministic
+          otherwise)."""
         from app.services.semantic_join_resolver import _route_label
 
         routes = [r for r in routes if r is not None]
@@ -4887,7 +4993,7 @@ class SemanticQueryEngine:
             group = next(iter(meanings.values()))
             group.sort(key=lambda r: (
                 not all(st.edge.to_node in joined for st in r.steps[:cls._route_anchor(r, joined)]),
-                _route_label(r)))
+                len(r.steps), _route_label(r)))
             return group[0], None
         return None, [sorted(g, key=_route_label)[0] for g in meanings.values()]
 
@@ -4897,6 +5003,14 @@ class SemanticQueryEngine:
         base = self._resolver
         root = getattr(self, "_filter_root", None)
         if base is None or not root or root == base.base_node:
+            return base
+        return self._resolver_rooted(root)
+
+    def _resolver_rooted(self, root: str):
+        """A (bidirectional) resolver of this query's model rooted at ``root``,
+        memoised per query."""
+        base = self._resolver
+        if base is not None and root == base.base_node:
             return base
         cache = getattr(self, "_filter_resolver_cache", None)
         if cache is None:

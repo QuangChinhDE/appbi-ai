@@ -121,8 +121,19 @@ def make_world(pg_engine, dialect: str, execute=None):
             db.add(v)
             views[name] = v
         db.flush()
-        fwd = _build_models(db, T.MODELS, views, reverse=False)
-        rev = _build_models(db, T.MODELS, views, reverse=True)
+
+        class _Models(dict):
+            """Each model persisted the first time a test asks for it."""
+
+            def __init__(self, reverse):
+                super().__init__()
+                self.reverse = reverse
+
+            def __missing__(self, key):
+                self[key] = _build_models(db, {key: T.MODELS[key]}, views, reverse=self.reverse)[key]
+                return self[key]
+
+        fwd, rev = _Models(False), _Models(True)
         yield types.SimpleNamespace(db=db, conn=conn, fwd=fwd, rev=rev, dialect=dialect, last_plan=None,
                                     execute=execute or (lambda sql: _pg_execute(conn, sql)))
     finally:

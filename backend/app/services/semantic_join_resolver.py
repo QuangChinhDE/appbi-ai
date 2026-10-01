@@ -121,6 +121,10 @@ class JoinEdge:
     # may travel it is the relationship's own setting (see edge_propagates).
     # Empty → the edge's cross_filter.
     rel_cross_filter: str = ""
+    # The relationship's condition is a plain AND of key equalities (no CAST /
+    # expression): only then may a chain of them be read as the key equalities
+    # it composes to (`route_key_mapping`). Carried on reverse edges.
+    plain_keys: bool = True
 
 
 def edge_propagates(edge: "JoinEdge") -> bool:
@@ -199,6 +203,7 @@ class SemanticRefusal(ValueError):
     UNREACHABLE_VIEW = "UNREACHABLE_VIEW"        # no relationship path to a view the request needs
     INVALID_RELATIONSHIP = "INVALID_RELATIONSHIP"
     UNVERIFIABLE_KEY = "UNVERIFIABLE_KEY"
+    ROUTE_LIMIT = "ROUTE_LIMIT"                  # the planner could not see every route within its bounds
 
     category = "REFUSED"
 
@@ -221,12 +226,112 @@ class AmbiguousJoinPathError(SemanticRefusal):
         self.target = target
         self.routes = routes
         super().__init__(
-            f"Có {len(routes)} đường join ngắn nhất khác nhau tới '{target}': "
+            f"Có {len(routes)} đường join khác nghĩa nhau tới '{target}': "
             + " | ".join(routes)
             + ". Kết quả sẽ phụ thuộc đường nào được chọn, nên truy vấn bị từ chối. "
             "Trong Data Model, đánh dấu Inactive một quan hệ, hoặc dùng alias (role-playing) "
             "để chỉ rõ đường cần dùng."
         )
+
+
+# The planner's route bounds. Within them every route is seen; past them the
+# query is REFUSED (RouteEnumerationIncomplete) — a meaning picked from the
+# routes that happened to be enumerated first could be the wrong one.
+ROUTE_MAX_DEPTH = 8
+ROUTE_CAP = 64
+
+
+class RouteEnumerationIncomplete(SemanticRefusal):
+    """The relationship routes to ``target`` could not ALL be enumerated within
+    the planner's bounds (more than ``ROUTE_CAP`` routes, or a route longer
+    than ``ROUTE_MAX_DEPTH`` hops). Choosing among, or AND-ing, a partial set
+    would answer as if the unseen routes did not exist — refused instead."""
+
+    category = SemanticRefusal.ROUTE_LIMIT
+
+    def __init__(self, target: str):
+        self.target = target
+        super().__init__(
+            f"Mô hình có quá nhiều (hơn {ROUTE_CAP}) hoặc quá dài (hơn {ROUTE_MAX_DEPTH} bước) đường quan hệ "
+            f"tới '{target}' để xác định đầy đủ ý nghĩa của truy vấn, nên truy vấn bị từ chối thay vì chỉ "
+            "dùng một phần các đường. Trong Data Model, đánh dấu Inactive bớt quan hệ, đặt cross filter "
+            "về single, hoặc dùng alias để chỉ rõ đường cần dùng.",
+            SemanticRefusal.ROUTE_LIMIT,
+        )
+
+
+def _stable(x):
+    """A value with every (frozen)set turned into a sorted tuple — an order
+    that does not depend on the process's hash seed."""
+    if isinstance(x, (set, frozenset)):
+        return tuple(sorted((_stable(e) for e in x), key=repr))
+    if isinstance(x, tuple):
+        return tuple(_stable(e) for e in x)
+    return x
+
+
+def route_key_mapping(steps) -> frozenset | None:
+    """What a chain of key-equality hops COMPARES, end to end: the set of
+    (first view's column, last view's column) equalities it composes to, when
+    every hop passes the previous hop's key straight through
+    (``sales.product_id = dim_product.product_id`` then
+    ``dim_product.product_id = products.product_id`` composes to
+    ``sales.product_id = products.product_id`` — the direct relationship's
+    meaning). ``None`` when a hop is not a pure key equality or reaches the
+    next view by ANOTHER column (``customers.region_id``): then the chain means
+    something of its own."""
+    mapping = None
+    for st in steps:
+        pairs = tuple(getattr(st.edge, "key_pairs", ()) or ())
+        if not pairs or not getattr(st.edge, "plain_keys", True):
+            return None
+        if mapping is None:
+            mapping = {(f, t) for f, t in pairs}
+            continue
+        by_target: dict = {}
+        for a, b in mapping:
+            by_target.setdefault(b, set()).add(a)
+        nxt = set()
+        for f, t in pairs:
+            if f not in by_target:
+                return None
+            nxt |= {(a, t) for a in by_target[f]}
+        mapping = nxt
+    return frozenset(mapping) if mapping else None
+
+
+def route_meaning_segments(steps) -> tuple:
+    """A route as what it MEANS: maximal runs of hops that pass a key straight
+    through are one segment (start view, end view, the key equalities they
+    compose to); any other hop is its own segment (its relationship). Two
+    routes with the same segments compare the same rows the same way —
+    ``products ← dim_product ← sales → txn_date`` (product_id throughout, then
+    the sale's date) is ``products ← sales → txn_date``."""
+    out: list = []
+    run: list = []
+
+    def _close():
+        if run:
+            keys = route_key_mapping(run)
+            out.append((run[0].edge.from_node, run[-1].edge.to_node, keys))
+            run.clear()
+
+    for st in steps:
+        if not tuple(getattr(st.edge, "key_pairs", ()) or ()) or not getattr(st.edge, "plain_keys", True):
+            _close()
+            out.append((st.edge.from_node, st.edge.to_node, ("rel", _edge_signature(st.edge))))
+            continue
+        if run and route_key_mapping(run + [st]) is None:
+            _close()
+        run.append(st)
+    _close()
+    return tuple(out)
+
+
+def hop_is_to_one(edge: "JoinEdge") -> bool:
+    """A hop toward a ONE side (many-to-one, one-to-one): maps each row to at
+    most one row of the next view."""
+    return canonical_cardinality(getattr(edge, "cardinality", None)) in ("many_to_one", "one_to_one")
 
 
 _re = __import__("re")
@@ -742,6 +847,7 @@ class SemanticJoinResolver:
                         cardinality=inv,
                         is_reverse=True,
                         rel_cross_filter=edge.cross_filter,
+                        plain_keys=edge.plain_keys,
                     )
                     self._adj.setdefault(reverse.from_node, []).append(reverse)
                     self._node_to_view.setdefault(reverse.to_node, reverse.to_view)
@@ -758,7 +864,7 @@ class SemanticJoinResolver:
         sql_on = contract.sql_on or " AND ".join(
             f"${{TABLE}}.{f} = ${{{contract.node}}}.{t}" for f, t in contract.key_pairs
         )
-        return JoinEdge(
+        edge = JoinEdge(
             from_node=contract.from_view,
             to_node=contract.node,
             to_view=contract.view,
@@ -773,6 +879,7 @@ class SemanticJoinResolver:
             is_reverse=False,
             key_pairs=tuple(contract.key_pairs),
         )
+        return __import__("dataclasses").replace(edge, plain_keys=isinstance(_edge_signature(edge)[1], frozenset))
 
     @staticmethod
     def _edge_from_join_dict(from_view: str, join: dict) -> JoinEdge | None:
@@ -887,7 +994,8 @@ class SemanticJoinResolver:
 
         def _walk(node: str, acc: list[JoinEdge]) -> None:
             if len(routes) >= cap:
-                return
+                # never a silently truncated set: past the cap, refused
+                raise RouteEnumerationIncomplete(target_node)
             if node == self._base_node:
                 seq = list(reversed(acc))
                 sig = tuple(_edge_signature(e) for e in seq)
@@ -915,46 +1023,104 @@ class SemanticJoinResolver:
             for seq in routes
         ]
 
-    def forward_routes(self, target_node: str, *, max_depth: int = 8, cap: int = 64) -> list[JoinPath] | None:
-        """EVERY route from the base to ``target_node`` that walks only toward
-        one sides (many-to-one / one-to-one hops: each maps a base row to at
-        most one target row) — distinct relationship chains of ANY length, not
-        just the shortest, sorted (order-free). Two of them are two meanings of
-        the target ("the sale's region" vs "the customer's region"); whether the
-        query's context selects one is the caller's rule. ``None`` when more
-        than ``cap`` exist (the caller refuses rather than truncating)."""
-        if target_node == self._base_node:
-            return [JoinPath(target_node=target_node, steps=[])]
+    # ── complete route enumeration ────────────────────────────────────────
+    # Every route set that can decide a number comes from `_route_search`:
+    # ALL simple routes the hop rule allows, of any length up to
+    # ROUTE_MAX_DEPTH — or `None` when that set cannot be seen completely
+    # (more than ROUTE_CAP routes, or a route the rule allows that is longer
+    # than the bound). Callers refuse on `None` (RouteEnumerationIncomplete);
+    # nothing ever treats a truncated set, or the shortest route, as complete.
+
+    def _out_edges(self, node: str) -> list:
+        """``node``'s outgoing edges, one per relationship and neighbour (a
+        declared edge before a synthetic reverse of the same relationship),
+        in a stable order."""
+        cache = self.__dict__.setdefault("_out_edges_cache", {})
+        if node not in cache:
+            best: dict = {}
+            for e in self._adj.get(node, []):
+                key = (e.to_node, _edge_signature(e))
+                cur = best.get(key)
+                if cur is None or (cur.is_reverse and not e.is_reverse):
+                    best[key] = e
+            cache[node] = [best[k] for k in sorted(best, key=lambda k: (k[0], repr(_stable(k[1]))))]
+        return cache[node]
+
+    def _in_edges(self) -> dict:
+        """to_node -> the de-duplicated edges entering it."""
+        cache = self.__dict__.get("_in_edges_cache")
+        if cache is None:
+            cache = {}
+            for u in sorted(set(self._adj)):
+                for e in self._out_edges(u):
+                    cache.setdefault(e.to_node, []).append(e)
+            self.__dict__["_in_edges_cache"] = cache
+        return cache
+
+    def _route_search(self, starts, target_node: str, step, *, phases=(0,), start_phase=0,
+                      blocked=frozenset(), max_depth: int | None = None, cap: int | None = None,
+                      exact_length: bool = False):
+        """Every simple route from a node of ``starts`` to ``target_node`` whose
+        hops ``step(edge, phase) -> next phase | None`` allows, through no
+        ``blocked`` interior node. ``None`` when not every such route could be
+        enumerated within the bounds. ``exact_length``: only routes of length
+        ``max_depth`` are asked for (the caller knows none is shorter), so
+        reaching that length is not a cut."""
+        max_depth = ROUTE_MAX_DEPTH if max_depth is None else max_depth
+        cap = ROUTE_CAP if cap is None else cap
+        # States (node, phase) from which the target is reachable at all (a
+        # backward walk from it): the search only enters those, so a route cut
+        # by the depth bound is one the rule allows to continue — the
+        # enumeration is then incomplete.
+        good = {(target_node, p) for p in phases}
+        queue = deque(good)
+        incoming = self._in_edges()
+        while queue:
+            v, q = queue.popleft()
+            if v != target_node and v in blocked:
+                continue
+            for e in incoming.get(v, ()):
+                for p in phases:
+                    if (e.from_node, p) not in good and step(e, p) == q:
+                        good.add((e.from_node, p))
+                        queue.append((e.from_node, p))
         found: list[list[JoinEdge]] = []
         seen: set = set()
-        overflow = False
+        state = {"complete": True}
 
-        def _dfs(node: str, acc: list, visited: set) -> None:
-            nonlocal overflow
-            if overflow:
+        def _dfs(node: str, phase, acc: list, visited: set) -> None:
+            if not state["complete"]:
                 return
-            if node == target_node:
-                sig = tuple(_edge_signature(e) for e in acc)
+            if node == target_node and acc:
+                sig = (acc[0].from_node,) + tuple(_edge_signature(e) for e in acc)
                 if sig not in seen:
                     seen.add(sig)
                     found.append(list(acc))
-                    overflow = len(found) > cap
+                    if len(found) > cap:
+                        state["complete"] = False
                 return
             if len(acc) >= max_depth:
+                if not exact_length:
+                    state["complete"] = False
                 return
-            for edge in self._adj.get(node, []):
-                if canonical_cardinality(edge.cardinality) not in ("many_to_one", "one_to_one"):
+            for edge in self._out_edges(node):
+                nxt = edge.to_node
+                if nxt in visited or (nxt != target_node and nxt in blocked):
                     continue
-                if edge.to_node in visited:
+                q = step(edge, phase)
+                if q is None or (nxt, q) not in good:
                     continue
                 acc.append(edge)
-                visited.add(edge.to_node)
-                _dfs(edge.to_node, acc, visited)
-                visited.discard(edge.to_node)
+                visited.add(nxt)
+                _dfs(nxt, q, acc, visited)
+                visited.discard(nxt)
                 acc.pop()
 
-        _dfs(self._base_node, [], {self._base_node})
-        if overflow:
+        for s in sorted(set(starts)):
+            if s == target_node or (s, start_phase) not in good:
+                continue
+            _dfs(s, start_phase, [], {s})
+        if not state["complete"]:
             return None
         paths = [
             JoinPath(target_node=target_node,
@@ -963,6 +1129,115 @@ class SemanticJoinResolver:
             for seq in found
         ]
         return sorted(paths, key=lambda pth: (len(pth.steps), _route_label(pth)))
+
+    def forward_routes(self, target_node: str, *, max_depth: int | None = None,
+                       cap: int | None = None) -> list[JoinPath] | None:
+        """EVERY route from the base to ``target_node`` that walks only toward
+        one sides (many-to-one / one-to-one hops: each maps a base row to at
+        most one target row) — distinct relationship chains of ANY length, not
+        just the shortest, sorted (order-free). Two of them are two meanings of
+        the target ("the sale's region" vs "the customer's region"); whether the
+        query's context selects one is the caller's rule. ``None`` when they
+        cannot all be enumerated within the bounds (the caller refuses rather
+        than truncating)."""
+        if target_node == self._base_node:
+            return [JoinPath(target_node=target_node, steps=[])]
+        return self._route_search([self._base_node], target_node,
+                                  lambda e, _p: 0 if hop_is_to_one(e) else None,
+                                  max_depth=max_depth, cap=cap)
+
+    def descend_ascend_routes(self, target_node: str) -> list[JoinPath] | None:
+        """EVERY route from the base that first walks toward many sides (the
+        base's facts, in reverse of their relationships) and then only toward
+        one sides — a fact under a dimension base, and that fact's dimensions.
+        These are the meanings of a SELECT-side view that is not a dimension of
+        the base: "the region's sales" through ``sales → regions`` and through
+        ``sales → customers → regions`` are two (the fact-base question "sales
+        by region" has the same two). Any length; ``None`` when they cannot all
+        be enumerated within the bounds."""
+        if target_node == self._base_node:
+            return [JoinPath(target_node=target_node, steps=[])]
+
+        def _step(e, phase):
+            if hop_is_to_one(e):
+                return 1
+            return 0 if phase == 0 else None
+
+        return self._route_search([self._base_node], target_node, _step, phases=(0, 1))
+
+    def shortest_propagation_routes(self, target_node: str, anchors) -> list[JoinPath] | None:
+        """The routes a FILTER on ``target_node`` travels to restrict this
+        resolver's root (the query's fact grain) — every one of the most DIRECT
+        valid routes. A route correlates at a view of ``anchors`` (the views the
+        query already has; the root among them), passes through no other one,
+        and every hop of it propagates (:func:`edge_propagates`: toward a many
+        side only through a relationship that filters both ways). Its length is
+        the root's own distance to its anchor plus the route's; the shortest
+        such routes are the filter's — all of them (AND-ed by the caller): a
+        longer one relates the two tables through further relationships,
+        typically another role of a dimension. A shorter route a filter may NOT
+        travel never hides a valid one. ``None`` when more than ``ROUTE_CAP``
+        of them exist (refused, never a partial set)."""
+        anchors = set(anchors) | {self._base_node}
+        blocked = frozenset(anchors)
+        offsets: dict = {}
+        for a in sorted(anchors):
+            if a == self._base_node:
+                offsets[a] = 0
+                continue
+            path = self.resolve_path(a)
+            if path is not None:
+                offsets[a] = len(path.steps)
+        # breadth-first distance from each anchor over propagating hops
+        best_total = None
+        lengths: dict = {}
+        for a, off in offsets.items():
+            seen = {a}
+            frontier = [a]
+            d = 0
+            found = None
+            while frontier and found is None:
+                d += 1
+                nxt = []
+                for node in frontier:
+                    for e in self._out_edges(node):
+                        if not edge_propagates(e) or e.to_node in seen:
+                            continue
+                        if e.to_node == target_node:
+                            found = d
+                            break
+                        if e.to_node in blocked:
+                            continue
+                        seen.add(e.to_node)
+                        nxt.append(e.to_node)
+                    if found is not None:
+                        break
+                frontier = nxt
+            if found is not None:
+                lengths[a] = found
+                total = off + found
+                best_total = total if best_total is None else min(best_total, total)
+        if best_total is None:
+            return []
+        out: list = []
+        for a in sorted(lengths):
+            if offsets[a] + lengths[a] != best_total:
+                continue
+            found = self._route_search([a], target_node, lambda e, _p: 0 if edge_propagates(e) else None,
+                                       blocked=blocked, max_depth=lengths[a], exact_length=True)
+            if found is None:
+                return None
+            out += [r for r in found if r.steps]
+        if len(out) > ROUTE_CAP:
+            return None
+        return sorted(out, key=lambda pth: (len(pth.steps), _route_label(pth)))
+
+    def any_routes(self, target_node: str) -> list[JoinPath] | None:
+        """EVERY simple route from the base to ``target_node``, any hops, any
+        length within the bounds (``None`` past them)."""
+        if target_node == self._base_node:
+            return [JoinPath(target_node=target_node, steps=[])]
+        return self._route_search([self._base_node], target_node, lambda _e, _p: 0)
 
     def resolve_unique_path(self, target_node: str) -> JoinPath | None:
         """The single shortest path to ``target_node``, or ``None`` when it is

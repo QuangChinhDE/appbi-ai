@@ -421,3 +421,148 @@ def test_the_live_adapter_rechecks_a_to_one_key_inside_its_own_statement(live_wo
     duck.execute("INSERT INTO customers VALUES (1)")  # a writer duplicates the key after the probe
     with pytest.raises(duckdb.Error, match="More than one row"):
         duck.execute(f"SELECT COUNT(*) FROM ({sql}) AS t").fetchall()
+
+
+# ── G16 (Pair #2 final closure): a related filter on the live path is applied,
+#    or recorded as not related, or refused — never left out silently ─────────
+
+
+def _live_adapt(live_world, base, filters, diagnostics=None):
+    from app.services import chart_service as cs
+
+    db, _con = live_world
+    return cs._adapt_live_sql_for_semantic_filters(
+        db, types.SimpleNamespace(type="duckdb", config={}), types.SimpleNamespace(),
+        {"semanticBinding": {"baseViewName": base, "modelId": 9}}, filters, diagnostics=diagnostics,
+    )
+
+
+def _flt(ref, value, **kw):
+    return {"field": ref, "semanticField": ref, "operator": "eq", "value": value, **kw}
+
+
+@pytest.mark.parametrize("live_world", ["single"], indirect=True)
+def test_g16_a_live_filter_with_no_filter_path_is_left_out_and_recorded(live_world):
+    """No relationship lets an orders filter reach the customers base (single
+    direction): it does not apply (PowerBI parity) — and the caller's
+    dropped-filter diagnostics say so. An authoritative one is refused."""
+    from app.services.chart_contracts import AuthoritativeFilterNotApplied
+
+    diagnostics: list = []
+    sql, eff = _live_adapt(live_world, "customers", [_flt("orders.status", "returned")], diagnostics)
+    assert sql is None and eff == []
+    assert [(d.get("semantic_field"), d.get("reason")) for d in diagnostics] == [("orders.status", "unreachable_view")]
+    with pytest.raises(AuthoritativeFilterNotApplied):
+        _live_adapt(live_world, "customers", [_flt("orders.status", "returned", _authoritative=True)], [])
+
+
+def test_g16_a_live_filter_without_a_base_relation_is_recorded_never_silent(live_world, monkeypatch):
+    """The base relation cannot be built, so no related view can be joined to
+    it: the related filter is not applied — and RECORDED (`no_join_path`, the
+    engine's rule for an unrenderable route: the skip badge); it used to vanish
+    with no trace. An authoritative one is refused; a filter on the base itself
+    is still handed back."""
+    from app.services import dataset_relation_service as drs
+    from app.services.chart_contracts import AuthoritativeFilterNotApplied
+
+    def _no_relation(*_a, **_k):
+        raise RuntimeError("relation unavailable")
+
+    monkeypatch.setattr(drs, "resolve_dataset_table_relation", _no_relation)
+    diagnostics: list = []
+    sql, eff = _live_adapt(live_world, "customers", [_flt("orders.status", "returned"), _flt("customers.id", 1)],
+                           diagnostics)
+    assert sql is None and [f["semanticField"] for f in eff] == ["customers.id"]
+    assert [(d.get("semantic_field"), d.get("reason")) for d in diagnostics] == [("orders.status", "no_join_path")]
+    with pytest.raises(AuthoritativeFilterNotApplied):
+        _live_adapt(live_world, "customers", [_flt("orders.status", "returned", _authoritative=True)], [])
+
+
+def test_g16_a_live_filter_whose_joined_view_cannot_be_rendered_is_recorded_never_silent(live_world, monkeypatch):
+    """orders → customers is a to-one route (a LEFT JOIN); the customers
+    relation cannot be rendered → not applied, and RECORDED (`no_join_path`);
+    it used to be skipped with no trace: the orders chart answered unfiltered
+    as if filtered. An authoritative one is refused."""
+    from app.services import chart_service as cs
+    from app.services import dataset_relation_service as drs
+    from app.services.chart_contracts import AuthoritativeFilterNotApplied
+
+    monkeypatch.setattr(drs, "resolve_dataset_table_relation",
+                        lambda *_a, **_k: types.SimpleNamespace(sql="SELECT * FROM orders"))
+    monkeypatch.setattr(cs, "_build_live_relation_for_semantic_view", lambda *_a, **_k: None)
+    diagnostics: list = []
+    sql, eff = _live_adapt(live_world, "orders", [_flt("customers.id", 1)], diagnostics)
+    assert sql is None and eff == []
+    assert [(d.get("semantic_field"), d.get("reason")) for d in diagnostics] == [("customers.id", "no_join_path")]
+    with pytest.raises(AuthoritativeFilterNotApplied):
+        _live_adapt(live_world, "orders", [_flt("customers.id", 1, _authoritative=True)], [])
+
+
+def test_g16_a_live_filter_on_a_field_the_related_view_lacks_is_refused(live_world, monkeypatch):
+    from app.services import dataset_relation_service as drs
+
+    monkeypatch.setattr(drs, "resolve_dataset_table_relation",
+                        lambda *_a, **_k: types.SimpleNamespace(sql="SELECT * FROM orders"))
+    with pytest.raises(ValueError, match="customers.nope"):
+        _live_adapt(live_world, "orders", [_flt("customers.nope", 1)], [])
+
+
+def test_g16_the_runtime_table_caller_applies_records_or_refuses(live_world, monkeypatch):
+    """The derived / runtime-table caller (`_build_row_filtered_live_relation_sql`)
+    receives the adapter's contract as is: an applied filter restricts the rows,
+    an unrelated one is recorded, an unrenderable one refuses."""
+    from app.services import chart_service as cs
+
+    db, con = live_world
+    ds = types.SimpleNamespace(type="duckdb", config={})
+    binding = {"baseViewName": "customers", "modelId": 9}
+    from app.services import dataset_relation_service as drs
+
+    monkeypatch.setattr(drs, "resolve_dataset_table_relation",
+                        lambda *_a, **_k: types.SimpleNamespace(sql="SELECT * FROM customers", output_columns=["id"]))
+
+    def ids(sql):
+        return [r[0] for r in con.execute(f"SELECT id FROM ({sql}) AS t ORDER BY id").fetchall()]
+
+    applied = cs._build_row_filtered_live_relation_sql(
+        db, ds, types.SimpleNamespace(), [_flt("products.name", "B")], semantic_binding=binding, diagnostics=[])
+    assert ids(applied) == [3]          # through orders AND tickets (both ways), as the engine
+    with pytest.raises(ValueError, match="customers.nope"):
+        cs._build_row_filtered_live_relation_sql(
+            db, ds, types.SimpleNamespace(), [_flt("customers.nope", 1)],
+            semantic_binding={"baseViewName": "orders", "modelId": 9}, diagnostics=[])
+
+
+@pytest.mark.parametrize("live_world", ["single"], indirect=True)
+def test_g16_the_runtime_table_caller_records_an_unrelated_filter(live_world, monkeypatch):
+    from app.services import chart_service as cs
+
+    db, con = live_world
+    from app.services import dataset_relation_service as drs
+
+    monkeypatch.setattr(drs, "resolve_dataset_table_relation",
+                        lambda *_a, **_k: types.SimpleNamespace(sql="SELECT * FROM customers", output_columns=["id"]))
+    diagnostics: list = []
+    sql = cs._build_row_filtered_live_relation_sql(
+        db, types.SimpleNamespace(type="duckdb", config={}), types.SimpleNamespace(),
+        [_flt("orders.status", "returned")], semantic_binding={"baseViewName": "customers", "modelId": 9},
+        diagnostics=diagnostics)
+    assert [r[0] for r in con.execute(f"SELECT id FROM ({sql}) AS t ORDER BY id").fetchall()] == [1, 2, 3]
+    assert [d.get("reason") for d in diagnostics] == ["unreachable_view"]
+
+
+def test_g16_the_physical_live_caller_refuses_a_related_filter_it_cannot_apply():
+    """The physical-table live path (a chart with no semantic model behind it —
+    one that has one always runs on the engine) normalises the dashboard
+    filters before the adapter: a filter on another view is a HARD drop
+    (binding_unsupported) and the request is refused — the adapter returning
+    no SQL can never leave an unfiltered chart there."""
+    from app.services.chart_contracts import enforce_no_hard_dropped_filters
+    from app.services.chart_service import _normalize_runtime_filters_for_chart
+
+    diagnostics: list = []
+    kept = _normalize_runtime_filters_for_chart({"semanticBinding": {}}, [_flt("orders.status", "returned")],
+                                                diagnostics=diagnostics)
+    assert kept == [] and [d.get("reason") for d in diagnostics] == ["binding_unsupported"]
+    with pytest.raises(ValueError, match="orders.status"):
+        enforce_no_hard_dropped_filters(diagnostics)
