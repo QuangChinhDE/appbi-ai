@@ -443,7 +443,7 @@ jobs:
       # NULL keys, ties), executed on Postgres AND DuckDB, re-asked under every
       # order permutation (relationships, explores, measures, dims, filters,
       # node-set order, a fresh graph): same rows or the same refusal category.
-      - name: GATE — Pair #2 golden topology + order invariance (Postgres + DuckDB)
+      - name: "GATE — Pair 2 golden topology + order invariance (Postgres + DuckDB)"
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_pair2_golden_topology_pg.py
