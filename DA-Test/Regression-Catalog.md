@@ -172,6 +172,9 @@ Legend for **Test**: ✅ = locked by a named test; ⚠️ = partial; ❌ **GAP**
 | (closure review) AI insight-pack/recon cache served summaries computed under old relationships | no semantic identity; max(updated_at) misses lock-waiting writers + deletes | `semantic_epoch` = hash of every (id, updated_at) | ✅ test_relationship_contract |
 | (closure review) unrenderable 🚫 hidden filter's 400 named its field | generic ValueError message | fixed refusal message for authoritative filters | ✅ test_public_authoritative_bounds |
 | (closure) a live source duplicated a one-side key BETWEEN the probe and the query → that request fanned out (200, inflated) | probe is a separate statement | in-statement guard `(SELECT _appbi_dup FROM (<probe>) … UNION ALL SELECT 1) = 1` in the joining statement's WHERE (same snapshot; raises on a duplicate) — engine + live adapter | ✅ test_relationship_contract_pg (exact race) + test_relationship_contract + BQ ds52 (scratchpad) |
+| (closure review r3) viewer's Order-date Year pick + 🔒 Date→Year fanned onto the same column → the lock copy was dropped as a duplicate and the stored entry left unmarked (engine drop = silent skip) | fan id added after the de-dup check | `_add_engine_predicate`: identity incl. fan id, marker OR-ed onto the stored entry | ✅ test_public_authoritative_bounds |
+| (closure review r3) PUT explore with `"joins": null` wrote null past the version precondition → every later read 500 | setattr loop wrote the raw value | 400 | ✅ test_semantic_router_object_access |
+| (closure review r3) AI pack/recon kept summaries computed before a table transformation edit / a new publish | epoch covered explores/views/models only | + datasets and dataset tables | ✅ test_relationship_contract |
 
 ### K. Workboard (mini-app)
 | Bug | Root cause | Fix | Test |

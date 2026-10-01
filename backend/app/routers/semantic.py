@@ -684,6 +684,10 @@ def update_explore(
 
     update_data = explore_update.model_dump(exclude_unset=True)
     expected_joins_version = update_data.pop("expected_joins_version", None)
+    if "joins" in update_data and update_data["joins"] is None:
+        # `null` is not "no relationships" (send []) — written as-is it skipped
+        # the version precondition and stored a null the schema cannot read.
+        raise HTTPException(status_code=400, detail="joins không được là null — gửi [] để xoá mọi quan hệ.")
     base_view_name = update_data.get("base_view_name") or db_explore.base_view_name
     if update_data.get("base_view_id") is not None:
         new_base = db.query(SemanticView).filter(SemanticView.id == update_data["base_view_id"]).first()

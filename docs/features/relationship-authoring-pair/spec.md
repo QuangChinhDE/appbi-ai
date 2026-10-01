@@ -90,8 +90,10 @@ blocking health check `invalid_relationship`) rather than guessed.
   VALID through the contract, no identity twice; provenance (`origin`,
   `managed`, `user_edited`, calendar fields) comes from the stored row of the
   same identity, and an auto row whose semantics changed becomes `user_edited`.
-  Takes the model write lock. `expected_updated_at` (optional) → 409 when the
-  explore changed since the client read it.
+  Takes the model write lock. `expected_joins_version` (the `joins_version` the
+  client read) is REQUIRED for a whole-list write — 428 without it, 409 when the
+  list changed since; a base move re-validates the stored list under the same
+  precondition; `"joins": null` is 400 (send `[]`). See `closure.md`.
 - **Every write path reads keys through the contract** (`_join_columns_from_definition`
   with the explore's base view): normalization, merge, identity matching for
   edit/delete/tombstones, suggestions — so a composite key behind a scalar

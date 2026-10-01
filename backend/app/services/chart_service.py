@@ -2233,6 +2233,22 @@ def _detect_foreign_dialect_leak(sql: str, dialect: str) -> Optional[str]:
     return None
 
 
+def _add_engine_predicate(bucket: list, predicate: dict, *, authoritative: bool) -> None:
+    """Add one engine predicate to a field's list: one entry per identity
+    (operator, value, calendar keys, fan id). The authority marker is not part
+    of the identity — it is OR-ed onto the stored entry, so an identical viewer
+    pick stored first can never leave a 🔒 copy unmarked (an engine drop of it
+    would then be a silent skip instead of a refusal)."""
+    identity = {k: v for k, v in predicate.items() if k != AUTHORITATIVE_KEY}
+    stored = next((e for e in bucket if {k: v for k, v in e.items() if k != AUTHORITATIVE_KEY} == identity), None)
+    if stored is None:
+        stored = dict(identity)
+        bucket.append(stored)
+    if authoritative:
+        # carried into the engine: every engine drop site refuses it
+        stored[AUTHORITATIVE_KEY] = True
+
+
 def _execute_semantic_chart_runtime(
     db: Session,
     datasource,
@@ -2456,16 +2472,10 @@ def _execute_semantic_chart_runtime(
             cal_source = filt.get("calendarSourceField") or filt.get("calendar_source_field")
             if cal_source:
                 engine_filt["calendarSourceField"] = cal_source
-        engine_filters.setdefault(qualified, [])
-        if engine_filt not in engine_filters[qualified]:
-            engine_filters[qualified].append(engine_filt)
         if filt.get("_calendar_fan"):
             engine_filt["_calendar_fan"] = filt["_calendar_fan"]
-        if filt.get(AUTHORITATIVE_KEY):
-            # carried into the engine: every engine drop site refuses it
-            for _ef in engine_filters[qualified]:
-                if {k: v for k, v in _ef.items() if k != AUTHORITATIVE_KEY} == engine_filt:
-                    _ef[AUTHORITATIVE_KEY] = True
+        _add_engine_predicate(engine_filters.setdefault(qualified, []), engine_filt,
+                              authoritative=bool(filt.get(AUTHORITATIVE_KEY)))
 
     # Phase-15.83 — DA decision: render every row. The previous code
     # capped chart queries at 1000 (default) / 5000 (with limit_override).

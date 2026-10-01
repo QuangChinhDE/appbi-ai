@@ -59,17 +59,21 @@ def scope_hash(excluded_columns) -> str:
 
 def semantic_epoch(db) -> str:
     """The semantic definitions a cached AI pack/recon was computed under: the
-    contract version plus every explore (relationships), view and model row's
-    (id, updated_at). Any edit or delete — on any worker — changes it. Not
+    contract version plus every explore (relationships), view, model, dataset
+    (settings, published generation) and dataset table (source,
+    transformations, type overrides, columns) row's (id, updated_at) — what the
+    chart result cache keys on, too. Any edit or delete — on any worker —
+    changes it. Not
     max(updated_at): PostgreSQL's now() is the TRANSACTION start, so a writer
     that waited on the model lock commits an OLDER stamp than the write before
     it, and a delete moves the max back to an earlier epoch."""
+    from app.models.dataset import Dataset, DatasetTable
     from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
     from app.services.query_cache import SEMANTIC_RESULT_CACHE_VERSION
 
     h = hashlib.sha256(SEMANTIC_RESULT_CACHE_VERSION.encode("utf-8"))
     try:
-        for m in (SemanticExplore, SemanticView, SemanticModel):
+        for m in (SemanticExplore, SemanticView, SemanticModel, Dataset, DatasetTable):
             for rid, stamp in db.query(m.id, m.updated_at).order_by(m.id).all():
                 h.update(f"{m.__tablename__}:{rid}:{stamp};".encode("utf-8"))
     except Exception:  # noqa: BLE001 — no identity → no reuse (a unique epoch)

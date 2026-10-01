@@ -1011,7 +1011,15 @@ def test_the_ai_cache_epoch_moves_on_every_relationship_write_and_delete(db):
     assert after_write != before
     db.delete(db.get(SemanticExplore, 1))
     db.commit()
-    assert semantic_epoch(db) not in (before, after_write)
+    after_delete = semantic_epoch(db)
+    assert after_delete not in (before, after_write)
+    # a table definition edit (a transformation) changes the numbers too — the
+    # chart result cache keys on it, so the AI caches must as well (review r3)
+    t = db.get(DatasetTable, 11)
+    t.transformations = [{"type": "filter", "column": "id", "operator": "ne", "value": 0}]
+    t.updated_at = dt.datetime(2026, 7, 1)
+    db.commit()
+    assert semantic_epoch(db) != after_delete
 
 
 def test_statement_key_guard_rechecks_only_mutable_relations():

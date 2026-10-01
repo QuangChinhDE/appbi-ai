@@ -247,6 +247,38 @@ def test_a_lock_reaching_the_dropdown_through_linked_fields_is_kept():
     assert b["semanticField"] == "customers.region" and b["value"] == ["North"] and b[HARD_BOUND_KEY]
 
 
+def test_a_lock_identical_to_a_stored_viewer_pick_still_marks_the_stored_predicate():
+    """Review (round 3): the fan id was added AFTER the de-duplication, so a 🔒
+    copy identical to a viewer pick already stored on the field was neither
+    appended nor matched — the stored predicate stayed unmarked and an engine
+    drop of it was a silent skip instead of a refusal."""
+    from app.services.chart_service import _add_engine_predicate
+
+    pick = {"operator": "in", "value": [2024], "calendarField": "year"}
+    # the viewer's Order-date Year pick is stored; the 🔒 "Date → Year" fanned
+    # onto the same column arrives as a fan copy: it must be stored, MARKED
+    bucket: list = []
+    _add_engine_predicate(bucket, dict(pick), authoritative=False)
+    _add_engine_predicate(bucket, {**pick, "_calendar_fan": "f1"}, authoritative=True)
+    assert bucket == [pick, {**pick, "_calendar_fan": "f1", AUTHORITATIVE_KEY: True}], bucket
+    # an identical lock (same identity) marks the stored entry instead of being lost
+    same: list = []
+    _add_engine_predicate(same, dict(pick), authoritative=False)
+    _add_engine_predicate(same, dict(pick), authoritative=True)
+    assert same == [{**pick, AUTHORITATIVE_KEY: True}]
+    # a fan copy never marks (or merges into) a role lock: the engine would
+    # collapse a fan-stamped lock onto the main calendar
+    lock: list = []
+    _add_engine_predicate(lock, dict(pick), authoritative=True)
+    _add_engine_predicate(lock, {**pick, "_calendar_fan": "f1"}, authoritative=False)
+    assert lock == [{**pick, AUTHORITATIVE_KEY: True}, {**pick, "_calendar_fan": "f1"}]
+    # an ordinary duplicate is stored once, unmarked
+    plain: list = []
+    for _ in range(2):
+        _add_engine_predicate(plain, {"operator": "eq", "value": "N"}, authoritative=False)
+    assert plain == [{"operator": "eq", "value": "N"}]
+
+
 def test_a_viewer_can_neither_claim_nor_shed_a_server_marker():
     from app.services.filter_layered_merge import without_server_owned_keys
 

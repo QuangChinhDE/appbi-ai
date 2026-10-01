@@ -78,7 +78,10 @@ including one that reaches it as a `linkedFields` member (re-aimed at the
 dropdown's field). A viewer can neither claim nor shed a server marker: every
 `_`-prefixed key is stripped from viewer filters. The per-measure executor
 (FEATURE_PER_MEASURE_ISOLATION) re-raises a refusal instead of returning an
-empty group.
+empty group. Engine predicates are de-duplicated per identity (operator,
+value, calendar keys, fan id) and the authority marker is OR-ed onto the stored
+entry (`chart_service._add_engine_predicate`), so a 🔒 copy identical to a viewer
+pick stored first is never left unmarked.
 
 An ORDINARY viewer/report filter keeps its documented Power BI behaviour: a
 filter on a table with no relationship path to the chart is ignored with a
@@ -100,6 +103,7 @@ authoritative one.
 | `replace_explore_joins` ← PUT /semantic/explores/{id} and PUT /datasets/{id}/model/explores/{id} | yes | yes | every row via the contract; no identity twice | stored provenance for unchanged identities; new rows are `manual`; omitted `is_active`/`cross_filter` keep the stored value | `expected_joins_version` REQUIRED (428 without, 409 stale) |
 | POST /semantic/explores | yes | yes | via the contract | new rows `manual` | a second explore for the same base view → 409 |
 | PUT /semantic/explores/{id} moving the base (`base_view_id`) | yes | yes | the stored list re-validated against the NEW base, even when no joins are sent | as above | version REQUIRED; moving onto a base another explore owns → 409 |
+| PUT /semantic/explores/{id} with `"joins": null` | n/a | n/a | refused (400) — send `[]` to remove every relationship | n/a | never written past the precondition |
 | `_cleanup_semantic_view_for_table` (table delete) | yes | yes | removes rows on the deleted view | n/a | n/a |
 | workboard template import | new dataset | n/a | rows the contract refuses fail the faithful rebuild (recorded `model_rebuild_error`) | bundle | n/a |
 
@@ -142,7 +146,7 @@ runs on the snapshot table the query reads).
 | join graph (`_GRAPH_CACHE`) | relationship JSON per explore (unchanged) |
 | key probes | only immutable relations; probe SQL names the physical table; a live relation is re-checked inside the query statement itself |
 | engine per-query memos | calendar/snapshot memos reset per top-level query |
-| AI insight pack / recon (`summary_cache`) | `semantic_epoch`: the contract version + every explore/view/model row's `(id, updated_at)` — any edit or delete changes it (not `max(updated_at)`: PostgreSQL `now()` is the transaction start, so a writer that waited on the model lock commits an older stamp) |
+| AI insight pack / recon (`summary_cache`) | `semantic_epoch`: the contract version + every explore/view/model/dataset/dataset-table row's `(id, updated_at)` (a transformation edit or a new publish changes it) — any edit or delete changes it (not `max(updated_at)`: PostgreSQL `now()` is the transaction start, so a writer that waited on the model lock commits an older stamp) |
 
 ## Execution surfaces (P1-10)
 

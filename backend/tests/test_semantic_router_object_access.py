@@ -387,3 +387,13 @@ def test_an_explore_cannot_be_moved_onto_a_base_view_another_explore_owns(db, sh
     db.commit()
     assert _status(api.update_explore, 1, SemanticExploreUpdate(**move, expected_joins_version=v), db, owner) == 409
     assert db.get(SemanticExplore, 1).base_view_name == "orders"
+
+
+def test_a_null_joins_list_is_refused_not_written_past_the_precondition(db, shares):
+    """Review (round 3): an explicit `"joins": null` skipped replace_explore_joins
+    (no version precondition, no tombstones) and was written as-is — every later
+    read of the explore then failed its schema."""
+    owner = _user(OWNER, "edit")
+    before = list(db.get(SemanticExplore, 1).joins)
+    assert _status(api.update_explore, 1, SemanticExploreUpdate(joins=None), db, owner) == 400
+    assert db.get(SemanticExplore, 1).joins == before
