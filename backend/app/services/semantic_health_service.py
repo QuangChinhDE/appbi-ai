@@ -99,15 +99,10 @@ def _duplicate_key_sql(relation: str, columns: List[str], dialect: str) -> str:
     )
 
 
-def _join_key_columns(join: dict) -> tuple[List[str], List[str]]:
-    import re
-
-    frm = [c for c in (join.get("from_columns") or []) if c] or ([join["from_column"]] if join.get("from_column") else [])
-    to = [c for c in (join.get("to_columns") or []) if c] or ([join["to_column"]] if join.get("to_column") else [])
-    if frm and to:
-        return frm, to
-    pairs = re.findall(r"\$\{TABLE\}\.(\w+)\s*=\s*\$\{\w+\}\.(\w+)", str(join.get("sql_on") or ""))
-    return [p[0] for p in pairs], [p[1] for p in pairs]
+def _join_key_columns(contract) -> tuple[List[str], List[str]]:
+    """The FULL key of a relationship, from the same contract the resolver
+    builds its edges from (every sql_on spelling; composite keys whole)."""
+    return [f for f, _t in contract.key_pairs], [t for _f, t in contract.key_pairs]
 
 
 def _views_by_name(db: Session, dataset_id: int) -> Dict[str, tuple]:
@@ -122,7 +117,7 @@ def uniqueness_checks(
     """One-side keys of active M:1 / 1:1 relationships (blocking), and declared
     primary keys of other views (reported, never blocking: a PK a relationship
     does not rely on changes no joined number)."""
-    from app.services.semantic_join_resolver import canonical_cardinality
+    from app.services.semantic_join_resolver import read_join_contract
 
     views = _views_by_name(db, dataset_id)
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
@@ -130,12 +125,13 @@ def uniqueness_checks(
 
     for e in (db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all() if model else []):
         for j in e.joins or []:
-            if not isinstance(j, dict) or j.get("is_active") is False:
-                continue
-            card = canonical_cardinality(j.get("cardinality") or j.get("relationship"))
-            frm_cols, to_cols = _join_key_columns(j)
-            src = str(j.get("from_view") or e.base_view_name or "")
-            dst = str(j.get("view") or "")
+            contract = read_join_contract(e.base_view_name, j)
+            if not contract.valid or not contract.is_active:
+                continue  # invalid rows are reported by invalid_relationship_checks
+            card = contract.cardinality
+            frm_cols, to_cols = _join_key_columns(contract)
+            src = contract.from_view
+            dst = contract.view
             if card in ("many_to_one", "one_to_one") and to_cols:
                 wanted.setdefault((dst, tuple(to_cols)), f"relationship {src} → {dst} ({card})")
             if card in ("one_to_many", "one_to_one") and frm_cols:
@@ -180,6 +176,28 @@ def uniqueness_checks(
                 check.blocking = False
                 check.detail = f"Không kiểm được: {type(exc).__name__}: {str(exc)[:300]}"
         out.append(check)
+    return out
+
+
+def invalid_relationship_checks(db: Session, dataset_id: int) -> List[HealthCheck]:
+    """Persisted relationships whose contract is invalid. Blocking: the engine
+    refuses every query on a model that carries one, so it must not publish."""
+    from app.services.semantic_join_resolver import read_join_contract
+
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    out: List[HealthCheck] = []
+    for e in (db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all() if model else []):
+        for i, j in enumerate(e.joins or []):
+            c = read_join_contract(e.base_view_name, j)
+            if c.valid:
+                continue
+            name = str(j.get("name") or c.node or i) if isinstance(j, dict) else str(i)
+            out.append(HealthCheck(
+                id=f"invalid_relationship:{e.base_view_name}:{name}", layer=LAYER_SEMANTIC,
+                kind="invalid_relationship", subject=f"{e.base_view_name} → {name}", status="fail",
+                blocking=True, detail="Quan hệ không hợp lệ: " + "; ".join(c.invalid),
+                evidence={"reasons": list(c.invalid)},
+            ))
     return out
 
 
@@ -263,7 +281,11 @@ def _layer_status(checks: List[HealthCheck]) -> str:
 
 
 def evaluate(db: Session, dataset_id: int, *, execute: bool = True) -> Dict[str, Any]:
-    semantic = uniqueness_checks(db, dataset_id, execute=execute) + dangling_checks(db, dataset_id)
+    semantic = (
+        invalid_relationship_checks(db, dataset_id)
+        + uniqueness_checks(db, dataset_id, execute=execute)
+        + dangling_checks(db, dataset_id)
+    )
     snapshot = snapshot_parity_checks(db, dataset_id, execute=execute)
     return {
         "dataset_id": dataset_id,
@@ -284,5 +306,7 @@ def publish_blockers(db: Session, dataset_id: int) -> List[str]:
     # (BigQuery dry-run cost limit, statement timeout); one that cannot run is
     # `unknown` and does not block. The checks read the live relation the
     # generation was just built from, moments earlier.
-    return [c.detail for c in uniqueness_checks(db, dataset_id, execute=True, include_primary_keys=False)
-            if c.blocking and c.status == "fail"]
+    checks = invalid_relationship_checks(db, dataset_id) + uniqueness_checks(
+        db, dataset_id, execute=True, include_primary_keys=False,
+    )
+    return [c.detail for c in checks if c.blocking and c.status == "fail"]

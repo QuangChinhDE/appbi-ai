@@ -61,7 +61,7 @@ _COMPLEX_NON_GROUPABLE_TYPES = {
 
 # FK naming heuristics: columns ending with these suffixes are likely foreign keys
 _FK_SUFFIXES = ("_id", "_pk", "_fk", "_key")
-_AUTO_JOIN_ORIGINS = {"auto_fk", "auto_calendar"}
+_AUTO_JOIN_ORIGINS = {"auto_fk", "auto_calendar", "auto_db_constraint"}
 _VALID_JOIN_TYPES = {"left", "inner", "right", "full"}
 _VALID_RELATIONSHIP_TYPES = {
     "one_to_one",
@@ -316,7 +316,22 @@ def _normalize_requested_join_columns(
     return [pair[0] for pair in pairs], [pair[1] for pair in pairs]
 
 
-def _join_columns_from_definition(join: dict[str, Any]) -> tuple[list[str], list[str]]:
+def _join_columns_from_definition(
+    join: dict[str, Any], base_view: str | None = None,
+) -> tuple[list[str], list[str]]:
+    """The key pairs of a stored join row. With its explore's base view (or
+    the row's own from_view) a VALID row is read through the relationship
+    contract — the same key the resolver joins on, whatever the spelling
+    (composite sql_on behind a scalar shorthand, reversed, LookML). Otherwise
+    the raw lists / scalar / canonical sql_on, as before (an invalid row is
+    never "repaired" into a reading here)."""
+    base = str(base_view or "").strip() or str((join or {}).get("from_view") or "").strip()
+    if base and isinstance(join, dict):
+        from app.services.semantic_join_resolver import read_join_contract
+
+        contract = read_join_contract(base, join)
+        if contract.valid and contract.key_pairs:
+            return [f for f, _ in contract.key_pairs], [t for _, t in contract.key_pairs]
     pairs = _dedupe_join_pairs(
         list(
             zip(
@@ -527,8 +542,9 @@ def _build_join_adjacency(model: SemanticModel) -> dict[str, set[str]]:
             # Phase-3b: inactive joins are stored but ignored for graph
             # operations (path resolution, cycle detection). Default True
             # for legacy joins missing the flag.
-            raw_active = join.get("is_active")
-            if raw_active is not None and not bool(raw_active):
+            from app.services.semantic_join_resolver import join_is_usable
+
+            if not join_is_usable(base_view_name, join):  # contract: invalid/"false" → absent
                 continue
             source_view_name = str(join.get("from_view") or base_view_name).strip()
             target_view_name = str(join.get("view") or "").strip()
@@ -573,17 +589,23 @@ def _would_create_join_cycle(
 
 def _normalize_join(join: dict, base_view_name: str, base_fields: set[str] | None = None) -> dict | None:
     normalized = dict(join)
-    from_columns, to_columns = _join_columns_from_definition(normalized)
+    from_columns, to_columns = _join_columns_from_definition(normalized, base_view_name)
     from_column = from_columns[0] if from_columns else None
     to_column = to_columns[0] if to_columns else None
 
     if normalized.get("from_view") and normalized.get("from_view") != base_view_name:
         return None
 
-    if base_fields is not None:
-        for candidate in from_columns:
-            if candidate not in base_fields:
-                return None
+    if base_fields is not None and any(c not in base_fields for c in from_columns):
+        # Kept, not dropped: a background resync (drift repair) after a
+        # transient column change used to delete the user's relationship for
+        # good. A query through it now fails loudly at the warehouse, and
+        # semantic health lists it as a dangling join key.
+        logger.warning(
+            "[model] join %s -> %s keeps a from-column missing on %s: %s",
+            base_view_name, normalized.get("view"), base_view_name,
+            [c for c in from_columns if c not in base_fields],
+        )
 
     normalized["from_view"] = base_view_name
     normalized["from_columns"] = from_columns
@@ -947,7 +969,7 @@ def _sanitize_join_definitions(
         if not target_view_name or target_view_name not in valid_target_view_names:
             continue
 
-        join_from_columns, join_to_columns = _join_columns_from_definition(normalized)
+        join_from_columns, join_to_columns = _join_columns_from_definition(normalized, base_view_name)
         join_alias = str(normalized.get("alias") or "").strip() or None
         key = (target_view_name, join_alias, _join_pairs_signature(join_from_columns, join_to_columns))
         if key in seen:
@@ -1427,7 +1449,7 @@ def _detect_fk_joins(
             joins_by_source.setdefault(current_view.name, [])
             existing = any(
                 join.get("view") == ref_view.name
-                and _join_pairs_signature(*_join_columns_from_definition(join)) == ((raw_col_name, target_col),)
+                and _join_pairs_signature(*_join_columns_from_definition(join, current_view.name)) == ((raw_col_name, target_col),)
                 for join in joins_by_source[current_view.name]
             )
             if existing:
@@ -1550,12 +1572,13 @@ def _build_calendar_role_views(
 def _merge_join_definitions(
     manual_joins: List[dict],
     auto_joins: List[dict],
+    base_view: str | None = None,
 ) -> List[dict]:
     merged: List[dict] = []
     seen: Set[tuple[str, str | None, tuple[tuple[str, str], ...]]] = set()
 
     for join in [*manual_joins, *auto_joins]:
-        join_from_columns, join_to_columns = _join_columns_from_definition(join)
+        join_from_columns, join_to_columns = _join_columns_from_definition(join, base_view)
         join_alias = str(join.get("alias") or "").strip() or None
         key = (
             str(join.get("view") or ""),
@@ -1712,6 +1735,15 @@ def lock_dataset_model_for_write(db: Session, dataset_id: int) -> None:
         int(r[0]) for r in db.query(SemanticModel.id).filter(SemanticModel.dataset_id == dataset_id).all()
     ]
     if model_ids:
+        # The model row too: its settings carry the auto-join tombstones a
+        # regeneration must see, even if this session loaded it before the lock.
+        (
+            db.query(SemanticModel)
+            .filter(SemanticModel.id.in_(model_ids))
+            .populate_existing()
+            .with_for_update()
+            .all()
+        )
         (
             db.query(SemanticExplore)
             .filter(SemanticExplore.model_id.in_(model_ids))
@@ -2039,11 +2071,25 @@ def _sync_dataset_model_structure(
     valid_target_view_names.update(
         name for name in role_view_names if str(name or "").strip()
     )
+    _referenced_targets: set = set()
     for explore in db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all():
         for join in explore.joins or []:
             target_view_name = str(join.get("view") or "").strip()
             if target_view_name and join.get("origin") == "auto_calendar":
                 valid_target_view_names.add(target_view_name)
+            if target_view_name:
+                _referenced_targets.add(target_view_name)
+    # A table-less view (a role-played calendar) that still EXISTS stays a valid
+    # target for every join that names it — a manual or edited join to it used
+    # to be deleted by the sanitize-only resync because only auto_calendar joins
+    # counted.
+    if _referenced_targets:
+        valid_target_view_names.update(
+            v.name for v in db.query(SemanticView).filter(
+                SemanticView.dataset_table_id.is_(None),
+                SemanticView.name.in_(sorted(_referenced_targets)),
+            ).all()
+        )
 
     existing_explores = {
         explore.base_view_id: explore
@@ -2081,20 +2127,30 @@ def _sync_dataset_model_structure(
         explore.base_view_id = base_view.id
         explore.description = f"Explore for {table.display_name or table.source_table_name or base_view.name}"
         if refresh_auto_joins:
+            # The user's relationships survive regeneration: manual rows, and
+            # auto rows the user EDITED (activated, deactivated, changed
+            # cardinality / cross filter). They win over a re-detected auto row
+            # with the same identity. A tombstoned (removed) auto join is not
+            # re-created.
             manual_joins = _sanitize_join_definitions(
                 [
                     join for join in (explore.joins or [])
-                    if join.get("origin") not in _AUTO_JOIN_ORIGINS
+                    if join.get("origin") not in _AUTO_JOIN_ORIGINS or join.get("user_edited")
                 ],
                 base_view_name=base_view.name,
                 base_fields=base_fields,
                 valid_target_view_names=valid_target_view_names,
             )
+            _tombstones = _rejected_signatures(model)
             auto_joins = [
-                *auto_fk_joins.get(base_view.name, []),
-                *auto_calendar_joins.get(base_view.name, []),
+                j for j in [
+                    *auto_fk_joins.get(base_view.name, []),
+                    *auto_calendar_joins.get(base_view.name, []),
+                ]
+                if _suggestion_signature(base_view.name, str(j.get("view") or ""),
+                                         *_join_columns_from_definition(j, base_view.name)) not in _tombstones
             ]
-            explore.joins = _merge_join_definitions(manual_joins, auto_joins)
+            explore.joins = _merge_join_definitions(manual_joins, auto_joins, base_view.name)
         else:
             explore.joins = _sanitize_join_definitions(
                 list(explore.joins or []),
@@ -2223,8 +2279,25 @@ def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
         normalized_joins = []
         base_fields = view_field_map.get(e.base_view_name, set())
         for join in e.joins or []:
+            from app.services.semantic_join_resolver import read_join_contract
+
+            contract = read_join_contract(e.base_view_name, join)
             normalized_join = _normalize_join(join, e.base_view_name, base_fields)
+            if normalized_join is None and isinstance(join, dict):
+                # Shown, not hidden: the editor must list every stored row the
+                # runtime knows about (an invalid one is marked below).
+                normalized_join = dict(join)
             if normalized_join:
+                # The editor shows the relationship AS THE RUNTIME READS IT (the
+                # relationship contract), not raw legacy values: a stored
+                # "false" displayed as active while the graph treats it as
+                # inactive would be two different models.
+                normalized_join["is_active"] = contract.is_active
+                normalized_join["cross_filter"] = contract.cross_filter
+                if contract.cardinality:
+                    normalized_join["cardinality"] = contract.cardinality
+                    normalized_join["relationship"] = contract.cardinality
+                normalized_join["contract_invalid"] = list(contract.invalid)
                 if normalized_join.get("origin") == "auto_calendar":
                     if not normalized_join.get("presentation_view") and calendar_presentation_view_name:
                         normalized_join["presentation_view"] = calendar_presentation_view_name
@@ -2275,6 +2348,8 @@ def set_view_primary_key(
     db: Session,
     view_id: int,
     primary_key_columns: list[str] | None,
+    *,
+    commit: bool = True,
 ) -> dict:
     """Declare (or clear) the primary key column(s) for a semantic view.
 
@@ -2322,8 +2397,78 @@ def set_view_primary_key(
                 )
             view.primary_key = cols
     flag_modified(view, "primary_key")
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return {"view_id": view.id, "view_name": view.name, "primary_key": view.primary_key}
+
+
+def _tombstone_auto_key_joins(model, from_view: str, joins: list[dict]) -> None:
+    """Remember removed auto FK / DB-constraint joins (the review flow's
+    tombstones), so model regeneration does not silently re-create them."""
+    tomb = []
+    for j in joins:
+        if j.get("origin") not in ("auto_fk", "auto_db_constraint"):
+            continue
+        jf, jt = _join_columns_from_definition(j, from_view)
+        tomb.append({"from_view": from_view, "to_view": str(j.get("view") or ""),
+                     "from_columns": jf, "to_columns": jt})
+    if not tomb:
+        return
+    settings_obj = dict(model.settings or {})
+    raw = list(settings_obj.get("rejected_auto_joins") or [])
+    raw.extend(tomb)
+    settings_obj["rejected_auto_joins"] = raw
+    model.settings = settings_obj
+
+
+def _remove_replaced_relationship(db: Session, model, replaces: dict | None, *, new_identity: tuple) -> int:
+    """Drop the stored row an edit replaces, when the edit changed its identity.
+
+    Identity = (from view, node (alias or view), key-pair signature). Returns the
+    number of rows removed (0 when the identity is unchanged or not found)."""
+    if not replaces:
+        return 0
+    old_from = str(replaces.get("from_view") or "").strip()
+    old_view = str(replaces.get("view") or "").strip()
+    old_alias = str(replaces.get("alias") or "").strip() or None
+    old_fc = [str(c) for c in (replaces.get("from_columns") or []) if str(c).strip()]
+    old_tc = [str(c) for c in (replaces.get("to_columns") or []) if str(c).strip()]
+    if not old_from or not old_view or not old_fc or len(old_fc) != len(old_tc):
+        raise ValueError("replaces phải gồm from_view, view, from_columns, to_columns của quan hệ đang sửa")
+    old_identity = (old_from, old_alias or old_view, _join_pairs_signature(old_fc, old_tc))
+    if old_identity == new_identity:
+        return 0
+    removed = 0
+    for e in db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all():
+        if e.base_view_name != old_from:
+            continue
+        keep = []
+        dropped = []
+        for j in e.joins or []:
+            jf, jt = _join_columns_from_definition(j, e.base_view_name)
+            j_alias = (j.get("alias") or "").strip() or None
+            if (j.get("view") == old_view and j_alias == old_alias
+                    and _join_pairs_signature(jf, jt) == old_identity[2]):
+                if j.get("origin") == "auto_calendar":
+                    # Regeneration re-creates a calendar role join from the
+                    # date column; re-keying it here would leave two.
+                    raise ValueError(
+                        "Quan hệ lịch tự động không đổi khoá/bảng được — đổi cột ngày trong cấu hình "
+                        "Calendar của dataset, hoặc chỉ sửa trạng thái/hướng lọc."
+                    )
+                dropped.append(j)
+                continue
+            keep.append(j)
+        if dropped:
+            removed += len(dropped)
+            _tombstone_auto_key_joins(model, e.base_view_name, dropped)
+            e.joins = keep
+            db.flush()
+    if not removed:
+        raise ValueError("Không tìm thấy quan hệ cần sửa (có thể đã bị người khác đổi) — tải lại model.")
+    return removed
 
 
 def add_join(
@@ -2343,11 +2488,27 @@ def add_join(
     cardinality: str | None = None,             # ← Phase-1 NEW
     primary_key_on_to_view: list[str] | None = None,  # ← Phase-1 NEW
     force: bool = False,
+    replaces: dict | None = None,
 ) -> dict:
     """
     Add (or update) a join from one semantic view to another.
     Finds the SemanticExplore for from_view and appends/replaces the join entry.
+
+    One transaction: the primary key, the join and the removal of a replaced
+    relationship commit together or not at all. Runs under the dataset's model
+    write lock, so a concurrent edit or a model resync cannot interleave.
+
+    ``replaces`` — the identity of the relationship being EDITED, as stored
+    ({from_view, view, alias, from_columns, to_columns}). When the edit changes
+    that identity (other keys, alias or tables) the old row is removed in the
+    same transaction; without it an edit used to ADD a second relationship.
+
+    ``primary_key_on_to_view`` — None leaves the PK unchanged; ``[]`` clears it;
+    a list sets it on the ONE side of the relationship as drawn (the to view of
+    an N:1 / 1:1). With a 1:N drawing the to view is the MANY side, so a PK there
+    is refused rather than silently applied to the other table.
     """
+    lock_dataset_model_for_write(db, dataset_id)
     from_view = db.query(SemanticView).filter(SemanticView.id == from_view_id).first()
     to_view = db.query(SemanticView).filter(SemanticView.id == to_view_id).first()
 
@@ -2492,6 +2653,12 @@ def add_join(
     # (param) is accepted for API back-compat but ignored.
     normalized_join_type = "left"
     canonicalized = False
+    if _swap and primary_key_on_to_view:
+        raise ValueError(
+            "Khóa chính được khai báo cho phía 'một' của quan hệ. Quan hệ vẽ 1:N "
+            "có bảng đích là phía 'nhiều' — hãy vẽ N:1 (từ bảng nhiều tới bảng một) "
+            "để khai báo khóa chính cho bảng một."
+        )
     if _swap:
         drawn_dim, drawn_fact = from_view.name, to_view.name
         from_view, to_view = to_view, from_view
@@ -2552,10 +2719,21 @@ def add_join(
         "cardinality": cardinality_canonical,
     }
 
+    # An EDIT whose identity changed: remove the relationship it replaces (on
+    # whichever explore stores it) in this same transaction.
+    replaced_rows = _remove_replaced_relationship(
+        db, model, replaces,
+        new_identity=(from_view.name, alias_clean or to_view.name,
+                      _join_pairs_signature(normalized_from_columns, normalized_to_columns)),
+    )
+    if replaced_rows and explore.id is not None:
+        db.refresh(explore)
+        joins = list(explore.joins or [])
+
     # Update an exact existing join, otherwise append so one pair of tables can
     # carry multiple explicit relationships on different columns or aliases.
     for i, j in enumerate(joins):
-        join_from_columns, join_to_columns = _join_columns_from_definition(j)
+        join_from_columns, join_to_columns = _join_columns_from_definition(j, from_view.name)
         existing_alias = (j.get("alias") or "").strip() or None
         if (
             j.get("view") == to_view.name
@@ -2569,7 +2747,10 @@ def add_join(
             # the resolver stops emitting that join in the SQL.
             # When `force=True`, the API layer has already prompted the user
             # to confirm — skip the guard.
-            previously_active = bool(j.get("is_active", True))
+            from app.services.semantic_join_resolver import read_join_contract
+
+            _prev = read_join_contract(from_view.name, j)
+            previously_active = _prev.valid and _prev.is_active
             if previously_active and not new_join["is_active"] and not force:
                 _ensure_no_chart_depends_on_join(
                     db,
@@ -2577,9 +2758,24 @@ def add_join(
                     join_view_name=to_view.name,
                     join_alias=alias_clean,
                 )
+            # Same identity (same tables, alias and key) = the same relationship:
+            # its condition and provenance are KEPT — only what the dialog edits
+            # changes. Rebuilding it dropped a calendar join's CAST / local-date
+            # expression (a timestamp then matched only midnight) and its
+            # calendar metadata. An edited auto join stays the user's: model
+            # regeneration keeps it instead of rebuilding it (see _sync_…).
+            kept = dict(j)
+            for key in ("relationship", "cardinality", "is_active", "cross_filter", "type"):
+                kept[key] = new_join[key]
+            if not str(kept.get("sql_on") or "").strip():
+                kept["sql_on"] = new_join["sql_on"]
+            if kept.get("origin") in _AUTO_JOIN_ORIGINS:
+                kept["user_edited"] = True
+            new_join = kept
             joins[i] = new_join
             break
     else:
+        new_join["origin"] = "manual"
         joins.append(new_join)
 
     # Phase-1 — declare the PK on the join target view in the same call (the
@@ -2587,11 +2783,11 @@ def add_join(
     # join is written: an invalid PK fails the request instead of being
     # reported as an "ignored" warning next to a relationship that saved.
     pk_result = None
-    if primary_key_on_to_view:
-        pk_result = set_view_primary_key(db, to_view_id, primary_key_on_to_view)
+    if primary_key_on_to_view is not None:
+        pk_result = set_view_primary_key(db, to_view_id, primary_key_on_to_view, commit=False)
 
     explore.joins = joins
-    db.commit()
+    db.commit()  # the ONLY commit: PK + join + replaced-row removal, together
     db.refresh(explore)
 
     # Phase-1 — surface advisory warnings the caller (or UI dialog) should show.
@@ -2732,11 +2928,29 @@ SELECT
     }
 
 
+# Server-owned provenance of a stored relationship. A whole-list write through
+# the direct API carries it over from the stored row of the same identity, so a
+# GET → PUT round trip cannot turn a user-edited auto join back into one the
+# next regeneration may overwrite.
+_JOIN_PROVENANCE_KEYS = (
+    "origin", "managed", "user_edited", "calendar_role", "calendar_source_field", "presentation_view",
+)
+
+
+def _join_semantics(contract, join: dict) -> tuple:
+    return (
+        contract.cardinality, contract.is_active, contract.cross_filter,
+        str(join.get("type") or "left").strip().lower(), str(join.get("sql_on") or "").strip(),
+    )
+
+
 def validate_direct_explore_joins(
     db: Session,
     dataset_id: int | None,
     base_view_name: str,
     joins: list[dict],
+    *,
+    stored_joins: list[dict] | None = None,
 ) -> list[dict]:
     """The checks `add_join` makes, for joins written as a whole list.
 
@@ -2745,8 +2959,24 @@ def validate_direct_explore_joins(
     from another dataset, or a column that does not exist all went straight to
     storage, and the resolver then read the missing cardinality as many-to-one
     (non-fanning). Returns the joins with `relationship` and `cardinality`
-    mirrored to one canonical value; raises ValueError on anything invalid."""
-    from app.services.semantic_join_resolver import ALLOWED_CARDINALITY, canonical_cardinality
+    mirrored to one canonical value; raises ValueError on anything invalid.
+
+    Every row must also read as VALID through the relationship contract (the
+    reader every runtime consumer uses) — a write never stores a row the reader
+    would refuse. ``stored_joins`` (the explore's current rows) supplies the
+    provenance of rows whose identity is unchanged; an auto row whose semantics
+    changed is marked ``user_edited`` like an edit through the dataset API."""
+    from app.services.semantic_join_resolver import (
+        ALLOWED_CARDINALITY, canonical_cardinality, read_join_contract,
+    )
+
+    stored_by_identity: dict = {}
+    for s in stored_joins or []:
+        if isinstance(s, dict):
+            sc = read_join_contract(base_view_name, s)
+            if sc.valid:
+                stored_by_identity.setdefault(sc.identity, s)
+    seen_identities: set = set()
 
     if dataset_id is None:
         views_by_name: dict[str, SemanticView] = {
@@ -2820,6 +3050,25 @@ def validate_direct_explore_joins(
                 raise ValueError(f"Column '{c}' does not exist on view '{view_name}'")
         if not from_cols and not str(j.get("sql_on") or "").strip():
             raise ValueError(f"Join '{j.get('name') or view_name}' không có điều kiện join.")
+        contract = read_join_contract(base_view_name, j)
+        if not contract.valid:
+            raise ValueError(
+                f"Join '{j.get('name') or view_name}' không hợp lệ: {'; '.join(contract.invalid)}"
+            )
+        if contract.identity in seen_identities:
+            raise ValueError(f"Join '{j.get('name') or view_name}' bị khai báo hai lần (cùng bảng, alias và khoá).")
+        seen_identities.add(contract.identity)
+        prev = stored_by_identity.get(contract.identity)
+        if prev is not None:
+            for key in _JOIN_PROVENANCE_KEYS:
+                if key in prev:
+                    j[key] = prev[key]
+                else:
+                    j.pop(key, None)
+            prev_contract = read_join_contract(base_view_name, prev)
+            if (prev.get("origin") in _AUTO_JOIN_ORIGINS
+                    and _join_semantics(prev_contract, prev) != _join_semantics(contract, j)):
+                j["user_edited"] = True
         out.append(j)
     return out
 
@@ -3052,7 +3301,7 @@ def canonicalize_dataset_relationships(db: Session, dataset_id: int) -> dict:
         DIM. Normalize a stored ``right``/``inner``/``full`` type to ``left``
         (idempotent). one_to_many/many_to_many are left untouched (advanced /
         can't-be-oriented cases)."""
-        c = str(join.get("cardinality") or join.get("relationship") or "").strip().lower()
+        c = read_join_contract(explore_name, join).cardinality
         cur = str(join.get("type") or "left").strip().lower()
         if c in ("many_to_one", "one_to_one") and cur != "left":
             fixed = dict(join)
@@ -3064,11 +3313,20 @@ def canonicalize_dataset_relationships(db: Session, dataset_id: int) -> dict:
             return fixed
         return join
 
+    from app.services.semantic_join_resolver import read_join_contract
+
     for base_name, explore in list(explores.items()):
         remaining: list[dict] = []
         changed_types = False
         for j in (explore.joins or []):
-            card = str(j.get("cardinality") or j.get("relationship") or "").strip().lower()
+            contract = read_join_contract(base_name, j)
+            if not contract.valid:
+                # Never rewritten from a guess: the runtime refuses it, the
+                # Data Model shows it, the modeller fixes it.
+                skipped.append({"explore": base_name, "view": j.get("view"), "reasons": list(contract.invalid)})
+                remaining.append(j)
+                continue
+            card = contract.cardinality
             alias = str(j.get("alias") or "").strip()
             tview_name = str(j.get("view") or "").strip()
             fv = views_by_name.get(base_name)
@@ -3084,11 +3342,10 @@ def canonicalize_dataset_relationships(db: Session, dataset_id: int) -> dict:
                     changed_types = True
                 remaining.append(j2)
                 continue
-            # Build the canonical N:1 join to place on the MANY (target) explore.
-            fcols = j.get("from_columns") or ([j.get("from_column")] if j.get("from_column") else [])
-            tcols = j.get("to_columns") or ([j.get("to_column")] if j.get("to_column") else [])
-            fcols = [c for c in fcols if c]
-            tcols = [c for c in tcols if c]
+            # Build the canonical N:1 join to place on the MANY (target) explore
+            # — on the FULL key the contract reads (a composite sql_on included).
+            fcols = [f for f, _t in contract.key_pairs]
+            tcols = [t for _f, t in contract.key_pairs]
             if not fcols or not tcols:
                 remaining.append(j)  # malformed — leave untouched
                 continue
@@ -3111,8 +3368,8 @@ def canonicalize_dataset_relationships(db: Session, dataset_id: int) -> dict:
                 "to_column": fcols[0],
                 "from_columns": tcols,
                 "to_columns": fcols,
-                "is_active": bool(j.get("is_active", True)),
-                "cross_filter": str(j.get("cross_filter") or "single").lower(),
+                "is_active": contract.is_active,
+                "cross_filter": contract.cross_filter,
                 "origin": j.get("origin") or "manual",
                 "managed": bool(j.get("managed", False)),
             }
@@ -3153,8 +3410,17 @@ def remove_join(
     to_column: str | None = None,
     from_columns: list[str] | None = None,
     to_columns: list[str] | None = None,
+    alias: str | None = None,
+    alias_given: bool = False,
 ) -> dict:
-    """Remove a join from one semantic view to another."""
+    """Remove ONE relationship (from view, to view, key, alias).
+
+    Role-played relationships to the same table differ only by alias: the alias
+    is part of the identity. Without key columns or when several rows still
+    match (an old client that sends no alias), the request is refused instead of
+    removing every relationship to that table. Removing an auto-generated join
+    leaves a tombstone so model regeneration does not bring it back."""
+    lock_dataset_model_for_write(db, dataset_id)
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise ValueError("Dataset not found")
@@ -3179,16 +3445,27 @@ def remove_join(
     )
     match_signature = _join_pairs_signature(match_from_columns, match_to_columns)
 
+    if not match_signature:
+        raise ValueError("Cần chỉ rõ cột khoá của quan hệ cần xoá (không xoá mọi quan hệ tới bảng).")
+    want_alias = (str(alias or "").strip() or None)
+
     def should_remove(join: dict) -> bool:
         if join.get("view") != to_view_name:
             return False
-        if not match_signature:
-            return True
-
-        join_from_columns, join_to_columns = _join_columns_from_definition(join)
-        return _join_pairs_signature(join_from_columns, join_to_columns) == match_signature
+        join_from_columns, join_to_columns = _join_columns_from_definition(join, explore.base_view_name)
+        if _join_pairs_signature(join_from_columns, join_to_columns) != match_signature:
+            return False
+        if alias_given:
+            return ((join.get("alias") or "").strip() or None) == want_alias
+        return True
 
     matching_joins = [join for join in (explore.joins or []) if should_remove(join)]
+    if not alias_given and len({(j.get("alias") or "").strip() for j in matching_joins}) > 1:
+        raise ValueError(
+            "Có nhiều quan hệ (alias khác nhau) cùng bảng và cột khoá — gửi alias để chỉ rõ quan hệ cần xoá."
+        )
+    if not matching_joins:
+        raise ValueError("Không tìm thấy quan hệ cần xoá.")
     blocked_joins = [
         join
         for join in matching_joins
@@ -3197,11 +3474,15 @@ def remove_join(
     if blocked_joins:
         raise ValueError("System-managed relationships cannot be removed manually")
 
+    # A removed auto FK / DB-constraint join is remembered (the review flow's
+    # tombstones), so regeneration does not silently re-create it.
+    _tombstone_auto_key_joins(model, explore.base_view_name, matching_joins)
+
     auto_calendar_joins = [
         join for join in matching_joins if join.get("origin") == "auto_calendar"
     ]
     for join in auto_calendar_joins:
-        join_from_columns, _ = _join_columns_from_definition(join)
+        join_from_columns, _ = _join_columns_from_definition(join, explore.base_view_name)
         parsed_from = join_from_columns[0] if join_from_columns else None
         source_field = (
             _clean_join_identifier(join.get("calendar_source_field"))
@@ -3742,6 +4023,13 @@ def _distinct_values_full(
         # (e.g. "users" in orders→users) can still reach the explore base
         # view when resolving cascading filter conditions.
         resolver = SemanticJoinResolver(db, model, view_name, bidirectional=True)
+        # The same refusal as the engine and the live path: an invalid
+        # relationship is not silently left out of the cascade (a lock routed
+        # through it would be dropped and the dropdown would list values
+        # outside the report's scope).
+        from app.services.semantic_join_resolver import raise_for_invalid_relationships
+
+        raise_for_invalid_relationships(resolver)
         view_cache: dict[str, SemanticView | None] = {}
         next_exists_index = [0]
 
@@ -4684,6 +4972,7 @@ def add_rejected_suggestions(
     rejections: list[dict],
 ) -> dict:
     """Persist tombstones the builder dismissed in the review modal."""
+    lock_dataset_model_for_write(db, dataset_id)
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
     if model is None:
         raise ValueError("Dataset has no semantic model yet")
@@ -4725,6 +5014,7 @@ def add_rejected_suggestions(
 
 
 def clear_rejected_suggestions(db: Session, dataset_id: int) -> dict:
+    lock_dataset_model_for_write(db, dataset_id)
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
     if model is None:
         raise ValueError("Dataset has no semantic model yet")
@@ -5257,9 +5547,11 @@ def _generate_join_suggestions(
     )
     existing_payload: list[dict] = []
     existing_sigs: set[tuple] = set()
+    from app.services.semantic_join_resolver import read_join_contract as _read_contract
+
     for explore in explores:
         for join in explore.joins or []:
-            from_cols, to_cols = _join_columns_from_definition(join)
+            from_cols, to_cols = _join_columns_from_definition(join, explore.base_view_name)
             if not from_cols or not to_cols:
                 continue
             sig = _suggestion_signature(
@@ -5277,7 +5569,9 @@ def _generate_join_suggestions(
                     "to_view": str(join.get("view") or ""),
                     "from_columns": from_cols,
                     "to_columns": to_cols,
-                    "relationship": join.get("relationship") or "many_to_one",
+                    # what the runtime reads (None for a row it refuses) — not
+                    # a many_to_one default
+                    "relationship": _read_contract(explore.base_view_name, join).cardinality,
                     "origin": join.get("origin") or "manual",
                     "status": "kept",
                 }
@@ -5324,9 +5618,11 @@ def _generate_join_suggestions(
 
     for from_view_name, joins in auto_joins_by_source.items():
         for join in joins:
-            from_cols, to_cols = _join_columns_from_definition(join)
+            from_cols, to_cols = _join_columns_from_definition(join, from_view_name)
             if not from_cols or not to_cols:
                 continue
+            if not (join.get("cardinality") or join.get("relationship")):
+                continue  # detection always decides; never default a suggestion to many_to_one
             origin = str(join.get("origin") or "auto_fk")
             target_view_name = str(join.get("view") or "")
             if origin == "auto_db_constraint":
@@ -5351,7 +5647,7 @@ def _generate_join_suggestions(
                     "to_view": target_view_name,
                     "from_columns": from_cols,
                     "to_columns": to_cols,
-                    "relationship": join.get("relationship") or "many_to_one",
+                    "relationship": join.get("cardinality") or join.get("relationship"),
                     "origin": origin,
                     "confidence": 1.0 if origin == "auto_db_constraint" else 0.85,
                     "reasons": reasons,
@@ -5762,7 +6058,17 @@ def apply_join_suggestions(
     added = 0
     skipped = 0
     errors: list[dict] = []
-    views = {v.name: v for v in db.query(SemanticView).all()}
+    # Read what is stored under the model write lock (fresh, not interleaved).
+    lock_dataset_model_for_write(db, dataset_id)
+    # This dataset's views only (the lookup used to be global by name).
+    _tids = [t.id for t in db.query(DatasetTable.id).filter(DatasetTable.dataset_id == dataset_id).all()]
+    views = {v.name: v for v in db.query(SemanticView).filter(SemanticView.dataset_table_id.in_(_tids or [-1])).all()}
+    _model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    _stored = set()
+    for _e in (_model.explores if _model else []):
+        for _j in _e.joins or []:
+            _f, _t = _join_columns_from_definition(_j, _e.base_view_name)
+            _stored.add((_e.base_view_name, str(_j.get("view") or ""), _join_pairs_signature(_f, _t)))
     for item in selections:
         try:
             from_view_name = str(item.get("from_view") or "")
@@ -5779,6 +6085,16 @@ def apply_join_suggestions(
                     {"item": item, "reason": "View not found at apply time."}
                 )
                 continue
+            sig = _join_pairs_signature(from_columns, to_columns)
+            rev = _join_pairs_signature(to_columns, from_columns)
+            if (from_view_name, to_view_name, sig) in _stored or (to_view_name, from_view_name, rev) in _stored:
+                # Already a relationship on this key: applying a suggestion
+                # must not reset its active state, cross filter or cardinality.
+                skipped += 1
+                continue
+            if not str(item.get("relationship") or "").strip():
+                errors.append({"item": item, "reason": "Gợi ý thiếu cardinality — không mặc định many_to_one."})
+                continue
             add_join(
                 db,
                 dataset_id=dataset_id,
@@ -5789,9 +6105,13 @@ def apply_join_suggestions(
                 from_columns=from_columns,
                 to_columns=to_columns,
                 join_type=str(item.get("join_type") or "left"),
-                relationship=str(item.get("relationship") or "many_to_one"),
+                relationship=str(item.get("relationship")),
             )
             added += 1
+            _stored.add((from_view_name, to_view_name, sig))
         except Exception as exc:
+            # add_join commits once or not at all: discard anything a failed
+            # item flushed, so the NEXT item's commit cannot carry it.
+            db.rollback()
             errors.append({"item": item, "reason": str(exc)})
     return {"added": added, "skipped": skipped, "errors": errors}

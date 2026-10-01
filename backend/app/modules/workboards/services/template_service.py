@@ -1556,6 +1556,7 @@ def rebuild_dataset_from_bundle(
                 built = _rebuild_semantic_from_bundle(db, dataset.id, id_map, semantic)
         except Exception as exc:
             logger.warning("rebuild: faithful model rebuild failed for ds %s: %s", dataset.id, exc)
+            report["model_rebuild_error"] = str(exc)[:500]
             try:
                 db.rollback()
             except Exception:
@@ -1655,11 +1656,24 @@ def _rebuild_semantic_from_bundle(
         db.flush()
         view_by_old_table[old_tid] = view
 
+    from app.services.semantic_join_resolver import read_join_contract
+
     for be in explores_b:
         old_base = be.get("base_view_old_table_id")
         base_view = view_by_old_table.get(int(old_base)) if old_base is not None else None
         if not base_view:
             continue
+        # A relationship is stored only if the runtime can read it: a bundle row
+        # the contract refuses fails the faithful rebuild (loud, in the import
+        # report) instead of landing as a model every query then refuses.
+        _base_name = _remap_dt_tokens(be.get("base_view_name"), id_map) or base_view.name
+        _bad = [
+            f"{j.get('view')}: {'; '.join(c.invalid)}"
+            for j in (_remap_dt_tokens(be.get("joins") or [], id_map) or [])
+            for c in [read_join_contract(_base_name, j)] if not c.valid
+        ]
+        if _bad:
+            raise ValueError("Quan hệ trong bundle không hợp lệ: " + " | ".join(_bad))
         db.add(
             SemanticExplore(
                 model_id=model.id,

@@ -225,6 +225,7 @@ jobs:
             tests/test_semantic_router_object_access.py \
             tests/test_semantic_state_contracts.py \
             tests/test_semantic_error_contracts.py \
+            tests/test_relationship_contract.py \
             tests/test_semantic_health.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
       # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
       #
@@ -410,3 +411,11 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_surface_parity.py
+
+      # Relationship authoring <-> join resolver, executed: reverse-edge values
+      # (composite keys, calendar CAST), the to-one key guard on real data, and
+      # two sessions racing one model under the model write lock.
+      - name: GATE — relationship contract on Postgres (values + key guard + races)
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_relationship_contract_pg.py

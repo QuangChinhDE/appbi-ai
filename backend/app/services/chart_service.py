@@ -1437,6 +1437,26 @@ _FANNING_CARDINALITIES = {"one_to_many", "many_to_many"}
 _CANON_STEP_ON_RE = re.compile(r"^\s*\$\{TABLE\}\.(\w+)\s*=\s*\$\{(\w+)\}\.(\w+)\s*$")
 
 
+def _live_probe_for_step(probes: dict, edge, condition: str, *, from_alias: str, to_alias: str,
+                         relations: dict) -> None:
+    """Record the key probe(s) of a live LEFT JOIN — the same rule as the
+    engine: every ONE side of the walked cardinality, grouped by the
+    expressions the ON condition compares, on the relation that alias reads."""
+    from app.services.relationship_key_guard import one_side_probe
+    from app.services.semantic_join_resolver import canonical_cardinality
+
+    card = canonical_cardinality(getattr(edge, "cardinality", None))
+    sides = []
+    if card in ("many_to_one", "one_to_one"):
+        sides.append((to_alias, from_alias, edge.to_view))
+    if card in ("one_to_many", "one_to_one"):
+        sides.append((from_alias, to_alias, edge.from_node))
+    for one, other, view_name in sides:
+        probe = one_side_probe(condition, one_alias=one, other_alias=other, relation=relations[one],
+                               label=f"{edge.from_node} → {edge.to_node}", view=str(view_name))
+        probes.setdefault(probe["key"], probe)
+
+
 def _live_edge_fans_out(edge) -> bool:
     """True when walking `edge` can match several rows per source row."""
     return str(getattr(edge, "cardinality", "") or "").strip().lower() in _FANNING_CARDINALITIES
@@ -1583,6 +1603,12 @@ def _adapt_live_sql_for_semantic_filters(
     # bc_owner" symptom. The engine path (semantic_query_engine.py) already
     # uses bidirectional=True for the same reason.
     resolver = SemanticJoinResolver(db, model, base_view_name, bidirectional=True)
+    # Same refusal as the engine: a model carrying an invalid relationship is
+    # not answered on the live path either (its absence would silently change
+    # which filters reach the base).
+    from app.services.semantic_join_resolver import raise_for_invalid_relationships
+
+    raise_for_invalid_relationships(resolver)
 
     try:
         base_sql = resolve_dataset_table_relation(datasource, db_table).sql
@@ -1600,6 +1626,9 @@ def _adapt_live_sql_for_semantic_filters(
     effective_filters: list[dict] = []
     # (anchor alias, target node, route) -> {"steps", "from_alias", "items"}
     semi_groups: dict = {}
+    live_probes: dict = {}
+    # alias -> the relation it reads (the key probes run on the same one)
+    live_relations: dict = {"_appbi_base": f"({base_sql})"}
     next_join_index = 0
     next_projection_index = 0
 
@@ -1719,15 +1748,10 @@ def _adapt_live_sql_for_semantic_filters(
                 from_alias=prev_alias,
                 to_alias=new_alias,
             )
-            # Validate the to_column actually exists; rebuild if necessary.
-            to_col = step.edge.to_column
-            if condition and to_col and not _semantic_view_has_field(joined_view, to_col):
-                # try fallback: maybe to_column is misnamed but from_column exists
-                from_col = step.edge.from_column
-                if from_col and _semantic_view_has_field(joined_view, from_col):
-                    condition = f"{prev_alias}.{from_col} = {new_alias}.{from_col}"
-                else:
-                    condition = None
+            # The relationship's own condition, as stored — never a guessed
+            # `from_col = from_col` when the key is not a declared field (that
+            # rebuilt the JOIN on a different key, silently). A key column that
+            # does not exist fails loudly in the warehouse.
             if not condition:
                 path_failed = True
                 break
@@ -1737,6 +1761,10 @@ def _adapt_live_sql_for_semantic_filters(
                 f"{join_kw} JOIN {_wrap_live_sql_relation(relation)} AS {new_alias} "
                 f"ON {condition}"
             )
+            # A to-one LEFT JOIN trusts its key: probe it like the engine does.
+            live_relations[new_alias] = _wrap_live_sql_relation(relation)
+            _live_probe_for_step(live_probes, step.edge, condition, from_alias=prev_alias,
+                                 to_alias=new_alias, relations=live_relations)
             materialized_steps[cache_key] = new_alias
             prev_alias = new_alias
             last_alias = new_alias
@@ -1807,6 +1835,13 @@ def _adapt_live_sql_for_semantic_filters(
 
     if not join_clauses or not projected_fields:
         return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+
+    if live_probes:
+        from app.services.relationship_key_guard import verify_key_probes
+
+        ds_type_v = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+        verify_key_probes(list(live_probes.values()), ds_type=ds_type_v, config=datasource.config,
+                          namespace=f"ds:{getattr(datasource, 'id', '')}")
 
     select_parts = ["_appbi_base.*"]
     select_parts.extend(
@@ -2921,6 +2956,12 @@ def _execute_semantic_chart_runtime(
                 )
 
         timeout = 60 if ds_type == "bigquery" else 30
+        # Every to-one JOIN the query trusts is verified on the SAME relation and
+        # credential before the query runs (relationship_key_guard).
+        from app.services.relationship_key_guard import verify_key_probes
+
+        verify_key_probes(engine.key_probes, ds_type=ds_type, config=_exec_config,
+                          namespace=f"ds:{getattr(datasource, 'id', '')}")
         start = time.time()
         # Phase-12.7: wrap execute so connection errors / dialect mismatch /
         # missing physical column at the datasource surface as a ValueError
@@ -3014,6 +3055,8 @@ def _execute_semantic_chart_runtime(
                             f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
                             f"Add filters (e.g. date range) to reduce the data scanned."
                         )
+                verify_key_probes(engine.key_probes, ds_type=ds_type, config=_exec_config,
+                                  namespace=f"ds:{getattr(datasource, 'id', '')}")
                 _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
                     ds_type,
                     _exec_config,
@@ -3081,6 +3124,8 @@ def _execute_semantic_chart_runtime(
                         db.commit()  # pool-release before the BQ wait (same guard as above)
                     except Exception:  # noqa: BLE001
                         db.rollback()
+                    verify_key_probes(engine.key_probes, ds_type=ds_type, config=_exec_config,
+                                      namespace=f"ds:{getattr(datasource, 'id', '')}")
                     _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
                         ds_type,
                         _exec_config,

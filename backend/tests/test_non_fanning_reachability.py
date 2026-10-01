@@ -43,7 +43,11 @@ def _explore(base, joins):
 
 
 def _join(view, cardinality, **extra):
-    j = {"view": view, "cardinality": cardinality, "is_active": True}
+    # A relationship needs a key to exist at runtime (a keyless join cannot be
+    # rendered, and the relationship contract treats it as invalid); the key
+    # itself is irrelevant to the direction semantics locked here.
+    j = {"view": view, "cardinality": cardinality, "is_active": True,
+         "from_column": f"{view.lower()}_id", "to_column": "id"}
     j.update(extra)
     return j
 

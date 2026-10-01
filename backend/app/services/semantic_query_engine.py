@@ -17,6 +17,7 @@ from app.services import physical_type_map as _ptm
 from app.services.sql_pattern import pattern_predicate, regex_predicate
 from app.services.semantic_join_resolver import (
     AmbiguousJoinPathError, SemanticJoinResolver, canonical_cardinality,
+    raise_for_invalid_relationships, read_join_contract,
 )
 from app.schemas.semantic import (
     WindowFunctionDefinition,
@@ -235,6 +236,9 @@ class SemanticQueryEngine:
         self.warnings = []
         if not _reanchored:
             self._stitch_decline_reason = None
+            # Key probes of every to-one JOIN this query (and its re-anchored /
+            # stitched sub-queries) trusts — see relationship_key_guard.
+            self._key_probes = {}
         self.views_cache = {}
         self._resolver = None
         self._model = None
@@ -308,6 +312,7 @@ class SemanticQueryEngine:
             explore.base_view_name,
             bidirectional=True,
         )
+        raise_for_invalid_relationships(self._resolver)
 
         base_view = self.db.query(SemanticView).filter(
             SemanticView.id == explore.base_view_id
@@ -3543,6 +3548,46 @@ class SemanticQueryEngine:
 
         return from_clause, joined_nodes
 
+    @property
+    def key_probes(self) -> list:
+        """The key probes the last generated query needs verified before it runs."""
+        return list((getattr(self, "_key_probes", None) or {}).values())
+
+    def _record_key_probe(self, edge, condition: str) -> None:
+        """Record the probe of every ONE-side key this JOIN trusts.
+
+        The walked cardinality names the one side: the to side of a
+        many-to-one, the FROM side of a one-to-many (a relationship walked from
+        its dimension, e.g. a chart based on the dim summing the fact), both
+        sides of a one-to-one. A duplicate on that side repeats the other
+        side's rows whichever way the JOIN is written. The probe groups the one
+        side by the very expressions the ON condition compares (casts and
+        expressions included), on the relation the FROM chain reads; a
+        condition that is not a key equality yields an unverifiable probe,
+        which refuses the query."""
+        from app.services.relationship_key_guard import one_side_probe
+
+        card = canonical_cardinality(getattr(edge, "cardinality", None))
+        sides = []
+        if card in ("many_to_one", "one_to_one"):
+            sides.append((edge.to_node, edge.from_node))
+        if card in ("one_to_many", "one_to_one"):
+            sides.append((edge.from_node, edge.to_node))
+        probes = getattr(self, "_key_probes", None)
+        if probes is None:
+            probes = self._key_probes = {}
+        for one, other in sides:
+            view = self._get_view_for_node(one)
+            relation = (
+                self._snapshot_ref_for_view(view) or self._relation_sql_for_view(view)
+                or getattr(view, "name", None) or one
+            )
+            probe = one_side_probe(
+                condition, one_alias=one, other_alias=other, relation=relation,
+                label=f"{edge.from_node} → {edge.to_node}", view=str(getattr(view, "name", None) or one),
+            )
+            probes.setdefault(probe["key"], probe)
+
     def _append_route_joins(self, from_clause: str, path, joined_nodes: set) -> str:
         """Append the JOINs of `path` that are not in the FROM chain yet."""
         for step in path.steps:
@@ -3556,6 +3601,7 @@ class SemanticQueryEngine:
                 raise ValueError(
                     f"Join from '{edge.from_node}' to '{edge.to_node}' is missing a SQL condition"
                 )
+            self._record_key_probe(edge, join_condition_rendered)
             join_type = (edge.type or "left").upper()
             from_clause += (
                 f"\n{join_type} JOIN {join_table} AS {edge.to_node} "
@@ -4931,14 +4977,12 @@ class SemanticQueryEngine:
         for j in (getattr(exp, "joins", None) or []):
             if not isinstance(j, dict):
                 continue
-            # Inactive joins are invisible to the resolver — treat as absent here
-            # too (see _m1_reachable_views) so relatedness checks stay consistent
-            # with the path the query builder actually renders.
-            if j.get("is_active") is False:
-                continue
-            tgt = j.get("view") or j.get("to_view") or j.get("target") or j.get("name")
-            if tgt:
-                out.add(str(tgt))
+            # The relationship contract decides (same reading as the resolver):
+            # an inactive or invalid join is absent here too, so relatedness
+            # checks stay consistent with the path the query builder renders.
+            c = read_join_contract(base_view_name, j)
+            if c.valid and c.is_active and c.view:
+                out.add(c.view)
         return out
 
     def _validate_group_grain(self, dimensions, pivots, measures) -> None:
@@ -5055,12 +5099,15 @@ class SemanticQueryEngine:
         for explore in (getattr(model, "explores", None) or []):
             base = str(getattr(explore, "base_view_name", "") or "").strip()
             for j in (getattr(explore, "joins", None) or []):
-                if not isinstance(j, dict) or j.get("is_active") is False:
+                # The relationship contract (the resolver's reading): an invalid
+                # row gives NO edge — never a guessed many-to-one — and "false"
+                # is inactive. (The engine refuses a model with invalid rows
+                # before it gets here; this keeps the graph honest regardless.)
+                contract = read_join_contract(base, j)
+                if not contract.valid or not contract.is_active:
                     continue
-                frm = str(j.get("from_view") or base or "").strip()
-                to = str(
-                    j.get("view") or j.get("to_view") or j.get("target") or j.get("name") or ""
-                ).strip()
+                frm = contract.from_view
+                to = contract.view
                 if not frm or not to:
                     continue
                 # The resolver addresses a role-played join by its ALIAS (the
@@ -5073,7 +5120,7 @@ class SemanticQueryEngine:
                 # legacy `relationship` only as fallback. Same vocabulary as the
                 # resolver's canonical alias table, but an UNKNOWN value gives no
                 # edge here (strict: never guessed M:1 — the caller fails loud).
-                card = canonical_cardinality(j.get("cardinality") or j.get("relationship"))
+                card = contract.cardinality
                 for tgt in targets:
                     if card == "many_to_one":
                         _link(frm, tgt)

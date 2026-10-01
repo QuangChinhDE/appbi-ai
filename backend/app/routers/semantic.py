@@ -527,6 +527,30 @@ def delete_model(
 
 # ============ Semantic Explores ============
 
+def _lock_model_of(db: Session, dataset) -> None:
+    """The same per-dataset model write lock the Data Model endpoints and the
+    drift resync take, so a direct write never interleaves with theirs."""
+    if getattr(dataset, "id", None) is None:
+        return
+    from app.services.dataset_model_service import lock_dataset_model_for_write
+
+    lock_dataset_model_for_write(db, int(dataset.id))
+
+
+def _same_instant(a, b) -> bool:
+    """Compare a client's ``expected_updated_at`` with the stored timestamp."""
+    import datetime as _dt
+
+    def _naive_utc(v):
+        if v is None:
+            return None
+        if v.tzinfo is not None:
+            v = v.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+        return v
+
+    return _naive_utc(a) == _naive_utc(b)
+
+
 def _check_view_belongs(db: Session, view: SemanticView, dataset, base_view_name: str) -> None:
     """The explore's base view must be a view of the explore's own dataset."""
     view_dataset = _dataset_of_view(db, view)
@@ -539,12 +563,12 @@ def _check_view_belongs(db: Session, view: SemanticView, dataset, base_view_name
         )
 
 
-def _validated_joins(db: Session, dataset, base_view_name: str, joins: list) -> list:
+def _validated_joins(db: Session, dataset, base_view_name: str, joins: list, stored_joins=None) -> list:
     from app.services.dataset_model_service import validate_direct_explore_joins
 
     try:
         return validate_direct_explore_joins(
-            db, getattr(dataset, "id", None), base_view_name, joins,
+            db, getattr(dataset, "id", None), base_view_name, joins, stored_joins=stored_joins,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -563,6 +587,7 @@ def create_explore(
         raise HTTPException(status_code=404, detail="Model not found")
     model_dataset = _dataset_of_model(db, model)
     _require_dataset_level(db, current_user, model_dataset, "edit")
+    _lock_model_of(db, model_dataset)
 
     # Verify base view exists
     view = db.query(SemanticView).filter(SemanticView.id == explore.base_view_id).first()
@@ -659,8 +684,15 @@ def update_explore(
         raise HTTPException(status_code=404, detail="Explore not found")
     model_dataset = _dataset_of_explore(db, db_explore)
     _require_dataset_level(db, current_user, model_dataset, "edit")
+    _lock_model_of(db, model_dataset)  # re-reads the explore FOR UPDATE
 
     update_data = explore_update.model_dump(exclude_unset=True)
+    expected = update_data.pop("expected_updated_at", None)
+    if expected is not None and not _same_instant(expected, db_explore.updated_at):
+        raise HTTPException(
+            status_code=409,
+            detail="Explore đã được người khác sửa sau lần bạn tải (updated_at khác) — tải lại rồi lưu lại.",
+        )
     base_view_name = update_data.get("base_view_name") or db_explore.base_view_name
     if update_data.get("base_view_id") is not None:
         new_base = db.query(SemanticView).filter(SemanticView.id == update_data["base_view_id"]).first()
@@ -682,6 +714,7 @@ def update_explore(
         update_data["joins"] = _validated_joins(
             db, model_dataset, base_view_name,
             [join.model_dump() for join in explore_update.joins],
+            stored_joins=list(db_explore.joins or []),
         )
 
     for key, value in update_data.items():
@@ -831,6 +864,11 @@ def execute_semantic_query(
             data_source.type if isinstance(data_source.type, str)
             else data_source.type.value
         )
+        # Trusted to-one JOINs verified on the same datasource first.
+        from app.services.relationship_key_guard import verify_key_probes
+
+        verify_key_probes(engine.key_probes, ds_type=exec_ds_type, config=data_source.config,
+                          namespace=f"ds:{getattr(data_source, 'id', '')}")
         # Note: SemanticQueryEngine already adds LIMIT, so don't pass limit again
         columns, data, exec_time = DataSourceConnectionService.execute_query(
             ds_type=exec_ds_type,

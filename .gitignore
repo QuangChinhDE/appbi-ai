@@ -396,3 +396,5 @@ backend/_verify_gate.db
 !backend/tests/test_semantic_state_contracts.py
 !backend/tests/test_semantic_golden_matrix.py
 !backend/tests/test_semantic_router_object_access.py
+!backend/tests/test_relationship_contract.py
+!backend/tests/test_relationship_contract_pg.py

@@ -1186,8 +1186,9 @@ def _execute_semantic_dataset_query(
         .all()
     }
     for join in (explore.joins or []):
-        raw_active = join.get("is_active") if isinstance(join, dict) else None
-        if raw_active is not None and not bool(raw_active):
+        from app.services.semantic_join_resolver import join_is_usable
+
+        if not join_is_usable(explore.base_view_name, join):  # contract: invalid/"false" → absent
             continue
         join_view_name = str(join.get("view") or "").strip() if isinstance(join, dict) else ""
         join_node_name = str(join.get("alias") or "").strip() if isinstance(join, dict) else ""
@@ -1373,6 +1374,15 @@ def _execute_semantic_dataset_query(
             ),
         ) from exc
 
+    # Trusted to-one JOINs are verified first (relationship_key_guard); a
+    # duplicate or unverifiable key is a 400 with the relationship named.
+    from app.services.relationship_key_guard import verify_key_probes
+
+    try:
+        verify_key_probes(engine.key_probes, ds_type=ds_type, config=datasource.config,
+                          namespace=f"ds:{getattr(datasource, 'id', '')}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         _cols, rows, _elapsed = DataSourceConnectionService.execute_query(
             ds_type,
@@ -5768,6 +5778,13 @@ def preview_dataset_view_measure(
         except ValueError as exc:
             return {"ok": False, "error": str(exc), "rows": []}
 
+        from app.services.relationship_key_guard import verify_key_probes
+
+        try:
+            verify_key_probes(engine.key_probes, ds_type=ds_type, config=datasource.config,
+                              namespace=f"ds:{getattr(datasource, 'id', '')}")
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "rows": []}
         try:
             _cols, rows, _ms = DataSourceConnectionService.execute_query(
                 ds_type, datasource.config, sql, limit=100, timeout_seconds=15,
@@ -6148,6 +6165,21 @@ def suggest_model_join(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _replaces_payload(raw) -> dict | None:
+    """The stored identity of the relationship an edit replaces, or None."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("replaces phải là object {from_view, view, alias, from_columns, to_columns}")
+    return {
+        "from_view": raw.get("from_view"),
+        "view": raw.get("view"),
+        "alias": raw.get("alias"),
+        "from_columns": list(raw.get("from_columns") or []),
+        "to_columns": list(raw.get("to_columns") or []),
+    }
+
+
 def _strict_optional_bool(raw, field: str, *, default: bool) -> bool:
     """A JSON boolean, or its exact text form. Absent → ``default``.
 
@@ -6224,6 +6256,7 @@ def add_model_join(
             cross_filter=cross_filter,
             primary_key_on_to_view=raw_pk,
             force=force,
+            replaces=_replaces_payload(payload.get("replaces")),
         )
         return result
     except ValueError as e:
@@ -6261,10 +6294,11 @@ def remove_model_join(
     to_column: Optional[str] = Query(None, description="Optional target column for an exact join match"),
     from_columns: Optional[str] = Query(None, description="Optional comma-separated source columns for an exact composite join match"),
     to_columns: Optional[str] = Query(None, description="Optional comma-separated target columns for an exact composite join match"),
+    alias: Optional[str] = Query(None, description="Alias of the relationship (role-played joins to the same table differ only by alias). Send an empty value for the un-aliased one."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Remove a join/relationship from one semantic view to another."""
+    """Remove ONE join/relationship from one semantic view to another."""
     from app.services.dataset_model_service import remove_join
 
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
@@ -6291,6 +6325,8 @@ def remove_model_join(
             to_column=to_column,
             from_columns=match_from_columns,
             to_columns=match_to_columns,
+            alias=alias,
+            alias_given=alias is not None,
         )
         return result
     except ValueError as e:

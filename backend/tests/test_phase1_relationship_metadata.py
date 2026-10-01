@@ -121,13 +121,16 @@ def test_edge_from_dict_falls_back_to_relationship_field():
     assert e.cardinality == "one_to_many"
 
 
-def test_edge_from_dict_unknown_cardinality_defaults():
+def test_edge_from_dict_unknown_cardinality_is_invalid_not_many_to_one():
+    """An unknown cardinality is NOT a "safe default" of many-to-one: that
+    default let an unverified relationship be trusted as non-fanning. The row
+    is invalid and gives no edge (the engine refuses the model loudly)."""
     e = SemanticJoinResolver._edge_from_join_dict("orders", {
         "view": "customers",
         "from_column": "x", "to_column": "y",
         "cardinality": "bogus",
     })
-    assert e.cardinality == "many_to_one"  # safe default
+    assert e is None
 
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -911,6 +911,9 @@ export function DataModelCanvas({
   const [relListOpen, setRelListOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(true);
   const [dialogInitialValue, setDialogInitialValue] = useState<Partial<RelationshipDialogValue> | undefined>(undefined);
+  // The relationship the dialog is EDITING (null = creating a new one). Its
+  // stored identity goes to the server as `replaces`.
+  const [editingRel, setEditingRel] = useState<ModelRelationship | null>(null);
   const [relationshipDrag, setRelationshipDrag] = useState<{
     fromViewId: number;
     fromColumn: string;
@@ -1269,6 +1272,7 @@ export function DataModelCanvas({
       ?? allViewsByName[rel.toViewName];
     if (!toView) return;
     setSelectedRelKey(rel.key);
+    setEditingRel(rel);
     setDialogInitialValue({
       fromViewId: rel.fromViewId,
       toViewId: toView.id,
@@ -1295,7 +1299,22 @@ export function DataModelCanvas({
   };
 
   const handleAddJoin = async (params: Omit<AddJoinParams, 'datasetId'>) => {
-    await addJoin.mutateAsync({ datasetId, ...params });
+    await addJoin.mutateAsync({
+      datasetId,
+      ...params,
+      ...(editingRel
+        ? {
+          replaces: {
+            fromView: editingRel.fromViewName,
+            view: editingRel.toViewName,
+            alias: editingRel.alias ?? null,
+            fromColumns: editingRel.fromCols,
+            toColumns: editingRel.toCols,
+          },
+        }
+        : {}),
+    });
+    setEditingRel(null);
     toast.success(t('datasets.dataModel.relationshipSaved'));
   };
 
@@ -1312,6 +1331,7 @@ export function DataModelCanvas({
         toColumn: relationship.toCol,
         fromColumns: relationship.fromCols,
         toColumns: relationship.toCols,
+        alias: relationship.alias ?? '',
       });
       setSelectedRelKey(null);
       toast.success(removingDateLink ? t('datasets.dataModel.dateLinkRemoved') : t('datasets.dataModel.relationshipRemoved'));
@@ -1391,6 +1411,7 @@ export function DataModelCanvas({
       setRelationshipDrag(null);
       if (!target || (target.viewId === current.fromViewId && target.columnName === current.fromColumn)) return;
       setSelectedRelKey(null);
+      setEditingRel(null);
       setDialogInitialValue({
         fromViewId: current.fromViewId,
         toViewId: target.viewId,
@@ -1677,6 +1698,7 @@ export function DataModelCanvas({
             <button
               onClick={() => {
                 setSelectedRelKey(null);
+                setEditingRel(null);
                 setDialogInitialValue(undefined);
                 setDialogOpen(true);
               }}

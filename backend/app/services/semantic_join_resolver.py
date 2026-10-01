@@ -113,6 +113,9 @@ class JoinEdge:
     # distinguish "user-declared forward edge" from "auto reverse"; matters
     # for direction-respecting filter propagation rules (Phase 2).
     is_reverse: bool = False
+    # The FULL key ((from_col, to_col), ...) from the relationship contract —
+    # from_column/to_column above are only its first pair.
+    key_pairs: tuple = ()
 
 
 # Canonical cardinality vocabulary + alias map (kept in this module so both
@@ -225,6 +228,271 @@ def _edge_signature(edge: "JoinEdge") -> tuple:
     return (frozenset({edge.from_node, edge.to_node}), frozenset(pairs))
 
 
+# ── The relationship contract ────────────────────────────────────────────────
+# ONE reading of a persisted join (SemanticExplore.joins[i]) for every consumer:
+# the resolver graph, the engine's grain graph, the semantic health checks and
+# the field pickers. Writers produce the canonical form; legacy rows written
+# before it are read through an EXPLICIT canonicalization (`legacy` notes) or
+# are INVALID (`invalid` reasons) — nothing unknown is ever defaulted to a
+# stronger assumption (many-to-one, active, single-direction).
+#
+#   cardinality   `cardinality`, else the legacy mirror `relationship`; both
+#                 present must agree; unknown text or neither → INVALID
+#   is_active     missing → active (documented default for pre-Phase-3 rows);
+#                 a JSON boolean; the strings "true"/"false" and the integers
+#                 1/0 (legacy spellings) → that boolean; anything else → INVALID
+#   cross_filter  missing/empty → "single" (documented default); "single" /
+#                 "both" in any case; anything else → INVALID
+#   key pairs     from `sql_on` when it is an AND of key equalities (any
+#                 spelling: ${TABLE}.a = ${v}.b, reversed, LookML ${v.a});
+#                 otherwise (an expression such as a calendar CAST) from the
+#                 column lists; the two must agree when both exist; no key at
+#                 all → INVALID
+
+_TRUE_STRINGS = {"true"}
+_FALSE_STRINGS = {"false"}
+
+
+@dataclass(frozen=True)
+class JoinContract:
+    view: str
+    alias: str | None
+    node: str                    # resolver node id: alias, else view
+    from_view: str
+    cardinality: str | None      # canonical; None only when invalid
+    is_active: bool
+    cross_filter: str
+    key_pairs: tuple             # ((from_col, to_col), ...) — the FULL key
+    key_source: str              # "sql_on" | "columns" | "expression"
+    sql_on: str
+    invalid: tuple = ()          # reasons this row cannot be used
+    legacy: tuple = ()           # canonicalizations applied to a legacy row
+
+    @property
+    def valid(self) -> bool:
+        return not self.invalid
+
+    @property
+    def identity(self) -> tuple:
+        """Stable identity, independent of array position and key order."""
+        return (self.from_view, self.node, frozenset(self.key_pairs))
+
+
+def _parse_key_equalities(sql_on: str, *, from_refs: set, to_refs: set):
+    """[(from_col, to_col), ...] when `sql_on` is an AND of key equalities
+    between the from side and the to side (either order, any spelling);
+    "expression" when it is something else; raises ValueError when an operand
+    names a table that is neither side."""
+    pairs = []
+    for part in _re.split(r"\s+AND\s+", sql_on.strip(), flags=_re.I):
+        m = _ON_EQUALITY_RE.fullmatch(part)
+        if not m:
+            return "expression"
+        a1, c1, b1, d1, a2, c2, b2, d2 = m.groups()
+        sides = []
+        for ref, col in ((a1 or b1, c1 or d1), (a2 or b2, c2 or d2)):
+            if ref == "TABLE" or ref in from_refs:
+                sides.append(("from", col))
+            elif ref in to_refs:
+                sides.append(("to", col))
+            else:
+                raise ValueError(f"sql_on tham chiếu '{ref}', không phải hai bảng của quan hệ")
+        if {s for s, _ in sides} != {"from", "to"}:
+            raise ValueError("sql_on so sánh hai cột cùng một bảng")
+        f = next(c for s, c in sides if s == "from")
+        t = next(c for s, c in sides if s == "to")
+        pairs.append((f, t))
+    return pairs
+
+
+def _expression_column_refs(sql_on: str, *, from_refs: set, to_refs: set):
+    """({from cols}, {to cols}) an expression condition reads, or None when it
+    names a table that is neither side of the relationship."""
+    used_from: set = set()
+    used_to: set = set()
+    refs = [(m.group(1), m.group(2)) for m in _re.finditer(r"\$\{(\w+)\}\.(\w+)", sql_on)]
+    refs += [(m.group(1), m.group(2)) for m in _re.finditer(r"\$\{(\w+)\.(\w+)\}", sql_on)]
+    for ref, col in refs:
+        if ref == "TABLE" or ref in from_refs:
+            used_from.add(col)
+        elif ref in to_refs:
+            used_to.add(col)
+        else:
+            return None
+    return used_from, used_to
+
+
+def read_join_contract(from_view: str, join) -> JoinContract:
+    """The contract of one persisted join row (see the block comment above)."""
+    invalid: list[str] = []
+    legacy: list[str] = []
+    if not isinstance(join, dict):
+        return JoinContract(view="", alias=None, node="", from_view=from_view, cardinality=None,
+                            is_active=False, cross_filter="single", key_pairs=(), key_source="columns",
+                            sql_on="", invalid=("quan hệ không phải một object",))
+    view = str(join.get("view") or "").strip()
+    if not view:
+        invalid.append("thiếu bảng đích (view)")
+    alias = str(join.get("alias") or "").strip() or None
+    explicit_from = str(join.get("from_view") or "").strip()
+    src = explicit_from or from_view
+    if explicit_from and from_view and explicit_from != from_view:
+        # A row stored on one explore but claiming another source table: the
+        # model editor never shows it (it lists rows by explore) while the graph
+        # would add it from `from_view` — two different relationships.
+        invalid.append(f"from_view '{explicit_from}' khác bảng gốc của explore '{from_view}'")
+
+    # cardinality
+    raw_c, raw_r = join.get("cardinality"), join.get("relationship")
+    c = canonical_cardinality(raw_c) if raw_c not in (None, "") else None
+    r = canonical_cardinality(raw_r) if raw_r not in (None, "") else None
+    if raw_c not in (None, "") and c is None:
+        invalid.append(f"cardinality {raw_c!r} không hợp lệ")
+    if raw_r not in (None, "") and r is None:
+        invalid.append(f"relationship {raw_r!r} không hợp lệ")
+    if c and r and c != r:
+        invalid.append(f"cardinality={c} mâu thuẫn relationship={r}")
+    cardinality = c or r
+    if cardinality is None and not any("không hợp lệ" in x for x in invalid):
+        invalid.append("thiếu cardinality (không mặc định many_to_one)")
+    if c is None and r is not None and not invalid:
+        legacy.append("cardinality đọc từ relationship")
+    if raw_c not in (None, "") and str(raw_c).strip() != (c or ""):
+        legacy.append(f"cardinality {raw_c!r} → {c}")
+    if raw_c in (None, "") and raw_r not in (None, "") and str(raw_r).strip() != (r or ""):
+        legacy.append(f"relationship {raw_r!r} → {r}")
+
+    # is_active
+    raw_a = join.get("is_active")
+    if raw_a is None:
+        is_active = True
+        legacy.append("is_active vắng → active")
+    elif isinstance(raw_a, bool):
+        is_active = raw_a
+    elif isinstance(raw_a, str) and raw_a.strip().lower() in _TRUE_STRINGS | _FALSE_STRINGS:
+        is_active = raw_a.strip().lower() in _TRUE_STRINGS
+        legacy.append(f"is_active {raw_a!r} → {is_active}")
+    elif isinstance(raw_a, int) and raw_a in (0, 1):
+        is_active = bool(raw_a)
+        legacy.append(f"is_active {raw_a!r} → {is_active}")
+    else:
+        is_active = False
+        invalid.append(f"is_active {raw_a!r} không phải true/false")
+
+    # cross_filter
+    raw_cf = join.get("cross_filter")
+    if raw_cf in (None, ""):
+        cross_filter = "single"
+        legacy.append("cross_filter vắng → single")
+    elif isinstance(raw_cf, str) and raw_cf.strip().lower() in ("single", "both"):
+        cross_filter = raw_cf.strip().lower()
+    else:
+        cross_filter = "single"
+        invalid.append(f"cross_filter {raw_cf!r} không phải single/both")
+
+    # key pairs — the full key, from the condition the runtime renders
+    fcols = [str(x).strip() for x in (join.get("from_columns") or []) if str(x or "").strip()]
+    tcols = [str(x).strip() for x in (join.get("to_columns") or []) if str(x or "").strip()]
+    if fcols or tcols:
+        if len(fcols) != len(tcols):
+            invalid.append("số cột khoá hai phía không khớp")
+        col_pairs = list(zip(fcols, tcols))
+        f1 = str(join.get("from_column") or "").strip()
+        t1 = str(join.get("to_column") or "").strip()
+        if (f1 or t1) and col_pairs and (f1, t1) != col_pairs[0]:
+            invalid.append("from_column/to_column lệch from_columns/to_columns")
+    elif join.get("from_column") and join.get("to_column"):
+        col_pairs = [(str(join["from_column"]).strip(), str(join["to_column"]).strip())]
+    else:
+        col_pairs = []
+    sql_on = str(join.get("sql_on") or "").strip()
+    key_source = "columns"
+    key_pairs = col_pairs
+    if sql_on:
+        to_refs = {x for x in (alias, view) if x}
+        # A self-join through an alias (employees → manager AS employees):
+        # `${employees}` names the JOINED side, as the renderer has always
+        # substituted it; the from side is `${TABLE}`.
+        from_refs = {src, from_view} - to_refs
+        try:
+            parsed = _parse_key_equalities(sql_on, from_refs=from_refs, to_refs=to_refs)
+        except ValueError as exc:
+            parsed = None
+            invalid.append(str(exc))
+        if parsed == "expression":
+            key_source = "expression"
+            if not col_pairs:
+                invalid.append("điều kiện join là biểu thức nhưng không khai báo cột khoá")
+            else:
+                used = _expression_column_refs(sql_on, from_refs=from_refs, to_refs=to_refs)
+                if used is None:
+                    invalid.append("biểu thức join tham chiếu bảng không thuộc quan hệ")
+                elif used != ({f for f, _ in col_pairs}, {t for _, t in col_pairs}):
+                    invalid.append("biểu thức join dùng cột khác cột khoá khai báo")
+        elif parsed is not None:
+            key_source = "sql_on"
+            if fcols or tcols:
+                if col_pairs and set(parsed) != set(col_pairs):
+                    invalid.append("sql_on và from/to_columns chỉ hai khoá khác nhau")
+            elif col_pairs:
+                # Legacy shorthand: only the scalar from_column/to_column, which
+                # name the FIRST pair of a (possibly composite) sql_on key.
+                if col_pairs[0] not in parsed:
+                    invalid.append("from_column/to_column không thuộc khoá trong sql_on")
+                elif len(parsed) > 1:
+                    legacy.append("khoá ghép đọc từ sql_on (from_column chỉ là cặp đầu)")
+            key_pairs = parsed
+    if not key_pairs and not any("khoá" in x for x in invalid):
+        invalid.append("không có điều kiện join (sql_on hoặc cột khoá)")
+
+    return JoinContract(
+        view=view, alias=alias, node=alias or view, from_view=src, cardinality=cardinality,
+        is_active=is_active, cross_filter=cross_filter, key_pairs=tuple(key_pairs),
+        key_source=key_source, sql_on=sql_on, invalid=tuple(invalid), legacy=tuple(legacy),
+    )
+
+
+def _reverse_sql_on(contract: JoinContract) -> str:
+    """The condition of the same relationship walked from its to side.
+
+    Placeholders are swapped (the to side becomes ${TABLE}), so every key
+    column and any expression (a calendar CAST, the local-date macro) is kept —
+    a reverse edge rebuilt from from_column/to_column alone joined a composite
+    key on its first column and dropped the CAST."""
+    if contract.sql_on and contract.key_source == "expression":
+        out = contract.sql_on.replace("${TABLE}", "\x00FROM\x00")
+        for ref in {contract.node, contract.view}:
+            out = out.replace("${" + ref + "}", "${TABLE}")
+        return out.replace("\x00FROM\x00", "${" + contract.from_view + "}")
+    return " AND ".join(
+        f"${{TABLE}}.{t} = ${{{contract.from_view}}}.{f}" for f, t in contract.key_pairs
+    )
+
+
+
+def join_is_usable(from_view: str, join) -> bool:
+    """Valid AND active under the relationship contract — the one test every
+    reader uses to decide whether a persisted join exists at runtime."""
+    c = read_join_contract(from_view, join)
+    return c.valid and c.is_active
+
+
+def raise_for_invalid_relationships(resolver) -> None:
+    """Refuse to build a query on a model that carries an invalid relationship.
+
+    An invalid row is left out of the graph; answering without it would change
+    which rows a filter keeps or which route a dimension takes — a different
+    number with no sign of why. The message names every row and what is wrong."""
+    bad = list(getattr(resolver, "invalid_joins", None) or [])
+    if not bad:
+        return
+    items = "; ".join(f"{b['from_view']} → {b['join']}: {', '.join(b['reasons'])}" for b in bad[:6])
+    more = f" (và {len(bad) - 6} quan hệ khác)" if len(bad) > 6 else ""
+    raise ValueError(
+        f"Model có quan hệ không hợp lệ nên truy vấn bị từ chối: {items}{more}. "
+        "Sửa hoặc xoá các quan hệ này trong Data Model."
+    )
+
 def _route_signature(path: "JoinPath") -> tuple:
     return tuple(_edge_signature(s.edge) for s in path.steps)
 
@@ -294,6 +562,10 @@ class SemanticJoinResolver:
         self._bidirectional = bidirectional
         # adjacency: from_node -> list[JoinEdge]
         self._adj: dict[str, list[JoinEdge]] = {}
+        # Persisted relationships whose contract is invalid (read_join_contract):
+        # left out of the graph AND surfaced, so no consumer can mistake their
+        # absence for "no relationship".
+        self.invalid_joins: list[dict] = []
         # node_id -> view_name (so we can find dimensions/measures)
         self._node_to_view: dict[str, str] = {base_node: base_node}
         if model is not None:
@@ -308,12 +580,13 @@ class SemanticJoinResolver:
                 with _GRAPH_CACHE_LOCK:
                     cached = _GRAPH_CACHE.get(cache_key)
             if cached is not None:
-                cached_adj, cached_n2v = cached
+                cached_adj, cached_n2v, cached_invalid = cached
                 # Copy the outer structures so per-resolver mutation (none today,
                 # but defensive) can't corrupt the shared cache entry. JoinEdge
                 # is frozen and node_to_view values are strings, so a shallow
                 # copy is sufficient and cheap.
                 self._adj = {k: list(v) for k, v in cached_adj.items()}
+                self.invalid_joins = [dict(x) for x in cached_invalid]
                 self._node_to_view = dict(cached_n2v)
                 # Ensure THIS resolver's base node is seeded (it always is in a
                 # full-model graph, but a base view with zero joins may be absent).
@@ -334,6 +607,7 @@ class SemanticJoinResolver:
                         _GRAPH_CACHE[cache_key] = (
                             {k: list(v) for k, v in self._adj.items()},
                             dict(self._node_to_view),
+                            [dict(x) for x in self.invalid_joins],
                         )
                 # [perf] graph (re)built from the model's explores. INFO because
                 # a burst of MISS on one dashboard load means the cache isn't
@@ -357,9 +631,19 @@ class SemanticJoinResolver:
                 continue
             self._node_to_view.setdefault(from_view, from_view)
             for join in explore.joins or []:
-                edge = self._edge_from_join_dict(from_view, join)
-                if edge is None:
+                contract = read_join_contract(from_view, join)
+                if not contract.valid:
+                    # Never used — and never silently: the engine refuses a
+                    # model that carries an invalid relationship (see
+                    # `invalid_joins`), the health check reports it.
+                    self.invalid_joins.append({
+                        "from_view": contract.from_view,
+                        "join": str((join or {}).get("name") or contract.node or "?")
+                        if isinstance(join, dict) else "?",
+                        "reasons": list(contract.invalid),
+                    })
                     continue
+                edge = self._edge_from_contract(contract)
                 # Phase-3b: inactive joins stay in storage but are invisible to
                 # the resolver so path resolution / filter checks behave as if
                 # the relationship doesn't exist. Active=True is the default
@@ -377,16 +661,17 @@ class SemanticJoinResolver:
                 wants_reverse = (
                     self._bidirectional or edge.cross_filter == "both"
                 )
-                if wants_reverse and edge.from_column and edge.to_column:
+                if wants_reverse and contract.key_pairs:
                     inv = invert_cardinality(edge.cardinality)
                     reverse = JoinEdge(
                         from_node=edge.to_node,
                         to_node=edge.from_node,
-                        to_view=edge.from_node,
+                        to_view=self._node_to_view.get(edge.from_node, edge.from_node),
                         type="left",
-                        sql_on="",
-                        from_column=edge.to_column,
-                        to_column=edge.from_column,
+                        sql_on=_reverse_sql_on(contract),
+                        from_column=contract.key_pairs[0][1],
+                        to_column=contract.key_pairs[0][0],
+                        key_pairs=tuple((t, f) for f, t in contract.key_pairs),
                         relationship=inv,
                         is_active=True,
                         cross_filter="both",
@@ -397,50 +682,33 @@ class SemanticJoinResolver:
                     self._node_to_view.setdefault(reverse.to_node, reverse.to_view)
 
     @staticmethod
-    def _edge_from_join_dict(from_view: str, join: dict) -> JoinEdge | None:
-        to_view = str(join.get("view") or "").strip()
-        if not to_view:
-            return None
-        alias = str(join.get("alias") or "").strip() or to_view
-        # `from_view` field may be set on a join when the explore base differs
-        # from the actual source view (legacy data). Honor it when present.
-        explicit_from = str(join.get("from_view") or "").strip()
-        from_node = explicit_from or from_view
-        # Phase-3b: read is_active / cross_filter with defaults preserving
-        # pre-Phase-3 behaviour when the keys are missing on legacy JSON.
-        raw_active = join.get("is_active")
-        is_active = True if raw_active is None else bool(raw_active)
-        cross_filter = str(join.get("cross_filter") or "single").strip().lower()
-        if cross_filter not in ("single", "both"):
-            cross_filter = "single"
-        # Phase-1 — `cardinality` takes precedence; legacy entries (no key) fall
-        # back to `relationship` mapped through `normalize_cardinality`. Default
-        # 'many_to_one' matches the dominant star-schema FK→PK pattern.
-        raw_card = join.get("cardinality") or join.get("relationship")
-        cardinality = normalize_cardinality(raw_card)
-        # ── ONE canonical rule (refactor 2026-07) ────────────────────────────
-        # The SQL join type is DERIVED, never authored. Runtime is ALWAYS
-        # FACT LEFT JOIN DIM: the base/fact side keeps all its rows, unmatched
-        # dim → NULL. Cardinality is the single source of truth for direction;
-        # join-type is not part of the semantic identity and must not be mixed
-        # in. We therefore IGNORE any stored ``type`` (legacy data may carry
-        # ``right``/``full`` from the old LEFT<->RIGHT swap) and force ``left``.
-        # Reverse edges (cross_filter=both) are likewise constructed as ``left``.
-        _derived_type = "left"
+    def _edge_from_contract(contract: "JoinContract") -> JoinEdge:
+        """The runtime edge of a VALID relationship contract. The SQL join type
+        is derived (always FACT LEFT JOIN DIM); stored `type` is ignored."""
+        first = contract.key_pairs[0] if contract.key_pairs else (None, None)
         return JoinEdge(
-            from_node=from_node,
-            to_node=alias,
-            to_view=to_view,
-            type=_derived_type,
-            sql_on=str(join.get("sql_on") or ""),
-            from_column=(str(join.get("from_column") or "").strip() or None),
-            to_column=(str(join.get("to_column") or "").strip() or None),
-            relationship=(join.get("relationship") or None),
-            is_active=is_active,
-            cross_filter=cross_filter,
-            cardinality=cardinality,
+            from_node=contract.from_view,
+            to_node=contract.node,
+            to_view=contract.view,
+            type="left",
+            sql_on=contract.sql_on,
+            from_column=first[0],
+            to_column=first[1],
+            relationship=contract.cardinality,
+            is_active=contract.is_active,
+            cross_filter=contract.cross_filter,
+            cardinality=contract.cardinality,
             is_reverse=False,
+            key_pairs=tuple(contract.key_pairs),
         )
+
+    @staticmethod
+    def _edge_from_join_dict(from_view: str, join: dict) -> JoinEdge | None:
+        """Edge for one persisted join, or None when its contract is invalid."""
+        contract = read_join_contract(from_view, join)
+        if not contract.valid:
+            return None
+        return SemanticJoinResolver._edge_from_contract(contract)
 
     # ── public API ─────────────────────────────────────────────────────
 
@@ -754,6 +1022,10 @@ def reachable_fields_for_model(
 
 
 __all__ = [
+    "JoinContract",
+    "join_is_usable",
+    "raise_for_invalid_relationships",
+    "read_join_contract",
     "JoinEdge",
     "JoinStep",
     "JoinPath",

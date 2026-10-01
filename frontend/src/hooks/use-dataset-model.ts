@@ -574,6 +574,19 @@ export interface AddJoinParams {
    * with force=true to proceed (charts then need re-binding).
    */
   force?: boolean;
+  /**
+   * EDIT of an existing relationship: its identity AS STORED. When the edit
+   * changes that identity (other key columns, alias or tables) the server
+   * removes the old row in the same transaction — without it an edit added a
+   * second relationship next to the old one.
+   */
+  replaces?: {
+    fromView: string;
+    view: string;
+    alias?: string | null;
+    fromColumns: string[];
+    toColumns: string[];
+  } | null;
 }
 
 export function useAddJoin() {
@@ -601,6 +614,17 @@ export function useAddJoin() {
           // Cascade override: re-submit with force after the user confirms the
           // JOIN_INACTIVE_CASCADE warning (charts referencing the disabled join).
           ...(params.force ? { force: true } : {}),
+          ...(params.replaces
+            ? {
+              replaces: {
+                from_view: params.replaces.fromView,
+                view: params.replaces.view,
+                alias: params.replaces.alias ?? null,
+                from_columns: params.replaces.fromColumns,
+                to_columns: params.replaces.toColumns,
+              },
+            }
+            : {}),
         }
       );
       return response.data;
@@ -619,6 +643,9 @@ export interface RemoveJoinParams {
   toColumn?: string;
   fromColumns?: string[];
   toColumns?: string[];
+  /** Part of the identity: role-played joins to one table differ only by
+   *  alias. '' = the un-aliased relationship. */
+  alias?: string | null;
 }
 
 export function useRemoveJoin() {
@@ -636,6 +663,7 @@ export function useRemoveJoin() {
             to_column: payload.to_column,
             from_columns: fromColumns.length ? fromColumns.join(',') : undefined,
             to_columns: toColumns.length ? toColumns.join(',') : undefined,
+            alias: params.alias ?? '',
           },
         }
       );

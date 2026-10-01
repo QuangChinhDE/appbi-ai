@@ -177,6 +177,7 @@ protected:
       - backend/app/services/chart_semantic_service.py
       - backend/app/services/chart_service.py   # carries the semantic-relation helpers the distinct cascade imports
       - backend/app/services/semantic_health_service.py   # model assumptions checked on the data; gates publish
+      - backend/app/services/relationship_key_guard.py    # runtime proof of every to-one key a query trusts
     directive: >
       DO NOT rewrite or replace the semantic layer. It is golden-proven
       (multi-fact fan-out, snowflake, calendar, measure isolation). Make the
@@ -190,7 +191,8 @@ protected:
     # coverage this subsystem should have, and their absence is reported by
     # `guardrail_check.py --health` rather than hidden.
     required_tests: [measure_render, dialect_structural, semantic_state_contracts, filter_matrix,
-                     golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity]
+                     golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity,
+                     relationship_contract, relationship_contract_pg]
 
   - id: public_link_security
     label: "Public-link filter merge / access (data-exposure surface)"
@@ -267,7 +269,18 @@ features:
     files: [backend/app/services/semantic_join_resolver.py]
     keywords: [join, joins, joined, relationship, cardinality, snowflake, "many_to_one", chasm, "fan out"]
     invariants: [model_autojoin_pk]
-    required_tests: [galaxy_golden, filter_matrix, relationship_metadata]
+    required_tests: [galaxy_golden, filter_matrix, relationship_metadata, relationship_contract]
+
+  - id: relationship_authoring
+    label: "Relationship authoring ↔ join resolver (one authored relationship = one persisted = one runtime contract)"
+    files:
+      - backend/app/services/dataset_model_service.py
+      - backend/app/services/relationship_key_guard.py
+      - backend/app/routers/semantic.py
+      - frontend/src/components/datasets/DataModelCanvas.tsx
+      - frontend/src/hooks/use-dataset-model.ts
+    keywords: [relationship, "add_join", "remove_join", "primary key", "cross_filter", "is_active", alias, tombstone, regenerate, "edit relationship"]
+    required_tests: [relationship_contract, relationship_contract_pg, semantic_router_access]
 
   - id: calendar_time
     label: "Calendar / time dimension (generated calendar, role-play, grain)"
@@ -556,6 +569,13 @@ tests:
   semantic_router_access:
     run: "pytest backend/tests/test_semantic_router_object_access.py"
     locks: "SEM-P1-004: every /semantic endpoint checks access to the object's DATASET (denied: stranger read/list/write/delete/query, view-share cannot write, module view caps an owner, dataset-less object needs datasets:full; allowed: owner); joins written wholesale are validated (other dataset's view, missing column, missing or contradictory cardinality); objects cannot move across datasets; context modifiers cannot be added or changed on save (a legacy one may stay unchanged or be removed)"
+  relationship_contract:
+    run: "pytest backend/tests/test_relationship_contract.py"
+    locks: "one reader of persisted relationships (read_join_contract) for resolver, grain graph, health, pickers and the model response: every legacy form in tests/fixtures/relationship_legacy_v1.json is SUPPORTED (explicit canonical reading) or INVALID (excluded from the graph, query refused) — unknown/missing cardinality is never many-to-one, 'false' is never active, an invalid cross_filter is never single; reverse edges keep composite keys and calendar CASTs; health reads the resolver's key; PK + relationship commit once or not at all; a 1:N drawing with a PK is refused; an identity-changing edit replaces (and tombstones an auto row); a same-identity edit keeps the stored condition and provenance; delete is alias-aware, never a wildcard; regeneration keeps user edits and never resurrects a removed auto join; the direct API stores only rows the reader accepts and keeps provenance on a round trip; the persisted JSON and the reloaded runtime graph agree after every state transition; the key probe covers every ONE side of the walked cardinality (a chart based on the dimension included, both sides of a 1:1), groups by the expressions the ON condition compares (casts included) and refuses a duplicate or an unverifiable condition; write paths read keys through the contract (composite behind a scalar shorthand, LookML twin rows); the distinct cascade refuses an invalid model; self-join aliases and expression-column agreement in the contract"
+  relationship_contract_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_relationship_contract_pg.py"
+    locks: "executed on Postgres: a composite relationship walked backwards filters on both keys and a calendar one keeps its CAST (values); a declared N:1 with duplicate one-side keys is refused before the inflated SQL runs — also when the chart is based on the dimension — a unique key gives the hand-computed value, an unverifiable key is refused; two editors of one model keep both relationships, a failed PK+relationship edit racing another edit leaves no partial state, a removal racing a regeneration is not resurrected — the second writer waits for the model write lock"
   semantic_state_contracts:
     run: "pytest backend/tests/test_semantic_state_contracts.py"
     locks: "drift sees every column reference on both columns_cache shapes; the chart cache key changes with measure/PK/transformation definitions; the live WHERE renders or refuses every operator; a 1:N live filter is a DISTINCT-key semi-join (executed); measure-filter classification by model; unrenderable HAVING refuses; bare explore names and tableless views are model-scoped; one local-date rule for calendar join and time grain"
@@ -866,13 +886,14 @@ semantic_contract:
     - "backend/app/services/type_override_service.py"
     - "backend/app/services/chart_contracts.py"
     - "backend/app/services/chart_semantic_service.py"
+    - "backend/app/services/relationship_key_guard.py"
   files:
     backend/app/services/semantic_query_engine.py:
-      symbols: [SemanticQueryEngine, generate_sql, _render_measure, _build_filter_exists_clause, _render_symmetric_aggregate, _build_isolated_measure_subquery, _build_dimensioned_multifact_sql, _validate_group_grain, _coerce_typed_filter_value, _filter_type_family, _render_dimension_with_time_grain, _filter_targets_measure, _aggregate_predicate, _best_calendar_dim_candidates, _collapse_fanned_calendar_filters, _view_is_generated_calendar]
+      symbols: [SemanticQueryEngine, generate_sql, _render_measure, _build_filter_exists_clause, _render_symmetric_aggregate, _build_isolated_measure_subquery, _build_dimensioned_multifact_sql, _validate_group_grain, _coerce_typed_filter_value, _filter_type_family, _render_dimension_with_time_grain, _filter_targets_measure, _aggregate_predicate, _best_calendar_dim_candidates, _collapse_fanned_calendar_filters, _view_is_generated_calendar, _record_key_probe, key_probes]
     backend/app/services/dataset_model_service.py:
-      symbols: [get_distinct_field_values, _build_distinct_sql, _emit_exists_for_single_path, _build_exists_for_path, _distinct_filter_targets_self, validate_direct_explore_joins, dangling_model_references, lock_dataset_model_for_write, cache_column_names]
+      symbols: [get_distinct_field_values, _build_distinct_sql, _emit_exists_for_single_path, _build_exists_for_path, _distinct_filter_targets_self, validate_direct_explore_joins, dangling_model_references, lock_dataset_model_for_write, cache_column_names, add_join, remove_join, _remove_replaced_relationship, _tombstone_auto_key_joins]
     backend/app/services/semantic_join_resolver.py:
-      symbols: [SemanticJoinResolver, resolve_path, resolve_paths, resolve_unique_path, distinct_routes, AmbiguousJoinPathError, canonical_cardinality]
+      symbols: [SemanticJoinResolver, resolve_path, resolve_paths, resolve_unique_path, distinct_routes, AmbiguousJoinPathError, canonical_cardinality, JoinContract, read_join_contract, join_is_usable, raise_for_invalid_relationships]
     backend/app/services/dataset_calendar_service.py:
       symbols: [build_calendar_live_sql, is_generated_calendar_table, local_date_sql, is_instant_column]
     backend/app/services/type_override_service.py:
@@ -888,7 +909,9 @@ semantic_contract:
     backend/app/services/semantic_query_compiler.py:
       symbols: []   # entry module registered; no pinned symbols yet (add when known)
     backend/app/services/semantic_health_service.py:
-      symbols: [evaluate, uniqueness_checks, publish_blockers, snapshot_parity_checks]
+      symbols: [evaluate, uniqueness_checks, publish_blockers, snapshot_parity_checks, invalid_relationship_checks]
+    backend/app/services/relationship_key_guard.py:
+      symbols: [key_probe_sql, verify_key_probes, one_side_key, one_side_probe]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. PATCH-LEVEL POLICY — cross-cutting checks in validate_patch / explain_risk.

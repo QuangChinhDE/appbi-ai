@@ -371,6 +371,11 @@ class JoinDefinition(BaseModel):
     # working without migration: every existing join is active + single-direction.
     is_active: bool = True
     cross_filter: Literal["single", "both"] = "single"
+    # Provenance written by the server (calendar roles, an auto join the user
+    # edited). Declared so a GET → PUT round trip keeps them; the server takes
+    # them from the stored row of the same identity anyway.
+    calendar_role: Optional[str] = None
+    user_edited: Optional[bool] = None
 
 
 # Semantic View
@@ -446,6 +451,10 @@ class SemanticExploreUpdate(BaseModel):
     joins: Optional[List[JoinDefinition]] = None
     default_filters: Optional[Dict[str, Any]] = None
     description: Optional[str] = None
+    # Optimistic concurrency for the whole-list write: the `updated_at` the
+    # client read. A different stored value → 409 instead of replacing an edit
+    # made in between. Omitted → the PUT replaces the list as sent.
+    expected_updated_at: Optional[datetime] = None
 
 
 class SemanticExplore(SemanticExploreBase):
