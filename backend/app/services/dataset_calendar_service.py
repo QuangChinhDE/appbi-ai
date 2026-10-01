@@ -365,11 +365,21 @@ FROM UNNEST(GENERATE_DATE_ARRAY(DATE '{start_date}', DATE '{end_date}')) AS d
 """.strip()
 
     if dialect == "mysql":
+        # NOT a recursive CTE: MySQL aborts one after `cte_max_recursion_depth`
+        # (1000) iterations, and the default calendar spans 2000-2100 (~37k
+        # days) — every MySQL calendar query failed. The days are an offset
+        # from start_date built from as many decimal digit tables as the range
+        # needs (never truncated), filtered to end_date.
+        _days = (date.fromisoformat(str(end_date)) - date.fromisoformat(str(start_date))).days
+        _digits = max(1, len(str(max(_days, 0))))
+        _digit_table = " UNION ALL ".join(f"SELECT {i} AS n" for i in range(10))
+        _offset = " + ".join(f"d{k}.n * {10 ** k}" for k in range(_digits))
+        _from = " CROSS JOIN ".join(f"({_digit_table}) AS d{k}" for k in range(_digits))
         return f"""
-WITH RECURSIVE calendar_series AS (
-  SELECT CAST('{start_date}' AS DATE) AS d
-  UNION ALL
-  SELECT DATE_ADD(d, INTERVAL 1 DAY) FROM calendar_series WHERE d < '{end_date}'
+WITH calendar_series AS (
+  SELECT DATE_ADD(CAST('{start_date}' AS DATE), INTERVAL ({_offset}) DAY) AS d
+  FROM {_from}
+  WHERE {_offset} <= {max(_days, 0)}
 )
 SELECT
   d AS date,
@@ -380,7 +390,7 @@ SELECT
   MONTH(d) AS month,
   MONTHNAME(d) AS month_name,
   DATE_FORMAT(d, '%b') AS month_short,
-  DATE_FORMAT(d, '%Y-%m') AS year_month,
+  DATE_FORMAT(d, '%Y-%m') AS `year_month`,
   WEEK(d, 3) AS week_of_year_iso,
   DATE_SUB(d, INTERVAL (WEEKDAY(d)) DAY) AS week_start_date,
   DATE_ADD(DATE_SUB(d, INTERVAL (WEEKDAY(d)) DAY), INTERVAL 6 DAY) AS week_end_date,

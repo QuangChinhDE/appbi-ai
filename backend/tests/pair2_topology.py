@@ -77,6 +77,9 @@ TABLES = {
     "lat_fact": ([("id", "int"), ("k", "int"), ("amount", "int")], [(1, 1, 5)]),
     "lat": ([("id", "int"), ("name", "text")], [(1, "L")]),
     "chain": ([("id", "int")], [(1,), (2,)]),
+    # two pass-through product dimensions that each miss a product (an orphan each): Pen only / Ink only
+    "products_a": ([("id", "int"), ("name", "text")], [(1, "Pen")]),
+    "products_b": ([("id", "int"), ("name", "text")], [(2, "Ink")]),
     # instants (UTC) under an Asia/Ho_Chi_Minh (+7) calendar: e1 is local 2024-01-01, e3 local 2025-01-01
     "events_tz": ([("id", "int"), ("ts", "timestamp"), ("amount", "int")],
                   [(1, "2023-12-31 20:00:00", 10), (2, "2024-06-01 12:00:00", 5), (3, "2024-12-31 18:00:00", 3)]),
@@ -168,6 +171,8 @@ VIEWS = {
     "p2_products": ("T:products", _dims("id", "name"), []),
     # a pass-through dimension over the same product key (G12 equivalence)
     "p2_products_dim": ("T:products", _dims("id", "name"), []),
+    "p2_pda": ("T:products_a", _dims("id", "name"), []),
+    "p2_pdb": ("T:products_b", _dims("id", "name"), []),
     "p2_sales": ("T:sales", _dims("id", "customer_id", "store_id", "product_id", "order_date", "ship_date",
                                     "close_date", types=_DATES),
                  [_sum("revenue", "amount"),
@@ -360,6 +365,18 @@ MODELS = {
     "G12_passthrough": {"p2_sales": [rel("p2_products", "product_id", "id"), rel("p2_products_dim", "product_id", "id")],
                         "p2_products_dim": [rel("p2_products", "id", "id")], "p2_products": []},
     # … the same shape through ANOTHER key (the sale's store id as a product id): two meanings
+    # Pair #3 H3-13 — the direct relationship next to a pass-through that misses Ink
+    "G12_orphan_direct_and_chain": {"p2_sales": [rel("p2_products", "product_id", "id"), rel("p2_pda", "product_id", "id")],
+                                    "p2_pda": [rel("p2_products", "id", "id")], "p2_products": []},
+    # … two equally short pass-throughs on the same key, each missing a different product: which one
+    # is joined decides which product's revenue lands in the "no product" group
+    "G12_orphan_two_chains": {"p2_sales": [rel("p2_pda", "product_id", "id"), rel("p2_pdb", "product_id", "id")],
+                              "p2_pda": [rel("p2_products", "id", "id")], "p2_pdb": [rel("p2_products", "id", "id")],
+                              "p2_products": []},
+    # Pair #3 sweep: regions is related to sales ONLY under a role alias (the customer's region)
+    "G16_alias_only": {"p2_sales": [rel("p2_customers", "customer_id", "id")],
+                       "p2_customers": [rel("p2_regions", "region_id", "id", alias="cust_region")],
+                       "p2_regions": []},
     "G12_passthrough_other_key": {"p2_sales": [rel("p2_products", "product_id", "id"),
                                                rel("p2_products_dim", "store_id", "id")],
                                   "p2_products_dim": [rel("p2_products", "id", "id")], "p2_products": []},
@@ -865,6 +882,20 @@ CASES = [
     ("G12.passthrough.kpi_filter_product", "G12_passthrough", "p2_sales",
      {"dims": [], "measures": ["p2_sales.revenue"], "filters": {"p2_products.name": [f("eq", "Ink")]}},
      [{"p2_sales.revenue": 57}]),
+    # Pair #3 H3-13 — the equivalent-key route that is USED is the direct relationship (the strictly
+    # shortest): Ink keeps its revenue (57) although the pass-through does not know Ink
+    ("G12.orphan.direct_and_chain_by_product", "G12_orphan_direct_and_chain", "p2_sales",
+     {"dims": ["p2_products.name"], "measures": ["p2_sales.revenue"]},
+     [{"p2_products.name": "Pen", "p2_sales.revenue": 141}, {"p2_products.name": "Ink", "p2_sales.revenue": 57}]),
+    ("G12.orphan.direct_and_chain_filter_ink", "G12_orphan_direct_and_chain", "p2_sales",
+     {"dims": [], "measures": ["p2_sales.revenue"], "filters": {"p2_products.name": [f("eq", "Ink")]}},
+     [{"p2_sales.revenue": 57}]),
+    # two equal-length pass-throughs keeping different rows: Pen 141 + (none) 57 through one, (none)
+    # 141 + Ink 57 through the other — refused, never the alphabetically first
+    ("G12.orphan.two_chains_by_product", "G12_orphan_two_chains", "p2_sales",
+     {"dims": ["p2_products.name"], "measures": ["p2_sales.revenue"]}, AMBIGUOUS),
+    ("G12.orphan.two_chains_filter_ink", "G12_orphan_two_chains", "p2_sales",
+     {"dims": [], "measures": ["p2_sales.revenue"], "filters": {"p2_products.name": [f("eq", "Ink")]}}, AMBIGUOUS),
     ("G12.passthrough_other_key.fact_by_product", "G12_passthrough_other_key", "p2_sales",
      {"dims": ["p2_products.name"], "measures": ["p2_sales.revenue"]}, AMBIGUOUS),
     ("G12.passthrough_other_key.products_base_by_product", "G12_passthrough_other_key", "p2_products",
@@ -875,10 +906,11 @@ CASES = [
     ("G14.lattice_filter", "G14_lattice", "p2_lat_fact",
      {"dims": [], "measures": ["p2_lat_fact.amount"], "filters": {"p2_lat_top.name": [f("eq", "L")]}}, ROUTE_LIMIT),
     # within the bound every chain is seen: the 8 chains all compare lat_fact.k with the top's id
-    # (identity keys straight through) — ONE meaning, answered
+    # (identity keys straight through) — one KEY meaning, but through 8 different intermediate views
+    # of equal length: which rows reach the top depends on which intermediate is joined (Pair #3
+    # H3-13: an orphan in one of them would be a NULL there) — not provably one answer → refused
     ("G14.lattice_small_select", "G14_lattice_small", "p2_lat_fact",
-     {"dims": ["p2_lat_top.name"], "measures": ["p2_lat_fact.amount"]},
-     [{"p2_lat_top.name": "L", "p2_lat_fact.amount": 5}]),
+     {"dims": ["p2_lat_top.name"], "measures": ["p2_lat_fact.amount"]}, AMBIGUOUS),
     ("G14.prop_overflow", "G14_prop_overflow", "p2_revenue",
      {"dims": [], "measures": ["p2_revenue.amount"], "filters": {"p2_deals.stage": [f("eq", "Won")]}}, ROUTE_LIMIT),
     # Ann and Bob both have a Won deal: every owner route keeps their revenue (100+40+25+10)
@@ -942,6 +974,17 @@ CASES = [
      {"dims": [], "measures": ["p2_sales.revenue"],
        "filters": {"p2_revenue.rdate": [f("eq", 2025, calendarField="year", calendarSourceField="rdate")]}},
      [{"p2_sales.revenue": 7}]),
+    # the NULL contract (spec): a sale with NO customer (sale 4) passes no predicate on the related
+    # view — IS NULL included (SQL three-valued logic, every path); every customer has a name
+    ("G1.kpi_customer_name_is_null", "G1_star", "p2_sales",
+     {"dims": [], "measures": ["p2_sales.revenue"], "filters": {"p2_customers.name": [f("is_null", None)]}},
+     [{"p2_sales.revenue": None}]),
+    ("G2.kpi_region_is_null_two_hops", "G2_snowflake", "p2_sales",
+     {"dims": [], "measures": ["p2_sales.revenue"], "filters": {"p2_regions.name": [f("is_null", None)]}},
+     [{"p2_sales.revenue": None}]),
+    ("G1.kpi_customer_name_is_not_null", "G1_star", "p2_sales",
+     {"dims": [], "measures": ["p2_sales.revenue"], "filters": {"p2_customers.name": [f("is_not_null", None)]}},
+     [{"p2_sales.revenue": 191}]),
     # composite key filter: a partially NULL key matches no store (G8)
     ("G8.kpi_region_filter", "G8_composite", "p2_c_sales",
      {"dims": [], "measures": ["p2_c_sales.amt"], "filters": {"p2_c_regions.label": [f("eq", "North")]}},

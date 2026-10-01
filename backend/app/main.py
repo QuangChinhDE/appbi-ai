@@ -152,6 +152,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Public-Session", "X-Requested-With"],
+    # the semantic refusal category of a refused chart request (chart_service.REFUSAL_HEADER)
+    expose_headers=["X-AppBI-Refusal"],
     max_age=3600,  # cache preflight 1h so cross-origin calls skip repeated OPTIONS
 )
 print("DEBUG: CORS middleware added")

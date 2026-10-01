@@ -364,9 +364,10 @@ class SemanticQueryEngine:
         # fact's PRIMARY calendar relationship (no-op unless a multi-date fact
         # was fanned). Runs before isolation/where so every path sees the
         # collapsed form; idempotent on already-clean filters.
-        # `_disable_isolation` (set by the chart-runtime auto-fallback when the
-        # isolated SQL errored on the datasource) reverts to the pre-isolation
-        # legacy path entirely — no collapse, no isolation/re-anchor/stitch.
+        # `_disable_isolation` reverts to the pre-isolation legacy path entirely —
+        # no collapse, no isolation/re-anchor/stitch. NO production caller sets
+        # it: the chart runtime has no isolation-disabling retry (a refused or
+        # failing query is never re-run through a weaker path — Pair #3).
         if not _disable_isolation:
             filters = self._collapse_fanned_calendar_filters(filters, explore.base_view_name)
 
@@ -4991,6 +4992,22 @@ class SemanticQueryEngine:
             meanings.setdefault(cls._route_meaning(r, joined), []).append(r)
         if len(meanings) == 1:
             group = next(iter(meanings.values()))
+            # One KEY meaning can still keep different ROWS: a chain through an
+            # intermediate view finds no target row where that intermediate has
+            # none (a LEFT JOIN NULL), so two equally short chains through
+            # DIFFERENT intermediates may disagree on which rows reach the target.
+            # Only a strictly shortest route represents the meaning; a tie
+            # between different relationships is refused (Pair #3 H3-13).
+            from app.services.semantic_join_resolver import _edge_signature
+
+            tails: dict = {}
+            for r in group:
+                tails.setdefault(tuple(_edge_signature(st.edge) for st in r.steps[cls._route_anchor(r, joined):]), r)
+            if len(tails) > 1:
+                shortest = min(len(t) for t in tails)
+                tied_tails = [t for t in tails if len(t) == shortest]
+                if len(tied_tails) > 1:
+                    return None, sorted((tails[t] for t in tied_tails), key=_route_label)
             group.sort(key=lambda r: (
                 not all(st.edge.to_node in joined for st in r.steps[:cls._route_anchor(r, joined)]),
                 len(r.steps), _route_label(r)))

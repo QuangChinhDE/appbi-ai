@@ -527,10 +527,13 @@ def preview_chart_data(
     except ValueError as exc:
         # Humanise internal dataset_table_<id> tokens → friendly table names so
         # the DA sees "dim_customer" not "dataset_table_585" in the error.
+        from app.services.chart_service import REFUSAL_HEADER, refusal_category
         from app.services.dataset_model_service import humanize_view_tokens
+        _cat = refusal_category(exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=humanize_view_tokens(str(exc), db, getattr(dataset_obj, "id", 0)),
+            headers={REFUSAL_HEADER: _cat} if _cat else None,
         )
     except Exception as exc:
         logger.exception("Failed to preview chart data")
@@ -1145,9 +1148,12 @@ def get_chart_data(
             from app.services.dataset_crud import DatasetCRUDService
             _dt2 = DatasetCRUDService.get_table_by_id(db, chart.dataset_table_id)
             _dsid = getattr(_dt2, "dataset_id", 0) or 0
+        from app.services.chart_service import REFUSAL_HEADER, refusal_category
+        _cat = refusal_category(e)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=humanize_view_tokens(str(e), db, _dsid),
+            headers={REFUSAL_HEADER: _cat} if _cat else None,
         )
     except Exception as e:
         logger.exception(

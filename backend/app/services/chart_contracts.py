@@ -572,9 +572,11 @@ def merge_chart_query_filters(
     physical, custom SQL, semantic, public). Base filters are the chart's
     saved scope; ``extra_filters`` are the runtime overlay (dashboard /
     slicer / public-link filters — for the public path already pre-merged by
-    `filter_layered_merge.merge_layered_filters`). On the same semantic scope
-    the runtime value WINS over the base (PBI-parity "viewer narrows the
-    chart's default"); see `_filter_dedupe_key`.
+    `filter_layered_merge.merge_layered_filters`). The base is the author's
+    HARD constraint: base AND runtime, never replaced — even on the same
+    field (product decision 2026-05-31, below). Runtime-vs-runtime override
+    ("viewer narrows the dashboard default") is resolved upstream by the
+    layered merge, not here.
 
     NOTE: base-internal duplicates are intentionally PRESERVED (only
     base-vs-extra collisions are deduped). A chart whose base scope is a

@@ -447,3 +447,15 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_pair2_golden_topology_pg.py
+
+      # Query engine ↔ ChartService (Pair #3): the engine's meaning survives
+      # routing, filtering, planning, caching, execution and reshaping. Every
+      # Pair 2 golden request asked THROUGH ChartService (saved chart, preview,
+      # stale / minimal / empty / legacy bindings) on a real datasource; cache
+      # mutations (model / measure / filter / generation / scope / host);
+      # live adapter == engine rows; snapshot→live fallback on the source
+      # engine; refusal categories over HTTP; field identity of the result.
+      - name: "GATE — Pair 3 query engine ↔ ChartService (Postgres)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_pair3_chartservice_pg.py

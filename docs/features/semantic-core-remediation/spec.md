@@ -35,7 +35,10 @@ Postgres; the same matrix was executed on BigQuery), `test_semantic_state_contra
   chains that compose to the same key equalities — a pass-through dimension
   over the same key (`sales → dim_product → products` on `product_id`
   throughout IS `sales → products`): no refusal because another physical path
-  exists; the one with the fewest joins is used. Two routes entering one view
+  exists; the STRICTLY shortest one is used. Equally short equivalent chains
+  through DIFFERENT intermediate views are refused: an intermediate without a
+  row for a key (an orphan) gives that fact row no target row, so which one is
+  joined would decide which rows reach the target (Pair #3). Two routes entering one view
   through different relationships are refused. The order of view names,
   relationships, explores or fields never decides.
 - **The base never resolves a meaning.** Under a DIMENSION base the measure's

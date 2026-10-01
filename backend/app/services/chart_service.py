@@ -530,7 +530,10 @@ def _build_semantic_alias_map(canonical_fields: list[str]) -> dict[str, str]:
     Mirrors `SemanticQueryEngine._safe_alias`. Used to rename keys in
     returned rows so the response contract matches the request (callers ask
     in `view.field` form, they get back `view.field` keyed rows)."""
+    from app.services.semantic_join_resolver import SemanticRefusal
+
     out: dict[str, str] = {}
+    by_folded: dict[str, str] = {}
     for raw in canonical_fields:
         canonical = str(raw or "").strip()
         if not canonical:
@@ -539,8 +542,18 @@ def _build_semantic_alias_map(canonical_fields: list[str]) -> dict[str, str]:
         # non-identifier char (not just '.') so a space-containing column like
         # 'Activity Group' maps to the same alias the engine emitted.
         alias = re.sub(r"[^A-Za-z0-9_]", "_", canonical)
-        # Two distinct refs cannot collide on the same alias because the
-        # engine itself rejects that case; first-write-wins is safe.
+        # Two DIFFERENT refs reducing to one result column (`C name` / `C_name`,
+        # or names differing only in case — Postgres folds an unquoted alias,
+        # BigQuery compares column names case-insensitively) would come back as
+        # ONE column carrying one field's values under both names. Refused.
+        prev = by_folded.setdefault(alias.lower(), canonical)
+        if prev != canonical:
+            raise SemanticRefusal(
+                f"Hai field '{prev}' và '{canonical}' trùng tên cột kết quả ('{alias}') nên giá trị của "
+                "một field sẽ hiện dưới tên của field kia — truy vấn bị từ chối. Đổi tên một field trong "
+                "Data Model (khác ký tự đặc biệt / chữ hoa-thường) hoặc bỏ một field khỏi chart.",
+                SemanticRefusal.UNSUPPORTED_CONTEXT,
+            )
         out.setdefault(alias, canonical)
     return out
 
@@ -557,11 +570,17 @@ def remap_semantic_engine_rows(
     """
     if not alias_to_canonical or not rows:
         return rows
+    # A warehouse may return the alias in another case than it was written:
+    # Postgres folds an unquoted alias to lower case (`view_Revenue` comes back
+    # `view_revenue`). Matched case-insensitively — distinct refs never fold to
+    # one alias (_build_semantic_alias_map refuses that) — else every field
+    # with a capital letter lost its values on Postgres (an empty column).
+    folded = {alias.lower(): canonical for alias, canonical in alias_to_canonical.items()}
     remapped: list[dict] = []
     for row in rows:
         new_row: dict[str, Any] = {}
         for key, value in row.items():
-            new_row[alias_to_canonical.get(key, key)] = value
+            new_row[alias_to_canonical.get(key) or folded.get(str(key).lower(), key)] = value
         remapped.append(new_row)
     return remapped
 
@@ -591,6 +610,66 @@ def _find_chart_name_conflict(
     if exclude_chart_id is not None:
         query = query.filter(Chart.id != exclude_chart_id)
     return query.first()
+
+
+def _view_is_in_model(db, binding: dict[str, Any], view_name: str) -> bool:
+    """Is ``view_name`` an UNRELATED plain view of the binding's model — one
+    the chart's base simply has no relationship to? A view of the dataset (or
+    an explore node), NOT a calendar (a raw calendar ref the role rewrite could
+    not place is not "unrelated") and NOT a view the model reaches only under
+    aliases (`geo` joined as `customer_geo` / `seller_geo`: which one the
+    filter means is ambiguous, not unrelated). Anything else → False, and the
+    caller keeps the hard refusal."""
+    model_id = (binding or {}).get("modelId")
+    if db is None or not model_id or not view_name:
+        return False
+    if "__" in view_name and view_name.endswith("_date_dim"):
+        return False
+    try:
+        from app.models.semantic import SemanticExplore as _SE
+
+        for _ex in db.query(_SE).filter(_SE.model_id == model_id).all():
+            for _j in _ex.joins or []:
+                if (isinstance(_j, dict) and _j.get("view") == view_name
+                        and str(_j.get("alias") or "").strip() not in ("", view_name)):
+                    return False      # reached only through role aliases: ambiguous, never ignored
+        from app.models.dataset import DatasetTable as _DT
+        from app.models.semantic import SemanticView as _SV
+
+        _v = db.query(_SV).filter(_SV.name == view_name).all()
+        for _row in _v:
+            _sql = str(getattr(_row, "sql_table_name", "") or "").upper()
+            if any(m in _sql for m in ("GENERATE_DATE_ARRAY", "GENERATE_SERIES", "CALENDAR_SERIES")):
+                return False
+            _t = db.get(_DT, _row.dataset_table_id) if getattr(_row, "dataset_table_id", None) else None
+            if _t is not None and is_generated_calendar_table(_t):
+                return False
+    except Exception:  # noqa: BLE001 — unknown → keep the hard drop
+        logger.debug("model view classification failed", exc_info=True)
+        return False
+    try:
+        from app.models.dataset import DatasetTable
+        from app.models.semantic import SemanticExplore, SemanticView
+
+        dataset_id = (binding or {}).get("datasetId")
+        if dataset_id is not None:
+            in_dataset = (
+                db.query(SemanticView.id)
+                .join(DatasetTable, DatasetTable.id == SemanticView.dataset_table_id)
+                .filter(DatasetTable.dataset_id == dataset_id, SemanticView.name == view_name)
+                .first()
+            )
+            if in_dataset is not None:
+                return True
+        for explore in db.query(SemanticExplore).filter(SemanticExplore.model_id == model_id).all():
+            if str(explore.base_view_name or "") == view_name:
+                return True
+            for join in explore.joins or []:
+                if isinstance(join, dict) and view_name in (join.get("alias"), join.get("view"), join.get("name")):
+                    return True
+    except Exception:  # noqa: BLE001 — unknown → keep the hard drop
+        logger.debug("model view lookup failed", exc_info=True)
+    return False
 
 
 def _semantic_field_is_supported_by_binding(
@@ -1072,6 +1151,21 @@ def _normalize_runtime_filters_for_chart(
             # direction) snapshot; the engine has richer knowledge. Skip this
             # legacy drop and let the engine decide downstream.
             if _prop_resolver is None or _prop_helpers is None:
+                # The semantic runtime's binding is derived from the CURRENT
+                # model: a field on a view OF THIS MODEL that the chart's base
+                # cannot reach is a filter on an unrelated table — PowerBI
+                # parity says ignore it, recorded (`unreachable_view`, the
+                # declared soft drop), never a 400 for the whole tile. Only a
+                # view the model does not have stays a hard `binding_unsupported`.
+                if include_joined_semantic and _view_is_in_model(db, binding, semantic_field.split(".", 1)[0]):
+                    _record_dropped_filter(
+                        diagnostics,
+                        filt,
+                        "unreachable_view",
+                        f"view {semantic_field.split('.', 1)[0]!r} has no relationship path to "
+                        f"{base_view_name!r}; ignored (PowerBI parity)",
+                    )
+                    continue
                 _record_dropped_filter(
                     diagnostics,
                     filt,
@@ -3188,16 +3282,36 @@ def _execute_semantic_chart_runtime(
                 except Exception:  # noqa: BLE001 — rebuild is best-effort
                     logger.debug("[snapshot] rebuild trigger after missing table failed", exc_info=True)
                 # Regenerate the query WITHOUT snapshot overrides → live SQL on source.
+                # The SAME semantic spec, compiled for the SOURCE's dialect and
+                # executed as the source's engine: the snapshot plan had switched
+                # dialect / ds_type to the BigQuery host, and the live statement
+                # used to keep them (BigQuery SQL on a Postgres / MySQL / Sheets
+                # credential — the fallback could never run there).
                 import dataclasses as _dc
                 _live_spec = _dc.replace(_spec, snapshot_overrides={})
+                _src_ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+                _src_dialect = _dialect_for_ds_type(_src_ds_type)
+                if _src_dialect != dialect or _src_ds_type != ds_type:
+                    engine = SemanticQueryEngine(db, database_type=_src_dialect)
+                    dialect, ds_type = _src_dialect, _src_ds_type
+                    timeout = 60 if ds_type == "bigquery" else 30
                 try:
                     sql, _engine_columns, _pivot_metadata = engine.run(_live_spec)
+                except ValueError:
+                    raise   # a semantic refusal (category) or a friendly engine message, as is
                 except Exception:
                     logger.exception("Semantic chart LIVE regen failed after missing snapshot")
                     raise ValueError(
                         f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
                         "Snapshot đã hết hạn và không dựng lại được SQL trực tiếp — "
                         "thử bấm Refresh trên Dataset."
+                    ) from exc
+                _leak = _detect_foreign_dialect_leak(sql, dialect)
+                if _leak:
+                    raise ValueError(
+                        "Biểu đồ này không chạy được trực tiếp (live) vì dataset trộn nhiều nguồn khác "
+                        f"engine (phát hiện {_leak} trong truy vấn chạy trên '{dialect}'). Bấm Refresh trên "
+                        "Dataset để dựng lại snapshot."
                     ) from exc
                 _exec_config = datasource.config
                 _snap_overrides = {}
@@ -3594,11 +3708,24 @@ def _apply_role_overrides(config: dict, role_overrides: dict | None) -> None:
         role_config["dimension"] = dimension.strip()
     metric = role_overrides.get("metric")
     if isinstance(metric, str) and metric.strip():
+        metric = metric.strip()
+        # A DECLARED semantic measure carries its own aggregation (count
+        # distinct, average, a formula, % of total, a filtered measure): it is
+        # swapped in with agg "auto" — the old metric's "sum" (or a default
+        # "sum") used to be carried onto it and re-aggregated it silently
+        # (a distinct count became the SUM of the ids). A plain column keeps
+        # the swapped metric's aggregation, as before.
+        binding = config.get("semanticBinding") if isinstance(config.get("semanticBinding"), dict) else {}
+        declared = set(_binding_semantic_measure_fields(binding)) | {
+            str(f) for f in (binding.get("reachableMeasureFields") or []) if f}
+        base = str(binding.get("baseViewName") or "").strip()
+        is_declared = metric in declared or (base and f"{base}.{metric}" in declared) or (
+            "." not in metric and any(f.rpartition(".")[2] == metric for f in declared))
         metrics = role_config.get("metrics")
         if isinstance(metrics, list) and metrics and isinstance(metrics[0], dict):
-            metrics[0] = {**metrics[0], "field": metric.strip()}
+            metrics[0] = {**metrics[0], "field": metric, **({"agg": "auto"} if is_declared else {})}
         else:
-            role_config["metrics"] = [{"field": metric.strip(), "agg": "sum"}]
+            role_config["metrics"] = [{"field": metric, "agg": "auto" if is_declared else "sum"}]
 
 
 def _rehydrate_binding_for_modeled_table(db: Session, db_table, chart_config) -> dict | None:
@@ -3976,9 +4103,9 @@ def _execute_chart_runtime_for_table(
         diagnostics=live_filter_diagnostics,
     )
     if live_sql:
-        # Merge chart_base ⊕ runtime through the single fold so a dashboard
-        # filter OVERRIDES a chart base filter on the same semantic scope
-        # ("runtime value wins"), matching the calendar/derived/public paths.
+        # Merge chart_base ⊕ runtime through the single fold (base AND runtime —
+        # the chart's base filter is the author's hard constraint), matching the
+        # calendar/derived/public paths.
         # Previously base (`filters`) and `extra_filters` were passed
         # separately and AND-ed by LiveQueryService → two predicates on the
         # same field → empty result instead of the override the design intends.
@@ -3997,6 +4124,24 @@ def _execute_chart_runtime_for_table(
         limit_override=limit_override,
         dropped_filters_log=live_filter_diagnostics,
     )
+
+
+REFUSAL_HEADER = "X-AppBI-Refusal"
+
+
+def refusal_category(exc: BaseException) -> str | None:
+    """The machine-readable category of a refused chart request — a semantic
+    planner refusal (`SemanticRefusal.category`: AMBIGUOUS_ROUTE, ROUTE_LIMIT,
+    UNRELATED_GRAIN, FANOUT_RISK, …) or an authoritative constraint that could
+    not be applied (its reason only — never the constraint's field) — so upper
+    surfaces decide on it without parsing the localized message. None for any
+    other error."""
+    from app.services.chart_contracts import AuthoritativeFilterNotApplied
+
+    if isinstance(exc, AuthoritativeFilterNotApplied):
+        return "AUTHORITATIVE_NOT_APPLIED"
+    category = getattr(exc, "category", None)
+    return str(category) if isinstance(category, str) and category else None
 
 
 class ChartService:
@@ -4335,7 +4480,8 @@ class ChartService:
             except ValueError as exc:
                 # Invalid chart config for the current dataset state — the same
                 # case the single endpoint maps to 400 (Vietnamese-friendly msg).
-                return {"chart_id": cid, "ok": False, "status": 400, "error": str(exc)}
+                return {"chart_id": cid, "ok": False, "status": 400, "error": str(exc),
+                        "category": refusal_category(exc)}
             except Exception as exc:  # noqa: BLE001 — one tile must not sink the page
                 logger.exception("Batch chart-data failed for chart_id=%s", cid)
                 return {
@@ -4372,6 +4518,17 @@ class ChartService:
         # same way — both mutate the ACTIVE role config on a deep copy so the
         # saved contract is untouched and the downstream cache keys differ.
         effective_config = db_chart.config or {}
+        _legacy_src = (effective_config.get("source") or {}) if isinstance(effective_config, dict) else {}
+        if db_chart.dataset_table_id is None and isinstance(_legacy_src, dict) \
+                and _legacy_src.get("kind") == "dataset_table" and _legacy_src.get("tableId"):
+            # A legacy chart names its table only in config.source: its binding
+            # is derived from the CURRENT model here, before anything reads it
+            # (the what-if swap's declared-measure check included).
+            try:
+                effective_config = with_chart_semantic_binding(
+                    db, int(_legacy_src["tableId"]), effective_config, auto_generate=True)
+            except (TypeError, ValueError):
+                pass
         if granularity_override or role_overrides:
             effective_config = deepcopy(effective_config)
             if granularity_override:
@@ -4432,6 +4589,8 @@ class ChartService:
             db_table = DatasetCRUDService.get_table_by_id(db, table_id)
             if not db_table or db_table.dataset_id != dataset_id:
                 raise ValueError("Table not found in dataset")
+            # (its binding was derived from the current model above, before the
+            # overrides — never the copy its config stored)
 
             datasource = None
             if not is_generated_calendar_table(db_table) and not is_derived_table(db_table) and getattr(db_table, "source_kind", None) != "dataset":
