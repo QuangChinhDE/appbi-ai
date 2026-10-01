@@ -368,3 +368,35 @@ def test_cache_identity_changes_with_the_calendar_timezone(db):
     ds.settings = {"calendar_dimension": {"timezone": "Asia/Ho_Chi_Minh"}}
     db.commit()
     assert sig(db, 1) != before, "time-grain SQL depends on the calendar timezone"
+
+
+def test_the_live_adapter_rechecks_a_to_one_key_inside_its_own_statement(live_world, monkeypatch):
+    """Pair #1 closure: the live filter adapter's LEFT JOIN to a one side
+    carries the key check IN its own statement — the probe that ran before it
+    cannot see a writer in between. Executed on DuckDB (the engine of Sheets
+    and manual tables): unique key → the rows; key duplicated after the probe →
+    the statement fails instead of answering with fanned-out rows."""
+    import duckdb
+
+    from app.services import chart_service as cs
+    from app.services import dataset_relation_service as drs
+    from app.services import relationship_key_guard as kg
+
+    db, _con = live_world
+    monkeypatch.setattr(drs, "resolve_dataset_table_relation",
+                        lambda *_a, **_k: types.SimpleNamespace(sql="SELECT * FROM orders"))
+    monkeypatch.setattr(kg, "verify_key_probes", lambda *_a, **_k: None)  # the probe before the query passed
+    flt = {"field": "customers.id", "semanticField": "customers.id", "operator": "eq", "value": 1}
+    sql, _eff = cs._adapt_live_sql_for_semantic_filters(
+        db, types.SimpleNamespace(type="duckdb", config={}), types.SimpleNamespace(),
+        {"semanticBinding": {"baseViewName": "orders", "modelId": 9}}, [flt],
+    )
+    assert sql and "LEFT JOIN" in sql and "_appbi_kpg0" in sql, sql
+    duck = duckdb.connect(":memory:")
+    duck.execute("CREATE TABLE customers(id int); INSERT INTO customers VALUES (1),(2),(3)")
+    duck.execute("CREATE TABLE orders(id int, customer_id int, status text, channel text, product_id int);"
+                 "INSERT INTO orders VALUES (1,1,'r','w',10),(2,2,'o','s',20)")
+    assert duck.execute(f"SELECT COUNT(*) FROM ({sql}) AS t").fetchone()[0] == 2
+    duck.execute("INSERT INTO customers VALUES (1)")  # a writer duplicates the key after the probe
+    with pytest.raises(duckdb.Error, match="More than one row"):
+        duck.execute(f"SELECT COUNT(*) FROM ({sql}) AS t").fetchall()
