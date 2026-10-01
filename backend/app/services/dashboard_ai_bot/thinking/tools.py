@@ -31,9 +31,11 @@ def chart_cache_identity(ctx, chart_id) -> list:
     column scope, and the chart's PAGE scope. A pack built without a page scope
     (an editor's run) must never answer a public viewer who is bounded by one."""
     from app.services.dashboard_ai_bot.summary_cache import scope_hash
+    from app.services.dashboard_ai_bot.summary_cache import semantic_epoch
     return [*(getattr(ctx, "public_filters", None) or []),
             {"__ai_scope__": scope_hash(getattr(ctx, "excluded_columns", None))},
-            {"__page_scope__": (getattr(ctx, "page_scope_by_chart", None) or {}).get(chart_id) or []}]
+            {"__page_scope__": (getattr(ctx, "page_scope_by_chart", None) or {}).get(chart_id) or []},
+            {"__semantic__": semantic_epoch(getattr(ctx, "db", None))}]
 from app.services.dashboard_ai_bot.insight_pack import (
     build_chart_manifest,
     build_insight_pack,

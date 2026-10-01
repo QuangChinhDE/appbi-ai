@@ -163,6 +163,25 @@ def _engine_run(world, model, base, dims, measures, filters=None):
     return eng, sql, [tuple(r) for r in conn.execute(sa.text(sql))]
 
 
+def _guarded_run(world, model, base, dims, measures):
+    """Generate; the statement itself must refuse (in-statement key guard), and
+    the SAME statement without the guard is what would have run unguarded."""
+    from app.services.relationship_key_guard import statement_key_guard
+
+    db, conn, models = world
+    eng = SemanticQueryEngine(db, database_type="postgresql")
+    sql, _cols, _ = eng.generate_sql(explore_name=base, dimensions=dims, measures=measures, filters={},
+                                     model_id=models[model])
+    guard = statement_key_guard(eng.key_probes)
+    assert guard and guard in sql, sql
+    with pytest.raises(sa.exc.DBAPIError, match="more than one row returned by a subquery"):
+        with conn.begin_nested():
+            conn.execute(sa.text(sql))
+    unguarded = sql.replace("\nWHERE\n  " + guard, "")
+    assert unguarded != sql
+    return eng, unguarded, [tuple(r) for r in conn.execute(sa.text(unguarded))]
+
+
 def _pg_config():
     url = sa.engine.make_url(_url())
     return {"host": url.host, "port": url.port or 5432, "database": url.database,
@@ -194,7 +213,8 @@ def test_a_calendar_relationship_walked_backwards_keeps_its_cast(world):
 def test_a_declared_n1_with_duplicate_keys_is_refused_before_it_inflates(world):
     from app.services.relationship_key_guard import verify_key_probes
 
-    eng, _sql, rows = _engine_run(world, "dup_key", "rp_orders", ["rp_customers_dup.region"], ["rp_orders.revenue"])
+    eng, _sql, rows = _guarded_run(world, "dup_key", "rp_orders", ["rp_customers_dup.region"],
+                                   ["rp_orders.revenue"])
     assert dict(rows) == {"N": 300, "S": 30}, "the unguarded SQL doubles N (truth: 150)"
     assert [p["view"] for p in eng.key_probes] == ["rp_customers_dup"]
     with pytest.raises(ValueError, match="bị lặp"):
@@ -208,8 +228,8 @@ def test_the_same_duplicate_key_is_refused_when_the_chart_is_based_on_the_dimens
     the pre-fix guard probed only edges walked to-one and let this through."""
     from app.services.relationship_key_guard import verify_key_probes
 
-    eng, sql, rows = _engine_run(world, "dup_key", "rp_customers_dup", ["rp_customers_dup.region"],
-                                 ["rp_orders.revenue"])
+    eng, sql, rows = _guarded_run(world, "dup_key", "rp_customers_dup", ["rp_customers_dup.region"],
+                                  ["rp_orders.revenue"])
     assert dict(rows).get("N") == 300, ("the unguarded SQL doubles N (truth: 150)", sql, rows)
     assert any(p["view"] == "rp_customers_dup" for p in eng.key_probes), eng.key_probes
     with pytest.raises(ValueError, match="bị lặp"):
@@ -408,3 +428,198 @@ def test_a_removal_racing_a_regeneration_is_not_resurrected(model_world):
     _base, joins = _joins(engine, dataset_id, tables["orders"])
     assert joins == [], "the regeneration re-created the relationship the user had just removed"
     assert not finished_early, "the regeneration must wait for the removal"
+
+
+def test_a_stale_whole_list_write_never_overwrites_a_committed_relationship(model_world):
+    """P1-03 — editor A adds a relationship (held at its commit); editor B
+    replaces the WHOLE list quoting the version it read before A's edit. B
+    waits for the model lock, then is refused as a conflict: A's relationship
+    survives (it used to be silently dropped by B's stale list)."""
+    from app.services.dataset_model_service import RelationshipWriteConflict, add_join, replace_explore_joins
+
+    engine, dataset_id, tables = model_world
+    with Session(engine) as s:
+        ids = _view_ids(s, tables)
+        orders_view = s.get(SemanticView, ids["orders"]).name
+        stale = s.query(SemanticExplore).filter(SemanticExplore.base_view_name == orders_view).one().joins_version
+
+    first = lambda s: add_join(s, dataset_id=dataset_id, from_view_id=ids["orders"],  # noqa: E731
+                               to_view_id=ids["periods"], from_column="ship_key", to_column="pkey",
+                               relationship="many_to_one", alias="ship_period")
+    outcome: dict = {}
+
+    def second(s):
+        e = s.query(SemanticExplore).filter(SemanticExplore.base_view_name == orders_view).one()
+        try:
+            replace_explore_joins(s, e, dataset_id, [], expected_joins_version=stale)
+        except RelationshipWriteConflict:
+            outcome["conflict"] = True
+            s.rollback()
+
+    finished_early, errors = _race(engine, first, second)
+    assert not errors, errors
+    assert outcome.get("conflict") is True, "the stale whole-list write must be refused"
+    _base, joins = _joins(engine, dataset_id, tables["orders"])
+    assert {j.get("alias") for j in joins} == {None, "ship_period"}, "A's committed relationship was lost"
+    assert not finished_early, "B must wait for the model write lock"
+
+
+# ── P1-01: a live source that gains a duplicate key between two queries ─────
+
+LIVE = "relpair_live"
+
+
+@pytest.fixture()
+def fixture_client():
+    """Real HTTP routes on the seeded CI fixture (dataset 56, a LIVE Postgres
+    datasource). The owner and revenue tables are COPIED (committed, no key
+    constraints) into a scratch schema and, inside one rolled-back metadata
+    transaction, the two dataset tables are pointed at the copies — so the
+    test can give the live source a duplicate key without touching the
+    fixture's own tables."""
+    from fastapi.testclient import TestClient
+
+    from app.core.database import get_db
+    from app.core.dependencies import get_current_user
+    from app.main import app
+    from app.models.models import Chart
+    from app.services import query_cache
+
+    engine = sa.create_engine(_url())
+    with engine.begin() as c:
+        c.execute(sa.text(f"DROP SCHEMA IF EXISTS {LIVE} CASCADE"))
+        c.execute(sa.text(f"CREATE SCHEMA {LIVE}"))
+        c.execute(sa.text(f"CREATE TABLE {LIVE}.bc_owner AS SELECT * FROM bcfix.bc_owner"))
+        c.execute(sa.text(f"CREATE TABLE {LIVE}.bc_revenue AS SELECT * FROM bcfix.bc_revenue"))
+    conn = engine.connect()
+    outer = conn.begin()
+    db = Session(bind=conn, join_transaction_mode="create_savepoint")
+    for tid, name in ((188, "bc_owner"), (193, "bc_revenue")):
+        db.get(DatasetTable, tid).source_table_name = f"{LIVE}.{name}"
+    db.flush()
+    chart = db.query(Chart).filter(Chart.name == "[snow] revenue by owner").first()
+    if chart is None:
+        pytest.fail("fixture chart missing — run scripts/seed_snowflake_ci_fixture.py first.")
+    model_id = db.query(SemanticModel).filter(SemanticModel.dataset_id == 56).one().id
+    admin = type("U", (), {"id": uuid.UUID(int=7), "email": "keyguard@x", "is_active": True,
+                           "permissions": {"settings": "full"}})()
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_user] = lambda: admin
+    saved = query_cache.get_cached
+    query_cache._real_get_cached = saved
+    query_cache.get_cached = lambda *_a, **_k: None  # a fresh computation every time
+    try:
+        yield TestClient(app), chart.id, model_id, engine
+    finally:
+        query_cache.get_cached = saved
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+        db.close()
+        outer.rollback()
+        conn.close()
+        with engine.begin() as c:
+            c.execute(sa.text(f"DROP SCHEMA IF EXISTS {LIVE} CASCADE"))
+        engine.dispose()
+
+
+def test_a_live_source_that_gains_a_duplicate_key_is_refused_on_the_next_query(fixture_client):
+    """Unique → query (probe clean) → the live owner table gains a second K1 →
+    the NEXT query on the chart route and on /semantic/query is refused, not
+    answered with K1's revenue doubled; repaired → answered again."""
+    client, chart_id, model_id, engine = fixture_client
+    direct = {"explore": "dataset_table_193", "model_id": model_id, "dimensions": ["dataset_table_188.crm_name"],
+              "measures": ["dataset_table_193.total_revenue"], "filters": {}, "limit": 1000}
+
+    ok_chart = client.get(f"/api/v1/charts/{chart_id}/data")
+    ok_direct = client.post("/api/v1/semantic/query", json=direct)
+    assert ok_chart.status_code == 200 and ok_direct.status_code == 200, (ok_chart.text, ok_direct.text)
+    assert "relpair_live" in ok_direct.json()["sql"], "the test must read the copied live tables"
+    with engine.begin() as c:
+        c.execute(sa.text(f"INSERT INTO {LIVE}.bc_owner SELECT * FROM {LIVE}.bc_owner WHERE bc_key = 'K1'"))
+    dup_chart = client.get(f"/api/v1/charts/{chart_id}/data")
+    dup_direct = client.post("/api/v1/semantic/query", json=direct)
+    assert dup_chart.status_code == 400 and "bị lặp" in dup_chart.text, dup_chart.text
+    assert dup_direct.status_code == 400 and "bị lặp" in dup_direct.text, dup_direct.text
+    with engine.begin() as c:
+        c.execute(sa.text(
+            f"DELETE FROM {LIVE}.bc_owner a USING (SELECT ctid FROM {LIVE}.bc_owner WHERE bc_key = 'K1' "
+            "ORDER BY ctid DESC LIMIT 1) d WHERE a.ctid = d.ctid"))
+    again = client.get(f"/api/v1/charts/{chart_id}/data")
+    assert again.status_code == 200 and again.json().get("data") == ok_chart.json().get("data"),         "a repaired source is probed again — no stale verdict in either direction"
+
+
+def test_a_duplicate_written_between_the_probe_and_the_query_is_refused(fixture_client, monkeypatch):
+    """The probe runs as its OWN statement before the query. A writer that
+    commits a duplicate one-side key after the probe passed and before the
+    query reads the source is invisible to that probe; the in-statement guard
+    (same snapshot as the JOIN) catches it. The race is reproduced exactly: the
+    real probe runs and passes, then the writer commits, then the query runs —
+    on the chart route and on /semantic/query. Neither answers with K1's
+    revenue doubled."""
+    from app.services import relationship_key_guard as kg
+
+    client, chart_id, model_id, engine = fixture_client
+    direct = {"explore": "dataset_table_193", "model_id": model_id, "dimensions": ["dataset_table_188.crm_name"],
+              "measures": ["dataset_table_193.total_revenue"], "filters": {}, "limit": 1000}
+    clean_chart = client.get(f"/api/v1/charts/{chart_id}/data")
+    clean_direct = client.post("/api/v1/semantic/query", json=direct)
+    assert clean_chart.status_code == 200 and clean_direct.status_code == 200, (clean_chart.text, clean_direct.text)
+    real_probe = kg.verify_key_probes
+
+    def probe_then_concurrent_writer(*a, **k):
+        real_probe(*a, **k)  # the key is unique NOW: the probe passes
+        with engine.begin() as c:  # … and a writer duplicates it before the query runs
+            c.execute(sa.text(f"INSERT INTO {LIVE}.bc_owner SELECT * FROM {LIVE}.bc_owner WHERE bc_key = 'K1'"))
+
+    def repair():
+        with engine.begin() as c:
+            c.execute(sa.text(
+                f"DELETE FROM {LIVE}.bc_owner a USING (SELECT ctid FROM {LIVE}.bc_owner WHERE bc_key = 'K1' "
+                "ORDER BY ctid DESC LIMIT 1) d WHERE a.ctid = d.ctid"))
+
+    monkeypatch.setattr(kg, "verify_key_probes", probe_then_concurrent_writer)
+    raced_chart = client.get(f"/api/v1/charts/{chart_id}/data")
+    repair()
+    raced_direct = client.post("/api/v1/semantic/query", json=direct)
+    repair()
+    for raced, clean in ((raced_chart, clean_chart), (raced_direct, clean_direct)):
+        assert raced.status_code >= 400, f"answered over a duplicated key ({raced.status_code}): {raced.text[:300]}"
+        assert "more than one row" in raced.text or "bị lặp" in raced.text, raced.text[:300]
+    monkeypatch.setattr(kg, "verify_key_probes", real_probe)
+    assert client.get(f"/api/v1/charts/{chart_id}/data").json().get("data") == clean_chart.json().get("data")
+
+
+# ── P1-09: a cached result never outlives the relationship it was built on ──
+
+
+def test_a_cached_chart_result_is_not_served_after_its_relationship_changes(fixture_client):
+    """The result cache ON (shared store and local layer): the chart is computed
+    and cached, then the relationship it joins through changes meaning (here:
+    deactivated). The next request must be computed under the new relationship
+    — the cache identity carries the relationship JSON — not the cached rows."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services import query_cache
+
+    client, chart_id, _model_id, engine = fixture_client
+    real_get = query_cache.__dict__.get("_real_get_cached", query_cache.get_cached)
+    hits = []
+
+    def counting_get(*a, **k):
+        out = real_get(*a, **k)
+        if out is not None:
+            hits.append(1)
+        return out
+
+    query_cache.get_cached = counting_get
+    first = client.get(f"/api/v1/charts/{chart_id}/data")
+    again = client.get(f"/api/v1/charts/{chart_id}/data")
+    assert first.status_code == 200 and again.json().get("data") == first.json().get("data")
+    assert hits, "the second request must have been served from the result cache (else this proves nothing)"
+    db = next(iter(client.app.dependency_overrides.values()))()
+    rev = db.query(SemanticExplore).filter(SemanticExplore.base_view_name == "dataset_table_193").one()
+    rev.joins = [{**j, "is_active": False} if j.get("view") == "dataset_table_188" else j for j in rev.joins]
+    flag_modified(rev, "joins")
+    db.flush()
+    after = client.get(f"/api/v1/charts/{chart_id}/data")
+    assert not (after.status_code == 200 and after.json().get("data") == first.json().get("data")),         "the cached result of the old relationship was served"

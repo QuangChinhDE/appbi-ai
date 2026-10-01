@@ -68,6 +68,16 @@ class SemanticModel(Base):
     dataset = relationship("Dataset", foreign_keys=[dataset_id])
 
 
+def joins_version_of(joins) -> str:
+    """Content version of an explore's stored relationship list — what a
+    whole-list writer must quote (expected_joins_version) to replace it."""
+    import hashlib
+    import json
+
+    blob = json.dumps(joins or [], sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
 class SemanticExplore(Base):
     """
     Represents a semantic explore (similar to LookML explore)
@@ -85,6 +95,10 @@ class SemanticExplore(Base):
     description = Column(String, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    @property
+    def joins_version(self) -> str:
+        return joins_version_of(self.joins)
 
     # Relationships
     model = relationship("SemanticModel", back_populates="explores")

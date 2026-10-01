@@ -537,20 +537,6 @@ def _lock_model_of(db: Session, dataset) -> None:
     lock_dataset_model_for_write(db, int(dataset.id))
 
 
-def _same_instant(a, b) -> bool:
-    """Compare a client's ``expected_updated_at`` with the stored timestamp."""
-    import datetime as _dt
-
-    def _naive_utc(v):
-        if v is None:
-            return None
-        if v.tzinfo is not None:
-            v = v.astimezone(_dt.timezone.utc).replace(tzinfo=None)
-        return v
-
-    return _naive_utc(a) == _naive_utc(b)
-
-
 def _check_view_belongs(db: Session, view: SemanticView, dataset, base_view_name: str) -> None:
     """The explore's base view must be a view of the explore's own dataset."""
     view_dataset = _dataset_of_view(db, view)
@@ -594,6 +580,16 @@ def create_explore(
     if not view:
         raise HTTPException(status_code=404, detail="Base view not found")
     _check_view_belongs(db, view, model_dataset, explore.base_view_name)
+    # One explore per base view in a model: a second one would add relationships
+    # beside the stored ones without any writer seeing both lists.
+    if db.query(SemanticExplore).filter(
+        SemanticExplore.model_id == explore.model_id,
+        SemanticExplore.base_view_name == explore.base_view_name,
+    ).first() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Model đã có explore cho '{explore.base_view_name}' — sửa explore đó (PUT) thay vì tạo thêm.",
+        )
 
     joins_data = _validated_joins(
         db, model_dataset, explore.base_view_name, [join.model_dump() for join in explore.joins],
@@ -687,12 +683,7 @@ def update_explore(
     _lock_model_of(db, model_dataset)  # re-reads the explore FOR UPDATE
 
     update_data = explore_update.model_dump(exclude_unset=True)
-    expected = update_data.pop("expected_updated_at", None)
-    if expected is not None and not _same_instant(expected, db_explore.updated_at):
-        raise HTTPException(
-            status_code=409,
-            detail="Explore đã được người khác sửa sau lần bạn tải (updated_at khác) — tải lại rồi lưu lại.",
-        )
+    expected_joins_version = update_data.pop("expected_joins_version", None)
     base_view_name = update_data.get("base_view_name") or db_explore.base_view_name
     if update_data.get("base_view_id") is not None:
         new_base = db.query(SemanticView).filter(SemanticView.id == update_data["base_view_id"]).first()
@@ -709,13 +700,43 @@ def update_explore(
                 detail="base_view_name phải là tên của base view hiện tại (đổi base view thì gửi base_view_id).",
             )
 
-    # Joins go through the same structural checks as the dataset endpoint.
-    if "joins" in update_data and update_data["joins"] is not None:
-        update_data["joins"] = _validated_joins(
-            db, model_dataset, base_view_name,
-            [join.model_dump() for join in explore_update.joins],
-            stored_joins=list(db_explore.joins or []),
+    # One explore per base view in a model — on a move too.
+    if base_view_name != db_explore.base_view_name and db.query(SemanticExplore).filter(
+        SemanticExplore.model_id == db_explore.model_id,
+        SemanticExplore.base_view_name == base_view_name,
+        SemanticExplore.id != db_explore.id,
+    ).first() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Model đã có explore cho '{base_view_name}' — không chuyển explore này sang đó.",
         )
+
+    # Joins go through the same structural checks as the dataset endpoint. A
+    # base move changes what every stored relationship means (its from side),
+    # so it re-validates the stored list against the new base under the same
+    # precondition, even when the request sends no joins.
+    moves_base = base_view_name != db_explore.base_view_name
+    if ("joins" in update_data and update_data["joins"] is not None) or moves_base:
+        from app.services.dataset_model_service import (
+            RelationshipWriteConflict, RelationshipWritePreconditionRequired, replace_explore_joins,
+        )
+
+        rows = ([join.model_dump() for join in explore_update.joins]
+                if update_data.get("joins") is not None
+                else [dict(j) for j in (db_explore.joins or []) if isinstance(j, dict)])
+        try:
+            update_data["joins"] = replace_explore_joins(
+                db, db_explore, getattr(model_dataset, "id", None),
+                rows,
+                expected_joins_version=expected_joins_version,
+                base_view_name=base_view_name,
+            )
+        except RelationshipWritePreconditionRequired as exc:
+            raise HTTPException(status_code=428, detail=str(exc))
+        except RelationshipWriteConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     for key, value in update_data.items():
         setattr(db_explore, key, value)

@@ -830,7 +830,13 @@ def _build_public_chart_filters(
             context_for_log,
             [d.get("reason") for d in merge_diagnostics],
         )
-    return merged
+    # Server-owned constraints carry the authoritative marker into every query
+    # path: applied, or the request is refused — never skipped.
+    from app.services.filter_layered_merge import mark_authoritative
+
+    if hard_bounds_out is not None:
+        hard_bounds_out[:] = [{**b, "_authoritative": True} for b in hard_bounds_out if isinstance(b, dict)]
+    return mark_authoritative(merged)
 
 
 def _link_scope_allowlist_for_field(
@@ -998,6 +1004,55 @@ def _public_page_scope_by_chart(dash: Dashboard, link_filters_config: list[dict]
         if bounds:
             out[chart_id] = bounds
     return out
+
+
+def _refuse_malformed_author_bounds(dash) -> None:
+    """Fail CLOSED on a 🔒/🚫 dashboard filter or a page filter the engine
+    cannot apply. The merge used to drop them as "empty" (``between 5``, a
+    scalar ``in``): the viewer got the data the author meant to restrict."""
+    authored = [
+        f for f in (getattr(dash, "filters_config", None) or [])
+        if isinstance(f, dict) and str(f.get("publicMode") or f.get("public_mode") or "").lower() in ("locked", "hidden")
+    ]
+    for page in getattr(dash, "pages_config", None) or []:
+        if isinstance(page, dict):
+            authored.extend(f for f in (page.get("filters") or []) if isinstance(f, dict))
+    if malformed_link_entries(authored):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This shared report has a locked or page filter that cannot be applied. "
+                   "Ask the report owner to fix it.",
+        )
+
+
+def _pages_offering_field(dash, dataset_id, field: str) -> set[str] | None:
+    """The pages on which the public report OFFERS ``field`` (a slicer/filter
+    for it, or a chart that reads it). ``None`` = every page (a dashboard-level
+    control is shown on each page)."""
+    from types import SimpleNamespace as _NS
+
+    want = str(field or "").strip()
+
+    def _names(e) -> set[str]:
+        if not isinstance(e, dict):
+            return set()
+        out = {str(e.get(k) or "").strip() for k in ("semanticField", "fieldKey", "field")}
+        out |= {str(x).strip() for x in (e.get("linkedFields") or []) if isinstance(x, str)}
+        return out
+    for e in [*(getattr(dash, "slicers_config", None) or []), *(getattr(dash, "filters_config", None) or [])]:
+        if want in _names(e):
+            return None
+    pages: set[str] = set()
+    for page in getattr(dash, "pages_config", None) or []:
+        if isinstance(page, dict) and any(want in _names(e) for e in [*(page.get("filters") or []),
+                                                                       *(page.get("slicers") or [])]):
+            pages.add(str(page.get("id") or "").strip())
+    for dc in getattr(dash, "dashboard_charts", None) or []:
+        refs = _public_field_refs(_NS(slicers_config=[], filters_config=[], pages_config=[],
+                                      dashboard_charts=[dc]), exact=True)
+        if want in refs:
+            pages.add(_tile_page_id(dc))
+    return pages
 
 
 def _refuse_malformed_link(link_filters_config: list[dict] | None) -> None:
@@ -1438,6 +1493,7 @@ def _get_dashboard_by_token(
         # one stamped into an exported PDF.
         display_name = getattr(grant, "header", None) or grant_link.name
         _refuse_malformed_link(grant_link.filters_config)
+        _refuse_malformed_author_bounds(dash)
         return dash, grant_link.filters_config or [], display_name, grant_link.appearance_config or {}
 
     # Try new multi-link table first
@@ -1475,6 +1531,7 @@ def _get_dashboard_by_token(
             db.commit()
             _reserve_after_commit(dash, load_dashboard)
         _refuse_malformed_link(link.filters_config)
+        _refuse_malformed_author_bounds(dash)
         return dash, link.filters_config or [], link.name, link.appearance_config or {}
 
     # Fallback to legacy share_token on Dashboard model
@@ -1485,6 +1542,7 @@ def _get_dashboard_by_token(
             detail="Shared dashboard not found or link has been revoked.",
         )
     _refuse_malformed_link(dash.public_filters_config)
+    _refuse_malformed_author_bounds(dash)
     return dash, dash.public_filters_config or [], dash.name, {}
 
 
@@ -3387,11 +3445,21 @@ def get_public_filter_distinct_values(
     )
 
     raw_hard_bounds: list[dict] = []
+    # The page scope of THIS dropdown: the requested page when it offers the
+    # field; otherwise every page that does (AND) — a viewer cannot ask for a
+    # field's values "on" a page whose scope is looser than where it is shown.
+    _requested_pages = _public_request_page_ids(dash, page_id)
+    _offering = _pages_offering_field(dash, dataset_id, field)
+    _distinct_pages = (
+        _requested_pages if _offering is None or not _offering or _requested_pages[0] in _offering
+        else sorted(_offering)
+    )
     combined_filters = _build_public_chart_filters(
         dash,
         public_filters,
         sanitized_viewer_filters,
-        page_ids=_public_request_page_ids(dash, page_id),
+        page_ids=_distinct_pages,
+        chart_dataset_id=dataset_id,
         context_for_log=f"distinct_values:{token}:{dataset_id}:{field}",
         hard_bounds_out=raw_hard_bounds,
     )
@@ -3401,6 +3469,8 @@ def get_public_filter_distinct_values(
     # the strip: the engine applies every operator, not only `in` lists.
     own_field_bounds = hard_bounds_on_field(raw_hard_bounds, dataset_id, field)
     combined_filters = [*combined_filters, *own_field_bounds]
+
+    from app.services.chart_contracts import AuthoritativeFilterNotApplied
 
     try:
         # Fetch the FULL searched set (server-side search over the cached full
@@ -3454,6 +3524,11 @@ def get_public_filter_distinct_values(
             # An anonymous viewer is not told (the builder's endpoint still is).
             "dropped_filters": [],
         }
+    except AuthoritativeFilterNotApplied:
+        # A server-owned constraint the cascade cannot apply: offer nothing
+        # rather than values outside the shared scope (the own-field rule's
+        # contract, now for every authoritative constraint).
+        return {"field": field, "values": [], "total": 0, "has_more": False, "dropped_filters": []}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:

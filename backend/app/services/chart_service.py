@@ -48,6 +48,8 @@ from app.services.execution_plan import plan_chart_execution
 from app.services.chart_contracts import (
     _record_dropped_filter,
     enforce_no_hard_dropped_filters,
+    AUTHORITATIVE_KEY,
+    refuse_unapplied_authoritative,
     get_chart_active_role_config,
     get_chart_custom_sql,
     merge_chart_query_filters,
@@ -1047,9 +1049,18 @@ def _normalize_runtime_filters_for_chart(
             if multi and len(multi) > 1:
                 # Expand: emit one filter per role with identical operator/value.
                 # Skip the downstream single-filter append (`result.append(filt)`)
-                # by recording each expansion directly and `continue`-ing.
+                # by recording each expansion directly and `continue`-ing. Every
+                # copy carries the SAME fan id: the engine collapses copies of
+                # ONE fanned filter, never two different filters that merely
+                # share an operator and value (a 🔒 ship-date lock and a viewer's
+                # order-date pick).
+                import hashlib as _hl_fan
+
+                fan_id = _hl_fan.sha1(
+                    f"{semantic_field}|{filt.get('operator')}|{filt.get('value')!r}".encode("utf-8")
+                ).hexdigest()[:12]
                 for rw in multi:
-                    expanded = {**filt, **rw}
+                    expanded = {**filt, **rw, "_calendar_fan": fan_id}
                     result.append(expanded)
                 continue
             if multi and len(multi) == 1:
@@ -1422,9 +1433,11 @@ def _semantic_definition_signature(db: Session, model_id) -> str | None:
              v.measures or [], getattr(v, "primary_key", None)]
             for v in views
         ],
+        # columns_cache carries the physical types the typed join coercion and
+        # the snapshot column renames read: a type change changes the SQL.
         "tables": [
             [t.id, t.source_kind, t.source_table_name, t.source_query, t.transformations,
-             t.type_overrides, t.enabled, t.datasource_id]
+             t.type_overrides, t.enabled, t.datasource_id, getattr(t, "columns_cache", None)]
             for t in tables
         ],
     }
@@ -1696,7 +1709,9 @@ def _adapt_live_sql_for_semantic_filters(
         #   * several forward to-one routes (a diamond: two meanings) → refused.
         routes = resolver.distinct_routes(target_node)
         if not routes:
-            # not reachable — skip this filter for this chart
+            # not reachable — skip this filter for this chart (an
+            # authoritative constraint is refused instead)
+            refuse_unapplied_authoritative(filt, "unreachable_view")
             continue
         if len(routes) > 1:
             if not all(any(_live_edge_fans_out(st.edge) for st in r.steps) for r in routes):
@@ -1770,12 +1785,14 @@ def _adapt_live_sql_for_semantic_filters(
             last_alias = new_alias
 
         if path_failed:
+            refuse_unapplied_authoritative(filt, "no_join_path")
             continue
 
         # Resolve the field def on the target view
         target_view_name = resolver.view_for_node(target_node) or target_node
         target_view = _get_view(target_view_name)
         if target_view is None:
+            refuse_unapplied_authoritative(filt, "view_not_found")
             continue
         field_def = next(
             (
@@ -1789,6 +1806,7 @@ def _adapt_live_sql_for_semantic_filters(
             None,
         )
         if not field_def:
+            refuse_unapplied_authoritative(filt, "field_not_on_view")
             continue
 
         if fan_idx is not None:
@@ -1811,6 +1829,7 @@ def _adapt_live_sql_for_semantic_filters(
 
         rendered_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias)
         if not rendered_expr:
+            refuse_unapplied_authoritative(filt, "field_not_renderable")
             continue
 
         projection_alias = f"__sem_filter_{next_projection_index}"
@@ -1853,6 +1872,14 @@ def _adapt_live_sql_for_semantic_filters(
         f'FROM ({base_sql}) AS _appbi_base '
         f'{" ".join(join_clauses)}'
     )
+    if live_probes:
+        # the same keys re-checked inside this statement (same snapshot as
+        # the JOINs): the probe above cannot see a writer in between
+        from app.services.relationship_key_guard import statement_key_guard
+
+        _key_guard = statement_key_guard(list(live_probes.values()))
+        if _key_guard:
+            enriched_sql += f" WHERE {_key_guard}"
     logger.debug("Semantic enriched SQL: %s", enriched_sql)
     return enriched_sql, effective_filters
 
@@ -1927,6 +1954,8 @@ def _build_row_filtered_live_relation_sql(
         field_name = str(filt.get("field") or "").strip()
         if not available_fields or not field_name or field_name in available_fields:
             applicable_filters.append(filt)
+        else:
+            refuse_unapplied_authoritative(filt, "field_not_in_relation")
 
     relation_sql = base_sql
     effective_filters = applicable_filters
@@ -2393,9 +2422,11 @@ def _execute_semantic_chart_runtime(
             or ""
         ).strip()
         if not target_field:
+            refuse_unapplied_authoritative(filt, "no_field")
             continue
         qualified = qualify(target_field)
         if not qualified:
+            refuse_unapplied_authoritative(filt, "no_field")
             continue
         operator = str(filt.get("operator") or "eq").strip().lower()
         operator = _OP_ALIAS.get(operator, operator)
@@ -2428,6 +2459,13 @@ def _execute_semantic_chart_runtime(
         engine_filters.setdefault(qualified, [])
         if engine_filt not in engine_filters[qualified]:
             engine_filters[qualified].append(engine_filt)
+        if filt.get("_calendar_fan"):
+            engine_filt["_calendar_fan"] = filt["_calendar_fan"]
+        if filt.get(AUTHORITATIVE_KEY):
+            # carried into the engine: every engine drop site refuses it
+            for _ef in engine_filters[qualified]:
+                if {k: v for k, v in _ef.items() if k != AUTHORITATIVE_KEY} == engine_filt:
+                    _ef[AUTHORITATIVE_KEY] = True
 
     # Phase-15.83 — DA decision: render every row. The previous code
     # capped chart queries at 1000 (default) / 5000 (with limit_override).
@@ -2698,6 +2736,9 @@ def _execute_semantic_chart_runtime(
             _model_join_sig = _hl.sha256(_join_sig_src.encode("utf-8")).hexdigest()[:16]
     except Exception:  # noqa: BLE001 — cache-key aug must never break a chart
         _model_join_sig = None
+        # Without the relationship identity a cached result could outlive a
+        # relationship edit: compute, do not cache.
+        cache_enabled = False
     # The DEFINITIONS the SQL is generated from are part of the result's
     # identity too: a measure edited from SUM to AVG, a dimension's SQL, a
     # primary key, or a table transformation all change the number with the
@@ -2767,12 +2808,24 @@ def _execute_semantic_chart_runtime(
     # served for all filtered requests → "filter applied but chart shows
     # unfiltered total". Flatten each field's predicate list so the cache
     # key is distinct per filter set again.
+    # calendarField / calendarSourceField change the predicate the engine
+    # renders (a month=1 and a quarter=1 rewrite on the same date column are
+    # different queries) — they are part of the identity, as on the live path.
     cache_filters = [
-        {"field": field, "operator": cond.get("operator"), "value": cond.get("value")}
+        {"field": field, "operator": cond.get("operator"), "value": cond.get("value"),
+         **({"calendarField": cond["calendarField"]} if cond.get("calendarField") else {}),
+         **({"calendarSourceField": cond["calendarSourceField"]} if cond.get("calendarSourceField") else {})}
         for field, conds in sorted(engine_filters.items())
         for cond in (conds if isinstance(conds, list) else [conds])
         if isinstance(cond, dict)
     ]
+    # Which constraints are AUTHORITATIVE changes what a soft drop means (an
+    # authoritative one refuses instead of being skipped): never share a slot.
+    cache_role_config["_authoritative"] = sorted(
+        field for field, conds in engine_filters.items()
+        for cond in (conds if isinstance(conds, list) else [conds])
+        if isinstance(cond, dict) and cond.get("_authoritative")
+    ) or None
 
     coalesce_leader = False
     if cache_enabled:

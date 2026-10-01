@@ -199,7 +199,9 @@ def _join(**over):
 
 def test_explore_joins_are_validated_like_add_join(db, shares):
     owner = _user(OWNER, "edit")
-    upd = lambda **o: SemanticExploreUpdate(joins=[_join(**o)])  # noqa: E731
+    # a whole-list write quotes the version it replaces (read fresh each call)
+    upd = lambda **o: SemanticExploreUpdate(  # noqa: E731
+        joins=[_join(**o)], expected_joins_version=db.get(SemanticExplore, 1).joins_version)
 
     # A view of ANOTHER dataset cannot be joined in.
     assert _status(api.update_explore, 1, upd(name="s", view="salaries", to_column="id"), db, owner) == 400
@@ -303,9 +305,11 @@ def test_a_role_played_calendar_view_of_this_model_can_be_rejoined_a_stray_one_c
     e.joins = [*e.joins, cal]
     db.commit()
 
-    keep = SemanticExploreUpdate(joins=[_join(), {**cal}])
+    keep = SemanticExploreUpdate(joins=[_join(), {**cal}],
+                                 expected_joins_version=db.get(SemanticExplore, 1).joins_version)
     assert _status(api.update_explore, 1, keep, db, owner) == 200
-    stray = SemanticExploreUpdate(joins=[_join(), {**cal, "name": "x", "view": "elsewhere__day__date_dim"}])
+    stray = SemanticExploreUpdate(joins=[_join(), {**cal, "name": "x", "view": "elsewhere__day__date_dim"}],
+                                  expected_joins_version=db.get(SemanticExplore, 1).joins_version)
     assert _status(api.update_explore, 1, stray, db, owner) == 400
 
 
@@ -314,3 +318,72 @@ def test_a_view_cannot_be_repointed_and_an_explore_cannot_be_renamed_onto_anothe
     assert _status(api.update_view, 101, SemanticViewUpdate(sql_table_name="hr.salaries"), db, owner) == 400
     assert _status(api.update_explore, 1, SemanticExploreUpdate(base_view_name="legacy"), db, owner) == 400
     assert _status(api.update_explore, 1, SemanticExploreUpdate(base_view_name="orders"), db, owner) == 200
+
+
+# ── the whole-list relationship write contract (P1-03) ──────────────────────
+
+
+def test_a_whole_list_relationship_write_must_quote_the_version_it_replaces(db, shares):
+    owner = _user(OWNER, "edit")
+    v0 = db.get(SemanticExplore, 1).joins_version
+    # no version: precondition required — never a blind replace
+    assert _status(api.update_explore, 1, SemanticExploreUpdate(joins=[_join()]), db, owner) == 428
+    assert _status(api.update_explore, 1, SemanticExploreUpdate(joins=[_join()], expected_joins_version=v0),
+                   db, owner) == 200
+    # a second writer still holding v0 is refused: someone changed the list since
+    stale = SemanticExploreUpdate(joins=[], expected_joins_version=v0)
+    assert db.get(SemanticExplore, 1).joins_version != v0
+    assert _status(api.update_explore, 1, stale, db, owner) == 409
+    assert len(db.get(SemanticExplore, 1).joins) == 1, "the stale write did not remove the committed relationship"
+    # a description-only update needs no version (it does not touch relationships)
+    assert _status(api.update_explore, 1, SemanticExploreUpdate(description="d"), db, owner) == 200
+
+
+def test_an_omitted_is_active_keeps_the_stored_value_and_a_new_row_cannot_claim_auto_provenance(db, shares):
+    owner = _user(OWNER, "edit")
+    e = db.get(SemanticExplore, 1)
+    e.joins = [{**_join(), "is_active": False, "origin": "auto_fk", "managed": True}]
+    db.commit()
+    row = _join()
+    row.pop("is_active", None)
+    api.update_explore(1, SemanticExploreUpdate(joins=[row], expected_joins_version=e.joins_version), db, owner)
+    (stored,) = db.get(SemanticExplore, 1).joins
+    assert stored["is_active"] is False, "omitting is_active must not switch a deactivated relationship on"
+    assert stored["origin"] == "auto_fk"
+    # a NEW relationship arriving through the whole-list API is the caller's
+    db.get(SemanticExplore, 1).joins = []
+    db.commit()
+    forged = {**_join(), "origin": "auto_fk", "managed": True}
+    api.update_explore(1, SemanticExploreUpdate(joins=[forged], expected_joins_version=db.get(SemanticExplore, 1)
+                                                .joins_version), db, owner)
+    (stored,) = db.get(SemanticExplore, 1).joins
+    assert stored["origin"] == "manual" and stored["managed"] is False
+
+
+def test_a_second_explore_for_the_same_base_view_is_refused(db, shares):
+    from app.schemas.semantic import SemanticExploreCreate
+
+    owner = _user(OWNER, "edit")
+    e = db.get(SemanticExplore, 1)
+    dup = SemanticExploreCreate(name="again", model_id=e.model_id, base_view_id=e.base_view_id,
+                                base_view_name=e.base_view_name, joins=[])
+    assert _status(api.create_explore, dup, db, owner) == 409
+
+
+def test_an_explore_cannot_be_moved_onto_a_base_view_another_explore_owns(db, shares):
+    """Review #5: the create path refused a second explore for one base view,
+    but PUT could MOVE an explore onto it — two explores for one base, the
+    resolver then picks one by creation order. A move also changes what every
+    stored relationship means, so it re-validates them under the precondition
+    even when the request sends no joins."""
+    owner = _user(OWNER, "edit")
+    v = db.get(SemanticExplore, 1).joins_version
+    move = dict(base_view_id=102, base_view_name="customers")
+    assert _status(api.update_explore, 1, SemanticExploreUpdate(**move), db, owner) == 428
+    # orders -> customers stored on base `customers` is a join of customers to itself
+    assert _status(api.update_explore, 1, SemanticExploreUpdate(**move, expected_joins_version=v), db, owner) == 400
+    db.add(SemanticExplore(id=2, name="customers", model_id=1, base_view_id=102, base_view_name="customers",
+                           joins=[]))
+    db.commit()
+    assert _status(api.update_explore, 1, SemanticExploreUpdate(**move, expected_joins_version=v), db, owner) == 409
+    assert db.get(SemanticExplore, 1).base_view_name == "orders"

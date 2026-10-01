@@ -239,6 +239,12 @@ class SemanticQueryEngine:
             # Key probes of every to-one JOIN this query (and its re-anchored /
             # stitched sub-queries) trusts — see relationship_key_guard.
             self._key_probes = {}
+            # Snapshot-dependent memos are per QUERY: the previous-generation
+            # fallback re-runs this same instance on another generation, and a
+            # kept calendar ref would read (and probe) the failed generation.
+            self._calendar_ref_cache = False
+            self._cal_live_sql_cache = False
+            self._snap_rename_cache = None
         self.views_cache = {}
         self._resolver = None
         self._model = None
@@ -735,13 +741,21 @@ class SemanticQueryEngine:
         )
 
         # Build FROM/JOIN clause (only SELECT-side views + base + hops).
-        if _omit_from:
-            from_clause = ""
-            joined_nodes = {explore.base_view_name}
-        else:
-            from_clause, joined_nodes = self._build_from_clause(
-                explore, target_views=select_side_views,
-            )
+        # The probes THIS statement's FROM chain trusts (a nested generation —
+        # another fact's CTE — keeps its own list).
+        _outer_chain_probes = getattr(self, "_chain_probe_keys", None)
+        self._chain_probe_keys = []
+        try:
+            if _omit_from:
+                from_clause = ""
+                joined_nodes = {explore.base_view_name}
+            else:
+                from_clause, joined_nodes = self._build_from_clause(
+                    explore, target_views=select_side_views,
+                )
+            _statement_probe_keys = list(self._chain_probe_keys)
+        finally:
+            self._chain_probe_keys = _outer_chain_probes
         # Filter views that never made it into the FROM chain → EXISTS.
         exists_views = filter_views - joined_nodes
 
@@ -787,6 +801,16 @@ class SemanticQueryEngine:
                 having_filters, time_grains,
                 measure_agg_overrides=measure_agg_overrides or {},
             )
+            # The one-side keys this statement's JOINs trust are re-checked IN
+            # the statement (same snapshot as the JOIN) for every live relation:
+            # the probe that ran before the query cannot see a writer in between.
+            from app.services.relationship_key_guard import statement_key_guard
+
+            _recorded = getattr(self, "_key_probes", None) or {}
+            _key_guard = statement_key_guard([_recorded[k] for k in _statement_probe_keys if k in _recorded])
+            if _key_guard and from_clause:
+                where_clause = (f"{where_clause} AND\n  {_key_guard}" if where_clause
+                                else f"WHERE\n  {_key_guard}")
 
         # Build GROUP BY clause
         group_by_clause = self._build_group_by_clause(dimensions, measures, pivots, time_grains)
@@ -2163,6 +2187,8 @@ class SemanticQueryEngine:
                 if f_view == view_name or f_view in reachable:
                     bound_filters[f_ref] = f_def
                 else:
+                    for _d in (f_def if isinstance(f_def, list) else [f_def]):
+                        self._refuse_unapplied_authoritative(_d, "unreachable_view")
                     self.warnings.append(
                         f"Filter '{f_ref}' không liên quan tới measure '{field_ref}' "
                         f"(bảng '{view_name}') — bỏ qua để tránh số sai âm thầm."
@@ -2606,20 +2632,41 @@ class SemanticQueryEngine:
                 return ("eq", "")
             return (str(d.get("operator") or "eq").strip().lower(), str(d.get("value")))
 
-        per_field_refs: Dict[str, set] = {}
-        per_field_sigs: Dict[str, set] = {}
+        # Which filters are COPIES OF ONE fanned filter. chart_service stamps the
+        # copies it creates with one fan id; an unstamped (legacy / direct engine)
+        # set is a fan when its copies share calendarField + operator + value —
+        # but an AUTHORITATIVE filter without a stamp is never merged into one:
+        # a 🔒 lock on ship-date year and a viewer's order-date pick with the
+        # same value are TWO filters, and collapsing them onto the main calendar
+        # moved the lock to another date column (wider data, silently).
+        def _group_key(cf: str, d: Any):
+            if not isinstance(d, dict):
+                return None
+            if d.get("_calendar_fan"):
+                return ("fan", cf, str(d.get("_calendar_fan")))
+            if d.get("_authoritative"):
+                return None
+            return ("sig", cf) + _sig(d)
+
+        groups: Dict[tuple, set] = {}
+        ref_group: Dict[str, tuple] = {}
         for f_ref, f_def in filters.items():
             defs = f_def if isinstance(f_def, list) else [f_def]
             cf = _cal_field(defs)
             if not cf:
                 continue
-            per_field_refs.setdefault(cf, set()).add(f_ref)
-            for d in defs:
-                per_field_sigs.setdefault(cf, set()).add(_sig(d))
-        fanned = {
-            cf for cf, refs in per_field_refs.items()
-            if len(refs) >= 2 and len(per_field_sigs.get(cf, set())) == 1
-        }
+            keys = {_group_key(cf, d) for d in defs
+                    if isinstance(d, dict) and (d.get("calendarField") or d.get("calendar_field"))}
+            if len(keys) != 1 or None in keys:
+                continue
+            (key,) = keys
+            groups.setdefault(key, set()).add(f_ref)
+            ref_group[f_ref] = key
+        fanned_groups = {k for k, refs in groups.items() if len(refs) >= 2}
+        fanned = {k[1] for k in fanned_groups}
+        per_field_refs: Dict[str, set] = {}
+        for k in fanned_groups:
+            per_field_refs.setdefault(k[1], set()).update(groups[k])
         if not fanned:
             return filters
 
@@ -2650,10 +2697,8 @@ class SemanticQueryEngine:
         for f_ref, f_def in filters.items():
             defs = f_def if isinstance(f_def, list) else [f_def]
             cf = _cal_field(defs)
-            if cf in fanned:
+            if ref_group.get(f_ref) in fanned_groups:
                 new_ref = f"{cal_view}.{cf}"
-                if new_ref in added:
-                    continue  # fan already collapsed to this one canonical filter
                 added.add(new_ref)
                 cleaned = [
                     {k: v for k, v in d.items()
@@ -2665,10 +2710,29 @@ class SemanticQueryEngine:
                     v = self._find_view_by_name(cal_view)
                     if v is not None:
                         self.views_cache[cal_view] = v
-                out[new_ref] = cleaned if isinstance(f_def, list) else cleaned[0]
+                # The replicated copies of ONE fanned filter collapse (identical
+                # predicates); a DIFFERENT filter landing on the same calendar
+                # key is ANDed — it used to be skipped (dropped).
+                self._accumulate_filter(out, new_ref, cleaned)
             else:
-                out[f_ref] = f_def
+                self._accumulate_filter(out, f_ref, defs if isinstance(f_def, list) else [f_def])
         return out
+
+    @staticmethod
+    def _accumulate_filter(out: Dict[str, Any], ref: str, defs: list) -> None:
+        """Add predicates under ``ref`` (AND); identical predicates once."""
+        existing = out.get(ref)
+        merged = list(existing) if isinstance(existing, list) else ([existing] if existing else [])
+        for d in defs:
+            if d not in merged:
+                merged.append(d)
+        out[ref] = merged
+
+    @staticmethod
+    def _refuse_unapplied_authoritative(filter_def, reason: str) -> None:
+        from app.services.chart_contracts import refuse_unapplied_authoritative
+
+        refuse_unapplied_authoritative(filter_def, reason)
 
     def _rebind_calendar_filters(
         self,
@@ -2692,7 +2756,13 @@ class SemanticQueryEngine:
                 ),
                 "",
             )
-            if cal_view and cal_field:
+            # An authoritative filter on a SPECIFIC date role (not a fanned
+            # "Date") keeps its column: re-pointing it at the measure's main
+            # calendar would apply the lock to another date (wider data). It is
+            # bound — or refused — on its own column below.
+            _role_lock = any(isinstance(d, dict) and d.get("_authoritative") and not d.get("_calendar_fan")
+                             for d in defs)
+            if cal_view and cal_field and not _role_lock:
                 new_ref = f"{cal_view}.{cal_field}"
                 cleaned = []
                 for d in defs:
@@ -2705,9 +2775,10 @@ class SemanticQueryEngine:
                     v = self._find_view_by_name(cal_view)
                     if v is not None:
                         self.views_cache[cal_view] = v
-                out[new_ref] = cleaned if isinstance(f_def, list) else cleaned[0]
+                # two date filters re-pointed at ONE calendar key both apply
+                self._accumulate_filter(out, new_ref, cleaned)
             else:
-                out[f_ref] = f_def
+                self._accumulate_filter(out, f_ref, defs)
         return out
 
     def _compute_context_partition(
@@ -3578,15 +3649,19 @@ class SemanticQueryEngine:
             probes = self._key_probes = {}
         for one, other in sides:
             view = self._get_view_for_node(one)
-            relation = (
-                self._snapshot_ref_for_view(view) or self._relation_sql_for_view(view)
-                or getattr(view, "name", None) or one
-            )
+            snapshot_ref = self._snapshot_ref_for_view(view)
+            relation = snapshot_ref or self._relation_sql_for_view(view) or getattr(view, "name", None) or one
             probe = one_side_probe(
                 condition, one_alias=one, other_alias=other, relation=relation,
                 label=f"{edge.from_node} → {edge.to_node}", view=str(getattr(view, "name", None) or one),
+                # a snapshot table is immutable (one physical table per build);
+                # anything else is read live and may change between queries
+                immutable=bool(snapshot_ref),
             )
             probes.setdefault(probe["key"], probe)
+            chain = getattr(self, "_chain_probe_keys", None)
+            if isinstance(chain, list) and probe["key"] not in chain:
+                chain.append(probe["key"])
 
     def _append_route_joins(self, from_clause: str, path, joined_nodes: set) -> str:
         """Append the JOINs of `path` that are not in the FROM chain yet."""
@@ -3863,6 +3938,8 @@ class SemanticQueryEngine:
 
         where_conditions: list[str] = []      # base / select-side predicates
         exists_groups: dict[str, list[str]] = {}  # filter-only view -> predicates
+        # views whose EXISTS group carries an authoritative predicate
+        exists_authoritative: set[str] = set()
         # Defensive default — pivot-value fetch (line ~445) calls this with only
         # filters + time_grains, so select_side_views may be None there.
         select_side_views = select_side_views if select_side_views is not None else set()
@@ -3960,6 +4037,7 @@ class SemanticQueryEngine:
                     select_side_views=select_side_views,
                 )
                 if propagated.mode == _Mode.DROP:
+                    self._refuse_unapplied_authoritative(filter_def, "propagation_drop")
                     propagation_drops.append({
                         "field": field_ref,
                         "reason": (propagated.reason.value if propagated.reason else "unknown"),
@@ -3984,6 +4062,8 @@ class SemanticQueryEngine:
                         conditions = where_conditions
                     else:
                         conditions = exists_groups.setdefault(view_name, [])
+                        if isinstance(filter_def, dict) and filter_def.get("_authoritative"):
+                            exists_authoritative.add(view_name)
                 # EXISTS / SYMMETRIC — always EXISTS-bucket. SYMMETRIC also
                 # accumulates the base view name so Phase-4 measure rendering
                 # can dedupe fan-out via the Looker MD5 trick. The filter side
@@ -4011,6 +4091,7 @@ class SemanticQueryEngine:
                             )
                         ]
                         if flag_on and missing_pk_views:
+                            self._refuse_unapplied_authoritative(filter_def, "no_primary_key")
                             propagation_drops.append({
                                 "field": field_ref,
                                 "reason": _DR.NO_PRIMARY_KEY.value,
@@ -4030,6 +4111,8 @@ class SemanticQueryEngine:
                         for sv in (propagated.symmetric_views or ()):
                             symmetric_aggregate_views.add(sv)
                     conditions = exists_groups.setdefault(view_name, [])
+                    if isinstance(filter_def, dict) and filter_def.get("_authoritative"):
+                        exists_authoritative.add(view_name)
             else:
                 # Phase-B' — route this filter's predicate(s) to the EXISTS
                 # group for its view when the view is filter-only (not in the
@@ -4074,6 +4157,7 @@ class SemanticQueryEngine:
                     if _strict_unreachable and measure_fact_views and view_name in measure_fact_views:
                         _strict_unreachable = False
                     if _strict_unreachable:
+                        self._refuse_unapplied_authoritative(filter_def, "unreachable_view")
                         propagation_drops.append({
                             "field": field_ref,
                             "reason": "unreachable_view",
@@ -4090,6 +4174,8 @@ class SemanticQueryEngine:
                         )
                         continue
                     conditions = exists_groups.setdefault(view_name, [])
+                    if isinstance(filter_def, dict) and filter_def.get("_authoritative"):
+                        exists_authoritative.add(view_name)
                 else:
                     conditions = where_conditions
 
@@ -4162,6 +4248,9 @@ class SemanticQueryEngine:
                         )
                         field_sql = calendar_field_sql
             except ValueError as exc:
+                # a server-owned constraint refuses with the fixed message (it
+                # names no field: the ref of a 🚫 hidden filter is not public)
+                self._refuse_unapplied_authoritative(filter_def, "field_not_renderable")
                 # STRICT (#4) — a filter whose field cannot be resolved
                 # (unknown column / schema drift / view not reachable) is a
                 # COMPLETE filter we cannot honour. The old contract skipped
@@ -4174,6 +4263,12 @@ class SemanticQueryEngine:
                 raise ValueError(
                     f"Filter không áp được: field {field_ref!r} — {exc}"
                 ) from exc
+            if calendar_field_ref and not calendar_field_sql:
+                # A calendar field with no expression here (week_start_date,
+                # month_end_date, date_key, …) is compared with the raw date
+                # column — another predicate. An ordinary filter keeps that
+                # legacy fallback; a server-owned one refuses.
+                self._refuse_unapplied_authoritative(filter_def, "calendar_field_unsupported")
 
             # Null-state operators don't take a value.
             if operator == "is_null":
@@ -4196,7 +4291,9 @@ class SemanticQueryEngine:
                     conditions.append(f"{bf} >= {_lit(lo)}")
                 elif _value_present(hi):
                     conditions.append(f"{bf} <= {_lit(hi)}")
-                # if both blank → user hasn't filled the picker yet, skip
+                else:
+                    # both blank → user hasn't filled the picker yet, skip
+                    self._refuse_unapplied_authoritative(filter_def, "empty_value")
                 continue
 
             # IN / NOT IN accept list or comma-separated string.
@@ -4209,6 +4306,8 @@ class SemanticQueryEngine:
                 vals = ", ".join(_lit(v) for v in present)
                 if vals:
                     conditions.append(f"{_num(field_sql, *present)} IN ({vals})")
+                else:
+                    self._refuse_unapplied_authoritative(filter_def, "empty_value")
                 continue
             if operator == "not_in":
                 present = []
@@ -4219,12 +4318,15 @@ class SemanticQueryEngine:
                 vals = ", ".join(_lit(v) for v in present)
                 if vals:
                     conditions.append(f"{_num(field_sql, *present)} NOT IN ({vals})")
+                else:
+                    self._refuse_unapplied_authoritative(filter_def, "empty_value")
                 continue
 
             # Pattern operators need LIKE-escaping for % and _ so DA-typed
             # literals don't accidentally turn into wildcards.
             if operator in {"contains", "not_contains", "starts_with", "ends_with"}:
                 if value is None:
+                    self._refuse_unapplied_authoritative(filter_def, "empty_value")
                     continue
                 # PBI parity (2026-06) — a LIKE operator on a DATE/numeric column
                 # is invalid SQL (Postgres: `operator does not exist: date ~~
@@ -4233,6 +4335,7 @@ class SemanticQueryEngine:
                 # caller. Soft-drop it (visible in dropped_filters) rather than
                 # emit SQL the warehouse rejects.
                 if self._field_rejects_pattern_operator(field_ref):
+                    self._refuse_unapplied_authoritative(filter_def, "unsupported_operator")
                     propagation_drops.append({
                         "field": field_ref,
                         "reason": "unsupported_operator",
@@ -4285,6 +4388,8 @@ class SemanticQueryEngine:
                     conditions.append(f"{field_sql} >= {_lit(lo)}")
                 elif _value_present(hi):
                     conditions.append(f"{field_sql} <= {_lit(hi)}")
+                else:
+                    self._refuse_unapplied_authoritative(filter_def, "empty_value")
                 continue
 
             # Phase-B (PBI-parity rework) — relative-date operators
@@ -4320,6 +4425,7 @@ class SemanticQueryEngine:
             # above. matches_regex falls here because dialects differ.
             if operator == "matches_regex":
                 if value is None:
+                    self._refuse_unapplied_authoritative(filter_def, "empty_value")
                     continue
                 # One spelling per engine (sql_pattern.regex_predicate). This
                 # used to emit `SIMILAR TO`, an anchored SQL pattern in which
@@ -4338,6 +4444,8 @@ class SemanticQueryEngine:
                     conditions.append(f"{field_sql} < {_lit(lo)}")
                 elif _value_present(hi):
                     conditions.append(f"{field_sql} > {_lit(hi)}")
+                else:
+                    self._refuse_unapplied_authoritative(filter_def, "empty_value")
                 continue
 
             # Unknown operator. STRICT (#4) — appending no condition would
@@ -4370,6 +4478,10 @@ class SemanticQueryEngine:
                 # in `_debug.dropped_filters` + the skip-badge — ignored, never
                 # silent. The root cause (broken relationship) is still
                 # actionable from the badge tooltip + Data Model tab.
+                if view_node in exists_authoritative:
+                    from app.services.chart_contracts import AuthoritativeFilterNotApplied
+
+                    raise AuthoritativeFilterNotApplied("no_join_path")
                 propagation_drops.append({
                     "field": view_node,
                     "reason": "no_join_path",

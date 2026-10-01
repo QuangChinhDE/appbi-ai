@@ -372,8 +372,9 @@ def test_key_probe_refuses_a_duplicate_and_an_unverifiable_key(monkeypatch):
     store = {}
     monkeypatch.setattr(query_cache, "get_shared", lambda k: store.get(k))
     monkeypatch.setattr(query_cache, "set_shared", lambda k, v, ttl: store.__setitem__(k, v))
+    # an IMMUTABLE relation (a snapshot table): its verdict is cached
     probe = {"sql": g.key_probe_sql("customers", ["id"]), "view": "customers", "columns": ["id"],
-             "label": "orders → customers"}
+             "label": "orders → customers", "immutable": True}
     calls = []
 
     def dup(_t, _c, sql, **_k):
@@ -397,6 +398,80 @@ def test_key_probe_refuses_a_duplicate_and_an_unverifiable_key(monkeypatch):
     monkeypatch.setattr(DataSourceConnectionService, "execute_query",
                         staticmethod(lambda *_a, **_k: (["_appbi_dup"], [], 0)))
     g.verify_key_probes([probe], ds_type="postgresql", config={}, namespace="clean")  # no raise
+
+
+def test_a_live_unique_verdict_is_never_reused_after_the_source_gains_a_duplicate(monkeypatch):
+    """P1-01: a live (mutable) relation is probed on EVERY query. A cached
+    "unique" verdict reused after the source changed would let the next query
+    fan out and succeed."""
+    from app.services import query_cache, relationship_key_guard as g
+    from app.services.datasource_service import DataSourceConnectionService
+
+    store = {}
+    monkeypatch.setattr(query_cache, "get_shared", lambda k: store.get(k))
+    monkeypatch.setattr(query_cache, "set_shared", lambda k, v, ttl: store.__setitem__(k, v))
+    probe = g.one_side_probe("orders.customer_id = customers.id", one_alias="customers", other_alias="orders",
+                             relation="customers", label="orders → customers", view="customers")
+    assert probe["immutable"] is False
+    source = {"rows": []}  # the live source: unique, then duplicated
+    calls = []
+
+    def run(_t, _c, sql, **_k):
+        calls.append(sql)
+        return ["_appbi_dup"], list(source["rows"]), 0
+
+    monkeypatch.setattr(DataSourceConnectionService, "execute_query", staticmethod(run))
+    g.verify_key_probes([probe], ds_type="postgresql", config={})
+    source["rows"] = [{"_appbi_dup": 1}]
+    with pytest.raises(ValueError, match="bị lặp"):
+        g.verify_key_probes([probe], ds_type="postgresql", config={})
+    assert len(calls) == 2 and store == {}, "a live verdict must not be cached"
+
+
+def test_snapshot_generations_never_share_a_uniqueness_verdict(db, monkeypatch):
+    """Generation A's physical table is unique, generation B's is not: the
+    probes name different physical tables, so A's cached verdict cannot vouch
+    for B."""
+    from app.services import query_cache, relationship_key_guard as g
+    from app.services.datasource_service import DataSourceConnectionService
+    from app.services.semantic_query_engine import SemanticQueryEngine
+
+    _add(db)
+    store = {}
+    monkeypatch.setattr(query_cache, "get_shared", lambda k: store.get(k))
+    monkeypatch.setattr(query_cache, "set_shared", lambda k, v, ttl: store.__setitem__(k, v))
+
+    def probes_for(gen):
+        e = SemanticQueryEngine(db, database_type="postgresql")
+        e.generate_sql(explore_name="orders", dimensions=["customers.region"], measures=[], filters={},
+                       model_id=1, snapshot_overrides={11: f"snap.orders_v{gen}", 12: f"snap.customers_v{gen}"})
+        (p,) = [p for p in e.key_probes if p["view"] == "customers"]
+        return p
+
+    a, b = probes_for(1), probes_for(2)
+    assert a["immutable"] and b["immutable"] and a["sql"] != b["sql"]
+    assert "customers_v1" in a["sql"] and "customers_v2" in b["sql"]
+    monkeypatch.setattr(DataSourceConnectionService, "execute_query", staticmethod(
+        lambda _t, _c, sql, **_k: (["_appbi_dup"], [{"_appbi_dup": 1}] if "_v2" in sql else [], 0)))
+    g.verify_key_probes([a], ds_type="bigquery", config={})  # A: unique, cached
+    with pytest.raises(ValueError, match="bị lặp"):
+        g.verify_key_probes([b], ds_type="bigquery", config={})  # B: its own probe, duplicate
+
+
+@pytest.mark.parametrize("join_kw,expect_cols", [
+    ({"from_columns": ["customer_id", "ship_date"], "to_columns": ["id", "region"]},
+     ["customers.id", "customers.region"]),
+    ({"alias": "buyer"}, ["buyer.id"]),
+])
+def test_composite_and_role_alias_keys_are_probed_whole_on_the_alias(db, join_kw, expect_cols):
+    from app.services.semantic_query_engine import SemanticQueryEngine
+
+    _add(db, **join_kw)
+    node = join_kw.get("alias", "customers")
+    e = SemanticQueryEngine(db, database_type="postgresql")
+    e.generate_sql(explore_name="orders", dimensions=[f"{node}.region"], measures=[], filters={}, model_id=1)
+    (p,) = [p for p in e.key_probes if p["view"] == "customers"]
+    assert p["columns"] == expect_cols and p["immutable"] is False
 
 
 def test_the_engine_probes_every_trusted_join_on_the_key_its_condition_compares(db):
@@ -774,3 +849,200 @@ def test_regeneration_keeps_a_manual_join_redrawn_after_removing_the_auto_one(ge
     db.commit()
     (row,) = _rows(db)
     assert row["origin"] == "manual" and read_join_contract(V_ORD, row).is_active is False
+
+
+# ── P1-11: one stored relationship, the same verdict everywhere ─────────────
+
+_CAL = "CAST(${TABLE}.ship_date AS DATE) = ${calendar}.date"
+# shape id → (stored row, writer accepts, reader valid, in graph, health, runtime ok, response is_active)
+#   health: None (no relationship check) | "fail" (blocking) | "warn" (dormant, non-blocking)
+_MATRIX = {
+    "canonical_n1": ({"view": "customers", "from_column": "customer_id", "to_column": "id",
+                      "sql_on": "${TABLE}.customer_id = ${customers}.id", "cardinality": "many_to_one"},
+                     True, True, True, None, True, True),
+    "one_to_many": ({"view": "customers", "from_column": "customer_id", "to_column": "id",
+                     "cardinality": "one_to_many"}, True, True, True, None, True, True),
+    "one_to_one": ({"view": "customers", "from_column": "customer_id", "to_column": "id",
+                    "cardinality": "one_to_one"}, True, True, True, None, True, True),
+    "many_to_many": ({"view": "customers", "from_column": "customer_id", "to_column": "id",
+                      "cardinality": "many_to_many"}, True, True, True, None, True, True),
+    "invalid_cardinality": ({"view": "customers", "from_column": "customer_id", "to_column": "id",
+                             "cardinality": "bogus"}, False, False, False, "fail", False, True),
+    "missing_cardinality": ({"view": "customers", "from_column": "customer_id", "to_column": "id"},
+                            False, False, False, "fail", False, True),
+    "inactive": ({"view": "customers", "from_column": "customer_id", "to_column": "id",
+                  "cardinality": "many_to_one", "is_active": False}, True, True, False, None, True, False),
+    "string_false": ({"view": "customers", "from_column": "customer_id", "to_column": "id",
+                      "cardinality": "many_to_one", "is_active": "false"}, True, True, False, None, True, False),
+    "invalid_cross_filter": ({"view": "customers", "from_column": "customer_id", "to_column": "id",
+                              "cardinality": "many_to_one", "cross_filter": "bidirectional"},
+                             False, False, False, "fail", False, True),
+    "role_alias": ({"view": "customers", "alias": "buyer", "from_column": "customer_id", "to_column": "id",
+                    "sql_on": "${TABLE}.customer_id = ${buyer}.id", "cardinality": "many_to_one"},
+                   True, True, True, None, True, True),
+    "composite": ({"view": "customers", "from_columns": ["customer_id", "ship_date"], "to_columns": ["id", "region"],
+                   "from_column": "customer_id", "to_column": "id", "cardinality": "many_to_one"},
+                  True, True, True, None, True, True),
+    "calendar_cast": ({"view": "calendar", "from_column": "ship_date", "to_column": "date",
+                       "from_columns": ["ship_date"], "to_columns": ["date"], "sql_on": _CAL,
+                       "relationship": "many_to_one"}, True, True, True, None, True, True),
+    "reversed_equality": ({"view": "customers", "sql_on": "${customers}.id = ${TABLE}.customer_id",
+                           "cardinality": "many_to_one"}, True, True, True, None, True, True),
+    "dormant_invalid": ({"view": "customers", "from_column": "customer_id", "to_column": "id",
+                         "cardinality": "bogus", "is_active": False}, False, False, False, "warn", True, False),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_MATRIX))
+def test_writer_reader_resolver_health_runtime_and_response_agree(db, shape):
+    from app.services.dataset_model_service import get_dataset_model, validate_direct_explore_joins
+    from app.services.semantic_health_service import invalid_relationship_checks
+
+    row, writer_ok, valid, in_graph, health, runtime_ok, resp_active = _MATRIX[shape]
+    # writer (the strict whole-list validator every direct write goes through)
+    try:
+        validate_direct_explore_joins(db, 1, "orders", [dict(row, name="j")])
+        accepted = True
+    except ValueError:
+        accepted = False
+    assert accepted is writer_ok, ("writer", shape)
+    # stored as a legacy row → every reader
+    e = db.get(SemanticExplore, 1)
+    e.joins = [dict(row)]
+    db.commit()
+    db.expire_all()
+    c = read_join_contract("orders", row)
+    assert c.valid is valid, ("reader", shape, c.invalid)
+    model = db.get(SemanticModel, 1)
+    r = SemanticJoinResolver(db, model, "orders", bidirectional=False)
+    nodes = {edge.to_node for edge in r._adj.get("orders", [])}
+    assert (c.node in nodes) is in_graph, ("resolver", shape, nodes)
+    checks = list(invalid_relationship_checks(db, 1))
+    got_health = None if not checks else ("fail" if checks[0].blocking else "warn")
+    assert got_health == health, ("health", shape, [(h.status, h.blocking) for h in checks])
+    try:
+        raise_for_invalid_relationships(r)
+        refused = False
+    except ValueError:
+        refused = True
+    assert refused is (not runtime_ok), ("runtime", shape)
+    (resp,) = [j for ex in get_dataset_model(db, 1)["explores"] if ex["base_view_name"] == "orders"
+               for j in ex["joins"]]
+    assert resp["is_active"] is resp_active, ("response is_active", shape, resp)
+    assert bool(resp.get("contract_invalid")) is (not valid), ("response invalid flag", shape)
+
+
+def test_the_same_relationship_twice_is_refused_by_the_writer(db):
+    from app.services.dataset_model_service import validate_direct_explore_joins
+
+    row = _MATRIX["canonical_n1"][0]
+    with pytest.raises(ValueError, match="hai lần"):
+        validate_direct_explore_joins(db, 1, "orders", [dict(row, name="a"), dict(row, name="b")])
+
+
+# ── P1-04: a dormant invalid relationship does not brick valid queries ──────
+
+
+def test_a_dormant_invalid_relationship_neither_bricks_valid_queries_nor_can_be_activated(db):
+    from app.services.semantic_health_service import invalid_relationship_checks
+    from app.services.semantic_query_engine import SemanticQueryEngine
+
+    _add(db)  # orders → customers, valid and active
+    e = db.get(SemanticExplore, 1)
+    e.joins = [*e.joins, {"view": "calendar", "from_column": "ship_date", "to_column": "date",
+                          "cardinality": "bogus", "is_active": False}]
+    db.commit()
+    sql, _c, _ = SemanticQueryEngine(db, database_type="postgresql").generate_sql(
+        explore_name="orders", dimensions=["customers.region"], measures=[], filters={}, model_id=1)
+    assert "customers" in sql, "the valid topology still answers"
+    (h,) = invalid_relationship_checks(db, 1)
+    assert h.kind == "invalid_relationship_inactive" and h.blocking is False and h.status == "warn"
+    with pytest.raises(ValueError, match="không hợp lệ"):
+        _add(db, to_view_id=13, from_column="ship_date", to_column="date", is_active=True)
+    db.rollback()
+    # an unknown activation is never "off": it refuses like an active invalid row
+    e = db.get(SemanticExplore, 1)
+    e.joins = [e.joins[0], {"view": "calendar", "from_column": "ship_date", "to_column": "date",
+                            "cardinality": "bogus", "is_active": "perhaps"}]
+    db.commit()
+    with pytest.raises(ValueError):
+        SemanticQueryEngine(db, database_type="postgresql").generate_sql(
+            explore_name="orders", dimensions=["customers.region"], measures=[], filters={}, model_id=1)
+
+
+def test_garbage_cardinality_is_never_written_as_many_to_one(db):
+    """P1-08: no authoring path turns garbage into N:1 — the granular writer, the
+    whole-list writer and the suggestion applier all refuse."""
+    from app.services.dataset_model_service import apply_join_suggestions, validate_direct_explore_joins
+
+    for bad in ("bogus", "", None):
+        with pytest.raises(ValueError):
+            _add(db, relationship=bad)
+        db.rollback()
+        with pytest.raises(ValueError):
+            validate_direct_explore_joins(db, 1, "orders", [{"name": "j", "view": "customers", "from_column":
+                                                            "customer_id", "to_column": "id", "relationship": bad}])
+    out = apply_join_suggestions(db, 1, [{"from_view": "orders", "to_view": "customers",
+                                          "from_columns": ["customer_id"], "to_columns": ["id"]}])
+    assert out["added"] == 0 and out["errors"]
+    assert _joins(db) == []
+
+
+def test_the_ai_cache_epoch_moves_on_every_relationship_write_and_delete(db):
+    """Review #6: the AI insight-pack / recon caches held a summary computed
+    under the OLD relationships. Their key carries semantic_epoch, which must
+    change on every write — including one whose updated_at is OLDER than the
+    newest (PostgreSQL now() is the transaction start: a writer that waited on
+    the model lock commits an older stamp) — and on a delete."""
+    import datetime as dt
+
+    from app.services.dashboard_ai_bot.summary_cache import semantic_epoch
+
+    e1, e2 = db.get(SemanticExplore, 1), db.get(SemanticExplore, 2)
+    e1.updated_at, e2.updated_at = dt.datetime(2026, 1, 1), dt.datetime(2026, 6, 1)
+    db.commit()
+    before = semantic_epoch(db)
+    assert semantic_epoch(db) == before, "stable while nothing changes"
+    e1.joins = [{"view": "customers", "from_column": "customer_id", "to_column": "id",
+                 "cardinality": "many_to_one"}]
+    e1.updated_at = dt.datetime(2026, 3, 1)  # older than the newest stamp
+    db.commit()
+    after_write = semantic_epoch(db)
+    assert after_write != before
+    db.delete(db.get(SemanticExplore, 1))
+    db.commit()
+    assert semantic_epoch(db) not in (before, after_write)
+
+
+def test_statement_key_guard_rechecks_only_mutable_relations():
+    """The in-statement half of the guard: a live probe becomes a predicate
+    that is TRUE on a unique key and raises (two-row scalar subquery) on a
+    duplicate; an immutable (snapshot) probe and an unverifiable one (refused
+    before the query) add nothing."""
+    from app.services.relationship_key_guard import statement_key_guard
+
+    live = {"sql": "SELECT 1 AS _appbi_dup FROM c AS c GROUP BY c.id HAVING COUNT(*) > 1 LIMIT 1"}
+    guard = statement_key_guard([live, {**live, "immutable": True}, {"sql": None}])
+    assert guard == f"(SELECT _appbi_dup FROM ({live['sql']}) AS _appbi_kpg0 UNION ALL SELECT 1) = 1"
+    assert statement_key_guard([{**live, "immutable": True}]) is None and statement_key_guard([]) is None
+
+
+def test_the_in_statement_guard_is_in_the_where_of_the_statement_that_joins(db):
+    """A live to-one JOIN carries its key re-check in the same statement (the
+    probe before it cannot see a writer in between); a snapshot-backed one
+    does not need it (immutable physical table)."""
+    from app.services.semantic_query_engine import SemanticQueryEngine
+
+    _add(db)
+    e = SemanticQueryEngine(db, database_type="postgresql")
+    sql, _c, _ = e.generate_sql(explore_name="orders", dimensions=["customers.region"], measures=[],
+                                filters={"customers.region": [{"operator": "eq", "value": "N"}]}, model_id=1)
+    (p,) = [p for p in e.key_probes if p["view"] == "customers"]
+    where = sql.split("WHERE", 1)[1]
+    assert f"(SELECT _appbi_dup FROM ({p['sql']}) AS _appbi_kpg0 UNION ALL SELECT 1) = 1" in where
+    assert "'N'" in where, "the guard is ANDed with the filters, it replaces none"
+    s = SemanticQueryEngine(db, database_type="postgresql")
+    snap_sql, _c, _ = s.generate_sql(explore_name="orders", dimensions=["customers.region"], measures=[],
+                                     filters={}, model_id=1,
+                                     snapshot_overrides={11: "snap.orders_v1", 12: "snap.customers_v1"})
+    assert "_appbi_kpg" not in snap_sql and all(p["immutable"] for p in s.key_probes)

@@ -2034,6 +2034,10 @@ def _cleanup_semantic_view_for_table(db: Session, table_id: int) -> None:
 
     view_name = view.name
     if view_name and model is not None:
+        # the same model write lock as every relationship writer
+        from app.services.dataset_model_service import lock_dataset_model_for_write
+
+        lock_dataset_model_for_write(db, table.dataset_id)
         model_explores = db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
         for explore in model_explores:
             old_joins = explore.joins or []
@@ -5624,6 +5628,15 @@ def dry_run_dataset_view_measure(
         # zero-row bound (no data returned; on BigQuery a cheap parse/validate)
         # and a short timeout, exactly like /datasources/validate-sql. The real
         # dialect error message is what we return to the DA.
+        # The same key guard as every executor: a dry-run must not report ok
+        # for a measure whose trusted join the real runtime would refuse.
+        from app.services.relationship_key_guard import verify_key_probes
+
+        try:
+            verify_key_probes(engine.key_probes, ds_type=ds_type, config=datasource.config,
+                              namespace=f"ds:{getattr(datasource, 'id', '')}")
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "compiled_sql": sql}
         try:
             # limit=1 (not 0): some dialect executors treat 0 as falsy → "no
             # limit" (full scan). limit=1 is what /datasources/validate-sql
@@ -5963,26 +5976,25 @@ def update_dataset_explore(
         if key not in allowed_fields:
             continue
         if key == "joins" and isinstance(value, list):
-            managed_joins = [
-                join for join in (explore.joins or [])
-                if join.get("managed") and join.get("origin") not in {"auto_fk", "auto_calendar"}
-            ]
-            editable_joins = [
-                join for join in value
-                if isinstance(join, dict)
-                and not (join.get("managed") and join.get("origin") not in {"auto_fk", "auto_calendar"})
-            ]
-            # Same structural checks as add_join (views of this dataset, real
-            # columns, a declared cardinality) — a wholesale write used to store
-            # anything, and a missing cardinality was later read as many-to-one.
-            from app.services.dataset_model_service import validate_direct_explore_joins
+            # The one whole-list writer: lock, required version, contract
+            # validation, stored provenance, tombstones; system-managed rows
+            # the caller may not edit are kept.
+            from app.services.dataset_model_service import (
+                RelationshipWriteConflict, RelationshipWritePreconditionRequired, replace_explore_joins,
+            )
             try:
-                editable_joins = validate_direct_explore_joins(
-                    db, dataset_id, explore.base_view_name, editable_joins,
+                new_joins = replace_explore_joins(
+                    db, explore, dataset_id, [dict(j) for j in value if isinstance(j, dict)],
+                    expected_joins_version=update_data.get("expected_joins_version"),
+                    keep_system_managed=True,
                 )
+            except RelationshipWritePreconditionRequired as exc:
+                raise HTTPException(status_code=428, detail=str(exc))
+            except RelationshipWriteConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
-            setattr(explore, key, [*managed_joins, *editable_joins])
+            setattr(explore, key, new_joins)
             continue
         setattr(explore, key, value)
 
@@ -5995,6 +6007,7 @@ def update_dataset_explore(
         "base_view_name": explore.base_view_name,
         "base_view_id": explore.base_view_id,
         "joins": explore.joins or [],
+        "joins_version": explore.joins_version,
         "description": explore.description,
     }
 
@@ -6249,7 +6262,7 @@ def add_model_join(
             from_columns=from_columns,
             to_columns=to_columns,
             join_type=payload.get("join_type", "left"),
-            relationship=payload.get("relationship", "many_to_one"),
+            relationship=payload.get("relationship"),
             cardinality=payload.get("cardinality"),
             alias=alias_value,
             is_active=is_active,

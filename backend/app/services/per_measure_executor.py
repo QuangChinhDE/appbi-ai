@@ -139,8 +139,12 @@ def execute_groups_parallel(
 
     def _one(group: MeasureGroup) -> dict:
         sub_cfg = build_group_chart_config(base_chart_config, group, plan)
+        from app.services.chart_contracts import AuthoritativeFilterNotApplied
+
         try:
             res = runner(sub_cfg)
+        except AuthoritativeFilterNotApplied:
+            raise  # a server-owned constraint not applied: the whole chart refuses
         except Exception as exc:
             logger.exception("[per_measure] group %r failed: %s", group.fact_view, exc)
             return {

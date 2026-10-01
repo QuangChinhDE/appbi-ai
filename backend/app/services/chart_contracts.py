@@ -73,6 +73,41 @@ def compute_date_preset_range(preset: str) -> tuple[str, str]:
     return "", ""
 
 
+#: Marker on a filter the VIEWER may not relax — a public link's lock / 🚫
+#: hidden constraint, a 🔒/🚫 dashboard filter, a page scope, a link 'limit'
+#: allow-list, an embed claim, a workboard role scope. Such a constraint is
+#: either APPLIED or the request is refused: it is never skipped "softly"
+#: (unreachable view, no join path, empty value…), because skipping it returns
+#: data wider than the server-owned scope.
+AUTHORITATIVE_KEY = "_authoritative"
+
+
+class AuthoritativeFilterNotApplied(ValueError):
+    """An authoritative constraint could not be applied to this query.
+
+    The message names no field and no value: it may reach an anonymous viewer,
+    and a 🚫 constraint's field must not be disclosed."""
+
+    def __init__(self, reason: str = ""):
+        self.reason = reason
+        super().__init__(
+            "Biểu đồ này không áp được một giới hạn bắt buộc của báo cáo / liên kết, nên không trả dữ liệu "
+            "(tránh hiển thị rộng hơn phạm vi được chia sẻ). Báo người chia sẻ kiểm tra lại quan hệ dữ liệu "
+            "hoặc bộ lọc khoá của báo cáo."
+        )
+
+
+def refuse_unapplied_authoritative(filt: Any, reason: str) -> None:
+    """Raise when ``filt`` is authoritative: called wherever a filter would be
+    dropped instead of applied."""
+    if isinstance(filt, dict) and filt.get(AUTHORITATIVE_KEY):
+        logger.warning(
+            "[authoritative-filter] refused: field=%s reason=%s",
+            filt.get("semanticField") or filt.get("fieldKey") or filt.get("field"), reason,
+        )
+        raise AuthoritativeFilterNotApplied(reason)
+
+
 def _summarize_filter(filt: dict[str, Any] | None) -> dict[str, Any]:
     """Phase-15.78 — extract the dropped-filter diagnostic shape from a
     runtime filter dict. Keeps the diagnostic small (no full value blobs)
@@ -95,7 +130,11 @@ def _record_dropped_filter(
     """Phase-15.78 — append a structured drop entry to caller-provided
     diagnostics list and emit a WARNING log. Caller passes None when it
     doesn't care (most internal sites); chart-data endpoints pass a list
-    and forward it into ChartDebugInfo.dropped_filters."""
+    and forward it into ChartDebugInfo.dropped_filters.
+
+    An AUTHORITATIVE filter is never dropped: recording its drop refuses the
+    request (``AuthoritativeFilterNotApplied``)."""
+    refuse_unapplied_authoritative(filt, reason)
     summary = _summarize_filter(filt)
     logger.warning(
         "[filter-drop] reason=%s field=%s semantic=%s op=%s detail=%s",

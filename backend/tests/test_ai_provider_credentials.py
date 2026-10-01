@@ -22,7 +22,7 @@ import uuid
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -41,6 +41,14 @@ from app.services.agent_flows.contract import Flow, upgrade_body
 @compiles(JSONB, "sqlite")
 def _jsonb_on_sqlite(_type, _compiler, **_kw):
     return "JSON"
+
+
+# The UUID columns too: without this the file only passed when another test
+# module happened to register the same hook first (it errored when run alone,
+# as the guardrail's required-gate runner does).
+@compiles(UUID, "sqlite")
+def _uuid_on_sqlite(_type, _compiler, **_kw):
+    return "CHAR(36)"
 
 
 CANARY = "sk-CANARY-a1b2c3d4e5f6g7h8i9j0-LEAK"

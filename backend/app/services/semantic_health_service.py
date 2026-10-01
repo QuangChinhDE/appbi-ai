@@ -76,6 +76,46 @@ def _relation_for_table(db: Session, table: DatasetTable):
     return ds, _dialect_for_ds_type(_ds_type(ds)), resolve_dataset_table_relation(ds, table).sql
 
 
+def _relation_for_generation(db: Session, table: DatasetTable, generation: int):
+    """(host datasource, dialect, relation_sql, physical_ref) of the table's
+    snapshot in ``generation`` — the artifact that generation SERVES — or None
+    when the generation holds no snapshot of it (a calendar or composition
+    reference: read elsewhere)."""
+    from app.models.dataset import DatasetTableSnapshot
+    from app.services.live_query_service import _dialect_for_ds_type
+
+    row = (
+        db.query(DatasetTableSnapshot)
+        .filter(
+            DatasetTableSnapshot.dataset_table_id == table.id,
+            DatasetTableSnapshot.generation == int(generation),
+            DatasetTableSnapshot.status.in_(("ready", "superseded")),
+            DatasetTableSnapshot.retired_at.is_(None),
+        )
+        .order_by(DatasetTableSnapshot.id.desc())
+        .first()
+    )
+    if row is None or not row.physical_ref or not row.host_datasource_id:
+        return None
+    host = db.query(DataSource).filter(DataSource.id == row.host_datasource_id).first()
+    if host is None:
+        return None
+    dialect = _dialect_for_ds_type(_ds_type(host))
+    ref = str(row.physical_ref)
+    quoted = f"`{ref}`" if dialect == "bigquery" else ".".join(f'"{p}"' for p in ref.split("."))
+    return host, dialect, f"SELECT * FROM {quoted}", ref
+
+
+def _snapshot_columns(columns: List[str], dialect: str) -> List[str]:
+    """A snapshot stores a column under its BigQuery-safe name (the build's own
+    per-name function): the check reads the name the table actually has."""
+    if dialect != "bigquery":
+        return list(columns)
+    from app.services.datasource_service import bq_safe_field
+
+    return [bq_safe_field(c) for c in columns]
+
+
 def _scalar(ds, sql: str) -> int:
     from app.services.datasource_service import DataSourceConnectionService
 
@@ -113,10 +153,20 @@ def _views_by_name(db: Session, dataset_id: int) -> Dict[str, tuple]:
 
 def uniqueness_checks(
     db: Session, dataset_id: int, *, execute: bool = True, include_primary_keys: bool = True,
+    generation: Optional[int] = None, generation_label: str = "candidate_generation",
 ) -> List[HealthCheck]:
     """One-side keys of active M:1 / 1:1 relationships (blocking), and declared
     primary keys of other views (reported, never blocking: a PK a relationship
-    does not rely on changes no joined number)."""
+    does not rely on changes no joined number).
+
+    WHAT is checked is part of the result (``evidence.checked``): without
+    ``generation`` the LIVE source relation (``live_source``); with it, the
+    table's snapshot IN THAT GENERATION on its host (``candidate_generation`` /
+    ``published_generation``, ``evidence.generation``) — the exact artifact a
+    dashboard reads once that generation is visible. A table that generation
+    holds no snapshot of is ``unknown`` (relation None, non-blocking) — its
+    live relation is not the generation's artifact; the runtime key probe
+    re-checks a live relation on every query."""
     from app.services.semantic_join_resolver import read_join_contract
 
     views = _views_by_name(db, dataset_id)
@@ -151,7 +201,27 @@ def uniqueness_checks(
             evidence={"why": why},
         )
         pair = views.get(view_name)
-        rel = _relation_for_table(db, pair[1]) if pair else None
+        check_cols = list(cols)
+        rel = None
+        if generation is not None and pair:
+            rel_g = _relation_for_generation(db, pair[1], generation)
+            if rel_g is not None:
+                host, dialect_g, relation_g, ref = rel_g
+                rel = (host, dialect_g, relation_g)
+                check_cols = _snapshot_columns(list(cols), dialect_g)
+                check.evidence.update(checked=generation_label, generation=int(generation), relation=ref)
+        if rel is None and generation is not None:
+            # The generation does not hold this table (a calendar, a composition
+            # reference): the live relation is NOT the artifact served — never
+            # report its result as the generation's.
+            check.evidence.update(checked=generation_label, generation=int(generation), relation=None)
+            check.detail = "Không kiểm được trên generation này: generation không chứa snapshot của bảng."
+            check.blocking = False
+            out.append(check)
+            continue
+        if rel is None:
+            rel = _relation_for_table(db, pair[1]) if pair else None
+            check.evidence["checked"] = "live_source"
         if rel is None:
             check.detail = "Không kiểm được: bảng không có nguồn riêng (calendar / bảng tham chiếu)."
             check.blocking = False
@@ -161,7 +231,7 @@ def uniqueness_checks(
         else:
             ds, dialect, relation = rel
             try:
-                dups = _scalar(ds, _duplicate_key_sql(relation, list(cols), dialect))
+                dups = _scalar(ds, _duplicate_key_sql(relation, check_cols, dialect))
                 check.evidence["duplicate_keys"] = dups
                 if dups:
                     check.status = "fail"
@@ -180,8 +250,11 @@ def uniqueness_checks(
 
 
 def invalid_relationship_checks(db: Session, dataset_id: int) -> List[HealthCheck]:
-    """Persisted relationships whose contract is invalid. Blocking: the engine
-    refuses every query on a model that carries one, so it must not publish."""
+    """Persisted relationships whose contract is invalid — judged exactly as
+    the runtime judges them. Active or unknown-activation: BLOCKING (the engine
+    refuses every query on the model, so it must not publish). Definitively
+    inactive: a WARNING (dormant — outside every graph, cannot change a number;
+    no writer can activate it until it is repaired)."""
     from app.services.semantic_join_resolver import read_join_contract
 
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
@@ -192,11 +265,21 @@ def invalid_relationship_checks(db: Session, dataset_id: int) -> List[HealthChec
             if c.valid:
                 continue
             name = str(j.get("name") or c.node or i) if isinstance(j, dict) else str(i)
+            if c.dormant:
+                out.append(HealthCheck(
+                    id=f"invalid_relationship:{e.base_view_name}:{name}", layer=LAYER_SEMANTIC,
+                    kind="invalid_relationship_inactive", subject=f"{e.base_view_name} → {name}",
+                    status="warn", blocking=False,
+                    detail="Quan hệ đang TẮT và không hợp lệ (không được dùng khi truy vấn) — sửa hoặc xoá "
+                           "trước khi bật lại: " + "; ".join(c.invalid),
+                    evidence={"reasons": list(c.invalid), "active": False},
+                ))
+                continue
             out.append(HealthCheck(
                 id=f"invalid_relationship:{e.base_view_name}:{name}", layer=LAYER_SEMANTIC,
                 kind="invalid_relationship", subject=f"{e.base_view_name} → {name}", status="fail",
                 blocking=True, detail="Quan hệ không hợp lệ: " + "; ".join(c.invalid),
-                evidence={"reasons": list(c.invalid)},
+                evidence={"reasons": list(c.invalid), "active": c.is_active if c.activation_known else None},
             ))
     return out
 
@@ -287,6 +370,20 @@ def evaluate(db: Session, dataset_id: int, *, execute: bool = True) -> Dict[str,
         + dangling_checks(db, dataset_id)
     )
     snapshot = snapshot_parity_checks(db, dataset_id, execute=execute)
+    # The relationship keys on the PUBLISHED generation itself (what dashboards
+    # read), next to the live-source checks above — each labelled with what it
+    # checked. Informational here: the publish gate checked the candidate.
+    ds_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    published = getattr(ds_obj, "published_generation", None)
+    if published is not None:
+        for c in uniqueness_checks(db, dataset_id, execute=execute, include_primary_keys=False,
+                                   generation=published, generation_label="published_generation"):
+            if c.evidence.get("relation") is None:
+                continue  # not a table this generation holds — the live check above covers it
+            c.layer = LAYER_SNAPSHOT
+            c.id = "published:" + c.id
+            c.blocking = False
+            snapshot.append(c)
     return {
         "dataset_id": dataset_id,
         "layers": {
@@ -299,14 +396,16 @@ def evaluate(db: Session, dataset_id: int, *, execute: bool = True) -> Dict[str,
     }
 
 
-def publish_blockers(db: Session, dataset_id: int) -> List[str]:
-    """Reasons Sync & Publish must refuse: semantic assumptions the data breaks."""
-    # Only the keys relationships rely on — a declared PK on a large fact is not
-    # scanned at publish time. Each check runs under the datasource's own guard
-    # (BigQuery dry-run cost limit, statement timeout); one that cannot run is
-    # `unknown` and does not block. The checks read the live relation the
-    # generation was just built from, moments earlier.
+def publish_blockers(db: Session, dataset_id: int, *, generation: Optional[int] = None) -> List[str]:
+    """Reasons Sync & Publish must refuse: semantic assumptions the data breaks.
+
+    With ``generation`` the keys are checked on THAT generation's snapshot
+    tables — the artifact that becomes visible — not on the live source (which
+    may have changed since the build, or been repaired after a duplicated build
+    that a resumed sync would reuse). Only the keys relationships rely on; one
+    that cannot run is ``unknown`` and does not block (the runtime key guard
+    still refuses an unverifiable trusted join at query time)."""
     checks = invalid_relationship_checks(db, dataset_id) + uniqueness_checks(
-        db, dataset_id, execute=True, include_primary_keys=False,
+        db, dataset_id, execute=True, include_primary_keys=False, generation=generation,
     )
     return [c.detail for c in checks if c.blocking and c.status == "fail"]

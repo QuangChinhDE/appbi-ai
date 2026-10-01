@@ -682,12 +682,16 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             return build_safe_cast_sql(col_sql, "float", dialect)
         return col_sql
 
+    from app.services.chart_contracts import refuse_unapplied_authoritative
+
     for f in normalize_filter_conditions(filters):
+        _parts_before = len(parts)
         field = f.get("field", "")
         op = normalize_filter_operator(f.get("operator"))
         op = {"date_eq": "eq", "date_between": "between"}.get(op, op)
         value = f.get("value")
         if not field:
+            refuse_unapplied_authoritative(f, "no_field")
             continue
         calendar_field = str(f.get("calendarField") or f.get("calendar_field") or "").strip()
         calendar_source_field = str(
@@ -772,6 +776,10 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             raise ValueError(
                 f"Filter không áp được: toán tử '{op}' không được hỗ trợ cho '{field}'."
             )
+        if len(parts) == _parts_before and op not in ("top_n", "bottom_n"):
+            # a branch rendered nothing (incomplete value): an authoritative
+            # constraint is refused, never skipped
+            refuse_unapplied_authoritative(f, "empty_value")
     return " AND ".join(parts)
 
 

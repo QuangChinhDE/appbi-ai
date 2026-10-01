@@ -369,8 +369,10 @@ class JoinDefinition(BaseModel):
     # Phase-3b: edge controls inspired by Power BI's "Manage relationships".
     # Default both fields preserve pre-Phase-3 behaviour so legacy joins keep
     # working without migration: every existing join is active + single-direction.
-    is_active: bool = True
-    cross_filter: Literal["single", "both"] = "single"
+    # None = omitted: a whole-list write keeps the stored relationship's value
+    # (a new relationship takes the defaults true / "single").
+    is_active: Optional[bool] = None
+    cross_filter: Optional[Literal["single", "both"]] = None
     # Provenance written by the server (calendar roles, an auto join the user
     # edited). Declared so a GET → PUT round trip keeps them; the server takes
     # them from the stored row of the same identity anyway.
@@ -451,10 +453,10 @@ class SemanticExploreUpdate(BaseModel):
     joins: Optional[List[JoinDefinition]] = None
     default_filters: Optional[Dict[str, Any]] = None
     description: Optional[str] = None
-    # Optimistic concurrency for the whole-list write: the `updated_at` the
-    # client read. A different stored value → 409 instead of replacing an edit
-    # made in between. Omitted → the PUT replaces the list as sent.
-    expected_updated_at: Optional[datetime] = None
+    # Optimistic concurrency for the whole-list relationship write: the
+    # `joins_version` the client read. REQUIRED when `joins` is sent (428
+    # without it, 409 when the stored list changed since).
+    expected_joins_version: Optional[str] = None
 
 
 class SemanticExplore(SemanticExploreBase):
@@ -462,6 +464,20 @@ class SemanticExplore(SemanticExploreBase):
     model_id: int
     created_at: datetime
     updated_at: datetime
+    # content version of the stored relationship list — quote it as
+    # expected_joins_version when replacing the list
+    joins_version: Optional[str] = None
+
+    @field_validator("joins", mode="after")
+    @classmethod
+    def _read_as_the_runtime_reads(cls, joins):
+        # an omitted is_active / cross_filter is shown as the runtime reads it
+        for j in joins or []:
+            if j.is_active is None:
+                j.is_active = True
+            if j.cross_filter is None:
+                j.cross_filter = "single"
+        return joins
 
     class Config:
         from_attributes = True

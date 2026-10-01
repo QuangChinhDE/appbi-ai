@@ -681,6 +681,8 @@ interface ModelRelationship {
   isActive: boolean;
   crossFilter: 'single' | 'both';
   key: string;
+  /** Reasons the server refuses this stored relationship (empty = valid). */
+  invalidReasons: string[];
 }
 
 interface CalendarLayerBannerProps {
@@ -1115,8 +1117,10 @@ export function DataModelCanvas({
         const { fromColumns, toColumns } = normalizeJoinColumns(j);
         // Phase-3b: default the new fields to legacy-equivalent values when
         // the join JSON predates the schema change.
-        const isActive = j.is_active === undefined ? true : Boolean(j.is_active);
+        // The server sends the relationship AS THE RUNTIME READS IT.
+        const isActive = j.is_active === undefined ? true : j.is_active === true;
         const crossFilter = j.cross_filter === 'both' ? 'both' : 'single';
+        const invalidReasons = j.contract_invalid ?? [];
         return {
           fromViewId:   ex.base_view_id,
           fromViewName: ex.base_view_name,
@@ -1133,6 +1137,7 @@ export function DataModelCanvas({
           toCols:       toColumns,
           origin:       j.origin,
           managed:      Boolean(j.managed),
+          invalidReasons,
           isActive,
           crossFilter,
           key: `${ex.base_view_id}->${j.view}->${j.alias ?? ''}->${fromColumns.join('|')}=>${toColumns.join('|')}`,
@@ -1266,6 +1271,12 @@ export function DataModelCanvas({
   // the selected-relationship header action and the relationships list panel).
   const openEditForRel = (rel: ModelRelationship) => {
     if (rel.origin === 'auto_calendar') return;
+    // An invalid stored relationship is not edited into a reading the dialog
+    // would have to guess (the server refuses it too): delete and redraw.
+    if (rel.invalidReasons.length > 0) {
+      toast.error(t('datasets.dataModel.invalidRelationshipNoEdit', { reasons: rel.invalidReasons.join('; ') }));
+      return;
+    }
     const toView =
       viewByName[rel.presentationViewName]
       ?? allViewsByName[rel.presentationViewName]
@@ -1281,7 +1292,7 @@ export function DataModelCanvas({
       fromColumns: rel.fromCols,
       toColumns: rel.toCols,
       joinType: (rel.joinType as 'left' | 'inner' | 'right' | 'full') ?? 'left',
-      relationship: (rel.relationship as 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many' | undefined) ?? 'many_to_one',
+      relationship: rel.relationship as 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many' | undefined,
       alias: rel.alias ?? null,
       isActive: rel.isActive,
       crossFilter: rel.crossFilter,
@@ -1608,7 +1619,8 @@ export function DataModelCanvas({
         <div className="flex items-center gap-2 shrink-0">
           {/* Phase-3b: edit existing relationship so the user can toggle
               is_active / cross_filter without having to delete + recreate. */}
-          {canDeleteSelectedRelationship && selectedRelationship && selectedRelationship.origin !== 'auto_calendar' && (
+          {canDeleteSelectedRelationship && selectedRelationship && selectedRelationship.origin !== 'auto_calendar'
+            && selectedRelationship.invalidReasons.length === 0 && (
             <button
               onClick={() => openEditForRel(selectedRelationship)}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand
@@ -1940,9 +1952,17 @@ export function DataModelCanvas({
                       {!rel.isActive && (
                         <span className="rounded bg-amber-100 px-1 text-[8px] font-bold uppercase text-amber-700">off</span>
                       )}
+                      {rel.invalidReasons.length > 0 && (
+                        <span
+                          className="rounded bg-red-100 px-1 text-[8px] font-bold uppercase text-red-700"
+                          title={rel.invalidReasons.join('; ')}
+                        >
+                          {t('datasets.dataModel.invalidRelationshipBadge')}
+                        </span>
+                      )}
                       {rel.crossFilter === 'both' && <ArrowLeftRight className="h-3 w-3 text-brand" />}
                       {isCal && <Calendar className="h-3 w-3 text-success" />}
-                      {canEdit && !isCal && (
+                      {canEdit && !isCal && rel.invalidReasons.length === 0 && (
                         <button
                           onClick={(e) => { e.stopPropagation(); openEditForRel(rel); }}
                           className="ml-auto rounded p-0.5 text-text-quaternary opacity-0 transition-opacity hover:bg-surface-1 hover:text-brand group-hover:opacity-100"

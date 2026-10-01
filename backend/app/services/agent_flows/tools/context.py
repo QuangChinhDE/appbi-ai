@@ -726,8 +726,8 @@ def _fetch_chart_data(
     # The chart's page scope — a model-added filter can narrow it, never undo it.
     bounds = ctx.page_scope_by_chart.get(chart_id) if ctx.page_scope_by_chart else None
     if bounds:
-        from app.services.filter_layered_merge import apply_page_scope_bounds
-        merged = apply_page_scope_bounds(merged, bounds)
+        from app.services.filter_layered_merge import apply_page_scope_bounds, mark_authoritative
+        merged = mark_authoritative(apply_page_scope_bounds(merged, bounds))
 
     # The AI-scope exclusion set is part of the cache identity: flipping a
     # column's visibility must not be served a pre-exclusion payload.

@@ -668,7 +668,7 @@ def _validate_generation(db: Session, dataset_id: int, generation: Optional[int]
     # generation keeps serving. A check that could not run does not block.
     from app.services.semantic_health_service import publish_blockers
 
-    blockers = publish_blockers(db, dataset_id)
+    blockers = publish_blockers(db, dataset_id, generation=generation)
     if blockers:
         return False, "Semantic health: " + " | ".join(blockers[:5])
     return True, None

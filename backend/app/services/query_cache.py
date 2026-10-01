@@ -442,6 +442,15 @@ def _get_ds_cache(datasource_id: int) -> TTLCache:
     return _caches[datasource_id]
 
 
+# The semantic contract a cached result was computed under. Bump it whenever a
+# change alters what the SAME query means (relationship contract, key guard,
+# filter authority, engine semantics): every result cached by older code then
+# has a different key and is never served — including from the shared store,
+# which survives restarts and would otherwise serve pre-deploy results for a
+# TTL (or two, through the local re-insert).
+SEMANTIC_RESULT_CACHE_VERSION = "pair1-closure-2026-10"
+
+
 def _make_key(
     table_identifier: str,
     chart_type: str,
@@ -450,6 +459,7 @@ def _make_key(
 ) -> str:
     """Deterministic cache key from query parameters (datasource_id handled by dict key)."""
     payload = {
+        "v": SEMANTIC_RESULT_CACHE_VERSION,
         "tbl": table_identifier,
         "ct": chart_type,
         "rc": _canonicalize_json_value(role_config),

@@ -521,10 +521,16 @@ def suggest_relationships(
                 return v
         return ""
 
+    from app.services.semantic_join_resolver import read_join_contract
+
     out: List[JoinSuggestion] = []
     for j in candidates:
         target_view_name = j.get("view")
         if not target_view_name:
+            continue
+        # only relationships the runtime uses, single-column (a lookup key)
+        _c = read_join_contract(str(j.get("from_view") or src_view_name or ""), j)
+        if not (_c.valid and _c.is_active and len(_c.key_pairs) == 1):
             continue
         target_t = tables_by_id.get(view_to_table_id.get(target_view_name))
         if target_t is None:

@@ -131,6 +131,10 @@ export interface JoinDefinition {
   is_active?: boolean;
   /** Phase-3b: 'both' adds a reverse edge in the resolver. */
   cross_filter?: 'single' | 'both';
+  /** Reasons the relationship contract refuses this stored row (empty = valid). */
+  contract_invalid?: string[];
+  /** Invalid but definitively switched off: outside every query. */
+  contract_dormant?: boolean;
 }
 
 export interface DatasetModelView {
@@ -601,7 +605,9 @@ export function useAddJoin() {
           to_view_id: params.toViewId,
           ...payload,
           join_type: params.joinType ?? 'left',
-          relationship: params.relationship ?? 'many_to_one',
+          // no default: the caller states the cardinality (an omitted one is
+          // refused by the server, never guessed as many_to_one)
+          relationship: params.relationship,
           ...(params.alias ? { alias: params.alias } : {}),
           // Phase-3b extras — server defaults preserve old behaviour if omitted.
           ...(params.isActive !== undefined ? { is_active: params.isActive } : {}),

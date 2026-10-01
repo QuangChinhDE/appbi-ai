@@ -53,6 +53,24 @@ LAYER_LINK_SCOPE = "link_scope"                          # per-link 'limit' allo
 # Layers a viewer can never relax. A hard bound on the same field ANDs with
 # these instead of intersecting-with-fallback (a fallback could widen a lock).
 _AUTHORITATIVE_SOURCES = frozenset({LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED, LAYER_LINK_SCOPE})
+#: Every layer whose entries are server-owned constraints (see
+#: chart_contracts.AUTHORITATIVE_KEY): applied, or the request is refused.
+AUTHORITATIVE_LAYERS = frozenset({
+    LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED, LAYER_PAGE_SCOPE, LAYER_LINK_SCOPE,
+})
+
+
+def mark_authoritative(filters: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Stamp the authoritative marker on every merged entry that came from a
+    server-owned layer, so every later drop site refuses instead of skipping."""
+    from app.services.chart_contracts import AUTHORITATIVE_KEY
+
+    return [
+        {**f, AUTHORITATIVE_KEY: True}
+        if isinstance(f, dict) and (f.get("_layer_source") in AUTHORITATIVE_LAYERS or f.get(HARD_BOUND_KEY))
+        else f
+        for f in filters
+    ]
 
 #: Marker on a merged entry whose field/value must never be shown to a public
 #: viewer or handed to a model that answers one (a 🚫 hidden constraint). The
@@ -140,7 +158,20 @@ def merge_layered_filters(
         )
         for entry in normalized:
             tagged = {**entry, "_layer_source": source}
-            merged[_filter_dedupe_key(entry)] = tagged
+            key = _filter_dedupe_key(entry)
+            prev = merged.get(key)
+            if (source in (LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED) and prev is not None
+                    and prev.get("_layer_source") == source
+                    and _predicate_identity(prev) != _predicate_identity(tagged)):
+                # Two server-owned constraints on ONE field in ONE layer (two
+                # embed claims, a role slot and a static lock): both apply —
+                # AND. Last-wins dropped one, so the result was wider.
+                n = 1
+                while (key, "and", n) in merged:
+                    n += 1
+                merged[(key, "and", n)] = tagged
+                continue
+            merged[key] = tagged
 
     # Apply link_hidden: drop any merged entry whose FIELD matches a
     # hidden marker. After Phase-B' the standard `_filter_dedupe_key`
@@ -155,7 +186,11 @@ def merge_layered_filters(
     if hidden_field_keys:
         survivors: Dict[tuple, Dict[str, Any]] = {}
         for key, entry in merged.items():
-            if _filter_dedupe_key(entry) in hidden_field_keys:
+            # A kill-marker removes a viewer/default filter on its field; it
+            # never removes a server-owned constraint (a lock and a kill on the
+            # same field is contradictory — the constraint stays: fail closed).
+            if (_filter_dedupe_key(entry) in hidden_field_keys
+                    and entry.get("_layer_source") not in (LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED)):
                 if diagnostics is not None:
                     _record_dropped_filter(
                         diagnostics,
@@ -516,9 +551,10 @@ def apply_link_scope_bounds(
             out.append(bounded)
             out_by_key[key] = bounded
             continue
-        if existing.get("_layer_source") in (LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED):
-            # An author lock is not a viewer choice: intersecting-with-fallback
-            # (or replacing a non-list lock) could widen it. AND the scope.
+        if existing.get("_layer_source") in (LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED, LAYER_LINK_SCOPE):
+            # An author lock — or ANOTHER scope on the same field — is not a
+            # viewer choice: intersecting-with-fallback (an empty intersection
+            # fell back to the second allow-list) could widen it. AND the scope.
             bounded = {**scope, "operator": "in", "value": allow, "_layer_source": LAYER_LINK_SCOPE}
             out.append(bounded)
             continue
@@ -699,7 +735,11 @@ def filter_names_only_exposed_fields(entry: Any, allowed: set, bare_allowed: set
 
 
 def without_server_owned_keys(entry: Dict[str, Any]) -> Dict[str, Any]:
-    return {k: v for k, v in entry.items() if k not in SERVER_OWNED_FILTER_KEYS}
+    """A viewer's (or a model's) filter without the keys only the server sets:
+    the calendar column keys and every ``_``-marker (layer source, authority,
+    hard bound, fan id) — a request can neither claim nor shed them."""
+    return {k: v for k, v in entry.items()
+            if k not in SERVER_OWNED_FILTER_KEYS and not str(k).startswith("_")}
 
 
 #: Marker on a HARD bound handed to a distinct-values query: the dropdown's
@@ -728,11 +768,20 @@ def hard_bounds_on_field(
         if dataset_id is not None and f.get("datasetId") not in (None, "") and str(f.get("datasetId")) != str(dataset_id):
             continue
         keys = {str(f.get(k) or "").strip().lower() for k in ("semanticField", "fieldKey", "field")}
+        linked = {str(x or "").strip().lower() for x in (f.get("linkedFields") or []) if isinstance(x, str)}
         if ref and ref in keys:
             # Stamped with the queried dataset: the SQL builder skips a filter
             # whose datasetId is not literally that id (a stored "1" would be
             # dropped silently, and the bound with it).
             out.append({**f, HARD_BOUND_KEY: True, **({"datasetId": dataset_id} if dataset_id is not None else {})})
+        elif ref and ref in linked:
+            # The bound reaches this field as a LINKED field (one control on two
+            # fields): the dropdown's self-strip removes the whole condition, so
+            # it comes back aimed at this field — its values stay inside it.
+            original = next(x for x in f.get("linkedFields") if str(x or "").strip().lower() == ref)
+            out.append({**{k: v for k, v in f.items() if k != "linkedFields"},
+                        "field": original, "semanticField": original, HARD_BOUND_KEY: True,
+                        **({"datasetId": dataset_id} if dataset_id is not None else {})})
     return out
 
 

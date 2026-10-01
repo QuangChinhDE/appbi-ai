@@ -114,12 +114,9 @@ blocking health check `invalid_relationship`) rather than guessed.
 
 ## Non-goals
 
-- Public-link policy (pre-existing, unchanged): a filter — a lock included —
-  on a table with no relationship path to a chart is ignored with a skip
-  badge (Power BI parity), so that chart is not scoped by the lock. Whether a
-  public link should refuse such a tile instead is a product decision outside
-  this pair. This change can newly put a lock in that state only through a
-  legacy `is_active: "false"/0` row (read active before); 0 such rows locally.
+Superseded by the closure round — see `closure.md`: the whole-list PUT now
+requires `expected_joins_version`, authoritative public constraints fail closed,
+dormant invalid relationships no longer refuse the model, publish validates the
+candidate generation, and live key-probe verdicts are never cached.
 
-- A stale whole-list PUT without `expected_updated_at` replaces the list as sent.
 - Probes do not run for EXISTS semi-joins (filter-only joins cannot fan out).

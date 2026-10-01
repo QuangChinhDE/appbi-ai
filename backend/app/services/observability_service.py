@@ -782,12 +782,17 @@ class ObservabilityService:
             for j in e.get("joins") or []:
                 tview = j.get("view")
                 to_tid = view_to_table.get(tview)
-                fcol, tcol = j.get("from_column"), j.get("to_column")
+                from app.services.semantic_join_resolver import read_join_contract
+
+                _c = read_join_contract(str(base or ""), j)  # lineage shows what the runtime reads
+                fcol, tcol = (_c.key_pairs[0] if _c.key_pairs else (j.get("from_column"), j.get("to_column")))
                 if base_tid and to_tid and base_tid != to_tid:
                     joins_out.append({
                         "fromTable": base_tid, "fromColumn": fcol,
                         "toTable": to_tid, "toColumn": tcol,
-                        "relationship": j.get("relationship"),
+                        "relationship": _c.cardinality,
+                        "active": _c.is_active if _c.valid else False,
+                        "invalid": list(_c.invalid),
                     })
                     if fcol:
                         join_key_cols.add((base_tid, fcol))

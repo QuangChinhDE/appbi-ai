@@ -398,3 +398,7 @@ backend/_verify_gate.db
 !backend/tests/test_semantic_router_object_access.py
 !backend/tests/test_relationship_contract.py
 !backend/tests/test_relationship_contract_pg.py
+!backend/tests/test_public_authoritative_bounds.py
+!backend/tests/test_public_authoritative_bounds_pg.py
+!backend/tests/test_publish_candidate_generation.py
+!backend/tests/test_pair1_baseline_parity.py

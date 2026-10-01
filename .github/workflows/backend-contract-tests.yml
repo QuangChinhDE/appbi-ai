@@ -226,6 +226,8 @@ jobs:
             tests/test_semantic_state_contracts.py \
             tests/test_semantic_error_contracts.py \
             tests/test_relationship_contract.py \
+            tests/test_public_authoritative_bounds.py \
+            tests/test_publish_candidate_generation.py \
             tests/test_semantic_health.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
       # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
       #
@@ -419,3 +421,18 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_relationship_contract_pg.py
+
+      # Server-owned public constraints (lock, hidden, page scope, link scope)
+      # are applied or the request is refused — on the real public routes.
+      - name: GATE — public authoritative constraints fail closed (real routes)
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_public_authoritative_bounds_pg.py
+
+      # Old-correct → new-correct: business numbers captured from the
+      # pre-Pair-1 engine (tests/golden_sql/pair1_baseline.json) reproduced
+      # by the current one — engine, snapshot-backed, every route, direct API.
+      - name: GATE — pre-Pair-1 business-number parity
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_pair1_baseline_parity.py

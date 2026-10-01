@@ -278,12 +278,20 @@ def _resolve_related_tables(
         for join in (explore.get("joins") or []):
             if not isinstance(join, dict):
                 continue
-            from_column = str(join.get("from_column") or "").strip()
+            # A lookup is a to-one, single-column relationship the runtime
+            # actually uses — read through the relationship contract (an
+            # invalid, inactive, composite or fanning row is not a lookup).
+            from app.services.semantic_join_resolver import read_join_contract
+
+            contract = read_join_contract(str(explore.get("base_view_name") or ""), join)
+            if not (contract.valid and contract.is_active and len(contract.key_pairs) == 1
+                    and contract.cardinality in ("many_to_one", "one_to_one")):
+                continue
+            from_column, to_column = contract.key_pairs[0]
             if not from_column or from_column not in primary_col_names:
                 continue
             target_view = view_by_name.get(str(join.get("view") or ""))
             target_table_id = target_view.get("dataset_table_id") if isinstance(target_view, dict) else None
-            to_column = str(join.get("to_column") or "").strip()
             if not target_table_id or not to_column:
                 continue
             table_key = f"lookup_{target_table_id}"
@@ -308,7 +316,7 @@ def _resolve_related_tables(
                     "from_column": from_column,
                     "to_table": table_key,
                     "to_column": to_column,
-                    "cardinality": "many_to_one",
+                    "cardinality": contract.cardinality,
                 }
             )
             lookup_tables.append(

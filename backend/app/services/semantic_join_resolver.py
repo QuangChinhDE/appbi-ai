@@ -143,9 +143,8 @@ def canonical_cardinality(raw: str | None) -> str | None:
     (``N:1``, ``many-to-one``…), ``None`` for empty OR unknown input.
 
     Anything that decides whether a join is safe (grain guard) or accepts a
-    relationship from a caller (write paths) must use this — never the lenient
-    :func:`normalize_cardinality`, which turns unknown text into ``many_to_one``
-    and would let an unverified relationship be trusted as non-fanning."""
+    relationship from a caller (write paths) uses this; unknown text never
+    becomes many_to_one."""
     if raw is None:
         return None
     key = str(raw).strip().lower().replace("-", "_")
@@ -154,20 +153,13 @@ def canonical_cardinality(raw: str | None) -> str | None:
     return _CARDINALITY_ALIASES.get(key)
 
 
-def normalize_cardinality(raw: str | None) -> str:
-    """Map any input form (1:N, many-to-one, etc.) to canonical value.
-
-    Falls back to ``many_to_one`` (most common star-schema FK→PK case) so
-    legacy ``joins`` JSON without an explicit cardinality still resolves.
-    """
-    if not raw:
-        return "many_to_one"
-    return _CARDINALITY_ALIASES.get(str(raw).strip().lower().replace("-", "_"), "many_to_one")
-
-
-def invert_cardinality(c: str | None) -> str:
-    """Cardinality of the reverse edge — symmetric for 1:1 and N:M."""
-    return _INVERT_CARDINALITY.get(normalize_cardinality(c), "many_to_one")
+def invert_cardinality(c: str | None) -> str | None:
+    """Cardinality of the reverse edge — symmetric for 1:1 and N:M. STRICT:
+    an unknown value has no inverse (None), never a guessed many_to_one. (The
+    lenient ``normalize_cardinality`` that mapped garbage to many_to_one was
+    removed: every reader goes through ``read_join_contract``.)"""
+    canon = canonical_cardinality(c)
+    return _INVERT_CARDINALITY.get(canon) if canon else None
 
 
 class AmbiguousJoinPathError(ValueError):
@@ -267,10 +259,26 @@ class JoinContract:
     sql_on: str
     invalid: tuple = ()          # reasons this row cannot be used
     legacy: tuple = ()           # canonicalizations applied to a legacy row
+    # False when `is_active` itself is unreadable: the row's activation is then
+    # unknown, and an unknown activation is never treated as "off".
+    activation_known: bool = True
 
     @property
     def valid(self) -> bool:
         return not self.invalid
+
+    @property
+    def dormant(self) -> bool:
+        """Invalid, but DEFINITIVELY inactive (is_active false / "false" / 0):
+        it is not part of any graph and cannot influence a query, so it does
+        not refuse the model's queries — health reports it as repair-needed,
+        and no writer can activate it while it is invalid."""
+        return bool(self.invalid) and self.activation_known and not self.is_active
+
+    @property
+    def blocks_runtime(self) -> bool:
+        """Invalid and possibly active: every query on the model is refused."""
+        return bool(self.invalid) and not self.dormant
 
     @property
     def identity(self) -> tuple:
@@ -363,6 +371,7 @@ def read_join_contract(from_view: str, join) -> JoinContract:
         legacy.append(f"relationship {raw_r!r} → {r}")
 
     # is_active
+    activation_known = True
     raw_a = join.get("is_active")
     if raw_a is None:
         is_active = True
@@ -377,6 +386,7 @@ def read_join_contract(from_view: str, join) -> JoinContract:
         legacy.append(f"is_active {raw_a!r} → {is_active}")
     else:
         is_active = False
+        activation_known = False
         invalid.append(f"is_active {raw_a!r} không phải true/false")
 
     # cross_filter
@@ -449,6 +459,7 @@ def read_join_contract(from_view: str, join) -> JoinContract:
         view=view, alias=alias, node=alias or view, from_view=src, cardinality=cardinality,
         is_active=is_active, cross_filter=cross_filter, key_pairs=tuple(key_pairs),
         key_source=key_source, sql_on=sql_on, invalid=tuple(invalid), legacy=tuple(legacy),
+        activation_known=activation_known,
     )
 
 
@@ -632,10 +643,14 @@ class SemanticJoinResolver:
             self._node_to_view.setdefault(from_view, from_view)
             for join in explore.joins or []:
                 contract = read_join_contract(from_view, join)
+                if contract.dormant:
+                    # Invalid but definitively switched off: not part of the
+                    # graph, cannot reach a query; health flags it.
+                    continue
                 if not contract.valid:
                     # Never used — and never silently: the engine refuses a
-                    # model that carries an invalid relationship (see
-                    # `invalid_joins`), the health check reports it.
+                    # model that carries an invalid, possibly active
+                    # relationship (see `invalid_joins`); health reports it.
                     self.invalid_joins.append({
                         "from_view": contract.from_view,
                         "join": str((join or {}).get("name") or contract.node or "?")
@@ -686,12 +701,19 @@ class SemanticJoinResolver:
         """The runtime edge of a VALID relationship contract. The SQL join type
         is derived (always FACT LEFT JOIN DIM); stored `type` is ignored."""
         first = contract.key_pairs[0] if contract.key_pairs else (None, None)
+        # A row stored as column lists only (no sql_on) gets the condition of its
+        # FULL key: every renderer (engine, live adapter, distinct cascade) used
+        # to fall back to from_column/to_column — the first pair — and joined a
+        # composite key on one column, silently.
+        sql_on = contract.sql_on or " AND ".join(
+            f"${{TABLE}}.{f} = ${{{contract.node}}}.{t}" for f, t in contract.key_pairs
+        )
         return JoinEdge(
             from_node=contract.from_view,
             to_node=contract.node,
             to_view=contract.view,
             type="left",
-            sql_on=contract.sql_on,
+            sql_on=sql_on,
             from_column=first[0],
             to_column=first[1],
             relationship=contract.cardinality,

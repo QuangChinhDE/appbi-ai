@@ -115,8 +115,16 @@ def test_uniqueness_decay_on_the_one_side_fails_blocks_and_stops_publishing(db, 
     assert check["status"] == "fail" and check["blocking"] and check["evidence"]["duplicate_keys"] == 1
     assert r["blocking"] and "customers(id)" in r["blocking"][0]["subject"]
 
-    # The publish gate refuses (after its own coverage checks, stubbed here).
+    # The publish gate refuses (after its own coverage checks, stubbed here). It
+    # judges the CANDIDATE generation's snapshot tables — the artifact that
+    # becomes visible — so the generation's rows are registered (on this sqlite
+    # host they read the same tables).
     import app.services.snapshot_service as snap
+    for tid, ref in ((11, "orders"), (12, "customers")):
+        db.add(DatasetTableSnapshot(dataset_id=1, dataset_table_id=tid, version=7, physical_ref=ref,
+                                    fingerprint="f", row_count=0, status="ready", generation=7,
+                                    host_datasource_id=1, built_at=dt.datetime(2026, 10, 1)))
+    db.commit()
     snap_ok = lambda *_a, **_k: ({11: "x", 12: "y"}, {}, None)  # noqa: E731
     orig = snap.resolve_specific_generation_refs
     snap.resolve_specific_generation_refs = snap_ok

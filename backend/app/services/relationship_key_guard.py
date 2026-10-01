@@ -17,10 +17,18 @@ credentials as the query, before it:
     trusted join is not answered — "unknown" never becomes "unique");
   * no duplicate → the query runs.
 
-Results are cached across workers for the live-query TTL, keyed by the probe
-SQL — which contains the relation (a published snapshot's physical table, or
-the live source SQL), so a new generation or a changed transformation is a
-different probe. Generated calendars are exempt: unique by construction.
+Caching follows what the relation IS:
+
+  * an IMMUTABLE relation — a materialized snapshot table: every build writes a
+    new versioned physical table (`snap_t<id>_…_v<epoch-ms>`), and the only
+    reuse shares a table whose source is unchanged — so a verdict on that
+    physical table holds for its lifetime. It is cached (both verdicts), keyed
+    by the probe SQL, which names the physical table: generation B can never
+    reuse generation A's verdict.
+  * a MUTABLE relation — a live source: never cached, in either direction. A
+    "unique" verdict is only true when it is taken; reusing it after the source
+    gained a duplicate would let the next query fan out and succeed. Every query
+    re-probes, immediately before it runs.
 """
 from __future__ import annotations
 
@@ -132,21 +140,22 @@ def _balanced(text: str) -> bool:
 
 
 def one_side_probe(condition: str, *, one_alias: str, other_alias: str, relation: str,
-                   label: str, view: str) -> dict:
+                   label: str, view: str, immutable: bool = False) -> dict:
     """The probe of the ONE side of a JOIN, grouped by exactly the expressions
     its ON condition compares (casts and expressions included) — or an
     unverifiable probe (sql None) when the condition is not a key equality."""
     key = one_side_key(condition, one_alias, other_alias)
     if key is None:
         return {"key": f"unverifiable::{label}::{one_alias}", "sql": None, "label": label, "view": view,
-                "columns": [], "reason": "điều kiện join không phải phép so sánh bằng giữa khoá hai bảng"}
+                "columns": [], "immutable": immutable,
+                "reason": "điều kiện join không phải phép so sánh bằng giữa khoá hai bảng"}
     exprs, preds = key
     where = " AND ".join([f"({e}) IS NOT NULL" for e in exprs] + [f"({p})" for p in preds])
     sql = (
         f"SELECT 1 AS _appbi_dup FROM {relation} AS {one_alias} WHERE {where} "
         f"GROUP BY {', '.join(exprs)} HAVING COUNT(*) > 1 LIMIT 1"
     )
-    return {"key": sql, "sql": sql, "label": label, "view": view, "columns": exprs}
+    return {"key": sql, "sql": sql, "label": label, "view": view, "columns": exprs, "immutable": immutable}
 
 
 def key_probe_sql(relation: str, columns: list[str]) -> str:
@@ -159,8 +168,38 @@ def key_probe_sql(relation: str, columns: list[str]) -> str:
     )
 
 
-def verify_key_probes(probes: Iterable[dict], *, ds_type: str, config, namespace: str = "") -> None:
-    """Run each probe (cached) and raise ValueError on a duplicate or failure."""
+def statement_key_guard(probes: Iterable[dict]) -> str | None:
+    """The in-statement half of the guard, for MUTABLE (live) relations only.
+
+    ``verify_key_probes`` runs before the query, as a separate statement: a
+    writer that duplicates a one-side key between that probe and the query is
+    not seen by it, and the JOIN fans out. This predicate goes into the WHERE of
+    the very statement that performs the JOIN, so it reads the same snapshot as
+    the JOIN (one statement = one snapshot on PostgreSQL, MySQL/InnoDB and
+    BigQuery). It is TRUE when the key is unique and raises otherwise — the
+    scalar subquery returns two rows ("more than one row returned by a subquery"
+    / "Subquery returns more than 1 row" / "Scalar subquery produced more than
+    one element"), so the request fails instead of answering with fanned-out
+    rows. It never filters: there is no value for which it is FALSE.
+
+    Immutable relations (snapshot tables) need no in-statement half: nothing
+    writes to them. ``None`` when there is nothing to guard."""
+    preds = []
+    for probe in probes or []:
+        sql = probe.get("sql") if isinstance(probe, dict) else None
+        if not sql or probe.get("immutable"):
+            continue
+        preds.append(
+            f"(SELECT _appbi_dup FROM ({sql}) AS _appbi_kpg{len(preds)} UNION ALL SELECT 1) = 1"
+        )
+    return " AND\n  ".join(preds) or None
+
+
+def verify_key_probes(probes: Iterable[dict], *, ds_type: str, config, namespace: str = "",
+                      use_cache: bool = True) -> None:
+    """Run each probe and raise ValueError on a duplicate or failure. Only a
+    probe of an IMMUTABLE relation (``probe["immutable"]``) reads or writes the
+    shared cache; a live relation is probed every time."""
     from app.core.config import settings
     from app.services import query_cache
     from app.services.datasource_service import DataSourceConnectionService
@@ -174,8 +213,9 @@ def verify_key_probes(probes: Iterable[dict], *, ds_type: str, config, namespace
                 f"{probe.get('reason') or 'không dựng được truy vấn kiểm tra'} — truy vấn bị từ chối "
                 "thay vì giả định khoá là duy nhất."
             )
+        cacheable = use_cache and bool(probe.get("immutable"))
         key = "keyprobe::" + hashlib.sha256(f"{namespace}|{ds_type}|{sql}".encode("utf-8")).hexdigest()
-        cached = query_cache.get_shared(key)
+        cached = query_cache.get_shared(key) if cacheable else None
         if cached is not None and "dup" in cached:
             dup = bool(cached["dup"])
         else:
@@ -190,7 +230,8 @@ def verify_key_probes(probes: Iterable[dict], *, ds_type: str, config, namespace
                     f"Chi tiết: {type(exc).__name__}: {str(exc)[:200]}"
                 ) from exc
             dup = bool(rows)
-            query_cache.set_shared(key, {"dup": dup}, ttl)
+            if cacheable:
+                query_cache.set_shared(key, {"dup": dup}, ttl)
         if dup:
             raise ValueError(
                 f"Quan hệ {probe.get('label')} khai báo N:1 nhưng khoá "

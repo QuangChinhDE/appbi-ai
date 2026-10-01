@@ -192,7 +192,8 @@ protected:
     # `guardrail_check.py --health` rather than hidden.
     required_tests: [measure_render, dialect_structural, semantic_state_contracts, filter_matrix,
                      golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity,
-                     relationship_contract, relationship_contract_pg]
+                     relationship_contract, relationship_contract_pg, pair1_baseline_parity,
+                     public_authoritative_bounds]
 
   - id: public_link_security
     label: "Public-link filter merge / access (data-exposure surface)"
@@ -205,7 +206,7 @@ protected:
       Data-exposure surface. Locked/hidden filters must stay enforced (scope
       bound, no leak). The public FE must use publicClient ONLY (no authed
       calls). Verify logged-out.
-    required_tests: [layered_merge, galaxy_golden]
+    required_tests: [layered_merge, galaxy_golden, public_authoritative_bounds, public_authoritative_bounds_pg]
 
   - id: engineering_infrastructure
     label: "The protection system itself (gates, rule base, agent contract, CI)"
@@ -294,7 +295,15 @@ features:
     files: [backend/app/api/public.py, frontend/src/lib/filters.ts]
     keywords: [locked, hidden, "public filter", "scope bound", layered, leak, viewer]
     invariants: [public_client_only, scope_bound_no_leak]
-    required_tests: [layered_merge, galaxy_golden]
+    required_tests: [layered_merge, galaxy_golden, public_authoritative_bounds, public_authoritative_bounds_pg]
+
+  - id: dataset_publish_gate
+    label: "Sync & Publish gate — the candidate generation is the artifact validated"
+    files:
+      - backend/app/services/dataset_publish_service.py
+      - backend/app/services/semantic_health_service.py
+    keywords: [publish, generation, snapshot, "semantic health", candidate, "sync & publish"]
+    required_tests: [publish_candidate_generation, semantic_health]
 
   - id: dashboard_build_render
     label: "Dashboard Builder tile render + filter seeding (FE)"
@@ -572,6 +581,20 @@ tests:
   relationship_contract:
     run: "pytest backend/tests/test_relationship_contract.py"
     locks: "one reader of persisted relationships (read_join_contract) for resolver, grain graph, health, pickers and the model response: every legacy form in tests/fixtures/relationship_legacy_v1.json is SUPPORTED (explicit canonical reading) or INVALID (excluded from the graph, query refused) — unknown/missing cardinality is never many-to-one, 'false' is never active, an invalid cross_filter is never single; reverse edges keep composite keys and calendar CASTs; health reads the resolver's key; PK + relationship commit once or not at all; a 1:N drawing with a PK is refused; an identity-changing edit replaces (and tombstones an auto row); a same-identity edit keeps the stored condition and provenance; delete is alias-aware, never a wildcard; regeneration keeps user edits and never resurrects a removed auto join; the direct API stores only rows the reader accepts and keeps provenance on a round trip; the persisted JSON and the reloaded runtime graph agree after every state transition; the key probe covers every ONE side of the walked cardinality (a chart based on the dimension included, both sides of a 1:1), groups by the expressions the ON condition compares (casts included) and refuses a duplicate or an unverifiable condition; write paths read keys through the contract (composite behind a scalar shorthand, LookML twin rows); the distinct cascade refuses an invalid model; self-join aliases and expression-column agreement in the contract"
+  public_authoritative_bounds:
+    run: "pytest backend/tests/test_public_authoritative_bounds.py"
+    locks: "a server-owned public constraint (link lock / 🚫 hidden, 🔒/🚫 dashboard filter, page scope, link scope, embed claim, workboard role) is applied or the request is refused — never skipped: two constraints on one field AND (no last-wins), a kill-marker never removes a lock, two scopes AND (no fallback widening), the central drop recorder and every engine/live/distinct drop site refuse a marked constraint, calendar rewrites accumulate instead of overwriting, an ordinary filter on an unrelated table keeps its documented soft drop, malformed 🔒/page bounds fail closed (409), the refusal names no field and no value, the result-cache key carries the semantic contract version"
+  public_authoritative_bounds_pg:
+    requires: postgres-fixture
+    run: "pytest backend/tests/test_public_authoritative_bounds_pg.py"
+    locks: "on the real public routes of the seeded fixture: a lock / 🚫 hidden constraint / page bound with no relationship path to the chart is refused (the anonymous viewer used to get the unscoped total), a related lock is applied with the hand-computed value, a dropdown under a lock it cannot apply offers nothing, a malformed 🔒 dashboard filter is 409, an ordinary dashboard filter keeps the documented unfiltered result, and a result cached for the ordinary request is never served for the authoritative one"
+  publish_candidate_generation:
+    run: "pytest backend/tests/test_publish_candidate_generation.py"
+    locks: "Sync & Publish validates the relationship keys of the CANDIDATE generation's snapshot tables on their host (not the live source): a candidate built from duplicated data does not publish even when the live source was repaired, the previously published generation stays pinned, a clean published snapshot stays valid when the live source later decays, mixed-source tables are judged on the host, and every health result says what it checked (live_source / candidate_generation / published_generation + generation)"
+  pair1_baseline_parity:
+    requires: postgres-fixture
+    run: "pytest backend/tests/test_pair1_baseline_parity.py"
+    locks: "old-correct → new-correct: 42 business results captured from the pre-Pair-1 engine (22bac47f) — star, three date roles, inactive-route diamond, galaxy, chasm, bridge, composite, timezone, alias, sibling facts, bidirectional, reverse filter, snapshot-backed; filters, NULL members, grains, sort, Top-N; every fixture chart on the saved, tile, filtered-tile and public routes, and the direct semantic API — are reproduced exactly"
   relationship_contract_pg:
     requires: postgres
     run: "pytest backend/tests/test_relationship_contract_pg.py"
@@ -891,7 +914,7 @@ semantic_contract:
     backend/app/services/semantic_query_engine.py:
       symbols: [SemanticQueryEngine, generate_sql, _render_measure, _build_filter_exists_clause, _render_symmetric_aggregate, _build_isolated_measure_subquery, _build_dimensioned_multifact_sql, _validate_group_grain, _coerce_typed_filter_value, _filter_type_family, _render_dimension_with_time_grain, _filter_targets_measure, _aggregate_predicate, _best_calendar_dim_candidates, _collapse_fanned_calendar_filters, _view_is_generated_calendar, _record_key_probe, key_probes]
     backend/app/services/dataset_model_service.py:
-      symbols: [get_distinct_field_values, _build_distinct_sql, _emit_exists_for_single_path, _build_exists_for_path, _distinct_filter_targets_self, validate_direct_explore_joins, dangling_model_references, lock_dataset_model_for_write, cache_column_names, add_join, remove_join, _remove_replaced_relationship, _tombstone_auto_key_joins]
+      symbols: [get_distinct_field_values, _build_distinct_sql, _emit_exists_for_single_path, _build_exists_for_path, _distinct_filter_targets_self, validate_direct_explore_joins, dangling_model_references, lock_dataset_model_for_write, cache_column_names, add_join, remove_join, _remove_replaced_relationship, _tombstone_auto_key_joins, replace_explore_joins]
     backend/app/services/semantic_join_resolver.py:
       symbols: [SemanticJoinResolver, resolve_path, resolve_paths, resolve_unique_path, distinct_routes, AmbiguousJoinPathError, canonical_cardinality, JoinContract, read_join_contract, join_is_usable, raise_for_invalid_relationships]
     backend/app/services/dataset_calendar_service.py:
@@ -900,8 +923,6 @@ semantic_contract:
       symbols: [build_safe_cast_sql]
     backend/app/services/filter_propagation.py:
       symbols: [resolve_filter_propagation]
-    backend/app/services/chart_contracts.py:
-      symbols: [normalize_filter_conditions, normalize_filter_operator]
     backend/app/services/chart_service.py:
       symbols: [_build_live_relation_for_semantic_view, _render_step_join_condition, _semantic_view_has_field, _wrap_live_sql_relation, _semantic_definition_signature, _build_live_semi_join, _rehydrate_binding_for_modeled_table]
     backend/app/services/chart_semantic_service.py:
@@ -909,9 +930,11 @@ semantic_contract:
     backend/app/services/semantic_query_compiler.py:
       symbols: []   # entry module registered; no pinned symbols yet (add when known)
     backend/app/services/semantic_health_service.py:
-      symbols: [evaluate, uniqueness_checks, publish_blockers, snapshot_parity_checks, invalid_relationship_checks]
+      symbols: [evaluate, uniqueness_checks, publish_blockers, snapshot_parity_checks, invalid_relationship_checks, _relation_for_generation]
     backend/app/services/relationship_key_guard.py:
-      symbols: [key_probe_sql, verify_key_probes, one_side_key, one_side_probe]
+      symbols: [key_probe_sql, verify_key_probes, one_side_key, one_side_probe, statement_key_guard]
+    backend/app/services/chart_contracts.py:
+      symbols: [normalize_filter_conditions, normalize_filter_operator, AuthoritativeFilterNotApplied, refuse_unapplied_authoritative]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. PATCH-LEVEL POLICY — cross-cutting checks in validate_patch / explain_risk.
