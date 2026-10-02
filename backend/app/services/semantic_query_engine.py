@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticExplore, SemanticModel
 from app.services import physical_type_map as _ptm
 from app.services.sql_pattern import pattern_predicate, regex_predicate
+from app.services.semantic_arithmetic import normalize_division, true_division_sql
 from app.services.semantic_join_resolver import (
     AmbiguousJoinPathError, RouteEnumerationIncomplete, SemanticJoinResolver, SemanticRefusal,
     canonical_cardinality, edge_propagates, hop_is_to_one, raise_for_invalid_relationships,
@@ -163,6 +164,9 @@ class SemanticQueryEngine:
         self._snapshot_overrides: Dict[int, str] = {}
         # Phase 3 — per-request compile-time relation cache + drop diagnostics.
         self._relation_sql_cache: Dict[int, Optional[str]] = {}
+        self._relation_source_cache: Dict[int, tuple] = {}
+        self.live_source_ids: Set[int] = set()
+        self.live_source_kinds: Dict[int, Set[str]] = {}
         self._propagation_drops: list = []
         # Calendar materialization — per-request memo of "the generated-calendar
         # table's snapshot ref among _snapshot_overrides" so role-played date-dim
@@ -187,6 +191,11 @@ class SemanticQueryEngine:
         concrete dict so a reused engine instance can never leak a previous
         request's snapshot redirects into this one."""
         self._propagation_drops = []
+        # Datasource ids whose tables this statement reads LIVE (not from a
+        # snapshot ref) — the executor checks they share its connection
+        # (execution_plan.refuse_foreign_live_sources).
+        self.live_source_ids = set()
+        self.live_source_kinds = {}
         return self.generate_sql(
             explore_name=spec.explore_name,
             dimensions=list(spec.dimensions or []),
@@ -266,6 +275,7 @@ class SemanticQueryEngine:
         # rendered per-request from the CURRENT DatasetTable definition in THIS
         # engine's dialect (see _relation_sql_for_view), memoised per table id.
         self._relation_sql_cache = {}
+        self._relation_source_cache = {}
         # Dashboard perf #5 — snapshot redirect. {dataset_table_id -> physical_ref}.
         # When a view's table has a fresh materialized snapshot, the FROM clause
         # reads the flat snapshot instead of re-running its heavy source SQL.
@@ -524,21 +534,12 @@ class SemanticQueryEngine:
                             _reanchored=True,
                             snapshot_overrides=self._snapshot_overrides,
                         )
-                elif (
-                    _is_cross_table
-                    and _grp_unrelated == _grp_views
-                    and all(self._is_scalar_isolatable_measure(mm) for mm in measures)
-                ):
-                    # EVERY group dim is UNRELATED to the measure's source fact
-                    # (chasm). PowerBI leaves the measure UNFILTERED by an
-                    # unrelated dim → its total repeats per group. Reproduce that
-                    # by ISOLATING the measure (uncorrelated aggregate over its
-                    # own table) while the base supplies the dim — NO legacy
-                    # fan-out. Falls through to the normal build below.
-                    self._isolated_measure_views = {_m_view}
-                    self._isolation_active = True
-                    self._plan_note(strategy="isolate")
                 else:
+                    # (A cross-table measure grouped ONLY by dims unrelated to its
+                    # source fact used to be isolated here — its grand total
+                    # repeated per group — while the same aggregate declared on its
+                    # own view is refused: one quantity, two answers. The kernel
+                    # contract is the refusal, for both — foundation freeze.)
                     # MIXED (some related + some unrelated dims), or a non-scalar
                     # measure with an unrelated dim, or a non-cross-table measure
                     # that can't re-anchor onto an unrelated dim. The legacy
@@ -723,9 +724,29 @@ class SemanticQueryEngine:
             if not mdef:
                 continue
             if str(mdef.get("scope") or "view") == "dataset":
+                _grain = self._measure_fact_view(m)
+                _grain_m1 = None
                 for entry in mdef.get("source_columns") or []:
                     sv = str(entry.get("view") or "").strip() if isinstance(entry, dict) else ""
                     if sv:
+                        if sv != _grain:
+                            # A row-level column of ANOTHER view is safe only when
+                            # every row the measure aggregates (its grain) has at
+                            # most ONE row of that view: many-to-one reachable.
+                            # A one-to-many child joined in would multiply the
+                            # grain's rows — THIS measure's and every other
+                            # measure's of the statement (SUM(fee) × items).
+                            if _grain_m1 is None:
+                                _grain_m1 = self._m1_reachable_views(_grain)
+                            if sv not in _grain_m1:
+                                raise SemanticRefusal(
+                                    f"Measure '{m}' đọc cột của '{sv}', bảng không đi được theo quan hệ "
+                                    f"nhiều-một từ '{_grain}' (grain của measure): JOIN bảng đó sẽ nhân "
+                                    "dòng — measure này và mọi measure khác trong truy vấn ra số sai. "
+                                    "Đặt measure trên bảng chi tiết (nhiều) hoặc tổng hợp riêng rồi "
+                                    "dùng measure công thức trên cùng một view.",
+                                    SemanticRefusal.FANOUT_RISK,
+                                )
                         measure_source_views.add(sv)
             # cross-view depends_on measures → JOIN their views
             for dep in mdef.get("depends_on") or []:
@@ -1964,6 +1985,17 @@ class SemanticQueryEngine:
                 depends_on,
                 stack,
             )
+        if expression_template and depends_on:
+            # A formula is a value over ALREADY-aggregated measures: another
+            # aggregation of it would aggregate the formula TEXT as a row
+            # expression (its `${measure}` refs read as columns) — never the
+            # formula's number. Refused, not reinterpreted.
+            raise SemanticRefusal(
+                f"Measure '{measure_def.get('name', '?')}' là measure công thức (trên các measure "
+                f"đã tổng hợp) — không thể tổng hợp lại bằng '{override_type}'. Dùng tổng hợp mặc "
+                "định (auto) của measure.",
+                SemanticRefusal.UNSUPPORTED_CONTEXT,
+            )
 
         # `expression` (advanced) wins over `sql` (form). Both are SQL templates.
         # Phase-15.29: for non-count measures, both empty is now caught at
@@ -2100,7 +2132,7 @@ class SemanticQueryEngine:
         elif measure_type == "sum":
             agg_sql = f"SUM({base_sql})"
         elif measure_type == "avg":
-            agg_sql = f"AVG({base_sql})"
+            agg_sql = self._avg_sql(base_sql)
         elif measure_type == "min":
             agg_sql = f"MIN({base_sql})"
         elif measure_type == "max":
@@ -2110,8 +2142,11 @@ class SemanticQueryEngine:
         elif measure_type == "percent_of_total":
             # Phase-1: built-in % of grand total via window aggregate over
             # the inner aggregate. Already self-contained; context_modifiers
-            # are skipped to avoid double-wrapping.
-            return f"SUM({base_sql}) / SUM(SUM({base_sql})) OVER () * 100"
+            # are skipped to avoid double-wrapping. True division, NULL on a
+            # zero total, on every engine (semantic_arithmetic).
+            return true_division_sql(
+                f"SUM({base_sql})", f"SUM(SUM({base_sql})) OVER ()", self.database_type,
+            ) + " * 100"
         else:
             agg_sql = f"SUM({base_sql})"  # Default fallback
 
@@ -2232,6 +2267,16 @@ class SemanticQueryEngine:
                 else:
                     for _d in (f_def if isinstance(f_def, list) else [f_def]):
                         self._refuse_unapplied_authoritative(_d, "unreachable_view")
+                    # the declared soft drop (PowerBI parity: a filter on a view this
+                    # measure's fact has no relationship to does not filter it) — a
+                    # structured record, as every other engine drop, never free text only
+                    self._propagation_drops = list(getattr(self, "_propagation_drops", None) or []) + [{
+                        "field": f_ref,
+                        "reason": "unreachable_view",
+                        "detail": (f"Filter view {f_view!r} has no relationship path to the measure "
+                                   f"{field_ref!r} (evaluated at its own grain, {view_name!r}); "
+                                   "ignored for that measure."),
+                    }]
                     self.warnings.append(
                         f"Filter '{f_ref}' không liên quan tới measure '{field_ref}' "
                         f"(bảng '{view_name}') — bỏ qua để tránh số sai âm thầm."
@@ -3032,7 +3077,9 @@ class SemanticQueryEngine:
             allowed_refs.add(dep)
             allowed_refs.add(dep if "." in dep else f"{view_name}.{dep}")
 
-        rendered = template.replace("${TABLE}", view_name)
+        # `${a} / ${b}` is true division on every engine (semantic_arithmetic):
+        # rewritten on the formula text, before the measures are substituted.
+        rendered = normalize_division(template, self.database_type).replace("${TABLE}", view_name)
         placeholder_pattern = r"\$\{([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\}"
 
         def replace_placeholder(match):
@@ -3050,6 +3097,20 @@ class SemanticQueryEngine:
                 if ref not in allowed_refs and qualified not in allowed_refs:
                     raise ValueError(
                         f"Measure formula references '{ref}' but it is not listed in depends_on"
+                    )
+                if ref_view_name != view_name:
+                    # Inlined here, a measure of ANOTHER view aggregates over this
+                    # view's joined rows — a dimension's rows repeated per fact row,
+                    # another fact's rows multiplied — never the number the same
+                    # measure has on its own (each measure is evaluated at its own
+                    # grain). Refused rather than answered at the wrong grain.
+                    raise SemanticRefusal(
+                        f"Measure công thức trên '{view_name}' dùng measure '{qualified}' của view khác. "
+                        "Trong một công thức, measure đó sẽ bị tính trên các dòng của "
+                        f"'{view_name}' (lặp hoặc thiếu dòng) chứ không ở grain của chính nó, nên "
+                        "kết quả sai. Đặt các measure cùng một view trong công thức, hoặc đưa hai "
+                        "measure vào biểu đồ riêng rẽ.",
+                        SemanticRefusal.UNSUPPORTED_CONTEXT,
                     )
                 return f"({self._render_measure(qualified, _stack=stack)})"
 
@@ -3289,6 +3350,15 @@ class SemanticQueryEngine:
         if _pivot_override and _pivot_override not in _KNOWN_AGGS:
             _pivot_override = ""
         measure_type = _pivot_override or stored_pivot_type
+        if measure_def.get('depends_on') and (measure_def.get('expression') or "").strip():
+            # A formula over aggregated measures has no per-cell CASE form: its
+            # text would be aggregated as a row expression — refused, never a
+            # different number (the same rule as an explicit agg on a formula).
+            raise SemanticRefusal(
+                f"Measure '{field_name}' là measure công thức — không thể đặt vào cột pivot. "
+                "Bỏ pivot hoặc dùng các measure gốc.",
+                SemanticRefusal.UNSUPPORTED_CONTEXT,
+            )
         sql_template = measure_def.get('expression') or measure_def.get('sql') or '*'
         # Phase-15.81 v9 — same bare-identifier guard as `_render_measure`.
         if (
@@ -3329,7 +3399,7 @@ class SemanticQueryEngine:
             # the mean toward zero (the column's avg for the pivot value, not
             # "avg including a 0 for every other row").
             case_expr = f"CASE WHEN {pivot_pred} THEN {base_sql} ELSE NULL END"
-            return f"AVG({case_expr})"
+            return self._avg_sql(case_expr)
         elif measure_type == "count":
             # COUNT = SUM of 1s for matching rows.
             case_expr = f"CASE WHEN {pivot_pred} THEN 1 ELSE 0 END"
@@ -3395,7 +3465,7 @@ class SemanticQueryEngine:
                 raise ValueError("running_avg requires base_measure")
             measure_sql = self._render_measure(base_measure)
             frame = "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW" if order_by else ""
-            return f"AVG({measure_sql}) OVER ({over_clause} {frame})"
+            return f"{self._avg_sql(measure_sql)} OVER ({over_clause} {frame})"
         
         elif wf_type == "rank":
             return f"RANK() OVER ({over_clause})"
@@ -3409,8 +3479,16 @@ class SemanticQueryEngine:
         else:
             raise ValueError(f"Unsupported window function type: {wf_type}")
     
+    def _avg_sql(self, expr: str) -> str:
+        """AVG with the same precision on every engine: MySQL's AVG of an
+        integer is a DECIMAL with 4 extra digits (an average of 0/1 flags of
+        1 in 30000 is 0.0000), so it averages a DOUBLE there."""
+        if (self.database_type or "").lower() == "mysql":
+            return f"AVG(({expr}) * 1e0)"
+        return f"AVG({expr})"
+
     def _render_calculated_field(
-        self, 
+        self,
         cf_def: Dict[str, Any],
         dimensions: List[str],
         measures: List[str]
@@ -3420,7 +3498,8 @@ class SemanticQueryEngine:
         
         # Validate safety
         self._validate_calculated_field_safety(sql_template)
-        
+        sql_template = normalize_division(sql_template, self.database_type)
+
         # Find all ${view.field} references
         pattern = r'\$\{([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)\}'
         matches = re.findall(pattern, sql_template)
@@ -3620,8 +3699,10 @@ class SemanticQueryEngine:
                     return rendered_cal
             return getattr(view, "sql_table_name", None)
         if tid in self._relation_sql_cache:
+            self._record_live_source(*(self._relation_source_cache.get(tid) or (None, None)))
             return self._relation_sql_cache[tid]
         rendered = None
+        source_id, source_kind = None, None
         try:
             from app.models.dataset import Dataset, DatasetTable
             from app.models.models import DataSource
@@ -3634,6 +3715,8 @@ class SemanticQueryEngine:
                     self.db.query(DataSource).filter(DataSource.id == t.datasource_id).first()
                     if t.datasource_id else None
                 )
+                source_id = self._live_source_of_table(ds_obj, t)
+                source_kind = str(getattr(t, "source_kind", "") or "").lower() or None
                 if ds_obj is not None:
                     rendered = _sql_table_for_table(
                         ds_obj, t,
@@ -3645,7 +3728,36 @@ class SemanticQueryEngine:
                          getattr(view, "name", "?"), exc_info=True)
         out = rendered or getattr(view, "sql_table_name", None)
         self._relation_sql_cache[tid] = out
+        self._relation_source_cache[tid] = (source_id, source_kind)
+        self._record_live_source(source_id, source_kind)
         return out
+
+    def _record_live_source(self, source_id, source_kind) -> None:
+        """This statement reads a table of datasource ``source_id`` LIVE."""
+        if source_id:
+            self.live_source_ids.add(source_id)
+            self.live_source_kinds.setdefault(source_id, set()).add(source_kind or "unknown")
+
+    def _live_source_of_table(self, ds_obj, t) -> Optional[int]:
+        """The datasource whose connection a LIVE read of table ``t`` needs: its
+        own; a calculated (derived) table's dependencies' (one datasource — the
+        derived resolver enforces it); none for the generated calendar (inline
+        SQL, no source table)."""
+        from app.services.dataset_calendar_service import is_generated_calendar_table
+        from app.services.dataset_table_sql_service import (
+            build_dataset_table_live_query,
+            is_derived_table,
+        )
+
+        if is_generated_calendar_table(t):
+            return None
+        if is_derived_table(t) and ds_obj is not None:
+            try:
+                resolved, _sql = build_dataset_table_live_query(self.db, ds_obj, t)
+                return getattr(resolved, "id", None)
+            except Exception:  # noqa: BLE001 — unresolvable: the render fails loud on its own
+                return None
+        return getattr(t, "datasource_id", None)
 
     def _build_from_clause(
         self,
@@ -4577,23 +4689,15 @@ class SemanticQueryEngine:
                 # is invalid SQL (Postgres: `operator does not exist: date ~~
                 # text`) and previously 500'd the chart. The FE gates operators
                 # by type; this only trips on a legacy saved filter or an API
-                # caller. Soft-drop it (visible in dropped_filters) rather than
-                # emit SQL the warehouse rejects.
+                # caller. An unsupported operator is a HARD reason (chart_contracts):
+                # refused (400), never answered without the filter — the same as an
+                # operator any other builder cannot render.
                 if self._field_rejects_pattern_operator(field_ref):
                     self._refuse_unapplied_authoritative(filter_def, "unsupported_operator")
-                    propagation_drops.append({
-                        "field": field_ref,
-                        "reason": "unsupported_operator",
-                        "detail": (
-                            f"Toán tử {operator!r} (dạng văn bản) không dùng được "
-                            f"trên cột {field_ref!r} kiểu ngày/số — filter bị bỏ qua."
-                        ),
-                    })
-                    self.warnings.append(
-                        f"Filter ignored — {field_ref}: operator {operator!r} is not "
-                        f"valid on a date/numeric column."
+                    raise ValueError(
+                        f"Toán tử {operator!r} (dạng văn bản) không dùng được trên cột "
+                        f"{field_ref!r} kiểu ngày/số — sửa filter (đổi toán tử hoặc cột)."
                     )
-                    continue
                 # One shape per dialect (app/services/sql_pattern): BigQuery has
                 # no LIKE … ESCAPE, so it gets STRPOS / STARTS_WITH / ENDS_WITH.
                 conditions.append(pattern_predicate(
@@ -5660,8 +5764,12 @@ class SemanticQueryEngine:
         Phase-5: time macros let the SAME measure expression work across
         DuckDB / PostgreSQL / BigQuery / MySQL — instead of forcing the
         user to rewrite `date_trunc('month', CURRENT_DATE)` per dialect.
+
+        Division in the author's text is TRUE division with a NULL zero
+        denominator on every engine (semantic_arithmetic) — rewritten here,
+        before any placeholder is substituted.
         """
-        rendered = template.replace("${TABLE}", view_alias)
+        rendered = normalize_division(template, self.database_type).replace("${TABLE}", view_alias)
         rendered = self._render_time_macros(rendered)
 
         dotted_pattern = r"\$\{([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\}"

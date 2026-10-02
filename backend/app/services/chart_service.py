@@ -1315,12 +1315,17 @@ def _render_live_semantic_field_sql(
     field_def: dict,
     field_name: str,
     table_alias: str,
+    dialect: str | None = None,
 ) -> str | None:
     sql_template = str(field_def.get("sql") or field_name).strip()
     if not sql_template or sql_template == "*":
         return None
     if "${TABLE}" in sql_template:
-        return sql_template.replace("${TABLE}", table_alias)
+        # the same division as the engine's (true division, NULL on /0) — a
+        # filter on a dividing dimension means one thing on both paths
+        from app.services.semantic_arithmetic import normalize_division
+
+        return normalize_division(sql_template, dialect or "").replace("${TABLE}", table_alias)
     if _SIMPLE_SQL_IDENTIFIER_RE.fullmatch(sql_template):
         return f"{table_alias}.{sql_template}"
     return None
@@ -1347,17 +1352,34 @@ def _build_live_relation_for_semantic_view(
             if dataset_obj is None:
                 return None
             try:
-                _, live_proxy_table = build_live_proxy_table_for_dataset_table(
+                _proxy_ds, live_proxy_table = build_live_proxy_table_for_dataset_table(
                     db,
                     dataset_obj,
                     joined_table,
                 )
-                return getattr(live_proxy_table, "source_query", None)
             except DatasetTableSqlError:
                 pass
+            else:
+                if (is_derived_table(joined_table) and _proxy_ds is not None
+                        and getattr(_proxy_ds, "id", None) != getattr(datasource, "id", None)):
+                    # a calculated table reads its dependencies' datasource (the
+                    # generated calendar reads none — inline SQL)
+                    from app.services.execution_plan import refuse_foreign_live_sources
+
+                    refuse_foreign_live_sources(db, {_proxy_ds.id}, datasource,
+                                                {_proxy_ds.id: {str(joined_table.source_kind or "").lower()}})
+                return getattr(live_proxy_table, "source_query", None)
         else:
             joined_datasource = db.query(DataSource).filter(DataSource.id == joined_table.datasource_id).first()
-            if joined_datasource and joined_datasource.id == datasource.id:
+            if joined_datasource and joined_datasource.id != datasource.id:
+                # One live statement reads one connection: another datasource's
+                # table (and the stored relation below) is refused unless it is
+                # the same physical table on this connection (execution_plan).
+                from app.services.execution_plan import refuse_foreign_live_sources
+
+                refuse_foreign_live_sources(db, {joined_datasource.id}, datasource,
+                                            {joined_datasource.id: {str(joined_table.source_kind or "").lower()}})
+            if joined_datasource:
                 try:
                     # Specialty: semantic view definition is shared across
                     # consumers, so it must NOT bake in this dataset's casts.
@@ -1635,7 +1657,7 @@ def _build_live_semi_join(
     projections: list[str] = []
     preds: list[str] = []
     for i, (field_def, semantic_name, filt) in enumerate(items):
-        field_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias)
+        field_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias, dialect)
         if not field_expr:
             raise _refuse(f"không dựng được biểu thức của field '{semantic_name}'")
         value_col = f"__sem_semi_value_{i}"
@@ -2025,7 +2047,12 @@ def _adapt_live_sql_for_semantic_filters(
                 group["items"].append((field_def, semantic_name, filt))
             continue
 
-        rendered_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias)
+        from app.services.live_query_service import _dialect_for_ds_type as _live_dialect
+
+        rendered_expr = _render_live_semantic_field_sql(
+            field_def, semantic_name, last_alias,
+            _live_dialect(datasource.type if isinstance(datasource.type, str) else datasource.type.value),
+        )
         if not rendered_expr:
             _refuse_unrenderable_live_filter(filt, "field_not_renderable")
 
@@ -3026,10 +3053,14 @@ def _execute_semantic_chart_runtime(
     # calendarField / calendarSourceField change the predicate the engine
     # renders (a month=1 and a quarter=1 rewrite on the same date column are
     # different queries) — they are part of the identity, as on the live path.
+    # `_calendar_fan` too: copies of ONE fanned Date filter collapse onto the main
+    # calendar, while look-alike role filters are AND-ed — different queries
+    # (the id is a deterministic hash of the fanned filter).
     cache_filters = [
         {"field": field, "operator": cond.get("operator"), "value": cond.get("value"),
          **({"calendarField": cond["calendarField"]} if cond.get("calendarField") else {}),
-         **({"calendarSourceField": cond["calendarSourceField"]} if cond.get("calendarSourceField") else {})}
+         **({"calendarSourceField": cond["calendarSourceField"]} if cond.get("calendarSourceField") else {}),
+         **({"_calendar_fan": cond["_calendar_fan"]} if cond.get("_calendar_fan") else {})}
         for field, conds in sorted(engine_filters.items())
         for cond in (conds if isinstance(conds, list) else [conds])
         if isinstance(cond, dict)
@@ -3072,7 +3103,17 @@ def _execute_semantic_chart_runtime(
             # `filter_diagnostics` before returning.
             try:
                 cached_debug = dict(cached.get("_debug") or {})
-                cached_debug["dropped_filters"] = list(filter_diagnostics)
+                # this request's pre-engine drops + the engine's own drops of the
+                # cached computation (deterministic for the key) — never lost on a hit
+                _hit_drops = list(filter_diagnostics)
+                _hit_seen = {(str(d.get("field") or d.get("semantic_field") or ""), str(d.get("reason") or ""))
+                             for d in _hit_drops if isinstance(d, dict)}
+                for _d in cached_debug.get("engine_dropped_filters") or []:
+                    _k = (str(_d.get("field") or _d.get("semantic_field") or ""), str(_d.get("reason") or ""))
+                    if isinstance(_d, dict) and _k not in _hit_seen:
+                        _hit_seen.add(_k)
+                        _hit_drops.append(dict(_d))
+                cached_debug["dropped_filters"] = _hit_drops
                 # snapshot_stale is time-dependent (age vs the per-request TTL),
                 # so it must reflect THIS request, not the value baked in when the
                 # slot was cached — else the "refreshing…" hint is wrong on a hit.
@@ -3193,6 +3234,12 @@ def _execute_semantic_chart_runtime(
         # Execution credential: snapshot-backed queries read the SA-only snapshot
         # dataset → run on the service-account config; else the datasource's own cred.
         _exec_config = _snap_exec_config if _snap_exec_config is not None else datasource.config
+        if _snap_exec_config is None:
+            # A live statement runs on ONE connection: every table it reads must be
+            # readable there as the same physical table (execution_plan).
+            from app.services.execution_plan import refuse_foreign_live_sources
+
+            refuse_foreign_live_sources(db, engine.live_source_ids, datasource, engine.live_source_kinds)
 
         # ── DB connection release (QueuePool exhaustion fix) ─────────────────────
         # The warehouse query below can run up to 60s. The request's ORM Session has
@@ -3314,6 +3361,9 @@ def _execute_semantic_chart_runtime(
                         "Dataset để dựng lại snapshot."
                     ) from exc
                 _exec_config = datasource.config
+                from app.services.execution_plan import refuse_foreign_live_sources
+
+                refuse_foreign_live_sources(db, engine.live_source_ids, datasource, engine.live_source_kinds)
                 _snap_overrides = {}
                 _snap_mode = "live"
                 _snap_stale = False
@@ -3528,6 +3578,10 @@ def _execute_semantic_chart_runtime(
                 # banner this so users discover when a slicer they applied
                 # didn't reach this chart.
                 "dropped_filters": list(filter_diagnostics),
+                # The ENGINE's own drops (single-direction gate, no_join_path, an
+                # isolated measure's unreachable filter) — part of THIS cached
+                # result (same key = same query = same drops), re-merged on a hit.
+                "engine_dropped_filters": [dict(d) for d in _engine_drops if isinstance(d, dict)],
             },
         }
 

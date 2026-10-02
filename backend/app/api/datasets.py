@@ -1266,14 +1266,15 @@ def _execute_semantic_dataset_query(
         "neq": "ne",
         "startswith": "starts_with",
     }
-    filters = {
-        qualify(item.field): {
-            "operator": _OP_ALIAS.get(item.operator, item.operator),
-            "value": item.value,
-        }
-        for item in (execute_request.filters or [])
-        if item.field
-    }
+    # Several predicates on ONE field (amount >= 10 AND amount <= 100) are a list
+    # the engine AND-s — a dict keyed by field kept only the last, silently.
+    filters: dict[str, list] = {}
+    for item in (execute_request.filters or []):
+        if item.field:
+            filters.setdefault(qualify(item.field), []).append({
+                "operator": _OP_ALIAS.get(item.operator, item.operator),
+                "value": item.value,
+            })
     sorts = [
         {
             "field": qualify(item.field),
@@ -1354,13 +1355,20 @@ def _execute_semantic_dataset_query(
         model_id=model.id,
         explore_id=explore.id,
     )
+    from app.services.chart_service import REFUSAL_HEADER, refusal_category
+    from app.services.execution_plan import refuse_foreign_live_sources
+
     try:
         sql, _columns, _pivot_metadata = engine.run(_spec)
+        refuse_foreign_live_sources(db, engine.live_source_ids, datasource, engine.live_source_kinds)
     except ValueError as exc:
         # ValueError = expected semantic engine domain errors (unreachable
         # view, missing field, circular dependency, ambiguous path). Phase
-        # 11 ensures these carry Vietnamese-friendly messages.
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # 11 ensures these carry Vietnamese-friendly messages; a semantic
+        # refusal keeps its category in the header (as /charts/{id}/data).
+        _cat = refusal_category(exc)
+        raise HTTPException(status_code=400, detail=str(exc),
+                            headers={REFUSAL_HEADER: _cat} if _cat else None) from exc
     except Exception as exc:
         logger.exception(
             "Semantic SQL generation failed for dataset=%s table=%s explore=%s",
@@ -1382,7 +1390,9 @@ def _execute_semantic_dataset_query(
         verify_key_probes(engine.key_probes, ds_type=ds_type, config=datasource.config,
                           namespace=f"ds:{getattr(datasource, 'id', '')}")
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _cat = refusal_category(exc)
+        raise HTTPException(status_code=400, detail=str(exc),
+                            headers={REFUSAL_HEADER: _cat} if _cat else None) from exc
     try:
         _cols, rows, _elapsed = DataSourceConnectionService.execute_query(
             ds_type,
@@ -1427,7 +1437,10 @@ def _execute_semantic_dataset_query(
         )
         for idx, col in enumerate(columns)
     ]
-    return ExecuteQueryResponse(columns=column_metadata, rows=rows)
+    return ExecuteQueryResponse(
+        columns=column_metadata, rows=rows,
+        dropped_filters=[dict(d) for d in (getattr(engine, "_propagation_drops", None) or []) if isinstance(d, dict)],
+    )
 
 
 def _stamp_dataset_catalog_fields(items: list[Dataset]) -> None:
@@ -5604,13 +5617,19 @@ def dry_run_dataset_view_measure(
             model_id=model.id,
             explore_id=explore.id,
         )
+        from app.services.chart_service import refusal_category
+        from app.services.execution_plan import refuse_foreign_live_sources
+
         try:
             sql, _columns, _pivot = engine.run(spec)
+            refuse_foreign_live_sources(db, engine.live_source_ids, datasource, engine.live_source_kinds)
         except ValueError as exc:
             # Expected engine domain error — carries a VN-friendly message
             # (missing field, dialect-incompatible expression, ambiguous path,
             # double-aggregation, …). Caught at SQL-GEN time (before the DB).
-            return {"ok": False, "error": str(exc), "compiled_sql": None}
+            # A semantic refusal keeps its category (as the chart runtime).
+            return {"ok": False, "error": str(exc), "compiled_sql": None,
+                    "category": refusal_category(exc)}
         except Exception as exc:  # pragma: no cover — unexpected compile crash
             logger.exception(
                 "Measure dry-run compile crashed: dataset=%s view=%s measure=%s",
@@ -5636,7 +5655,7 @@ def dry_run_dataset_view_measure(
             verify_key_probes(engine.key_probes, ds_type=ds_type, config=datasource.config,
                               namespace=f"ds:{getattr(datasource, 'id', '')}")
         except ValueError as exc:
-            return {"ok": False, "error": str(exc), "compiled_sql": sql}
+            return {"ok": False, "error": str(exc), "compiled_sql": sql, "category": refusal_category(exc)}
         try:
             # limit=1 (not 0): some dialect executors treat 0 as falsy → "no
             # limit" (full scan). limit=1 is what /datasources/validate-sql
@@ -5786,10 +5805,15 @@ def preview_dataset_view_measure(
             model_id=model.id,
             explore_id=explore.id,
         )
+        from app.services.chart_service import refusal_category
+        from app.services.execution_plan import refuse_foreign_live_sources
+
         try:
             sql, _columns, _pivot = engine.run(spec)
+            refuse_foreign_live_sources(db, engine.live_source_ids, datasource, engine.live_source_kinds)
         except ValueError as exc:
-            return {"ok": False, "error": str(exc), "rows": []}
+            # a semantic refusal keeps its category (as the chart runtime)
+            return {"ok": False, "error": str(exc), "rows": [], "category": refusal_category(exc)}
 
         from app.services.relationship_key_guard import verify_key_probes
 
@@ -5797,7 +5821,7 @@ def preview_dataset_view_measure(
             verify_key_probes(engine.key_probes, ds_type=ds_type, config=datasource.config,
                               namespace=f"ds:{getattr(datasource, 'id', '')}")
         except ValueError as exc:
-            return {"ok": False, "error": str(exc), "rows": []}
+            return {"ok": False, "error": str(exc), "rows": [], "category": refusal_category(exc)}
         try:
             _cols, rows, _ms = DataSourceConnectionService.execute_query(
                 ds_type, datasource.config, sql, limit=100, timeout_seconds=15,

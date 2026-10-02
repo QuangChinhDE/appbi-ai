@@ -889,6 +889,12 @@ def execute_semantic_query(
             data_source.type if isinstance(data_source.type, str)
             else data_source.type.value
         )
+        # One live statement runs on ONE connection (execution_plan) — checked
+        # before the key probes, as on every executor: a probe of another
+        # connection's table through this one would refuse for the wrong reason.
+        from app.services.execution_plan import refuse_foreign_live_sources
+
+        refuse_foreign_live_sources(db, engine.live_source_ids, data_source, engine.live_source_kinds)
         # Trusted to-one JOINs verified on the same datasource first.
         from app.services.relationship_key_guard import verify_key_probes
 
@@ -909,7 +915,9 @@ def execute_semantic_query(
             row_count=len(data),
             execution_time_ms=exec_time,
             pivoted_columns=pivot_metadata,
-            warnings=engine.warnings
+            warnings=engine.warnings,
+            dropped_filters=[dict(d) for d in (getattr(engine, "_propagation_drops", None) or [])
+                             if isinstance(d, dict)],
         )
 
     except HTTPException:
@@ -920,7 +928,12 @@ def execute_semantic_query(
     except ValueError as e:
         # Phase-11 friendly VN message for unreachable views / missing
         # fields. Keep the engine's text; surface dialect for debug ease.
-        raise HTTPException(status_code=400, detail=str(e))
+        # A semantic refusal keeps its category in the header (as /charts).
+        from app.services.chart_service import REFUSAL_HEADER, refusal_category
+
+        _cat = refusal_category(e)
+        raise HTTPException(status_code=400, detail=str(e),
+                            headers={REFUSAL_HEADER: _cat} if _cat else None)
     except Exception as e:
         # Log full stack — DA was hitting "Query execution failed: ..."
         # generic 500s with no debugging info. Include explore name +

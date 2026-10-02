@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from tests import pair2_topology as T
 
-_CC_TYPE = {"int": "integer", "text": "string", "date": "date", "timestamp": "timestamp"}
+_CC_TYPE = {"int": "integer", "text": "string", "date": "date", "timestamp": "timestamp", "dec": "decimal"}
 
 
 def _columns_cache(table: str) -> dict:

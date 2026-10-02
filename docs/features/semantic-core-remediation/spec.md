@@ -150,9 +150,10 @@ precedence over the chart's row limit.
 ## Refusals
 
 Every planner refusal is a `SemanticRefusal` (a `ValueError`, HTTP 400, the
-message unchanged) with a `category`: `AMBIGUOUS_ROUTE`, `UNRELATED_GRAIN`,
-`FANOUT_RISK`, `UNSUPPORTED_CONTEXT`, `UNREACHABLE_VIEW`,
-`INVALID_RELATIONSHIP`, `UNVERIFIABLE_KEY`. The engine's `query_plan` names the
+message unchanged) with a `category`: `AMBIGUOUS_ROUTE`, `ROUTE_LIMIT`,
+`UNRELATED_GRAIN`, `FANOUT_RISK`, `UNSUPPORTED_CONTEXT`, `UNREACHABLE_VIEW`,
+`INVALID_RELATIONSHIP`, `UNVERIFIABLE_KEY` — on every entry point
+(`docs/features/semantic-foundation-freeze/kernel-contract-v1.md`). The engine's `query_plan` names the
 strategy (single / reanchor / isolate / stitch), the fact grains, the filter
 root, the SELECT routes and the filter routes before any SQL runs.
 
@@ -168,6 +169,15 @@ regular expression per dialect (`REGEXP_CONTAINS` / `~` / `regexp_matches` /
 HAVING whether or not the chart shows that measure; it accepts
 `=, ≠, >, ≥, <, ≤, between, in, not_in, is_null, is_not_null` and refuses the
 rest.
+
+## Numeric and formula meaning
+
+`/` in any semantic expression is true division and a zero denominator is
+NULL, on every engine; AVG has one precision; a formula's dependencies are
+measures of its own view (another view's measure inside a formula is refused,
+`UNSUPPORTED_CONTEXT`). The contract and its physical rendering per engine:
+`docs/features/semantic-foundation-freeze/kernel-contract-v1.md`
+(Numeric / Formula Meaning, Measure Meaning).
 
 ## NULL and missing-member contract
 

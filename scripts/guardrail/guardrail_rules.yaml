@@ -178,6 +178,8 @@ protected:
       - backend/app/services/chart_service.py   # carries the semantic-relation helpers the distinct cascade imports
       - backend/app/services/semantic_health_service.py   # model assumptions checked on the data; gates publish
       - backend/app/services/relationship_key_guard.py    # runtime proof of every to-one key a query trusts
+      - backend/app/services/semantic_arithmetic.py       # division = true division, NULL on /0, every engine
+      - backend/app/services/execution_plan.py            # live / snapshot / published decision; one live statement = one connection
     directive: >
       DO NOT rewrite or replace the semantic layer. It is golden-proven
       (multi-fact fan-out, snowflake, calendar, measure isolation). Make the
@@ -193,7 +195,8 @@ protected:
     required_tests: [measure_render, dialect_structural, semantic_state_contracts, filter_matrix,
                      golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity,
                      relationship_contract, relationship_contract_pg, pair1_baseline_parity,
-                     public_authoritative_bounds, pair2_golden_topology, pair3_chartservice]
+                     public_authoritative_bounds, pair2_golden_topology, pair3_chartservice,
+                     semantic_foundation]
 
   - id: public_link_security
     label: "Public-link filter merge / access (data-exposure surface)"
@@ -599,6 +602,10 @@ tests:
     requires: postgres
     run: "pytest backend/tests/test_pair3_chartservice_pg.py"
     locks: "query engine ↔ ChartService: every Pair 2 golden request through ChartService (saved chart, preview, stale/minimal/empty stored bindings, legacy config.source charts) gives the engine's rows / refusal category; a cached result never outlives a model, measure, filter, snapshot generation, security scope or host change; a live fallback after a missing snapshot is compiled for and executed on the SOURCE engine (a published snapshot never falls back); refusal categories reach the HTTP response (X-AppBI-Refusal) and the batch; a field keeps its values whatever its name's case (Postgres alias folding) and two fields reducing to one result column are refused; a what-if swap renders a declared measure by its own type; the live filter adapter keeps the engine's base rows; generated and custom query modes never stand in for each other; base AND runtime filters, never replaced; an unrelated table's filter is a recorded soft drop"
+  semantic_foundation:
+    requires: postgres
+    run: "pytest backend/tests/test_semantic_foundation_pg.py"
+    locks: "semantic kernel (Pair 1 + 2 + 3 as one contract, docs/features/semantic-foundation-freeze/kernel-contract-v1.md): division in every semantic expression (formula, nested formula, row-level measure, where_sql, dimension, % of total) is true division with a NULL zero denominator, executed on Postgres and DuckDB and through a saved chart (int/int, int/decimal, decimal/int, SUM/COUNT, negative, NULL numerator / denominator, a 1-in-30000 ratio to 1e-9, AVG of 0/1 flags); a formula over a measure of ANOTHER view is refused (UNSUPPORTED_CONTEXT), never aggregated at the formula view's grain; the same request through chart saved / preview, /semantic/query, dataset execute and measure preview gives the same rows or the same refusal category (NULL contract, a one-to-one relationship, an invalid relationship INVALID_RELATIONSHIP and a non-unique one side FANOUT_RISK included); a reused and a fresh engine compile the same meaning; a declared soft drop is reported by every entry point (dropped_filters); one live statement never reads another connection's table through its own (refused on every executor), a second connection onto the same database / schema is one connection, BigQuery physical tables (absolute names) may cross connections but custom-SQL tables of another project may not, the connection check runs before any key probe on every entry point (the live filter adapter included); a dataset-scope measure never joins a 1:N child (FANOUT_RISK) and a cross-table measure answers or refuses like the plain measure of its fact; a formula is never re-aggregated by an explicit agg or a pivot; a text operator on a date column is refused; dataset execute AND-s every predicate of a field; a cache hit keeps the engine's own dropped filters and a fanned Date filter never shares a cache slot with look-alike role filters; an isolated measure records the filter its fact cannot reach; the division rewrite never appends to a `--` / `#` comment and lexes strings per dialect"
   pair1_baseline_parity:
     requires: postgres-fixture
     run: "pytest backend/tests/test_pair1_baseline_parity.py"
@@ -918,6 +925,8 @@ semantic_contract:
     - "backend/app/services/chart_contracts.py"
     - "backend/app/services/chart_semantic_service.py"
     - "backend/app/services/relationship_key_guard.py"
+    - "backend/app/services/semantic_arithmetic.py"
+    - "backend/app/services/execution_plan.py"
   files:
     backend/app/services/semantic_query_engine.py:
       symbols: [SemanticQueryEngine, generate_sql, _render_measure, _build_filter_exists_clause, _render_symmetric_aggregate, _build_isolated_measure_subquery, _build_dimensioned_multifact_sql, _validate_group_grain, _coerce_typed_filter_value, _filter_type_family, _render_dimension_with_time_grain, _filter_targets_measure, _aggregate_predicate, _best_calendar_dim_candidates, _collapse_fanned_calendar_filters, _view_is_generated_calendar, _record_key_probe, key_probes, _filter_route_resolver, _calendar_tie, _rebind_calendar_filters, _fact_own_calendar_view, _build_order_by_clause, _pick_route, _resolver_rooted]
@@ -943,6 +952,10 @@ semantic_contract:
       symbols: [key_probe_sql, verify_key_probes, one_side_key, one_side_probe, statement_key_guard]
     backend/app/services/chart_contracts.py:
       symbols: [normalize_filter_conditions, normalize_filter_operator, AuthoritativeFilterNotApplied, refuse_unapplied_authoritative]
+    backend/app/services/semantic_arithmetic.py:
+      symbols: [normalize_division, true_division_sql]
+    backend/app/services/execution_plan.py:
+      symbols: [plan_chart_execution, refuse_foreign_live_sources]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. PATCH-LEVEL POLICY — cross-cutting checks in validate_patch / explain_risk.

@@ -83,6 +83,21 @@ TABLES = {
     # instants (UTC) under an Asia/Ho_Chi_Minh (+7) calendar: e1 is local 2024-01-01, e3 local 2025-01-01
     "events_tz": ([("id", "int"), ("ts", "timestamp"), ("amount", "int")],
                   [(1, "2023-12-31 20:00:00", 10), (2, "2024-06-01 12:00:00", 5), (3, "2024-12-31 18:00:00", 3)]),
+    # Semantic foundation — numeric meaning (tests/foundation_corpus.py): integers that do not
+    # divide evenly, a decimal, a zero column, a NULL-mostly column, negatives, a 1-in-30000
+    # ratio, and a column whose total is 0 (a zero denominator for % of total)
+    "nums": ([("id", "int"), ("grp", "text"), ("a", "int"), ("b", "int"), ("z", "int"), ("n", "int"),
+              ("neg", "int"), ("flag", "int"), ("big", "int"), ("d", "dec"), ("pm", "int")],
+             [(1, "X", 5, 2, 0, None, -5, 1, 30000, "2.50", 1),
+              (2, "X", 1, 2, 0, None, -1, 0, 0, "0.25", -1),
+              (3, "Y", 3, 0, 0, None, -3, 0, 0, "1.00", 2),
+              (4, "Y", 4, 3, 0, 4, -4, 0, 0, "0.10", -2)]),
+    "thirds": ([("id", "int"), ("flag", "int")], [(1, 1), (2, 0), (3, 0)]),
+    # foundation F8: one extension row per sale (1:1); F10: customers with C1 twice (a one side that
+    # is not unique — the key guard must refuse the join, never sum C1's sales twice)
+    "sales_ext": ([("sale_id", "int"), ("channel", "text")],
+                  [(1, "web"), (2, "shop"), (3, "web"), (4, "web"), (5, "shop")]),
+    "customers_dup": ([("id", "int"), ("name", "text")], [(1, "C1"), (1, "C1-dup"), (2, "C2"), (3, "C3")]),
 }
 
 DIALECTS = ("postgresql", "duckdb", "mysql", "bigquery")
@@ -97,20 +112,25 @@ def _lit(v, typ, dialect):
         return f"DATE '{v}'"
     if typ == "timestamp":
         return f"TIMESTAMP '{v}'"
+    if typ == "dec":
+        return f"NUMERIC '{v}'" if dialect == "bigquery" else str(v)
     return "'" + str(v).replace("'", "''") + "'"
+
+
+_DDL_TYPE = {"dec": "decimal(10,2)"}
 
 
 def physical_sql(dialect: str) -> list:
     """DDL + INSERTs into schema/database `p2g` (not BigQuery: inline there)."""
     out = []
     for table, (cols, rows) in TABLES.items():
-        out.append(f"CREATE TABLE {S}.{table}(" + ", ".join(f"{c} {t}" for c, t in cols) + ")")
+        out.append(f"CREATE TABLE {S}.{table}(" + ", ".join(f"{c} {_DDL_TYPE.get(t, t)}" for c, t in cols) + ")")
         out.append(f"INSERT INTO {S}.{table} VALUES " + ", ".join(
             "(" + ", ".join(_lit(v, t, dialect) for v, (_c, t) in zip(r, cols)) + ")" for r in rows))
     return out
 
 
-_BQ_TYPE = {"int": "INT64", "text": "STRING", "date": "DATE", "timestamp": "TIMESTAMP"}
+_BQ_TYPE = {"int": "INT64", "text": "STRING", "date": "DATE", "timestamp": "TIMESTAMP", "dec": "NUMERIC"}
 
 
 def calendar_sql(dialect: str) -> str:
@@ -166,7 +186,12 @@ VIEWS = {
     "p2_countries": ("T:countries", _dims("id", "name"), []),
     "p2_regions_cte": ("CTE:regions", _dims("id", "name"), []),
     "p2_customers": ("T:customers", _dims("id", "name", "region_id", "signup", types=_DATES),
-                     [{"name": "n", "type": "count", "sql": "*"}]),
+                     [{"name": "n", "type": "count", "sql": "*"},
+                      # foundation F7: a formula over its own view's measure
+                      {"name": "cust_ratio", "type": "sum", "expression": "${n} / 2", "depends_on": ["n"]},
+                      # foundation A3: a customer column + a column of its 1:N child (sales) — refused
+                      {"name": "mixed", "type": "sum", "expression": "${TABLE}.id + ${p2_sales.amount}",
+                       "scope": "dataset", "source_columns": [{"view": "p2_sales", "field": "amount"}]}]),
     "p2_stores": ("T:stores", _dims("id", "name", "region_id"), []),
     "p2_products": ("T:products", _dims("id", "name"), []),
     # a pass-through dimension over the same product key (G12 equivalence)
@@ -183,9 +208,25 @@ VIEWS = {
                    "filters": [{"field": "p2_regions.name", "operator": "eq", "value": "North"}]},
                   # a measure-level filter on the sale's product
                   {**_sum("pen_rev", "amount"),
-                   "filters": [{"field": "p2_products.name", "operator": "eq", "value": "Pen"}]}]),
+                   "filters": [{"field": "p2_products.name", "operator": "eq", "value": "Pen"}]},
+                  # foundation F7: a formula over a measure of ANOTHER view (customers) — refused
+                  {"name": "rev_per_cust", "type": "sum", "expression": "${revenue} / ${p2_customers.n}",
+                   "depends_on": ["revenue", "p2_customers.n"]},
+                  # foundation A3: a many-to-one parent's column (one product row per sale) — answered
+                  {"name": "rev_x_prod", "type": "sum", "expression": "${TABLE}.amount * ${p2_products.id}",
+                   "scope": "dataset", "source_columns": [{"view": "p2_products", "field": "id"}]},
+                  # foundation V1: a formula is never re-aggregated (explicit agg ≠ its type → refused)
+                  {"name": "rev_share", "type": "number", "expression": "${revenue} / NULLIF(${revenue}, 0)",
+                   "depends_on": ["revenue"]}]),
     "p2_owners": ("T:owners", _dims("id", "name"), []),
-    "p2_revenue": ("T:revenue", _dims("id", "rdate", "owner_id", types=_DATES), [_sum("amount", "amount")]),
+    "p2_revenue": ("T:revenue", _dims("id", "rdate", "owner_id", types=_DATES),
+                   [_sum("amount", "amount"),
+                    # foundation F7: a formula over ANOTHER fact's measure — refused
+                    {"name": "rev_over_deals", "type": "sum", "expression": "${amount} / ${p2_deals.value}",
+                     "depends_on": ["amount", "p2_deals.value"]},
+                    # foundation B1: declared on revenue, aggregates deals.value only (its grain is deals)
+                    {"name": "deal_value", "type": "sum", "expression": "${p2_deals.value}", "scope": "dataset",
+                     "source_columns": [{"view": "p2_deals", "field": "value"}]}]),
     "p2_deals": ("T:deals", _dims("id", "ddate", "owner_id", "stage", types=_DATES), [_sum("value", "value")]),
     "p2_activity": ("T:activity", _dims("id", "adate", "owner_id", types=_DATES), [_sum("calls", "calls")]),
     # the generated calendar (main) and two role-played date dims of sales
@@ -210,6 +251,49 @@ VIEWS = {
                       {"name": "ts", "type": "datetime", "source_type": "timestamp", "sql": "${TABLE}.ts"}],
                      [_sum("total", "amount")]),
 }
+
+
+def _formula(name, expression, *deps):
+    return {"name": name, "type": "sum", "expression": expression, "depends_on": list(deps)}
+
+
+# Semantic foundation — numeric meaning. Division is TRUE division and a zero denominator is
+# NULL on every engine (app/services/semantic_arithmetic.py); oracles in tests/foundation_corpus.py.
+VIEWS["p2_nums"] = (
+    "T:nums",
+    [{"name": "id", "type": "number", "sql": "${TABLE}.id"},
+     {"name": "grp", "type": "string", "sql": "${TABLE}.grp"},
+     {"name": "half_a", "type": "number", "sql": "${TABLE}.a / 2"},
+     # the `/` starts the line after a `--` comment (the rewrite must never append to the comment)
+     {"name": "unit_a", "type": "number",
+      "sql": "CASE WHEN ${TABLE}.b > 0 THEN ${TABLE}.a -- per b\n / ${TABLE}.b ELSE NULL END"}],
+    [_sum("sum_a", "a"), _sum("sum_b", "b"), _sum("sum_z", "z"), _sum("sum_n", "n"), _sum("sum_neg", "neg"),
+     _sum("sum_flag", "flag"), _sum("sum_big", "big"), _sum("sum_d", "d"),
+     {"name": "n_rows", "type": "count", "sql": "*"},
+     {"name": "n_grp", "type": "count_distinct", "sql": "${TABLE}.grp"},
+     {"name": "avg_a", "type": "avg", "sql": "${TABLE}.a"},
+     {"name": "row_ratio", "type": "sum", "sql": "${TABLE}.a / ${TABLE}.b"},
+     {**_sum("where_ratio", "a"), "where_sql": "${TABLE}.a / ${TABLE}.b > 1"},
+     {"name": "pct_a", "type": "percent_of_total", "sql": "${TABLE}.a"},
+     {"name": "pct_pm", "type": "percent_of_total", "sql": "${TABLE}.pm"},
+     _formula("ratio_ab", "${sum_a} / ${sum_b}", "sum_a", "sum_b"),
+     _formula("a_per_row", "${sum_a} / ${n_rows}", "sum_a", "n_rows"),
+     _formula("a_over_d", "${sum_a} / ${sum_d}", "sum_a", "sum_d"),
+     _formula("d_over_b", "${sum_d} / ${sum_b}", "sum_d", "sum_b"),
+     _formula("pct_ab", "100 * ${sum_a} / ${sum_b}", "sum_a", "sum_b"),
+     _formula("neg_ratio", "${sum_neg} / ${sum_b}", "sum_neg", "sum_b"),
+     _formula("zero_den", "${sum_a} / ${sum_z}", "sum_a", "sum_z"),
+     _formula("null_num", "${sum_n} / ${sum_b}", "sum_n", "sum_b"),
+     _formula("null_den", "${sum_a} / ${sum_n}", "sum_a", "sum_n"),
+     _formula("small_ratio", "${sum_flag} / ${sum_big}", "sum_flag", "sum_big"),
+     _formula("ratio_of_ratio", "${ratio_ab} / ${a_per_row}", "ratio_ab", "a_per_row")],
+)
+VIEWS["p2_sales_ext"] = ("T:sales_ext", _dims("sale_id", "channel"), [])
+VIEWS["p2_customers_dup"] = ("T:customers_dup", _dims("id", "name"), [])
+VIEWS["p2_thirds"] = ("T:thirds", _dims("id"),
+                      [{"name": "avg_flag", "type": "avg", "sql": "${TABLE}.flag"},
+                       _sum("sum_flag", "flag"), {"name": "n", "type": "count", "sql": "*"},
+                       _formula("rate", "${sum_flag} / ${n}", "sum_flag", "n")])
 
 
 LAT_LAYERS = 7      # 2^7 = 128 forward chains lat_fact → lat_top: more than the route cap (64)
@@ -1066,3 +1150,11 @@ GRAIN_MATRIX = [
     ("G10_null", "p2_sales", ["p2_sales.revenue"], "p2_customers.name", SAFE),
 ]
 MODELS["G10_null"] = MODELS["G1_star"]
+# Semantic foundation — numeric meaning: two unrelated single-table explores
+MODELS["F1_numeric"] = {"p2_nums": [], "p2_thirds": []}
+# foundation F8: a one-to-one relationship; F10: an invalid one and a non-unique one side
+MODELS["F8_one_to_one"] = {"p2_sales": [rel("p2_sales_ext", "id", "sale_id", card="one_to_one")]}
+MODELS["F10_invalid"] = {"p2_sales": [rel("p2_customers", "customer_id", "id", card="sometimes")]}
+MODELS["F10_dup_key"] = {"p2_sales": [rel("p2_customers_dup", "customer_id", "id")]}
+# foundation F11: deals with NO relationship — a filter on owners filters revenue, not deals
+MODELS["F11_unrelated_fact"] = {"p2_revenue": [rel("p2_owners", "owner_id", "id")], "p2_deals": [], "p2_owners": []}

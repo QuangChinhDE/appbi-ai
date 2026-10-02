@@ -585,3 +585,88 @@ def _dataset_is_mixed_engine(db: Session, dataset_id: int) -> bool:
     rows = db.query(DataSource).filter(DataSource.id.in_(list(ds_ids))).all()
     dialects = {_dialect_for_ds_type(str(getattr(d.type, "value", d.type)).lower()) for d in rows}
     return len(dialects) > 1
+
+
+# ── One live statement, one connection ────────────────────────────────────────
+# A live statement runs on ONE connection, and each table in it is rendered from
+# its OWN datasource's definition. A Postgres / MySQL table is named relative to
+# the connection (`sales`, `schema.sales`: its database and search_path), and a
+# Sheets / manual datasource is its own in-memory engine — so a table of
+# datasource B read through datasource A's connection is A's object of that
+# name: another database's rows (or nothing). BigQuery names a PHYSICAL table
+# absolutely (`project.dataset.table`); a custom-SQL / calculated table's text
+# names its tables relative to the executing job's project (`dataset.table`).
+# Two connections to the same physical scope (host, port, database, schema,
+# user) are one connection.
+
+_IDENTITY_KEYS = (("host",), ("port",), ("database", "dbname", "db"), ("schema_name", "schema"),
+                  ("username", "user"))
+_DEFAULT_PORT = {"postgresql": "5432", "mysql": "3306"}
+_LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+
+
+def _connection_identity(ds) -> tuple:
+    ds_type = str(getattr(ds.type, "value", ds.type)).lower()
+    cfg = getattr(ds, "config", None) or {}
+    out = []
+    for keys in _IDENTITY_KEYS:
+        val = next((cfg.get(k) for k in keys if cfg.get(k) not in (None, "")), None)
+        out.append(str(val).strip().lower() if val is not None else None)
+    host, port, database, schema, user = out
+    if host in _LOOPBACK:
+        host = "localhost"
+    port = port or _DEFAULT_PORT.get(ds_type)
+    if ds_type == "postgresql":
+        schema = schema or "public"
+    else:
+        schema = None            # MySQL: the database IS the schema
+    return (ds_type, host, port, database, schema, user)
+
+
+def _bigquery_project(ds) -> str | None:
+    cfg = getattr(ds, "config", None) or {}
+    val = cfg.get("project_id")
+    return str(val).strip().lower() if val else None
+
+
+def refuse_foreign_live_sources(db: Session, source_ids, executing_ds, source_kinds=None) -> None:
+    """Refuse (SemanticRefusal UNSUPPORTED_CONTEXT) a live statement that reads
+    a table of a datasource other than ``executing_ds`` unless the statement
+    can read it there as the same physical table (see above). ``source_ids``:
+    the engine's ``live_source_ids``; ``source_kinds``: ``{datasource id: {the
+    source kinds read}}`` (the engine's ``live_source_kinds``) — without it a
+    foreign BigQuery table counts as named relative to the job."""
+    from app.models.models import DataSource
+    from app.services.live_query_service import _dialect_for_ds_type
+    from app.services.semantic_join_resolver import SemanticRefusal
+
+    exec_id = getattr(executing_ds, "id", None)
+    others = {int(i) for i in (source_ids or ()) if i and int(i) != exec_id}
+    if not others or executing_ds is None:
+        return
+    kinds = source_kinds or {}
+    exec_type = str(getattr(executing_ds.type, "value", executing_ds.type)).lower()
+    exec_dialect = _dialect_for_ds_type(exec_type)
+    for other in db.query(DataSource).filter(DataSource.id.in_(sorted(others))).all():
+        o_type = str(getattr(other.type, "value", other.type)).lower()
+        if _dialect_for_ds_type(o_type) != exec_dialect:
+            why = f"một bảng thuộc kết nối {o_type} không chạy được trên engine {exec_type}"
+        elif exec_dialect == "bigquery":
+            if _bigquery_project(other) == _bigquery_project(executing_ds):
+                continue  # the same project: relative and absolute names alike
+            read = kinds.get(other.id) or kinds.get(int(other.id)) or set()
+            if read and read <= {"physical_table"}:
+                continue  # physical tables are named absolutely (project.dataset.table)
+            why = ("một bảng SQL / bảng tính toán của kết nối BigQuery khác đặt tên bảng theo project "
+                   "của chính nó — chạy trong project khác sẽ đọc một bảng khác")
+        elif exec_type in ("postgresql", "mysql") and _connection_identity(other) == _connection_identity(executing_ds):
+            continue      # the same physical database / schema
+        else:
+            why = ("một bảng của kết nối khác được đặt tên theo kết nối của chính nó — đọc qua kết nối "
+                   "đang chạy sẽ là một bảng khác (database / schema / engine khác)")
+        raise SemanticRefusal(
+            "Truy vấn này đọc bảng từ nhiều kết nối dữ liệu khác nhau, nhưng một truy vấn trực tiếp "
+            f"(live) chỉ chạy trên MỘT kết nối: {why}. Dùng snapshot hợp nhất (bật materialization "
+            "trên một kết nối BigQuery làm host), hoặc đặt các bảng trên cùng một kết nối.",
+            category=SemanticRefusal.UNSUPPORTED_CONTEXT,
+        )

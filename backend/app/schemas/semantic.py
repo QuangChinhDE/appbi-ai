@@ -625,3 +625,6 @@ class SemanticQueryResponse(BaseModel):
     execution_time_ms: Optional[float] = None
     pivoted_columns: List[PivotedColumn] = []  # Metadata for pivoted columns
     warnings: List[str] = []  # Any warnings about query execution
+    # Filters the engine left out by its declared soft-drop policy
+    # (unreachable_view / no_join_path) — never silent, as on /charts.
+    dropped_filters: List[Dict[str, Any]] = []

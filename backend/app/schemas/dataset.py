@@ -329,6 +329,9 @@ class ExecuteQueryResponse(BaseModel):
     """Response schema for executed query"""
     columns: List[ColumnMetadata]
     rows: List[Dict[str, Any]]
+    # Filters the semantic engine left out by its declared soft-drop policy
+    # (unreachable_view / no_join_path) — never silent, as on /charts.
+    dropped_filters: List[Dict[str, Any]] = []
 
 
 # ===== Dataset Quality Schemas =====

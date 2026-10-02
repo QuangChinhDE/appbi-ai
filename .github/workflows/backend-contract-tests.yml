@@ -459,3 +459,15 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_pair3_chartservice_pg.py
+
+      # Semantic foundation (Pair 1 + 2 + 3 as one kernel contract): numeric
+      # meaning (true division, NULL on a zero denominator) on Postgres + DuckDB
+      # and through ChartService; a cross-view formula refused; the same request
+      # through every entry point (chart saved / preview, /semantic/query,
+      # dataset execute, measure preview) gives the same rows or refusal
+      # category; soft drops reported everywhere; one live statement reads one
+      # connection.
+      - name: "GATE — Semantic foundation kernel contract (Postgres + DuckDB)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_semantic_foundation_pg.py

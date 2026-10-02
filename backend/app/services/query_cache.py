@@ -448,7 +448,7 @@ def _get_ds_cache(datasource_id: int) -> TTLCache:
 # has a different key and is never served — including from the shared store,
 # which survives restarts and would otherwise serve pre-deploy results for a
 # TTL (or two, through the local re-insert).
-SEMANTIC_RESULT_CACHE_VERSION = "pair3-closure-2026-10"
+SEMANTIC_RESULT_CACHE_VERSION = "foundation-freeze-2026-10"
 
 
 def _make_key(
