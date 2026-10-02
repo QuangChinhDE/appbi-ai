@@ -35,6 +35,7 @@ def chart_cache_identity(ctx, chart_id) -> list:
     return [*(getattr(ctx, "public_filters", None) or []),
             {"__ai_scope__": scope_hash(getattr(ctx, "excluded_columns", None))},
             {"__page_scope__": (getattr(ctx, "page_scope_by_chart", None) or {}).get(chart_id) or []},
+            {"__snapshot_ttl__": getattr(ctx, "snapshot_ttl_minutes", None)},
             {"__semantic__": semantic_epoch(getattr(ctx, "db", None))}]
 from app.services.dashboard_ai_bot.insight_pack import (
     build_chart_manifest,
@@ -552,6 +553,16 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
         # found by the group-2 audit. The type is enough to act on; the full
         # text is in the server log for whoever is debugging.
         logger.warning("chart %s failed: %s", chart_id, exc)
+        # A semantic REFUSAL keeps its machine-readable category (AMBIGUOUS_ROUTE,
+        # FANOUT_RISK, …): the model is told the chart has NO answer for this
+        # question — never a retryable failure, never a number from elsewhere.
+        from app.services.chart_service import refusal_category
+
+        _cat = refusal_category(exc)
+        if _cat:
+            return _err(f"chart {chart_id} refused ({_cat}): the semantic model has no single "
+                        "answer for this chart in this context — report it as unavailable",
+                        code=f"semantic_refusal:{_cat}")
         return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
     columns: list[str] = data["columns"]

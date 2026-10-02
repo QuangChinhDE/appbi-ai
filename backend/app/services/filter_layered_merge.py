@@ -659,6 +659,91 @@ def apply_page_scope_bounds(
     return out
 
 
+def scope_filters_to_dataset(
+    filters: Sequence[Dict[str, Any]],
+    dataset_id: Any,
+    field_is_foreign=None,
+) -> List[Dict[str, Any]]:
+    """The filters that belong to a chart of ``dataset_id``: a filter of ANOTHER
+    dataset is that dataset's filter — a report over two datasets filters each
+    visual by its own model's filters (Power BI: a filter on a table of model A
+    never reaches a visual of model B). It does not apply here (neither applied
+    nor "dropped"); a lock is scoped the same way — it bounds ITS dataset's data.
+
+    A filter leaves only when it PROVABLY belongs elsewhere: its ``datasetId``
+    names another dataset AND ``field_is_foreign(filter)`` says its field is not
+    of this dataset. A mismatching id on a field of THIS dataset (a stale id) is
+    kept — the engine then refuses it as a dataset mismatch, loudly; dropping it
+    would widen a lock. Without ``field_is_foreign``, or with the chart's dataset
+    unknown, every filter stays."""
+    kept = [f for f in filters if isinstance(f, dict)]
+    if dataset_id in (None, "") or field_is_foreign is None:
+        return kept
+    want = str(dataset_id)
+    out: List[Dict[str, Any]] = []
+    for f in kept:
+        ds = f.get("datasetId")
+        if ds in (None, "") or str(ds) == want:
+            out.append(f)
+            continue
+        try:
+            foreign = bool(field_is_foreign(f))
+        except Exception:  # noqa: BLE001 — not provable → kept (fail closed)
+            foreign = False
+        if not foreign:
+            out.append(f)
+    return out
+
+
+def foreign_field_check(db: Any, dataset_id: Any, report_dataset_ids: Any = None):
+    """The ``field_is_foreign`` predicate for :func:`scope_filters_to_dataset`:
+    a filter is foreign to ``dataset_id`` when its field's view is a view of the
+    dataset the filter names AND not a view of ``dataset_id``. A view known to
+    neither (a calendar alias, a typo, a deleted table) is not provably foreign —
+    the filter is kept and the engine decides, loudly.
+
+    ``report_dataset_ids``: the datasets of the report's OTHER charts. Only a
+    filter of one of them is another chart's filter; a filter naming a dataset no
+    chart of the report reads (a lock left behind after the charts moved to a new
+    dataset) bounds nothing on the report — it is kept, so it refuses instead of
+    silently lifting. None = no report context (every chart of the dataset)."""
+    if db is None or dataset_id in (None, ""):
+        return None
+    report = None if report_dataset_ids is None else {str(d) for d in report_dataset_ids if d not in (None, "")}
+    from app.models.dataset import DatasetTable
+    from app.models.semantic import SemanticView
+
+    memo: Dict[str, frozenset] = {}
+
+    def views_of(ds: Any) -> frozenset:
+        key = str(ds)
+        if key not in memo:
+            try:
+                ds_int = int(ds)
+            except (TypeError, ValueError):
+                memo[key] = frozenset()
+                return memo[key]
+            rows = (
+                db.query(SemanticView.name)
+                .join(DatasetTable, SemanticView.dataset_table_id == DatasetTable.id)
+                .filter(DatasetTable.dataset_id == ds_int)
+                .all()
+            )
+            memo[key] = frozenset(str(r[0]) for r in rows if r[0])
+        return memo[key]
+
+    def is_foreign(f: Dict[str, Any]) -> bool:
+        ref = str(f.get("semanticField") or f.get("fieldKey") or f.get("field") or "").strip()
+        if "." not in ref:
+            return False
+        if report is not None and str(f.get("datasetId")) not in report:
+            return False
+        view = ref.split(".", 1)[0]
+        return view in views_of(f.get("datasetId")) and view not in views_of(dataset_id)
+
+    return is_foreign
+
+
 def _predicate_identity(entry: Dict[str, Any]) -> tuple:
     return (_filter_dedupe_key(entry), str(entry.get("operator") or "").lower(), repr(entry.get("value")),
             str(entry.get("datePreset") or entry.get("date_preset") or ""))

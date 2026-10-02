@@ -1713,16 +1713,31 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
 
     warnings_out: list[str] = []
     for a in parsed_aggs:
-        if a["op"] != "sum":
+        if a["op"] not in ("sum", "avg"):
             continue
         info = measure_meta.describe_measure(ctx, chart_id, a["src"])
-        if not info["additive"] and n_groups > 1:
+        if info["additive"]:
+            continue
+        # A non-additive measure (an average, a ratio, a percentage) is a value
+        # at ITS grain: neither the sum nor the unweighted average of its row
+        # values across groups is that measure at the coarser grain (the average
+        # of per-product averages is not the region's average). Refused — the
+        # number would be arithmetically valid and semantically wrong.
+        if a["op"] == "sum" and n_groups > 1:
             return _err(
                 f"cannot sum '{a['src']}': it is "
                 f"{info['agg'] or info['format_kind'] or 'non-additive'}, and a "
                 f"total of that across {n_groups} groups is arithmetically valid "
-                "and semantically meaningless. Use op='avg' for the average, or "
-                "sum the underlying additive measure instead."
+                "and semantically meaningless. Sum the underlying additive measure "
+                "instead, or read the measure at the coarser grain from a chart."
+            )
+        if a["op"] == "avg" and len(rows) > 1:
+            return _err(
+                f"cannot average '{a['src']}': it is "
+                f"{info['agg'] or info['format_kind'] or 'non-additive'}, and the "
+                "unweighted average of its values across rows is not that measure "
+                "at the coarser grain. Read the measure at the coarser grain from a "
+                "chart, or average an additive measure instead."
             )
 
     coverage: dict[str, Any] = {
@@ -1738,6 +1753,14 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
             f"{coverage.get('ordered_by') or 'the grouping order'}. `totals` below "
             "covers ALL rows — use it for population figures, not the sum of what "
             "is listed here."
+        )
+    if data.get("source_top_n"):
+        # The chart itself returns only its top N rows: `totals` covers THOSE,
+        # not the population — never a figure to quote as "the total".
+        coverage["source_top_n"] = data["source_top_n"]
+        warnings_out.append(
+            f"the chart is limited to its top {data['source_top_n']} rows: `totals` is the total of "
+            "those rows only, not of every member"
         )
     if warnings_out:
         coverage["warnings"] = warnings_out

@@ -361,11 +361,7 @@ def ai_chart_preview(
     Used by the AI agent's create_chart tool.
     Requires explore_charts >= view permission.
     """
-    from app.models.models import DataSource
-    from app.services.live_query_service import build_live_dataset_query, _dialect_for_ds_type
-    from app.services.datasource_service import DataSourceConnectionService
-
-    dataset_obj, db_table = _get_dataset_for_chart_table(db, payload.dataset_table_id)
+    dataset_obj, _db_table = _get_dataset_for_chart_table(db, payload.dataset_table_id)
     require_view_access(db, current_user, dataset_obj, "datasets")
     if payload.save:
         perms = current_user.permissions or {}
@@ -376,99 +372,51 @@ def ai_chart_preview(
             )
     config = payload.config or {}
 
-    # Resolve live datasource and base SQL for every table type
-    try:
-        if is_generated_calendar_table(db_table):
-            # Calendar tables need an explicit datasource to determine dialect.
-            # Pick the first physical datasource referenced by the dataset.
-            from app.models.dataset import DatasetTable
-            sibling_table = (
-                db.query(DatasetTable)
-                .filter(
-                    DatasetTable.dataset_id == dataset_obj.id,
-                    DatasetTable.datasource_id.isnot(None),
-                )
-                .first()
-            )
-            if sibling_table is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail="No datasource available for calendar table",
-                )
-            datasource = db.query(DataSource).filter(DataSource.id == sibling_table.datasource_id).first()
-            if datasource is None:
-                raise HTTPException(status_code=404, detail="Datasource not found")
-            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-            dialect = _dialect_for_ds_type(ds_type)
-            base_sql = build_calendar_live_sql(
-                get_calendar_settings(dataset_obj, enabled_default=False),
-                dialect,
-            )
-        elif is_derived_table(db_table):
-            datasource, proxy_table = build_live_proxy_table_for_dataset_table(
-                db, dataset_obj, db_table,
-            )
-            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-            dialect = _dialect_for_ds_type(ds_type)
-            base_sql = proxy_table.source_query
-        else:
-            # Physical or sql_query table — build live SQL via query plan
-            from app.services.dataset_relation_service import resolve_dataset_table_relation
-            datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-            if not datasource:
-                raise HTTPException(status_code=404, detail="Datasource not found")
-            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-            dialect = _dialect_for_ds_type(ds_type)
-            plan = resolve_dataset_table_relation(datasource, db_table)
-            base_sql = plan.sql
-    except DatasetTableSqlError as exc:
-        code = getattr(exc, "code", "")
-        if code == "NOT_SYNCED":
-            raise HTTPException(
-                status_code=422,
-                detail={"code": exc.code, "message": str(exc)},
-            )
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    # Build and execute aggregation query via live datasource
-    dimensions = config.get("dimensions") or []
-    metrics = config.get("metrics") or []
-    limit = min(int(config.get("limit", 500)), 2000)
-    measures = [
-        {
-            "field": item.get("column", ""),
-            "agg": str(item.get("aggregation", "sum")).lower(),
-        }
-        for item in metrics
-        if item.get("column")
+    # The SAME execution as every chart (Semantic Kernel Contract v1): the AI's
+    # `{dimensions, metrics: [{column, aggregation}]}` becomes a canonical role
+    # config and runs through ChartService's preview path — a modelled table's
+    # semantic engine (measures, relationships, refusals), never a raw physical
+    # aggregate of the table (which ignored the model and differed from the
+    # chart this endpoint saves).
+    dimensions = [str(d) for d in (config.get("dimensions") or []) if str(d or "").strip()]
+    metric_cfg = [
+        {"field": str(item.get("column") or "").strip(), "agg": str(item.get("aggregation") or "sum").lower()}
+        for item in (config.get("metrics") or [])
+        if isinstance(item, dict) and str(item.get("column") or "").strip()
     ]
+    limit = min(int(config.get("limit", 500) or 500), 2000)
+    from app.services.chart_contracts import normalize_chart_role_config
 
-    sql = build_live_dataset_query(
-        base_table=f"({base_sql}) AS base_table",
-        dimensions=dimensions,
-        measures=measures,
-        filters=[],
-        order_by=[],
-        limit=limit,
-        dialect=dialect,
-    )
-
+    role_config = normalize_chart_role_config(payload.chart_type, {
+        "selectedColumns": dimensions + [m["field"] for m in metric_cfg],
+        "metrics": metric_cfg,
+        "dimension": dimensions[0] if dimensions else None,
+        "breakdown": dimensions[1] if len(dimensions) > 1 else None,
+    })
+    chart_config = {**{k: v for k, v in config.items() if k not in ("dimensions", "metrics", "limit")},
+                    "roleConfig": role_config}
+    # The preview runs the config that is saved (its filters, sort, data limit),
+    # read as a table of its columns.
+    preview_config = {**chart_config, "roleConfig": {"selectedColumns": role_config.get("selectedColumns") or [],
+                                                     "metrics": role_config.get("metrics") or []}}
     try:
-        _, data, _ = DataSourceConnectionService.execute_query(
-            ds_type,
-            datasource.config,
-            sql,
-            timeout_seconds=60 if ds_type == "bigquery" else 30,
-            skip_bigquery_cost_check=True,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Query failed: {str(exc)}")
+        result = ChartService.preview_chart_data(db, payload.dataset_table_id, "TABLE", preview_config)
+    except ValueError as exc:
+        from app.services.chart_service import REFUSAL_HEADER, refusal_category
 
+        _cat = refusal_category(exc)
+        raise HTTPException(status_code=400, detail=str(exc),
+                            headers={REFUSAL_HEADER: _cat} if _cat else None)
+    except Exception as exc:
+        logger.exception("ai-preview failed for table=%s", payload.dataset_table_id)
+        raise HTTPException(status_code=422, detail=f"Query failed: {exc}")
+    data = list(result.get("data") or [])
     response: Dict[str, Any] = {
         "chart_type": payload.chart_type,
-        "config": config,
-        "data": data,
-        "row_count": len(data),
+        "config": chart_config,
+        "data": data[:limit],
+        "row_count": min(len(data), limit),
+        "truncated": len(data) > limit,
         "saved": False,
         "chart_id": None,
     }
@@ -486,7 +434,7 @@ def ai_chart_preview(
             description=payload.description,
             dataset_table_id=payload.dataset_table_id,
             chart_type=ct,
-            config=config,
+            config=chart_config,   # what was previewed
         )
         new_chart = ChartService.create(db, chart_create, owner_id=current_user.id)
         DescriptionPipelineService.enqueue_chart_pipeline(

@@ -153,6 +153,17 @@ def _canonicalize_filter(filter_obj: dict[str, Any]) -> dict[str, Any] | None:
         if calendar_source_field:
             normalized["calendarSourceField"] = calendar_source_field
 
+    # Two markers change what the SAME predicate means to the engine, so they
+    # are identity too: copies of ONE fanned Date filter collapse onto the main
+    # calendar (look-alike role filters are AND-ed), and an authoritative
+    # predicate refuses where an ordinary one is soft-dropped — per predicate,
+    # never per field (an authoritative and an ordinary pick on one field).
+    fan = filter_obj.get("_calendar_fan")
+    if fan:
+        normalized["_calendar_fan"] = str(fan)
+    if filter_obj.get("_authoritative"):
+        normalized["_authoritative"] = True
+
     return normalized
 
 

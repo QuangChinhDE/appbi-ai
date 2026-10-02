@@ -527,6 +527,25 @@ def _authorization_identity(ctx: Any) -> list:
     ]
 
 
+def _semantic_epoch_of(ctx: Any) -> str:
+    """The semantic epoch (summary_cache.semantic_epoch), computed once per
+    context — a tool turn calls many tools on one request."""
+    cached = getattr(ctx, "_semantic_epoch_memo", None)
+    if cached:
+        return cached
+    db = getattr(ctx, "db", None)
+    if db is None:
+        return ""
+    from app.services.dashboard_ai_bot.summary_cache import semantic_epoch
+
+    epoch = semantic_epoch(db)
+    try:
+        setattr(ctx, "_semantic_epoch_memo", epoch)
+    except Exception:  # noqa: BLE001 — a frozen context: recompute next time
+        pass
+    return epoch
+
+
 def _cache_key(ctx: Any, name: str, args: dict) -> str | None:
     dashboard = getattr(getattr(ctx, "dashboard", None), "id", None)
     if dashboard is None:
@@ -547,6 +566,11 @@ def _cache_key(ctx: Any, name: str, args: dict) -> str | None:
                 sorted(str(m) for m in (getattr(ctx, "asked_measures", None) or [])),
                 sorted((getattr(ctx, "member_aliases", None) or {}).items()),
                 sorted(str(p) for p in (getattr(ctx, "asked_periods", None) or [])),
+                # WHAT THE DATA MEANS NOW: the semantic definitions + snapshot
+                # generations (a measure edit or a refresh is never answered by
+                # a pre-edit entry for the TTL) and the surface's freshness.
+                _semantic_epoch_of(ctx),
+                getattr(ctx, "snapshot_ttl_minutes", None),
                 name,
                 args,
             ],

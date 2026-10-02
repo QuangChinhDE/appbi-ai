@@ -106,7 +106,8 @@ export function usePublicFilterDistinctValues(
       }
       status[getColumnKey(column)] = {
         isLoading: Boolean(q?.isLoading || q?.isFetching),
-        isError: Boolean(q?.isError),
+        // `unavailable`: the warehouse could not answer — an error, not "no values match".
+        isError: Boolean(q?.isError || q?.data?.unavailable),
         hasFilterContext: Array.isArray(filterContext) && filterContext.length > 0,
         total: q?.data?.total,
         hasMore: q?.data?.has_more,

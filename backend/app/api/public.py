@@ -814,10 +814,20 @@ def _build_public_chart_filters(
     # kill-marker removed comes back, ANDed: a link narrows the report, it
     # never removes the author's boundary.
     merged = enforce_author_bounds(merged, authoritative_filters)
+    # A report over several datasets: each chart takes ITS dataset's filters
+    # (a filter of another dataset does not apply to it — it was refused as a
+    # dataset mismatch, every tile of the second dataset), the same set the
+    # builder's dashboard sends per tile. Only a provably foreign filter leaves.
+    from app.services.filter_layered_merge import foreign_field_check, scope_filters_to_dataset
+
+    _foreign = foreign_field_check(_session_of(dash), chart_dataset_id, _report_dataset_ids(dash))
+    merged = scope_filters_to_dataset(merged, chart_dataset_id, _foreign)
     if hard_bounds_out is not None:
         hard_bounds_out.extend(page_bounds)
-        hard_bounds_out.extend(normalize_filter_conditions(authoritative_filters))
-        hard_bounds_out.extend(normalize_filter_conditions(locked_link))
+        hard_bounds_out.extend(scope_filters_to_dataset(normalize_filter_conditions(authoritative_filters),
+                                                        chart_dataset_id, _foreign))
+        hard_bounds_out.extend(scope_filters_to_dataset(normalize_filter_conditions(locked_link),
+                                                        chart_dataset_id, _foreign))
         for scope in scope_link:
             allow = scope.get("value")
             allow = [str(v) for v in allow if v not in (None, "")] if isinstance(allow, (list, tuple)) else (
@@ -964,19 +974,83 @@ def _public_error_text(message: str, applied: list[dict] | None) -> str:
     return message
 
 
-def _public_chart_payload(data: Any) -> Any:
-    """A chart result as an anonymous viewer receives it: without ``debug``.
+_PUBLIC_SKIPPED_DETAIL = "Bộ lọc này không áp dụng được cho biểu đồ này (bỏ qua)."
+
+
+def _public_skipped_filters(debug: Any, applied: list[dict] | None) -> list[dict]:
+    """The filters the engine left out (a declared soft drop), as a public viewer
+    may SEE them: the field ref and a neutral reason — no SQL, no value, no
+    route / model detail — and never a 🚫 hidden constraint (withheld, as by
+    ``disclosable_filters``). An authoritative constraint is never here: it is
+    applied or the request is refused."""
+    if hasattr(debug, "model_dump"):
+        debug = debug.model_dump()
+    drops = (debug or {}).get("dropped_filters") if isinstance(debug, dict) else None
+    if not drops:
+        return []
+    withheld = {
+        str(f.get(k) or "").strip().lower()
+        for f in (applied or []) if isinstance(f, dict) and f.get(DISCLOSE_KEY) is False
+        for k in ("field", "semanticField")
+    } - {""}
+    out: list[dict] = []
+    seen: set[str] = set()
+    for d in drops:
+        if not isinstance(d, dict):
+            continue
+        ref = str(d.get("semantic_field") or d.get("field") or "").strip()
+        if not ref or ref.lower() in withheld or ref in seen:
+            continue
+        seen.add(ref)
+        out.append({"semantic_field": ref, "reason": "not_applicable", "detail": _PUBLIC_SKIPPED_DETAIL})
+    return out
+
+
+def _public_chart_payload(data: Any, applied: list[dict] | None = None) -> Any:
+    """A chart result as an anonymous viewer receives it: ``debug`` replaced by
+    the safe skipped-filter list only.
 
     ``debug`` carries the emitted SQL with every filter value inlined (🚫 hidden
-    link, dashboard and page constraints included) and the list of filters that
-    were dropped. The public page never reads it; the builder's own chart-data
-    endpoint still returns it.
+    link, dashboard and page constraints included): never served. What the
+    viewer must still SEE is that a filter they applied did not reach this
+    chart (a declared soft drop — Semantic Kernel Contract v1): the public tile
+    shows the same skipped-filter badge as the builder, from
+    ``debug.dropped_filters`` reduced to ``_public_skipped_filters``.
     """
+    from app.schemas.schemas import ChartDebugInfo
+
+    debug_in = data.get("debug") if isinstance(data, dict) else getattr(data, "debug", None)
+    skipped = _public_skipped_filters(debug_in, applied)
+    safe_debug = ChartDebugInfo.model_validate({"dropped_filters": skipped}) if skipped else None
     if isinstance(data, dict):
-        return {**data, "debug": None}
+        return {**data, "debug": safe_debug.model_dump() if safe_debug else None}
     if hasattr(data, "model_copy"):
-        return data.model_copy(update={"debug": None})
+        return data.model_copy(update={"debug": safe_debug})
     return data
+
+
+def _session_of(obj: Any):
+    """The ORM session holding ``obj`` — None for a detached or unmapped object
+    (dataset scoping and table lookup are then skipped: every filter stays)."""
+    from sqlalchemy.orm import object_session
+    from sqlalchemy.orm.exc import UnmappedInstanceError
+
+    try:
+        return object_session(obj)
+    except UnmappedInstanceError:
+        return None
+
+
+def _report_dataset_ids(dash: Any) -> set:
+    """The datasets the report's charts read (each chart's table, else its binding)."""
+    out: set = set()
+    for dc in getattr(dash, "dashboard_charts", None) or []:
+        cid = getattr(dc, "chart_id", None)
+        if cid is not None:
+            ds = _chart_dataset_id(dash, cid)
+            if ds is not None:
+                out.add(ds)
+    return out
 
 
 def _chart_dataset_id(dash: Dashboard, chart_id: int) -> Any:
@@ -984,7 +1058,18 @@ def _chart_dataset_id(dash: Dashboard, chart_id: int) -> Any:
     one the engine checks a filter's ``datasetId`` against."""
     for dc in dash.dashboard_charts or []:
         if dc.chart_id == chart_id:
-            cfg = getattr(getattr(dc, "chart", None), "config", None)
+            chart = getattr(dc, "chart", None)
+            # The chart's TABLE is the truth (a stored binding is a copy that
+            # may be absent or stale — Kernel Contract v1, Binding Truth).
+            table_id = getattr(chart, "dataset_table_id", None)
+            if table_id is not None:
+                from app.models.dataset import DatasetTable
+
+                session = _session_of(dc)
+                table = session.get(DatasetTable, table_id) if session is not None else None
+                if table is not None and table.dataset_id is not None:
+                    return table.dataset_id
+            cfg = getattr(chart, "config", None)
             binding = cfg.get("semanticBinding") if isinstance(cfg, dict) else None
             if isinstance(binding, dict) and binding.get("datasetId") is not None:
                 return binding.get("datasetId")
@@ -3515,20 +3600,26 @@ def get_public_filter_distinct_values(
             values = [v for v in values if str(v) in allow_set]
         total = len(values)
         page = values[offset:offset + limit]
+        _drops = [d for d in (result.get("dropped_filters") or []) if isinstance(d, dict)]
         return {
             "field": field,
             "values": page,
             "total": total,
             "has_more": (offset + limit) < total,
-            # Diagnostics name the filters that did not apply — 🚫 ones included.
-            # An anonymous viewer is not told (the builder's endpoint still is).
-            "dropped_filters": [],
+            # The cascade filters that did not apply, as a viewer may see them
+            # (field + neutral reason; never a 🚫 constraint, a value or SQL).
+            "dropped_filters": _public_skipped_filters(
+                {"dropped_filters": [d for d in _drops if d.get("reason") != "sql_error"]}, combined_filters),
+            # The warehouse could not answer: the empty list is NOT "no values
+            # match" — the dropdown says it is unavailable.
+            "unavailable": any(d.get("reason") == "sql_error" for d in _drops),
         }
     except AuthoritativeFilterNotApplied:
         # A server-owned constraint the cascade cannot apply: offer nothing
         # rather than values outside the shared scope (the own-field rule's
-        # contract, now for every authoritative constraint).
-        return {"field": field, "values": [], "total": 0, "has_more": False, "dropped_filters": []}
+        # contract, now for every authoritative constraint) — and say so.
+        return {"field": field, "values": [], "total": 0, "has_more": False, "dropped_filters": [],
+                "restricted": True}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
@@ -3631,7 +3722,7 @@ def get_public_chart_data(
             filter_context="dashboard",
             granularity_override=granularity_override,
             snapshot_ttl_minutes=_resolve_public_snapshot_ttl(_chart_appearance),
-        ))
+        ), combined_filters)
     except ValueError as exc:
         # Phase-12.7: previously this swallowed the engine's Vietnamese
         # message ("Bảng X chưa có relationship..." etc.) and returned a
@@ -3639,9 +3730,15 @@ def get_public_chart_data(
         # dashboard think the chart was missing rather than mis-
         # configured. Forward the message verbatim with the right status —
         # unless it names a 🚫 hidden constraint's field (logged instead).
+        # The refusal's machine-readable category (an enum — never a field or a
+        # value) reaches the public viewer too, as on /charts/{id}/data.
+        from app.services.chart_service import REFUSAL_HEADER, refusal_category
+
+        _cat = refusal_category(exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_public_error_text(str(exc), combined_filters),
+            headers={REFUSAL_HEADER: _cat} if _cat else None,
         )
     except Exception as exc:
         logger.exception("Public chart data error for token=%s chart=%s", token, chart_id)
@@ -3757,12 +3854,15 @@ def get_public_charts_data_batch(
     results: list[dict] = []
     for r in raw_results:
         if r.get("ok"):
-            results.append({"chart_id": r["chart_id"], "data": _public_chart_payload(r["data"])})
+            results.append({"chart_id": r["chart_id"],
+                            "data": _public_chart_payload(r["data"], filters_by_chart.get(r["chart_id"]))})
         else:
             results.append({
                 "chart_id": r["chart_id"],
                 "error": _public_error_text(str(r.get("error") or ""), filters_by_chart.get(r["chart_id"])),
                 "status": r.get("status", 500),
+                # the refusal category (an enum) — the tile tells a refusal from a failure
+                "category": r.get("category"),
             })
     for cid in not_found:
         results.append({
@@ -4035,6 +4135,8 @@ def get_dashboard_ai_recon(
             db=db, dashboard=dash, public_filters=combined_filters,
             page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
             exposed_fields=_viewer_allowed(dash, public_filters),
+            # the link's data freshness, as its tiles read it (Realtime = live)
+            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(appearance_config),
         )
         recon = build_proactive_recon(ctx)
     except Exception:
@@ -4191,6 +4293,8 @@ def get_dashboard_ai_briefing_guess(
             db=db, dashboard=dash, public_filters=combined_filters,
             page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
             exposed_fields=_viewer_allowed(dash, public_filters),
+            # the link's data freshness, as its tiles read it (Realtime = live)
+            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(appearance_config),
         )
         recon = build_proactive_recon(ctx)
         guess = guess_briefing_from_recon(
@@ -4280,6 +4384,8 @@ async def post_dashboard_ai_briefing_brief(
             db=db, dashboard=dash, public_filters=combined_filters,
             page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
             exposed_fields=_viewer_allowed(dash, public_filters),
+            # the link's data freshness, as its tiles read it (Realtime = live)
+            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(appearance_config),
         )
     recon = build_proactive_recon(ctx)
     user_prompt = build_executive_brief_user_prompt(
@@ -4721,6 +4827,8 @@ async def chat_dashboard_ai_agent(
             db=db, dashboard=dash, public_filters=combined_filters,
             page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
             exposed_fields=_viewer_allowed(dash, public_filters),
+            # the link's data freshness, as its tiles read it (Realtime = live)
+            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(appearance_config),
         )
 
     # Phase A + B: parse briefing + state, default-construct if missing.
@@ -5093,6 +5201,8 @@ async def explore_dashboard_ai_agent(
             db=db, dashboard=dash, public_filters=combined_filters,
             page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
             exposed_fields=_viewer_allowed(dash, public_filters),
+            # the link's data freshness, as its tiles read it (Realtime = live)
+            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(appearance_config),
         )
     # Guarded BEFORE the run starts. This endpoint fans one briefing out into a
     # multi-round exploration, so an instruction smuggled into `smart_goal` is

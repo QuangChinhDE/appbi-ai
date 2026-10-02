@@ -262,6 +262,10 @@ class ToolContext:
     # column never reaches ANY tool — filtering only the prompt's field list
     # (the pre-P0-05 behaviour) left the raw values readable via get_chart_data.
     excluded_columns: set[str] = field(default_factory=set)
+    #: The surface's snapshot freshness (a public link's ``cache_ttl_minutes``:
+    #: None = current snapshot, 0 = realtime) — the AI reads a chart exactly as
+    #: the viewer's tile does, never a different execution state.
+    snapshot_ttl_minutes: int | None = None
     #: dataset_table_ids of the tiles this context was built from, recorded once
     #: by `from_dashboard`. A public token is served published tiles only, and a
     #: commit during the turn (retrieval logging commits the request session)
@@ -340,6 +344,7 @@ class ToolContext:
         actor_ref: str | None = None,
         page_scope_by_chart: dict[int, list[dict]] | None = None,
         exposed_fields: tuple | None = None,
+        snapshot_ttl_minutes: int | None = None,
     ) -> "ToolContext":
         allowed: set[int] = set()
         served_tables: set[int] = set()
@@ -411,6 +416,7 @@ class ToolContext:
             served_table_ids=served_tables,
             page_scope_by_chart=dict(page_scope_by_chart or {}),
             exposed_fields=exposed_fields,
+            snapshot_ttl_minutes=snapshot_ttl_minutes,
         )
 
     def disclosed_filters(self) -> tuple[list[dict], int]:
@@ -723,6 +729,34 @@ def _fetch_chart_data(
         if isinstance(f, dict):
             from app.services.filter_layered_merge import without_server_owned_keys
             merged.append(without_server_owned_keys(dict(f)) if ctx.exposed_fields else dict(f))
+    # A report over several datasets: the chart takes ITS dataset's filters, as
+    # its public tile does (filter_layered_merge.scope_filters_to_dataset) — and
+    # a filter left out that way is told to the model as NOT applied.
+    scoped_out: list[dict] = []
+    try:
+        from app.models.dataset import DatasetTable as _DT
+        from app.models.models import Chart as _Chart
+        from app.services.filter_layered_merge import foreign_field_check, scope_filters_to_dataset
+
+        def _dataset_of(cid) -> Any:
+            row = ctx.db.get(_Chart, int(cid))
+            # The chart's TABLE is the truth; the stored binding is the fallback.
+            ds = None
+            if getattr(row, "dataset_table_id", None):
+                ds = getattr(ctx.db.get(_DT, row.dataset_table_id), "dataset_id", None)
+            if ds is None:
+                cfg = getattr(row, "config", None) or {}
+                ds = ((cfg.get("semanticBinding") or {}).get("datasetId") if isinstance(cfg, dict) else None)
+            return ds
+
+        _ds_id = _dataset_of(chart_id)
+        _report = {d for d in (_dataset_of(dc.chart_id) for dc in (
+            getattr(getattr(ctx, "dashboard", None), "dashboard_charts", None) or []) if dc.chart_id) if d is not None}
+        _kept = scope_filters_to_dataset(merged, _ds_id, foreign_field_check(ctx.db, _ds_id, _report))
+        scoped_out = [f for f in merged if not any(f is k for k in _kept)]
+        merged = _kept
+    except Exception:  # noqa: BLE001 — unknown dataset → every filter stays (no scoping)
+        logger.debug("chart dataset scoping skipped for chart %s", chart_id, exc_info=True)
     # The chart's page scope — a model-added filter can narrow it, never undo it.
     bounds = ctx.page_scope_by_chart.get(chart_id) if ctx.page_scope_by_chart else None
     if bounds:
@@ -733,6 +767,7 @@ def _fetch_chart_data(
     # column's visibility must not be served a pre-exclusion payload.
     cache_key = (
         chart_id,
+        getattr(ctx, "snapshot_ttl_minutes", None),
         _hash_filters(merged),
         ",".join(sorted(ctx.excluded_columns)) if ctx.excluded_columns else "",
     )
@@ -745,6 +780,7 @@ def _fetch_chart_data(
         chart_id,
         extra_filters=merged or None,
         filter_context="dashboard",
+        snapshot_ttl_minutes=getattr(ctx, "snapshot_ttl_minutes", None),
     )
     raw = result.get("data") if isinstance(result, dict) else None
 
@@ -813,13 +849,44 @@ def _fetch_chart_data(
     # hidden field and value included).
     from app.services.filter_layered_merge import disclosable_filters
     shown, withheld = disclosable_filters(merged)
+    # A filter the chart could NOT apply (a declared soft drop, e.g. a field
+    # unrelated to this chart's table) is never told to the model as applied —
+    # it would summarise the unfiltered number as the filtered answer.
+    _debug = result.get("debug") if isinstance(result, dict) else None
+    _dropped_refs = {
+        str(d.get("semantic_field") or d.get("field") or "").strip()
+        for d in ((_debug or {}).get("dropped_filters") or []) if isinstance(d, dict)
+    } - {""}
+
+    def _refs_of(f: dict) -> set[str]:
+        return {str(f.get(k) or "").strip() for k in ("semanticField", "field")} - {""}
+
+    applied_shown = [f for f in shown if not (_refs_of(f) & _dropped_refs)]
+    not_applied_shown = [f for f in shown if _refs_of(f) & _dropped_refs]
+    if scoped_out:  # another chart's filter — never this chart's answer
+        not_applied_shown += disclosable_filters(scoped_out)[0]
     payload = {
         "columns": columns,
         "rows": rows,
         "filters_applied": [
-            {k: v for k, v in f.items() if not str(k).startswith("_")} for f in shown
+            {k: v for k, v in f.items() if not str(k).startswith("_")} for f in applied_shown
         ],
     }
+    if not_applied_shown:
+        payload["filters_not_applied"] = [
+            {k: v for k, v in f.items() if not str(k).startswith("_")} for f in not_applied_shown
+        ]
+    # A Top-N chart's rows are its top N, not the population: a total over them
+    # is the total of the top N (the tools must say so, never call it "all").
+    try:
+        from app.models.models import Chart as _Chart
+
+        _cfg = getattr(ctx.db.get(_Chart, int(chart_id)), "config", None) or {}
+        _limit = int(((_cfg.get("styleConfig") or {}).get("dataLimit") or 0)) if isinstance(_cfg, dict) else 0
+    except Exception:  # noqa: BLE001 — unknown → not claimed
+        _limit = 0
+    if _limit and len(rows) >= _limit:
+        payload["source_top_n"] = _limit
     if withheld:
         payload["restricted_by_author"] = withheld
     if dropped:

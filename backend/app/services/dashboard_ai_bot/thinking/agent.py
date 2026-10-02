@@ -39,9 +39,12 @@ def _recon_identity(ctx) -> list:
     """The recon cache key's filter part: the enforced filters plus every
     chart's page scope (a recon read without one never answers a viewer bound
     by one)."""
-    from app.services.dashboard_ai_bot.summary_cache import semantic_epoch
+    from app.services.dashboard_ai_bot.summary_cache import scope_hash, semantic_epoch
     return [*(ctx.public_filters or []),
             {"__page_scope__": sorted((str(k), v) for k, v in (getattr(ctx, "page_scope_by_chart", None) or {}).items())},
+            # the AI column scope (as the pack key) and the surface's freshness
+            {"__ai_scope__": scope_hash(getattr(ctx, "excluded_columns", None))},
+            {"__snapshot_ttl__": getattr(ctx, "snapshot_ttl_minutes", None)},
             {"__semantic__": semantic_epoch(getattr(ctx, "db", None))}]
 
 logger = logging.getLogger(__name__)

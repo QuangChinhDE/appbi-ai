@@ -471,3 +471,15 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_semantic_foundation_pg.py
+
+      # ChartService ↔ every consuming surface (Pair #4): the Kernel's answer
+      # asked THROUGH the authenticated tile, the public single chart (/d,
+      # /embed, the PDF worker), the public batch, the public slicer and the AI
+      # chart read / preview: same rows or the same refusal category; a soft
+      # drop shown without internals; authoritative constraints fail closed; a
+      # filter of another dataset never applies; per-tile batch isolation; a
+      # cache slot per link scope; the AI never told a dropped filter applied.
+      - name: "GATE — Pair 4 surfaces (Postgres)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_pair4_surfaces_pg.py

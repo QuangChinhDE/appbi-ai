@@ -519,8 +519,10 @@ def test_a_fanned_date_filter_and_look_alike_role_filters_never_share_a_cache_sl
     from app.services.chart_service import ChartService
 
     seen = []
+    # the REAL cache key (canonicalised), not the arguments it is built from
     monkeypatch.setattr(query_cache, "get_cached",
-                        lambda _ds, _cid, _ct, _rc, filters: seen.append(filters) or None)
+                        lambda _ds, cid, ct, rc, filters: seen.append(query_cache._make_key(cid, ct, rc, filters))
+                        or None)
     req = {"dims": [], "measures": ["p2_sales.revenue"]}
     role = {"field": "p2_sales__ship_date__date_dim.year", "semanticField": "p2_sales__ship_date__date_dim.year",
             "operator": "eq", "value": 2025}

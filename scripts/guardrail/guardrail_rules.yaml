@@ -196,7 +196,7 @@ protected:
                      golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity,
                      relationship_contract, relationship_contract_pg, pair1_baseline_parity,
                      public_authoritative_bounds, pair2_golden_topology, pair3_chartservice,
-                     semantic_foundation]
+                     semantic_foundation, pair4_surfaces]
 
   - id: public_link_security
     label: "Public-link filter merge / access (data-exposure surface)"
@@ -209,7 +209,8 @@ protected:
       Data-exposure surface. Locked/hidden filters must stay enforced (scope
       bound, no leak). The public FE must use publicClient ONLY (no authed
       calls). Verify logged-out.
-    required_tests: [layered_merge, galaxy_golden, public_authoritative_bounds, public_authoritative_bounds_pg]
+    required_tests: [layered_merge, galaxy_golden, public_authoritative_bounds, public_authoritative_bounds_pg,
+                     pair4_surfaces]
 
   - id: engineering_infrastructure
     label: "The protection system itself (gates, rule base, agent contract, CI)"
@@ -259,7 +260,7 @@ features:
     files: [backend/app/services/dataset_model_service.py, backend/app/api/public.py]
     keywords: [distinct, dropdown, slicer, cascade, "khong ra gia tri", "không ra giá trị", "filter value", "loading values"]
     invariants: [distinct_no_correlated_bq, distinct_no_or_of_ins, distinct_no_in_over_aggregated, distinct_strict_no_showall, distinct_self_exclude]
-    required_tests: [distinct_cascade_bq, galaxy_golden]
+    required_tests: [distinct_cascade_bq, galaxy_golden, pair4_surfaces]
 
   - id: chart_sql_engine
     label: "Chart SQL generation (semantic query engine)"
@@ -298,7 +299,8 @@ features:
     files: [backend/app/api/public.py, frontend/src/lib/filters.ts]
     keywords: [locked, hidden, "public filter", "scope bound", layered, leak, viewer]
     invariants: [public_client_only, scope_bound_no_leak]
-    required_tests: [layered_merge, galaxy_golden, public_authoritative_bounds, public_authoritative_bounds_pg]
+    required_tests: [layered_merge, galaxy_golden, public_authoritative_bounds, public_authoritative_bounds_pg,
+                     pair4_surfaces]
 
   - id: dataset_publish_gate
     label: "Sync & Publish gate — the candidate generation is the artifact validated"
@@ -606,6 +608,10 @@ tests:
     requires: postgres
     run: "pytest backend/tests/test_semantic_foundation_pg.py"
     locks: "semantic kernel (Pair 1 + 2 + 3 as one contract, docs/features/semantic-foundation-freeze/kernel-contract-v1.md): division in every semantic expression (formula, nested formula, row-level measure, where_sql, dimension, % of total) is true division with a NULL zero denominator, executed on Postgres and DuckDB and through a saved chart (int/int, int/decimal, decimal/int, SUM/COUNT, negative, NULL numerator / denominator, a 1-in-30000 ratio to 1e-9, AVG of 0/1 flags); a formula over a measure of ANOTHER view is refused (UNSUPPORTED_CONTEXT), never aggregated at the formula view's grain; the same request through chart saved / preview, /semantic/query, dataset execute and measure preview gives the same rows or the same refusal category (NULL contract, a one-to-one relationship, an invalid relationship INVALID_RELATIONSHIP and a non-unique one side FANOUT_RISK included); a reused and a fresh engine compile the same meaning; a declared soft drop is reported by every entry point (dropped_filters); one live statement never reads another connection's table through its own (refused on every executor), a second connection onto the same database / schema is one connection, BigQuery physical tables (absolute names) may cross connections but custom-SQL tables of another project may not, the connection check runs before any key probe on every entry point (the live filter adapter included); a dataset-scope measure never joins a 1:N child (FANOUT_RISK) and a cross-table measure answers or refuses like the plain measure of its fact; a formula is never re-aggregated by an explicit agg or a pivot; a text operator on a date column is refused; dataset execute AND-s every predicate of a field; a cache hit keeps the engine's own dropped filters and a fanned Date filter never shares a cache slot with look-alike role filters; an isolated measure records the filter its fact cannot reach; the division rewrite never appends to a `--` / `#` comment and lexes strings per dialect"
+  pair4_surfaces:
+    requires: postgres
+    run: "pytest backend/tests/test_pair4_surfaces_pg.py"
+    locks: "ChartService ↔ dashboard / public / embed / export / AI surfaces: the Kernel v1 golden requests asked through the authenticated tile, the public single chart (/d, /embed and the PDF worker's page), the public batch and the AI chart read give the same rows or the same refusal category (X-AppBI-Refusal header, batch `category`, AI `semantic_refusal:<CAT>`); a public soft drop is shown as field + `not_applicable` without SQL, warnings, values or a 🚫 field; a link lock is applied or refused (AUTHORITATIVE_NOT_APPLIED), never widened, on every surface; a dashboard filter of ANOTHER tile's dataset does not apply to a chart (only when its field is that dataset's view — a stale id on the chart's own field, or a lock of a dataset no tile reads, still refuses); a batch keeps every tile's own outcome; a slicer option applied gives the hand-computed value, a 🔒 cascades only through members EVERY route admits (a pick keeps the any-route union), an empty list says `restricted` or `unavailable`; the AI lists a dropped filter as not applied, never re-averages / re-sums a non-additive measure across rows, notes a Top-N source; the AI preview is the semantic answer and saves what it previewed; the PDF prints the public page with the same filters; two links / an ordinary vs an authoritative predicate never share a cache slot; a link edit is served on the next view; a relative date preset resolves at request time; legacy and custom charts keep their meaning"
   pair1_baseline_parity:
     requires: postgres-fixture
     run: "pytest backend/tests/test_pair1_baseline_parity.py"

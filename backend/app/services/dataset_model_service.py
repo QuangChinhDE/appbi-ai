@@ -4269,6 +4269,21 @@ def _distinct_values_full(
             if not clauses:
                 return None, last_reason or "no_join_path"
 
+            # An AUTHORITATIVE constraint (a 🔒 / 🚫 / page bound) is a scope,
+            # not a pick: a member is offered only when EVERY path admits it —
+            # never the union of the paths' meanings, which is wider than any
+            # one of them (a member admitted only by an unrelated route). A path
+            # that cannot render cannot be checked: the constraint is refused
+            # (fail closed), never applied through the other paths alone.
+            if filter_condition.get("_authoritative") and len(candidate_paths) > 1:
+                if len(clauses) != len(candidate_paths):
+                    return None, last_reason or "no_join_path"
+                if all(c[0] == "in" for c in clauses):
+                    return {"kind": "join_all",
+                            "parts": [{"on_expr": c[1], "select": c[2]} for c in clauses]}, None
+                return {"kind": "where", "sql": "(" + " AND ".join(
+                    f"{c[1]} IN ({c[2]})" if c[0] == "in" else c[1] for c in clauses) + ")"}, None
+
             # Combine the per-path clauses. A slicer dim reaches the filter's
             # view via one semi-join per equal-shortest path (owner→revenue→date,
             # owner→activity→date, …), all keyed on the SAME base column.
@@ -4409,6 +4424,15 @@ def _distinct_values_full(
                     f"INNER JOIN ({clause['select']}) AS {alias} "
                     f"ON {clause['on_expr']} = {alias}._appbi_semi_key"
                 )
+            elif isinstance(clause, dict) and clause.get("kind") == "join_all":
+                # one semi-join per path: a base row survives only when every path admits it
+                # (each key set DISTINCT: N routes must not multiply the base rows)
+                for pidx, part in enumerate(clause["parts"]):
+                    alias = f"_appbi_semi_{idx}_{pidx}"
+                    join_parts.append(
+                        f"INNER JOIN (SELECT DISTINCT {alias}_k._appbi_semi_key FROM ({part['select']}) AS {alias}_k) "
+                        f"AS {alias} ON {part['on_expr']} = {alias}._appbi_semi_key"
+                    )
             elif isinstance(clause, dict):
                 where_parts.append(clause["sql"])
             else:  # legacy string form (defensive)

@@ -3335,6 +3335,11 @@ def update_public_link(
         link.password_hash = _pwd_context.hash(request.password) if request.password else None
     db.commit()
     db.refresh(link)
+    # The public structure is cached by token: a lock turned 🚫 hidden (its value
+    # withheld from viewers), a changed scope or appearance must be served on the
+    # next view — never the pre-edit structure for the cache TTL.
+    from app.services import query_cache as _qc
+    _qc.invalidate_all_public_meta()
     return _sanitize_link_for_admin(link)
 
 
@@ -3364,6 +3369,8 @@ def delete_public_link(
         )
     db.delete(link)
     db.commit()
+    from app.services import query_cache as _qc
+    _qc.invalidate_all_public_meta()
     return {"deleted": True}
 
 

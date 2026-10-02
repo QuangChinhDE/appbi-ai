@@ -3060,7 +3060,8 @@ def _execute_semantic_chart_runtime(
         {"field": field, "operator": cond.get("operator"), "value": cond.get("value"),
          **({"calendarField": cond["calendarField"]} if cond.get("calendarField") else {}),
          **({"calendarSourceField": cond["calendarSourceField"]} if cond.get("calendarSourceField") else {}),
-         **({"_calendar_fan": cond["_calendar_fan"]} if cond.get("_calendar_fan") else {})}
+         **({"_calendar_fan": cond["_calendar_fan"]} if cond.get("_calendar_fan") else {}),
+         **({"_authoritative": True} if cond.get("_authoritative") else {})}
         for field, conds in sorted(engine_filters.items())
         for cond in (conds if isinstance(conds, list) else [conds])
         if isinstance(cond, dict)

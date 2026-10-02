@@ -178,7 +178,7 @@ export const publicDashboardApi = {
     search?: string,
     offset?: number,
     pageId?: string,
-  ): Promise<{ field: string; values: string[]; total?: number; has_more?: boolean }> => {
+  ): Promise<{ field: string; values: string[]; total?: number; has_more?: boolean; unavailable?: boolean; restricted?: boolean }> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     const res = await publicClient.get(
       `/public/dashboards/${token}/filters/distinct-values`,
