@@ -486,6 +486,17 @@ def collect_derived_dependency_table_ids(
     return dependency_ids
 
 
+# AppBI's internal dialect names are not all sqlglot's. sqlglot registers the
+# PostgreSQL dialect as "postgres"; passing "postgresql" raises "Unknown dialect
+# 'postgresql'. Did you mean postgres?" — which broke creating a calculated table
+# over a PostgreSQL source (the alias rewrite emits SQL through sqlglot).
+_SQLGLOT_DIALECT = {"postgresql": "postgres"}
+
+
+def _to_sqlglot_dialect(dialect: str) -> str:
+    return _SQLGLOT_DIALECT.get((dialect or "").strip().lower(), dialect)
+
+
 def rewrite_dataset_table_aliases_in_sql(
     sql: str,
     replacements: Dict[str, str],
@@ -526,7 +537,7 @@ def rewrite_dataset_table_aliases_in_sql(
         table.set("this", exp.Identifier(this=replacement, quoted=False))
         changed = True
 
-    return statement.sql(dialect=output_dialect) if changed else cleaned
+    return statement.sql(dialect=_to_sqlglot_dialect(output_dialect)) if changed else cleaned
 
 
 def _source_columns_for_transformations(table: DatasetTable | Any) -> list[str] | None:

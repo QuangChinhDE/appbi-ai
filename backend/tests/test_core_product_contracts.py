@@ -76,3 +76,24 @@ def test_a_query_table_accepts_a_plain_select():
     from app.services.query_validator import QueryValidator
     cleaned = QueryValidator.validate_and_clean("SELECT id, region FROM orders")
     assert "select" in cleaned.lower()
+
+
+def test_a_calculated_table_over_postgres_emits_valid_sql():
+    """Browser (M2 Calculated Table): creating a calculated table over a
+    PostgreSQL source failed with "Unknown dialect 'postgresql'. Did you mean
+    postgres?" — the alias rewrite passed AppBI's dialect name straight to
+    sqlglot, whose Postgres dialect is "postgres". The rewrite must map it."""
+    from app.services.dataset_table_sql_service import (
+        rewrite_dataset_table_aliases_in_sql, _to_sqlglot_dialect,
+    )
+
+    assert _to_sqlglot_dialect("postgresql") == "postgres"
+    assert _to_sqlglot_dialect("bigquery") == "bigquery"   # unchanged
+    assert _to_sqlglot_dialect("mysql") == "mysql"
+
+    out = rewrite_dataset_table_aliases_in_sql(
+        "SELECT * FROM orders WHERE region = 'North'",
+        {"orders": "dataset_table_42"},
+        output_dialect="postgresql",
+    )
+    assert "dataset_table_42" in out      # the alias was rewritten (no exception)
