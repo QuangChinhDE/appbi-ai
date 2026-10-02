@@ -483,3 +483,16 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_pair4_surfaces_pg.py
+
+      # Source / Data Prep / Snapshot <-> Drift / Health / Quality /
+      # Observability (Pair #5): a calculated column is the Kernel's true
+      # division on every engine; the transformation chain runs in order or
+      # refuses; the snapshot extract, quality, health and monitors read the
+      # SAME logical relation charts read; a source schema change is seen (and
+      # named) by the monitor and the schema_drift rule; an error / no-data /
+      # still-learning check is never a pass; a failed or mid-sync-edited
+      # candidate is never published; publish and rebuild exclude each other.
+      - name: "GATE — Pair 5 data state (Postgres)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_pair5_data_state_pg.py

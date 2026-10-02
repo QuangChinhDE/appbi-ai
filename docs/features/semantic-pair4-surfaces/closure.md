@@ -148,3 +148,5 @@ and may name semantic view names on the refused routes; never SQL, values or a
 
 * `dataset add_column` expressions `[a]/[b]` may preserve PostgreSQL integer
   division (outside the Kernel's division rewrite) — recorded, not fixed here.
+  Resolved in Pair #5 (`docs/features/semantic-pair5-data-state/closure.md`):
+  calculated columns compile through the Kernel's `normalize_division`.

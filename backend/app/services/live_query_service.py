@@ -1289,7 +1289,10 @@ class LiveQueryService:
     ) -> Dict[str, Any]:
         """Preview dataset rows directly from the source with cache + cost guard."""
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-        dialect = "bigquery" if ds_type == "bigquery" else "postgresql"
+        # The SOURCE's dialect, as the base relation (build_live_base_query_plan)
+        # uses: a MySQL source got Postgres-quoted WHERE / ORDER BY ("col" is a
+        # STRING LITERAL there — the preview filtered and sorted on a constant).
+        dialect = _dialect_for_ds_type(ds_type)
         cache_enabled = _should_cache_live_query(ds_type)
 
         from app.core.crypto import decrypt_config

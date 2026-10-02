@@ -406,3 +406,4 @@ backend/_verify_gate.db
 !backend/tests/test_pair3_chartservice_pg.py
 !backend/tests/test_semantic_foundation_pg.py
 !backend/tests/test_pair4_surfaces_pg.py
+!backend/tests/test_pair5_data_state_pg.py

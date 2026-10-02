@@ -9,6 +9,14 @@ import re
 from app.services.type_override_service import build_safe_cast_sql
 
 
+class TransformationError(ValueError):
+    """A transformation list whose stored order cannot hold: a step references
+    a column that does not exist at that point (not yet created, renamed away,
+    removed), or produces a column name that already exists. Refused with the
+    column named — never compiled into a relation that reads a different or
+    ambiguous column (two outputs named ``b``: whoever read ``b`` got one)."""
+
+
 def _quote_identifier(name: str, dialect: str) -> str:
     if dialect in ("bigquery", "mysql"):
         return f"`{name}`"
@@ -489,6 +497,15 @@ class TransformationCompiler:
         result_columns = list(current_columns or [])
         step_num = 0
 
+        # Columns an EARLIER step provably took away (renamed / not selected):
+        # a later reference to one is refused by name. A name never seen at all
+        # is left to the engine (its loud "column does not exist") — the source
+        # column list may be a stale cache, and a guess would over-refuse.
+        gone: set = set()
+
+        def _known(name: str) -> bool:
+            return name not in gone
+
         for transformation in active_steps:
             t_type = transformation.get("type")
             params = transformation.get("params", {}) or {}
@@ -500,6 +517,12 @@ class TransformationCompiler:
                 ]
                 if not requested_columns:
                     continue
+                missing = [c for c in requested_columns if not _known(c)]
+                if missing:
+                    raise TransformationError(
+                        f"Bước chọn cột tham chiếu cột không còn tồn tại ở bước này: '{missing[0]}'.")
+                if current_columns is not None:
+                    gone |= {c for c in current_columns if c not in requested_columns}
                 select_parts = [_quote_identifier(col, dialect) for col in requested_columns]
                 step_sql = (
                     "SELECT\n  "
@@ -516,6 +539,13 @@ class TransformationCompiler:
                 }
                 if not mapping:
                     continue
+                for src, dst in mapping.items():
+                    if not _known(src):
+                        raise TransformationError(f"Bước đổi tên tham chiếu cột không còn tồn tại ở bước này: '{src}'.")
+                    if current_columns is not None and dst != src and dst in current_columns and dst not in mapping:
+                        raise TransformationError(f"Đổi tên '{src}' thành '{dst}' trùng một cột đã có: '{dst}'.")
+                gone |= {src for src, dst in mapping.items() if dst != src}
+                gone -= set(mapping.values())
 
                 if current_columns:
                     select_parts = []
@@ -546,6 +576,13 @@ class TransformationCompiler:
                 expression = str(params.get("expression") or "").strip()
                 if not new_field or not expression:
                     continue
+                if current_columns is not None and new_field in current_columns:
+                    raise TransformationError(f"Cột tính toán trùng tên một cột đã có: '{new_field}'.")
+                for ref in re.findall(r"\[([^\[\]]+)\]", expression):
+                    if not _known(ref.strip()):
+                        raise TransformationError(
+                            f"Cột tính toán '{new_field}' tham chiếu cột không còn tồn tại ở bước này: '{ref.strip()}'.")
+                gone.discard(new_field)
 
                 sql_expr = TransformationCompiler._compile_expression(expression, dialect)
                 base_projection = (
@@ -696,7 +733,16 @@ class TransformationCompiler:
                 f"__CF_COLREF_{idx}__",
                 _quote_identifier(resolved, dialect),
             )
-        return expr
+        # A calculated column divides like the Semantic Kernel (Kernel Contract
+        # v1): true division, NULL on a zero denominator, on every engine. The
+        # `/` was passed through verbatim — Postgres integer division (13 / 7 =
+        # 1) and a whole-dataset "division by zero" error, DuckDB `inf`, MySQL
+        # NULL — so one business ratio meant three numbers. ONE rewrite owns
+        # this (semantic_arithmetic.normalize_division, lexer-aware: strings,
+        # comments, `//` untouched).
+        from app.services.semantic_arithmetic import normalize_division
+
+        return normalize_division(expr, dialect)
 
     @staticmethod
     def validate_expression(expression: str) -> Tuple[bool, Optional[str]]:

@@ -13,11 +13,17 @@ export type Severity = 'info' | 'warning' | 'critical';
 export type IncidentStatus = 'open' | 'acknowledged' | 'resolved';
 
 // ── Overview ──────────────────────────────────────────────────────────────────
+/** breached > error (a check failed to run) > unknown (never run / still
+ *  learning) > not_monitored > healthy — "healthy" only when every check ran. */
+export type HealthState = 'breached' | 'error' | 'unknown' | 'not_monitored' | 'healthy';
 export interface PillarHealth {
   pillar: Pillar;
   monitors: number;
   breached: number;
+  errored?: number;
+  unknown?: number;
   openIncidents: number;
+  status?: HealthState;
   healthy: boolean;
 }
 export interface ObservabilityOverview {
@@ -106,6 +112,7 @@ export interface UsageRow {
   chartCount: number; dashboardCount: number;
   lastRefresh?: string | null;
   monitors: number; qualityRules: number; openIncidents: number;
+  erroredChecks?: number; unknownChecks?: number; health?: HealthState;
   unused: boolean; observed: boolean;
 }
 export async function getUsage(): Promise<UsageRow[]> {

@@ -3545,6 +3545,20 @@ def update_dataset_table(
             detail="Standard Date table is managed by dataset calendar settings and cannot be edited here.",
         )
 
+    # A composed table (a pointer to another dataset's published table) carries
+    # no shaping of its own: it would show in the preview and never reach a
+    # chart (the published read swaps in the parent's snapshot). Refused.
+    if db_table.source_kind == "dataset" and (
+        table_update.transformations is not None or table_update.type_overrides is not None
+    ):
+        from app.services.dataset_model_service import refuse_composed_table_shaping
+
+        try:
+            refuse_composed_table_shaping(db_table, db, transformations=table_update.transformations,
+                                          type_overrides=table_update.type_overrides)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     # Reject source_query updates on unsupported table kinds
     if table_update.source_query is not None and db_table.source_kind not in {"sql_query", "derived_table"}:
         raise HTTPException(
@@ -4334,6 +4348,12 @@ def preview_dataset_table(
                 raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
             raise HTTPException(status_code=400, detail=str(exc))
     elif db_table.source_kind == "dataset":
+        from app.services.dataset_model_service import refuse_composed_table_shaping
+
+        try:
+            refuse_composed_table_shaping(db_table, db)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         # Composition parent-ref: preview the parent's CURRENT published snapshot
         # (the design-time source). Reuse the standard preview path via a proxy
         # sql_query table pointed at the parent snapshot ref on the host BQ.

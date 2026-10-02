@@ -671,17 +671,14 @@ def _apply_semantic_type_overrides(sql: str, table: DatasetTable, *, dialect: st
     overrides = normalize_type_overrides(getattr(table, "type_overrides", None))
     if not overrides:
         return sql
-    try:
-        from app.services.live_query_service import _extract_cached_output_columns
+    # No silent skip: a projection that cannot be built FAILS (loudly) — the
+    # preview (live_query_service.build_live_base_query_plan) builds the same
+    # projection without a guard, so swallowing here made the chart read the
+    # column UNCAST while the preview showed it cast.
+    from app.services.live_query_service import _extract_cached_output_columns
 
-        columns = _extract_cached_output_columns(table)
-        return build_runtime_projection_query(sql, columns, overrides, dialect)
-    except Exception as exc:  # noqa: BLE001 — never break model/chart rendering
-        logger.warning(
-            "[semantic_sql] type-override projection skipped for table %s: %s",
-            getattr(table, "id", None), exc,
-        )
-        return sql
+    columns = _extract_cached_output_columns(table)
+    return build_runtime_projection_query(sql, columns, overrides, dialect)
 
 
 def _coerce_distinct_values(rows: list[Any]) -> list[str]:
@@ -718,6 +715,44 @@ def _resolve_dataset_dialect(datasources: List[DataSource]) -> str:
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         return _dialect_for_ds_type(ds_type)
     return "postgresql"
+
+
+COMPOSED_TABLE_SHAPING_REFUSED = (
+    "Bảng tham chiếu một dataset khác không có biến đổi / ép kiểu riêng: dữ liệu của nó là bản "
+    "đã publish của dataset gốc. Hãy thêm cột tính toán, đổi tên hoặc ép kiểu trong dataset gốc."
+)
+
+
+def refuse_composed_table_shaping(table: Any, db: Optional[Session] = None, *,
+                                  transformations: Any = None, type_overrides: Any = None) -> None:
+    """A composed table (``source_kind == 'dataset'``) is a POINTER to its
+    parent's published table: at published read time its FROM is the parent's
+    pinned snapshot, so shaping of ITS OWN cannot apply. The preview applied it
+    and every chart did not — one table, two data. Refused instead, wherever
+    such a table is read or written.
+
+    Own shaping = any transformation, or an UPDATE that sets type overrides
+    other than the ones stored. The stored overrides are the mirror pinning
+    copied from the parent table (the parent snapshot already has them baked
+    in) — metadata, never the composed table's own — so a read is never refused
+    for them, even after the parent's overrides moved on (that is a parent
+    change the child picks up when it re-publishes; refusing it broke every
+    read of the child). ``transformations`` / ``type_overrides`` check an
+    incoming update instead of the stored table."""
+    from app.services.transformation_compiler import TransformationCompiler
+    from app.services.type_override_service import normalize_type_overrides
+
+    if getattr(table, "source_kind", None) != "dataset":
+        return
+    steps = transformations if transformations is not None else getattr(table, "transformations", None)
+    if TransformationCompiler.normalize_server_transformations(steps or []):
+        raise ValueError(COMPOSED_TABLE_SHAPING_REFUSED)
+    if type_overrides is None:
+        return
+    incoming = normalize_type_overrides(type_overrides)
+    mirror = normalize_type_overrides(getattr(table, "type_overrides", None))
+    if incoming and incoming != (mirror or {}):
+        raise ValueError(COMPOSED_TABLE_SHAPING_REFUSED)
 
 
 def _sql_table_for_table(
@@ -761,17 +796,18 @@ def _sql_table_for_table(
                 _resolved_ds, resolved_sql = build_dataset_table_live_query(
                     db, dataset_obj, table
                 )
-                # `resolved_sql` is already a complete SELECT (possibly
-                # `WITH … SELECT …`) with transformations applied — wrap in
-                # parens to use it as a subquery; do NOT re-apply transforms.
-                return f"({resolved_sql})"
-            except Exception as exc:  # noqa: BLE001 — never block model gen
-                logger.warning(
-                    "[derived_sql] alias-resolve failed for table %s; falling "
-                    "back to raw wrap (may fail on BigQuery): %s",
-                    getattr(table, "id", None),
-                    exc,
-                )
+            except Exception as exc:  # noqa: BLE001 — re-raised: no raw-wrap guess
+                # No fallback to the raw wrap here: unresolved aliases (`FROM
+                # sales`) would then read whatever relation of that NAME the
+                # engine finds — another table, silently — or fail obscurely.
+                raise ValueError(
+                    f"Bảng tính toán '{getattr(table, 'display_name', None) or getattr(table, 'id', None)}' "
+                    f"không dựng được truy vấn từ các bảng nguồn: {exc}"
+                ) from exc
+            # `resolved_sql` is already a complete SELECT (possibly
+            # `WITH … SELECT …`) with transformations applied — wrap in
+            # parens to use it as a subquery; do NOT re-apply transforms.
+            return f"({resolved_sql})"
         base_query = f"SELECT * FROM ({table.source_query}) AS _dataset_model_src"
         return _apply_semantic_transformations(base_query, table, dialect=calendar_dialect)
     if table.source_kind == "physical_table" and table.source_table_name:
@@ -782,6 +818,7 @@ def _sql_table_for_table(
         base_query = f"SELECT * FROM ({table.source_query}) AS _dataset_model_src"
         return _apply_semantic_transformations(base_query, table, dialect=calendar_dialect)
     if getattr(table, "source_kind", None) == "dataset" and getattr(table, "parent_dataset_table_id", None):
+        refuse_composed_table_shaping(table, db)
         # Dataset-on-Dataset composition. At PUBLISHED read time the planner
         # overrides this view's FROM with the child's PINNED parent generation
         # (execution_plan._plan_published), so this fragment is used only at
@@ -1764,20 +1801,29 @@ def _definition_column_refs(defn: dict) -> set[str]:
     return {r.lower() for r in refs}
 
 
-def dangling_model_references(db: Session, dataset_id: int) -> list[dict]:
+def dangling_model_references(db: Session, dataset_id: int, *, columns_for=None) -> list[dict]:
     """Every definition in the dataset's model that names a column its table no
     longer has: dimension/measure SQL, measure source_columns and filters,
     primary-key columns, and join key columns on either side.
 
     A dangling reference is not self-healed by a resync (user definitions are
     merge-preserved), so it is reported, and a query touching it fails at the
-    warehouse. Tables without a column cache are skipped (unknown ≠ dangling)."""
+    warehouse. Tables without a column cache are skipped (unknown ≠ dangling).
+
+    ``columns_for(table)`` (optional) gives the table's CURRENT columns — the
+    live logical relation (dataset_relation_service.logical_relation_columns):
+    a column dropped upstream is then dangling even while columns_cache still
+    lists it. A table it cannot read (None) falls back to the cache."""
     tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
-    cols_by_table = {
-        t.id: {c.lower() for c in cache_column_names(t.columns_cache)}
-        for t in tables
-        if t.columns_cache and not is_generated_calendar_table(t)
-    }
+    cols_by_table = {}
+    for t in tables:
+        if is_generated_calendar_table(t):
+            continue
+        live = columns_for(t) if columns_for is not None else None
+        if live is not None:
+            cols_by_table[t.id] = {str(c.get("name") if isinstance(c, dict) else c).lower() for c in live}
+        elif t.columns_cache:
+            cols_by_table[t.id] = {c.lower() for c in cache_column_names(t.columns_cache)}
     if not cols_by_table:
         return []
     views = db.query(SemanticView).filter(SemanticView.dataset_table_id.in_(list(cols_by_table))).all()
@@ -1994,10 +2040,8 @@ def _sync_dataset_model_structure(
         dimensions, measures = _semantic_fields_for_table(dataset_obj, table)
         display_label = table.display_name or table.source_table_name or view_name
         description = table.auto_description or f"View for table: {display_label}"
-        view, was_created, was_updated = _upsert_semantic_view(
-            db,
-            name=view_name,
-            sql_table_name=_sql_table_for_table(
+        try:
+            table_sql = _sql_table_for_table(
                 dataset_obj,
                 table,
                 calendar_dialect=calendar_dialect,
@@ -2007,7 +2051,19 @@ def _sync_dataset_model_structure(
                     else None
                 ),
                 db=db,
-            ),
+            )
+        except ValueError as exc:
+            # This table's relation is refused (see _sql_table_for_table); the
+            # rest of the model still syncs. Its view keeps its stored fragment,
+            # which the engine never answers from for a refused table.
+            logger.warning("[model-sync] table %s relation refused: %s", table.id, exc)
+            if existing_view is None:
+                continue
+            table_sql = existing_view.sql_table_name
+        view, was_created, was_updated = _upsert_semantic_view(
+            db,
+            name=view_name,
+            sql_table_name=table_sql,
             dataset_table_id=table.id,
             dimensions=dimensions,
             measures=measures,

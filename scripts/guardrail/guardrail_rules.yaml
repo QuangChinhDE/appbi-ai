@@ -308,7 +308,26 @@ features:
       - backend/app/services/dataset_publish_service.py
       - backend/app/services/semantic_health_service.py
     keywords: [publish, generation, snapshot, "semantic health", candidate, "sync & publish"]
-    required_tests: [publish_candidate_generation, semantic_health]
+    required_tests: [publish_candidate_generation, semantic_health, pair5_data_state]
+
+  - id: data_state
+    label: "Source / data prep / snapshot <-> drift / health / quality / observability (Pair #5)"
+    files:
+      - backend/app/services/transformation_compiler.py
+      - backend/app/services/live_query_service.py
+      - backend/app/services/snapshot_service.py
+      - backend/app/services/snapshot_scheduler.py
+      - backend/app/services/dataset_relation_service.py
+      - backend/app/services/dataset_quality_service.py
+      - backend/app/services/observability_service.py
+      - backend/app/services/dataset_crud.py
+      - backend/app/services/dataset_composition_service.py
+      - backend/app/services/column_summary_service.py
+      - backend/app/services/description_pipeline_service.py
+      - backend/app/api/observability.py
+    keywords: [transformation, "calculated column", snapshot, drift, schema, quality, freshness, volume,
+               observability, monitor, incident, publish]
+    required_tests: [pair5_data_state]
 
   - id: dashboard_build_render
     label: "Dashboard Builder tile render + filter seeding (FE)"
@@ -351,7 +370,7 @@ features:
     files: [backend/app/services/semantic_health_service.py, backend/app/services/dataset_publish_service.py]
     keywords: [quality, health, uniqueness, "primary key", cardinality, publish, snapshot parity]
     invariants: []
-    required_tests: [semantic_health]
+    required_tests: [semantic_health, pair5_data_state]
 
   - id: measures
     label: "Measures (expression/filters/ratio/context modifiers)"
@@ -612,6 +631,25 @@ tests:
     requires: postgres
     run: "pytest backend/tests/test_pair4_surfaces_pg.py"
     locks: "ChartService ↔ dashboard / public / embed / export / AI surfaces: the Kernel v1 golden requests asked through the authenticated tile, the public single chart (/d, /embed and the PDF worker's page), the public batch and the AI chart read give the same rows or the same refusal category (X-AppBI-Refusal header, batch `category`, AI `semantic_refusal:<CAT>`); a public soft drop is shown as field + `not_applicable` without SQL, warnings, values or a 🚫 field; a link lock is applied or refused (AUTHORITATIVE_NOT_APPLIED), never widened, on every surface; a dashboard filter of ANOTHER tile's dataset does not apply to a chart (only when its field is that dataset's view — a stale id on the chart's own field, or a lock of a dataset no tile reads, still refuses); a batch keeps every tile's own outcome; a slicer option applied gives the hand-computed value, a 🔒 cascades only through members EVERY route admits (a pick keeps the any-route union), an empty list says `restricted` or `unavailable`; the AI lists a dropped filter as not applied, never re-averages / re-sums a non-additive measure across rows, notes a Top-N source; the AI preview is the semantic answer and saves what it previewed; the PDF prints the public page with the same filters; two links / an ordinary vs an authoritative predicate never share a cache slot; a link edit is served on the next view; a relative date preset resolves at request time; legacy and custom charts keep their meaning"
+  pair5_data_state:
+    requires: postgres
+    run: "pytest backend/tests/test_pair5_data_state_pg.py"
+    locks: "source / data prep / snapshot <-> drift / health / quality / observability: a calculated column
+      ([a] / [b], ([a] + 1) / [b], decimal and NULL operands, a zero denominator) is true division with NULL on
+      Postgres, DuckDB and in the rendered SQL; a transformation chain runs in stored order, a disabled step is
+      absent, a reference to a removed / never-seen column or a duplicate name refuses (TransformationError); the
+      snapshot extract never falls back to the raw source; a type override / derived / composed table that cannot
+      be projected refuses the chart (never served stale); quality rules check the cast and calculated columns of
+      the logical relation, a query error is an error and a no-row result is not evaluated (never a pass); volume
+      from a constant baseline breaches and a learning monitor is unknown; a source column dropped / added /
+      retyped upstream is breached by the schema monitor AND the schema_drift rule (live relation, not
+      columns_cache; type families; the reason named when unreadable) and stays breached until accepted; health is
+      healthy only when every check ran and passed; freshness on timestamptz; observability instants are UTC (Z); a
+      shaping edit drops samples / stats; a dangling join / measure is a blocking failure and the chart refuses;
+      a failed or mid-sync-edited candidate never becomes the published generation, a live sync is not reaped,
+      publish and rebuild exclude each other, the scheduler never deploys an unpublished design, a fresh publish
+      is not changes-pending, no snapshot host is named as the failure; a composed child pins the parent
+      generation it validated; a column summary is keyed by the table's shaping"
   pair1_baseline_parity:
     requires: postgres-fixture
     run: "pytest backend/tests/test_pair1_baseline_parity.py"

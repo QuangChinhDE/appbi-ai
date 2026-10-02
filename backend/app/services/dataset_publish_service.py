@@ -258,11 +258,17 @@ def _refresh_run_tables(db: Session, dataset_id: int, built: Optional[list]) -> 
         return None
 
 
-def design_fingerprint(db: Session, dataset_id: int) -> str:
+def design_fingerprint(db: Session, dataset_id: int,
+                       parent_generations: Optional[Dict[int, int]] = None) -> str:
     """sha256 of the LOCKED design — tables (source kind/name/query + column
     name:type + transforms + type overrides) and the semantic model
     (view dimensions/measures + explore joins). Stable across ordering. A change
-    here after publish ⇒ changes_pending."""
+    here after publish ⇒ changes_pending.
+
+    ``parent_generations`` ({parent_dataset_id: generation}) fingerprints a
+    composed table against the parent generation it was PINNED to (the publish
+    records what it validated); omitted, the parent's current one (what a reader
+    compares against — so a parent that moved on reads changes_pending)."""
     import app.models.semantic as sem
 
     parts: List[str] = []
@@ -294,8 +300,11 @@ def design_fingerprint(db: Session, dataset_id: int) -> str:
     # re-validates + re-publishes against the new parent generation (principle #2).
     for t in tables:
         if getattr(t, "source_kind", None) == "dataset":
-            parent = db.query(Dataset).filter(Dataset.id == t.parent_dataset_id).first()
-            gen = getattr(parent, "published_generation", None) if parent else None
+            if parent_generations is not None and t.parent_dataset_id in parent_generations:
+                gen = parent_generations[t.parent_dataset_id]
+            else:
+                parent = db.query(Dataset).filter(Dataset.id == t.parent_dataset_id).first()
+                gen = getattr(parent, "published_generation", None) if parent else None
             parts.append("P|%s|%s|%s" % (t.id, t.parent_dataset_id, gen))
     model = db.query(sem.SemanticModel).filter(sem.SemanticModel.dataset_id == dataset_id).first()
     if model is not None:
@@ -314,6 +323,33 @@ def design_fingerprint(db: Session, dataset_id: int) -> str:
             .all()
         )
         for e in explores:
+            parts.append("E|%s|%s" % (e.base_view_name, _stable(e.joins)))
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def authored_design_fingerprint(db: Session, dataset_id: int) -> str:
+    """sha256 of what a PERSON authors and a sync never writes: each table's
+    source (kind / name / query), enabled flag, transformations and type
+    overrides, and the model's measures and joins. Excludes the column cache
+    and the dimensions mirrored from it — the build itself rewrites those (the
+    physical-type reconcile), so they cannot tell an edit from the sync."""
+    import app.models.semantic as sem
+
+    tables = (db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id)
+              .order_by(DatasetTable.id).all())
+    parts: List[str] = [
+        "|".join(["T", str(t.id), str(getattr(t, "enabled", True)), str(t.source_kind),
+                  str(t.source_table_name or ""), str(t.source_query or ""),
+                  _stable(t.transformations), _stable(t.type_overrides)])
+        for t in tables
+    ]
+    model = db.query(sem.SemanticModel).filter(sem.SemanticModel.dataset_id == dataset_id).first()
+    if model is not None:
+        for v in (db.query(sem.SemanticView).filter(sem.SemanticView.dataset_table_id.in_([t.id for t in tables]))
+                  .order_by(sem.SemanticView.id).all()):
+            parts.append("V|%s|%s" % (v.name, _stable(v.measures)))
+        for e in (db.query(sem.SemanticExplore).filter(sem.SemanticExplore.model_id == model.id)
+                  .order_by(sem.SemanticExplore.id).all()):
             parts.append("E|%s|%s" % (e.base_view_name, _stable(e.joins)))
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
@@ -404,6 +440,11 @@ def start_sync_and_publish(
 
     if not _qc.try_claim_global(_lease_key(dataset_id), _PUBLISH_LEASE_SECONDS):
         return {"started": False, "reason": "already_syncing"}
+    if _qc.is_claimed_global(f"snaprebuild::{dataset_id}"):
+        # A background rebuild is building this dataset's tables right now; a
+        # publish started on top would race it table by table. One writer.
+        _qc.release_global(_lease_key(dataset_id))
+        return {"started": False, "reason": "rebuilding"}
 
     sync_progress.start(dataset_id, total=0, trigger=trigger)
 
@@ -441,19 +482,47 @@ def start_sync_and_publish(
     return {"started": True}
 
 
+#: A sync whose progress has not moved for this long is presumed dead.
+STUCK_SYNC_STALE_SECONDS = 20 * 60
+
+
+def _sync_looks_alive(dataset_id: int, now: Optional[float] = None) -> bool:
+    """Is a sync for ``dataset_id`` still making progress SOMEWHERE? The running
+    sync mirrors its progress (with ``updated_at``) to the shared cross-worker
+    store; a fresh progress record means another worker is still running it."""
+    import time as _time
+
+    from app.services import sync_progress
+
+    p = sync_progress.get(dataset_id) or {}
+    ts = p.get("updated_at")
+    if not isinstance(ts, (int, float)):
+        return False
+    if str(p.get("phase") or "") in ("done", "failed", "stopped"):
+        return False
+    return ((now or _time.time()) - float(ts)) < STUCK_SYNC_STALE_SECONDS
+
+
 def reap_stuck_syncs() -> int:
-    """Startup reaper: a fresh process means NO sync is actually running, so any
-    dataset left in 'syncing' is a crash/restart casualty — it would otherwise
-    show "Syncing…" forever and block new syncs until the 1h lease TTL expires
-    (the lease lives in shared sqlite and survives a restart). Release the stale
-    publish lease + reset the state to its safe prior value. Mirrors the workboard
-    stuck-run reaper. NEVER raises."""
+    """Startup reaper: a dataset left in 'syncing' by a crash/restart would show
+    "Syncing…" forever and block new syncs until the 1h lease TTL expires (the
+    lease lives in shared sqlite and survives a restart). Release the stale
+    publish lease + reset the state to its safe prior value. NEVER raises.
+
+    Only a sync that is provably DEAD is reaped — its cross-worker progress has
+    not moved for STUCK_SYNC_STALE_SECONDS (or it has none). "A fresh process
+    means no sync is running" holds for one worker only: with several, one
+    worker's restart released ANOTHER worker's live lease and reset its state,
+    and a second sync could then run — and publish — alongside the first."""
     from app.core.database import SessionLocal
     db = SessionLocal()
     n = 0
     try:
         stuck = db.query(Dataset).filter(Dataset.publish_state == "syncing").all()
         for ds in stuck:
+            if _sync_looks_alive(ds.id):
+                logger.info("[publish] dataset %s still syncing elsewhere (progress is fresh) — not reaped", ds.id)
+                continue
             _qc.release_global(_lease_key(ds.id))
             if ds.published_generation is not None:
                 ds.publish_state = "published"  # keep serving the pinned gen
@@ -519,9 +588,10 @@ def _sync_and_publish_blocking(
     #    the same BQ host, resolvable at its pinned generation, and the edge must
     #    not form a cycle / exceed depth. Fail LOUD (sync_failed) rather than
     #    publish a child pointing at a missing/unpublished parent (principles #2/#6).
+    validated_parents: Dict[int, int] = {}
     try:
         from app.services import dataset_composition_service as _comp
-        _comp.validate_parents_publishable(db, dataset_id)
+        validated_parents = _comp.validate_parents_publishable(db, dataset_id) or {}
     except ValueError as exc:
         ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         ds.publish_state = "sync_failed"
@@ -533,9 +603,10 @@ def _sync_and_publish_blocking(
         logger.warning("[publish] composition pre-flight FAILED dataset=%s: %s", dataset_id, exc)
         return {"ok": False, "error": str(exc)}
 
-    # 1) LOCK the design fingerprint NOW (before ETL) so a mid-sync edit doesn't
-    #    silently publish a different design than was validated.
-    locked_fp = design_fingerprint(db, dataset_id)
+    # 1) LOCK the authored design NOW (before ETL): an edit landing mid-sync must
+    #    refuse the publish (checked after the build), never publish a generation
+    #    built partly from another design.
+    locked_authored = authored_design_fingerprint(db, dataset_id)
 
     # 2) SYNC — build one complete generation (reuses the proven builder).
     result = snapshot_service.refresh_all_for_dataset(db, dataset_id, force=True)
@@ -565,10 +636,23 @@ def _sync_and_publish_blocking(
                 "built": built, "skipped": skipped}
 
     # 3) VALIDATE gate — the generation must fully cover every materializable
-    #    (enabled, non-calendar, non-derived) table.
+    #    (enabled, non-calendar, non-derived) table, AND be built from the design
+    #    that was locked: tables are built from the design as it is AT BUILD TIME,
+    #    so an edit landing mid-sync published a generation partly built from the
+    #    new design under the OLD design's fingerprint. Refused — sync again.
     from app.services import sync_progress
     sync_progress.set_phase(dataset_id, "validating")
     ok, reason = _validate_generation(db, dataset_id, generation)
+    if not ok and not built and result.get("no_host"):
+        # Nothing was built because there is nowhere to build it: no BigQuery
+        # datasource hosts this dataset's snapshots. "build có bảng lỗi" sent
+        # the user hunting for a table error that does not exist.
+        reason = ("Không có nơi lưu snapshot: dataset này chưa có BigQuery datasource nào bật "
+                  "materialization (snapshot host), nên không bảng nào được dựng. Thêm một "
+                  "BigQuery host để Sync & Publish.")
+    if ok and authored_design_fingerprint(db, dataset_id) != locked_authored:
+        ok, reason = False, ("Thiết kế dataset đã thay đổi trong lúc đồng bộ — generation vừa dựng không "
+                             "khớp một thiết kế duy nhất nên không được publish. Bấm Sync & Publish lại.")
     if not ok:
         ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         ds.publish_state = "sync_failed"
@@ -589,7 +673,15 @@ def _sync_and_publish_blocking(
     ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     ds.published_generation = generation
     ds.published_at = datetime.utcnow()
-    ds.published_design_fingerprint = locked_fp
+    # The design AS BUILT: the build itself rewrites the column cache (the
+    # physical-type reconcile), so the pre-build fingerprint made a fresh
+    # publish read "changes pending" for changes nobody made. An authored edit
+    # during the sync already refused the publish above. A composed table is
+    # fingerprinted against the parent generation it is PINNED to (what was
+    # validated): a parent that re-published meanwhile then reads
+    # changes_pending, never "published" over an older parent generation.
+    ds.published_design_fingerprint = design_fingerprint(
+        db, dataset_id, parent_generations=validated_parents or None)
     ds.publish_state = "published"
     ds.last_sync_error = None
     db.commit()
@@ -605,7 +697,14 @@ def _sync_and_publish_blocking(
     #    changes_pending (they keep serving their OLD pin until they re-publish).
     try:
         from app.services import dataset_composition_service as _comp
-        _comp.pin_parent_generations(db, dataset_id)
+        _comp.pin_parent_generations(db, dataset_id, validated_parents)
+        if validated_parents:
+            # Pinning re-mirrors the composed tables' columns from the pinned
+            # parent: fingerprint the design as pinned, or a fresh publish reads
+            # changes_pending (and the scheduler then skips it).
+            ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+            ds.published_design_fingerprint = design_fingerprint(
+                db, dataset_id, parent_generations=validated_parents)
         affected = _comp.cascade_children_to_pending(db, dataset_id)
         db.commit()
         if affected:

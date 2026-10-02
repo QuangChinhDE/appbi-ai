@@ -502,6 +502,13 @@ class DatasetCRUDService:
             "source_query" in update_data
             and update_data.get("source_query") != db_table.source_query
         )
+        # Transformations / type overrides change the table's ROWS too (a
+        # calculated column, a rename, a cast): samples and stats computed from
+        # the previous relation describe data that no longer exists.
+        shaping_changed = any(
+            key in update_data and update_data.get(key) != getattr(db_table, key, None)
+            for key in ("transformations", "type_overrides")
+        )
         for key, value in update_data.items():
             setattr(db_table, key, value)
 
@@ -529,6 +536,15 @@ class DatasetCRUDService:
             db_table.sample_cache = None
             db_table.column_stats = None
             db_table.schema_hash = None
+            db_table.stats_updated_at = None
+        elif shaping_changed:
+            # columns_cache is re-inferred by the caller from the new relation;
+            # the sample rows and the per-column stats are the OLD relation's
+            # (a new calculated column read as 100% null). Recomputed lazily from
+            # the current relation. schema_hash is kept: it is the baseline the
+            # next stats run compares the new columns against.
+            db_table.sample_cache = None
+            db_table.column_stats = None
             db_table.stats_updated_at = None
         
         db.commit()

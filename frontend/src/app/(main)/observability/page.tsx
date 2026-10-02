@@ -14,7 +14,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ShieldCheck, AlertTriangle, ChevronRight, ChevronLeft, Search, RefreshCw, Bell, Loader2,
-  GitBranch, Clock, BarChart3, LayoutDashboard, CheckCircle2, Database, Plus,
+  GitBranch, Clock, BarChart3, LayoutDashboard, CheckCircle2, Database, Plus, CircleSlash, HelpCircle,
 } from 'lucide-react';
 
 import { PageListLayout } from '@/components/common/PageListLayout';
@@ -191,8 +191,20 @@ function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
                             <tr key={r.datasetId} className="cursor-pointer hover:bg-surface-2" onClick={() => onOpen(r.datasetId)}>
                               <td className="app-list-cell">
                                 <span className="flex w-full items-start gap-3 text-left">
-                                  <span className={cn('mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md', r.openIncidents > 0 ? 'bg-danger/10 text-danger' : 'bg-brand/10 text-brand')}>
-                                    {r.openIncidents > 0 ? <AlertTriangle className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
+                                  <span
+                                    data-testid={`obs-health-${r.datasetId}`}
+                                    data-health={r.health ?? (r.openIncidents > 0 ? 'breached' : 'healthy')}
+                                    title={t(`observability.health.state.${r.health ?? (r.openIncidents > 0 ? 'breached' : 'healthy')}`)}
+                                    className={cn('mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md',
+                                      r.openIncidents > 0 || r.health === 'breached' ? 'bg-danger/10 text-danger'
+                                        : r.health === 'error' ? 'bg-warning/10 text-warning'
+                                          : r.health === 'unknown' || r.health === 'not_monitored' ? 'bg-surface-2 text-text-tertiary'
+                                            : 'bg-brand/10 text-brand')}
+                                  >
+                                    {r.openIncidents > 0 || r.health === 'breached' ? <AlertTriangle className="h-4 w-4" />
+                                      : r.health === 'error' ? <CircleSlash className="h-4 w-4" />
+                                        : r.health === 'unknown' || r.health === 'not_monitored' ? <HelpCircle className="h-4 w-4" />
+                                          : <ShieldCheck className="h-4 w-4" />}
                                   </span>
                                   <span className="min-w-0">
                                     <span className="app-list-text-main block text-caption font-emphasis text-text-primary transition-colors hover:text-brand">{r.dataset}</span>
@@ -205,7 +217,11 @@ function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
                               <td className="app-list-cell">
                                 {r.openIncidents > 0
                                   ? <span className="inline-flex items-center gap-1 text-caption font-emphasis text-danger"><AlertTriangle className="h-3.5 w-3.5" />{r.openIncidents}</span>
-                                  : <span className="inline-flex items-center gap-1 text-caption text-success"><CheckCircle2 className="h-3.5 w-3.5" />0</span>}
+                                  : r.health === 'error'
+                                    ? <span className="inline-flex items-center gap-1 text-caption font-emphasis text-warning"><CircleSlash className="h-3.5 w-3.5" />{t('observability.health.erroredChecks', { count: r.erroredChecks ?? 0 })}</span>
+                                    : r.health === 'unknown'
+                                      ? <span className="inline-flex items-center gap-1 text-caption text-text-tertiary"><HelpCircle className="h-3.5 w-3.5" />{t('observability.health.unknownChecks', { count: r.unknownChecks ?? 0 })}</span>
+                                      : <span className="inline-flex items-center gap-1 text-caption text-success"><CheckCircle2 className="h-3.5 w-3.5" />0</span>}
                               </td>
                               <td className="app-list-cell text-caption text-text-tertiary">{t('observability.health.monitorCount', { count: r.monitors + r.qualityRules })}</td>
                               <td className="app-list-cell">

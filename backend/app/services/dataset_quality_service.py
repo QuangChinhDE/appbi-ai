@@ -697,6 +697,15 @@ def _table_ref_for_source(
     if db_table.source_kind == "generated_calendar":
         return None, None
 
+    # The DATASET's rows, not the source's: a table with transformations / type
+    # overrides is checked on its logical relation — the one the preview, the
+    # live charts and the snapshot extract compile (build_live_base_query_plan).
+    # A rule on the raw source table PASSED while the user-facing column
+    # (calculated, renamed, cast — "abc" → NULL) failed it.
+    logical = _logical_relation_ref(db_table, datasource)
+    if logical is not None:
+        return logical, None
+
     if db_table.source_kind == "physical_table":
         tbl = db_table.source_table_name or ""
         if dialect == "bigquery":
@@ -731,6 +740,28 @@ def _table_ref_for_source(
         return f"({q}) _dq_src", None
 
     return None, None
+
+
+def _logical_relation_ref(db_table: DatasetTable, datasource: Any) -> Optional[str]:
+    """``(<logical relation>) _dq_src`` for a table whose rows differ from its
+    source (transformations / type overrides), else None (the source IS the
+    relation — the existing reference, byte-identical). Raises when the
+    relation cannot be built: the rule is then an error, never a pass."""
+    from app.services.transformation_compiler import TransformationCompiler
+    from app.services.type_override_service import normalize_type_overrides
+
+    if datasource is None:
+        return None
+    needs = bool(
+        TransformationCompiler.normalize_server_transformations(getattr(db_table, "transformations", None) or [])
+        or normalize_type_overrides(getattr(db_table, "type_overrides", None))
+    )
+    if not needs:
+        return None
+    from app.services.live_query_service import build_live_base_query_plan
+
+    plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
+    return f"({plan.sql}) _dq_src"
 
 
 def _dialect_for_ds(datasource) -> str:
@@ -2033,27 +2064,56 @@ class DatasetQualityService:
     def _check_schema_drift(db, rule, db_table, log) -> Dict[str, Any]:
         """Compare the table's current column fingerprint to a stored baseline.
         On first run, capture the baseline (into rule.config) and pass; afterwards
-        fail when columns are added / removed / retyped."""
-        current = DatasetQualityService._schema_fingerprint(db_table)
+        fail when columns are added / removed / retyped.
+
+        "Current" is the schema the charts READ now — the logical relation
+        (source → transformations → type overrides), the same reader the schema
+        monitor uses — not columns_cache: a column dropped or retyped upstream
+        left the cache, and so this rule, "Schema unchanged" until someone
+        opened a preview. Types compare by family (int4 vs integer is no
+        change). Unreadable → an error, never a pass."""
+        from app.services.observability_service import SCHEMA_BASELINE_V, ObservabilityService
+
+        why: list = []
+        current = ObservabilityService._live_columns_fingerprint(db, db_table, why)
+        if current is None:
+            detail = "Cannot read the table's current schema" + (f": {why[0]}" if why else "")
+            log(f"ERROR: {detail}")
+            return {"passed": False, "rows_checked": None, "rows_failed": None,
+                    "detail": detail, "error": True}
         cfg = dict(rule.config or {})
         baseline = cfg.get("baseline_columns")
-        if not baseline:
+
+        def _store_baseline() -> None:
             cfg["baseline_columns"] = current
+            cfg["baseline_v"] = SCHEMA_BASELINE_V
             rule.config = cfg
             if getattr(rule, "id", 0):  # real (persisted) rule — not the test SimpleNamespace
                 try:
                     db.commit()
                 except Exception:
                     db.rollback()
+
+        if not baseline:
+            _store_baseline()
             log(f"Baseline captured ({len(current)} columns)")
             return {"passed": True, "rows_checked": len(current), "rows_failed": 0,
                     "detail": f"Baseline captured ({len(current)} columns)"}
-        prev_map = {c["name"]: c.get("type", "") for c in baseline}
-        cur_map = {c["name"]: c.get("type", "") for c in current}
+        fam = ObservabilityService._type_family
+        prev_map = {c["name"]: fam(c.get("type", "")) for c in baseline}
+        cur_map = {c["name"]: fam(c.get("type", "")) for c in current}
         added = [n for n in cur_map if n not in prev_map]
         removed = [n for n in prev_map if n not in cur_map]
+        # A baseline captured before live reading holds columns_cache types
+        # (value-sampled): compared by NAME only, and — names unchanged —
+        # replaced by a typed one, instead of failing every run on a "retype"
+        # that is only the cache's sampling.
+        typed = cfg.get("baseline_v") == SCHEMA_BASELINE_V
         retyped = [{"column": n, "from": prev_map[n], "to": cur_map[n]}
-                   for n in cur_map if n in prev_map and prev_map[n] != cur_map[n]]
+                   for n in cur_map if typed and n in prev_map and prev_map[n] != cur_map[n]]
+        if not typed and not added and not removed:
+            _store_baseline()
+            log("Baseline upgraded to the live relation's types")
         changes = len(added) + len(removed) + len(retyped)
         log(f"Schema drift: +{len(added)} / -{len(removed)} / ~{len(retyped)}")
         detail = (f"+{len(added)} added / -{len(removed)} removed / ~{len(retyped)} retyped"
@@ -2123,7 +2183,14 @@ class DatasetQualityService:
             })
 
         dialect = _dialect_for_ds(datasource)
-        table_ref, _ = _table_ref_for_source(execution_table, datasource, dialect)
+        try:
+            table_ref, _ = _table_ref_for_source(execution_table, datasource, dialect)
+        except Exception as exc:  # noqa: BLE001 — the dataset's relation cannot be built
+            _log(f"ERROR building the dataset relation: {exc}")
+            return _result({
+                "passed": False, "rows_checked": None, "rows_failed": None,
+                "detail": f"Dataset relation error: {str(exc)[:500]}", "error": True,
+            })
         if not table_ref:
             _log("ERROR: Cannot build table reference for this source kind")
             return _result({
@@ -2207,7 +2274,16 @@ class DatasetQualityService:
                     "error": True,
                 })
 
-            secondary_table_ref, _ = _table_ref_for_source(secondary_exec_table, secondary_datasource, dialect)
+            try:
+                secondary_table_ref, _ = _table_ref_for_source(secondary_exec_table, secondary_datasource, dialect)
+            except Exception as exc:  # noqa: BLE001 — the referenced table's relation cannot be built
+                # One rule's error, never the whole run's (the run loop has no
+                # per-rule guard; the single-rule preview would 500).
+                _log(f"ERROR building the secondary dataset relation: {exc}")
+                return _result({
+                    "passed": False, "rows_checked": None, "rows_failed": None,
+                    "detail": f"Secondary relation error: {str(exc)[:500]}", "error": True,
+                })
             if not secondary_table_ref:
                 _log("ERROR: Cannot build secondary table reference for this source kind")
                 return _result({
@@ -2258,10 +2334,16 @@ class DatasetQualityService:
             _log(f"Query executed in {round(exec_ms)}ms — returned {len(rows)} row(s)")
 
             if not rows:
-                _log("PASS: No rows returned (empty table)")
+                # Every built-in check is an aggregate (one row, even on an empty
+                # table); a query with NO result row — a custom rule — was not
+                # evaluated. Reported as "No rows returned" PASS, which counted a
+                # rule nobody evaluated as a passing one.
+                _log("NOT EVALUATED: the rule query returned no result row")
                 return _result({
-                    "passed": True, "rows_checked": 0, "rows_failed": 0,
-                    "detail": "No rows returned", "sql": check_sql,
+                    "passed": False, "rows_checked": None, "rows_failed": None,
+                    "detail": "The rule query returned no result row — not evaluated "
+                              "(it must return rows_checked / rows_failed)",
+                    "skipped": True, "no_data": True, "sql": check_sql,
                 })
 
             row = rows[0]

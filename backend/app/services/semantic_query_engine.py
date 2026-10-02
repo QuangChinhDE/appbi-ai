@@ -3723,6 +3723,13 @@ class SemanticQueryEngine:
                         calendar_dialect=(self.database_type or "postgresql").lower(),
                         datasource=src, db=self.db,
                     )
+        except ValueError:
+            # A DELIBERATE refusal of the table's current relation (an invalid
+            # transformation order, a composed table with its own shaping, a
+            # calculated table whose sources cannot be resolved): never answered
+            # from the STORED relation — that is the last model sync's, i.e. a
+            # stale definition of the data. The request is refused.
+            raise
         except Exception:  # noqa: BLE001 — fall back to the stored relation
             logger.debug("[relation] compile-time render failed for view %s",
                          getattr(view, "name", "?"), exc_info=True)

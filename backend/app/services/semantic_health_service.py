@@ -284,17 +284,29 @@ def invalid_relationship_checks(db: Session, dataset_id: int) -> List[HealthChec
     return out
 
 
-def dangling_checks(db: Session, dataset_id: int) -> List[HealthCheck]:
-    from app.services.dataset_model_service import dangling_model_references
+#: A dangling KEY breaks a relationship the Kernel relies on (a join, a
+#: primary key): blocking for publish. A dangling dimension / measure fails
+#: (visibly) and is refused at query time, without blocking the rest.
+_BLOCKING_DANGLING = {"join", "primary_key"}
 
+
+def dangling_checks(db: Session, dataset_id: int, *, live: bool = False) -> List[HealthCheck]:
+    """Model definitions naming a column the table no longer has. ``live``
+    reads each table's CURRENT columns (its live logical relation) — a column
+    dropped upstream is dangling even while columns_cache still lists it."""
+    from app.services.dataset_model_service import dangling_model_references
+    from app.services.dataset_relation_service import logical_relation_columns
+
+    columns_for = (lambda t: logical_relation_columns(db, t)) if live else None
     return [
         HealthCheck(
             id=f"dangling:{d['kind']}:{d['view']}:{d['name']}:{d['column']}", layer=LAYER_SEMANTIC,
-            kind="dangling_reference", subject=f"{d['view']}.{d['name']}", status="fail", blocking=False,
+            kind="dangling_reference", subject=f"{d['view']}.{d['name']}", status="fail",
+            blocking=d["kind"] in _BLOCKING_DANGLING,
             detail=f"{d['kind']} '{d['name']}' trên {d['view']} dùng cột '{d['column']}' không còn trong bảng.",
             evidence=d,
         )
-        for d in dangling_model_references(db, dataset_id)
+        for d in dangling_model_references(db, dataset_id, columns_for=columns_for)
     ]
 
 
@@ -367,7 +379,7 @@ def evaluate(db: Session, dataset_id: int, *, execute: bool = True) -> Dict[str,
     semantic = (
         invalid_relationship_checks(db, dataset_id)
         + uniqueness_checks(db, dataset_id, execute=execute)
-        + dangling_checks(db, dataset_id)
+        + dangling_checks(db, dataset_id, live=execute)
     )
     snapshot = snapshot_parity_checks(db, dataset_id, execute=execute)
     # The relationship keys on the PUBLISHED generation itself (what dashboards
@@ -407,5 +419,5 @@ def publish_blockers(db: Session, dataset_id: int, *, generation: Optional[int] 
     still refuses an unverifiable trusted join at query time)."""
     checks = invalid_relationship_checks(db, dataset_id) + uniqueness_checks(
         db, dataset_id, execute=True, include_primary_keys=False, generation=generation,
-    )
+    ) + dangling_checks(db, dataset_id, live=True)
     return [c.detail for c in checks if c.blocking and c.status == "fail"]

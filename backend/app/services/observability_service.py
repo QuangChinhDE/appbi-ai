@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 
 # Severity ranking shared across pillars (higher = worse).
 SEV_RANK = {"info": 1, "warning": 2, "critical": 3, "error": 3, "high": 2}
+#: A schema baseline whose column types are the LIVE relation's (type families).
+#: Older baselines carry columns_cache types and are compared by name only.
+SCHEMA_BASELINE_V = 2
 PILLAR_FOR_SOURCE = {
     "freshness": "freshness", "volume": "volume", "schema": "schema",
     "quality": "quality", "anomaly": "distribution",
@@ -87,6 +90,60 @@ class ObservabilityService:
         except Exception as exc:
             logger.warning("[obs] query failed: %s", exc)
             return None
+
+    @staticmethod
+    def _utc_iso(dt: Any) -> Optional[str]:
+        """An instant the browser reads AS UTC. The columns are naive UTC
+        (datetime.utcnow); a bare isoformat() is parsed as browser-local, so
+        "refreshed" / incident times were off by the viewer's offset (a
+        just-loaded table read "7 hours ago" at UTC+7). Same contract as the
+        refresh history (api/datasets.py _iso)."""
+        if dt is None:
+            return None
+        if getattr(dt, "tzinfo", None) is not None:
+            from datetime import timezone as _tz
+            return dt.astimezone(_tz.utc).replace(tzinfo=None).isoformat() + "Z"
+        return dt.isoformat() + "Z"
+
+    @staticmethod
+    def _type_family(raw: Any) -> str:
+        """number / text / date / datetime / boolean / other — what a schema
+        change means to a chart. Engine spellings (int4, INT64, integer,
+        NUMERIC(10,2), varchar, STRING…) of one family are not a change."""
+        t = str(raw or "").strip().lower()
+        if not t:
+            return "unknown"
+        if any(k in t for k in ("bool",)):
+            return "boolean"
+        if "timestamp" in t or "datetime" in t or t in ("time", "timetz"):
+            return "datetime"
+        if t == "date" or t.startswith("date"):
+            return "date"
+        if any(k in t for k in ("int", "numeric", "decimal", "float", "double", "real", "number", "money")):
+            return "number"
+        if any(k in t for k in ("char", "text", "string", "uuid", "json", "enum")):
+            return "text"
+        return t
+
+    @staticmethod
+    def _live_columns_fingerprint(db: Session, table: DatasetTable,
+                                  reason: Optional[list] = None) -> Optional[List[Dict[str, str]]]:
+        """The columns the table's LOGICAL relation has NOW (source → its
+        transformations → type overrides), as [{name, type-family}] — what every
+        chart reads. None when it cannot be determined (→ the check errors; it
+        is never "ok"). A table with no datasource of its own (calculated /
+        composed) is described by its AppBI definition (columns_cache)."""
+        if not getattr(table, "datasource_id", None):
+            return [{"name": c["name"], "type": ObservabilityService._type_family(c.get("type"))}
+                    for c in ObservabilityService._columns_fingerprint(table)]
+        from app.services.dataset_relation_service import logical_relation_columns
+
+        cols = logical_relation_columns(db, table, reason)
+        if cols is None:
+            return None
+        out = [{"name": c["name"], "type": ObservabilityService._type_family(c.get("type"))} for c in cols]
+        out.sort(key=lambda c: c["name"].lower())
+        return out
 
     @staticmethod
     def _columns_fingerprint(table: DatasetTable) -> List[Dict[str, str]]:
@@ -188,6 +245,12 @@ class ObservabilityService:
                 mx = datetime.fromisoformat(str(mx).replace("Z", "").split("+")[0].strip())
             except Exception:
                 return "error", None, {"error": f"unparseable timestamp: {mx}"}
+        if mx.tzinfo is not None:
+            # A timezone-aware TIMESTAMP (BigQuery, timestamptz): compare in UTC —
+            # naive utcnow() minus an aware value raised, and the check errored forever.
+            from datetime import timezone as _tz
+
+            mx = mx.astimezone(_tz.utc).replace(tzinfo=None)
         lag_hours = round((datetime.utcnow() - mx).total_seconds() / 3600.0, 2)
         detail = {"last_loaded_at": mx.isoformat(), "lag_hours": lag_hours, "max_lag_hours": max_lag}
         return ("breached" if lag_hours > max_lag else "ok"), lag_hours, detail
@@ -219,14 +282,22 @@ class ObservabilityService:
         )
         vals = [float(v[0]) for v in hist if v[0] is not None]
         if len(vals) < 5:
+            # Not enough history to judge: UNKNOWN (learning), never "ok" — an
+            # "ok" here resolved an open volume incident with nothing checked.
             detail["reason"] = "đang học baseline"
-            return "ok", cnt, detail  # not enough history yet
+            return "unknown", cnt, detail
         mean = statistics.mean(vals)
         try:
             std = statistics.stdev(vals)
         except statistics.StatisticsError:
             std = 0.0
         if std == 0:
+            # A constant baseline: ANY change from it is the anomaly (100 rows
+            # every day, then 0 — was "ok", the z-score being undefined).
+            if cnt != mean:
+                detail.update({"expected": round(mean, 2), "reason": "khác baseline cố định",
+                               "change_pct": round((cnt - mean) / mean * 100, 1) if mean else None})
+                return "breached", cnt, detail
             return "ok", cnt, detail
         z = (cnt - mean) / std
         detail.update({"expected": round(mean, 2), "z_score": round(z, 2),
@@ -238,32 +309,131 @@ class ObservabilityService:
 
     @staticmethod
     def _check_schema(db, monitor, table, cfg) -> tuple:
-        current = ObservabilityService._columns_fingerprint(table)
-        # Compare to the most recent prior snapshot that captured columns.
+        # The schema the charts READ, now — not the cached description of it (a
+        # column dropped or retyped upstream left columns_cache, and so this
+        # monitor, "ok" until someone opened a preview).
+        why: list = []
+        current = ObservabilityService._live_columns_fingerprint(db, table, why)
+        if current is None:
+            return "error", None, {"error": "cannot read the table's current schema"
+                                    + (f": {why[0]}" if why else "")}
+        # The ACCEPTED schema: the most recent check that found it unchanged
+        # ("ok"). A breach is not a new baseline — comparing against the
+        # breaching check made the next scan "ok" and auto-resolved a schema
+        # change that was still there; an error check (no columns) re-baselined
+        # it the same way. It moves only when a person resolves the incident
+        # (accept_schema_baseline) or nothing was ever accepted.
         prev = (
             db.query(ObservabilityCheck)
             .filter(ObservabilityCheck.monitor_id == monitor.id)
+            .filter(ObservabilityCheck.status == "ok")
             .filter(ObservabilityCheck.detail.isnot(None))
             .order_by(ObservabilityCheck.checked_at.desc())
             .first()
         )
         prev_cols = (prev.detail or {}).get("columns") if prev else None
         if not prev_cols:
-            return "ok", float(len(current)), {"columns": current, "reason": "baseline đã lưu"}
+            return "ok", float(len(current)), {"columns": current, "reason": "baseline đã lưu",
+                                               "baseline_v": SCHEMA_BASELINE_V}
 
-        prev_map = {c["name"]: c.get("type", "") for c in prev_cols}
-        cur_map = {c["name"]: c.get("type", "") for c in current}
+        fam = ObservabilityService._type_family
+        prev_map = {c["name"]: fam(c.get("type", "")) for c in prev_cols}
+        cur_map = {c["name"]: fam(c.get("type", "")) for c in current}
         added = [n for n in cur_map if n not in prev_map]
         removed = [n for n in prev_map if n not in cur_map]
+        # A baseline from before live reading carries columns_cache types (value-
+        # sampled: a Sheets text column of digits cached as "integer"): comparing
+        # them to physical types would raise a retype on every such column. Such
+        # a baseline is compared by NAME only; unchanged, this check (typed, v2)
+        # becomes the baseline.
+        typed = (prev.detail or {}).get("baseline_v") == SCHEMA_BASELINE_V
         retyped = [
             {"column": n, "from": prev_map[n], "to": cur_map[n]}
-            for n in cur_map if n in prev_map and prev_map[n] != cur_map[n]
+            for n in cur_map if typed and n in prev_map and prev_map[n] != cur_map[n]
         ]
-        detail = {"columns": current, "added": added, "removed": removed, "retyped": retyped}
+        detail = {"columns": current, "added": added, "removed": removed, "retyped": retyped,
+                  "baseline_v": SCHEMA_BASELINE_V}
         if added or removed or retyped:
             detail["reason"] = "cột thêm/xoá/đổi kiểu"
             return "breached", float(len(current)), detail
         return "ok", float(len(current)), detail
+
+    @staticmethod
+    def accept_schema_baseline(db: Session, incident: "ObservabilityIncident") -> None:
+        """A person resolved a schema incident: the CURRENT columns become the
+        accepted schema (an "ok" check), so the change is not re-raised — and is
+        never silently accepted by the scanner itself."""
+        key = str(getattr(incident, "dedup_key", "") or "")
+        if not key.startswith("schema:monitor_"):
+            return
+        try:
+            monitor_id = int(key.split("_", 1)[1])
+        except (IndexError, ValueError):
+            return
+        monitor = db.query(ObservabilityMonitor).filter(ObservabilityMonitor.id == monitor_id).first()
+        if monitor is None or monitor.dataset_table is None:
+            return
+        live = ObservabilityService._live_columns_fingerprint(db, monitor.dataset_table)
+        current = live or ObservabilityService._columns_fingerprint(monitor.dataset_table)
+        detail = {"columns": current, "reason": "baseline được chấp nhận"}
+        if live:
+            detail["baseline_v"] = SCHEMA_BASELINE_V          # typed only when read live
+        db.add(ObservabilityCheck(monitor_id=monitor.id, checked_at=datetime.utcnow(), value=float(len(current)),
+                                  status="ok", detail=detail))
+
+    @staticmethod
+    def _quality_run_state(db: Session, dataset_ids: List[int]) -> Dict[int, Dict[str, int]]:
+        """Per dataset, the ENABLED quality rules judged on the latest run:
+        a rule that FAILED is breached (now — not only once a scan has folded it
+        into an incident, up to a day later); one that ERRORED, or a run that
+        failed as a whole, is a check that did not run; a not-evaluated result,
+        or a rule the latest run never reached (never run, added since), is
+        unknown. Only a passed result is a pass."""
+        enabled: Dict[int, set] = {}
+        for (rid, ds_id) in db.query(DatasetQualityRule.id, DatasetQualityRule.dataset_id).filter(
+                DatasetQualityRule.dataset_id.in_(dataset_ids),
+                DatasetQualityRule.enabled == True).all():  # noqa: E712
+            enabled.setdefault(ds_id, set()).add(str(rid))
+        out: Dict[int, Dict[str, int]] = {}
+        for ds_id, rule_ids in enabled.items():
+            q = {"breached": 0, "errored": 0, "unknown": 0}
+            out[ds_id] = q
+            run = (
+                db.query(DatasetQualityRun).filter(DatasetQualityRun.dataset_id == ds_id)
+                .filter(DatasetQualityRun.status.in_(("completed", "failed")))
+                .order_by(DatasetQualityRun.id.desc()).first()
+            )
+            if run is None:
+                q["unknown"] = len(rule_ids)
+                continue
+            if run.status == "failed":
+                q["errored"] = len(rule_ids)
+                continue
+            results = {str(k): v for k, v in (run.results or {}).items()}
+            for rid in rule_ids:
+                res = results.get(rid)
+                if isinstance(res, dict) and res.get("error"):
+                    q["errored"] += 1
+                elif not isinstance(res, dict) or res.get("skipped"):
+                    q["unknown"] += 1
+                elif not res.get("passed"):
+                    q["breached"] += 1
+        return out
+
+    @staticmethod
+    def health_state(*, open_incidents: int, breached: int, errored: int, unknown: int, checks: int) -> str:
+        """One honest state: breached > error > unknown > not_monitored > healthy.
+        "healthy" only when every check ran and passed — a check that failed to
+        run, one never run / still learning, or no check at all is NOT healthy."""
+        if open_incidents or breached:
+            return "breached"
+        if errored:
+            return "error"
+        if unknown:
+            return "unknown"
+        if not checks:
+            return "not_monitored"
+        return "healthy"
 
     # ── incident lifecycle ────────────────────────────────────────────────────
 
@@ -347,6 +517,10 @@ class ObservabilityService:
                 if rule is None:
                     continue
                 key = f"quality:rule_{rid}"
+                if isinstance(res, dict) and res.get("skipped") and rule.enabled:
+                    # Not evaluated (no data, source unreachable): says nothing
+                    # about the breach — it neither opens nor RESOLVES one.
+                    continue
                 failing = isinstance(res, dict) and not res.get("skipped") and (
                     res.get("error") or not res.get("passed"))
                 if failing and rule.enabled:
@@ -538,15 +712,36 @@ class ObservabilityService:
         for m in monitors:
             mon_by_kind.setdefault(m.kind, []).append(m)
         pillars = []
+        quality_rules = (
+            db.query(DatasetQualityRule).filter(DatasetQualityRule.dataset_id.in_(dataset_ids))
+            .filter(DatasetQualityRule.enabled == True).count()  # noqa: E712
+            if dataset_ids else 0
+        )
+        # The quality pillar is judged on the rules' latest run, not on their
+        # mere existence (a rule never run read "healthy").
+        q_state = ObservabilityService._quality_run_state(db, dataset_ids) if dataset_ids else {}
         for pillar in ("freshness", "volume", "schema", "distribution", "quality"):
-            kind_monitors = mon_by_kind.get(pillar, [])
+            kind_monitors = [m for m in mon_by_kind.get(pillar, []) if m.is_active]
             breached = sum(1 for m in kind_monitors if m.last_status == "breached")
+            errored = sum(1 for m in kind_monitors if m.last_status == "error")
+            unknown = sum(1 for m in kind_monitors if m.last_status in (None, "unknown"))
+            if pillar == "quality":
+                breached += sum(q["breached"] for q in q_state.values())
+                errored += sum(q["errored"] for q in q_state.values())
+                unknown += sum(q["unknown"] for q in q_state.values())
+            checks = len(kind_monitors) + (quality_rules if pillar == "quality" else 0)
+            state = ObservabilityService.health_state(
+                open_incidents=by_pillar.get(pillar, 0), breached=breached, errored=errored,
+                unknown=unknown, checks=checks)
             pillars.append({
                 "pillar": pillar,
                 "monitors": len(kind_monitors),
                 "breached": breached,
+                "errored": errored,
+                "unknown": unknown,
                 "openIncidents": by_pillar.get(pillar, 0),
-                "healthy": by_pillar.get(pillar, 0) == 0 and breached == 0,
+                "status": state,
+                "healthy": state == "healthy",
             })
 
         recent = sorted(open_inc, key=lambda i: (SEV_RANK.get(i.severity, 0), i.last_seen_at or datetime.min), reverse=True)[:8]
@@ -576,10 +771,10 @@ class ObservabilityService:
             "id": i.id, "datasetId": i.dataset_id, "dataset": dataset_name,
             "datasetTableId": i.dataset_table_id, "source": i.source, "pillar": i.pillar,
             "title": i.title, "detail": i.detail, "severity": i.severity, "status": i.status,
-            "firstSeenAt": i.first_seen_at.isoformat() if i.first_seen_at else None,
-            "lastSeenAt": i.last_seen_at.isoformat() if i.last_seen_at else None,
-            "resolvedAt": i.resolved_at.isoformat() if i.resolved_at else None,
-            "acknowledgedAt": i.acknowledged_at.isoformat() if i.acknowledged_at else None,
+            "firstSeenAt": ObservabilityService._utc_iso(i.first_seen_at),
+            "lastSeenAt": ObservabilityService._utc_iso(i.last_seen_at),
+            "resolvedAt": ObservabilityService._utc_iso(i.resolved_at),
+            "acknowledgedAt": ObservabilityService._utc_iso(i.acknowledged_at),
             "mttrHours": mttr,
         }
 
@@ -945,8 +1140,24 @@ class ObservabilityService:
         monitors = db.query(ObservabilityMonitor).filter(
             ObservabilityMonitor.dataset_id.in_(dataset_ids)).all()
         mon_per_ds: Dict[int, int] = {}
+        # What health is judged on: the checks that actually RUN — an active
+        # monitor, an enabled rule. A dataset whose only monitors are paused is
+        # not "healthy", it is not monitored.
+        active_mon_per_ds: Dict[int, int] = {}
+        err_per_ds: Dict[int, int] = {}
+        unk_per_ds: Dict[int, int] = {}
+        brk_per_ds: Dict[int, int] = {}
         for m in monitors:
             mon_per_ds[m.dataset_id] = mon_per_ds.get(m.dataset_id, 0) + 1
+            if not m.is_active:
+                continue
+            active_mon_per_ds[m.dataset_id] = active_mon_per_ds.get(m.dataset_id, 0) + 1
+            if m.last_status == "error":
+                err_per_ds[m.dataset_id] = err_per_ds.get(m.dataset_id, 0) + 1
+            elif m.last_status in (None, "unknown"):
+                unk_per_ds[m.dataset_id] = unk_per_ds.get(m.dataset_id, 0) + 1
+            elif m.last_status == "breached":
+                brk_per_ds[m.dataset_id] = brk_per_ds.get(m.dataset_id, 0) + 1
         open_inc = (
             db.query(ObservabilityIncident)
             .filter(ObservabilityIncident.dataset_id.in_(dataset_ids))
@@ -958,9 +1169,17 @@ class ObservabilityService:
         # Quality rules per dataset — a dataset with rules is "observed" even
         # without a native monitor, so the FE list can include it.
         rules_per_ds: Dict[int, int] = {}
-        for (ds_id,) in db.query(DatasetQualityRule.dataset_id).filter(
+        enabled_rules_per_ds: Dict[int, int] = {}
+        for (ds_id, enabled) in db.query(DatasetQualityRule.dataset_id, DatasetQualityRule.enabled).filter(
                 DatasetQualityRule.dataset_id.in_(dataset_ids)).all():
             rules_per_ds[ds_id] = rules_per_ds.get(ds_id, 0) + 1
+            if enabled:
+                enabled_rules_per_ds[ds_id] = enabled_rules_per_ds.get(ds_id, 0) + 1
+
+        for ds_id, q in ObservabilityService._quality_run_state(db, dataset_ids).items():
+            for key, bucket in (("errored", err_per_ds), ("unknown", unk_per_ds), ("breached", brk_per_ds)):
+                if q[key]:
+                    bucket[ds_id] = bucket.get(ds_id, 0) + q[key]
 
         out = []
         for d in datasets:
@@ -974,10 +1193,16 @@ class ObservabilityService:
                 "datasetId": d.id, "dataset": d.name,
                 "tables": len(ts), "rows": rows, "sizeBytes": size,
                 "chartCount": len(ds_chart_ids), "dashboardCount": len(dash_ids),
-                "lastRefresh": last_refresh.isoformat() if last_refresh else None,
+                "lastRefresh": ObservabilityService._utc_iso(last_refresh),
                 "monitors": mon_per_ds.get(d.id, 0),
                 "qualityRules": rules_per_ds.get(d.id, 0),
                 "openIncidents": inc_per_ds.get(d.id, 0),
+                "erroredChecks": err_per_ds.get(d.id, 0),
+                "unknownChecks": unk_per_ds.get(d.id, 0),
+                "health": ObservabilityService.health_state(
+                    open_incidents=inc_per_ds.get(d.id, 0), breached=brk_per_ds.get(d.id, 0),
+                    errored=err_per_ds.get(d.id, 0), unknown=unk_per_ds.get(d.id, 0),
+                    checks=active_mon_per_ds.get(d.id, 0) + enabled_rules_per_ds.get(d.id, 0)),
                 "unused": len(ds_chart_ids) == 0,
                 # "observed" = has any check set up (monitor or rule) or an open incident
                 "observed": mon_per_ds.get(d.id, 0) > 0 or rules_per_ds.get(d.id, 0) > 0 or inc_per_ds.get(d.id, 0) > 0,

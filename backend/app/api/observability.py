@@ -137,6 +137,9 @@ def update_incident(
     elif payload.action == "resolve":
         inc.status = "resolved"
         inc.resolved_at = now
+        # A schema change a person resolves is ACCEPTED as the new schema — the
+        # scanner never accepts one on its own (ObservabilityService._check_schema).
+        ObservabilityService.accept_schema_baseline(db, inc)
     elif payload.action == "reopen":
         inc.status = "open"
         inc.resolved_at = None

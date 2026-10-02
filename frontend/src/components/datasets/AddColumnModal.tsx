@@ -75,9 +75,20 @@ function evalExcelFormula(
       expr = expr.replace(new RegExp(key, 'g'), `__ROW[${JSON.stringify(colName)}]`);
     }
 
+    // The preview speaks the DATASET's arithmetic (what the saved column will
+    // hold — server-compiled, the Semantic Kernel's contract), not JavaScript's:
+    // a division by zero is empty (NULL), never Infinity / NaN; and in a pure
+    // arithmetic formula an empty operand gives an empty result (JS turns
+    // `null / 2` into 0). Formulas with functions keep their own null handling.
+    const pureArithmetic = Object.keys(colMap).length > 0
+      && !/__FN\./.test(expr) && strings.length === 0 && !/[&<>=!]/.test(formula);
+    if (pureArithmetic && Object.values(colMap).some((c) => row[c] === null || row[c] === undefined || row[c] === '')) {
+      return { ok: true, value: null };
+    }
     // eslint-disable-next-line no-new-func
     const fn = new Function('__ROW', '__FN', `return (${expr});`);
     const result = fn(row, fns);
+    if (typeof result === 'number' && !Number.isFinite(result)) return { ok: true, value: null };
     return { ok: true, value: result };
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) };

@@ -77,7 +77,12 @@ def _run_scheduled_refresh_locked(dataset_id: int) -> None:
         ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         if ds is None:
             return
-        state = getattr(ds, "publish_state", None)
+        # The LIVE state, not the stored one: the stored state is recomputed only
+        # when someone views the dataset, so an unviewed design edit still read
+        # "published" here — and the scheduled run deployed it.
+        from app.services.dataset_publish_service import refresh_publish_state
+
+        state = refresh_publish_state(db, ds)
         # Power BI-standard: a SCHEDULED refresh reloads DATA on the currently
         # PUBLISHED design. It must NEVER auto-deploy an in-progress design edit —
         # a dataset in draft / changes_pending / sync_failed is skipped; the DA

@@ -251,11 +251,16 @@ def assert_composable(db: Session, child_id: int, parent_id: int) -> None:
 
 
 # ── pinning + cascade (publish-time) ──────────────────────────────────────────
-def validate_parents_publishable(db: Session, dataset_id: int) -> None:
+def validate_parents_publishable(db: Session, dataset_id: int) -> Dict[int, int]:
     """Publish gate: every parent referenced must itself be Published with data,
     same host, and the referenced parent table must resolve at that generation.
-    Raises ValueError otherwise (publish → sync_failed with the message)."""
+    Raises ValueError otherwise (publish → sync_failed with the message).
+
+    Returns {parent_dataset_id: generation} — the EXACT generations validated,
+    which the publish then pins (pin_parent_generations): a parent that
+    re-publishes during the child's sync must not be pinned unvalidated."""
     from app.services import snapshot_service
+    validated: Dict[int, int] = {}
     for t in parent_ref_tables(db, dataset_id):
         parent = db.query(Dataset).filter(Dataset.id == t.parent_dataset_id).first()
         if parent is None:
@@ -273,9 +278,11 @@ def validate_parents_publishable(db: Session, dataset_id: int) -> None:
                 f"Bảng '{t.display_name}' tham chiếu bảng cha không còn snapshot ở generation đã publish "
                 f"của '{parent.name}' — publish lại cha."
             )
+        validated[parent.id] = parent.published_generation
+    return validated
 
 
-def pin_parent_generations(db: Session, dataset_id: int) -> None:
+def pin_parent_generations(db: Session, dataset_id: int, generations: Optional[Dict[int, int]] = None) -> None:
     """After the child publishes successfully, pin each parent's CURRENT
     published generation into dataset_dependencies (principle #2). Upsert one
     edge per (child, parent).
@@ -294,6 +301,9 @@ def pin_parent_generations(db: Session, dataset_id: int) -> None:
         parent = db.query(Dataset).filter(Dataset.id == pid).first()
         if parent is None or parent.published_generation is None:
             continue
+        # The generation VALIDATED at pre-flight when given (the publish path);
+        # the parent's current one otherwise.
+        pinned = (generations or {}).get(pid, parent.published_generation)
         edge = (
             db.query(DatasetDependency)
             .filter(
@@ -305,7 +315,7 @@ def pin_parent_generations(db: Session, dataset_id: int) -> None:
         if edge is None:
             edge = DatasetDependency(child_dataset_id=dataset_id, parent_dataset_id=pid)
             db.add(edge)
-        edge.parent_generation = parent.published_generation
+        edge.parent_generation = pinned
         edge.materialized = False  # we read the parent snapshot in place, no re-extract
 
     for t in parent_ref_tables(db, dataset_id):

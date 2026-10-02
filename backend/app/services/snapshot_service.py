@@ -481,8 +481,13 @@ def _source_select_sql(source_ds: DataSource, table: DatasetTable) -> str:
 
     ``build_live_base_query_plan`` is the one definition of that projection
     (source SELECT → transformations → runtime type casts) and is what preview
-    already runs, so extracting through it makes snapshot ≡ preview ≡ live. Falls
-    back to the plain dialect-quoted SELECT when no plan can be built."""
+    already runs, so extracting through it makes snapshot ≡ preview ≡ live.
+
+    A table WITH transformations / type overrides whose projection cannot be
+    built FAILS the build (the candidate never becomes the visible generation;
+    the published one keeps serving). It used to fall back to the plain SELECT
+    — the snapshot then materialized the RAW rows and published as the dataset.
+    The plain SELECT is only for a table with nothing to project."""
     from app.services.live_query_service import (
         _build_base_table_ref,
         _dialect_for_ds_type,
@@ -504,15 +509,10 @@ def _source_select_sql(source_ds: DataSource, table: DatasetTable) -> str:
         )
     )
     if needs_projection:
-        try:
-            plan = build_live_base_query_plan(source_ds, table, apply_type_overrides=True)
-            if plan.sql and plan.sql.strip():
-                return plan.sql
-        except Exception as exc:  # noqa: BLE001 — never block a build on the planner
-            logger.warning(
-                "[snapshot] live-plan extract SQL unavailable for table %s (%s) → plain SELECT",
-                getattr(table, "id", None), exc,
-            )
+        plan = build_live_base_query_plan(source_ds, table, apply_type_overrides=True)
+        if not (plan.sql and plan.sql.strip()):
+            raise ValueError(f"table {getattr(table, 'id', None)}: no extract SQL for its transformations")
+        return plan.sql
     kind = getattr(table, "source_kind", None)
     if kind == "sql_query" and table.source_query:
         return f"SELECT * FROM (\n{table.source_query}\n) AS _appbi_src"
@@ -1494,7 +1494,7 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     except Exception:  # noqa: BLE001 — GC must never fail a refresh
         logger.warning("[snapshot] delayed GC failed dataset=%s", dataset_id, exc_info=True)
     return {"built": built, "skipped": skipped, "as_of": ts.isoformat() if ts else None,
-            "generation": generation, "stopped": stopped}
+            "generation": generation, "stopped": stopped, "no_host": host is None}
 
 
 def as_of(db: Session, table_ids: List[int]) -> Optional[datetime]:
@@ -1640,6 +1640,16 @@ def _reserve_rebuild_slot(dataset_id: int) -> bool:
         return False
     if not _qc.try_claim_global(f"snaprebuild::{dataset_id}", _REBUILD_LEASE_SECONDS):
         logger.info("[snapshot] dataset=%s already rebuilding in another worker; skipping", dataset_id)
+        return False
+    # Claim THEN check (as Sync & Publish does: claim its lease, then check this
+    # one) — in any interleaving at least one side sees the other's claim. A
+    # check-then-claim here let both start between the two steps.
+    if _qc.is_claimed_global(f"datasetpublish::{dataset_id}"):
+        # A Sync & Publish owns this dataset's build right now: a second writer
+        # building the same tables concurrently (and possibly the same resumed
+        # generation) is exactly what the publish lease exists to prevent.
+        _qc.release_global(f"snaprebuild::{dataset_id}")
+        logger.info("[snapshot] dataset=%s is being synced & published; background rebuild skipped", dataset_id)
         return False
     _async_refresh_inflight[dataset_id] = time.time()
     return True
@@ -1807,6 +1817,7 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
         claimed = [
             d for d in ids
             if d not in _async_refresh_inflight
+            and not _qc.is_claimed_global(f"datasetpublish::{d}")   # a Sync & Publish owns it
             and _qc.try_claim_global(f"snaprebuild::{d}", _REBUILD_LEASE_SECONDS)
         ]
         for d in claimed:
