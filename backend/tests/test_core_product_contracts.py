@@ -145,3 +145,28 @@ def test_live_execution_engines_flags_a_mixed_engine_dataset():
     db3 = _DB([table(1, 1), table(9, None, kind="derived_table")], [pg])
     _, ok3 = pub._live_execution_engines(db3, 99)
     assert ok3 is True
+
+
+# ── M8 Filters/Public — a relative date preset is resolved at request time ───
+
+def test_a_relative_date_preset_resolves_to_today_not_the_authoring_day():
+    """Browser (M8 §51): a public report authored with a relative preset must
+    show the window relative to WHEN IT IS VIEWED, not freeze to the authoring
+    day. The resolver recomputes from today on every call."""
+    from datetime import datetime, timedelta
+    from app.services.chart_contracts import compute_date_preset_range
+
+    today = datetime.now().date()
+
+    def d(s):
+        from datetime import date
+        return date.fromisoformat(s)
+
+    s, e = compute_date_preset_range("today")
+    assert d(s) == today and d(e) == today
+    s, e = compute_date_preset_range("this_month")
+    assert d(s).year == today.year and d(s).month == today.month and d(s).day == 1
+    s, e = compute_date_preset_range("last_7_days")
+    assert d(e) == today and d(s) == today - timedelta(days=6)
+    # 'custom'/unknown yields no window (the stored explicit range is used instead)
+    assert compute_date_preset_range("custom") == ("", "")
