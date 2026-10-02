@@ -34,7 +34,10 @@ and failing with a cryptic parser error.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -147,6 +150,67 @@ def _resolve_dataset_id(db: Session, binding: dict, base_view_name: str) -> Opti
             if bt is not None:
                 return bt.dataset_id
     return None
+
+
+class ReadScope:
+    """ONE logical read — a public page batch, an AI turn, an export page — sees
+    ONE snapshot generation per dataset (the dashboard generation contract).
+
+    Each tile resolves its generation independently, so a read straddling a
+    publish (the pointer flips N → N+1 between two tiles) used to draw tile A
+    from N and tile B from N+1 under one "data as of" label. The first tile of
+    a dataset in the scope fixes its generation; every later tile of that
+    dataset in the same scope is served the SAME one (or refused when it is no
+    longer servable) — never the other. Thread-safe: a batch plans its tiles in
+    a thread pool."""
+
+    def __init__(self) -> None:
+        self._pins: Dict[int, Optional[int]] = {}
+        self._lock = threading.Lock()
+
+    def pin(self, dataset_id: Any, generation: Optional[int]) -> Optional[int]:
+        """The generation this read serves for ``dataset_id``: the first one
+        seen, else ``generation`` (which then becomes the pin)."""
+        with self._lock:
+            return self._pins.setdefault(int(dataset_id), generation)
+
+    def pins(self) -> Dict[int, Optional[int]]:
+        with self._lock:
+            return dict(self._pins)
+
+
+_read_scope_var: contextvars.ContextVar[Optional[ReadScope]] = contextvars.ContextVar(
+    "appbi_read_scope", default=None,
+)
+
+
+def current_read_scope() -> Optional[ReadScope]:
+    return _read_scope_var.get()
+
+
+@contextlib.contextmanager
+def read_scope(scope: Optional[ReadScope] = None):
+    """Run a logical read under ``scope`` (a new one when omitted; the current
+    one is kept when already inside a read)."""
+    active = scope or _read_scope_var.get() or ReadScope()
+    token = _read_scope_var.set(active)
+    try:
+        yield active
+    finally:
+        _read_scope_var.reset(token)
+
+
+def _pinned_generation(dataset_id: Any, generation: Optional[int]) -> Optional[int]:
+    scope = _read_scope_var.get()
+    if scope is None or dataset_id is None:
+        return generation
+    return scope.pin(dataset_id, generation)
+
+
+_GENERATION_MOVED = (
+    "Dữ liệu của dataset vừa được cập nhật trong lúc tải báo cáo — tải lại để xem cùng một phiên bản "
+    "dữ liệu cho mọi biểu đồ."
+)
 
 
 def plan_chart_execution(
@@ -306,6 +370,19 @@ def plan_chart_execution(
         overrides, stored_fps, generation, as_of = snapshot_service.resolve_generation_refs(
             db, [t.id for t in mat_tables]
         )
+        # One read, one generation per dataset (ReadScope): a later tile of this
+        # read is served the generation its first tile was — never the newer one.
+        if overrides and generation is not None:
+            pinned = _pinned_generation(dataset_id, generation)
+            if pinned != generation:
+                if pinned is None:
+                    return live(_GENERATION_MOVED, dataset_id=dataset_id, blocked=_GENERATION_MOVED)
+                overrides, stored_fps, as_of = snapshot_service.resolve_specific_generation_refs(
+                    db, [t.id for t in mat_tables], pinned
+                )
+                if not overrides:
+                    return live(_GENERATION_MOVED, dataset_id=dataset_id, blocked=_GENERATION_MOVED)
+                generation = pinned
         if not overrides:
             # Not built yet → warm in the background. Single-engine dataset
             # serves live meanwhile; mixed-engine CANNOT run live → blocked
@@ -467,7 +544,10 @@ def _plan_published(db: Session, dataset_obj, base_view_name: str, *, is_preview
 
     dataset_id = dataset_obj.id
     state = getattr(dataset_obj, "publish_state", None)
-    pg = getattr(dataset_obj, "published_generation", None)
+    current_pg = getattr(dataset_obj, "published_generation", None)
+    # One read, one generation per dataset (ReadScope): a publish that flips the
+    # pointer mid-read does not split this read across N and N+1.
+    pg = _pinned_generation(dataset_id, current_pg)
     scope = getattr(dataset_obj, "security_scope", None) or "shared"
 
     def blocked_plan(msg: str, *, trigger: Optional[int] = None) -> ExecutionPlan:
@@ -512,6 +592,8 @@ def _plan_published(db: Session, dataset_obj, base_view_name: str, *, is_preview
     ]
     if want:
         refs, _fps, as_of = snapshot_service.resolve_specific_generation_refs(db, want, pg)
+        if not refs and pg != current_pg:
+            return blocked_plan(_GENERATION_MOVED)
         if not refs:
             return blocked_plan(
                 "Snapshot đã publish không còn đầy đủ (có thể đã hết hạn/bị xoá) — bấm “Sync & Publish” "

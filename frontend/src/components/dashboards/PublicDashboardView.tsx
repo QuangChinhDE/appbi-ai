@@ -79,6 +79,7 @@ import { SectionBands } from './SectionBands';
 import { readingOrder, resolveStructure, toStructTiles } from '@/lib/report-structure';
 import { ReportMetaProvider } from '@/lib/report-meta';
 import { ReportEvidenceProvider } from '@/lib/report-evidence';
+import { snapshotCoherence } from '@/lib/snapshot-coherence';
 
 // Phase-B5 / Phase-B9 — responsive "Fit to width" grid for the public report.
 // (Now THREE breakpoints: a tablet band between them is derived by
@@ -362,6 +363,15 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
   const [chartData, setChartData] = useState<Record<number, ChartDataResponse>>({});
   const [chartErrors, setChartErrors] = useState<Record<number, string>>({});
+  // The generation contract (lib/snapshot-coherence): set when the tiles on
+  // screen still hold two snapshot generations of one dataset after a re-read —
+  // the header then says so instead of one "data as of" over both. The ref
+  // records that a publish landed mid-view (the PDF export reports it).
+  const [snapshotMixed, setSnapshotMixed] = useState(false);
+  const generationMovedRef = useRef(false);
+  // "data as of" = the oldest build among the tiles actually on screen (the
+  // report-level /snapshots/info value is only the fallback before any tile).
+  const tilesAsOf = useMemo(() => snapshotCoherence(chartData).asOf, [chartData]);
   // Mirrors of the two maps above. PDF export walks pages in a loop and must see
   // what the PREVIOUS iteration just fetched; a closure snapshot would report
   // every chart as "still missing" and refetch the whole report page by page.
@@ -941,6 +951,28 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         if (entry.error) nextErrors[entry.chartId] = entry.error;
         else delete nextErrors[entry.chartId];
       }
+      // ONE view, ONE generation per dataset. A publish that landed between two
+      // reads leaves older tiles beside newer ones: re-read this page's older
+      // tiles once; older tiles of other pages are dropped (re-read on visit).
+      let coherence = snapshotCoherence(nextData);
+      if (!coherence.coherent) {
+        generationMovedRef.current = true;
+        const onPage = new Set(allCharts.map((dc) => dc.chart_id));
+        for (const id of coherence.stale) if (!onPage.has(id)) delete nextData[id];
+        const reread = batchItems.filter((item) => coherence.stale.includes(item.chart_id));
+        if (reread.length) {
+          try {
+            const again = await publicDashboardApi.getChartsDataBatch(token, sessionToken, reread, pageId);
+            for (const r of again.results || []) {
+              if (r.data) nextData[r.chart_id] = r.data;
+            }
+          } catch {
+            /* the mixed state is reported below */
+          }
+        }
+        coherence = snapshotCoherence(nextData);
+      }
+      setSnapshotMixed(!coherence.coherent);
       chartDataRef.current = nextData;
       chartErrorsRef.current = nextErrors;
       setChartData(nextData);
@@ -1261,6 +1293,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     // Charts that never produced data → listed in the PDF + the toast instead of
     // silently exporting an empty tile.
     const failures: PdfExportWarning[] = [];
+    generationMovedRef.current = false;
     try {
       const safeName = safePdfFilename(dashboard.public_link_name || dashboard.name, 'bao-cao');
       const storedSession = getPublicSession(token) ?? undefined;
@@ -1326,6 +1359,12 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
             reason: chartErrorsRef.current[id] || t('dashboards.readonlyChartTile.failedToLoad'),
           });
         }
+        // A publish landed during the export: pages already captured hold the
+        // previous generation. Said in the file, never one silent "as of".
+        const movedNote = 'Dữ liệu được cập nhật trong lúc xuất — các trang trong file thuộc hai phiên bản dữ liệu; hãy xuất lại.';
+        if (generationMovedRef.current && !failures.some((f) => f.reason === movedNote)) {
+          failures.push({ page: pageName, chart: 'Toàn báo cáo', reason: movedNote });
+        }
       };
 
       const reportTitle = dashboard.public_link_name || dashboard.name || 'Dashboard';
@@ -1373,7 +1412,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         onProgress: setExportProgress,
         pages: pageSources,
         previewWindow,
-        dataAsOf: snapshotAsOf,
+        dataAsOf: snapshotCoherence(chartDataRef.current).asOf ?? snapshotAsOf,
         warnings: failures,
       });
       if (failures.length) {
@@ -1834,12 +1873,20 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       >
         {presentationTitle}
       </h1>
-      {snapshotAsOf && (
+      {snapshotMixed ? (
+        <p
+          className="mt-0.5 text-[11px] font-medium text-warning-700"
+          role="status"
+          data-testid="snapshot-mixed"
+        >
+          Dữ liệu vừa được cập nhật trong lúc tải — các biểu đồ đang thuộc hai phiên bản dữ liệu. Tải lại trang để xem cùng một phiên bản.
+        </p>
+      ) : (tilesAsOf ?? snapshotAsOf) && (
         <p
           className="mt-0.5 text-[11px] text-text-tertiary"
-          title={`Số liệu tính đến ${formatSnapshotAsOf(snapshotAsOf)}`}
+          title={`Số liệu tính đến ${formatSnapshotAsOf(tilesAsOf ?? snapshotAsOf)}`}
         >
-          Số liệu tính đến {formatSnapshotAsOf(snapshotAsOf)}
+          Số liệu tính đến {formatSnapshotAsOf(tilesAsOf ?? snapshotAsOf)}
         </p>
       )}
     </div>

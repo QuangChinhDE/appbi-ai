@@ -96,7 +96,7 @@ export function usePublicFilterDistinctValues(
     // was still in flight, then values appeared ("vàng xong lại ra data").
     // isLoading deliberately includes isFetching so a REFETCH (after Apply or a
     // cascade-filter change) also suppresses the banner, not just the first load.
-    const status: Record<string, { isLoading: boolean; isError: boolean; hasFilterContext: boolean; total?: number; hasMore?: boolean }> = {};
+    const status: Record<string, { isLoading: boolean; isError: boolean; isUnavailable?: boolean; isRestricted?: boolean; hasFilterContext: boolean; total?: number; hasMore?: boolean }> = {};
 
     activeSemanticDistinctTargets.forEach(({ column, filterContext }, index) => {
       const q = semanticDistinctQueries[index];
@@ -108,6 +108,11 @@ export function usePublicFilterDistinctValues(
         isLoading: Boolean(q?.isLoading || q?.isFetching),
         // `unavailable`: the warehouse could not answer — an error, not "no values match".
         isError: Boolean(q?.isError || q?.data?.unavailable),
+        // Three different empty lists, never one "no values": the warehouse did
+        // not answer (unavailable), the link's scope forbids answering
+        // (restricted), or the cascade genuinely matched nothing.
+        isUnavailable: Boolean(q?.data?.unavailable),
+        isRestricted: Boolean(q?.data?.restricted),
         hasFilterContext: Array.isArray(filterContext) && filterContext.length > 0,
         total: q?.data?.total,
         hasMore: q?.data?.has_more,

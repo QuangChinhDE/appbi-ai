@@ -1280,12 +1280,23 @@ async def test_flow(
         raise HTTPException(status_code=422, detail="Flow không hợp lệ, chưa test được")
 
     from app.services.agent_flows.dispatch import run_preview
-    from app.services.dashboard_ai_bot.tool_context import ToolContext
+    from app.services.public_link_scope import LinkScopeUnavailable, link_tool_context
 
-    ctx = ToolContext.from_dashboard(
-        db=db, dashboard=dashboard, public_filters=[],
-        actor_type="user", actor_ref=_actor(user),
-    )
+    # THE LINK'S DATA CONTRACT, NOT THE AUTHOR'S. This button tests the flow ON
+    # this link: the run reads what the link's viewers read — its filters, 🔒 /
+    # 🚫 locks, page bounds, exposed fields and snapshot freshness — built by
+    # the same function the live link's chatbot uses. It ran with no link filter
+    # at all, so an author testing a North-only link was shown every region.
+    # (test-on-report and test-as-chat are the author's own read, by contract.)
+    try:
+        ctx = link_tool_context(
+            db, dashboard=dashboard, filters_config=getattr(link, "filters_config", None),
+            appearance_config=getattr(link, "appearance_config", None),
+            context_for_log=f"flow_test:{link.id}",
+            actor_type="user", actor_ref=_actor(user),
+        )
+    except LinkScopeUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Không dựng được phạm vi dữ liệu của link để test") from exc
     # Every step runs on its own stored key; the link's key is not consulted.
     _require_keys(db, flow)
 

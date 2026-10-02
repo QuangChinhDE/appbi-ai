@@ -325,6 +325,118 @@ def test_a_filter_of_another_dataset_does_not_apply_to_this_chart(pg, http, mode
         refused_everywhere(*_dashboard(w, [(chart, None)], filters_config=[foreign]))
 
 
+@pytest.mark.parametrize("mode", ["visible", "locked", "hidden"])
+def test_a_page_bound_is_applied_scoped_out_or_refused_never_skipped(pg, http, mode):
+    """P4-C1 — a page filter (server-owned, every publicMode) is exactly one of:
+    APPLIED (its own dataset: North 130), SCOPED OUT (provably another tile's
+    dataset: 198), REFUSED. A page bound on the chart's OWN field whose stored
+    datasetId is stale (another dataset, a deleted one) was skipped — the
+    viewer got 198, every region, and the slicer offered South. Now it refuses
+    on the tile, the batch and the AI, and the slicer offers nothing (restricted)."""
+    client, holder = http
+    req = {"dims": [], "measures": ["p2_sales.revenue"]}
+    url = "/api/v1/public/dashboards/{}/filters/distinct-values"
+    with chart_world(pg, "G2_snowflake", ds_config=_pg_config()) as w:
+        holder["db"] = w.db
+        chart = save_chart(w, "p2_sales", req)
+        other, other_view, other_tile = _other_dataset(w)
+        slicer = {"dataset_id": w.dataset.id, "field": "p2_regions.name", "limit": 50, "page_id": "p1"}
+
+        def on_page(filters, tiles=((chart, "p1"),)):
+            dash, tokens = _dashboard(w, list(tiles), slicer_fields=["p2_regions.name"],
+                                      pages_config=[{"id": "p1", "filters": filters}])
+            outcomes = [ask_public(client, tokens["plain"], chart, req, page="p1"),
+                        ask_public_batch(client, tokens["plain"], [(chart, req)], page="p1")[chart.id],
+                        ask_ai(w, dash, [], chart, req)]
+            options = client.get(url.format(tokens["plain"]), params=slicer).json()
+            return outcomes, options
+
+        own = _lock("p2_regions.name", "North", publicMode=mode)
+        outcomes, options = on_page([{**own, "datasetId": w.dataset.id}])
+        for outcome in outcomes:
+            chart_expect(outcome, req, [{"p2_sales.revenue": 130}])
+        assert options["values"] == ["North"], options
+        for stale_id in (other.id, other.id + 10_000_000):     # another dataset / a deleted one
+            for tiles in (((chart, "p1"),), ((chart, "p1"), (other_tile, "p1"))):
+                outcomes, options = on_page([{**own, "datasetId": stale_id}], tiles)
+                for kind, cat, _ in outcomes:
+                    assert kind == "error" and cat == "AUTHORITATIVE_NOT_APPLIED", (stale_id, len(tiles), cat)
+                assert options["values"] == [] and options.get("restricted") is True, options
+        # B's page filter on B's view, with a tile of B on the report: B's bound, not A's
+        foreign = _lock(f"{other_view}.region", "X", datasetId=other.id, publicMode=mode)
+        outcomes, options = on_page([foreign], ((chart, "p1"), (other_tile, "p1")))
+        for outcome in outcomes:
+            chart_expect(outcome, req, [{"p2_sales.revenue": 198}])
+        assert sorted(options["values"]) == ["North", "South"], options
+        # ... and with no tile of B on the report it bounds nothing here: refused, never lifted
+        outcomes, _options = on_page([foreign])
+        for kind, cat, _ in outcomes:
+            assert kind == "error" and cat == "AUTHORITATIVE_NOT_APPLIED", cat
+
+
+def test_the_studio_link_test_reads_what_that_links_viewers_read(pg, http, monkeypatch):
+    """P4-C2 — Agent Flow Studio "Test" on a link runs the flow ON that link.
+    North-only link: 130, South-only link: 61 — the numbers the live link's
+    tile (and its chatbot) give; the unrestricted author view is 198. It ran
+    with no link filter, so every link's test answered 198. The flow itself is
+    stubbed at `run_preview` (no model call): what is asserted is the data
+    contract the run is handed."""
+    import asyncio
+
+    from app.models.agent_brain import AgentBrainVersion
+    from app.modules.agent_flows import api as af_api
+    from app.services.agent_flows import dispatch
+    from app.services.agent_flows.tools.context import _fetch_chart_data
+
+    client, holder = http
+    req = {"dims": [], "measures": ["p2_sales.revenue"]}
+    with chart_world(pg, "G2_snowflake", ds_config=_pg_config()) as w:
+        holder["db"] = w.db
+        chart = save_chart(w, "p2_sales", req)
+        dash, tokens = _dashboard(w, [(chart, None)], links=(
+            ("north", [_lock("p2_regions.name", "North")], {"cache_ttl_minutes": 0}),
+            ("south", [_lock("p2_regions.name", "South")], {}),
+        ))
+        key = f"p4-flow-{uuid.uuid4().hex[:6]}"
+        w.db.add(AgentBrainVersion(brain_key=key, version=1, name="p4 flow", status="draft", body={}))
+        w.db.flush()
+        from app.models.models import DashboardPublicLink
+
+        links = {s: w.db.query(DashboardPublicLink).filter_by(token=t).one() for s, t in tokens.items()}
+        seen: dict = {}
+
+        async def fake_run_preview(db, *, ctx, **_kw):
+            seen["ctx"] = ctx
+            yield types_ns(type="result", extra={"envelope": {"answer": "stub"}, "run_row_id": None})
+
+        def types_ns(**kw):
+            import types
+            return types.SimpleNamespace(**kw)
+
+        monkeypatch.setattr(dispatch, "run_preview", fake_run_preview)
+        monkeypatch.setattr(af_api, "_may_edit_flow", lambda *_a, **_k: None)
+        monkeypatch.setattr(af_api, "_require_keys", lambda *_a, **_k: None)
+        monkeypatch.setattr(af_api.binding_service, "get_for_link", lambda *_a, **_k: object())
+        monkeypatch.setattr(af_api.reg, "get_brain", lambda *_a, **_k: {"version": 1})
+        monkeypatch.setattr(af_api.reg, "parse_flow", lambda _row: object())
+        author = types_ns(id=uuid.UUID(int=7), email="author@p4", full_name="author")
+        expected = {"north": 130, "south": 61}
+        for suffix, link in links.items():
+            monkeypatch.setattr(af_api, "_link_and_dashboard", lambda *_a, _l=link, **_k: (_l, dash))
+            body = af_api.TestBody(question="tổng doanh thu?", link_id=link.id)
+            out = asyncio.run(af_api.test_flow(key, body, db=w.db, user=author))
+            assert out["envelope"] == {"answer": "stub"}, out
+            read = _fetch_chart_data(seen["ctx"], chart.id)
+            assert [dict(zip(read["columns"], r)) for r in read["rows"]] == [{"p2_sales.revenue": expected[suffix]}]
+            # = the live link's own tile
+            chart_expect(ask_public(client, tokens[suffix], chart, req), req, [{"p2_sales.revenue": expected[suffix]}])
+            from app.api.public import _resolve_public_snapshot_ttl
+
+            assert seen["ctx"].snapshot_ttl_minutes == _resolve_public_snapshot_ttl(link.appearance_config)
+        # the author's own, unrestricted read is a different contract (test-on-report): 198
+        chart_expect(ask_auth(client, w, chart, req), req, [{"p2_sales.revenue": 198}])
+
+
 @pytest.mark.parametrize("mode", ["locked", "hidden"])
 def test_an_unappliable_link_lock_refuses_never_widens(pg, http, mode):
     """deals.stage is unreachable from revenue (single-direction): an ordinary
@@ -650,6 +762,114 @@ def test_a_published_dataset_without_a_generation_blocks_every_tile_alike(pg, ht
         dash, tokens = _dashboard(w, [(c, None) for c in charts])
         out = ask_public_batch(client, tokens["plain"], list(zip(charts, reqs)))
         assert all(o[0] == "error" for o in out.values()), out
+
+
+def _two_generations(w, monkeypatch):
+    """The dataset published at generation 1, generation 2 fully built (a
+    publish about to flip the pointer). Snapshot execution is redirected to the
+    live source — what is under test is WHICH generation each tile is planned on."""
+    import dataclasses
+    import types
+
+    from app.models.dataset import DatasetTableSnapshot
+    from app.services import chart_service as cs
+    from app.services import snapshot_service
+
+    w.dataset.publish_state = "published"
+    w.dataset.published_generation = 1
+    rows = {}
+    for gen in (1, 2):
+        for name, t in w.tables.items():
+            rows[(gen, name)] = DatasetTableSnapshot(
+                dataset_id=w.dataset.id, dataset_table_id=t.id, version=gen, generation=gen,
+                physical_ref=f"p4.snap_{t.id}_g{gen}", fingerprint="f" * 64, status="ready",
+                is_current=(gen == 1), built_at=datetime.datetime(2026, 1, gen))
+            w.db.add(rows[(gen, name)])
+    w.db.flush()
+    monkeypatch.setattr(snapshot_service, "host_for_generation", lambda *_a, **_k: types.SimpleNamespace(id=4242, config={}))
+    from app.services.datasource_service import DataSourceConnectionService
+
+    monkeypatch.setattr(DataSourceConnectionService, "snapshot_query_config", staticmethod(lambda cfg: {"host": True}))
+    planned: list = []
+    real = cs.plan_chart_execution
+
+    def plan_then_run_live(*a, **kw):
+        plan = real(*a, **kw)
+        planned.append((plan.generation, plan.blocked))
+        if plan.blocked:
+            return plan
+        return dataclasses.replace(plan, mode="live", dialect="", ds_type="", exec_config=None, overrides={},
+                                   published=False, cred="source_datasource")
+
+    monkeypatch.setattr(cs, "plan_chart_execution", plan_then_run_live)
+    return planned, rows
+
+
+def test_one_read_of_a_dashboard_sees_one_generation(pg, http, monkeypatch):
+    """P4-C3 — the generation contract: ONE logical read (a public page batch,
+    an AI turn) is served ONE published generation per dataset. A publish that
+    flips the pointer 1 → 2 between two tiles of the same batch used to draw the
+    second tile from 2 under the page's single "data as of" label. Now both
+    come from 1; separate reads each take the current one and SAY which
+    (snapshot_generation on every public tile). A pinned generation that is no
+    longer servable refuses the tile — never silently swaps to the other."""
+    client, holder = http
+    reqs = [{"dims": [], "measures": ["p2_sales.revenue"]},
+            {"dims": ["p2_products.name"], "measures": ["p2_sales.revenue"]}]
+    with chart_world(pg, "G1_star", ds_config=_pg_config()) as w:
+        holder["db"] = w.db
+        charts = [save_chart(w, "p2_sales", r) for r in reqs]
+        dash, tokens = _dashboard(w, [(c, None) for c in charts])
+        planned, rows = _two_generations(w, monkeypatch)
+        from app.services import snapshot_service
+
+        real_refs = snapshot_service.resolve_specific_generation_refs
+        flip = {"after": 1, "retire_old": False}
+
+        def refs_then_publish(db, ids, gen):
+            out = real_refs(db, ids, gen)
+            flip["after"] -= 1
+            if flip["after"] == 0:          # a publish lands right after the first tile planned
+                w.dataset.published_generation = 2
+                for (g, _n), r in rows.items():
+                    r.status = "superseded" if g == 1 else "ready"
+                    if g == 1 and flip["retire_old"]:
+                        r.retired_at = datetime.datetime(2026, 1, 3)
+                w.db.flush()
+            return out
+
+        monkeypatch.setattr(snapshot_service, "resolve_specific_generation_refs", refs_then_publish)
+        out = ask_public_batch(client, tokens["plain"], list(zip(charts, reqs)))
+        assert [g for g, _b in planned] == [1, 1], planned
+        assert {o[2].get("snapshot_generation") for o in out.values()} == {1}, out
+        assert all(o[0] == "rows" for o in out.values()), out
+        # separate reads: each takes the current generation, and says which
+        planned.clear()
+        _k, _r, debug = ask_public(client, tokens["plain"], charts[0], reqs[0])
+        assert debug.get("snapshot_generation") == 2 and debug.get("snapshot_dataset_id") == w.dataset.id, debug
+        # an AI turn is one read too
+        planned.clear()
+        w.dataset.published_generation = 1
+        for (g, _n), r in rows.items():
+            r.status = "ready"
+        w.db.flush()
+        flip["after"] = 1
+        ctx = ai_context(w, dash, [], reqs[0])
+        from app.services.agent_flows.tools.context import _fetch_chart_data
+
+        _fetch_chart_data(ctx, charts[0].id)
+        _fetch_chart_data(ctx, charts[1].id)
+        assert [g for g, _b in planned] == [1, 1], planned
+        # the pinned generation is gone mid-read (retired): the tile refuses, it is never served gen 2
+        planned.clear()
+        w.dataset.published_generation = 1
+        for (g, _n), r in rows.items():
+            r.status, r.retired_at = "ready", None
+        w.db.flush()
+        flip.update(after=1, retire_old=True)
+        out = ask_public_batch(client, tokens["plain"], list(zip(charts, reqs)))
+        assert planned[0][0] == 1 and planned[1][1], planned
+        assert out[charts[1].id][0] == "error", out
 
 
 # ── S11 — no result is reused across link scopes ─────────────────────────────

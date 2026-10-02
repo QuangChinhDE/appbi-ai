@@ -266,6 +266,11 @@ class ToolContext:
     #: None = current snapshot, 0 = realtime) — the AI reads a chart exactly as
     #: the viewer's tile does, never a different execution state.
     snapshot_ttl_minutes: int | None = None
+    #: ONE turn = ONE logical read: every chart of a dataset this context reads
+    #: is served the same snapshot generation (execution_plan.ReadScope), so an
+    #: answer never combines a tile read before a publish with one read after.
+    #: Created on the first chart read; worker copies of the context share it.
+    read_scope: Any = None
     #: dataset_table_ids of the tiles this context was built from, recorded once
     #: by `from_dashboard`. A public token is served published tiles only, and a
     #: commit during the turn (retrieval logging commits the request session)
@@ -775,13 +780,21 @@ def _fetch_chart_data(
     if cached is not None:
         return cached
 
-    result = ChartService.get_chart_data(
-        ctx.db,
-        chart_id,
-        extra_filters=merged or None,
-        filter_context="dashboard",
-        snapshot_ttl_minutes=getattr(ctx, "snapshot_ttl_minutes", None),
-    )
+    from app.services.execution_plan import ReadScope, read_scope
+
+    if getattr(ctx, "read_scope", None) is None:
+        try:
+            ctx.read_scope = ReadScope()
+        except Exception:  # noqa: BLE001 — a frozen context: one scope per call
+            pass
+    with read_scope(getattr(ctx, "read_scope", None)):
+        result = ChartService.get_chart_data(
+            ctx.db,
+            chart_id,
+            extra_filters=merged or None,
+            filter_context="dashboard",
+            snapshot_ttl_minutes=getattr(ctx, "snapshot_ttl_minutes", None),
+        )
     raw = result.get("data") if isinstance(result, dict) else None
 
     columns: list[str] = []

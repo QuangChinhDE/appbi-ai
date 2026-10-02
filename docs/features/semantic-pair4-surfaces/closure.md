@@ -28,7 +28,7 @@ dashboard and real public links.
 | AI chart read (every dashboard / public AI tool) | `agent_flows.tools.context._fetch_chart_data` | `get_chart_data` (link snapshot TTL, Pair #4) | the public merge, scoped to the chart's dataset | `ToolError` / `semantic_refusal:<CAT>` |
 | AI re-aggregation | `tool_aggregate_chart_data` | the rows the Kernel returned | — | refuses a non-additive SUM / AVG across rows |
 | AI chart preview | `POST /charts/ai-preview` | `ChartService.preview_chart_data` with the config it saves (Pair #4; it was a physical `{column, aggregation}` query) | — | 400 + `X-AppBI-Refusal` |
-| Agent-flow studio test on a link (editor-only) | `agent_flows.api.test_flow` | the AI chart read | none — the link's filters are NOT applied (debt below) | as the AI read |
+| Agent-flow studio test on a link (editor-only) | `agent_flows.api.test_flow` | the AI chart read | the link's own contract — `services.public_link_scope.link_tool_context`, the SAME builder (`api.public._public_link_tool_context`) every live public AI endpoint uses (final closure) | as the AI read |
 
 Authenticated dashboard locks are applied by the dashboard client; an
 authenticated viewer's scope is the chart / dataset permission, not the
@@ -89,6 +89,37 @@ itself).
 * Re-aggregation of returned rows refuses SUM across groups and AVG across rows
   of a non-additive measure; a Top-N source is noted (`source_top_n`).
 
+## Final closure (P4-C1 / C2 / C3)
+
+* **Page bounds are applied, scoped out, or refused — never skipped (P4-C1).**
+  A page filter naming another `datasetId` leaves a chart only when it is
+  PROVABLY another tile's dataset's filter (`foreign_field_check`: that
+  dataset is read by another tile of the report AND the field is that
+  dataset's view). A stale id on the chart's own field, a deleted dataset, or
+  no proof keeps the bound: the Kernel refuses (`AUTHORITATIVE_NOT_APPLIED`)
+  and the slicer says `restricted`. It was skipped — the anonymous viewer got
+  every region (198) and a slicer offering South on a North page.
+* **The Studio link test reads the link's contract (P4-C2).** One builder owns
+  "the AI context of a public link" (filters, locks, page bounds, exposed
+  fields, freshness): the five live public AI endpoints and `test_flow` both
+  call it. `modules/` reaches it through `services/public_link_scope.py`, where
+  the public router registers it at import — no `modules → api` import; an
+  unregistered builder refuses (503), it never runs unbounded. test-on-report
+  and test-as-chat stay the author's own read, by contract.
+* **Generation contract: coherent per logical read (P4-C3, Contract A).** A
+  published BI report presents one "data as of" per view, so ONE logical read
+  — a public page batch, an AI turn — is served ONE snapshot generation per
+  dataset (`execution_plan.ReadScope`: the first tile of a dataset fixes it,
+  later tiles of that read reuse it; a pinned generation that is no longer
+  servable refuses the tile, never swaps to the other). Separate reads (a page
+  switch, a lazy tile) each take the current generation and SAY which
+  (`debug.snapshot_generation` / `snapshot_dataset_id` on every public tile);
+  the public page re-reads older tiles once (`lib/snapshot-coherence`), derives
+  "data as of" from the tiles on screen, and — if two generations remain —
+  says so in the header instead of one as-of. A PDF export during which a
+  publish landed carries an explicit note. (A server PDF prints one page per
+  load — each page one read.)
+
 ## Cache contract
 
 The Kernel result cache keys on the canonical filter, which now keeps
@@ -102,14 +133,16 @@ predicate as an authoritative bound, and two links never share a slot.
 | In-process caches (public meta, AI registry) are invalidated per worker; another worker serves the old entry until its TTL (≤ 60 s / 5 min) | platform |
 | The public slicer reads at most 50 000 distinct values before search / pagination | dashboard UX |
 | The AI ignores a viewer's granularity override (reads the chart's saved grain) | AI surfaces |
-| A dashboard read during a publish may mix generation N and N+1 tiles (both published) | semantic platform |
 | A pivot error on a direct API call is a warning, not a refusal | semantic platform |
 | An authoritative constraint on a calendar / role-played view of ANOTHER dataset is not provably foreign (no table) — kept, so refused | semantic platform |
-| Page-scope bounds (`page_scope_bounds`, `hard_bounds_on_field`) still skip on any `datasetId` mismatch — a page bound on the chart's own field carrying a stale id is skipped, not refused (pre-existing) | semantic platform |
 | The public slicer shows `restricted` as "no values match" (the flag is returned; the client does not read it yet) | dashboard UX |
 | A 🔒 cascade whose routes mix a composite-key EXISTS with semi-joins falls back to a WHERE form BigQuery may reject over aggregated views — it fails closed (`unavailable`) | semantic platform |
 | `semantic_epoch` aggregates snapshot rows globally: any dataset's refresh retires every AI cache entry (cost only) | AI surfaces |
-| The agent-flow studio test on a link (`test_flow`, editors only) runs without the link's filters / page scope / TTL — its numbers can differ from the link viewers'. Fixing it from `modules/` needs the public merge moved out of `api/public.py` into a service (`modules` may not import `api` — guardrail BLOCK) | AI surfaces |
+
+Recorded, not changed: a public refusal message is shown verbatim (the
+documented Phase-12.7 choice — the author sharing the report needs the reason)
+and may name semantic view names on the refused routes; never SQL, values or a
+🚫 field (owner: public-link security).
 
 ## Pair #5 handoff
 

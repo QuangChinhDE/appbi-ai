@@ -200,6 +200,8 @@ interface DashboardFilterBarProps {
   distinctStatus?: Record<string, {
     isLoading: boolean;
     isError: boolean;
+    isUnavailable?: boolean;
+    isRestricted?: boolean;
     hasFilterContext: boolean;
     total?: number;
     hasMore?: boolean;
@@ -1134,6 +1136,8 @@ interface FilterCardProps {
   distinctStatus?: {
     isLoading: boolean;
     isError: boolean;
+    isUnavailable?: boolean;
+    isRestricted?: boolean;
     hasFilterContext: boolean;
     total?: number;
     hasMore?: boolean;
@@ -2125,6 +2129,8 @@ function SingleSelectBody({
   distinctStatus?: {
     isLoading: boolean;
     isError: boolean;
+    isUnavailable?: boolean;
+    isRestricted?: boolean;
     hasFilterContext: boolean;
     total?: number;
     hasMore?: boolean;
@@ -2140,6 +2146,7 @@ function SingleSelectBody({
     values.length === 0
     && (conflictingFilterLabels?.length ?? 0) > 0
     && !distinctStatus?.isError
+    && !distinctStatus?.isRestricted
     && !distinctStatus?.isLoading;
   // Phase-7.6 — when no values AND no in-list conflict, also check if a
   // cross-list filter (page-level, slicer cluster) was passed via the
@@ -2193,6 +2200,10 @@ function SingleSelectBody({
             {values.length === 0
               ? (showConflictBanner
                   ? t('dashboards.selectBody.noMatchingValues')
+                  : distinctStatus?.isRestricted
+                    ? t('dashboards.selectBody.restrictedByScope')
+                  : distinctStatus?.isUnavailable
+                    ? t('dashboards.selectBody.unavailable')
                   : distinctStatus?.isError
                     ? t('dashboards.selectBody.failedToLoad')
                     : emptyDueToFilter
@@ -2260,6 +2271,8 @@ function MultiSelectBody({
   distinctStatus?: {
     isLoading: boolean;
     isError: boolean;
+    isUnavailable?: boolean;
+    isRestricted?: boolean;
     hasFilterContext: boolean;
     total?: number;
     hasMore?: boolean;
@@ -2279,6 +2292,7 @@ function MultiSelectBody({
     values.length === 0
     && (conflictingFilterLabels?.length ?? 0) > 0
     && !distinctStatus?.isError
+    && !distinctStatus?.isRestricted
     && !distinctStatus?.isLoading;
   // Phase-7.6 — cross-list filter (page filter, slicer cluster filter
   // outside the current popup's filter list) can also produce 0 cascade
@@ -2342,6 +2356,10 @@ function MultiSelectBody({
             {values.length === 0
               ? (showConflictBanner
                   ? t('dashboards.selectBody.noMatchingValues')
+                  : distinctStatus?.isRestricted
+                    ? t('dashboards.selectBody.restrictedByScope')
+                  : distinctStatus?.isUnavailable
+                    ? t('dashboards.selectBody.unavailable')
                   : distinctStatus?.isError
                     ? t('dashboards.selectBody.failedToLoad')
                     : emptyDueToFilter

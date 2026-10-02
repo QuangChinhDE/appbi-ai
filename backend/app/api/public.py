@@ -803,10 +803,19 @@ def _build_public_chart_filters(
     # Page scope — resolved HERE from the stored dashboard for the page(s) the
     # chart is on, not trusted from the request. A link's lock or kill-marker
     # on the same field does not replace it: the two AND (DoD 01).
+    # A report over several datasets: each chart takes ITS dataset's filters
+    # (a filter of another dataset does not apply to it — it was refused as a
+    # dataset mismatch, every tile of the second dataset), the same set the
+    # builder's dashboard sends per tile. Only a PROVABLY foreign filter leaves
+    # — a dashboard filter or a page bound alike; a stale id is kept and refused.
+    from app.services.filter_layered_merge import scope_filters_to_dataset
+
+    _foreign = _foreign_check_for(dash, chart_dataset_id)
     page_bounds = page_scope_bounds(
         getattr(dash, "pages_config", None) or [],
         page_ids,
         dataset_id=chart_dataset_id,
+        field_is_foreign=_foreign,
     ) if page_ids else []
     if page_bounds:
         merged = apply_page_scope_bounds(merged, page_bounds)
@@ -814,13 +823,6 @@ def _build_public_chart_filters(
     # kill-marker removed comes back, ANDed: a link narrows the report, it
     # never removes the author's boundary.
     merged = enforce_author_bounds(merged, authoritative_filters)
-    # A report over several datasets: each chart takes ITS dataset's filters
-    # (a filter of another dataset does not apply to it — it was refused as a
-    # dataset mismatch, every tile of the second dataset), the same set the
-    # builder's dashboard sends per tile. Only a provably foreign filter leaves.
-    from app.services.filter_layered_merge import foreign_field_check, scope_filters_to_dataset
-
-    _foreign = foreign_field_check(_session_of(dash), chart_dataset_id, _report_dataset_ids(dash))
     merged = scope_filters_to_dataset(merged, chart_dataset_id, _foreign)
     if hard_bounds_out is not None:
         hard_bounds_out.extend(page_bounds)
@@ -1021,7 +1023,14 @@ def _public_chart_payload(data: Any, applied: list[dict] | None = None) -> Any:
 
     debug_in = data.get("debug") if isinstance(data, dict) else getattr(data, "debug", None)
     skipped = _public_skipped_filters(debug_in, applied)
-    safe_debug = ChartDebugInfo.model_validate({"dropped_filters": skipped}) if skipped else None
+    # Freshness is safe to show (a build time, a generation id): the viewer's
+    # page needs it to tell one snapshot from two (the generation contract).
+    _get = (lambda k: debug_in.get(k)) if isinstance(debug_in, dict) else (lambda k: getattr(debug_in, k, None))
+    freshness = {k: _get(k) for k in ("data_source_mode", "snapshot_as_of", "snapshot_stale",
+                                      "snapshot_generation", "snapshot_dataset_id")} if debug_in is not None else {}
+    freshness = {k: v for k, v in freshness.items() if v is not None}
+    safe_debug = (ChartDebugInfo.model_validate({"dropped_filters": skipped, **freshness})
+                  if (skipped or freshness) else None)
     if isinstance(data, dict):
         return {**data, "debug": safe_debug.model_dump() if safe_debug else None}
     if hasattr(data, "model_copy"):
@@ -1039,6 +1048,15 @@ def _session_of(obj: Any):
         return object_session(obj)
     except UnmappedInstanceError:
         return None
+
+
+def _foreign_check_for(dash: Any, chart_dataset_id: Any):
+    """Whether a filter is PROVABLY another tile's dataset's filter on this
+    report (filter_layered_merge.foreign_field_check), for a chart of
+    ``chart_dataset_id``."""
+    from app.services.filter_layered_merge import foreign_field_check
+
+    return foreign_field_check(_session_of(dash), chart_dataset_id, _report_dataset_ids(dash))
 
 
 def _report_dataset_ids(dash: Any) -> set:
@@ -1081,10 +1099,12 @@ def _public_page_scope_by_chart(dash: Dashboard, link_filters_config: list[dict]
     which reads a chart without a page (never wider than any of its pages)."""
     out: dict[int, list[dict]] = {}
     for chart_id in {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}:
+        _ds = _chart_dataset_id(dash, chart_id)
         bounds = page_scope_bounds(
             getattr(dash, "pages_config", None) or [],
             _public_chart_page_ids(dash, chart_id, None),
-            dataset_id=_chart_dataset_id(dash, chart_id),
+            dataset_id=_ds,
+            field_is_foreign=_foreign_check_for(dash, _ds),
         )
         if bounds:
             out[chart_id] = bounds
@@ -3429,6 +3449,42 @@ def _resolve_public_snapshot_ttl(appearance_config: dict | None) -> int | None:
     return None if v == -1 else v
 
 
+def _public_link_tool_context(
+    db: Session,
+    dash: Dashboard,
+    link_filters_config: list[dict] | None,
+    appearance_config: dict | None,
+    viewer_filters: list[dict] | None = None,
+    *,
+    context_for_log: str = "public_ai",
+    **ctx_kwargs: Any,
+):
+    """THE AI tool context of one public link — its layered filters, locks,
+    page bounds, exposed fields and freshness. Every public AI endpoint and the
+    Agent Flow Studio's link test (through ``services.public_link_scope``) build
+    it here, so "as this link" means one thing."""
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
+
+    _refuse_malformed_link(link_filters_config)
+    combined = _build_public_chart_filters(
+        dash, link_filters_config, [f for f in (viewer_filters or []) if isinstance(f, dict)],
+        context_for_log=context_for_log,
+    )
+    return ToolContext.from_dashboard(
+        db=db, dashboard=dash, public_filters=combined,
+        page_scope_by_chart=_public_page_scope_by_chart(dash, link_filters_config),
+        exposed_fields=_viewer_allowed(dash, link_filters_config),
+        # the link's data freshness, as its tiles read it (Realtime = live)
+        snapshot_ttl_minutes=_resolve_public_snapshot_ttl(appearance_config),
+        **ctx_kwargs,
+    )
+
+
+from app.services.public_link_scope import register_link_context_builder as _register_link_ctx  # noqa: E402
+
+_register_link_ctx(_public_link_tool_context)
+
+
 @router.get("/dashboards/{token}/snapshots/info")
 def get_public_snapshot_info(
     token: str,
@@ -3552,7 +3608,7 @@ def get_public_filter_distinct_values(
     # pinned to the current pick) — which also dropped a HARD bound on it. The
     # raw hard bounds on this field go back into the query marked to survive
     # the strip: the engine applies every operator, not only `in` lists.
-    own_field_bounds = hard_bounds_on_field(raw_hard_bounds, dataset_id, field)
+    own_field_bounds = hard_bounds_on_field(raw_hard_bounds, dataset_id, field, _foreign_check_for(dash, dataset_id))
     combined_filters = [*combined_filters, *own_field_bounds]
 
     from app.services.chart_contracts import AuthoritativeFilterNotApplied
@@ -4128,16 +4184,9 @@ def get_dashboard_ai_recon(
         # locks (and empty/hidden entries are normalized) — never the raw,
         # un-merged link.filters_config. Closes the AI-bypass drift; matches
         # the chat/briefing endpoints which already merge.
-        combined_filters = _build_public_chart_filters(
-            dash, public_filters, [], context_for_log="ai_recon",
-        )
-        ctx = ToolContext.from_dashboard(
-            db=db, dashboard=dash, public_filters=combined_filters,
-            page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
-            exposed_fields=_viewer_allowed(dash, public_filters),
-            # the link's data freshness, as its tiles read it (Realtime = live)
-            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(appearance_config),
-        )
+        ctx = _public_link_tool_context(db, dash, public_filters, appearance_config, [],
+                                        context_for_log="ai_recon")
+        combined_filters = ctx.public_filters
         recon = build_proactive_recon(ctx)
     except Exception:
         logger.exception("AI recon build error for token=%s", token)
@@ -4281,21 +4330,12 @@ def get_dashboard_ai_briefing_guess(
                 detail=f"Invalid filters parameter: {exc}",
             ) from exc
 
-    combined_filters = _build_public_chart_filters(
-        dash,
-        public_filters,
-        viewer_filters,
-        context_for_log=f"ai_bot:{token}",
-    )
 
     try:
-        ctx = ToolContext.from_dashboard(
-            db=db, dashboard=dash, public_filters=combined_filters,
-            page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
-            exposed_fields=_viewer_allowed(dash, public_filters),
-            # the link's data freshness, as its tiles read it (Realtime = live)
-            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(appearance_config),
-        )
+        ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
+                                        viewer_filters,
+                                        context_for_log=f"ai_bot:{token}")
+        combined_filters = ctx.public_filters
         recon = build_proactive_recon(ctx)
         guess = guess_briefing_from_recon(
             recon,
@@ -4374,19 +4414,10 @@ async def post_dashboard_ai_briefing_brief(
     briefing.confirmed = True
 
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
-    combined_filters = _build_public_chart_filters(
-        dash,
-        public_filters,
-        [item for item in viewer_filters_body if isinstance(item, dict)],
-        context_for_log=f"ai_bot_briefing:{token}",
-    )
-    ctx = ToolContext.from_dashboard(
-            db=db, dashboard=dash, public_filters=combined_filters,
-            page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
-            exposed_fields=_viewer_allowed(dash, public_filters),
-            # the link's data freshness, as its tiles read it (Realtime = live)
-            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(appearance_config),
-        )
+    ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
+                                    [item for item in viewer_filters_body if isinstance(item, dict)],
+                                    context_for_log=f"ai_bot_briefing:{token}")
+    combined_filters = ctx.public_filters
     recon = build_proactive_recon(ctx)
     user_prompt = build_executive_brief_user_prompt(
         briefing=briefing,
@@ -4817,19 +4848,10 @@ async def chat_dashboard_ai_agent(
     # Merge link-level public filters with viewer-applied slicer filters
     # from the dashboard UI through the shared layered-merge helper.
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
-    combined_filters = _build_public_chart_filters(
-        dash,
-        public_filters,
-        [item for item in viewer_filters_body if isinstance(item, dict)],
-        context_for_log=f"ai_bot_chat_extra:{token}",
-    )
-    ctx = ToolContext.from_dashboard(
-            db=db, dashboard=dash, public_filters=combined_filters,
-            page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
-            exposed_fields=_viewer_allowed(dash, public_filters),
-            # the link's data freshness, as its tiles read it (Realtime = live)
-            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(appearance_config),
-        )
+    ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
+                                    [item for item in viewer_filters_body if isinstance(item, dict)],
+                                    context_for_log=f"ai_bot_chat_extra:{token}")
+    combined_filters = ctx.public_filters
 
     # Phase A + B: parse briefing + state, default-construct if missing.
     from app.services.dashboard_ai_bot.thinking.briefing import Briefing as _Briefing
@@ -5191,19 +5213,10 @@ async def explore_dashboard_ai_agent(
     )
 
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
-    combined_filters = _build_public_chart_filters(
-        dash,
-        public_filters,
-        [item for item in viewer_filters_body if isinstance(item, dict)],
-        context_for_log=f"ai_bot_explore:{token}",
-    )
-    ctx = ToolContext.from_dashboard(
-            db=db, dashboard=dash, public_filters=combined_filters,
-            page_scope_by_chart=_public_page_scope_by_chart(dash, public_filters),
-            exposed_fields=_viewer_allowed(dash, public_filters),
-            # the link's data freshness, as its tiles read it (Realtime = live)
-            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(appearance_config),
-        )
+    ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
+                                    [item for item in viewer_filters_body if isinstance(item, dict)],
+                                    context_for_log=f"ai_bot_explore:{token}")
+    combined_filters = ctx.public_filters
     # Guarded BEFORE the run starts. This endpoint fans one briefing out into a
     # multi-round exploration, so an instruction smuggled into `smart_goal` is
     # not read once — it is carried into every question the run generates.

@@ -588,6 +588,7 @@ def page_scope_bounds(
     page_ids: Sequence[str],
     *,
     dataset_id: Any = None,
+    field_is_foreign=None,
 ) -> List[Dict[str, Any]]:
     """The hard bounds a page puts on the data of the charts drawn on it.
 
@@ -602,9 +603,15 @@ def page_scope_bounds(
     🚫 entry is tagged ``_disclose: False``). Entries the engine drops (empty,
     invalid) are dropped here too — the builder drops them the same way.
     A page filter is an author boundary: a public link's lock or kill-marker on
-    the same field never replaces it — they AND. A filter on ANOTHER dataset than the chart's (``dataset_id``)
-    does not bound it — the engine could not apply it (the builder skips it the
-    same way). With several page ids the bounds of every page apply (AND).
+    the same field never replaces it — they AND. With several page ids the
+    bounds of every page apply (AND).
+
+    A page filter naming ANOTHER dataset than the chart's (``dataset_id``) is
+    left out only when ``field_is_foreign`` proves it is that dataset's filter
+    (another tile's dataset, that dataset's view — :func:`foreign_field_check`).
+    Any other mismatch (a stale or deleted dataset id on the chart's own field,
+    or no proof available) is KEPT: the engine then refuses it as an unapplied
+    authoritative bound. Skipping it served the chart's unbounded data.
     """
     wanted = {str(p).strip() for p in page_ids}
     raw: List[Dict[str, Any]] = []
@@ -614,8 +621,13 @@ def page_scope_bounds(
         for f in page.get("filters") or []:
             if not isinstance(f, dict):
                 continue
-            if dataset_id is not None and f.get("datasetId") not in (None, "") and str(f.get("datasetId")) != str(dataset_id):
-                continue
+            if (dataset_id is not None and f.get("datasetId") not in (None, "")
+                    and str(f.get("datasetId")) != str(dataset_id) and field_is_foreign is not None):
+                try:
+                    if field_is_foreign(f):
+                        continue
+                except Exception:  # noqa: BLE001 — not provable → kept (fail closed)
+                    pass
             raw.append({**f, "_layer_source": LAYER_PAGE_SCOPE, DISCLOSE_KEY: _public_mode(f) != "hidden"})
     return normalize_filter_conditions(raw)
 
@@ -837,6 +849,7 @@ def hard_bounds_on_field(
     bounds: Optional[Sequence[Dict[str, Any]]],
     dataset_id: Any,
     field_ref: str,
+    field_is_foreign=None,
 ) -> List[Dict[str, Any]]:
     """The hard bounds (page scope, 🔒/🚫 dashboard filters, link locks and
     scope) that constrain ``field_ref`` itself, marked to survive the dropdown's
@@ -851,6 +864,19 @@ def hard_bounds_on_field(
         if not isinstance(f, dict):
             continue
         if dataset_id is not None and f.get("datasetId") not in (None, "") and str(f.get("datasetId")) != str(dataset_id):
+            # Another dataset's bound only when PROVABLY so (field_is_foreign);
+            # otherwise (a stale / deleted id, no proof) it is kept authoritative
+            # under its own id, so the dropdown refuses (restricted) instead of
+            # offering the values the bound forbids.
+            try:
+                if field_is_foreign is not None and field_is_foreign(f):
+                    continue
+            except Exception:  # noqa: BLE001 — not provable → kept (fail closed)
+                pass
+            keys = {str(f.get(k) or "").strip().lower() for k in ("semanticField", "fieldKey", "field")}
+            linked = {str(x or "").strip().lower() for x in (f.get("linkedFields") or []) if isinstance(x, str)}
+            if ref and (ref in keys or ref in linked):
+                out.append({**f, HARD_BOUND_KEY: True, "_authoritative": True})
             continue
         keys = {str(f.get(k) or "").strip().lower() for k in ("semanticField", "fieldKey", "field")}
         linked = {str(x or "").strip().lower() for x in (f.get("linkedFields") or []) if isinstance(x, str)}

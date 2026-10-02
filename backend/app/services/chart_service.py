@@ -521,6 +521,7 @@ def _build_debug_response(runtime_result: dict) -> Optional[dict]:
         "execution_state": raw_debug.get("execution_state"),
         "execution_reason": raw_debug.get("execution_reason"),
         "snapshot_generation": raw_debug.get("snapshot_generation"),
+        "snapshot_dataset_id": raw_debug.get("snapshot_dataset_id"),
     }
 
 
@@ -3574,6 +3575,7 @@ def _execute_semantic_chart_runtime(
                 "execution_state": _exec_state,
                 "execution_reason": _exec_reason,
                 "snapshot_generation": _exec_generation,
+                "snapshot_dataset_id": _plan_dataset_id,
                 # Phase-15.78: structured record of every filter the BE dropped
                 # before generating SQL. Empty list = nothing dropped. FE can
                 # banner this so users discover when a slicer they applied
@@ -4515,20 +4517,28 @@ class ChartService:
             return []
         from concurrent.futures import ThreadPoolExecutor
         from app.core.database import SessionLocal
+        from app.services.execution_plan import ReadScope, current_read_scope, read_scope
+
+        # ONE batch = ONE logical read: every tile of a dataset is served the same
+        # snapshot generation (execution_plan.ReadScope) — a publish landing
+        # mid-batch never splits the page across N and N+1. Worker threads do not
+        # inherit context variables, so the scope is handed to each explicitly.
+        _scope = current_read_scope() or ReadScope()
 
         def _one(item: dict) -> dict:
             cid = int(item["chart_id"])
             local_db = SessionLocal()
             try:
-                data = ChartService.get_chart_data(
-                    local_db,
-                    cid,
-                    extra_filters=item.get("extra_filters"),
-                    filter_context=item.get("filter_context"),
-                    granularity_override=item.get("granularity_override"),
-                    snapshot_ttl_minutes=item.get("snapshot_ttl_minutes"),
-                    role_overrides=item.get("role_overrides"),
-                )
+                with read_scope(_scope):
+                    data = ChartService.get_chart_data(
+                        local_db,
+                        cid,
+                        extra_filters=item.get("extra_filters"),
+                        filter_context=item.get("filter_context"),
+                        granularity_override=item.get("granularity_override"),
+                        snapshot_ttl_minutes=item.get("snapshot_ttl_minutes"),
+                        role_overrides=item.get("role_overrides"),
+                    )
                 if serialize is not None:
                     data = serialize(data)
                 return {"chart_id": cid, "ok": True, "data": data}

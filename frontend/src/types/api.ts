@@ -862,6 +862,12 @@ export interface ChartDebugInfo {
   warnings?: string[];
   /** Phase-15.78 — filters the BE dropped (e.g. field not in this chart's binding). */
   dropped_filters?: DroppedFilterInfo[];
+  /** Which snapshot this tile was served from (the dashboard generation contract). */
+  data_source_mode?: string | null;
+  snapshot_as_of?: string | null;
+  snapshot_stale?: boolean | null;
+  snapshot_generation?: number | null;
+  snapshot_dataset_id?: number | null;
 }
 
 export interface TimeCompleteness {

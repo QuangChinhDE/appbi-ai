@@ -283,7 +283,11 @@ def test_a_dropdown_keeps_every_hard_bound_on_its_own_field_and_drops_only_picks
     on_region = hard_bounds_on_field(bounds, 1, "t1.region")
     assert sorted((f["operator"], repr(f["value"])) for f in on_region) == [
         ("in", "['North', 'South']"), ("not_in", "['North']")], "a non-`in` hard bound was not kept"
-    assert hard_bounds_on_field(bounds, 2, "t1.region") == [], "a bound on another dataset constrains this one"
+    provably_dataset_1 = lambda f: str(f.get("datasetId")) == "1"  # noqa: E731 — t1 is dataset 1's view
+    assert hard_bounds_on_field(bounds, 2, "t1.region", provably_dataset_1) == [],         "a bound PROVABLY on another dataset constrains this one"
+    # without that proof (a stale / deleted id) the bound is kept, authoritative: the dropdown refuses
+    unproven = hard_bounds_on_field(bounds, 2, "t1.region")
+    assert unproven and all(f.get("_authoritative") and str(f["datasetId"]) == "1" for f in unproven), unproven
     assert hard_bounds_on_field(bounds, 1, "t1.channel") == [], "a visible default is treated as a hard bound"
     cascade = _cascade_of(monkeypatch, "t1", "region", [*merged, *on_region])
     region_terms = sorted((f["operator"], repr(f["value"])) for f in cascade if f.get("field") == "region")
@@ -699,10 +703,22 @@ def test_an_is_null_lock_adds_to_the_page_filter_it_does_not_replace_it():
     assert next(p for p in pages if p["id"] == "p1")["filters"], "the page filter was withheld although it still applies"
 
 
-def test_a_page_filter_on_another_dataset_does_not_bound_the_chart():
+def test_a_page_filter_on_another_dataset_does_not_bound_the_chart(monkeypatch):
     pages = [{"id": "p1", "filters": [{**REGION, "datasetId": 2, "operator": "in", "value": ["North"]}]}]
+    # PROVABLY another tile's dataset's filter (foreign_field_check): it does not bound this chart
+    monkeypatch.setattr(public_api, "_foreign_check_for", lambda _d, _ds: (lambda f: str(f.get("datasetId")) == "2"))
     assert public_api._build_public_chart_filters(_dash(pages_config=pages), [], [], page_ids=["p1"], chart_dataset_id=1) == []
     assert public_api._build_public_chart_filters(_dash(pages_config=pages), [], [], page_ids=["p1"], chart_dataset_id="2")
+
+
+def test_a_page_filter_with_an_unproven_dataset_id_is_kept_never_skipped(monkeypatch):
+    """P4-C1: without proof that it is another dataset's (a stale or deleted id
+    on the chart's own field) a page bound is KEPT — the engine refuses it —
+    never skipped, which served the chart's unbounded data."""
+    pages = [{"id": "p1", "filters": [{**REGION, "datasetId": 2, "operator": "in", "value": ["North"]}]}]
+    monkeypatch.setattr(public_api, "_foreign_check_for", lambda _d, _ds: (lambda f: False))
+    kept = public_api._build_public_chart_filters(_dash(pages_config=pages), [], [], page_ids=["p1"], chart_dataset_id=1)
+    assert [(f["semanticField"], f["value"], bool(f.get("_authoritative"))) for f in kept] == [("t1.region", ["North"], True)]
 
 
 def test_a_public_chart_response_carries_no_emitted_sql_and_no_hidden_field_in_errors():

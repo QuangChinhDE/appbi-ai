@@ -518,6 +518,11 @@ class ChartDebugInfo(BaseModel):
     # Public per-link TTL (Stage 2): served snapshot is older than the link TTL
     # and a background rebuild was kicked off — FE shows a "refreshing…" hint.
     snapshot_stale: Optional[bool] = None
+    # The generation this tile was served from, and its dataset: a page whose
+    # tiles of one dataset disagree is not one snapshot (the FE says so and
+    # re-reads) — never one "data as of" label over two generations.
+    snapshot_generation: Optional[int] = None
+    snapshot_dataset_id: Optional[int] = None
 
 
 class ChartDataResponse(BaseModel):
