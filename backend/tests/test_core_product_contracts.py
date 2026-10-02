@@ -49,3 +49,30 @@ def test_an_empty_source_error_is_not_an_exception():
     assert describe_source_error(None, {}) == "NoneType" or describe_source_error(None, {}) == ""
     # A bare exception class still yields something a person can read.
     assert describe_source_error(ValueError(), {}) == "ValueError"
+
+
+# ── M2 Dataset — a Query Table refuses anything that is not a read ───────────
+
+@pytest.mark.parametrize("sql", [
+    "DROP TABLE orders",
+    "DELETE FROM orders",
+    "UPDATE orders SET amount = 0",
+    "INSERT INTO orders VALUES (1)",
+    "TRUNCATE orders",
+])
+def test_a_query_table_refuses_a_non_select(sql):
+    """A Query Table is read-only. Anything that is not SELECT / WITH is refused
+    before it reaches the source, and the refusal carries a reason the UI shows.
+    (The browser bug this guards against was the reverse: an INVALID read was
+    accepted silently because the UI ignored {valid:false}; see the e2e spec.)"""
+    from app.services.query_validator import QueryValidator, QueryValidationError
+
+    with pytest.raises(QueryValidationError) as ei:
+        QueryValidator.validate_and_clean(sql)
+    assert str(ei.value), "a refusal must explain itself"
+
+
+def test_a_query_table_accepts_a_plain_select():
+    from app.services.query_validator import QueryValidator
+    cleaned = QueryValidator.validate_and_clean("SELECT id, region FROM orders")
+    assert "select" in cleaned.lower()

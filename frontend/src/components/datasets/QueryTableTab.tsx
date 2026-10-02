@@ -517,10 +517,18 @@ export function QueryTableTab({
     setIsValidating(true);
     setServerError(null);
     try {
-      await dataSourceApi.validateSql({
+      // The endpoint answers 200 with { valid, error } — an invalid query does
+      // NOT throw. Reading only the catch left a broken query with no feedback
+      // (the "Validate SQL" button appeared to do nothing).
+      const res = await dataSourceApi.validateSql({
         data_source_id: selectedDatasourceId,
         sql_query: sqlText,
       });
+      if (res && res.valid === false) {
+        const msg = res.error || t('datasets.queryTable.unknownError');
+        setServerError(msg);
+        return msg;
+      }
       return null;
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
