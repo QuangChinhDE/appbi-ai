@@ -125,6 +125,25 @@ export function DatasetPublishControls({ datasetId, canEditFallback }: ControlsP
     </span>
   );
 
+  // A dataset whose source tables span more than one engine cannot run any
+  // chart live — every chart is refused until it is Sync & Published. Say so
+  // next to the state badge instead of letting the user discover it when a
+  // chart fails. (Once published, charts run on the single-engine snapshot.)
+  const mixedEngines =
+    status?.live_executable === false && state !== 'published';
+  const mixedBadge = mixedEngines ? (
+    <span
+      title={t('datasets.publish.mixedSourcesHint', {
+        engines: (status?.live_engines ?? []).join(', '),
+      })}
+    >
+      <Badge variant="warning" size="sm" className="gap-1">
+        <AlertTriangle className="h-3 w-3" />
+        {t('datasets.publish.mixedSources')}
+      </Badge>
+    </span>
+  ) : null;
+
   const publishLabel = syncing
     ? t('datasets.publish.publishing')
     : state === 'published'
@@ -134,6 +153,7 @@ export function DatasetPublishControls({ datasetId, canEditFallback }: ControlsP
   return (
     <div className="flex items-center gap-2">
       {badge}
+      {mixedBadge}
       {canManage && (
         <Button
           size="xs"

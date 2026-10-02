@@ -568,6 +568,10 @@ export interface DatasetPublishStatus {
   has_published_data: boolean;
   /** at least one COMPLETE generation exists → serve-stale; false = first sync. */
   has_prior_complete?: boolean;
+  /** engine labels among the dataset's source tables, e.g. ["Shop PG (postgresql)"]. */
+  live_engines?: string[];
+  /** false = source tables span >1 engine → no chart runs live until published. */
+  live_executable?: boolean;
   progress?: DatasetSyncProgress | null;
 }
 

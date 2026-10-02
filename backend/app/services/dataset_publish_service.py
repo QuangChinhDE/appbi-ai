@@ -406,18 +406,54 @@ def get_publish_info(db: Session, dataset: Dataset) -> Dict[str, Any]:
             .first()
             is not None
         )
+    live_engines, live_executable = _live_execution_engines(db, dataset.id)
     return {
         "publish_state": state,  # None = legacy
         "published_generation": dataset.published_generation,
         "published_at": _utc_iso(dataset.published_at),
         "last_sync_error": dataset.last_sync_error,
         "syncing": syncing,
+        # A live chart runs on ONE engine. When a dataset's source tables span
+        # more than one engine, every chart is refused live (it must be Sync &
+        # Published to serve a single-engine snapshot). Surfaced so the dataset
+        # UI can say so BEFORE a chart fails, instead of showing a plain "Live".
+        "live_engines": live_engines,
+        "live_executable": live_executable,
         "stoppable": syncing,  # a stop can be requested only while a sync is live
         "has_published_data": dataset.published_generation is not None,
         "has_prior_complete": has_prior_complete,
         # Live progress for the manual Sync & Publish waiting UI (None when idle).
         "progress": sync_progress.get(dataset.id),
     }
+
+
+def _live_execution_engines(db: Session, dataset_id: int) -> tuple[list[str], bool]:
+    """(engine labels, live_executable) for a dataset's source-backed tables.
+
+    A live chart runs on one engine; a dataset whose enabled physical / SQL
+    tables resolve to more than one engine cannot run any chart live. Composed
+    (dataset-reference) and calculated tables carry no datasource of their own
+    and do not count. Cheap: one query over the tables' datasources.
+    """
+    from app.models.models import DataSource
+    from app.services.live_query_service import _dialect_for_ds_type
+
+    ds_ids = {
+        t.datasource_id
+        for t in db.query(DatasetTable).filter(
+            DatasetTable.dataset_id == dataset_id,
+            DatasetTable.enabled.is_(True),
+        ).all()
+        if t.datasource_id and (t.source_kind in (None, "physical_table", "sql_query"))
+    }
+    if not ds_ids:
+        return [], True
+    engines: dict[str, str] = {}
+    for d in db.query(DataSource).filter(DataSource.id.in_(sorted(ds_ids))).all():
+        dtype = str(getattr(d.type, "value", d.type)).lower()
+        engines[_dialect_for_ds_type(dtype)] = f"{d.name} ({dtype})"
+    labels = sorted(engines.values())
+    return labels, len(engines) <= 1
 
 
 def _utc_iso(dt):

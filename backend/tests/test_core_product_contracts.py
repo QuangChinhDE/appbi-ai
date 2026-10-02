@@ -97,3 +97,51 @@ def test_a_calculated_table_over_postgres_emits_valid_sql():
         output_dialect="postgresql",
     )
     assert "dataset_table_42" in out      # the alias was rewritten (no exception)
+
+
+# ── M3 Execution mode — a dataset mixing engines is flagged before a chart fails
+
+def test_live_execution_engines_flags_a_mixed_engine_dataset():
+    """Browser (M3): adding a MySQL table to a live PostgreSQL dataset refused
+    EVERY chart (one chart runs on one engine) while the dataset still read
+    "Live". The publish payload now reports live_executable=False and names the
+    engines, so the UI warns before a chart fails."""
+    from types import SimpleNamespace
+    import app.services.dataset_publish_service as pub
+
+    class _DS:
+        def __init__(self, id, name, type_):
+            self.id, self.name, self.type = id, name, SimpleNamespace(value=type_)
+
+    def table(tid, dsid, kind="physical_table", enabled=True):
+        return SimpleNamespace(id=tid, datasource_id=dsid, source_kind=kind, enabled=enabled)
+
+    class _Q:
+        def __init__(self, rows): self._rows = rows
+        def filter(self, *a, **k): return self
+        def all(self): return self._rows
+
+    class _DB:
+        def __init__(self, tables, sources): self._t, self._s = tables, sources
+        def query(self, model):
+            name = getattr(model, "__name__", str(model))
+            if "DatasetTable" in name: return _Q(self._t)
+            return _Q(self._s)
+
+    pg = _DS(1, "Shop PG", "postgresql")
+    my = _DS(2, "Targets MySQL", "mysql")
+    # one engine → executable
+    db1 = _DB([table(1, 1), table(2, 1)], [pg])
+    labels, ok = pub._live_execution_engines(db1, 99)
+    assert ok is True and len(labels) == 1
+
+    # two engines → not executable, both named
+    db2 = _DB([table(1, 1), table(2, 2)], [pg, my])
+    labels2, ok2 = pub._live_execution_engines(db2, 99)
+    assert ok2 is False
+    assert any("postgresql" in x for x in labels2) and any("mysql" in x for x in labels2)
+
+    # calculated / composed tables (no datasource) do not count
+    db3 = _DB([table(1, 1), table(9, None, kind="derived_table")], [pg])
+    _, ok3 = pub._live_execution_engines(db3, 99)
+    assert ok3 is True
