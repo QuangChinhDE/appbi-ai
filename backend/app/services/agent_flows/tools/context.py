@@ -902,6 +902,16 @@ def _fetch_chart_data(
         payload["source_top_n"] = _limit
     if withheld:
         payload["restricted_by_author"] = withheld
+    # Freshness, as the chart's own surfaces show it: a snapshot's build time,
+    # or — for a live read served from the result cache — when the source was
+    # read. The answer can then say "tính đến HH:MM" instead of presenting a
+    # cached number as the source right now.
+    _dbg = _debug if isinstance(_debug, dict) else {}
+    if _dbg.get("snapshot_as_of"):
+        payload["data_as_of"] = _dbg.get("snapshot_as_of")
+    elif _dbg.get("result_cached"):
+        payload["data_as_of"] = _dbg.get("result_as_of")
+        payload["data_cached"] = True
     if dropped:
         # Tell the caller (and through it the LLM) that something was withheld,
         # so it says "không được phép xem" instead of inventing a reason.

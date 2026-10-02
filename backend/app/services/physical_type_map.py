@@ -374,10 +374,44 @@ def verified_bq_type(bq_type: str, values: Iterable[Any]) -> str:
     """
     if bq_type == "STRING":
         return "STRING"
+    values = list(values)
     for v in values:
         if not value_fits_bq_type(bq_type, v):
             return "STRING"
+    if bq_type == "NUMERIC":
+        # NUMERIC holds 29 integer + 9 fractional digits. An exact decimal
+        # wider than that (a Postgres numeric division: 13/7 =
+        # 1.8571428571428571) is not a NUMERIC: the LOAD job failed on it and
+        # took the whole snapshot — every calculated ratio of a Postgres /
+        # MySQL dataset was unpublishable. Same exact value as BIGNUMERIC
+        # (38 + 38); wider still → STRING, as any value the type cannot hold.
+        widest = _decimal_widths(values)
+        if widest is not None and (widest[0] > 29 or widest[1] > 9):
+            return "BIGNUMERIC" if widest[0] <= 38 and widest[1] <= 38 else "STRING"
     return bq_type
+
+
+def _decimal_widths(values: Iterable[Any]) -> Optional[tuple]:
+    """(max integer digits, max fractional digits) over the numeric values."""
+    from decimal import Decimal, InvalidOperation
+
+    int_w = frac_w = 0
+    seen = False
+    for v in values:
+        if v is None or isinstance(v, bool):
+            continue
+        try:
+            d = Decimal(str(v).strip())
+        except (InvalidOperation, ValueError):
+            continue
+        if not d.is_finite():
+            continue
+        seen = True
+        sign, digits, exp = d.as_tuple()
+        frac = max(0, -exp)
+        int_w = max(int_w, max(0, len(digits) - frac))
+        frac_w = max(frac_w, frac)
+    return (int_w, frac_w) if seen else None
 
 # ── Rebuild decision for snapshots built by the OLD (buggy) map ──────────────
 # This exists for ONE purpose: deciding whether an EXISTING snapshot may hold

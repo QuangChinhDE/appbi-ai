@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
 from typing import Any, Dict, List, Literal, Optional
 
+from app.services.time_contract import utc_iso
 from app.services import dashboard_presence
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -355,7 +356,7 @@ def refresh_dashboard_snapshots(
         "datasets": list(dataset_ids),
         "started": started,
         "building": snapshot_service.datasets_rebuilding(list(dataset_ids)),
-        "as_of": ts.isoformat() if ts else None,
+        "as_of": utc_iso(ts),
     }
 
 
@@ -440,7 +441,7 @@ def get_dashboard_snapshot_info(
     ts = _dashboard_snapshot_as_of(db, dash)
     building = snapshot_service.datasets_rebuilding(list(_dashboard_dataset_ids(db, dash)))
     return {
-        "as_of": ts.isoformat() if ts else None,
+        "as_of": utc_iso(ts),
         "mode": "snapshot" if ts else "live",
         "building": building,
     }

@@ -409,7 +409,7 @@ def get_publish_info(db: Session, dataset: Dataset) -> Dict[str, Any]:
     return {
         "publish_state": state,  # None = legacy
         "published_generation": dataset.published_generation,
-        "published_at": dataset.published_at.isoformat() if dataset.published_at else None,
+        "published_at": _utc_iso(dataset.published_at),
         "last_sync_error": dataset.last_sync_error,
         "syncing": syncing,
         "stoppable": syncing,  # a stop can be requested only while a sync is live
@@ -418,6 +418,12 @@ def get_publish_info(db: Session, dataset: Dataset) -> Dict[str, Any]:
         # Live progress for the manual Sync & Publish waiting UI (None when idle).
         "progress": sync_progress.get(dataset.id),
     }
+
+
+def _utc_iso(dt):
+    from app.services.time_contract import utc_iso
+
+    return utc_iso(dt)
 
 
 def _lease_key(dataset_id: int) -> str:
@@ -755,7 +761,22 @@ def _validate_generation(db: Session, dataset_id: int, generation: Optional[int]
     refs, _fps, _asof = snapshot_service.resolve_specific_generation_refs(db, want, generation)
     if not refs:
         missing = [tid for tid in want]  # resolve returns empty if ANY missing
-        return False, f"Generation {generation} chưa phủ đủ {len(missing)} bảng — build có bảng lỗi."
+        msg = f"Generation {generation} chưa phủ đủ {len(missing)} bảng — build có bảng lỗi."
+        # WHICH table failed and WHY (its own build error) — the bare message
+        # sent the user hunting for the cause the build had already recorded.
+        from app.models.dataset import DatasetTableSnapshot
+
+        names = {t.id: (t.display_name or t.source_table_name or f"#{t.id}") for t in tables}
+        failed = (db.query(DatasetTableSnapshot)
+                  .filter(DatasetTableSnapshot.dataset_id == dataset_id,
+                          DatasetTableSnapshot.generation == int(generation),
+                          DatasetTableSnapshot.status == "failed")
+                  .order_by(DatasetTableSnapshot.id).all())
+        causes = [f"{names.get(s.dataset_table_id, s.dataset_table_id)}: "
+                  f"{(str(s.error).strip().splitlines() or [''])[0][:240]}" for s in failed if s.error]
+        if causes:
+            msg += " " + " | ".join(causes[:3])
+        return False, msg
     # semantic model must exist + resolve views for the base tables
     import app.models.semantic as sem
     model = db.query(sem.SemanticModel).filter(sem.SemanticModel.dataset_id == dataset_id).first()

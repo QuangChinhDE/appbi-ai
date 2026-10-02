@@ -177,6 +177,15 @@ jobs:
         working-directory: backend
         run: python scripts/ci/seed_e2e_presentation.py
 
+      # The Pair #5 data-state contracts (data-state.spec.ts): a live source in
+      # its own schema of this database, a calculated column, a semantic model
+      # that names a missing column, a failed publish over a published
+      # generation, a relation that cannot be built. Without it the spec FAILS
+      # (it looks its fixtures up by name) rather than passing on nothing.
+      - name: Seed the data-state fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_data_state.py
+
       - name: Start the backend
         working-directory: backend
         run: |

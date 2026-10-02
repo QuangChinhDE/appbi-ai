@@ -137,16 +137,30 @@ def target_of(state: Any, ctx: Any) -> dict:
     dim_key = field_key(dim) if dim and not _is_time(dim) else None
     words = {_squash(w) for w in question.replace("/", " ").split() if _squash(w)}
     member = None
+    # EVERY member the question names: "Ratio của South và North?" asks for
+    # both — keeping only the first withheld North's correct figure as "another
+    # member's" (found on the Pair #5 golden journey, public AI).
+    # A longer name consumes its own text first, so "Northeast" never also
+    # counts as a question about "North" (which would let North's figure pass).
+    seen: list[str] = []
     for e in getattr(state, "claim_ledger", None) or []:
         m = e.get("member")
         if not m or (dim_key and e.get("dimension") != dim_key):
             continue
         sm = _squash(m)
-        if not sm:
-            continue
-        if (len(sm) <= 3 and sm in words) or (len(sm) > 3 and sm in _squash(question)):
-            member = sm
-            break
+        if sm and sm not in seen:
+            seen.append(sm)
+    rest = _squash(question)
+    hits: set[str] = set()
+    for sm in sorted(seen, key=len, reverse=True):
+        if len(sm) <= 3:
+            if sm in words:
+                hits.add(sm)
+        elif sm in rest:
+            hits.add(sm)
+            rest = rest.replace(sm, "\x00")
+    members = [sm for sm in seen if sm in hits]
+    member = members[0] if members else None
     # THE INTENT CONTRACT, when the runtime resolved one (runtime/intent.py): its
     # measures and breakdown were chosen from the report's own vocabulary against
     # the question, so they replace the re-derived ones.
@@ -156,7 +170,8 @@ def target_of(state: Any, ctx: Any) -> dict:
             measures = set(intent["measures"])
         if intent.get("dimension") and not _is_time(intent["dimension"]):
             dim_key = intent["dimension"]
-    return {"measures": {m for m in measures if m}, "dimension": dim_key, "member": member}
+    return {"measures": {m for m in measures if m}, "dimension": dim_key, "member": member,
+            "members": set(members)}
 
 
 def _confirmed(ctx: Any, dim: str | None) -> bool:
@@ -881,7 +896,7 @@ def _contradiction(e: dict, t: dict, ctx: Any) -> str | None:
     if meas and t["measures"] and meas not in t["measures"] and not _names_measure(ctx, meas):
         return "other_measure"
     if t["member"] and e.get("member") and (not t["dimension"] or dim == t["dimension"]) \
-            and _squash(e["member"]) != t["member"]:
+            and _squash(e["member"]) not in (t.get("members") or {t["member"]}):
         return "other_member"
     return None
 

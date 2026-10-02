@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Qu
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
+from app.services.time_contract import utc_iso
 from app.core.database import get_db
 from app.core.dependencies import (
     module_floor,
@@ -2484,7 +2485,7 @@ def refresh_dataset_snapshots(
         "status": "started",
         "started": started,
         "building": snapshot_service.datasets_rebuilding([dataset_id]),
-        "as_of": ts.isoformat() if ts else None,
+        "as_of": utc_iso(ts),
     }
 
 

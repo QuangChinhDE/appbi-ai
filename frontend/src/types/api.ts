@@ -868,6 +868,9 @@ export interface ChartDebugInfo {
   snapshot_stale?: boolean | null;
   snapshot_generation?: number | null;
   snapshot_dataset_id?: number | null;
+  /** A live read: when the source was read (UTC), and whether this response re-served it from the cache. */
+  result_as_of?: string | null;
+  result_cached?: boolean | null;
 }
 
 export interface TimeCompleteness {

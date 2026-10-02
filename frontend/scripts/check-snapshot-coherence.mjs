@@ -57,6 +57,24 @@ check('live / no-debug tiles never break coherence', c.coherent && c.asOf === nu
 c = snapshotCoherence({ 1: tile(7, 100, null), 2: tile(7, 101, null), 3: tile(7, 101, null) }, [2, 3]);
 check('restricted to the given tiles', c.coherent, JSON.stringify(c));
 
+// ── the live-data freshness contract (Pair #5) ──────────────────────────────
+const { cachedLiveNotice } = mod.exports;
+const NOW = Date.parse('2026-10-02T09:10:00Z');
+const live = (asOf, cached) => ({ data_source_mode: 'live', result_as_of: asOf, result_cached: cached });
+
+check('a live read served now is current (no notice)', cachedLiveNotice(live('2026-10-02T09:10:00Z', false), NOW) === null);
+let n = cachedLiveNotice(live('2026-10-02T09:06:00Z', true), NOW);
+check('a CACHED live read 4 min old says as of its read time', n && n.asOf === '2026-10-02T09:06:00Z', JSON.stringify(n));
+check('a cached read seconds old reads as current', cachedLiveNotice(live('2026-10-02T09:09:40Z', true), NOW) === null);
+n = cachedLiveNotice({ data_source_mode: 'live', result_cached: true }, NOW);
+check('a cached read with no stamp is still flagged (time unknown), never current', n && n.asOf === null, JSON.stringify(n));
+check('a snapshot tile is labelled by its build, not the cache',
+  cachedLiveNotice({ snapshot_as_of: '2026-10-02T08:00:00Z', result_cached: true, result_as_of: '2026-10-02T09:00:00Z' }, NOW) === null);
+c = snapshotCoherence({ 1: { debug: live('2026-10-02T09:10:00Z', false) }, 2: { debug: live('2026-10-02T08:30:00Z', true) } });
+check('the view as-of is the cached live tile\'s read time', c.asOf === '2026-10-02T08:30:00Z', c.asOf);
+c = snapshotCoherence({ 1: { debug: live('2026-10-02T08:30:00Z', true) }, 2: tile(7, 100, '2026-10-02T07:00:00Z') });
+check('…or an older snapshot build, whichever is OLDER', c.asOf === '2026-10-02T07:00:00Z', c.asOf);
+
 if (failed) {
   console.error(`snapshot-coherence: ${failed} check(s) failed`);
   process.exit(1);

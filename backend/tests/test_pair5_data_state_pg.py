@@ -660,6 +660,14 @@ def test_observability_instants_are_emitted_as_utc():
     aware = _dt.datetime(2026, 10, 2, 15, 39, 4, tzinfo=_dt.timezone(_dt.timedelta(hours=7)))
     assert iso(aware) == "2026-10-02T08:39:04Z"
     assert iso(None) is None
+    # …and every "data as of" on the wire: the snapshot build time a tile /
+    # the public header / the publish status shows (was 7 hours off at UTC+7).
+    from app.services import chart_service, dataset_publish_service
+
+    naive = _dt.datetime(2026, 10, 2, 13, 30, 26)
+    assert chart_service._utc_iso_of(naive) == "2026-10-02T13:30:26Z"
+    assert dataset_publish_service._utc_iso(naive) == "2026-10-02T13:30:26Z"
+    assert chart_service._utc_now_iso().endswith("Z")
 
 
 def test_a_quality_rule_not_evaluated_does_not_resolve_its_incident(pg):
@@ -1316,3 +1324,273 @@ def test_a_column_summary_is_keyed_by_the_tables_shaping(monkeypatch):
             css.ColumnSummaryService.get_column_summary(_pg_source(), _table(steps), "a") \
                 if hasattr(css, "ColumnSummaryService") else css.get_column_summary(_pg_source(), _table(steps), "a")
     assert seen[0] != seen[1], seen
+
+
+# ── Pair #5 final closure — F1: a live result is never cached-and-current ─────
+
+from tests.test_pair3_chartservice_pg import real_cache  # noqa: E402,F401 — fixture
+
+
+def test_a_cached_live_result_says_when_the_source_was_read(pg, real_cache):
+    """The live result cache re-served the previous read for up to its TTL
+    with nothing to say it was not the source now. Every live result now
+    carries when the source was read (UTC) and whether this response is a
+    cache re-serve; the public payload and the AI tool keep both."""
+    from tests.pair3_world import chart_world, save_chart
+    from tests.test_pair3_chartservice_pg import _pg_config
+    from tests.test_pair4_surfaces_pg import _dashboard, ai_context
+
+    from app.api.public import _public_chart_payload
+    from app.services.agent_flows.tools.context import _fetch_chart_data
+    from app.services.chart_service import ChartService
+
+    req = {"dims": [], "measures": ["p2_sales.revenue"]}
+    with chart_world(pg, "G1_star", ds_config=_pg_config()) as w:
+        chart = save_chart(w, "p2_sales", req)
+        first = ChartService.get_chart_data(w.db, chart.id)
+        d1 = first["debug"]
+        assert d1["data_source_mode"] == "live" and d1["result_cached"] is False, d1
+        assert d1["result_as_of"] and d1["result_as_of"].endswith("Z"), d1
+        second = ChartService.get_chart_data(w.db, chart.id)
+        d2 = second["debug"]
+        assert d2["result_cached"] is True and d2["result_as_of"] == d1["result_as_of"], d2
+        assert second["data"] == first["data"]                                   # the same (older) read
+        pub = _public_chart_payload(second, [])
+        assert pub["debug"]["result_cached"] is True and pub["debug"]["result_as_of"] == d1["result_as_of"], pub
+        dash, _tokens = _dashboard(w, [(chart, None)])
+        ai = _fetch_chart_data(ai_context(w, dash, [], req), chart.id)
+        assert ai.get("data_cached") is True and ai.get("data_as_of") == d1["result_as_of"], ai
+        # …and the get_chart_data TOOL the model calls keeps it (its payload was
+        # rebuilt without it: the answer said "as of now" over a snapshot).
+        from app.services.dashboard_ai_bot.thinking.tools import tool_get_chart_data
+
+        tool = tool_get_chart_data(ai_context(w, dash, [], req), {"chart_id": chart.id})
+        body = tool.get("data") if isinstance(tool.get("data"), dict) else tool
+        assert body.get("data_as_of") == d1["result_as_of"] and body.get("data_cached") is True, tool
+
+
+def test_a_legacy_live_chart_result_says_when_the_source_was_read_too(pg, real_cache):
+    """The legacy live engine (custom-SQL charts, the non-semantic route) has
+    its own result cache: the same contract — read time on the miss, flagged
+    cached and the ORIGINAL read time on the hit (review of the F1 closure)."""
+    from tests.pair3_world import chart_world
+    from tests.test_pair3_chartservice_pg import _pg_config
+
+    from app.models.models import DataSource
+    from app.services.live_query_service import LiveQueryService
+
+    with chart_world(pg, "G1_star", ds_config=_pg_config()) as w:
+        table = w.tables["p2_sales"]
+        ds = w.db.get(DataSource, table.datasource_id)
+        role = {"metrics": [{"field": "amount", "agg": "sum"}]}
+        first = LiveQueryService.execute_chart_query(ds, table, "KPI", role, [])
+        d1 = first["_debug"]
+        assert d1["result_cached"] is False and str(d1["result_as_of"]).endswith("Z"), d1
+        second = LiveQueryService.execute_chart_query(ds, table, "KPI", role, [])
+        d2 = second["_debug"]
+        assert d2["result_cached"] is True and d2["result_as_of"] == d1["result_as_of"], d2
+        sql = f"SELECT * FROM {table.source_table_name}"
+        f1 = LiveQueryService.execute_chart_query_from_sql(ds, "KPI", role, [], sql)["_debug"]
+        f2 = LiveQueryService.execute_chart_query_from_sql(ds, "KPI", role, [], sql)["_debug"]
+        assert f1["result_cached"] is False and f2["result_cached"] is True, (f1, f2)
+        assert f2["result_as_of"] == f1["result_as_of"] and str(f1["result_as_of"]).endswith("Z")
+
+
+# ── Pair #5 final closure — F2: Observability incorporates semantic usability ──
+
+def _passing_rule(w):
+    from app.models.dataset import DatasetQualityRule, DatasetQualityRun
+
+    rule = DatasetQualityRule(dataset_id=w.dataset.id, table_id=w.tables["p2_sales"].id, column_name="revenue",
+                              dimension="completeness", rule_type="not_null", name="rev not null",
+                              config={}, severity="warning", enabled=True)
+    w.db.add(rule)
+    w.db.flush()
+    w.db.add(DatasetQualityRun(dataset_id=w.dataset.id, status="completed",
+                               results={str(rule.id): {"passed": True, "rows_failed": 0}}))
+    w.db.flush()
+    return rule
+
+
+def _usage(w):
+    from app.services.observability_service import ObservabilityService
+
+    return next(r for r in ObservabilityService.get_usage(w.db, [w.dataset.id]) if r["datasetId"] == w.dataset.id)
+
+
+def _semantic_pillar(w):
+    from app.services.observability_service import ObservabilityService
+
+    return next(p for p in ObservabilityService.get_overview(w.db, [w.dataset.id])["pillars"]
+                if p["pillar"] == "semantic")
+
+
+def test_a_known_semantic_failure_is_never_healthy_whatever_the_data_checks_say(pg):
+    """Quality passing + a model naming a column its table no longer has (the
+    charts on it are refused): Observability read "healthy". The semantic
+    layer now judges the dataset — its own state (semantic_invalid, with the
+    reason), never folded into quality — monitored or not."""
+    from tests.pair3_world import chart_world
+    from tests.test_pair3_chartservice_pg import _pg_config
+
+    with chart_world(pg, "G1_star", ds_config=_pg_config()) as w:
+        try:
+            tf, _tc = _drift_model(w, pg)
+            assert _usage(w)["health"] == "not_monitored"                                   # valid, no checks
+            assert _semantic_pillar(w)["status"] == "healthy"
+            _passing_rule(w)
+            assert _usage(w)["health"] == "healthy"                                         # truth: all pass
+            tf.columns_cache = {"columns": [{"name": c, "type": "integer"} for c in ("id", "amount")]}
+            w.db.flush()                                                                    # cust_id is gone
+            row = _usage(w)
+            assert row["health"] == "semantic_invalid", row
+            assert row["semantic"]["status"] == "fail" and any("cust_id" in r for r in row["semantic"]["reasons"])
+            assert _semantic_pillar(w)["status"] == "semantic_invalid"
+            tf.columns_cache = {"columns": [{"name": c, "type": "integer"} for c in ("id", "cust_id", "amount")]}
+            w.db.flush()
+            assert _usage(w)["health"] == "healthy"                                         # repaired
+        finally:
+            _ddl(pg, f"DROP TABLE IF EXISTS {S5}.facts")
+            _ddl(pg, f"DROP TABLE IF EXISTS {S5}.custs")
+
+
+def test_a_semantic_failure_seen_only_at_the_source_is_found_by_the_scan(pg, monkeypatch):
+    """The join key dropped UPSTREAM while columns_cache still lists it: the
+    metadata says valid, the Kernel refuses. The scan reads the live relation
+    and opens a `semantic` incident — semantic_invalid even with NO monitor
+    and no rule (listed, never "not monitored") — and resolves it once the
+    source is repaired."""
+    from tests.pair3_world import chart_world
+    from tests.test_pair3_chartservice_pg import _pg_config
+
+    from app.services import query_cache
+    from app.services.observability_service import ObservabilityService
+
+    busted: list = []
+    monkeypatch.setattr(query_cache, "invalidate_datasource", lambda ds: busted.append(ds) or 0)
+    with chart_world(pg, "G1_star", ds_config=_pg_config()) as w:
+        try:
+            _drift_model(w, pg)
+            ObservabilityService.fold_semantic(w.db, [w.dataset.id])
+            assert _open_incidents(w, f"semantic:dataset_{w.dataset.id}") == 0 and busted == []
+            _ddl(pg, f"ALTER TABLE {S5}.facts DROP COLUMN cust_id")
+            assert _usage(w)["semantic"]["status"] == "pass"                                # the cache cannot know
+            ObservabilityService.fold_semantic(w.db, [w.dataset.id])
+            assert _open_incidents(w, f"semantic:dataset_{w.dataset.id}") == 1
+            # the model broke: a cached result computed before is not re-served
+            assert busted == [w.ds.id], busted
+            row = _usage(w)
+            assert row["health"] == "semantic_invalid" and row["observed"] is True, row
+            assert row["semantic"]["source"] == "scan" and any("cust_id" in r for r in row["semantic"]["reasons"])
+            _ddl(pg, f"ALTER TABLE {S5}.facts ADD COLUMN cust_id int")
+            ObservabilityService.fold_semantic(w.db, [w.dataset.id])
+            assert _open_incidents(w, f"semantic:dataset_{w.dataset.id}") == 0
+            assert busted == [w.ds.id, w.ds.id], busted                                     # repaired: fresh reads
+            assert _usage(w)["health"] == "not_monitored"                                   # valid again, no checks
+        finally:
+            _ddl(pg, f"DROP TABLE IF EXISTS {S5}.facts")
+            _ddl(pg, f"DROP TABLE IF EXISTS {S5}.custs")
+
+
+def test_a_calculated_ratio_wider_than_numeric_loads_exactly_as_bignumeric():
+    """Found on a REAL publish into BigQuery: a Postgres numeric division
+    (13/7 = 1.8571428571428571, 16 fractional digits) was typed NUMERIC (9
+    max) and the LOAD job failed — every calculated ratio of a Postgres /
+    MySQL dataset was unpublishable. Such a column now loads as BIGNUMERIC,
+    the same exact value; NUMERIC stays NUMERIC; wider than BIGNUMERIC →
+    STRING (as any value a type cannot hold)."""
+    from app.services.physical_type_map import verified_bq_type
+
+    assert verified_bq_type("NUMERIC", ["1.8571428571428571", "-2.5", None]) == "BIGNUMERIC"
+    assert verified_bq_type("NUMERIC", ["2.25", "1000.5"]) == "NUMERIC"
+    assert verified_bq_type("NUMERIC", ["1." + "3" * 40]) == "STRING"
+    assert verified_bq_type("NUMERIC", ["9" * 30 + ".5"]) == "BIGNUMERIC"            # 30 integer digits
+    assert verified_bq_type("INT64", [1, 2]) == "INT64"
+
+
+def test_a_table_whose_relation_cannot_be_read_is_never_semantically_valid(pg):
+    """A transformation input dropped upstream: the table's relation cannot
+    be built, every chart on it is refused — but the live dangling check fell
+    back to the column cache and PASSED, and with the last quality run green
+    the dataset read healthy. The relation that cannot be read is a semantic
+    failure, named, until it can be read again."""
+    from tests.pair3_world import chart_world
+    from tests.test_pair3_chartservice_pg import _pg_config
+
+    from app.services.observability_service import ObservabilityService
+
+    with chart_world(pg, "G1_star", ds_config=_pg_config()) as w:
+        try:
+            tf, _tc = _drift_model(w, pg)
+            tf.transformations = [add_column("per_cust", "[amount] / [cust_id]")]
+            w.db.flush()
+            _passing_rule(w)
+            ObservabilityService.fold_semantic(w.db, [w.dataset.id])
+            assert _usage(w)["health"] == "healthy"
+            _ddl(pg, f"ALTER TABLE {S5}.facts DROP COLUMN amount")          # the transformation needs it
+            ObservabilityService.fold_semantic(w.db, [w.dataset.id])
+            row = _usage(w)
+            assert row["health"] == "semantic_invalid", row
+            assert any("không đọc được quan hệ hiện tại" in r and "amount" in r for r in row["semantic"]["reasons"]), row
+            _ddl(pg, f"ALTER TABLE {S5}.facts ADD COLUMN amount int")
+            ObservabilityService.fold_semantic(w.db, [w.dataset.id])
+            assert _usage(w)["health"] == "healthy"
+        finally:
+            _ddl(pg, f"DROP TABLE IF EXISTS {S5}.facts")
+            _ddl(pg, f"DROP TABLE IF EXISTS {S5}.custs")
+
+
+def test_a_failed_publish_names_the_tables_own_build_error(pg, monkeypatch):
+    """Found in the browser: a publish failed with "build có bảng lỗi" while
+    the build had recorded the real cause (column "b" does not exist) on the
+    failed snapshot row. The failure now names the table and its error."""
+    import datetime as _dt
+
+    from tests.pair3_world import chart_world
+    from tests.test_pair3_chartservice_pg import _pg_config
+
+    from app.models.dataset import DatasetTableSnapshot
+    from app.services import dataset_publish_service as pub
+
+    with chart_world(pg, "G1_star", ds_config=_pg_config()) as w:
+        t = w.tables["p2_sales"]
+        w.db.add(DatasetTableSnapshot(dataset_id=w.dataset.id, dataset_table_id=t.id, version=9, generation=9,
+                                      physical_ref="p5.snap_fail", fingerprint="f" * 64, status="failed",
+                                      error='column "b" does not exist\nLINE 9:     "b",', is_current=False,
+                                      built_at=_dt.datetime(2026, 10, 2)))
+        w.db.flush()
+        ok, reason = pub._validate_generation(w.db, w.dataset.id, 9)
+        assert ok is False and 'column "b" does not exist' in reason and (t.display_name or "") in reason, reason
+        assert "LINE 9" not in reason                                                # first line only
+
+
+def test_a_legacy_cache_listing_the_calculated_column_does_not_refuse_it():
+    """Found seeding the Pair #5 browser fixtures: a columns_cache written
+    without `source_columns` lists the relation's OUTPUT — the calculated
+    column included. Taken as the source, the compiler refused `ratio` as a
+    duplicate of itself and the semantic model skipped the table (the live path,
+    which infers the source, worked). The source is the output minus what the
+    table's own steps create; a REAL duplicate still refuses."""
+    from app.models.dataset import DatasetTable
+    from app.services import dataset_model_service as dms
+    from app.services.transformation_compiler import TransformationError
+
+    cols = [{"name": c, "type": "integer"} for c in ("id", "a", "b", "qty", "ratio")]
+    t = DatasetTable(id=1, dataset_id=1, datasource_id=1, source_kind="physical_table",
+                     source_table_name="p5d.nums", display_name="nums", enabled=True,
+                     transformations=[rename({"x": "qty"}), add_column("ratio", "[a] / [b]")],
+                     columns_cache={"columns": cols})
+    assert dms._source_columns_for_transformations(t) == ["id", "a", "b", "x"]
+    sql = dms._apply_semantic_transformations("SELECT * FROM p5d.nums", t, dialect="postgresql")
+    assert "ratio" in sql and "NULLIF" in sql, sql
+    t.columns_cache = {"columns": cols, "source_columns": ["id", "a", "b", "x", "ratio"]}
+    with pytest.raises(TransformationError, match="ratio"):                      # a source column named ratio
+        dms._apply_semantic_transformations("SELECT * FROM p5d.nums", t, dialect="postgresql")
+    # a name an earlier step CREATED is not a source column: add-then-rename,
+    # and a chained rename x→y→qty (review of the closure)
+    out = [{"name": c, "type": "integer"} for c in ("id", "a", "b", "qty", "Lợi nhuận")]
+    t.columns_cache = {"columns": out}
+    t.transformations = [add_column("profit", "[a] - [b]"), rename({"profit": "Lợi nhuận"}),
+                         rename({"x": "y"}), rename({"y": "qty"})]
+    assert dms._source_columns_for_transformations(t) == ["id", "a", "b", "x"]
+    assert "Lợi nhuận" in dms._apply_semantic_transformations("SELECT * FROM p5d.nums", t, dialect="postgresql")

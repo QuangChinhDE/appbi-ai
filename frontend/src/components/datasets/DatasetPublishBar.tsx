@@ -222,7 +222,12 @@ export function DatasetPublishBanner({ datasetId, canEditFallback }: ControlsPro
     : t('datasets.publish.bannerDraftTitle');
   const body =
     kind === 'firstsync' ? t('datasets.sync.firstSyncWarnBody')
-    : kind === 'failed' ? status?.last_sync_error ?? ''
+    : kind === 'failed'
+      ? [status?.last_sync_error ?? '',
+        // The failed candidate was NOT published: say what dashboards serve instead.
+        status?.published_generation != null
+          ? t('datasets.publish.bannerFailedServing', { when: formatGenerationTime(status.published_generation) })
+          : t('datasets.publish.bannerFailedNothing')].filter(Boolean).join(' ')
     : kind === 'changes' ? t('datasets.publish.bannerChangesBody')
     : t('datasets.publish.bannerDraftBody');
 

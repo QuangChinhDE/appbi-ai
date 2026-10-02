@@ -44,7 +44,7 @@ SEV_RANK = {"info": 1, "warning": 2, "critical": 3, "error": 3, "high": 2}
 SCHEMA_BASELINE_V = 2
 PILLAR_FOR_SOURCE = {
     "freshness": "freshness", "volume": "volume", "schema": "schema",
-    "quality": "quality", "anomaly": "distribution",
+    "quality": "quality", "anomaly": "distribution", "semantic": "semantic",
 }
 
 
@@ -97,13 +97,10 @@ class ObservabilityService:
         (datetime.utcnow); a bare isoformat() is parsed as browser-local, so
         "refreshed" / incident times were off by the viewer's offset (a
         just-loaded table read "7 hours ago" at UTC+7). Same contract as the
-        refresh history (api/datasets.py _iso)."""
-        if dt is None:
-            return None
-        if getattr(dt, "tzinfo", None) is not None:
-            from datetime import timezone as _tz
-            return dt.astimezone(_tz.utc).replace(tzinfo=None).isoformat() + "Z"
-        return dt.isoformat() + "Z"
+        refresh history (api/datasets.py _iso). One definition: time_contract."""
+        from app.services.time_contract import utc_iso
+
+        return utc_iso(dt)
 
     @staticmethod
     def _type_family(raw: Any) -> str:
@@ -421,10 +418,16 @@ class ObservabilityService:
         return out
 
     @staticmethod
-    def health_state(*, open_incidents: int, breached: int, errored: int, unknown: int, checks: int) -> str:
-        """One honest state: breached > error > unknown > not_monitored > healthy.
-        "healthy" only when every check ran and passed — a check that failed to
-        run, one never run / still learning, or no check at all is NOT healthy."""
+    def health_state(*, open_incidents: int, breached: int, errored: int, unknown: int, checks: int,
+                     semantic_invalid: bool = False) -> str:
+        """One honest state: semantic_invalid > breached > error > unknown >
+        not_monitored > healthy. "healthy" only when every check ran and passed
+        — a check that failed to run, one never run / still learning, or no
+        check at all is NOT healthy — AND the Semantic Kernel can use the
+        model: a known semantic failure (charts on it are refused) outranks
+        every data check, configured or not."""
+        if semantic_invalid:
+            return "semantic_invalid"
         if open_incidents or breached:
             return "breached"
         if errored:
@@ -488,6 +491,103 @@ class ObservabilityService:
                 UserNotification.read == False,  # noqa: E712
             ).delete(synchronize_session=False)
         return len(rows)
+
+    # ── semantic usability (Pair #5) ──────────────────────────────────────────
+
+    @staticmethod
+    def semantic_state(db: Session, dataset_id: int, *, live: bool = False) -> Dict[str, Any]:
+        """Can the Semantic Kernel answer this dataset's CURRENT model? The
+        semantic-health checks the Kernel itself relies on — an invalid active
+        relationship, a definition naming a column the table no longer has
+        (dangling join / key / dimension / measure) and, ``live``, a one-side
+        key a relationship trusts that is not unique — read cheaply from the
+        model metadata (``live=False``: the column cache) or against the live
+        relation (``live=True``, the scan).
+
+        ``fail`` when any fails (the charts on it are refused); ``pass``;
+        ``unknown`` when it could not be evaluated; ``not_modelled`` without a
+        model. Its own layer: a semantic failure is never reported as a quality
+        or freshness one."""
+        from app.models.semantic import SemanticModel
+        from app.services import semantic_health_service as shs
+
+        if db.query(SemanticModel.id).filter(SemanticModel.dataset_id == dataset_id).first() is None:
+            return {"status": "not_modelled", "reasons": [], "failed": 0}
+        unreadable: List[str] = []
+        try:
+            if live:
+                # A modelled table whose CURRENT relation cannot be read at all (a
+                # column its transformation needs was dropped upstream) is not
+                # "valid": the dangling check would fall back to the column cache
+                # and pass, while every chart on the table is refused.
+                from app.services.dataset_calendar_service import is_generated_calendar_table
+                from app.services.dataset_relation_service import logical_relation_columns
+
+                for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all():
+                    if (not getattr(t, "datasource_id", None) or getattr(t, "enabled", True) is False
+                            or is_generated_calendar_table(t)):
+                        continue
+                    why: list = []
+                    if logical_relation_columns(db, t, why) is None:
+                        unreadable.append(f"Bảng {t.display_name or t.source_table_name or t.id}: không đọc "
+                                          f"được quan hệ hiện tại — {why[0] if why else 'không rõ lý do'}")
+            checks = shs.invalid_relationship_checks(db, dataset_id) + shs.dangling_checks(
+                db, dataset_id, live=live)
+            if live:
+                checks += [c for c in shs.uniqueness_checks(db, dataset_id, execute=True,
+                                                            include_primary_keys=False) if c.blocking]
+        except Exception as exc:  # noqa: BLE001 — unknown, never "pass"
+            logger.warning("[obs] semantic state dataset=%s failed: %s", dataset_id, exc)
+            return {"status": "unknown", "reasons": [f"{type(exc).__name__}: {str(exc)[:200]}"], "failed": 0}
+        failed = [c for c in checks if c.status == "fail"]
+        if failed or unreadable:
+            return {"status": "fail", "failed": len(failed) + len(unreadable),
+                    "blocking": sum(1 for c in failed if c.blocking) + len(unreadable),
+                    "reasons": (unreadable + [c.detail for c in failed])[:10]}
+        return {"status": "pass", "reasons": [], "failed": 0}
+
+    @staticmethod
+    def fold_semantic(db: Session, dataset_ids: Optional[List[int]] = None) -> List[ObservabilityIncident]:
+        """The scan's semantic pass: each modelled dataset's semantic state
+        against its LIVE relation, as one incident per dataset in the
+        ``semantic`` pillar (opened / refreshed while it fails, resolved once it
+        passes; an evaluation that could not run changes nothing)."""
+        from app.models.semantic import SemanticModel
+
+        q = db.query(SemanticModel.dataset_id).filter(SemanticModel.dataset_id.isnot(None))
+        if dataset_ids is not None:
+            q = q.filter(SemanticModel.dataset_id.in_(dataset_ids))
+        created: List[ObservabilityIncident] = []
+        for (ds_id,) in q.distinct().all():
+            st = ObservabilityService.semantic_state(db, ds_id, live=True)
+            key = f"semantic:dataset_{ds_id}"
+            if st["status"] == "fail":
+                inc, was_created = ObservabilityService.upsert_incident(
+                    db, dataset_id=ds_id, dataset_table_id=None, source="semantic", dedup_key=key,
+                    title=f"Mô hình ngữ nghĩa không dùng được: {st['failed']} lỗi",
+                    detail={"reasons": st["reasons"], "blocking": st.get("blocking", 0)},
+                    severity="critical" if st.get("blocking") else "warning")
+                if was_created:
+                    created.append(inc)
+                    ObservabilityService._invalidate_dataset_results(db, ds_id)
+            elif st["status"] == "pass":
+                if ObservabilityService.resolve_incidents(db, key):
+                    ObservabilityService._invalidate_dataset_results(db, ds_id)
+        return created
+
+    @staticmethod
+    def _invalidate_dataset_results(db: Session, dataset_id: int) -> None:
+        """The scan just learned the dataset's model changed state (broke, or
+        was repaired): a cached live result computed before is not served
+        again — the next read asks the source (refused, or the repaired rows)."""
+        try:
+            from app.services import query_cache
+
+            for (ds,) in db.query(DatasetTable.datasource_id).filter(
+                    DatasetTable.dataset_id == dataset_id, DatasetTable.datasource_id.isnot(None)).distinct():
+                query_cache.invalidate_datasource(int(ds))
+        except Exception:  # noqa: BLE001 — cache hygiene never fails a scan
+            logger.warning("[obs] result cache invalidation failed dataset=%s", dataset_id, exc_info=True)
 
     # ── folding the other detectors into the incident store ────────────────────
 
@@ -620,6 +720,10 @@ class ObservabilityService:
         new_incidents.extend(q_new)
         new_incidents.extend(a_new)
         try:
+            new_incidents.extend(ObservabilityService.fold_semantic(db))
+        except Exception as exc:  # noqa: BLE001 — one layer's failure never loses the scan
+            logger.warning("[obs] semantic fold failed: %s", exc)
+        try:
             db.commit()
         except Exception as exc:
             logger.error("[obs] scan commit failed — retrying once: %s", exc)
@@ -743,6 +847,19 @@ class ObservabilityService:
                 "status": state,
                 "healthy": state == "healthy",
             })
+        # Semantic usability, its own pillar: each modelled dataset is one check.
+        sem_states = [ObservabilityService.semantic_state(db, ds_id, live=False) for ds_id in dataset_ids]
+        sem_states = [st for st in sem_states if st["status"] != "not_modelled"]
+        sem_failed = sum(1 for st in sem_states if st["status"] == "fail")
+        sem_unknown = sum(1 for st in sem_states if st["status"] == "unknown")
+        sem_state = ObservabilityService.health_state(
+            open_incidents=by_pillar.get("semantic", 0), breached=0, errored=0, unknown=sem_unknown,
+            checks=len(sem_states), semantic_invalid=bool(sem_failed) or bool(by_pillar.get("semantic")))
+        pillars.append({
+            "pillar": "semantic", "monitors": len(sem_states), "breached": sem_failed, "errored": 0,
+            "unknown": sem_unknown, "openIncidents": by_pillar.get("semantic", 0),
+            "status": sem_state, "healthy": sem_state == "healthy",
+        })
 
         recent = sorted(open_inc, key=lambda i: (SEV_RANK.get(i.severity, 0), i.last_seen_at or datetime.min), reverse=True)[:8]
 
@@ -1164,8 +1281,11 @@ class ObservabilityService:
             .filter(ObservabilityIncident.status != "resolved").all()
         )
         inc_per_ds: Dict[int, int] = {}
+        sem_inc: Dict[int, ObservabilityIncident] = {}
         for i in open_inc:
             inc_per_ds[i.dataset_id] = inc_per_ds.get(i.dataset_id, 0) + 1
+            if i.pillar == "semantic":
+                sem_inc[i.dataset_id] = i
         # Quality rules per dataset — a dataset with rules is "observed" even
         # without a native monitor, so the FE list can include it.
         rules_per_ds: Dict[int, int] = {}
@@ -1181,9 +1301,22 @@ class ObservabilityService:
                 if q[key]:
                     bucket[ds_id] = bucket.get(ds_id, 0) + q[key]
 
+        # Semantic usability: the model's state from its metadata now (cheap),
+        # or the scan's live finding (an open semantic incident) — either way a
+        # known semantic failure is never "healthy".
+        def _semantic(ds_id: int) -> Dict[str, Any]:
+            st = ObservabilityService.semantic_state(db, ds_id, live=False)
+            inc = sem_inc.get(ds_id)
+            if inc is not None and st["status"] != "fail":
+                reasons = list((inc.detail or {}).get("reasons") or [])
+                st = {"status": "fail", "failed": len(reasons) or 1, "reasons": reasons[:10],
+                      "source": "scan", "since": ObservabilityService._utc_iso(inc.first_seen_at)}
+            return st
+
         out = []
         for d in datasets:
             ts = tables_by_ds.get(d.id, [])
+            sem = _semantic(d.id)
             rows = sum((t.estimated_row_count or 0) for t in ts)
             size = sum((t.estimated_size_bytes or 0) for t in ts)
             last_refresh = max([t.stats_updated_at for t in ts if t.stats_updated_at], default=None)
@@ -1202,10 +1335,14 @@ class ObservabilityService:
                 "health": ObservabilityService.health_state(
                     open_incidents=inc_per_ds.get(d.id, 0), breached=brk_per_ds.get(d.id, 0),
                     errored=err_per_ds.get(d.id, 0), unknown=unk_per_ds.get(d.id, 0),
-                    checks=active_mon_per_ds.get(d.id, 0) + enabled_rules_per_ds.get(d.id, 0)),
+                    checks=active_mon_per_ds.get(d.id, 0) + enabled_rules_per_ds.get(d.id, 0),
+                    semantic_invalid=sem["status"] == "fail"),
+                "semantic": sem,
                 "unused": len(ds_chart_ids) == 0,
-                # "observed" = has any check set up (monitor or rule) or an open incident
-                "observed": mon_per_ds.get(d.id, 0) > 0 or rules_per_ds.get(d.id, 0) > 0 or inc_per_ds.get(d.id, 0) > 0,
+                # "observed" = has any check set up (monitor or rule), an open
+                # incident, or a known semantic failure (listed even unmonitored)
+                "observed": (mon_per_ds.get(d.id, 0) > 0 or rules_per_ds.get(d.id, 0) > 0
+                             or inc_per_ds.get(d.id, 0) > 0 or sem["status"] == "fail"),
             })
         out.sort(key=lambda x: (-(x["chartCount"] + x["dashboardCount"]), -x["rows"]))
         return out

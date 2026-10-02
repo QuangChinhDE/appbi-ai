@@ -523,6 +523,11 @@ class ChartDebugInfo(BaseModel):
     # re-reads) — never one "data as of" label over two generations.
     snapshot_generation: Optional[int] = None
     snapshot_dataset_id: Optional[int] = None
+    # A LIVE read's freshness: when the source was read (UTC), and whether this
+    # response re-served it from the result cache (then the surface says "as
+    # of HH:MM" — a cached number is never presented as the source right now).
+    result_as_of: Optional[str] = None
+    result_cached: Optional[bool] = None
 
 
 class ChartDataResponse(BaseModel):

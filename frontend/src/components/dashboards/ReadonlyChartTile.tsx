@@ -9,6 +9,8 @@ import { ExploreChart } from '@/components/explore/ExploreChart';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { useI18n } from '@/providers/LanguageProvider';
+import { CachedLiveBadge } from '@/components/dashboards/CachedLiveBadge';
+import { cachedLiveNotice } from '@/lib/snapshot-coherence';
 import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
 import { buildTileEvidence, usePublishTileEvidence } from '@/lib/report-evidence';
 import { KpiContext, kpiRowValue } from './KpiContext';
@@ -443,7 +445,9 @@ export function ReadonlyChartTile({
               <Download className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
             </button>
           ) : null;
-          const hasActions = Boolean(droppedBadge || havingToggle || exportButton);
+          // A live result re-served from the cache says when it was read.
+          const cachedBadge = cachedLiveNotice(chartData?.debug) ? <CachedLiveBadge debug={chartData?.debug} /> : null;
+          const hasActions = Boolean(droppedBadge || cachedBadge || havingToggle || exportButton);
 
           // KPI: header row carries the metric label (the de-facto title) on
           // the left, level with the actions on the right; the card body then
@@ -460,6 +464,7 @@ export function ReadonlyChartTile({
                 {hasActions && (
                   <div className="absolute right-0 top-0 flex items-center gap-1">
                     {droppedBadge}
+                    {cachedBadge}
                     {havingToggle}
                     {exportButton}
                   </div>
@@ -486,6 +491,7 @@ export function ReadonlyChartTile({
               {hasActions && (
                 <div className="ml-auto flex flex-shrink-0 items-center gap-1">
                   {droppedBadge}
+                    {cachedBadge}
                   {havingToggle}
                   {exportButton}
                 </div>

@@ -13,7 +13,7 @@
  */
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ShieldCheck, AlertTriangle, ChevronRight, ChevronLeft, Search, RefreshCw, Bell, Loader2,
+  ShieldCheck, Unlink, AlertTriangle, ChevronRight, ChevronLeft, Search, RefreshCw, Bell, Loader2,
   GitBranch, Clock, BarChart3, LayoutDashboard, CheckCircle2, Database, Plus, CircleSlash, HelpCircle,
 } from 'lucide-react';
 
@@ -194,14 +194,15 @@ function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
                                   <span
                                     data-testid={`obs-health-${r.datasetId}`}
                                     data-health={r.health ?? (r.openIncidents > 0 ? 'breached' : 'healthy')}
-                                    title={t(`observability.health.state.${r.health ?? (r.openIncidents > 0 ? 'breached' : 'healthy')}`)}
+                                    title={[t(`observability.health.state.${r.health ?? (r.openIncidents > 0 ? 'breached' : 'healthy')}`), ...(r.health === 'semantic_invalid' ? (r.semantic?.reasons ?? []) : [])].join('\n')}
                                     className={cn('mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md',
-                                      r.openIncidents > 0 || r.health === 'breached' ? 'bg-danger/10 text-danger'
+                                      r.health === 'semantic_invalid' || r.openIncidents > 0 || r.health === 'breached' ? 'bg-danger/10 text-danger'
                                         : r.health === 'error' ? 'bg-warning/10 text-warning'
                                           : r.health === 'unknown' || r.health === 'not_monitored' ? 'bg-surface-2 text-text-tertiary'
                                             : 'bg-brand/10 text-brand')}
                                   >
-                                    {r.openIncidents > 0 || r.health === 'breached' ? <AlertTriangle className="h-4 w-4" />
+                                    {r.health === 'semantic_invalid' ? <Unlink className="h-4 w-4" />
+                                      : r.openIncidents > 0 || r.health === 'breached' ? <AlertTriangle className="h-4 w-4" />
                                       : r.health === 'error' ? <CircleSlash className="h-4 w-4" />
                                         : r.health === 'unknown' || r.health === 'not_monitored' ? <HelpCircle className="h-4 w-4" />
                                           : <ShieldCheck className="h-4 w-4" />}
@@ -215,7 +216,9 @@ function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
                                 </span>
                               </td>
                               <td className="app-list-cell">
-                                {r.openIncidents > 0
+                                {r.health === 'semantic_invalid'
+                                  ? <span data-testid={`obs-semantic-${r.datasetId}`} className="inline-flex items-center gap-1 text-caption font-emphasis text-danger" title={(r.semantic?.reasons ?? []).join('\n')}><Unlink className="h-3.5 w-3.5" />{t('observability.health.semanticInvalid', { count: r.semantic?.failed ?? 1 })}</span>
+                                  : r.openIncidents > 0
                                   ? <span className="inline-flex items-center gap-1 text-caption font-emphasis text-danger"><AlertTriangle className="h-3.5 w-3.5" />{r.openIncidents}</span>
                                   : r.health === 'error'
                                     ? <span className="inline-flex items-center gap-1 text-caption font-emphasis text-warning"><CircleSlash className="h-3.5 w-3.5" />{t('observability.health.erroredChecks', { count: r.erroredChecks ?? 0 })}</span>

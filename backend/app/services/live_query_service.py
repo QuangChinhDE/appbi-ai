@@ -24,6 +24,7 @@ from app.services.chart_contracts import (
     normalize_filter_operator,
 )
 from app.services import query_cache
+from app.services.time_contract import utc_iso
 from app.services.dataset_calendar_service import build_calendar_filter_expression
 from app.services.transformation_compiler import TransformationCompiler
 from app.services.sql_validator import validate_select_only
@@ -107,6 +108,18 @@ def _render_time_grain_expression(field_sql: str, grain: str, dialect: str) -> s
             return f"MAKEDATE(YEAR({field_sql}), 1)"
 
     return f"DATE_TRUNC('{g}', {field_sql})"
+
+
+def _mark_cached_read(cached):
+    """A result re-served from the cache keeps the time its source was read
+    (`result_as_of`, stamped on the miss) and says it is cached — an entry
+    stored before the stamp existed has no read time, still never "current"."""
+    if not isinstance(cached, dict):
+        return cached
+    debug = dict(cached.get("_debug") or {})
+    debug["result_cached"] = True
+    debug.setdefault("result_as_of", None)
+    return {**cached, "_debug": debug}
 
 
 def _should_cache_live_query(ds_type: str) -> bool:
@@ -1561,6 +1574,8 @@ class LiveQueryService:
                 # so two requests whose ONLY difference is the dropped
                 # filter share a cache slot. Re-stamp `_debug.dropped_filters`
                 # with THIS request's diagnostics before returning.
+                # Pair #5 F1: re-served rows say when the source was read.
+                cached = _mark_cached_read(cached)
                 try:
                     cached_debug = dict(cached.get("_debug") or {})
                     cached_debug["dropped_filters"] = list(local_drops)
@@ -1628,6 +1643,9 @@ class LiveQueryService:
                 "row_count": len(rows),
                 # Phase-15.78: surface filters dropped on the way here.
                 "dropped_filters": list(local_drops),
+                # Pair #5 F1: when the source was read (a cache hit re-serves it).
+                "result_as_of": utc_iso(datetime.utcnow()),
+                "result_cached": False,
             },
         }
 
@@ -1710,6 +1728,8 @@ class LiveQueryService:
             )
             if cached is not None:
                 # Phase-15.96 — see _execute_semantic_chart_runtime comment.
+                # Pair #5 F1: re-served rows say when the source was read.
+                cached = _mark_cached_read(cached)
                 try:
                     cached_debug = dict(cached.get("_debug") or {})
                     cached_debug["dropped_filters"] = list(local_drops)
@@ -1770,6 +1790,9 @@ class LiveQueryService:
                 "row_count": len(rows),
                 # Phase-15.78: surface filters dropped on the way here.
                 "dropped_filters": list(local_drops),
+                # Pair #5 F1: when the source was read (a cache hit re-serves it).
+                "result_as_of": utc_iso(datetime.utcnow()),
+                "result_cached": False,
             },
         }
 

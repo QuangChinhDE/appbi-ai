@@ -160,6 +160,33 @@ def test_another_members_figure_is_flagged(world):
     assert _why(state, ctx, "Bang SP có 41.746 đơn hàng.") == []
 
 
+def test_every_member_the_question_names_is_asked_for(world):
+    """Pair #5 golden journey (public AI): "Ratio của South và North?" kept
+    only the FIRST member named, and North's correct figure was withheld as
+    another member's. Both named → both answer; a third member still does not."""
+    ctx, state = world("Bang SP và RJ có bao nhiêu đơn hàng?", asked=("order_count",))
+    _rec(state, "rank_values", derived.tool_rank_values(ctx, {"chart_id": STATE_ORDERS_CHART}),
+         {"chart_id": STATE_ORDERS_CHART})
+    assert _why(state, ctx, "Bang SP có 41.746 đơn hàng, bang RJ có 12.852 đơn hàng.") == []
+    assert _why(state, ctx, "Bang SP có 41.746 đơn hàng, bang MG có 11.635 đơn hàng.") == [
+        (11635.0, "other_member")]
+
+
+def test_a_member_named_inside_a_longer_name_is_not_asked_for(world):
+    """Keeping every named member must not turn a substring into a question:
+    "Northeast" names Northeast, not North — North's figure stays another
+    member's. Both written out, both are asked."""
+    def members(question):
+        ctx, state = world(question, asked=("gmv",))
+        dim = CC.target_of(state, ctx)["dimension"]
+        state.claim_ledger = [{"member": "North", "dimension": dim, "value": 1.0},
+                              {"member": "Northeast", "dimension": dim, "value": 2.0}]
+        return CC.target_of(state, ctx)["members"]
+
+    assert members("Doanh thu của Northeast là bao nhiêu?") == {"northeast"}
+    assert members("Doanh thu của North và Northeast?") == {"north", "northeast"}
+
+
 def test_a_change_the_model_divided_out_itself_is_flagged(world):
     ctx, state = world(MOM_Q, asked=("gmv",))
     _rec(state, "compare_periods", _compare(1003308.47 * 0 + 881380.0, 837555.37, 5.23), {"chart_id": MONTHLY})

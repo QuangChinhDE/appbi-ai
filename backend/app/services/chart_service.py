@@ -522,7 +522,25 @@ def _build_debug_response(runtime_result: dict) -> Optional[dict]:
         "execution_reason": raw_debug.get("execution_reason"),
         "snapshot_generation": raw_debug.get("snapshot_generation"),
         "snapshot_dataset_id": raw_debug.get("snapshot_dataset_id"),
+        # Live-read freshness: when the source was read, and whether this
+        # response re-served that read from the result cache.
+        "result_as_of": raw_debug.get("result_as_of"),
+        "result_cached": raw_debug.get("result_cached"),
     }
+
+
+def _utc_iso_of(dt):
+    """A stored (naive UTC) instant on the wire, readable AS UTC (…Z)."""
+    from app.services.time_contract import utc_iso
+
+    return utc_iso(dt)
+
+
+def _utc_now_iso() -> str:
+    """Now, as an instant the browser reads AS UTC (…Z)."""
+    from datetime import datetime as _dt
+
+    return _dt.utcnow().isoformat() + "Z"
 
 
 def _build_semantic_alias_map(canonical_fields: list[str]) -> dict[str, str]:
@@ -3103,8 +3121,16 @@ def _execute_semantic_chart_runtime(
             # the SECOND, lying about which filter was actually dropped.
             # Fix: rebuild the dropped log from this request's
             # `filter_diagnostics` before returning.
+            # Served from the result cache: the rows are those read at
+            # `result_as_of` (an entry cached before the stamp existed has none —
+            # still flagged cached, never presented as current). Stamped BEFORE
+            # the overlay below, which may fail and fall through.
+            cached_debug = dict((cached.get("_debug") if isinstance(cached, dict) else None) or {})
+            cached_debug["result_cached"] = True
+            cached_debug.setdefault("result_as_of", None)
+            if isinstance(cached, dict):
+                cached = {**cached, "_debug": cached_debug}
             try:
-                cached_debug = dict(cached.get("_debug") or {})
                 # this request's pre-engine drops + the engine's own drops of the
                 # cached computation (deterministic for the key) — never lost on a hit
                 _hit_drops = list(filter_diagnostics)
@@ -3564,7 +3590,13 @@ def _execute_semantic_chart_runtime(
                 # label + a live/snapshot badge. Oldest built_at wins (never over-
                 # claims freshness); "live" when no snapshot was used.
                 "data_source_mode": _snap_mode,
-                "snapshot_as_of": (_snap_as_of.isoformat() if _snap_as_of else None),
+                "snapshot_as_of": _utc_iso_of(_snap_as_of),
+                # The freshness contract of a LIVE read (Pair #5): when the source
+                # was actually read. A cache hit re-serves this result — flagged
+                # `result_cached` below — so a surface can say "as of HH:MM"
+                # instead of presenting a cached number as the source right now.
+                "result_as_of": _utc_now_iso(),
+                "result_cached": False,
                 # Public per-link TTL: the served snapshot is older than the TTL and
                 # a background rebuild was kicked off; the FE shows "đang làm mới…".
                 "snapshot_stale": bool(_snap_stale),

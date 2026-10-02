@@ -37,6 +37,7 @@ import type { BaseFilter, FilterOperator } from '@/lib/filters';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { useQueryClient } from '@tanstack/react-query';
 import { useI18n } from '@/providers/LanguageProvider';
+import { CachedLiveBadge } from '@/components/dashboards/CachedLiveBadge';
 import type { ChartSemanticBinding, DashboardPageConfig } from '@/types/api';
 import { ChartDetailModal } from './ChartDetailModal';
 import { resolveTileFrameStyle, tileKindOf, TILE_TITLE_CLASS, TILE_KPI_LABEL_CLASS } from '@/lib/dashboard-presentation/tile-frame';
@@ -1255,6 +1256,9 @@ function ChartTileBase({
                 {t('dashboards.tile.skippedBadge', { count: skippedGlobalFilters.length + droppedByBackend.length })}
               </span>
             )}
+            {/* A live result re-served from the cache says when it was read —
+                never presented as the source right now. */}
+            <CachedLiveBadge debug={chartData?.debug} />
             <a
               href={`/explore/${chartId}?fromReport=${dashboardId}&tile=${dashboardChartId}`}
               target="_blank"

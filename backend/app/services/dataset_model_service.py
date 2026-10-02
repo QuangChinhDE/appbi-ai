@@ -619,7 +619,7 @@ def _source_columns_for_transformations(table: DatasetTable) -> list[str] | None
                 if isinstance(item, dict) and str(item.get("name") or "").strip()
             ]
             if normalized:
-                return normalized
+                return _source_from_output_columns(normalized, table)
     elif isinstance(raw_cache, list):
         normalized = [
             str(item.get("name") or "").strip()
@@ -627,8 +627,36 @@ def _source_columns_for_transformations(table: DatasetTable) -> list[str] | None
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         ]
         if normalized:
-            return normalized
+            return _source_from_output_columns(normalized, table)
     return None
+
+
+def _source_from_output_columns(columns: list[str], table: DatasetTable) -> list[str]:
+    """A cache without ``source_columns`` lists the relation's OUTPUT columns —
+    the calculated / renamed ones included. Taken as the SOURCE, a calculated
+    column read as already existing, and the compiler refused it as a duplicate
+    of itself (the model view was then skipped while the live path, which infers
+    the true source, worked). The source is the output minus what this table's
+    own steps create, with renamed columns under their source names."""
+    from app.services.transformation_compiler import TransformationCompiler
+
+    created: set[str] = set()
+    restored: list[str] = []
+    for step in TransformationCompiler.normalize_server_transformations(
+            getattr(table, "transformations", None) or []):
+        params = step.get("params") or {}
+        if step.get("type") == "add_column" and params.get("newField"):
+            created.add(str(params["newField"]))
+        elif step.get("type") == "rename_columns":
+            for src, dst in (params.get("mapping") or {}).items():
+                if dst != src:
+                    # a name an EARLIER step created (add-then-rename, A→B→C)
+                    # was never a source column
+                    if str(src) not in created:
+                        restored.append(str(src))
+                    created.add(str(dst))
+    out = [c for c in columns if c not in created]
+    return out + [c for c in restored if c not in out]
 
 
 def _apply_semantic_transformations(base_query: str, table: DatasetTable, *, dialect: str) -> str:

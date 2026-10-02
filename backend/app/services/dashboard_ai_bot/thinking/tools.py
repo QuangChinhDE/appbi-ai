@@ -646,6 +646,16 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
         "row_count": len(rows),
         "coverage": coverage,
         "filters_applied": data["filters_applied"],
+        # Freshness, as the chart's surfaces show it (a snapshot's build time,
+        # or a cached live read's read time): the answer says "tính đến HH:MM"
+        # instead of presenting the rows as the source right now.
+        **({"data_as_of": data["data_as_of"]} if data.get("data_as_of") else {}),
+        **({"data_cached": True} if data.get("data_cached") else {}),
+        # What the shared fetch says about the rows' meaning is the model's too
+        # (it was dropped here: a filter the chart could not apply, a Top-N
+        # source, an author restriction, an AI-scope exclusion).
+        **{k: data[k] for k in ("filters_not_applied", "source_top_n", "restricted_by_author",
+                                "excluded_columns") if data.get(k)},
     })
 
 

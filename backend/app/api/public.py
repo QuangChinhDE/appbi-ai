@@ -18,6 +18,7 @@ from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
+from app.services.time_contract import utc_iso
 from app.core import get_db
 from app.core.config import settings
 from app.core.dependencies import ALGORITHM
@@ -1027,7 +1028,8 @@ def _public_chart_payload(data: Any, applied: list[dict] | None = None) -> Any:
     # page needs it to tell one snapshot from two (the generation contract).
     _get = (lambda k: debug_in.get(k)) if isinstance(debug_in, dict) else (lambda k: getattr(debug_in, k, None))
     freshness = {k: _get(k) for k in ("data_source_mode", "snapshot_as_of", "snapshot_stale",
-                                      "snapshot_generation", "snapshot_dataset_id")} if debug_in is not None else {}
+                                      "snapshot_generation", "snapshot_dataset_id",
+                                      "result_as_of", "result_cached")} if debug_in is not None else {}
     freshness = {k: v for k, v in freshness.items() if v is not None}
     safe_debug = (ChartDebugInfo.model_validate({"dropped_filters": skipped, **freshness})
                   if (skipped or freshness) else None)
@@ -3501,7 +3503,7 @@ def get_public_snapshot_info(
     ts = _dashboard_snapshot_as_of(db, dash)
     ttl = _resolve_public_snapshot_ttl(appearance)
     return {
-        "as_of": ts.isoformat() if ts else None,
+        "as_of": utc_iso(ts),
         "mode": "snapshot" if ts else "live",
         "stale": snapshot_service.is_stale(ts, ttl),
     }

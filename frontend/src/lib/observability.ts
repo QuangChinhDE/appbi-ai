@@ -15,7 +15,9 @@ export type IncidentStatus = 'open' | 'acknowledged' | 'resolved';
 // ── Overview ──────────────────────────────────────────────────────────────────
 /** breached > error (a check failed to run) > unknown (never run / still
  *  learning) > not_monitored > healthy — "healthy" only when every check ran. */
-export type HealthState = 'breached' | 'error' | 'unknown' | 'not_monitored' | 'healthy';
+export type HealthState = 'semantic_invalid' | 'breached' | 'error' | 'unknown' | 'not_monitored' | 'healthy';
+/** Can the Semantic Kernel use the dataset's current model (its own layer, never a quality one). */
+export interface SemanticState { status: 'pass' | 'fail' | 'unknown' | 'not_modelled'; failed?: number; reasons?: string[]; source?: string; since?: string | null }
 export interface PillarHealth {
   pillar: Pillar;
   monitors: number;
@@ -112,7 +114,7 @@ export interface UsageRow {
   chartCount: number; dashboardCount: number;
   lastRefresh?: string | null;
   monitors: number; qualityRules: number; openIncidents: number;
-  erroredChecks?: number; unknownChecks?: number; health?: HealthState;
+  erroredChecks?: number; unknownChecks?: number; health?: HealthState; semantic?: SemanticState;
   unused: boolean; observed: boolean;
 }
 export async function getUsage(): Promise<UsageRow[]> {
