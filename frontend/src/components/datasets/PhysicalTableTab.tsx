@@ -4,7 +4,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { Search, Database, CheckSquare, Loader2, ChevronDown, ChevronRight, Square } from 'lucide-react';
+import { Search, Database, CheckSquare, Loader2, ChevronDown, ChevronRight, Square, AlertTriangle } from 'lucide-react';
 import { useDataSources } from '@/hooks/use-datasources';
 import { useDatasourceTables } from '@/hooks/use-datasets';
 import type { DatasourceTable, AddTableInput } from '@/hooks/use-datasets';
@@ -24,7 +24,7 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
 
   const { data: datasources, isLoading: loadingDatasources } = useDataSources();
-  const { data: tables, isLoading: loadingTables } = useDatasourceTables(
+  const { data: tables, isLoading: loadingTables, error: tablesError } = useDatasourceTables(
     selectedDatasourceId,
     searchQuery || undefined
   );
@@ -183,6 +183,21 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
             {loadingTables ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="w-5 h-5 animate-spin text-text-quaternary" />
+              </div>
+            ) : tablesError ? (
+              // A source that cannot be read is NOT an empty source: say why
+              // (credential / permission / network), as the create form does.
+              <div
+                data-testid="datasource-tables-error"
+                role="alert"
+                className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center text-sm text-danger"
+              >
+                <AlertTriangle className="w-6 h-6" />
+                <p className="font-medium">Could not read tables from this datasource</p>
+                <p className="text-xs text-text-secondary break-words">
+                  {(tablesError as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                    || (tablesError as Error)?.message}
+                </p>
               </div>
             ) : filteredTables.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-8 text-text-tertiary">

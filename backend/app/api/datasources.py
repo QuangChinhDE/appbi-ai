@@ -647,7 +647,10 @@ def get_schema_browser(
         return {"schemas": schemas}
     except Exception as e:
         logger.error(f"Schema browser failed for ds {data_source_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve schema. Please check the connection.")
+        from app.services.source_errors import describe_source_error
+
+        raise HTTPException(status_code=400, detail=(
+            f"Không đọc được schema từ nguồn: {describe_source_error(e, ds.config)}"))
 
 
 @router.get("/{data_source_id}/tables/{schema_name}/{table_name}")

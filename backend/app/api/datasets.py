@@ -4869,9 +4869,14 @@ def list_datasource_tables(
     
     except Exception as e:
         logger.error(f"Failed to list tables: {e}")
+        # The source's own reason (credential / permission / network / config),
+        # as the create form shows it — never a bare 500 the picker reads as
+        # "No tables found".
+        from app.services.source_errors import describe_source_error
+
         raise HTTPException(
-            status_code=500,
-            detail="Failed to list tables."
+            status_code=400,
+            detail=f"Không đọc được danh sách bảng từ nguồn: {describe_source_error(e, datasource.config)}"
         )
 
 

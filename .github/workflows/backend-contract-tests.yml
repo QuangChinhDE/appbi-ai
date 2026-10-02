@@ -174,6 +174,7 @@ jobs:
             tests/test_requested_dimension_is_not_substituted.py \
             tests/test_skill_surfaces_found_in_the_browser.py \
             tests/test_claims_mean_what_was_asked.py \
+            tests/test_core_product_contracts.py \
             tests/test_publication_boundary.py \
             tests/test_intent_contract.py \
             tests/test_alembic_revision_reconcile.py \
