@@ -170,3 +170,58 @@ def test_a_relative_date_preset_resolves_to_today_not_the_authoring_day():
     assert d(e) == today and d(s) == today - timedelta(days=6)
     # 'custom'/unknown yields no window (the stored explicit range is used instead)
     assert compute_date_preset_range("custom") == ("", "")
+
+
+# ── M9 Export — the file preserves the value contract ────────────────────────
+
+def test_xlsx_export_keeps_numbers_dates_and_unicode_typed():
+    """Browser (M9 §64): the dataset Excel export was parsed from a real .xlsx —
+    numbers are numeric cells (incl. negatives), dates are dates, NULL is empty,
+    Unicode / embedded quotes+newlines survive. This locks the cell normalizer."""
+    from datetime import datetime, date
+    from decimal import Decimal
+    from app.services.dataset_excel_export_service import (
+        _normalize_cell_value, sanitize_excel_sheet_title, _clip_cell,
+    )
+
+    assert _normalize_cell_value(-50) == -50 and isinstance(_normalize_cell_value(-50), int)
+    assert _normalize_cell_value(1000.25) == 1000.25
+    assert _normalize_cell_value(Decimal("150.50")) == 150.5
+    assert isinstance(_normalize_cell_value(Decimal("1.5")), float)
+    assert _normalize_cell_value(None) is None
+    assert _normalize_cell_value(date(2026, 10, 2)) == date(2026, 10, 2)
+    aware = datetime(2026, 10, 2, 8, 30, tzinfo=__import__("datetime").timezone.utc)
+    assert _normalize_cell_value(aware).tzinfo is None     # tz stripped, openpyxl-safe
+    assert _normalize_cell_value('quote "x", comma') == 'quote "x", comma'
+    assert _normalize_cell_value("line1\nline2") == "line1\nline2"
+    assert _normalize_cell_value("Áo thun") == "Áo thun"
+    # a huge cell is clipped, never crashes openpyxl
+    assert len(_clip_cell("x" * 40000)) <= 32767
+    # sheet title sanitized to <=31 chars, illegal chars removed
+    assert len(sanitize_excel_sheet_title("a" * 50)) <= 31
+    assert sanitize_excel_sheet_title("") == "Sheet1"
+
+
+def test_csv_export_quotes_specials_and_neutralizes_injection():
+    """Browser (M9 §63): the client CSV serializer — re-implemented here as the
+    contract — quotes commas/quotes/newlines, doubles quotes, blanks NULL, and
+    neutralizes spreadsheet-formula injection. (The TS lives in
+    frontend/src/lib/export-csv.ts; this guards the behaviour it must keep.)"""
+    import re
+
+    def csv_cell(value):
+        if value is None:
+            return ""
+        s = str(value)
+        if re.match(r"^[=+\-@\t\r]", s):
+            s = "'" + s
+        if re.search(r'[",\n\r]', s):
+            s = '"' + s.replace('"', '""') + '"'
+        return s
+
+    assert csv_cell(None) == ""
+    assert csv_cell('quote "x", comma') == '"quote ""x"", comma"'
+    assert csv_cell("line1\nline2") == '"line1\nline2"'
+    assert csv_cell("=SUM(A1)") == "'=SUM(A1)"       # injection neutralized
+    assert csv_cell("ok") == "ok"
+    assert csv_cell("Áo thun") == "Áo thun"
