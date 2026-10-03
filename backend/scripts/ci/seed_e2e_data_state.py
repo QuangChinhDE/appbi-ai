@@ -48,6 +48,16 @@ ROWS = "(1,'North',13,7), (2,'South',5,0), (3,'North',-5,2), (4,'South',NULL,2),
 COLUMNS = [{"name": "id", "type": "integer"}, {"name": "region", "type": "string"},
            {"name": "a", "type": "integer"}, {"name": "b", "type": "integer"},
            {"name": "ratio", "type": "float"}]
+# A table whose cells exercise the CSV serializer's edge cases: a comma+quote, an
+# embedded newline, a leading-'=' formula-injection payload, Unicode diacritics,
+# a NULL. The e2e CSV download parses these from the REAL TypeScript exporter.
+CSV_ROWS = (
+    "(1, 'quote \"x\", comma', 'Áo thun'), "
+    "(2, E'line1\\nline2', '=SUM(A1)'), "
+    "(3, NULL, 'refund -50')"
+)
+CSV_COLUMNS = [{"name": "id", "type": "integer"}, {"name": "note", "type": "string"},
+               {"name": "label", "type": "string"}]
 RATIO = {"id": "e2e-ratio", "type": "add_column", "enabled": True,
          "params": {"newField": "ratio", "expression": "[a] / [b]", "formula": "[a] / [b]"}}
 
@@ -63,6 +73,9 @@ def _source_tables() -> None:
         # The same rows WITHOUT `b` — what a source looks like after an upstream
         # column drop the dataset's calculated column still needs.
         c.execute(sa.text(f"CREATE TABLE {SCHEMA}.orders_nob AS SELECT id, region, a FROM {SCHEMA}.orders"))
+        c.execute(sa.text(f"DROP TABLE IF EXISTS {SCHEMA}.orders_csv"))
+        c.execute(sa.text(f"CREATE TABLE {SCHEMA}.orders_csv (id int, note text, label text)"))
+        c.execute(sa.text(f"INSERT INTO {SCHEMA}.orders_csv VALUES {CSV_ROWS}"))
     eng.dispose()
 
 
@@ -120,6 +133,46 @@ def _chart_on_dashboard(db, user, table_id: int, name: str, token: str) -> int:
     return int(chart.id)
 
 
+def _csv_table_link(db, user, ds) -> dict:
+    """A TABLE chart over the special-char rows, on a public link whose default
+    appearance allows data export — the durable CSV-download e2e opens this."""
+    name = "E2E orders detail (csv)"
+    token = "e2e-data-state-table"
+    found = db.query(Dataset).filter(Dataset.name == name).first()
+    if found is None:
+        dataset = DatasetCRUDService.create_dataset(db, DatasetCreate(name=name), owner_id=user.id)
+        t = DatasetCRUDService.add_table_to_dataset(db, dataset.id, TableCreate(
+            datasource_id=ds.id, source_kind="physical_table",
+            source_table_name=f"{SCHEMA}.orders_csv", display_name="orders_csv"))
+        db.flush()
+        DatasetCRUDService.update_table_cache(db, t.id, columns_cache={
+            "columns": [dict(c) for c in CSV_COLUMNS],
+            "source_columns": ["id", "note", "label"]})
+        generate_dataset_model(db, int(dataset.id), force=False)
+        table_id = int(t.id)
+    else:
+        table_id = int(db.query(DatasetTable).filter(DatasetTable.dataset_id == found.id).first().id)
+    chart = db.query(Chart).filter(Chart.name == name).first()
+    if chart is None:
+        role = {"selectedColumns": ["id", "note", "label"], "metrics": []}
+        chart = ChartService.create(db, ChartCreate(
+            name=name, chart_type="TABLE", dataset_table_id=table_id,
+            config={"chartType": "TABLE", "queryMode": "generated", "roleConfig": role,
+                    "generatedRoleConfig": role, "customRoleConfig": {"metrics": []},
+                    "filters": [], "baseFilters": [], "styleConfig": {"chartTitle": name}},
+        ), owner_id=user.id)
+    if db.query(DashboardPublicLink).filter(DashboardPublicLink.token == token).first() is None:
+        dash = Dashboard(name=f"{name} board", owner_id=user.id,
+                         pages_config=[{"id": "p1", "name": "Detail"}], slicers_config=[], filters_config=[])
+        db.add(dash); db.flush()
+        db.add(DashboardChart(dashboard_id=dash.id, chart_id=chart.id, widget_type="chart",
+                              layout={"x": 0, "y": 0, "w": 24, "h": 12, "gv": 2, "pageId": "p1"}))
+        db.add(DashboardPublicLink(dashboard_id=dash.id, name=name, token=token, is_active=True,
+                                   created_by=user.id, filters_config=[],
+                                   appearance_config={"allow_data_export": True}))
+    return {"dataset_id": table_id, "chart_id": int(chart.id), "token": token}
+
+
 def main() -> int:
     db = SessionLocal()
     try:
@@ -156,6 +209,8 @@ def main() -> int:
         dataset.last_sync_error = ("Generation 1790948448889 chưa phủ đủ 1 bảng — build có bảng lỗi. "
                                    "orders: column \"b\" does not exist")
         out["failed_publish"] = {"dataset_id": pub_ds}
+        # F. CSV export over special-char rows (A4): the durable CSV-download e2e.
+        out["csv_table"] = _csv_table_link(db, user, ds)
         db.commit()
         print(json.dumps(out))
         return 0
