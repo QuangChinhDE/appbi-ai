@@ -86,6 +86,28 @@ test('dirty sidebar navigation prompts, cancel preserves work, accept leaves', a
   }
 });
 
+test('dirty Dashboard A-to-B navigation prompts and accept reaches B', async ({ page, request }) => {
+  test.setTimeout(90_000);
+  const firstId = await createDashboard(request, 'dirty-a');
+  const secondId = await createDashboard(request, 'dirty-b');
+  try {
+    await openDashboard(page, firstId);
+    await makeThemeDirty(page);
+    await page.evaluate((targetId) => {
+      const link = document.createElement('a');
+      link.href = `/dashboards/${targetId}`;
+      link.textContent = 'Open dirty target dashboard';
+      link.setAttribute('data-testid', 'dirty-target-dashboard-link');
+      document.body.appendChild(link);
+    }, secondId);
+    await handleDialogWhile(page, () => page.getByTestId('dirty-target-dashboard-link').click(), 'accept');
+    await expect(page).toHaveURL(new RegExp(`/dashboards/${secondId}`), { timeout: 15_000 });
+  } finally {
+    await request.delete(`${API}/api/v1/dashboards/${firstId}`);
+    await request.delete(`${API}/api/v1/dashboards/${secondId}`);
+  }
+});
+
 test('header Back, browser Back and reload protect dirty presentation state', async ({ page, request }) => {
   test.setTimeout(120_000);
   const id = await createDashboard(request, 'history');
