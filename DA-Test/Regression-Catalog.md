@@ -461,4 +461,14 @@ These behaviors were fixed but have **no automated test** — a future change ca
 
 ---
 
+## Final release closure — 2026-10-04
+
+| Bug / gap | Root cause | Fix | Locking test |
+|---|---|---|---|
+| Datasource connection tests returned and logged configured secrets, including a BigQuery success-with-warning | Provider methods returned raw driver text and the shared service boundary logged raw raised exceptions; API scrubbing occurred too late to protect logs/service callers | Sanitize every provider result and raised exception once in `DataSourceConnectionService.test_connection`, before log or return | ✅ `test_core_product_contracts.py`: actual service connectors for PostgreSQL/MySQL/BigQuery/Google Sheets/Docs, captured production logger, BigQuery warning, and API boundary |
+| Unsaved Dashboard theme/layout could leave through sidebar, SPA Dashboard links, or browser history | Only unload and the header's one-off handler consulted current dirty state | One capture-phase same-origin link guard plus a same-URL history sentinel; cancel retains local state, accepted SPA navigation replaces the sentinel, successful Save/Publish removes it | ✅ `unsaved-theme-nav.spec.ts`: real theme and layout changes, sidebar/header/history/reload, accept/dismiss, saved/published clean exits |
+| APPBI-VERIFY-007: North page showed KPI `685` and a skipped filter while bar/table showed `610`/North | Bare saved page-filter fields were accepted only when present in the visual role map; KPI/trend omitted `region` from roles even though their base semantic view declared it reachable | Resolve the bare field against `baseViewName` plus `availableSemanticFields`/`reachableFields` before declaring it inapplicable | ✅ `final-release-closure.spec.ts`: exact rows/config in real Builder, all four chart requests carry `region = North`, KPI `610`, no skipped state |
+| Relative-date thread-pool regression could stay green if production batch anchor propagation broke | The test copied a `ThreadPoolExecutor` pattern instead of calling `ChartService.get_charts_data_batch` | Replace it with production single and batch calls over deterministic dated rows at two anchors | ✅ `test_core_product_contracts.py`: hand = single = production batch at both anchors and all batch workers |
+| New PDF `as_of` contract lacked real worker/multi-page proof | Existing checks stopped at helpers, job enqueue, or historical export behavior | Add deterministic three-page relative-date fixture and run the existing worker in E2E/CI; download and parse actual bytes | ✅ `final-release-closure.spec.ts`: server engine, completed worker job, 3 pages in order, Unicode titles, A/B/C values, footer, nonblank bytes |
+
 *Generated 2026-06-30 from: code bug-markers (BUG-005…018), ~80 git fix-commits, the golden/contract/e2e test inventory, and the project memory bank. Update this file whenever a new bug is fixed — add the row AND its locking test.*

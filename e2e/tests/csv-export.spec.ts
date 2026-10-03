@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
 
 /**
@@ -11,7 +12,7 @@ import { expect, test } from '@playwright/test';
  * diacritics, a NULL. allow_data_export is on, so the per-tile "Export data"
  * button is present on the logged-out public view.
  */
-test('the public CSV download encodes specials, Unicode, NULL and injection', async ({ page }) => {
+test('the public CSV download encodes specials, Unicode, NULL and injection', async ({ page }, testInfo) => {
   test.setTimeout(60_000);
   await page.goto('/d/e2e-data-state-table');
   await expect(page.getByText('E2E orders detail (csv)').first()).toBeVisible({ timeout: 30_000 });
@@ -27,7 +28,9 @@ test('the public CSV download encodes specials, Unicode, NULL and injection', as
   const stream = await download.createReadStream();
   const chunks: Buffer[] = [];
   for await (const c of stream) chunks.push(Buffer.from(c));
-  const raw = Buffer.concat(chunks).toString('utf-8');
+  const bytes = Buffer.concat(chunks);
+  fs.writeFileSync(testInfo.outputPath('public-filtered-export.csv'), bytes);
+  const raw = bytes.toString('utf-8');
 
   // UTF-8 BOM so Excel reads Vietnamese (the first char).
   expect(raw.charCodeAt(0)).toBe(0xfeff);

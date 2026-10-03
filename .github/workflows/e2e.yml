@@ -128,6 +128,11 @@ jobs:
       # `/api/v1/*` to BACKEND_URL and falls back to `http://backend:8000/api/v1`
       # — a docker-compose hostname that does not resolve on a GitHub runner.
       BACKEND_URL: http://localhost:8000/api/v1
+      # Final-release closure: full-stack Playwright includes one REAL
+      # multi-page worker export. API and worker share this local directory.
+      PDF_EXPORT_ENABLED: "true"
+      PDF_RENDER_BASE_URL: http://localhost:3000
+      DATA_DIR: ${{ github.workspace }}/.artifacts/e2e-pdf-data
 
     steps:
       - uses: actions/checkout@v4
@@ -136,7 +141,11 @@ jobs:
         with: { python-version: "3.11", cache: pip }
       - name: Install backend dependencies
         working-directory: backend
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          # The API image stays slim in production; CI opts into the same two
+          # packages Dockerfile.pdf installs for the real render worker.
+          pip install pymupdf==1.24.14 playwright==1.49.1
 
       # AI KEYS ARE STORED ENCRYPTED, OR NOT AT ALL.
       #
@@ -219,6 +228,16 @@ jobs:
         run: |
           npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
+          python -m playwright install chromium
+
+      - name: Start the real PDF worker
+        working-directory: backend
+        run: |
+          mkdir -p "$DATA_DIR"
+          python -m app.scripts.pdf_worker > ../.artifacts/e2e-pdf-worker.log 2>&1 &
+          echo $! > ../.artifacts/e2e-pdf-worker.pid
+          sleep 3
+          kill -0 "$(cat ../.artifacts/e2e-pdf-worker.pid)"
 
       - name: Run the suite
         working-directory: e2e
@@ -233,4 +252,5 @@ jobs:
           path: |
             e2e/test-results/
             e2e/playwright-report/
+            .artifacts/e2e-pdf-worker.log
           retention-days: 14

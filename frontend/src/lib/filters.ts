@@ -895,6 +895,20 @@ export function resolveChartFieldForFilter(
     return filter.field;
   }
 
+  // A dashboard/page filter is allowed to target a field that the visual does
+  // not itself use as a role. Older saved page filters carry only the bare
+  // field name + datasetId (no semanticField). Resolve that name against this
+  // chart's base view before deciding it is inapplicable; restricting this to
+  // fieldMap made KPI/trend visuals silently skip a valid base-view predicate
+  // while bar/table siblings happened to apply it because they used the field.
+  if (binding.baseViewName) {
+    const baseSemanticField = `${binding.baseViewName}.${filter.field}`;
+    if (availableSemanticFields.has(baseSemanticField)
+        || (binding.reachableFields ?? []).includes(baseSemanticField)) {
+      return filter.field;
+    }
+  }
+
   return null;
 }
 
