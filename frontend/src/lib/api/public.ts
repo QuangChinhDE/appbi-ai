@@ -10,6 +10,7 @@
  * Sessions expire after 2 hours (server-enforced via JWT expiry).
  */
 import axios from 'axios';
+import { reportAnchor } from '@/lib/report-anchor';
 import type { Dashboard } from '@/types/api';
 import type { BaseFilter } from '@/lib/filters';
 import type { ReaderOutcome } from '../notices';
@@ -35,6 +36,17 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 const publicClient = axios.create({
   baseURL: API_BASE,
   withCredentials: false,
+});
+
+// One relative-date anchor for all tiles of the current public report read, so a
+// load across midnight cannot mix windows. Non-credential header; the server
+// resolves relative presets against it (falls back to now() when absent).
+publicClient.interceptors.request.use((config) => {
+  try {
+    const a = reportAnchor();
+    if (a) { config.headers = config.headers || {} as any; (config.headers as any)['X-AppBI-As-Of'] = a; }
+  } catch { /* best-effort */ }
+  return config;
 });
 
 export const publicDashboardApi = {

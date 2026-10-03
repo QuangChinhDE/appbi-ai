@@ -1,6 +1,7 @@
 'use client';
 
 import { sectionTitlesOf } from '@/lib/report-meta';
+import { stampReportAnchor } from '@/lib/report-anchor';
 import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
@@ -249,6 +250,15 @@ function DashboardDetailPageInner() {
   const { t, locale } = useI18n();
   const params = useParams();
   const dashboardId = Number(params.id);
+
+  // One relative-date anchor for every tile of this report read (stamped during
+  // render, before react-query sends the tile requests, so a load across
+  // midnight cannot mix windows). Re-stamped when the opened dashboard changes.
+  const anchorStampedRef = React.useRef<number | null>(null);
+  if (anchorStampedRef.current !== dashboardId) {
+    anchorStampedRef.current = dashboardId;
+    stampReportAnchor();
+  }
 
   const [isAddChartModalOpen, setIsAddChartModalOpen] = useState(false);
   const [isHtmlImportOpen, setIsHtmlImportOpen] = useState(false);

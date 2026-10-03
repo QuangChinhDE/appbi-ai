@@ -151,7 +151,7 @@ app.add_middleware(
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Public-Session", "X-Requested-With"],
+    allow_headers=["Authorization", "Content-Type", "X-Public-Session", "X-Requested-With", "X-AppBI-As-Of"],
     # the semantic refusal category of a refused chart request (chart_service.REFUSAL_HEADER)
     expose_headers=["X-AppBI-Refusal"],
     max_age=3600,  # cache preflight 1h so cross-origin calls skip repeated OPTIONS
@@ -160,6 +160,23 @@ print("DEBUG: CORS middleware added")
 
 # Compress responses > 1 KB — chart data payloads shrink ~10× with gzip.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+@app.middleware("http")
+async def _report_read_anchor(request, call_next):
+    """One logical report read shares ONE relative-date anchor. The client stamps
+    a single instant per report load and sends it on every tile request
+    (X-AppBI-As-Of); relative presets then resolve against it instead of each
+    tile's own now(), so a dashboard loading across midnight cannot mix windows.
+    Absent the header (API, AI bot, scheduler), presets fall back to now() in the
+    app timezone."""
+    from app.services.time_contract import set_report_anchor, reset_report_anchor, parse_anchor
+
+    token = set_report_anchor(parse_anchor(request.headers.get("X-AppBI-As-Of")))
+    try:
+        return await call_next(request)
+    finally:
+        reset_report_anchor(token)
 
 # Rate limiting
 app.state.limiter = limiter

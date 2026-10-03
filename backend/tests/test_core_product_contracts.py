@@ -169,11 +169,11 @@ def test_live_execution_flags_any_dataset_that_spans_more_than_one_connection():
 def test_a_relative_date_preset_resolves_to_today_not_the_authoring_day():
     """Browser (M8 §51): a public report authored with a relative preset must
     show the window relative to WHEN IT IS VIEWED, not freeze to the authoring
-    day. The resolver recomputes from today on every call."""
-    from datetime import datetime, timedelta
+    day. The resolver recomputes from today (in the app timezone) on every call."""
+    from datetime import datetime, timedelta, timezone
     from app.services.chart_contracts import compute_date_preset_range
 
-    today = datetime.now().date()
+    today = datetime.now(timezone.utc).date()   # APP_TIMEZONE default = UTC
 
     def d(s):
         from datetime import date
@@ -187,6 +187,48 @@ def test_a_relative_date_preset_resolves_to_today_not_the_authoring_day():
     assert d(e) == today and d(s) == today - timedelta(days=6)
     # 'custom'/unknown yields no window (the stored explicit range is used instead)
     assert compute_date_preset_range("custom") == ("", "")
+
+
+def test_one_report_read_shares_one_relative_date_anchor_across_midnight():
+    """Final closure §7 / Q4: all tiles of one logical report read must use ONE
+    relative-date anchor. The client stamps one instant per load (X-AppBI-As-Of);
+    every tile resolves its preset against it, so a load that straddles midnight
+    cannot mix windows. Absent an anchor, presets fall back to now() in the app tz."""
+    from app.services.time_contract import set_report_anchor, reset_report_anchor, parse_anchor
+    from app.services.chart_contracts import compute_date_preset_range
+
+    # One read begins at 23:59:59Z; two "tiles" that share that stamp agree, even
+    # though real wall-clock crosses midnight between them.
+    tok = set_report_anchor(parse_anchor("2026-03-14T23:59:59Z"))
+    try:
+        tile1 = compute_date_preset_range("last_30_days")
+        tile2 = compute_date_preset_range("today")
+        assert tile1 == ("2026-02-13", "2026-03-14")
+        assert tile2 == ("2026-03-14", "2026-03-14")
+    finally:
+        reset_report_anchor(tok)
+
+    # A LATER logical read (next day) stamps a new anchor → window moves (§8).
+    tok = set_report_anchor(parse_anchor("2026-03-15T00:00:01Z"))
+    try:
+        assert compute_date_preset_range("today") == ("2026-03-15", "2026-03-15")
+    finally:
+        reset_report_anchor(tok)
+
+    # A malformed / absent stamp never crashes — falls back to now() in app tz.
+    assert parse_anchor("not-a-date") is None
+    assert parse_anchor("") is None
+
+
+def test_the_relative_date_timezone_is_explicit_utc_not_process_local():
+    """Final closure §6 / Q6: 'today' must be an intentional product timezone,
+    not the server process's local clock. The anchor resolves in the configured
+    app timezone (default UTC)."""
+    from datetime import datetime, timezone
+    from app.services.time_contract import current_report_date
+
+    # With no request anchor, the resolved date is today IN UTC.
+    assert current_report_date() == datetime.now(timezone.utc).date()
 
 
 # ── M9 Export — the file preserves the value contract ────────────────────────

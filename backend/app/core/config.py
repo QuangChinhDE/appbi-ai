@@ -313,6 +313,11 @@ class Settings(BaseSettings):
     # Dashboard perf #5 — snapshot materialization. Global default dataset where
     # flat snapshot tables are written; a per-datasource `materialization_dataset`
     # config value overrides it, this is the .env-configurable fallback.
+    # The timezone in which relative-date presets ("today", "last 30 days") are
+    # resolved for every report read. Explicit and product-owned — NOT the server
+    # process's local clock. Defaults to UTC, matching the UTC instants the rest
+    # of the stack emits (time_contract.utc_iso). See time_contract.current_report_date.
+    APP_TIMEZONE: str = "UTC"
     MATERIALIZATION_DATASET: str = "appbi_snapshots"
     MATERIALIZATION_DEFAULT_TTL_MINUTES: int = 30       # freshness TTL fallback (public links / builder)
     # Global AppBI write service account for snapshot CREATE+LOAD (never reads

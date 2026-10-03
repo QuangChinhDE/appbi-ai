@@ -31,9 +31,15 @@ def compute_date_preset_range(preset: str) -> tuple[str, str]:
     EVERY consumer (public link, embed, AI bot, PDF worker): the range is
     recomputed at request time instead of being frozen to the build-time window.
     Returns ('', '') for 'custom'/unknown. Weeks are Monday-start (matches FE).
+
+    "Today" is resolved in an EXPLICIT app timezone and against the current
+    request's report-read anchor when the client stamped one (so every tile of
+    one logical read — even across midnight — shares one window). See
+    ``time_contract.current_report_date``.
     """
     p = str(preset or "").strip().lower()
-    today = datetime.now().date()
+    from app.services.time_contract import current_report_date
+    today = current_report_date()
     fmt = lambda d: d.isoformat()
     if p == "today":
         return fmt(today), fmt(today)

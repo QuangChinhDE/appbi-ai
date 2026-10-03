@@ -2,6 +2,7 @@
  * API client for making requests to the backend.
  */
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
+import { reportAnchor } from '@/lib/report-anchor';
 
 // NEXT_PUBLIC_API_URL is baked at build time as '/api/v1' (relative).
 // Next.js rewrites (localhost) or nginx (/api/ location) proxy it to the backend.
@@ -67,6 +68,9 @@ apiClient.interceptors.request.use(
     if (API_DEBUG_LOGGING) {
       console.log(`[API ${API_CLIENT_BUILD_STAMP}] ${config.method?.toUpperCase()} ${config.url}`);
     }
+    // One relative-date anchor for all tiles of the current report read.
+    const a = reportAnchor();
+    if (a) { config.headers = config.headers || {} as any; (config.headers as any)['X-AppBI-As-Of'] = a; }
     return config;
   },
   (error) => {

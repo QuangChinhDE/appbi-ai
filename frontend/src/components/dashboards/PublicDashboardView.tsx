@@ -1,6 +1,7 @@
 ﻿'use client';
 
 import { sectionTitlesOf } from '@/lib/report-meta';
+import { stampReportAnchor } from '@/lib/report-anchor';
 import { fitLayoutToContent, useMeasuredContentRows } from '@/lib/responsive-fit';
 import { extractParamDefs } from '@/lib/dashboard-params';
 import { groupIntoPrintBands } from '@/lib/print-bands';
@@ -547,6 +548,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   useEffect(() => () => clearSessionTimer(), [clearSessionTimer]);
 
   const loadDashboard = useCallback(async (sessionToken?: string) => {
+    // One relative-date anchor for every tile of THIS report read (across midnight).
+    stampReportAnchor();
     setPageState('loading');
     setLoading(true);
     setError(null);
