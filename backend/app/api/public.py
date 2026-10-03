@@ -4047,10 +4047,16 @@ def create_public_export_job(
         if isinstance(pc, dict) and pc.get("id")
     }
     report_title = str(getattr(dash, "public_link_name", None) or dash.name or "Báo cáo")
-    exported_at = datetime.now(timezone.utc).astimezone().strftime("%d/%m/%Y %H:%M")
+    export_instant = datetime.now(timezone.utc)
+    exported_at = export_instant.astimezone().strftime("%d/%m/%Y %H:%M")
     params = {
         "title": report_title,
         "subtitle": f"Xuất lúc {exported_at}",
+        # One relative-date anchor for the WHOLE export: every page the worker
+        # renders carries this instant (X-AppBI-As-Of via ?asOf=), so a multi-page
+        # PDF whose render crosses midnight cannot show page 1 with one "last 30
+        # days" window and page 5 with another (A3 / one coherent export state).
+        "as_of": export_instant.isoformat(),
         "page_names": page_names,
         "filename": f"{report_title}.pdf",
         "pages": [str(p) for p in (body.pages or [])],

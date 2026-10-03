@@ -231,6 +231,27 @@ def test_the_relative_date_timezone_is_explicit_utc_not_process_local():
     assert current_report_date() == datetime.now(timezone.utc).date()
 
 
+def test_a_pdf_export_carries_one_as_of_anchor_to_every_page():
+    """Final closure §9 / Q5: one PDF export must render every page against ONE
+    relative-date anchor, so a multi-page render crossing midnight can't mix
+    windows. The job captures one as_of and the worker puts it on every page URL."""
+    from types import SimpleNamespace
+    from app.scripts.pdf_worker import _render_url
+
+    job = SimpleNamespace(
+        link_token="tok123",
+        params={"as_of": "2026-03-14T23:59:59+00:00", "pages": ["p1", "p2"], "filters": []},
+    )
+    u1 = _render_url(job, "p1")
+    u2 = _render_url(job, "p2")
+    assert "asOf=2026-03-14" in u1 and "asOf=2026-03-14" in u2
+    # the SAME anchor on both pages
+    import re
+    a1 = re.search(r"asOf=([^&]+)", u1).group(1)
+    a2 = re.search(r"asOf=([^&]+)", u2).group(1)
+    assert a1 == a2 and "p1" in u1 and "p2" in u2
+
+
 # ── M9 Export — the file preserves the value contract ────────────────────────
 
 def test_xlsx_export_keeps_numbers_dates_and_unicode_typed():

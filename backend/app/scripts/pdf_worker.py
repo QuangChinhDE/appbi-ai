@@ -128,6 +128,12 @@ def _render_url(job: DashboardExportJob, page_id: str) -> str:
     # all its rows, 'snapshot' (default) prints what the report shows. Sending it
     # here is what stops a snapshot job from paying for a thousand-row DOM.
     query["layout"] = "full" if _is_full_data(job) else "snapshot"
+    # One relative-date anchor for every page of this export (A3): the FE resolves
+    # relative presets against it, so all pages share one window even if the render
+    # crosses midnight. Captured once at job creation.
+    as_of = params.get("as_of")
+    if as_of:
+        query["asOf"] = str(as_of)
     base = str(settings.PDF_RENDER_BASE_URL).rstrip("/")
     return f"{base}/d/{quote(job.link_token or '')}?{urlencode(query)}"
 

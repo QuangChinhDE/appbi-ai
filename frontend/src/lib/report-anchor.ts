@@ -18,6 +18,13 @@ export function stampReportAnchor(): string {
   return anchor;
 }
 
+/** Use a given instant as the anchor (e.g. the PDF worker's per-export as-of, so
+ *  every page of one export shares one window). Falsy → stamp a fresh one. */
+export function setReportAnchor(iso: string | null | undefined): string {
+  anchor = iso ? String(iso) : new Date().toISOString();
+  return anchor;
+}
+
 /** The current report read's anchor (ISO-8601, UTC), or null if none is active. */
 export function reportAnchor(): string | null {
   return anchor;

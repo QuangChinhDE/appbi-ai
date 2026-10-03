@@ -20,6 +20,9 @@ export interface PrintRenderOptions {
   pageId: string | null;
   /** Viewer slicer/filter selections to re-apply before printing. */
   filters: BaseFilter[];
+  /** The export's single relative-date anchor (ISO-8601), passed by the PDF
+   *  worker so every page of one export shares one window (A3). Null → stamp fresh. */
+  asOf: string | null;
   /**
    * Which export this render belongs to.
    *   'snapshot' (default) — the page is scaled onto ONE sheet, so tables print
@@ -51,6 +54,7 @@ export function parsePrintRenderOptions(search: string): PrintRenderOptions | nu
   return {
     pageId: params.get('page') || null,
     filters: decodeFilters(params.get('filters')),
+    asOf: params.get('asOf') || null,
     layout: params.get('layout') === 'full' ? 'full' : 'snapshot',
   };
 }
