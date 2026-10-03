@@ -428,15 +428,19 @@ def get_publish_info(db: Session, dataset: Dataset) -> Dict[str, Any]:
 
 
 def _live_execution_engines(db: Session, dataset_id: int) -> tuple[list[str], bool]:
-    """(engine labels, live_executable) for a dataset's source-backed tables.
+    """(connection labels, live_executable) for a dataset's source-backed tables.
 
-    A live chart runs on one engine; a dataset whose enabled physical / SQL
-    tables resolve to more than one engine cannot run any chart live. Composed
-    (dataset-reference) and calculated tables carry no datasource of their own
-    and do not count. Cheap: one query over the tables' datasources.
+    A live chart runs on ONE physical connection. The runtime
+    (``execution_plan.refuse_foreign_live_sources``) refuses a live query that
+    reads tables from more than one connection IDENTITY — (engine, host, port,
+    database, schema, user) — not merely more than one dialect: two PostgreSQL
+    datasources on different databases are the same dialect but cannot share a
+    live connection. This mirrors that exact contract so the UI warns whenever
+    the runtime would refuse a cross-table live chart. Composed / calculated
+    tables carry no datasource of their own and do not count.
     """
     from app.models.models import DataSource
-    from app.services.live_query_service import _dialect_for_ds_type
+    from app.services.execution_plan import _connection_identity
 
     ds_ids = {
         t.datasource_id
@@ -448,12 +452,14 @@ def _live_execution_engines(db: Session, dataset_id: int) -> tuple[list[str], bo
     }
     if not ds_ids:
         return [], True
-    engines: dict[str, str] = {}
+    # Group by the runtime's connection identity. Two datasources that resolve
+    # to the same physical scope (e.g. duplicate records of one DB) count as one.
+    conns: dict[tuple, str] = {}
     for d in db.query(DataSource).filter(DataSource.id.in_(sorted(ds_ids))).all():
         dtype = str(getattr(d.type, "value", d.type)).lower()
-        engines[_dialect_for_ds_type(dtype)] = f"{d.name} ({dtype})"
-    labels = sorted(engines.values())
-    return labels, len(engines) <= 1
+        conns[_connection_identity(d)] = f"{d.name} ({dtype})"
+    labels = sorted(conns.values())
+    return labels, len(conns) <= 1
 
 
 def _utc_iso(dt):

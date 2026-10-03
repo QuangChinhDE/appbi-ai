@@ -101,7 +101,7 @@ def test_a_calculated_table_over_postgres_emits_valid_sql():
 
 # ── M3 Execution mode — a dataset mixing engines is flagged before a chart fails
 
-def test_live_execution_engines_flags_a_mixed_engine_dataset():
+def test_live_execution_flags_any_dataset_that_spans_more_than_one_connection():
     """Browser (M3): adding a MySQL table to a live PostgreSQL dataset refused
     EVERY chart (one chart runs on one engine) while the dataset still read
     "Live". The publish payload now reports live_executable=False and names the
@@ -128,8 +128,11 @@ def test_live_execution_engines_flags_a_mixed_engine_dataset():
             if "DatasetTable" in name: return _Q(self._t)
             return _Q(self._s)
 
-    pg = _DS(1, "Shop PG", "postgresql")
-    my = _DS(2, "Targets MySQL", "mysql")
+    def _cfg(db_, host="127.0.0.1", port=5432, schema="public", user="u"):
+        return {"host": host, "port": port, "database": db_, "schema_name": schema, "username": user}
+
+    pg = _DS(1, "Shop PG", "postgresql"); pg.config = _cfg("src_shop")
+    my = _DS(2, "Targets MySQL", "mysql"); my.config = {"host": "127.0.0.1", "port": 3306, "database": "t", "username": "root"}
     # one engine → executable
     db1 = _DB([table(1, 1), table(2, 1)], [pg])
     labels, ok = pub._live_execution_engines(db1, 99)
@@ -145,6 +148,20 @@ def test_live_execution_engines_flags_a_mixed_engine_dataset():
     db3 = _DB([table(1, 1), table(9, None, kind="derived_table")], [pg])
     _, ok3 = pub._live_execution_engines(db3, 99)
     assert ok3 is True
+
+    # GAP A1: two PostgreSQL datasources on DIFFERENT databases are the SAME
+    # dialect but NOT the same live connection → not executable, both named.
+    pg_other = _DS(3, "Shop PG 2", "postgresql"); pg_other.config = _cfg("src_shop2")
+    db4 = _DB([table(1, 1), table(2, 3)], [pg, pg_other])
+    labels4, ok4 = pub._live_execution_engines(db4, 99)
+    assert ok4 is False, "two PG databases must not look live-ready (runtime refuses the cross-connection join)"
+    assert len(labels4) == 2
+
+    # Two datasource RECORDS pointing at the SAME physical scope = one connection → executable.
+    pg_dup = _DS(4, "Shop PG (dup)", "postgresql"); pg_dup.config = _cfg("src_shop")
+    db5 = _DB([table(1, 1), table(2, 4)], [pg, pg_dup])
+    _, ok5 = pub._live_execution_engines(db5, 99)
+    assert ok5 is True, "duplicate records of the same physical DB are one connection"
 
 
 # ── M8 Filters/Public — a relative date preset is resolved at request time ───
