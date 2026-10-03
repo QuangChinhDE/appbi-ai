@@ -4868,7 +4868,10 @@ def list_datasource_tables(
         ]
     
     except Exception as e:
-        logger.error(f"Failed to list tables: {e}")
+        from app.services.source_errors import describe_source_error
+        # Log the SCRUBBED reason too — the raw driver error can echo a secret
+        # (a DSN with an inline password, a token in a URL). Never log the raw e.
+        logger.error("Failed to list tables (ds=%s): %s", datasource.id, describe_source_error(e, datasource.config))
         # The source's own reason (credential / permission / network / config),
         # as the create form shows it — never a bare 500 the picker reads as
         # "No tables found".

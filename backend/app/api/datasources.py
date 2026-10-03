@@ -646,8 +646,8 @@ def get_schema_browser(
         schemas = DataSourceConnectionService.get_schema_browser(ds.type.value, ds.config)
         return {"schemas": schemas}
     except Exception as e:
-        logger.error(f"Schema browser failed for ds {data_source_id}: {e}")
         from app.services.source_errors import describe_source_error
+        logger.error("Schema browser failed (ds=%s): %s", data_source_id, describe_source_error(e, ds.config))
 
         raise HTTPException(status_code=400, detail=(
             f"Không đọc được schema từ nguồn: {describe_source_error(e, ds.config)}"))

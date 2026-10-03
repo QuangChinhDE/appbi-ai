@@ -51,6 +51,41 @@ def test_an_empty_source_error_is_not_an_exception():
     assert describe_source_error(ValueError(), {}) == "ValueError"
 
 
+def test_source_error_redaction_survives_adversarial_secrets():
+    """Final closure A5 / Q8: a driver error must never expose a configured
+    credential — across password / token / API key / private key / SA JSON / DSN
+    params / a SHORT secret / an UNUSUAL secret-key name — while the actionable
+    reason (host, database, user) survives."""
+    cfg = {
+        "host": "db.example.com", "database": "sales", "username": "analyst",
+        "password": "P@ss",                         # short-ish
+        "app_pwd": "xyz",                           # 3-char, unusual key
+        "svc_credential": "unusual-key-cred-value",  # unusual key name
+        "api_token": "AKIA-SECRET-TOKEN-123456",
+        "service_account_json": {"private_key": "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----"},
+    }
+    leaky = (
+        "connect failed to host=db.example.com dbname=sales user=analyst "
+        "password=P@ss app_pwd=xyz cred=unusual-key-cred-value "
+        "token=AKIA-SECRET-TOKEN-123456 bearer eyJabc.def.ghi "
+        "key=-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----"
+    )
+    msg = describe_source_error(Exception(leaky), cfg)
+    for secret in ("P@ss", "xyz", "unusual-key-cred-value", "AKIA-SECRET-TOKEN-123456",
+                   "BEGIN PRIVATE KEY", "MIIB", "eyJabc.def.ghi"):
+        assert secret not in msg, f"leaked: {secret!r} in {msg!r}"
+    # the actionable parts stay
+    assert "db.example.com" in msg and "sales" in msg and "analyst" in msg
+
+
+def test_source_error_keeps_actionable_detail_not_over_redacted():
+    """Must not destroy source detail to make redaction easy: a non-secret key
+    whose name merely contains 'key' (schema_name, a key COLUMN) is not scrubbed."""
+    cfg = {"host": "h", "database": "d", "schema_name": "public", "key_column": "order_id"}
+    msg = describe_source_error(Exception('relation "public.orders" does not exist'), cfg)
+    assert "public.orders" in msg
+
+
 # ── M2 Dataset — a Query Table refuses anything that is not a read ───────────
 
 @pytest.mark.parametrize("sql", [
