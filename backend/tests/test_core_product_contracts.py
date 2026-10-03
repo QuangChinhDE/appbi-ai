@@ -345,37 +345,65 @@ def test_csv_export_quotes_specials_and_neutralizes_injection():
 # ── Codex re-verification — confirmed findings (durable regressions) ──────────
 
 def test_batch_chart_reads_keep_the_request_relative_date_anchor():
-    """APPBI-VERIFY-001: a batched page (public report / PDF) must resolve every
-    tile's relative preset against the request's X-AppBI-As-Of, not each worker
-    thread's own now(). The batch captures the anchor and re-applies it inside
-    each worker thread (ThreadPoolExecutor does not inherit contextvars)."""
-    import contextvars
-    from concurrent.futures import ThreadPoolExecutor
+    """APPBI-VERIFY-001 / R4: exercise the production single and batch methods.
+
+    The deterministic executor below stands in for the warehouse only. Thread
+    creation, SessionLocal lifecycle, anchor capture/re-application and calls to
+    ``ChartService.get_chart_data`` are the real production implementation. If
+    anchor propagation is removed from ``get_charts_data_batch``, its workers use
+    wall-clock today and this test returns zero instead of the fixture totals.
+    """
+    from datetime import date
+    import app.core.database as database_mod
+    from app.services.chart_service import ChartService
     from app.services.time_contract import (
-        set_report_anchor, reset_report_anchor, parse_anchor, get_report_anchor, current_report_date,
+        set_report_anchor, reset_report_anchor, parse_anchor,
     )
     from app.services.chart_contracts import compute_date_preset_range
 
-    # Baseline: a worker thread does NOT inherit the anchor (the bug's root).
-    tok = set_report_anchor(parse_anchor("2026-03-14T23:59:59Z"))
-    try:
-        anchor = get_report_anchor()
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            inherited = list(ex.map(lambda _: current_report_date().isoformat(), range(2)))
-        assert all(d != "2026-03-14" for d in inherited), "contextvar must NOT auto-cross threads"
+    rows = [
+        (date(2026, 3, 14), 10),
+        (date(2026, 3, 14), 20),
+        (date(2026, 3, 15), 30),
+        (date(2026, 3, 15), 40),
+    ]
 
-        # The batch's fix: capture on the request thread, re-apply inside the worker.
-        def worker(_):
-            t = set_report_anchor(anchor)
+    class _Session:
+        def close(self):
+            pass
+
+    original_inner = ChartService._get_chart_data_inner
+    original_session_local = database_mod.SessionLocal
+
+    def dated_executor(_db, chart_id, **_kwargs):
+        lo, hi = compute_date_preset_range("today")
+        total = sum(amount for day, amount in rows if lo <= day.isoformat() <= hi)
+        return {"chart_id": chart_id, "date_range": [lo, hi], "value": total}
+
+    ChartService._get_chart_data_inner = staticmethod(dated_executor)
+    database_mod.SessionLocal = _Session
+    try:
+        for anchor_text, expected in (
+            ("2026-03-14T23:59:59Z", 30),
+            ("2026-03-15T00:00:00Z", 70),
+        ):
+            token = set_report_anchor(parse_anchor(anchor_text))
             try:
-                return compute_date_preset_range("today")
+                single = ChartService.get_chart_data(_Session(), 101)
+                batch = ChartService.get_charts_data_batch(
+                    [{"chart_id": 101}, {"chart_id": 102}, {"chart_id": 103}],
+                    max_workers=3,
+                )
             finally:
-                reset_report_anchor(t)
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            results = list(ex.map(worker, range(3)))
-        assert results == [("2026-03-14", "2026-03-14")] * 3
+                reset_report_anchor(token)
+
+            assert single["value"] == expected
+            assert single["date_range"] == [anchor_text[:10], anchor_text[:10]]
+            assert [item["data"]["value"] for item in batch] == [expected] * 3
+            assert all(item["data"]["date_range"] == single["date_range"] for item in batch)
     finally:
-        reset_report_anchor(tok)
+        ChartService._get_chart_data_inner = original_inner
+        database_mod.SessionLocal = original_session_local
 
 
 def test_a_published_dataset_plan_construction_failure_fails_closed():
@@ -476,6 +504,150 @@ def test_source_error_redaction_is_central_not_per_endpoint():
     cfg = {"host": "h", "database": "d", "username": "u", "password": "topsecretpw123"}
     msg = describe_source_error('FATAL: dsn "host=h password=topsecretpw123" rejected', cfg)
     assert "topsecretpw123" not in msg and "h" in msg
+
+
+@pytest.mark.parametrize("provider", ["postgresql", "mysql", "bigquery", "google_sheets"])
+def test_datasource_connection_service_scrubs_returns_and_logs_at_the_real_boundary(
+    provider, monkeypatch, caplog,
+):
+    """R1: provider failures cross the actual production service boundary.
+
+    This deliberately patches the connector/driver, not ``describe_source_error``
+    or ``test_connection``. Restoring a raw log/return in the production dispatch
+    therefore makes this regression fail.
+    """
+    import logging
+    import app.services.datasource_service as mod
+
+    secrets = (
+        "pw-inline-closure-123",
+        "token-closure-opaque-123456789",
+        "BearerClosureToken123456",
+        "AIzaClosureApiKey123456789",
+        "SHORT",
+        "PRIVATE-CLOSURE-MARKER",
+    )
+    config = {
+        "host": "db.closure.invalid",
+        "database": "sales",
+        "username": "analyst",
+        "password": secrets[0],
+        "token": secrets[1],
+        "bearer_token": secrets[2],
+        "api_key": secrets[3],
+        "app_pwd": secrets[4],
+        "service_account_json": {
+            "private_key": (
+                "-----BEGIN PRIVATE KEY-----\n"
+                f"{secrets[5]}\n"
+                "-----END PRIVATE KEY-----"
+            )
+        },
+        "spreadsheet_id": "sheet-closure",
+        "project_id": "project-closure",
+    }
+    leaky = (
+        "authentication failed at host db.closure.invalid for database sales; "
+        f"dsn=postgresql://analyst:{secrets[0]}@db.closure.invalid/sales "
+        f"password={secrets[0]} token={secrets[1]} bearer {secrets[2]} "
+        f"api_key={secrets[3]} app_pwd={secrets[4]} "
+        "key=-----BEGIN PRIVATE KEY-----\n"
+        f"{secrets[5]}\n-----END PRIVATE KEY-----"
+    )
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(leaky)
+
+    if provider == "postgresql":
+        monkeypatch.setattr(mod.psycopg2, "connect", fail)
+    elif provider == "mysql":
+        monkeypatch.setattr(mod.pymysql, "connect", fail)
+    elif provider == "bigquery":
+        monkeypatch.setattr(mod, "_build_bigquery_client", fail)
+    else:
+        monkeypatch.setattr(mod, "create_google_sheets_connector", fail)
+
+    caplog.set_level(logging.ERROR, logger=mod.__name__)
+    success, message = mod.DataSourceConnectionService.test_connection(provider, config)
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+
+    assert success is False
+    assert "db.closure.invalid" in message and "authentication failed" in message
+    for secret in secrets:
+        assert secret not in message
+        assert secret not in log_text
+
+
+def test_bigquery_success_warning_is_scrubbed_before_service_return(monkeypatch):
+    """R1: a successful query plus failed metadata listing is still secret-safe."""
+    import app.services.datasource_service as mod
+
+    secret = "bq-warning-secret-closure-123456"
+    config = {
+        "project_id": "project-closure",
+        "default_dataset": "sales",
+        "password": secret,
+    }
+
+    class _Query:
+        def result(self):
+            return []
+
+    class _Client:
+        def query(self, _sql):
+            return _Query()
+
+        def list_tables(self, *_args, **_kwargs):
+            raise RuntimeError(
+                f"permission denied for dataset sales; password={secret}"
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod, "_build_bigquery_client", lambda _config: _Client())
+    success, message = mod.DataSourceConnectionService.test_connection("bigquery", config)
+
+    assert success is True
+    assert "could not list tables" in message
+    assert "dataset 'sales'" in message
+    assert secret not in message
+
+
+def test_datasource_test_api_receives_the_service_safe_message(monkeypatch, caplog):
+    """R1: the API boundary receives an already-safe production service result."""
+    import logging
+    import app.api.datasources as api
+    import app.services.datasource_service as mod
+    from app.schemas.schemas import DataSourceTestRequest, DataSourceTypeSchema
+
+    secret = "api-boundary-secret-closure-123456"
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(
+            f"authentication failed at db.closure.invalid; password={secret}"
+        )
+
+    monkeypatch.setattr(mod.psycopg2, "connect", fail)
+    caplog.set_level(logging.ERROR, logger=mod.__name__)
+    response = api.test_data_source_connection(
+        DataSourceTestRequest(
+            type=DataSourceTypeSchema.POSTGRESQL,
+            config={
+                "host": "db.closure.invalid",
+                "database": "sales",
+                "username": "analyst",
+                "password": secret,
+            },
+        ),
+        db=object(),
+        current_user=object(),
+    )
+
+    assert response.success is False
+    assert "authentication failed" in response.message
+    assert secret not in response.message
+    assert secret not in "\n".join(record.getMessage() for record in caplog.records)
 
 
 def test_datasource_test_endpoint_enforces_resource_access_before_rehydration():

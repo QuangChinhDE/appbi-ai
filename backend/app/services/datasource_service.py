@@ -634,25 +634,36 @@ class DataSourceConnectionService:
             Tuple of (success: bool, message: str)
         """
         from app.core.crypto import decrypt_config
+        from app.services.source_errors import describe_source_error
+
         config = decrypt_config(config)
         try:
             if ds_type == DataSourceType.POSTGRESQL.value:
-                return DataSourceConnectionService._test_postgresql(config)
+                success, message = DataSourceConnectionService._test_postgresql(config)
             elif ds_type == DataSourceType.MYSQL.value:
-                return DataSourceConnectionService._test_mysql(config)
+                success, message = DataSourceConnectionService._test_mysql(config)
             elif ds_type == DataSourceType.BIGQUERY.value:
-                return DataSourceConnectionService._test_bigquery(config)
+                success, message = DataSourceConnectionService._test_bigquery(config)
             elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
-                return DataSourceConnectionService._test_google_sheets(config)
+                success, message = DataSourceConnectionService._test_google_sheets(config)
             elif ds_type == DataSourceType.GOOGLE_DOCS.value:
-                return DataSourceConnectionService._test_google_docs(config)
+                success, message = DataSourceConnectionService._test_google_docs(config)
             elif ds_type == DataSourceType.MANUAL.value:
-                return DataSourceConnectionService._test_manual(config)
+                success, message = DataSourceConnectionService._test_manual(config)
             else:
                 return False, f"Unsupported data source type: {ds_type}"
+
+            # This is the shared boundary for every connection-test provider.
+            # Sanitize before either logging or returning, including successful
+            # tests that carry a metadata-listing warning.
+            safe_message = describe_source_error(message, config) if message else message
+            if not success:
+                logger.error("Connection test failed: %s", safe_message or "Unknown source error")
+            return success, safe_message
         except Exception as e:
-            logger.error(f"Connection test failed: {str(e)}")
-            return False, f"Connection failed: {str(e)}"
+            safe_error = describe_source_error(e, config)
+            logger.error("Connection test failed: %s", safe_error)
+            return False, f"Connection failed: {safe_error}"
     
     @staticmethod
     def _test_google_docs(config: Dict[str, Any]) -> Tuple[bool, str]:
