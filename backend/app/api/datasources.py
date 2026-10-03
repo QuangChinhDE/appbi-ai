@@ -67,9 +67,14 @@ def _validate_datasource_connection_or_raise(ds_type: str, config: dict[str, Any
     if success:
         return
 
+    # Central redaction: the driver message can echo a secret (an inline DSN
+    # password, a token in a URL). Scrub it the same way the browse endpoints do
+    # before it reaches the create/update API response.
+    from app.services.source_errors import describe_source_error
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail=message or "Connection failed",
+        detail=describe_source_error(message, config) if message else "Connection failed",
     )
 
 
@@ -522,9 +527,18 @@ def test_data_source_connection(
     # When editing an existing datasource, sensitive fields are cleared to ''
     # by the frontend (sanitizeConfigForForm strips the '__stored__' sentinel).
     # Re-fill them from the DB so the real (encrypted) credentials are used.
+    db_ds = None
     if request.data_source_id is not None:
         db_ds = DataSourceCRUDService.get_by_id(db, request.data_source_id)
-        if db_ds and db_ds.config:
+        if db_ds is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Data source not found")
+        # SECURITY: rehydrating THIS datasource's stored secrets requires resource
+        # access to it — module-level "view" is NOT enough. Without this, a user
+        # with no access to datasource A could pass its id + a caller-chosen host
+        # and have A's stored credentials rehydrated into a connection attempt
+        # (IDOR credential reuse). Checked BEFORE any secret is restored.
+        require_view_access(db, current_user, db_ds, "data_sources")
+        if db_ds.config:
             config = _restore_sensitive_config_fields(config, db_ds.config)
 
     config = _normalize_google_oauth_config(
@@ -537,6 +551,11 @@ def test_data_source_connection(
         request.type.value,
         config
     )
+    # Central redaction: never return a raw driver message that could carry a
+    # secret value to the client (the config holds this test's secrets).
+    if not success and message:
+        from app.services.source_errors import describe_source_error
+        message = describe_source_error(message, config)
     return DataSourceTestResponse(success=success, message=message)
 
 
