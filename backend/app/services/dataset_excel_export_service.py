@@ -9,9 +9,30 @@ from io import BytesIO
 from typing import Any, Callable, Mapping, Sequence
 
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 
 EXCEL_MAX_DATA_ROWS = 1_048_575
 _INVALID_SHEET_TITLE_RE = re.compile(r"[\\/*?:\[\]]")
+# Excel (and openpyxl) treats a string starting with one of these as a FORMULA.
+# Source text like "=SUM(A1)" must stay literal text, not become a live formula
+# (formula injection / silent corruption). See _formula_safe_cell.
+_FORMULA_TRIGGERS = ("=", "+", "-", "@")
+
+
+def _formula_safe_cell(ws, value):
+    """Wrap a value for append. A string that looks like a formula is forced to a
+    text cell (data_type 's' + quotePrefix) so Excel shows it literally instead of
+    evaluating it; everything else is appended as-is (numbers stay numeric, dates
+    stay dates)."""
+    if isinstance(value, str) and value[:1] in _FORMULA_TRIGGERS:
+        cell = WriteOnlyCell(ws, value=value)
+        cell.data_type = "s"
+        try:
+            cell.quotePrefix = True   # Excel shows it as text, no visible apostrophe
+        except Exception:
+            pass
+        return cell
+    return value
 
 
 @dataclass
@@ -109,7 +130,9 @@ def export_dataset_table_to_excel(
             break
 
         for row in page_rows:
-            worksheet.append(_row_to_excel_values(row, columns))
+            worksheet.append(
+                [_formula_safe_cell(worksheet, v) for v in _row_to_excel_values(row, columns)]
+            )
             rows_written += 1
             if rows_written >= max_rows:
                 truncated = True
