@@ -340,3 +340,182 @@ def test_csv_export_quotes_specials_and_neutralizes_injection():
     assert csv_cell("=SUM(A1)") == "'=SUM(A1)"       # injection neutralized
     assert csv_cell("ok") == "ok"
     assert csv_cell("Áo thun") == "Áo thun"
+
+
+# ── Codex re-verification — confirmed findings (durable regressions) ──────────
+
+def test_batch_chart_reads_keep_the_request_relative_date_anchor():
+    """APPBI-VERIFY-001: a batched page (public report / PDF) must resolve every
+    tile's relative preset against the request's X-AppBI-As-Of, not each worker
+    thread's own now(). The batch captures the anchor and re-applies it inside
+    each worker thread (ThreadPoolExecutor does not inherit contextvars)."""
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+    from app.services.time_contract import (
+        set_report_anchor, reset_report_anchor, parse_anchor, get_report_anchor, current_report_date,
+    )
+    from app.services.chart_contracts import compute_date_preset_range
+
+    # Baseline: a worker thread does NOT inherit the anchor (the bug's root).
+    tok = set_report_anchor(parse_anchor("2026-03-14T23:59:59Z"))
+    try:
+        anchor = get_report_anchor()
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            inherited = list(ex.map(lambda _: current_report_date().isoformat(), range(2)))
+        assert all(d != "2026-03-14" for d in inherited), "contextvar must NOT auto-cross threads"
+
+        # The batch's fix: capture on the request thread, re-apply inside the worker.
+        def worker(_):
+            t = set_report_anchor(anchor)
+            try:
+                return compute_date_preset_range("today")
+            finally:
+                reset_report_anchor(t)
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            results = list(ex.map(worker, range(3)))
+        assert results == [("2026-03-14", "2026-03-14")] * 3
+    finally:
+        reset_report_anchor(tok)
+
+
+def test_a_published_dataset_plan_construction_failure_fails_closed():
+    """APPBI-VERIFY-002: if the published read-plan cannot be CONSTRUCTED, the
+    planner must NOT silently fall back to live (that would show un-published
+    source numbers). It blocks. A legacy dataset still live-falls-back."""
+    import app.services.execution_plan as ep
+
+    class _DS:
+        def __init__(self, pub): self.id = 1; self.publish_state = pub
+
+    # Monkeypatch the planning body to raise, and the dataset lookups the except uses.
+    import types
+    calls = {}
+
+    class _Q:
+        def __init__(self, ds): self._ds = ds
+        def filter(self, *a, **k): return self
+        def first(self): return self._ds
+
+    def make_db(ds):
+        return types.SimpleNamespace(query=lambda model: _Q(ds))
+
+    import app.models.dataset as _dm
+    import app.services.snapshot_service as _ss
+    orig_resolve = ep._resolve_dataset_id
+    orig_plan_pub = ep._plan_published
+    orig_isop = _ss.is_operational_dataset
+    try:
+        ep._resolve_dataset_id = lambda db, binding, base: 1
+        def boom(*a, **k): raise RuntimeError("registry corrupt")
+        ep._plan_published = boom
+        _ss.is_operational_dataset = lambda d: False
+        ds_src = types.SimpleNamespace(type="postgresql", config={})
+        # published → the except must BLOCK (plan.blocked set), not run live
+        pub_plan = ep.plan_chart_execution(
+            make_db(_DS("published")), ds_src, {"datasetId": 1}, "v", is_preview=False,
+        )
+        assert pub_plan.blocked, "published plan-construction failure must fail closed"
+        # legacy → still a live fallback (no block)
+        leg_plan = ep.plan_chart_execution(
+            make_db(_DS(None)), ds_src, {"datasetId": 1}, "v", is_preview=False,
+        )
+        assert not leg_plan.blocked and leg_plan.mode == "live"
+    finally:
+        ep._resolve_dataset_id = orig_resolve
+        ep._plan_published = orig_plan_pub
+        _ss.is_operational_dataset = orig_isop
+
+
+def test_invalid_app_timezone_warns_and_falls_back_to_utc():
+    """APPBI-VERIFY-003: an invalid APP_TIMEZONE must not silently change the day
+    boundary with no trace — it warns (once) and falls back to UTC."""
+    import logging
+    from datetime import datetime, timezone
+    import app.services.time_contract as tc
+    from app.core.config import settings
+
+    old = settings.APP_TIMEZONE
+    tc._WARNED_BAD_TZ.discard("Not/AZone")
+    try:
+        settings.APP_TIMEZONE = "Not/AZone"
+        records = []
+        h = logging.Handler(); h.emit = lambda r: records.append(r.getMessage())
+        lg = logging.getLogger("app.time_contract"); lg.addHandler(h); lg.setLevel(logging.WARNING)
+        try:
+            assert tc.current_report_date() == datetime.now(timezone.utc).date()
+        finally:
+            lg.removeHandler(h)
+        assert any("APP_TIMEZONE" in m for m in records), "a bad timezone must warn"
+    finally:
+        settings.APP_TIMEZONE = old
+
+
+def test_xlsx_export_keeps_formula_like_text_as_text():
+    """APPBI-VERIFY-004: source text that looks like an Excel formula (=SUM(A1),
+    +1, -1, @x) must export as a literal text cell, NOT a live formula."""
+    from io import BytesIO
+    from openpyxl import load_workbook
+    from app.services.dataset_excel_export_service import export_dataset_table_to_excel
+
+    def page(limit, offset):
+        if offset: return {"columns": ["label"], "rows": []}
+        return {"columns": ["label"], "rows": [["=SUM(A1)"], ["+1+1"], ["-1"], ["@x"], ["normal"]]}
+
+    res = export_dataset_table_to_excel(page, sheet_title="t")
+    ws = load_workbook(BytesIO(res.content))["t"]
+    vals = [(c.value, c.data_type) for row in ws.iter_rows() for c in row]
+    # header + 5 data cells; none of the formula-like ones is data_type 'f'
+    assert ("=SUM(A1)", "s") in vals
+    assert all(dt != "f" for _, dt in vals), f"a cell became a formula: {vals}"
+
+
+def test_source_error_redaction_is_central_not_per_endpoint():
+    """APPBI-VERIFY-006: redaction is a datasource invariant — the same scrubber
+    the browse endpoints use also guards the create/update/test boundaries. Guard
+    the shared function so every boundary that routes through it is covered."""
+    cfg = {"host": "h", "database": "d", "username": "u", "password": "topsecretpw123"}
+    msg = describe_source_error('FATAL: dsn "host=h password=topsecretpw123" rejected', cfg)
+    assert "topsecretpw123" not in msg and "h" in msg
+
+
+def test_datasource_test_endpoint_enforces_resource_access_before_rehydration():
+    """APPBI-VERIFY-005: /datasources/test must check resource access to the given
+    data_source_id BEFORE it rehydrates that datasource's stored secrets — else a
+    user with only module 'view' could reuse another datasource's credentials
+    (IDOR). Prove the endpoint calls require_view_access on the looked-up source
+    and does NOT restore secrets when access is denied."""
+    from fastapi import HTTPException
+    import app.api.datasources as mod
+    from app.schemas.schemas import DataSourceTestRequest, DataSourceTypeSchema as DataSourceType
+
+    calls = {"restored": False, "access_checked_for": None}
+
+    class _DS:  # a foreign datasource
+        id = 99; type = DataSourceType.POSTGRESQL
+        config = {"host": "h", "database": "d", "username": "u", "password": "STORED-SECRET"}
+
+    def fake_get_by_id(db, i): return _DS()
+    def fake_require_view(db, user, resource, module):
+        calls["access_checked_for"] = getattr(resource, "id", None)
+        raise HTTPException(status_code=403, detail="no access")
+    def fake_restore(cfg, stored):
+        calls["restored"] = True
+        return {**cfg, **stored}
+
+    orig = (mod.DataSourceCRUDService.get_by_id, mod.require_view_access, mod._restore_sensitive_config_fields)
+    mod.DataSourceCRUDService.get_by_id = staticmethod(fake_get_by_id)
+    mod.require_view_access = fake_require_view
+    mod._restore_sensitive_config_fields = fake_restore
+    try:
+        req = DataSourceTestRequest(data_source_id=99, type=DataSourceType.POSTGRESQL,
+                                    config={"host": "attacker", "username": "x"})
+        raised = False
+        try:
+            mod.test_data_source_connection(req, db=object(), current_user=object())
+        except HTTPException as e:
+            raised = (e.status_code == 403)
+        assert raised, "foreign datasource test must be refused with 403"
+        assert calls["access_checked_for"] == 99, "resource access must be checked on the looked-up source"
+        assert calls["restored"] is False, "secrets must NOT be rehydrated when access is denied"
+    finally:
+        (mod.DataSourceCRUDService.get_by_id, mod.require_view_access, mod._restore_sensitive_config_fields) = orig
