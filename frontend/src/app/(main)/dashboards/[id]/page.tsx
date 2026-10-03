@@ -392,6 +392,17 @@ function DashboardDetailPageInner() {
   const hasAnyPendingChanges = hasLocalLayoutChanges || Boolean(serverDashboard?.has_draft) || Boolean(pendingThemeConfig);
   /** Unsaved = not yet in the server draft: local layout edits or a theme. */
   const hasUnsavedPresentation = hasLocalLayoutChanges || Boolean(pendingThemeConfig);
+  // Mirror into a ref so the (mount-only) beforeunload handler and the Back link
+  // see the current value — an unsaved theme/layout must warn before leaving.
+  const unsavedPresentationRef = React.useRef(false);
+  React.useEffect(() => { unsavedPresentationRef.current = hasUnsavedPresentation; }, [hasUnsavedPresentation]);
+  /** Confirm before discarding an unsaved theme/layout edit on navigation.
+   *  Returns true when it is safe to leave. */
+  const confirmLeaveIfUnsaved = React.useCallback((): boolean => {
+    if (!unsavedPresentationRef.current) return true;
+    return window.confirm(t('dashboards.detail.unsavedLeaveConfirm'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   /** True for the WHOLE save (layout, then theme, then filters) — not just the
    *  layout request — so the controls never report "saved" half-way through. */
   const [isStagingDraft, setIsStagingDraft] = useState(false);
@@ -1113,7 +1124,8 @@ function DashboardDetailPageInner() {
   // Leaving the page with an unsent edit asks first.
   React.useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (pendingContentSaveRef.current?.hasPending() || inflightContentSavesRef.current.size > 0) {
+      if (pendingContentSaveRef.current?.hasPending() || inflightContentSavesRef.current.size > 0
+          || unsavedPresentationRef.current) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -3967,6 +3979,7 @@ function DashboardDetailPageInner() {
             {/* Back */}
             <Link
               href="/dashboards"
+              onClick={(e) => { if (!confirmLeaveIfUnsaved()) e.preventDefault(); }}
               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-secondary"
               title={t('dashboards.detail.backToDashboards')}
             >
