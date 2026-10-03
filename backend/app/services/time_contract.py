@@ -38,6 +38,7 @@ def utc_iso(dt: Any) -> Optional[str]:
 _report_anchor: contextvars.ContextVar[Optional[datetime]] = contextvars.ContextVar(
     "appbi_report_anchor", default=None
 )
+_WARNED_BAD_TZ: set = set()
 
 
 def _app_tz():
@@ -52,6 +53,20 @@ def _app_tz():
         from zoneinfo import ZoneInfo
         return ZoneInfo(name)
     except Exception:
+        # An invalid APP_TIMEZONE must not silently change the day boundary with
+        # no trace: warn (once per bad value) so a misconfiguration is visible,
+        # then fall back to the safe UTC default.
+        if name not in _WARNED_BAD_TZ:
+            _WARNED_BAD_TZ.add(name)
+            try:
+                import logging
+                logging.getLogger("app.time_contract").warning(
+                    "APP_TIMEZONE=%r is not a valid IANA timezone; relative dates "
+                    "resolve in UTC. Set a valid zone (e.g. 'UTC', 'Asia/Ho_Chi_Minh').",
+                    name,
+                )
+            except Exception:
+                pass
         return timezone.utc
 
 
@@ -59,6 +74,12 @@ def set_report_anchor(dt: Optional[datetime]):
     """Set the current request's report-read anchor (an aware instant). Returns
     the contextvar token so a dependency can reset it after the request."""
     return _report_anchor.set(dt)
+
+
+def get_report_anchor() -> Optional[datetime]:
+    """The current request's anchor, or None. Captured on the request thread and
+    re-applied inside batch worker threads (which do not inherit contextvars)."""
+    return _report_anchor.get()
 
 
 def reset_report_anchor(token) -> None:

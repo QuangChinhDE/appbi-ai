@@ -480,6 +480,30 @@ def plan_chart_execution(
         )
     except Exception:  # noqa: BLE001 — planning must NEVER break a chart
         logger.warning("[exec-plan] planning failed; falling back to live", exc_info=True)
+        # Fail-CLOSED for a PUBLISHED dataset. The published contract (Pair #5) is
+        # "served ONLY from the pinned published generation — never live". If the
+        # published plan cannot be CONSTRUCTED (not just executed), a silent live
+        # fallback would show un-published source numbers under a published
+        # intent. Block with a clear message instead, mirroring the execution-time
+        # refusal. A LEGACY (publish_state NULL) dataset keeps the live fallback.
+        try:
+            ds_id = _resolve_dataset_id(db, binding, base_view_name)
+            if ds_id and not is_preview:
+                from app.models.dataset import Dataset as _Dataset
+                from app.services import snapshot_service as _ss
+                _d = db.query(_Dataset).filter(_Dataset.id == ds_id).first()
+                if (_d is not None and getattr(_d, "publish_state", None) is not None
+                        and not _ss.is_operational_dataset(_d)):
+                    return live(
+                        "planner error on a PUBLISHED dataset → blocked (no live fallback)",
+                        dataset_id=ds_id,
+                        blocked="Không lập được kế hoạch đọc snapshot đã phát hành của Dataset "
+                        "(có thể cấu hình/registry lỗi). Dashboard không tự chạy trực tiếp (live) "
+                        "để tránh hiển thị số liệu chưa được phát hành — vào Dataset bấm "
+                        "“Sync & Publish” để dựng lại.",
+                    )
+        except Exception:  # noqa: BLE001 — never break the block decision
+            pass
         # Issue #5: fail-CLOSED for mixed-engine datasets. A silent live fallback
         # on a dataset that spans >1 engine would generate cross-engine SQL and
         # leak one dialect into another. Cheap re-probe of the engine span; if

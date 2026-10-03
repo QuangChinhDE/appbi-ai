@@ -4550,16 +4550,23 @@ class ChartService:
         from concurrent.futures import ThreadPoolExecutor
         from app.core.database import SessionLocal
         from app.services.execution_plan import ReadScope, current_read_scope, read_scope
+        from app.services.time_contract import get_report_anchor, set_report_anchor, reset_report_anchor
 
         # ONE batch = ONE logical read: every tile of a dataset is served the same
         # snapshot generation (execution_plan.ReadScope) — a publish landing
         # mid-batch never splits the page across N and N+1. Worker threads do not
         # inherit context variables, so the scope is handed to each explicitly.
         _scope = current_read_scope() or ReadScope()
+        # Same reason for the relative-date anchor: a batched page (e.g. the public
+        # report, or a PDF export) must resolve every tile's preset against the
+        # request's X-AppBI-As-Of, not each worker thread's own now(). Captured
+        # here on the request thread; re-applied inside each worker.
+        _anchor = get_report_anchor()
 
         def _one(item: dict) -> dict:
             cid = int(item["chart_id"])
             local_db = SessionLocal()
+            _anchor_tok = set_report_anchor(_anchor)
             try:
                 with read_scope(_scope):
                     data = ChartService.get_chart_data(
@@ -4586,6 +4593,7 @@ class ChartService:
                     "error": f"Failed to retrieve chart data: {exc}",
                 }
             finally:
+                reset_report_anchor(_anchor_tok)
                 local_db.close()
 
         # Bound concurrency: a big page must not open dozens of warehouse
