@@ -4,7 +4,7 @@ import { sectionTitlesOf } from '@/lib/report-meta';
 import { stampReportAnchor } from '@/lib/report-anchor';
 import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useIsStudioPreview, isStudioMessage, studioFrameId, type StudioMessage, type StudioPreviewState } from '@/lib/studio/preview-mode';
 import { StudioPreview } from '@/components/dashboards/StudioPreview';
 import { pendingWork } from '@/lib/dashboard-presentation/vision-review';
@@ -249,6 +249,7 @@ function stripUndefined<T extends Record<string, any>>(value: T): T {
 function DashboardDetailPageInner() {
   const { t, locale } = useI18n();
   const params = useParams();
+  const router = useRouter();
   const dashboardId = Number(params.id);
 
   // One relative-date anchor for every tile of this report read (stamped during
@@ -396,6 +397,10 @@ function DashboardDetailPageInner() {
   // see the current value — an unsaved theme/layout must warn before leaving.
   const unsavedPresentationRef = React.useRef(false);
   React.useEffect(() => { unsavedPresentationRef.current = hasUnsavedPresentation; }, [hasUnsavedPresentation]);
+  const leaveGuardEntryRef = React.useRef(false);
+  const leaveGuardBypassPopRef = React.useRef(false);
+  const leaveGuardUrlRef = React.useRef('');
+  const leaveGuardKeyRef = React.useRef(`appbi-dashboard-${dashboardId}`);
   /** Confirm before discarding an unsaved theme/layout edit on navigation.
    *  Returns true when it is safe to leave. */
   const confirmLeaveIfUnsaved = React.useCallback((): boolean => {
@@ -1121,7 +1126,11 @@ function DashboardDetailPageInner() {
     return ok;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // Leaving the page with an unsent edit asks first.
+  // Leaving the page with an unsent edit asks first. Next's SPA links do not
+  // emit beforeunload, so capture same-origin anchors as one shared boundary
+  // (sidebar, header and Dashboard-to-Dashboard links). A duplicate history
+  // entry lets browser Back ask *before* Next leaves this mounted editor; on
+  // cancel we restore the guard entry, preserving the local edit itself.
   React.useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (pendingContentSaveRef.current?.hasPending() || inflightContentSavesRef.current.size > 0
@@ -1130,9 +1139,83 @@ function DashboardDetailPageInner() {
         e.returnValue = '';
       }
     };
+    const onDocumentClick = (e: MouseEvent) => {
+      if (!unsavedPresentationRef.current || e.defaultPrevented || e.button !== 0
+          || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const anchor = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+      if (!anchor || anchor.target === '_blank' || anchor.hasAttribute('download')) return;
+      const url = new URL(anchor.href, window.location.href);
+      if (url.origin !== window.location.origin || url.href === window.location.href) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      if (!confirmLeaveIfUnsaved()) return;
+
+      const nextHref = `${url.pathname}${url.search}${url.hash}`;
+      if (leaveGuardEntryRef.current) {
+        // Replace the duplicate same-URL guard entry with the accepted target.
+        // Going back first and routing from popstate races Next's own history
+        // listener; replacing is atomic and leaves exactly one editor entry.
+        leaveGuardEntryRef.current = false;
+        router.replace(nextHref);
+      } else {
+        router.push(nextHref);
+      }
+    };
+    const onPopState = () => {
+      if (leaveGuardBypassPopRef.current) {
+        leaveGuardBypassPopRef.current = false;
+        leaveGuardEntryRef.current = false;
+        return;
+      }
+      if (!unsavedPresentationRef.current) return;
+
+      // The first Back only removed our same-URL guard entry. Confirm now; a
+      // second Back performs the user's requested navigation when accepted.
+      if (confirmLeaveIfUnsaved()) {
+        leaveGuardBypassPopRef.current = true;
+        leaveGuardEntryRef.current = false;
+        window.history.back();
+      } else {
+        window.history.pushState(
+          { ...window.history.state, __appbiDashboardLeaveGuard: leaveGuardKeyRef.current },
+          '',
+          leaveGuardUrlRef.current || window.location.href,
+        );
+        leaveGuardEntryRef.current = true;
+      }
+    };
     window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, []);
+    window.addEventListener('popstate', onPopState);
+    document.addEventListener('click', onDocumentClick, true);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('popstate', onPopState);
+      document.removeEventListener('click', onDocumentClick, true);
+    };
+  }, [confirmLeaveIfUnsaved, router]);
+
+  React.useEffect(() => {
+    if (hasUnsavedPresentation && !leaveGuardEntryRef.current) {
+      leaveGuardUrlRef.current = window.location.href;
+      window.history.pushState(
+        { ...window.history.state, __appbiDashboardLeaveGuard: leaveGuardKeyRef.current },
+        '',
+        leaveGuardUrlRef.current,
+      );
+      leaveGuardEntryRef.current = true;
+      return;
+    }
+    if (!hasUnsavedPresentation && leaveGuardEntryRef.current) {
+      // Save/Publish removed the dirty state. Remove the duplicate same-URL
+      // guard entry so later clean navigation has normal history and no prompt.
+      if (window.history.state?.__appbiDashboardLeaveGuard === leaveGuardKeyRef.current) {
+        leaveGuardBypassPopRef.current = true;
+        window.history.back();
+      }
+      leaveGuardEntryRef.current = false;
+    }
+  }, [hasUnsavedPresentation]);
   // The builder header's real height. It wraps to a second row when a draft's
   // actions and the tools do not fit on one; the overlays (AI Design, the
   // Inspector) sit below it, never over its second row.
@@ -3979,7 +4062,6 @@ function DashboardDetailPageInner() {
             {/* Back */}
             <Link
               href="/dashboards"
-              onClick={(e) => { if (!confirmLeaveIfUnsaved()) e.preventDefault(); }}
               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-secondary"
               title={t('dashboards.detail.backToDashboards')}
             >
