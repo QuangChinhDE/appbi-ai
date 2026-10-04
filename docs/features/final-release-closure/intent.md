@@ -1,6 +1,6 @@
 # Final release closure — intent
 
-**Status:** approved — implementation and verification in progress  
+**Status:** implementation and local verification complete — independent verification pending  
 **Owner:** Codex  
 **Date:** 2026-10-03
 

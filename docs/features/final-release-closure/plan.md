@@ -1,6 +1,6 @@
 # Final release closure — implementation plan
 
-**Status:** approved — implementation and verification in progress
+**Status:** implementation and local verification complete — independent verification pending
 
 ## Guardrail scoping
 
