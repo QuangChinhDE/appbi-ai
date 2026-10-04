@@ -124,10 +124,10 @@ const PDF_PARSER = [
   '    out["text"] += page.get_text() + "\\n"',
   '    for b in page.get_text("dict")["blocks"]:',
   '        for l in b.get("lines", []):',
-  '            for s in l["spans"]:',
-  '                t = s["text"].strip()',
-  '                if re.fullmatch(r"8[.,]0B|920|1[.,]6B|0[.,]2", t):',
-  '                    out["spans"].append({"page": pi, "text": t, "bbox": s["bbox"], "size": s["size"]})',
+  '            # A value can be split across spans ("8.0" + "B"): match the line.',
+  '            t = "".join(s["text"] for s in l["spans"]).strip()',
+  '            if l["spans"] and re.fullmatch(r"8[.,]0B|920|1[.,]6B|0[.,]2", t):',
+  '                out["spans"].append({"page": pi, "text": t, "bbox": l["bbox"], "size": max(s["size"] for s in l["spans"])})',
   'print(json.dumps(out, ensure_ascii=False))',
 ].join('\n');
 
@@ -175,10 +175,13 @@ for (const orientation of ['landscape', 'portrait']) {
     expect(Math.max(...steps) - Math.min(...steps), `uneven KPI columns: ${steps}`).toBeLessThanOrEqual(2);
 
     // "Keep dashboard layout" promises every row AND every column.
-    for (const header of ['sales_', 'profit_', 'customer_']) expect(pdf.text).toContain(header);
-    expect(pdf.text).toContain('Nhân viên 4'); // row 40's owner (40 % 6 = 4)
-    const ids = pdf.text.split('\n').map((l) => l.trim()).filter((l) => /^\d{1,2}$/.test(l)).map(Number);
-    expect(ids).toEqual(expect.arrayContaining([1, 20, 39, 40]));
+    // The text layer can be letter-spaced, so compare with whitespace removed.
+    const compact = pdf.text.replace(/\s+/g, '');
+    for (const header of ['sales_owner', 'profit_vnd', 'customer_acquisition_channel']) expect(compact).toContain(header);
+    // Revenue is unique per row (125,000,000 + i × 3,711,000): rows 1, 20 and 40 print.
+    expect(compact).toContain('128711000.00');
+    expect(compact).toContain('199220000.00');
+    expect(compact).toContain('273440000.00');
   });
 }
 

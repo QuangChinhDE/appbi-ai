@@ -2298,6 +2298,13 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       >
         <ExportModeContext.Provider value={printRenderMode}>
           <main className="w-full px-3 py-2" data-pdf-root="1">
+            {printRenderMode === 'full' && (
+              // Paper repeats a table's header on every sheet, so a paginated
+              // table needs MORE height than its on-screen layout gave its
+              // (overflow-hidden) tile — which then clipped the last rows of a
+              // full-data export. Inside a growable band nothing may clip.
+              <style>{'[data-print-growable="1"] * { overflow: visible !important; }'}</style>
+            )}
             <section ref={gridSectionRef}>
               {printBands.map((band, bandIndex) => {
                 const rowH = dashboardRowHeight(rowGap);
