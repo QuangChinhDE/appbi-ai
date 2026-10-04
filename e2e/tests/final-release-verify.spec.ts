@@ -214,3 +214,30 @@ test('pending Inspector content is saved before leaving; a failed save keeps the
     await request.delete(`${API}/api/v1/dashboards/${id}`);
   }
 });
+
+test('an un-applied filter edit is guarded on leave; Reset makes leaving clean', async ({ page, request }) => {
+  test.setTimeout(90_000);
+  const id = await dashboardIdByName(request, 'E2E closure original 007');
+  await page.goto(`/dashboards/${id}`);
+  await expect(tile(page, 'E2E 007 A Total')).toContainText('610', { timeout: 60_000 });
+  await page.getByRole('button', { name: 'Filters', exact: true }).first().click();
+  await page.getByRole('button', { name: /Filters on this page/ }).first().click();
+  const applyPage = page.getByRole('button', { name: /Apply this page/ });
+  await expect(applyPage).toBeDisabled();
+
+  // A draft edit that Apply would persist to the dashboard draft.
+  await page.locator('select').filter({ has: page.locator('option', { hasText: 'Show' }) }).first().selectOption({ index: 1 });
+  await expect(applyPage).toBeEnabled();
+
+  await handleDialogWhile(page, () => page.getByRole('link', { name: /Datasets/i }).first().click(), 'dismiss');
+  await expect(page).toHaveURL(new RegExp(`/dashboards/${id}`));
+  await expect(applyPage).toBeEnabled(); // the edit is still there
+
+  await page.getByRole('button', { name: 'Reset', exact: true }).click();
+  await expect(applyPage).toBeDisabled();
+  let dialogs = 0;
+  page.on('dialog', d => { dialogs += 1; void d.dismiss(); });
+  await page.getByRole('link', { name: /Datasets/i }).first().click();
+  await expect(page).toHaveURL(/\/datasets(?:\?|$)/, { timeout: 15_000 });
+  expect(dialogs).toBe(0);
+});
