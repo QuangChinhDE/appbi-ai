@@ -864,6 +864,31 @@ def compute_workboard_audit(db: Session, wb: Workboard) -> dict[str, Any]:
             dash_id = dash_spec.get("dashboard_id") if isinstance(dash_spec, dict) else None
             if isinstance(dash_id, int):
                 referenced_dashboard_ids.add(int(dash_id))
+    # Manual-mode screens paste a raw public token. It must name an ACTIVE user
+    # public link: the legacy Dashboard.share_token authority is retired, and a
+    # managed embed link's token is never served on its own. A token that does
+    # not resolve is surfaced here (publish gate) instead of as a blank iframe.
+    manual_tokens: set[str] = set()
+    for screen in screens_iter:
+        if screen.get("kind") == "dashboard":
+            dash_spec = screen.get("dashboard") or {}
+            if isinstance(dash_spec, dict) and dash_spec.get("dashboard_id") is None:
+                tok = str(dash_spec.get("share_token") or "").strip()
+                if tok:
+                    manual_tokens.add(tok)
+    live_manual_tokens: set[str] = set()
+    if manual_tokens:
+        from app.models.models import DashboardPublicLink as _PublicLink
+        live_manual_tokens = {
+            str(row[0])
+            for row in db.query(_PublicLink.token)
+            .filter(
+                _PublicLink.token.in_(manual_tokens),
+                _PublicLink.is_active == True,  # noqa: E712
+                _PublicLink.source != "embed_api",
+            )
+            .all()
+        }
     existing_dashboard_ids: set[int] = set()
     if referenced_dashboard_ids:
         existing_dashboard_ids = {
@@ -1167,6 +1192,18 @@ def compute_workboard_audit(db: Session, wb: Workboard) -> dict[str, Any]:
                     severity="error",
                     code="dashboard_unbound",
                     detail="Dashboard screen has neither dashboard_id nor share_token.",
+                    screen=screen,
+                )
+            elif dash_id is None and str(share_token or "").strip() not in live_manual_tokens:
+                _add(
+                    severity="error",
+                    code="dashboard_token_unresolved",
+                    detail=(
+                        "The pasted dashboard token is not an active public link "
+                        "(revoked, deleted, or a retired legacy share token). "
+                        "Create a public link on the dashboard and paste its token, "
+                        "or bind the screen to the dashboard directly."
+                    ),
                     screen=screen,
                 )
             elif isinstance(dash_id, int) and int(dash_id) not in existing_dashboard_ids:

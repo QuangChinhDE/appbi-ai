@@ -161,6 +161,14 @@ print("DEBUG: CORS middleware added")
 # Compress responses > 1 KB — chart data payloads shrink ~10× with gzip.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+# Client address for every rate limit: forwarded headers are honoured from our
+# own proxies only, counting hops from the right (app/core/trusted_proxy.py).
+# Replaces uvicorn's `--forwarded-allow-ips="*"`, which took the client-written
+# leftmost X-Forwarded-For entry and let a viewer pick its own rate-limit key.
+from app.core.trusted_proxy import TrustedProxyMiddleware  # noqa: E402
+
+app.add_middleware(TrustedProxyMiddleware)
+
 
 @app.middleware("http")
 async def _report_read_anchor(request, call_next):

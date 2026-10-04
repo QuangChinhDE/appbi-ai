@@ -192,7 +192,11 @@ class Dashboard(Base):
     # Ownership
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
-    # Public link sharing — null means not shared
+    # RETIRED legacy public token. Nothing reads or writes it: the public
+    # resolver's fallback to it was removed and migration 20261004_0001 nulled
+    # every value (each one had been copied into a DashboardPublicLink by 0019,
+    # and the surviving copy is what let a revoked link keep serving). Kept only
+    # so the schema change stays additive; drop it in a later migration.
     share_token = Column(String(64), nullable=True, unique=True, index=True)
     public_filters_config = Column(JSON, nullable=True, default=list)
 
@@ -263,8 +267,15 @@ class DashboardPublicLink(Base):
     # Security & governance
     expires_at = Column(DateTime(timezone=True), nullable=True)  # null = never expires
     password_hash = Column(String(255), nullable=True)  # optional password protection
-    max_access_count = Column(Integer, nullable=True)  # null = unlimited
-    allowed_ips = Column(JSON, nullable=True, default=list)  # optional IP allowlist
+    # Security generation. Bumped by every security-changing edit (password
+    # set/changed/cleared, active toggled, expiry changed); a password session
+    # JWT carries the generation it was minted at and stops verifying once it
+    # moves. See public._create_public_session.
+    auth_version = Column(Integer, nullable=False, default=0, server_default="0")
+    # `max_access_count` and `allowed_ips` columns still exist in the table but
+    # are RETIRED (migration 20261004_0001): neither had a way to be set, the
+    # IP list was never enforced, and a page-load cap is not a meaningful limit
+    # on a bearer URL whose data endpoints it never counted.
 
     # Tracking
     access_count = Column(Integer, nullable=False, default=0)

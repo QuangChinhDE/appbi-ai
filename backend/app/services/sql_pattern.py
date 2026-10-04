@@ -13,13 +13,22 @@ value's `%` and `_` are literal by construction. Case sensitivity is the same as
 LIKE's on both engines, and a NULL column still matches nothing (both NOT LIKE
 and `STRPOS(...) = 0` are NULL for a NULL input).
 
-The value is quoted by the CALLER's own string-literal function, so each builder
-keeps exactly the literal escaping it already had; this module changes only the
-predicate's shape.
+Quoting is NOT delegated: every literal here goes through the canonical,
+dialect-aware `app.services.sql_literal.quote_string` (a backslash escapes inside
+BigQuery and MySQL strings, so the old per-builder quote-doubling let a value
+ending in a backslash end the string early). The `quote` argument is kept for
+call-site compatibility and ignored.
+
+For LIKE engines the pattern escapes its own escape character (backslash)
+first, so a backslash the viewer typed is matched literally too, and the ESCAPE
+clause is itself a dialect-quoted literal: one backslash on Postgres/DuckDB, two
+on MySQL, where a lone backslash inside quotes would be an unterminated string.
 """
 from __future__ import annotations
 
 from typing import Callable
+
+from app.services.sql_literal import quote_string
 
 PATTERN_OPERATORS = frozenset({"like", "contains", "not_contains", "starts_with", "ends_with"})
 
@@ -43,7 +52,7 @@ def pattern_predicate(
                 return f"({expr} IS NOT NULL)"
             if operator == "not_contains":
                 return "FALSE"
-        lit = quote(text)
+        lit = quote_string(text, dialect)
         if operator in ("like", "contains"):
             return f"STRPOS({expr}, {lit}) > 0"
         if operator == "not_contains":
@@ -53,16 +62,22 @@ def pattern_predicate(
         if operator == "ends_with":
             return f"ENDS_WITH({expr}, {lit})"
         raise ValueError(f"not a pattern operator: {operator!r}")
-    # Unchanged for every other engine (byte-for-byte what the builders emitted).
-    esc = text.replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+    # LIKE engines. For a value without backslash or quote this is byte-for-byte
+    # what the builders always emitted on Postgres/DuckDB.
+    esc = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    escape = quote_string("\\", dialect)
+
+    def pat(p: str) -> str:
+        return quote_string(p, dialect)
+
     if operator in ("like", "contains"):
-        return f"{expr} LIKE '%{esc}%' ESCAPE '\\'"
+        return f"{expr} LIKE {pat('%' + esc + '%')} ESCAPE {escape}"
     if operator == "not_contains":
-        return f"{expr} NOT LIKE '%{esc}%' ESCAPE '\\'"
+        return f"{expr} NOT LIKE {pat('%' + esc + '%')} ESCAPE {escape}"
     if operator == "starts_with":
-        return f"{expr} LIKE '{esc}%' ESCAPE '\\'"
+        return f"{expr} LIKE {pat(esc + '%')} ESCAPE {escape}"
     if operator == "ends_with":
-        return f"{expr} LIKE '%{esc}' ESCAPE '\\'"
+        return f"{expr} LIKE {pat('%' + esc)} ESCAPE {escape}"
     raise ValueError(f"not a pattern operator: {operator!r}")
 
 
@@ -79,7 +94,7 @@ def regex_predicate(
     plausible, wrong row set for an ordinary regex. An engine without a known
     spelling is refused rather than guessed."""
     d = (dialect or "").lower()
-    lit = quote(str(value))
+    lit = quote_string(str(value), dialect)
     if d == "bigquery":
         return f"REGEXP_CONTAINS({expr}, {lit})"
     if d in ("postgresql", "postgres", ""):

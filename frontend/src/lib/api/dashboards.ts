@@ -701,18 +701,6 @@ export const dashboardApi = {
     return response.data;
   },
 
-  share: async (
-    id: number,
-    public_filters_config?: any[],
-  ): Promise<{ share_token: string; public_filters_config?: any[] }> => {
-    const response = await apiClient.post(`/dashboards/${id}/share`, { public_filters_config });
-    return response.data;
-  },
-
-  unshare: async (id: number): Promise<void> => {
-    await apiClient.delete(`/dashboards/${id}/share`);
-  },
-
   // ── Multi public links ────────────────────────────────────────
   listPublicLinks: async (dashboardId: number): Promise<PublicLink[]> => {
     const response = await apiClient.get(`/dashboards/${dashboardId}/public-links`);

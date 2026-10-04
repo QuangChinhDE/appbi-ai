@@ -239,12 +239,15 @@ with engine.connect() as conn:
         print(f"==> Users table already has rows — skipping admin seed.")
 PYEOF
 
-# --proxy-headers + --forwarded-allow-ips="*" lets Uvicorn honour
-# X-Forwarded-For / X-Real-IP from nginx so request.client.host reflects
-# the real viewer IP. Without this, slowapi's get_remote_address() sees
-# every public-link request as coming from 127.0.0.1 on prod, and one
-# busy dashboard (e.g. an HTML-imported one with many tiles) exhausts
-# the shared rate-limit bucket, making chart data silently fail to load.
+# Client address: uvicorn's own proxy-header handling is OFF. With
+# `--forwarded-allow-ips="*"` it took the LEFTMOST X-Forwarded-For entry — the
+# one the client writes — so rotating that header defeated every per-IP rate
+# limit (password guessing included). The app's TrustedProxyMiddleware
+# (app/core/trusted_proxy.py) resolves the real viewer address instead: it
+# honours forwarded headers only from TRUSTED_PROXY_CIDRS and takes the entry
+# TRUSTED_PROXY_HOPS from the right (what nginx appended). Viewers still get
+# separate buckets (one busy report does not exhaust a shared one); they can no
+# longer choose theirs.
 # Multiple workers so one slow/heavy request (or a background snapshot rebuild)
 # can't block the whole app (single process = one GIL). Cross-worker request
 # coalescing + the shared sqlite cache (query_cache) keep concurrent identical
@@ -252,4 +255,4 @@ PYEOF
 # behaviour) — set it (e.g. 4) on the VM to scale concurrent report viewing.
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000 \
     --workers "${WEB_CONCURRENCY:-1}" \
-    --proxy-headers --forwarded-allow-ips="*"
+    --no-proxy-headers

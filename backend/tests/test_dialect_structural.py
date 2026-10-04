@@ -113,14 +113,22 @@ def test_string_literal_stays_quoted(dialect):
     assert "= 'won'" in sql
 
 
-@pytest.mark.parametrize("dialect", ["bigquery", "postgresql"])
-def test_quote_escaping_is_dialect_independent(dialect):
+@pytest.mark.parametrize("dialect, literal", [
+    # GoogleSQL has ONE string escape, the backslash. `'O''Brien'` is not an
+    # escaped quote there: it tokenizes as two adjacent literals that concatenate
+    # to "OBrien", so the filter silently matched the wrong value. This test used
+    # to assert that form for BigQuery too ("dialect independent"); it is
+    # dialect-DEPENDENT by necessity (app/services/sql_literal.py).
+    ("bigquery", r"'O\'Brien'"),
+    ("postgresql", "'O''Brien'"),
+])
+def test_quote_escaping_is_correct_for_the_dialect(dialect, literal):
     measure = {
         "name": "a", "type": "sum", "sql": "amount",
         "filters": [{"field": "status", "operator": "eq", "value": "O'Brien"}],
     }
     sql = _engine([measure], dialect)._render_measure("revenue.a")
-    assert "'O''Brien'" in sql
+    assert literal in sql, sql
 
 
 # ── The cast builder itself ───────────────────────────────────────────────

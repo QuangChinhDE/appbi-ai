@@ -56,15 +56,12 @@ def _quote_identifier(name: str, dialect: str) -> str:
         return f'"{name}"'
 
 
-def _sql_literal(value) -> str:
-    """Safely escape a Python value as a SQL literal."""
-    if value is None:
-        return "NULL"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, (int, float)):
-        return str(value)
-    return "'" + str(value).replace("'", "''") + "'"
+def _sql_literal(value, dialect: str | None) -> str:
+    """A SQL literal for ``value`` on ``dialect`` — the canonical, dialect-aware
+    escaping in app/services/sql_literal (a backslash escapes inside BigQuery and
+    MySQL strings; doubling the quote alone left them injectable)."""
+    from app.services.sql_literal import sql_literal
+    return sql_literal(value, dialect)
 
 
 def _dialect_for_ds_type(ds_type: str) -> str:
@@ -720,64 +717,64 @@ def _build_where_clause(filters: list, dialect: str) -> str:
         cal = bool(calendar_field)
         if op == "eq":
             _v = _coerce_numeric_text([value])[0]
-            parts.append(f"{_num(qf, cal, value)} = {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} = {_sql_literal(value, dialect)}")
         elif op == "neq":
             _v = _coerce_numeric_text([value])[0]
-            parts.append(f"{_num(qf, cal, value)} != {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} != {_sql_literal(value, dialect)}")
         elif op == "gt":
-            parts.append(f"{_num(qf, cal, value)} > {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} > {_sql_literal(value, dialect)}")
         elif op == "gte":
-            parts.append(f"{_num(qf, cal, value)} >= {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} >= {_sql_literal(value, dialect)}")
         elif op == "lt":
-            parts.append(f"{_num(qf, cal, value)} < {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} < {_sql_literal(value, dialect)}")
         elif op == "lte":
-            parts.append(f"{_num(qf, cal, value)} <= {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} <= {_sql_literal(value, dialect)}")
         elif op == "between" and isinstance(value, list) and len(value) >= 2:
             lo, hi = value[0], value[1]
             bf = _num(qf, cal, lo, hi)
             if value_present(lo) and value_present(hi):
-                parts.append(f"{bf} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}")
+                parts.append(f"{bf} BETWEEN {_sql_literal(lo, dialect)} AND {_sql_literal(hi, dialect)}")
             elif value_present(lo):
-                parts.append(f"{bf} >= {_sql_literal(lo)}")
+                parts.append(f"{bf} >= {_sql_literal(lo, dialect)}")
             elif value_present(hi):
-                parts.append(f"{bf} <= {_sql_literal(hi)}")
+                parts.append(f"{bf} <= {_sql_literal(hi, dialect)}")
         elif op == "in" and isinstance(value, list):
             present = [v for v in _coerce_numeric_text(value) if value_present(v)]
-            vals = ", ".join(_sql_literal(v) for v in present)
+            vals = ", ".join(_sql_literal(v, dialect) for v in present)
             if vals:
                 parts.append(f"{_num(qf, cal, *present)} IN ({vals})")
         elif op == "in" and isinstance(value, str) and value:
             vals = ", ".join(
-                _sql_literal(v.strip()) for v in value.split(",") if v.strip()
+                _sql_literal(v.strip(), dialect) for v in value.split(",") if v.strip()
             )
             if vals:
                 parts.append(f"{qf} IN ({vals})")
         elif op == "not_in" and isinstance(value, list):
             present = [v for v in _coerce_numeric_text(value) if value_present(v)]
-            vals = ", ".join(_sql_literal(v) for v in present)
+            vals = ", ".join(_sql_literal(v, dialect) for v in present)
             if vals:
                 parts.append(f"{_num(qf, cal, *present)} NOT IN ({vals})")
         elif op == "not_in" and isinstance(value, str) and value:
             vals = ", ".join(
-                _sql_literal(v.strip()) for v in value.split(",") if v.strip()
+                _sql_literal(v.strip(), dialect) for v in value.split(",") if v.strip()
             )
             if vals:
                 parts.append(f"{qf} NOT IN ({vals})")
         elif op in ("like", "contains", "not_contains", "starts_with", "ends_with") and value is not None:
             # One shape per dialect (app/services/sql_pattern): BigQuery has no
             # LIKE … ESCAPE, so it gets STRPOS / STARTS_WITH / ENDS_WITH.
-            parts.append(pattern_predicate(qf, op, value, dialect, lambda s: _sql_literal(s)))
+            parts.append(pattern_predicate(qf, op, value, dialect, lambda s: _sql_literal(s, dialect)))
         elif op == "matches_regex" and value_present(value):
-            parts.append(regex_predicate(qf, value, dialect, lambda s: _sql_literal(s)))
+            parts.append(regex_predicate(qf, value, dialect, lambda s: _sql_literal(s, dialect)))
         elif op == "not_between" and isinstance(value, list) and len(value) >= 2:
             lo, hi = value[0], value[1]
             bf = _num(qf, cal, lo, hi)
             if value_present(lo) and value_present(hi):
-                parts.append(f"{bf} NOT BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}")
+                parts.append(f"{bf} NOT BETWEEN {_sql_literal(lo, dialect)} AND {_sql_literal(hi, dialect)}")
             elif value_present(lo):
-                parts.append(f"{bf} < {_sql_literal(lo)}")
+                parts.append(f"{bf} < {_sql_literal(lo, dialect)}")
             elif value_present(hi):
-                parts.append(f"{bf} > {_sql_literal(hi)}")
+                parts.append(f"{bf} > {_sql_literal(hi, dialect)}")
         elif op == "is_null":
             parts.append(f"{qf} IS NULL")
         elif op == "is_not_null":

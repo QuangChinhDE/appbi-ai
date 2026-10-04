@@ -39,7 +39,6 @@ from app.schemas import (
     ChartTypeSchema,
     DashboardCreate,
     DashboardUpdate,
-    DashboardShareRequest,
     DashboardResponse,
     DashboardAddChartRequest,
     DashboardRelayoutRequest,
@@ -3185,47 +3184,33 @@ def dashboard_editing_leave(
 
 # ============ Public Link Sharing ============
 
-@router.post("/{dashboard_id}/share", status_code=status.HTTP_200_OK)
-def share_dashboard(
-    dashboard_id: int,
-    request: DashboardShareRequest | None = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Generate (or return existing) a public share token for a dashboard."""
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
-    if not dash:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
-    require_edit_access(db, current_user, dash, "dashboards")
-    if not dash.share_token:
-        dash.share_token = secrets.token_urlsafe(32)
-    if request is not None and request.public_filters_config is not None:
-        dash.public_filters_config = request.public_filters_config
-    elif dash.public_filters_config is None:
-        dash.public_filters_config = []
-    db.commit()
-    db.refresh(dash)
-    return {
-        "share_token": dash.share_token,
-        "public_filters_config": dash.public_filters_config or [],
-    }
+_LEGACY_SHARE_RETIRED = (
+    "The legacy single share token is retired. Create a public link instead: "
+    "POST /dashboards/{id}/public-links (or the Share → Public links dialog)."
+)
 
 
-@router.delete("/{dashboard_id}/share", status_code=status.HTTP_200_OK)
-def unshare_dashboard(
-    dashboard_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Revoke the public share token for a dashboard."""
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
-    if not dash:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
-    require_edit_access(db, current_user, dash, "dashboards")
-    dash.share_token = None
-    dash.public_filters_config = []
-    db.commit()
-    return {"share_token": None}
+@router.post("/{dashboard_id}/share", status_code=status.HTTP_410_GONE)
+def share_dashboard(dashboard_id: int, current_user: User = Depends(get_current_user)):
+    """RETIRED. The legacy `Dashboard.share_token` was a second public-token
+    authority beside DashboardPublicLink, with no password, expiry or active
+    flag — and its copy outlived revoking the link it had been migrated into.
+    Public access now has exactly one authority (a DashboardPublicLink); this
+    endpoint refuses rather than minting a token nothing would resolve."""
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=_LEGACY_SHARE_RETIRED)
+
+
+@router.delete("/{dashboard_id}/share", status_code=status.HTTP_410_GONE)
+def unshare_dashboard(dashboard_id: int, current_user: User = Depends(get_current_user)):
+    """RETIRED with POST /share. There is no legacy token left to revoke."""
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=_LEGACY_SHARE_RETIRED)
+
+
+def _aware(value):
+    """Store expiries timezone-aware (UTC when the client sent a naive time)."""
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 def _sanitize_link_for_admin(link: DashboardPublicLink) -> DashboardPublicLink:
@@ -3307,6 +3292,7 @@ def create_public_link(
         appearance_config=request.appearance_config or {},
         created_by=current_user.id,
         password_hash=_pwd_context.hash(request.password) if request.password else None,
+        expires_at=_aware(request.expires_at),
     )
     db.add(link)
     db.commit()
@@ -3361,10 +3347,24 @@ def update_public_link(
         # ai_bot_key_configured is computed server-side; strip any client-sent value
         new_config.pop("ai_bot_key_configured", None)
         link.appearance_config = new_config
-    if request.is_active is not None:
+    # Every security-changing edit moves the link to a new security generation,
+    # which invalidates every password session minted before it (see
+    # public._create_public_session). That includes re-enabling a disabled link:
+    # a session issued before the disable must not come back to life with it.
+    security_changed = False
+    if request.is_active is not None and bool(request.is_active) != bool(link.is_active):
         link.is_active = request.is_active
+        security_changed = True
     if request.password is not None:
         link.password_hash = _pwd_context.hash(request.password) if request.password else None
+        security_changed = True
+    if "expires_at" in request.model_fields_set:
+        new_exp = _aware(request.expires_at)
+        if new_exp != _aware(link.expires_at):
+            link.expires_at = new_exp
+            security_changed = True
+    if security_changed:
+        link.auth_version = int(link.auth_version or 0) + 1
     db.commit()
     db.refresh(link)
     # The public structure is cached by token: a lock turned 🚫 hidden (its value

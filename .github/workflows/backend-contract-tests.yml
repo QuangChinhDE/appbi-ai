@@ -222,6 +222,9 @@ jobs:
             tests/test_public_link_filter_disclosure.py \
             tests/test_embed_link_claim_operator.py \
             tests/test_public_filter_authority.py \
+            tests/test_public_token_lifecycle.py \
+            tests/test_sql_literal_security.py \
+            tests/test_trusted_proxy_client_ip.py \
             tests/test_report_content_widgets.py \
             tests/test_semantic_router_object_access.py \
             tests/test_semantic_state_contracts.py \

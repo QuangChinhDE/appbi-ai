@@ -3951,7 +3951,7 @@ def _distinct_values_full(
                 return "TRUE" if v else "FALSE"
             if isinstance(v, (int, float)):
                 return str(v)
-            return _sql_literal(v)
+            return _sql_literal(v, _d)
 
         def _numcast(col_sql: str, *vals) -> str:
             present = [v for v in vals if value_present(v)]
@@ -3994,7 +3994,7 @@ def _distinct_values_full(
             # One shape per dialect (app/services/sql_pattern): BigQuery has no
             # LIKE … ESCAPE — the dropdown's search failed on every BigQuery field.
             from app.services.sql_pattern import pattern_predicate
-            return pattern_predicate(field_expression, op, raw_value, _d, lambda s: _sql_literal(s))
+            return pattern_predicate(field_expression, op, raw_value, _d, lambda s: _sql_literal(s, _d))
         if op == "is_null":
             return f"{field_expression} IS NULL"
         if op == "is_not_null":

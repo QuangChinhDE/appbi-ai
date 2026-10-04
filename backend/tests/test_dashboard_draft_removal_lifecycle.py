@@ -121,8 +121,8 @@ def test_the_access_bump_commit_does_not_undo_the_published_only_copy(db, monkey
     DashboardPublicLink.__table__.create(db.get_bind(), checkfirst=True)
     monkeypatch.setattr(public_api, "resolve_embed_grant", lambda *_a, **_k: None)
     _with_draft_tile_and_pending_removal(db)
-    db.add(DashboardPublicLink(id=1, dashboard_id=1, name="capped", token="tok-capped", filters_config=[],
-                               is_active=True, max_access_count=100, access_count=0))
+    db.add(DashboardPublicLink(id=1, dashboard_id=1, name="first-view", token="tok-capped", filters_config=[],
+                               is_active=True, access_count=0, last_accessed_at=None))  # first view always commits the bump
     db.commit()
     dash, *_ = public_api._get_dashboard_by_token("tok-capped", db, track_access=True, load_dashboard=True)
     assert db.get(DashboardPublicLink, 1).access_count == 1, "the fixture did not take the committing path"

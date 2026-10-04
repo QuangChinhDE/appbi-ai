@@ -1489,29 +1489,45 @@ def _public_viewer_filter_inventory(dash: Dashboard) -> list[dict]:
     ])
 
 
-def _create_public_session(link_token: str) -> str:
+def _create_public_session(link: DashboardPublicLink) -> str:
+    """A password session is bound to ONE link at ONE security generation.
+
+    `lid` + `av` (the link's `auth_version`) are what make revocation
+    deterministic: changing the password, clearing it, disabling or re-enabling
+    the link, or changing its expiry bumps `auth_version`, and every session
+    minted before that stops verifying at once — instead of living out its 2h.
+    `sub` stays the link token so a session can never be replayed on another link.
+    """
     payload = {
-        "sub": link_token,
+        "sub": link.token,
+        "lid": link.id,
+        "av": int(link.auth_version or 0),
         "type": "public_link_session",
         "exp": datetime.now(timezone.utc) + timedelta(seconds=PUBLIC_SESSION_SECONDS),
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
-def _verify_public_session(session_token: str, link_token: str) -> bool:
+def _verify_public_session(session_token: str, link: DashboardPublicLink) -> bool:
     try:
         data = jwt.decode(session_token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-        return data.get("sub") == link_token and data.get("type") == "public_link_session"
     except JWTError:
         return False
+    return (
+        data.get("type") == "public_link_session"
+        and data.get("sub") == link.token
+        and data.get("lid") == link.id
+        and data.get("av") == int(link.auth_version or 0)
+    )
 
 
 # Access-count telemetry is bumped on EVERY public/embed view. For a widely
 # shared link that means an UPDATE + row lock on the SAME row across every
 # concurrent viewer — they serialize on it and pin their pool connection while
 # waiting. Throttle to one write per window per link so a burst of viewers of the
-# same report doesn't contend on one row. EXCEPTION: links that enforce a
-# max_access_count need the exact running count, so those always bump.
+# same report doesn't contend on one row. The count is telemetry only: no access
+# decision reads it (max_access_count was retired — see migration
+# 20261004_0001).
 _ACCESS_BUMP_WINDOW_SECONDS = 30
 
 
@@ -1561,7 +1577,7 @@ def _get_dashboard_by_token(
     track_access: bool = True,
     load_dashboard: bool = True,
 ) -> tuple[Dashboard, list[dict], str | None, dict]:
-    """Look up dashboard by token. Checks new multi-link table first, falls back to legacy share_token.
+    """Look up dashboard by token: an `emb_` grant, else an active DashboardPublicLink. Nothing else.
     Returns (dashboard, filters_config_for_this_link, link_name, appearance_config).
 
     ``load_dashboard=False`` still performs ALL authentication (token/password/
@@ -1605,58 +1621,70 @@ def _get_dashboard_by_token(
         _refuse_malformed_author_bounds(dash)
         return dash, grant_link.filters_config or [], display_name, grant_link.appearance_config or {}
 
-    # Try new multi-link table first
+    # The ONE authority for a stable public token: an ACTIVE DashboardPublicLink.
+    # There is no second lookup. The legacy `Dashboard.share_token` fallback that
+    # used to follow this block was removed (migration 20261004_0001 nulls the
+    # column): migration 0019 had COPIED every legacy token into a 'Default' link
+    # without clearing the column, so disabling or deleting that link fell through
+    # to the column and the "revoked" URL kept serving the report — with no
+    # password, expiry or active flag. A token that does not match an active link
+    # is refused, full stop.
     link = db.query(DashboardPublicLink).filter(
         DashboardPublicLink.token == token,
         DashboardPublicLink.is_active == True,
     ).first()
-    if link:
-        # Check expiry
-        if link.expires_at and datetime.now(timezone.utc) > link.expires_at:
-            raise HTTPException(status_code=status.HTTP_410_GONE, detail="This shared link has expired.")
-
-        # Check max access count
-        if link.max_access_count and (link.access_count or 0) >= link.max_access_count:
-            raise HTTPException(status_code=status.HTTP_410_GONE, detail="This shared link has reached its access limit.")
-
-        # Check password protection â€” require a valid session token
-        if link.password_hash:
-            if not session_token or not _verify_public_session(session_token, token):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="This shared link requires a password.",
-                    headers={"X-Link-Password-Required": "true"},
-                )
-
-        dash = _load_dash(Dashboard.id == link.dashboard_id)
-        if not dash:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found.")
-        # Capped links need the exact count to enforce max_access_count; unlimited
-        # (the widely-shared, high-traffic case) throttle to avoid per-view writes
-        # + row-lock contention on the shared link row.
-        if track_access and (link.max_access_count or _should_bump_access(link.last_accessed_at)):
-            link.access_count = (link.access_count or 0) + 1
-            link.last_accessed_at = datetime.now(timezone.utc)
-            db.commit()
-            _reserve_after_commit(dash, load_dashboard)
-        _refuse_malformed_link(link.filters_config)
-        _refuse_malformed_author_bounds(dash)
-        return dash, link.filters_config or [], link.name, link.appearance_config or {}
-
-    # Fallback to legacy share_token on Dashboard model
-    dash = _load_dash(Dashboard.share_token == token)
-    if not dash:
+    if not link:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Shared dashboard not found or link has been revoked.",
         )
-    _refuse_malformed_link(dash.public_filters_config)
+    # Managed embed links are reachable ONLY through their short-lived `emb_`
+    # grant, which is where the TTL, revocation and origin policy live. Their
+    # own token is never handed out; refusing it here keeps it that way even if
+    # it leaks (logs, a DB dump), instead of it being a non-expiring bearer URL.
+    if (link.source or "user") == "embed_api":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Shared dashboard not found or link has been revoked.",
+        )
+
+    if link.expires_at:
+        exp = link.expires_at if link.expires_at.tzinfo else link.expires_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > exp:
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="This shared link has expired.")
+
+    if link.password_hash:
+        if not session_token or not _verify_public_session(session_token, link):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="This shared link requires a password.",
+                headers={"X-Link-Password-Required": "true"},
+            )
+
+    dash = _load_dash(Dashboard.id == link.dashboard_id)
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found.")
+    if track_access and _should_bump_access(link.last_accessed_at):
+        link.access_count = (link.access_count or 0) + 1
+        link.last_accessed_at = datetime.now(timezone.utc)
+        db.commit()
+        _reserve_after_commit(dash, load_dashboard)
+    _refuse_malformed_link(link.filters_config)
     _refuse_malformed_author_bounds(dash)
-    return dash, dash.public_filters_config or [], dash.name, {}
+    return dash, link.filters_config or [], link.name, link.appearance_config or {}
+
+
+def _link_token_key(request: Request) -> str:
+    """Rate-limit key for password attempts: the LINK, not the caller. The
+    per-IP limit alone lets a distributed guesser (many source IPs) try a
+    link's password without bound; this caps attempts on one link no matter
+    how many addresses they come from."""
+    return "public-link-auth:" + str(request.path_params.get("token") or "")
 
 
 @router.post("/dashboards/{token}/auth")
 @_limiter.limit("10/minute")
+@_limiter.limit("100/hour", key_func=_link_token_key)
 def auth_public_link(
     token: str,
     body: _PasswordBody,
@@ -1674,13 +1702,17 @@ def auth_public_link(
     ).first()
     if not link:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shared dashboard not found or link has been revoked.")
-    if link.expires_at and datetime.now(timezone.utc) > link.expires_at:
-        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This shared link has expired.")
+    if (link.source or "user") == "embed_api":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shared dashboard not found or link has been revoked.")
+    if link.expires_at:
+        exp = link.expires_at if link.expires_at.tzinfo else link.expires_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > exp:
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="This shared link has expired.")
     if not link.password_hash:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This link does not require a password.")
     if not _pwd_ctx.verify(body.password, link.password_hash):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Incorrect password.")
-    return {"session_token": _create_public_session(token), "expires_in": PUBLIC_SESSION_SECONDS}
+    return {"session_token": _create_public_session(link), "expires_in": PUBLIC_SESSION_SECONDS}
 
 
 @router.get("/dashboards/{token}", response_model=DashboardResponse)

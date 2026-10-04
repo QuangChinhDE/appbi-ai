@@ -14,6 +14,7 @@ from typing import List, Tuple, Dict, Any, Optional, Set
 from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticExplore, SemanticModel
 from app.services import physical_type_map as _ptm
+from app.services.sql_literal import quote_string as _quote_string
 from app.services.sql_pattern import pattern_predicate, regex_predicate
 from app.services.semantic_arithmetic import normalize_division, true_division_sql
 from app.services.semantic_join_resolver import (
@@ -3175,7 +3176,7 @@ class SemanticQueryEngine:
                 return "TRUE" if v else "FALSE"
             if isinstance(v, (int, float)):
                 return str(v)
-            return "'" + str(v).replace("'", "''") + "'"
+            return _quote_string(v, self.database_type)
 
         def _numcast(col_sql: str, *vals: Any) -> str:
             present = [v for v in vals if _present(v)]
@@ -3227,7 +3228,7 @@ class SemanticQueryEngine:
                     return None
                 return pattern_predicate(
                     field_sql, operator, value, self.database_type,
-                    lambda s: "'" + s.replace("'", "''") + "'",
+                    lambda s: _quote_string(s, self.database_type),
                 )
             if operator == "is_null":
                 return f"{field_sql} IS NULL"
@@ -3385,7 +3386,7 @@ class SemanticQueryEngine:
         # Raw interpolation here produced invalid/injectable SQL for ANY value
         # containing a quote — every other predicate uses `_q`/`esc` which double
         # single quotes; this one path was missed (DA9 white-box). Mirror that.
-        pivot_literal = "'" + str(pivot_value).replace("'", "''") + "'"
+        pivot_literal = _quote_string(pivot_value, self.database_type)
         pivot_pred = f"{pivot_sql} = {pivot_literal}"
         if measure_filter_sql:
             pivot_pred = f"({pivot_pred}) AND ({measure_filter_sql})"
@@ -4218,7 +4219,7 @@ class SemanticQueryEngine:
                 return "TRUE" if raw else "FALSE"
             if isinstance(raw, (int, float)):
                 return str(raw)
-            return "'" + str(raw).replace("'", "''") + "'"
+            return _quote_string(raw, self.database_type)
 
         def _value_present(raw: Any) -> bool:
             if raw is None:
@@ -4709,7 +4710,7 @@ class SemanticQueryEngine:
                 # no LIKE … ESCAPE, so it gets STRPOS / STARTS_WITH / ENDS_WITH.
                 conditions.append(pattern_predicate(
                     field_sql, operator, value, self.database_type,
-                    lambda s: "'" + s.replace("'", "''") + "'",
+                    lambda s: _quote_string(s, self.database_type),
                 ))
                 continue
 
@@ -5218,7 +5219,7 @@ class SemanticQueryEngine:
                 return "TRUE" if raw else "FALSE"
             if isinstance(raw, (int, float)):
                 return str(raw)
-            return "'" + str(raw).replace("'", "''") + "'"
+            return _quote_string(raw, self.database_type)
 
         def _present(raw: Any) -> bool:
             return not (raw is None or (isinstance(raw, str) and not raw.strip()))
@@ -5279,7 +5280,7 @@ class SemanticQueryEngine:
                 return "TRUE" if raw else "FALSE"
             if isinstance(raw, (int, float)):
                 return str(raw)
-            return "'" + str(raw).replace("'", "''") + "'"
+            return _quote_string(raw, self.database_type)
 
         def _value_present(raw: Any) -> bool:
             if raw is None:

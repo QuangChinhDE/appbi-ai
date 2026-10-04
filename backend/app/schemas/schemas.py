@@ -610,6 +610,8 @@ class PublicLinkCreate(BaseModel):
     filters_config: Optional[List[Dict[str, Any]]] = None
     appearance_config: Optional[Dict[str, Any]] = None
     password: Optional[str] = Field(None, min_length=1, max_length=128)
+    # Absolute expiry. None = never expires.
+    expires_at: Optional[datetime] = None
 
 
 class PublicLinkUpdate(BaseModel):
@@ -620,6 +622,9 @@ class PublicLinkUpdate(BaseModel):
     is_active: Optional[bool] = None
     # None = no change; empty string = clear password; non-empty = new password
     password: Optional[str] = Field(None, max_length=128)
+    # Expiry: omitted = no change; null = never expires; a datetime = expires then.
+    # (Distinguished through `model_fields_set`.)
+    expires_at: Optional[datetime] = None
 
 
 class PublicLinkResponse(BaseModel):
@@ -632,6 +637,7 @@ class PublicLinkResponse(BaseModel):
     appearance_config: Optional[Dict[str, Any]] = None
     is_active: bool
     has_password: bool = False
+    expires_at: Optional[datetime] = None
     access_count: int
     last_accessed_at: Optional[datetime] = None
     created_at: datetime
