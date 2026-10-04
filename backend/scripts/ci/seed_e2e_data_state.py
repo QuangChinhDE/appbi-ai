@@ -144,7 +144,7 @@ def _source_tables() -> None:
             "customer_acquisition_channel text, doanh_thu_thuan_theo_khu_vuc numeric(16,2), orders int, "
             "margin_rate double precision, profit_vnd numeric(16,2), sales_owner text)"
         ))
-        # Deterministic: revenue = 125,000,000 + i*3,711,000 → total 8,042,220,000;
+        # Deterministic: revenue = 125,000,000 + i*3,711,000 → total 8,043,020,000;
         # orders = 20 + i%7 → total 920.
         c.execute(sa.text(f"INSERT INTO {SCHEMA}.feedback_exec VALUES " + ",".join(
             f"({i}, DATE '2026-0{(i % 9) + 1}-{(i % 27) + 1:02d}', '{regions[i % 4]}', '{channels[i % 4]}', "
