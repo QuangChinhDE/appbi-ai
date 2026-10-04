@@ -59,6 +59,13 @@ export function ExportPdfDialog({ isOpen, onClose, pages, defaultPageId, isExpor
     [defaultPageId, pages],
   );
   const [selected, setSelected] = useState<Set<string>>(seedSelection);
+  // The dialog stays mounted while closed: re-seed on every OPEN, so the ticked
+  // page is the one the reader is looking at NOW (it kept the page that was
+  // active at first render — a reader on page C exported page A).
+  React.useEffect(() => {
+    if (isOpen) setSelected(seedSelection());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
   // The arranger opens on top of this dialog; it hands back a plan and starts the
   // export itself, so the two never disagree about what is being printed.
   const [arrangerOpen, setArrangerOpen] = useState(false);

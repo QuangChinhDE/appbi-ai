@@ -87,13 +87,17 @@ async function sortAndFilterLongHeader(page: Page) {
   await arrow.click();
   await expect(th).toHaveAttribute('aria-sort', 'none');
 
-  // Keyboard users can sort too.
+  // Keyboard users can sort too (Enter and Space).
   await th.focus();
   await page.keyboard.press('Enter');
   await expect(th).toHaveAttribute('aria-sort', 'ascending');
+  await page.keyboard.press(' ');
+  await expect(th).toHaveAttribute('aria-sort', 'descending');
+  // The filter button is labelled for assistive tech.
+  await expect(filter).toHaveAttribute('aria-label', /^Filter /);
 }
 
-for (const width of [1440, 1024, 820, 390]) {
+for (const width of [1440, 1280, 1024, 820, 390]) {
   test(`public table: sort and filter have separate hit areas @${width}`, async ({ page }) => {
     test.setTimeout(120_000);
     await page.setViewportSize({ width, height: 900 });
@@ -254,4 +258,228 @@ test('builder Arrange-it-yourself is populated and its PDF contains every tile',
   ].join('\n'), path], { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } }));
   expect(parsed.images).toBeGreaterThanOrEqual(7);
   expect(parsed.text).not.toMatch(/Không tìm thấy biểu đồ|not found on the report/i);
+});
+
+// ── Final product closure ────────────────────────────────────────────────────
+
+const PPTX_PAGES = [
+  'import json, sys',
+  'from pptx import Presentation',
+  'prs = Presentation(sys.argv[1])',
+  'out = []',
+  'for s in prs.slides:',
+  '    texts = [sh.text_frame.text for sh in s.shapes if sh.has_text_frame and sh.text_frame.text]',
+  '    tables = [[[c.text for c in r.cells] for r in sh.table.rows] for sh in s.shapes if sh.has_table]',
+  '    off = sum(1 for sh in s.shapes if sh.top + sh.height > prs.slide_height or sh.left + sh.width > prs.slide_width)',
+  '    out.append({"texts": texts, "tables": tables, "off": off})',
+  'print(json.dumps(out, ensure_ascii=False))',
+].join('\n');
+
+/** Hand-computed from the closure_sales seed rows (not from the app):
+ *  North 100+200+10+300 = 610 (4 rows), South 50-25+70 = 95 (3 rows),
+ *  all eight rows incl. the blank-region -20 = 685. */
+const ORACLE_007 = [
+  { page: 'A North', kpi: '610', rows: 4, regions: ['North'] },
+  { page: 'B South', kpi: '95', rows: 3, regions: ['South'] },
+  { page: 'C All', kpi: '685', rows: 8, regions: ['', 'North', 'South'] },
+];
+
+type DeckSlide = { texts: string[]; tables: string[][][]; off: number };
+
+async function exportPptx(page: Page, path: string, extraPages: string[]): Promise<DeckSlide[]> {
+  await page.getByTestId('export-filetype-pptx').click();
+  for (const name of extraPages) {
+    const box = page.locator('label').filter({ hasText: name }).locator('input[type="checkbox"]');
+    if (!(await box.isChecked())) await box.check();
+  }
+  const [download] = await Promise.all([
+    page.waitForEvent('download', { timeout: 180_000 }),
+    page.getByRole('button', { name: /^(Export PowerPoint|Xuất PowerPoint)$/ }).click(),
+  ]);
+  await download.saveAs(path);
+  return JSON.parse(execFileSync('python', ['-c', PPTX_PAGES, path], {
+    encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+  }));
+}
+
+function assertDeckMatchesOracle(deck: DeckSlide[]) {
+  expect(deck).toHaveLength(ORACLE_007.length);
+  ORACLE_007.forEach((o, i) => {
+    const slide = deck[i];
+    expect(slide.off, `slide ${i + 1} has a block off the slide`).toBe(0);
+    expect(slide.texts).toContain(o.page);
+    expect(slide.texts, `slide ${i + 1} KPI`).toContain(o.kpi);
+    expect(slide.tables, `slide ${i + 1} table`).toHaveLength(1);
+    const body = slide.tables[0].slice(1);
+    expect(body, `slide ${i + 1} row count`).toHaveLength(o.rows);
+    const regionCol = slide.tables[0][0].indexOf('region');
+    expect([...new Set(body.map((r) => r[regionCol]))].sort()).toEqual(o.regions);
+  });
+}
+
+test('multi-page PowerPoint from Public: every page loads its own data and scope', async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await page.goto('/d/e2e-closure-007');
+  await expect(page.locator('[data-grid-item-id]').filter({ hasText: 'E2E 007 A Total' })).toContainText('610', { timeout: 60_000 });
+  await page.getByTestId('public-export-open').first().click();
+  // Pages B and C were never opened by this reader: the deck must still carry their data.
+  assertDeckMatchesOracle(await exportPptx(page, testInfo.outputPath('public-007.pptx'), ['B South', 'C All']));
+});
+
+test('multi-page PowerPoint from the Builder matches the same oracle', async ({ page, request }, testInfo) => {
+  test.setTimeout(240_000);
+  const id = await dashboardIdByName(request, 'E2E closure original 007');
+  await page.goto(`/dashboards/${id}`);
+  await expect(page.locator('[data-grid-item-id]').filter({ hasText: 'E2E 007 A Total' })).toContainText('610', { timeout: 60_000 });
+  await page.getByTestId('dashboard-more').click();
+  await page.getByRole('button', { name: /PowerPoint/ }).first().click();
+  assertDeckMatchesOracle(await exportPptx(page, testInfo.outputPath('builder-007.pptx'), ['B South', 'C All']));
+});
+
+test('PowerPoint failure is reported truthfully and a retry replaces it', async ({ page }) => {
+  test.setTimeout(180_000);
+  let fail = true;
+  await page.route('**/exports/pptx', (route) => (fail
+    ? route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' })
+    : route.continue()));
+  await page.goto(`/d/${TOKEN}`);
+  await expect(detailTable(page)).toBeVisible({ timeout: 60_000 });
+  await page.getByTestId('public-export-open').first().click();
+  await page.getByTestId('export-filetype-pptx').click();
+  await page.getByRole('button', { name: /^(Export PowerPoint|Xuất PowerPoint)$/ }).click();
+  const toasts = page.locator('[data-sonner-toast]');
+  const failed = toasts.filter({ hasText: /Could not create the PowerPoint|Không tạo được file PowerPoint/ });
+  const done = toasts.filter({ hasText: /PowerPoint downloaded|Đã tải file PowerPoint/ });
+  await expect(failed).toBeVisible({ timeout: 60_000 });
+  await expect(done).toHaveCount(0);
+  fail = false;
+  await page.getByTestId('export-filetype-pptx').click();
+  const [download] = await Promise.all([
+    page.waitForEvent('download', { timeout: 120_000 }),
+    page.getByRole('button', { name: /^(Export PowerPoint|Xuất PowerPoint)$/ }).click(),
+  ]);
+  expect(download.suggestedFilename()).toMatch(/\.pptx$/);
+  await expect(done).toBeVisible();
+  await expect(failed).toHaveCount(0);
+});
+
+test('real PDF worker Snapshot (portrait): the KPI row stays one aligned row', async ({ request }, testInfo) => {
+  test.setTimeout(240_000);
+  const pdf = await serverPdf(request, 'snapshot', 'portrait', testInfo.outputPath('feedback-snapshot.pdf'));
+  const kpi = ['8.0B', '920', '1.6B', '0.2'].map((v) => pdf.spans
+    .filter((s) => s.text.replace(',', '.') === v && s.page === 0)
+    .sort((a, b) => b.size - a.size)[0]);
+  kpi.forEach((s, i) => expect(s, `KPI ${i}`).toBeTruthy());
+  const tops = kpi.map((s) => s.bbox[1]);
+  expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(1.5);
+});
+
+test('Tidy never drops a block: overflow continues on a new sheet', async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const id = await dashboardIdByName(request, 'E2E feedback executive');
+  await page.goto(`/dashboards/${id}`);
+  await expect(detailTable(page)).toBeVisible({ timeout: 60_000 });
+  await page.getByTestId('dashboard-more').click();
+  await page.getByRole('button', { name: /PowerPoint/ }).first().click();
+  await page.getByRole('button', { name: /Arrange it yourself|Tự sắp bố cục/ }).click();
+  await page.getByRole('button', { name: /^(Arrange…|Sắp xếp…)$/ }).click();
+  await expect(page.getByText(/·\s*7\s*(items|ô)/)).toBeVisible({ timeout: 30_000 });
+  await page.getByRole('button', { name: /^(Tidy up|Tự sắp gọn)$/ }).click();
+  await expect(page.getByText(/(NOT PLACED|CHƯA ĐẶT)\s*\(0\)/i)).toBeVisible();
+  await expect(page.getByText(/(SHEETS|CÁC TỜ)\s*\(2\)/i)).toBeVisible();
+});
+
+for (const width of [1440, 1280, 1024, 820, 390]) {
+  test(`public export entry is reachable and the dialog fits @${width}`, async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`/d/${TOKEN}`);
+    await expect(detailTable(page)).toBeVisible({ timeout: 60_000 });
+    const entry = page.getByTestId('public-export-open').first();
+    await expect(entry).toBeVisible();
+    await entry.click();
+    for (const id of ['export-filetype-pdf', 'export-filetype-pptx']) {
+      const box = await page.getByTestId(id).boundingBox();
+      expect(box, id).toBeTruthy();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width + 1);
+    }
+    await expect(page.getByText(/charts as images|biểu đồ là hình ảnh/).first()).toBeVisible();
+  });
+}
+
+test('Builder → Save draft → reload → Publish → Public: draft never leaks, published matches', async ({ page, request }, testInfo) => {
+  test.setTimeout(300_000);
+  const sourceId = await dashboardIdByName(request, 'E2E closure original 007');
+  const dup = await request.post(`${API}/api/v1/dashboards/${sourceId}/duplicate`);
+  expect(dup.status(), await dup.text()).toBe(201);
+  const copyId = (await dup.json()).id as number;
+  try {
+    const link = await request.post(`${API}/api/v1/dashboards/${copyId}/public-links`, { data: { name: 'journey' } });
+    expect(link.status(), await link.text()).toBeLessThan(300);
+    const token = (await link.json()).token as string;
+    const publicTileWidth = async () => {
+      const reader = await page.context().newPage();
+      await reader.goto(`/d/${token}`);
+      const tile = reader.locator('[data-grid-item-id]').filter({ hasText: 'E2E 007 A Total' });
+      await expect(tile).toContainText('610', { timeout: 60_000 });
+      const w = (await tile.boundingBox())!.width;
+      await reader.close();
+      return w;
+    };
+    const before = await publicTileWidth();
+
+    // Builder: the KPI, sort the table, resize the KPI.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/dashboards/${copyId}`);
+    const kpi = page.locator('[data-grid-item-id]').filter({ hasText: 'E2E 007 A Total' });
+    await expect(kpi).toContainText('610', { timeout: 60_000 });
+    const detail = page.locator('[data-grid-item-id]').filter({ hasText: 'E2E 007 A Detail' }).locator('table');
+    const amountTh = detail.locator('thead th').filter({ hasText: 'amount' });
+    await amountTh.locator('[data-testid="table-sort-indicator"]').click();
+    await expect(amountTh).toHaveAttribute('aria-sort', 'ascending');
+    const amountCol = await amountTh.evaluate((el) => Array.from(el.parentElement!.children).indexOf(el));
+    await expect.poll(() => detail.locator('tbody tr').first().locator('td').nth(amountCol).innerText()).toMatch(/^10(\.00)?$/);
+    const handle = kpi.locator('.react-resizable-handle-se');
+    const hb = (await handle.boundingBox())!;
+    await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(hb.x + 160, hb.y + hb.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await expect(page.getByTestId('dashboard-save-draft')).toHaveAttribute('data-state', 'unsaved', { timeout: 15_000 });
+    const resized = (await kpi.boundingBox())!.width;
+    await page.getByRole('button', { name: 'Save draft' }).click();
+    await expect(page.getByText('Draft saved.')).toBeVisible({ timeout: 15_000 });
+
+    // Reload: the draft survives in the Builder...
+    await page.reload();
+    await expect(kpi).toContainText('610', { timeout: 60_000 });
+    expect(Math.abs((await kpi.boundingBox())!.width - resized)).toBeLessThan(4);
+    // ...but the public link still serves the PUBLISHED layout.
+    expect(Math.abs((await publicTileWidth()) - before)).toBeLessThan(4);
+
+    // Publish: the public link serves the new layout, same numbers on every page.
+    await page.getByRole('button', { name: 'Save & publish' }).click();
+    await expect(page.getByText(/Published — public link now serves/)).toBeVisible({ timeout: 20_000 });
+    expect(await publicTileWidth()).toBeGreaterThan(before + 20);
+    const reader = await page.context().newPage();
+    await reader.goto(`/d/${token}`);
+    for (const o of ORACLE_007) {
+      if (o.page !== 'A North') await reader.getByRole('button', { name: o.page }).click();
+      const letter = o.page[0];
+      await expect(reader.locator('[data-grid-item-id]').filter({ hasText: `E2E 007 ${letter} Total` }))
+        .toContainText(o.kpi, { timeout: 60_000 });
+    }
+    await reader.getByTestId('public-export-open').first().click();
+    const deck = await exportPptx(reader, testInfo.outputPath('journey.pptx'), []);
+    expect(deck[0].texts).toContain('685'); // the reader is on page C
+    await reader.close();
+
+    // Back in the Builder: clean state, no stale "unsaved".
+    await page.goto(`/dashboards/${copyId}`);
+    await expect(kpi).toContainText('610', { timeout: 60_000 });
+    await expect(page.locator('button[data-state="unsaved"]')).toHaveCount(0);
+  } finally {
+    await request.delete(`${API}/api/v1/dashboards/${copyId}`);
+  }
 });

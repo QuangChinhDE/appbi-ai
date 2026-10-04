@@ -1305,11 +1305,27 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
               })),
             getRoot: async () => {
               setCurrentPageId(p.id);
-              setPageHiddenFilters(
-                resolvePublicPageFilterContext(dashboard as unknown as Record<string, unknown>, dashboardPages, p.id).hiddenFilters,
+              const { controlSeed, hiddenFilters } = resolvePublicPageFilterContext(
+                dashboard as unknown as Record<string, unknown>, dashboardPages, p.id,
               );
-              // Switching the page runs its own fetch; the extractor then waits
-              // on the shared readiness protocol before reading anything.
+              setPageHiddenFilters(hiddenFilters);
+              // Load EVERY chart of this page with THAT page's filter context
+              // (same as the PDF path). A page switch alone only lazy-loads the
+              // visible tiles, so pages the reader had not opened came out of
+              // the deck with no KPI values and no tables — silently.
+              const pending = getDashboardChartsForPage(dashboard.dashboard_charts ?? [], p.id)
+                .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id
+                  && !chartDataRef.current[dc.chart_id])
+                .map((dc) => dc.chart_id);
+              if (pending.length) {
+                await fetchChartsForPage(p.id, session, null, {
+                  chartIds: pending,
+                  viewerFilters: mergeSeedWithViewerSelections(controlSeed, appliedViewerFiltersRef.current),
+                  hiddenFilters,
+                  silent: true,
+                });
+              }
+              // The extractor then waits on the shared readiness protocol.
               await new Promise<void>((resolve) => {
                 requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 250)));
               });
@@ -1318,10 +1334,10 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           })),
         });
         setIsExportDialogOpen(false);
-        toast.success(t('dashboards.export.pptxDone'));
+        toast.success(t('dashboards.export.pptxDone'), { id: 'report-export' });
       } catch (err) {
         console.error('PowerPoint export failed', err);
-        toast.error(t('dashboards.export.pptxFailed'));
+        toast.error(t('dashboards.export.pptxFailed'), { id: 'report-export' });
       } finally {
         setCurrentPageId(originalPageId);
         setForceVisibleAll(false);

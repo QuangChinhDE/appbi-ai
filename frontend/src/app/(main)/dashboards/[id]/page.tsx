@@ -4060,10 +4060,10 @@ function DashboardDetailPageInner() {
           })),
         });
         setIsExportDialogOpen(false);
-        toast.success(t('dashboards.export.pptxDone'));
+        toast.success(t('dashboards.export.pptxDone'), { id: 'report-export' });
       } catch (err) {
         console.error('PowerPoint export failed', err);
-        toast.error(t('dashboards.export.pptxFailed'));
+        toast.error(t('dashboards.export.pptxFailed'), { id: 'report-export' });
       } finally {
         setCurrentPageId(originalPageId);
         setIsExportingPdf(false);
@@ -4125,13 +4125,14 @@ function DashboardDetailPageInner() {
         // the pop-up hint would be nonsense.
         try { previewWindow?.close(); } catch { /* noop */ }
         toast.info(t('dashboards.detail.pdfDownloaded'), {
+          id: 'report-export',
           description: t('dashboards.detail.pdfPopupBlocked'),
         });
       }
     } catch (err) {
       console.error('PDF export failed', err);
       try { previewWindow?.close(); } catch { /* noop */ }
-      toast.error(t('dashboards.detail.exportFailed'));
+      toast.error(t('dashboards.detail.exportFailed'), { id: 'report-export' });
     } finally {
       setCurrentPageId(originalPageId);
       setIsExportingPdf(false);
