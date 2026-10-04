@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -108,7 +108,9 @@ def _source_tables() -> None:
         # captures its own export instant and exposes no caller-supplied clock.
         # Yesterday has deliberately different values, so losing `as_of` is not
         # hidden by an equal adjacent window.
-        today = date.today()
+        # UTC, matching APP_TIMEZONE=UTC — a host-local date (e.g. Vietnam just
+        # after midnight) is a different calendar day than the server's 'today'.
+        today = datetime.now(timezone.utc).date()
         yesterday = today - timedelta(days=1)
         c.execute(sa.text(f"DROP TABLE IF EXISTS {SCHEMA}.closure_pdf"))
         c.execute(sa.text(

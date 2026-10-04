@@ -815,3 +815,20 @@ def test_datasource_service_execute_query_log_is_scrubbed(monkeypatch, caplog):
         svc.DataSourceConnectionService.execute_query("postgresql", cfg, "select 1", 1)
     assert "Query execution failed" in caplog.text
     _assert_safe(caplog.text, "execute_query service log")
+
+
+def test_pdf_worker_inputs_carry_the_same_fixed_as_of_on_every_page():
+    """Final release §13.11: the worker's per-page render inputs (the exact loop
+    `_render_job` runs: _page_ids → _render_url) all carry the job's ONE as_of,
+    in page order — the fixed-anchor contract itself, not inferred from values."""
+    from types import SimpleNamespace
+    from urllib.parse import urlparse, parse_qs
+    from app.scripts.pdf_worker import _page_ids, _render_url
+
+    as_of = "2026-03-14T23:59:59.500000+00:00"
+    job = SimpleNamespace(link_token="e2e-closure-pdf",
+                          params={"as_of": as_of, "pages": ["a", "b", "c"], "filters": []})
+    urls = [_render_url(job, p) for p in _page_ids(job)]
+    qs = [parse_qs(urlparse(u).query) for u in urls]
+    assert [q["page"][0] for q in qs] == ["a", "b", "c"]
+    assert {q["asOf"][0] for q in qs} == {as_of}

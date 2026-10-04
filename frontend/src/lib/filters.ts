@@ -901,7 +901,10 @@ export function resolveChartFieldForFilter(
   // chart's base view before deciding it is inapplicable; restricting this to
   // fieldMap made KPI/trend visuals silently skip a valid base-view predicate
   // while bar/table siblings happened to apply it because they used the field.
-  if (binding.baseViewName) {
+  // Only for a BARE filter: one that names its semantic view (semanticField /
+  // fieldKey) already resolved — or deliberately did not — above, and must never
+  // be re-matched by column name onto a different view that happens to share it.
+  if (binding.baseViewName && semanticCandidates(filter).length === 0) {
     const baseSemanticField = `${binding.baseViewName}.${filter.field}`;
     if (availableSemanticFields.has(baseSemanticField)
         || (binding.reachableFields ?? []).includes(baseSemanticField)) {

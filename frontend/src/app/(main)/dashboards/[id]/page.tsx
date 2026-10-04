@@ -416,6 +416,10 @@ function DashboardDetailPageInner() {
   const unsavedWorkRef = React.useRef(false);
   const leaveGuardEntryRef = React.useRef(false);
   const leaveGuardBypassPopRef = React.useRef(false);
+  // A link clicked while the guard's own history.back() is still in flight is
+  // queued and followed once that pop lands — else the late pop would bounce
+  // the user straight back to this dashboard.
+  const queuedNavRef = React.useRef<string | null>(null);
   const leaveGuardUrlRef = React.useRef('');
   const leaveGuardKeyRef = React.useRef(`appbi-dashboard-${dashboardId}`);
   /** Confirm before discarding an unsaved theme/layout edit on navigation.
@@ -1160,6 +1164,18 @@ function DashboardDetailPageInner() {
       const dirty = unsavedWorkRef.current;
       const contentPending = Boolean(pendingContentSaveRef.current?.hasPending())
         || inflightContentSavesRef.current.size > 0;
+      if (!dirty && !contentPending && leaveGuardBypassPopRef.current && !e.defaultPrevented && e.button === 0) {
+        const a = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+        if (a && a.target !== '_blank' && !a.hasAttribute('download')) {
+          const u = new URL(a.href, window.location.href);
+          if (u.origin === window.location.origin && u.href !== window.location.href) {
+            e.preventDefault();
+            e.stopPropagation();
+            queuedNavRef.current = `${u.pathname}${u.search}${u.hash}`;
+            return;
+          }
+        }
+      }
       if ((!dirty && !contentPending) || e.defaultPrevented || e.button !== 0
           || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       const anchor = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
@@ -1176,7 +1192,11 @@ function DashboardDetailPageInner() {
       // and stay (with the failure toast) if it did not land — never leave and
       // let it fail behind the user's back.
       if (contentPending) {
-        void settleContentEdits('flush').then((ok) => { if (ok) go(); });
+        void settleContentEdits('flush').then((ok) => {
+          // Saved → leave. Failed → the failure toast is showing; leave only if
+          // the author explicitly accepts losing it (never silently).
+          if (ok || window.confirm(t('dashboards.detail.unsavedLeaveConfirm'))) go();
+        });
         return;
       }
       go();
@@ -1196,6 +1216,9 @@ function DashboardDetailPageInner() {
       if (leaveGuardBypassPopRef.current) {
         leaveGuardBypassPopRef.current = false;
         leaveGuardEntryRef.current = false;
+        const queued = queuedNavRef.current;
+        queuedNavRef.current = null;
+        if (queued) router.push(queued);
         return;
       }
       if (!unsavedWorkRef.current) return;
