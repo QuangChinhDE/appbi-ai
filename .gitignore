@@ -390,6 +390,7 @@ backend/_verify_gate.db
 !backend/tests/test_public_token_lifecycle.py
 !backend/tests/test_sql_literal_security.py
 !backend/tests/test_trusted_proxy_client_ip.py
+!backend/tests/test_embed_integration_security.py
 !backend/tests/test_report_content_widgets.py
 !backend/tests/test_semantic_health.py
 !backend/tests/test_surface_parity.py

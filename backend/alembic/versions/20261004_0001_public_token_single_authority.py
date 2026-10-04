@@ -25,8 +25,14 @@
    enforced. A link that had already reached its cap is DISABLED here so its
    closed state survives the retirement instead of silently reopening.
 
-Downgrade drops `auth_version` only; nulled tokens are not restored (restoring
-them would restore the bypass).
+4. `embed_grants.personal_access_token_id` (additive, nullable, FK CASCADE) —
+   the PAT that minted the grant. A grant is honoured only while that PAT is
+   live; revoking or deleting the token ends every link it issued. Grants
+   minted before this revision have no PAT recorded and are refused from now
+   on (they live at most an hour; integrations re-mint as they always do).
+
+Downgrade drops the two added columns; nulled tokens are not restored
+(restoring them would restore the bypass).
 
 SELF-CONTAINED — imports nothing from `app`.
 
@@ -35,6 +41,7 @@ Revises: 20261001_0001
 """
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision = "20261004_0001"
 down_revision = "20261001_0001"
@@ -61,6 +68,22 @@ def upgrade() -> None:
 
     op.execute("UPDATE dashboards SET share_token = NULL WHERE share_token IS NOT NULL")
 
+    op.add_column(
+        "embed_grants",
+        sa.Column("personal_access_token_id", postgresql.UUID(as_uuid=True), nullable=True),
+    )
+    op.create_foreign_key(
+        "fk_embed_grants_personal_access_token_id",
+        "embed_grants", "personal_access_tokens",
+        ["personal_access_token_id"], ["id"], ondelete="CASCADE",
+    )
+    op.create_index(
+        "ix_embed_grants_personal_access_token_id", "embed_grants", ["personal_access_token_id"],
+    )
+
 
 def downgrade() -> None:
+    op.drop_index("ix_embed_grants_personal_access_token_id", table_name="embed_grants")
+    op.drop_constraint("fk_embed_grants_personal_access_token_id", "embed_grants", type_="foreignkey")
+    op.drop_column("embed_grants", "personal_access_token_id")
     op.drop_column("dashboard_public_links", "auth_version")

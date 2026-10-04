@@ -329,26 +329,61 @@ def resolve_pat_allowed_origins(pat) -> list[str]:
     return [str(v) for v in raw] if isinstance(raw, list) else []
 
 
-def embed_policy_for_token(token: str, db: Session) -> dict:
-    """Framing policy for an embed grant token, for the frontend middleware.
+def embed_policy_for_token(token: str, db: Session, origin: str | None = None) -> dict:
+    """Framing policy for an embed page, for the frontend middleware.
 
-    Deliberately returns nothing but the policy: this is called without
-    authentication (the token IS the capability) on every iframe page load, so it
-    must not become a metadata oracle. An unknown/expired token yields the
-    unrestricted default rather than an error — the page itself still refuses the
-    token, and answering "that token doesn't exist" here would turn this into a
-    probe endpoint.
+    An explicit STATE, never an empty list standing in for several meanings:
+
+      * ``unrestricted`` — a stable public token (no per-link policy exists; the
+        deployment-wide EMBED_FRAME_ANCESTORS floor still applies), or a live
+        ``emb_`` grant minted without allowed origins;
+      * ``restricted`` — a live ``emb_`` grant with an allowlist. When the
+        caller passes the framing ``origin`` (the Referer's origin), the
+        decision is made HERE with the one canonical matcher
+        (``origin_allowed``) and returned as ``origin_allowed``;
+      * ``invalid`` — an ``emb_`` token that does not resolve to a live grant:
+        unknown, expired, revoked, its PAT revoked/expired, or its link
+        disabled. Never reported as unrestricted.
+
+    Tokens are 256 random hex characters, so telling "invalid" apart from
+    "unrestricted" is no enumeration oracle. Stable tokens are answered
+    ``unrestricted`` without a lookup: the page itself refuses an unknown one.
     """
-    origins: list[str] = []
-    if token and token.startswith(EMBED_GRANT_PREFIX):
-        grant = (
-            db.query(EmbedGrant)
-            .filter(EmbedGrant.token_hash == _hash_token(token))
-            .first()
-        )
-        if grant is not None and isinstance(grant.allowed_origins, list):
-            origins = [str(v) for v in grant.allowed_origins]
-    return {"allowed_origins": origins, "enforced": bool(origins)}
+    if not token or not token.startswith(EMBED_GRANT_PREFIX):
+        return {"state": "unrestricted", "allowed_origins": [], "enforced": False, "origin_allowed": True}
+    invalid = {"state": "invalid", "allowed_origins": [], "enforced": True, "origin_allowed": False}
+    grant = (
+        db.query(EmbedGrant)
+        .filter(EmbedGrant.token_hash == _hash_token(token))
+        .first()
+    )
+    if grant is None or grant.revoked_at is not None:
+        return invalid
+    now = datetime.now(timezone.utc)
+    exp = grant.expires_at
+    if exp is not None and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp is not None and now >= exp:
+        return invalid
+    if not _minting_token_is_live(grant, db, now):
+        return invalid
+    link_live = (
+        db.query(DashboardPublicLink.id)
+        .filter(DashboardPublicLink.id == grant.link_id, DashboardPublicLink.is_active == True)  # noqa: E712
+        .first()
+    )
+    if link_live is None:
+        return invalid
+    origins = [str(v) for v in grant.allowed_origins] if isinstance(grant.allowed_origins, list) else []
+    if not origins:
+        return {"state": "unrestricted", "allowed_origins": [], "enforced": False, "origin_allowed": True}
+    return {
+        "state": "restricted",
+        "allowed_origins": origins,
+        "enforced": True,
+        "origin_allowed": origin_allowed(origin, origins) if origin else None,
+        "expires_at": exp.isoformat() if exp is not None else None,
+    }
 
 
 def get_or_create_embed_link(
@@ -467,6 +502,7 @@ def mint_embed_grant(
     ttl_seconds: int,
     header: str | None = None,
     allowed_origins: list[str] | None = None,
+    personal_access_token_id=None,
 ) -> tuple[str, EmbedGrant]:
     raw = f"{EMBED_GRANT_PREFIX}{secrets.token_hex(EMBED_GRANT_HEX_CHARS // 2)}"
     grant = EmbedGrant(
@@ -474,6 +510,7 @@ def mint_embed_grant(
         link_id=link.id,
         token_hash=_hash_token(raw),
         created_by=created_by,
+        personal_access_token_id=personal_access_token_id,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
         header=sanitize_embed_header(header),
         allowed_origins=list(allowed_origins) if allowed_origins else None,
@@ -485,6 +522,20 @@ def mint_embed_grant(
     if secrets.randbelow(_GRANT_PURGE_PROBABILITY_DENOM) == 0:
         _purge_expired_grants(db)
     return raw, grant
+
+
+def _minting_token_is_live(grant: EmbedGrant, db: Session, now: datetime) -> bool:
+    pat_id = getattr(grant, "personal_access_token_id", None)
+    if pat_id is None:
+        return False  # minted before PAT binding existed — refuse, never assume
+    from app.models.personal_access_token import PersonalAccessToken
+    pat = db.query(PersonalAccessToken).filter(PersonalAccessToken.id == pat_id).first()
+    if pat is None or pat.revoked_at is not None:
+        return False
+    exp = pat.expires_at
+    if exp is not None and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp is None or now < exp
 
 
 def resolve_embed_grant(token: str, db: Session) -> tuple[DashboardPublicLink, EmbedGrant] | None:
@@ -514,6 +565,11 @@ def resolve_embed_grant(token: str, db: Session) -> tuple[DashboardPublicLink, E
         exp = exp.replace(tzinfo=timezone.utc)
     if exp is not None and now >= exp:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="This embed link has expired.")
+
+    # A grant lives only as long as the PAT that minted it. Revoking the token is
+    # THE revocation for an integration: every link it issued stops at once.
+    if not _minting_token_is_live(grant, db, now):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This embed link has been revoked.")
 
     link = (
         db.query(DashboardPublicLink)

@@ -24,6 +24,7 @@ from app.core import get_db
 from app.core.config import settings
 from app.core.dependencies import ALGORITHM
 from app.core.logging import get_logger
+from app.core.log_safety import token_ref
 from app.models.models import Dashboard, DashboardChart, DashboardPublicLink
 from app.schemas import ChartDataResponse, DashboardResponse
 from app.services.dashboard_service import DRAFT_ROW_KEYS, is_draft_only_item, strip_draft_row_keys
@@ -46,7 +47,7 @@ from fastapi.responses import FileResponse
 from app.services.report_pptx_service import ReportPptxRequest
 
 from app.services import pdf_export_service
-from app.services.embed_link_service import embed_policy_for_token, resolve_embed_grant
+from app.services.embed_link_service import EMBED_GRANT_PREFIX, embed_policy_for_token, resolve_embed_grant
 #: The SSE wire format, shared with the authenticated Direct Chat route. Two
 #: copies of it would agree only until one of them gained an event, and the
 #: browser parser is a single implementation.
@@ -3715,7 +3716,7 @@ def get_public_filter_distinct_values(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
-        logger.error(f"Public distinct values error for token={token} dataset={dataset_id} field={field}: {exc}")
+        logger.error(f"Public distinct values error for link={token_ref(token)} dataset={dataset_id} field={field}: {exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load distinct values.",
@@ -3833,7 +3834,7 @@ def get_public_chart_data(
             headers={REFUSAL_HEADER: _cat} if _cat else None,
         )
     except Exception as exc:
-        logger.exception("Public chart data error for token=%s chart=%s", token, chart_id)
+        logger.exception("Public chart data error for link=%s chart=%s", token_ref(token), chart_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load chart data.",
@@ -3988,11 +3989,19 @@ def get_public_charts_data_batch(
 # ── Embed framing policy ─────────────────────────────────────────────────────
 
 
+def _policy_token_key(request: Request) -> str:
+    """Rate-limit the policy lookup per TOKEN, not per caller: every lookup comes
+    from the frontend server, so a per-IP bucket was one bucket for all
+    viewers — flooding it with random tokens made real lookups fail."""
+    return "embed-policy:" + str(request.path_params.get("token") or "")
+
+
 @router.get("/embed/{token}/policy")
-@_limiter.limit("600/minute")
+@_limiter.limit("600/minute", key_func=_policy_token_key)
 def get_embed_framing_policy(
     token: str,
     request: Request,
+    origin: str | None = Query(default=None, max_length=512),
     db: Session = Depends(get_db),
 ):
     """Which sites may iframe this embed link.
@@ -4003,11 +4012,12 @@ def get_embed_framing_policy(
     the iframe carries the report's own origin, never the host page's).
 
     Unauthenticated on purpose: the token IS the capability, and the middleware
-    needs the answer before rendering anything. It returns nothing but the policy,
-    and an unknown or expired token yields the unrestricted default rather than an
-    error — answering "no such token" here would turn this into a probe endpoint.
+    needs the answer before rendering anything. It returns nothing but the policy
+    STATE (unrestricted / restricted / invalid — see embed_policy_for_token) and,
+    when `origin` is passed, whether that framing origin is allowed. A failure
+    to answer is never read as "unrestricted" by the middleware.
     """
-    return embed_policy_for_token(token, db)
+    return embed_policy_for_token(token, db, origin=origin)
 
 
 # ── Server-side PDF export ───────────────────────────────────────────────────
@@ -4037,6 +4047,20 @@ class _ExportCreateBody(BaseModel):
     session: str | None = None
 
 
+def _refuse_report_export_on_embed_grant(token: str) -> None:
+    """Report export (PDF/PPTX) is a capability of the stable public link, NOT of
+    the integration embed. An `emb_` grant is a short-lived, origin-bound view
+    for a host app's iframe; the server renderer opens `/d/<token>`, which is
+    refused for grants (the per-grant framing policy lives on `/embed` only).
+    Declared here rather than left to fail in the worker. Per-tile CSV (the rows
+    the viewer already received) is unaffected."""
+    if token and token.startswith(EMBED_GRANT_PREFIX):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Report export is not available on an integration embed link.",
+        )
+
+
 @router.get("/dashboards/{token}/exports/capabilities")
 @_limiter.limit("60/minute")
 def get_public_export_capabilities(
@@ -4046,6 +4070,7 @@ def get_public_export_capabilities(
     x_public_session: str | None = Header(default=None),
 ):
     """Does this deployment have a render worker? Drives engine selection in the UI."""
+    _refuse_report_export_on_embed_grant(token)
     _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
     return {
         "server_engine": pdf_export_service.engine_available(),
@@ -4068,6 +4093,7 @@ def export_public_dashboard_pptx(
     locked/hidden filters); reads no data itself, so it cannot widen the link.
     """
     from app.services.report_pptx_service import build_report_pptx
+    _refuse_report_export_on_embed_grant(token)
 
     dash, _public_filters, _link, _appearance = _get_dashboard_by_token(
         token, db, session_token=x_public_session, track_access=False,
@@ -4091,6 +4117,7 @@ def create_public_export_job(
     x_public_session: str | None = Header(default=None),
 ):
     """Queue a server-side PDF render for this shared link."""
+    _refuse_report_export_on_embed_grant(token)
     if not pdf_export_service.engine_available():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -4259,7 +4286,7 @@ def get_dashboard_ai_recon(
         combined_filters = ctx.public_filters
         recon = build_proactive_recon(ctx)
     except Exception:
-        logger.exception("AI recon build error for token=%s", token)
+        logger.exception("AI recon build error for link=%s", token_ref(token))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to build AI recon.",
@@ -4340,8 +4367,8 @@ def _guard_viewer_text(token: str, *, briefing: dict | None = None,
         return
     result = _check_input(text, mode=settings.INTELLIGENCE_GUARD_MODE)
     if result.codes:
-        logger.warning("ai_bot guard token=%s %s text=%r",
-                       token, result.to_log(), text[:160])
+        logger.warning("ai_bot guard link=%s %s text=%r",
+                       token_ref(token), result.to_log(), text[:160])
     if not result.allowed:
         raise HTTPException(status_code=400, detail=result.message)
 
@@ -4413,7 +4440,7 @@ def get_dashboard_ai_briefing_guess(
             dashboard_description=getattr(dash, "description", "") or "",
         )
     except Exception:
-        logger.exception("AI briefing guess error for token=%s", token)
+        logger.exception("AI briefing guess error for link=%s", token_ref(token))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to build AI briefing guess.",
@@ -4854,7 +4881,7 @@ async def chat_dashboard_ai_agent(
         viewer_supplied_key=bool((x_user_ai_key or "").strip()),
     )
     if not _budget.allowed:
-        logger.warning("ai_bot budget block token=%s %s", token, _budget.to_log())
+        logger.warning("ai_bot budget block link=%s %s", token_ref(token), _budget.to_log())
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=_budget.message,
         )
@@ -4886,14 +4913,14 @@ async def chat_dashboard_ai_agent(
     if _brief_text:
         _bguard = _check_input(_brief_text, mode=settings.INTELLIGENCE_GUARD_MODE)
         if _bguard.codes:
-            logger.warning("ai_bot guard(briefing) token=%s %s text=%r",
-                           token, _bguard.to_log(), _brief_text[:160])
+            logger.warning("ai_bot guard(briefing) link=%s %s text=%r",
+                           token_ref(token), _bguard.to_log(), _brief_text[:160])
         if not _bguard.allowed:
             _guard = _bguard
     if _guard.codes:
         logger.warning(
-            "ai_bot guard token=%s %s question=%r",
-            token, _guard.to_log(), _last_user_msg[:160],
+            "ai_bot guard link=%s %s question=%r",
+            token_ref(token), _guard.to_log(), _last_user_msg[:160],
         )
     if not _guard.allowed:
         async def _blocked_stream():
@@ -5195,7 +5222,7 @@ async def chat_dashboard_ai_agent(
             except Exception:
                 logger.debug("ai_bot turn-log write failed", exc_info=True)
         if timed_out:
-            logger.warning("ai_bot turn watchdog fired token=%s mode=%s", token, effective_mode)
+            logger.warning("ai_bot turn watchdog fired link=%s mode=%s", token_ref(token), effective_mode)
             yield (
                 "data: "
                 + _json.dumps({
@@ -5382,7 +5409,7 @@ async def explore_dashboard_ai_agent(
             except Exception:
                 logger.debug("ai_bot explore turn-log write failed", exc_info=True)
         if timed_out:
-            logger.warning("ai_bot explore watchdog fired token=%s", token)
+            logger.warning("ai_bot explore watchdog fired link=%s", token_ref(token))
             yield (
                 "data: "
                 + _json.dumps({

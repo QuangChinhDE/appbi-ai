@@ -1,8 +1,11 @@
 """Machine-to-machine embed API.
 
-- POST /integrations/embed/resolve — authenticated with the caller's Personal
-  Access Token (PAT, the same token the MCP uses). Given a dashboard the PAT's
-  user can view, it returns a fresh, rotating, ~256-char embed URL
+- POST /integrations/embed/resolve — an INTEGRATION capability. It accepts a
+  Personal Access Token only (a browser session is refused), the token must
+  carry `dashboards: edit` (or full), and its owner must be able to EDIT the
+  dashboard — the same bar as creating a public link, since a minted URL is an
+  unauthenticated capability for the report. It returns a fresh, rotating,
+  ~256-char embed URL
   (`/embed/emb_...`) valid ~1h, scoped to a set of LOCKED filters. Call again
   after it expires to get a new URL. This link is DIFFERENT from a public-share
   link created in the Public Link modal: it rotates and self-expires.
@@ -24,9 +27,10 @@ from datetime import datetime
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import (
+    AUTH_TOKEN_KIND_ATTR,
     PERSONAL_ACCESS_TOKEN_ID_ATTR,
     get_current_user,
-    require_view_access,
+    require_edit_access,
 )
 from app.models.personal_access_token import PersonalAccessToken
 from app.models.models import Dashboard
@@ -123,13 +127,29 @@ def resolve_embed_link(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Mint a rotating embed link for a dashboard the PAT's user can view."""
+    """Mint a rotating embed link. PAT only; the PAT's owner must be able to edit
+    the dashboard (the token's own `dashboards` scope caps that — a view-scoped
+    token cannot mint)."""
+    # Integration credential only. A logged-in browser session (cookie or the
+    # JWT the frontend proxies) is refused: minting hands out an unauthenticated
+    # capability URL, which is a publish action, not something any page a user
+    # happens to have open should be able to do on their behalf.
+    if getattr(current_user, AUTH_TOKEN_KIND_ATTR, "session") != "personal_access_token":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Embed links are minted with a Personal Access Token (Settings → Tokens), not a browser session.",
+        )
+    pat_id = getattr(current_user, PERSONAL_ACCESS_TOKEN_ID_ATTR, None)
+
     dash = db.query(Dashboard).filter(Dashboard.id == body.dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found.")
 
-    # Scope guardrail: the caller can only embed a dashboard they can access.
-    require_view_access(db, current_user, dash, "dashboards")
+    # Same bar as creating a public link (dashboards.create_public_link). The
+    # effective permission is already capped by the PAT's scopes, so a token
+    # scoped `dashboards: view` is refused here even for its owner's dashboards.
+    # Applies to full_report=true exactly the same way.
+    require_edit_access(db, current_user, dash, "dashboards")
 
     # Safety gate — see EmbedResolveRequest.full_report.
     if not body.filters and not body.full_report:
@@ -153,11 +173,7 @@ def resolve_embed_link(
     # inherits it. The value is then SNAPSHOT onto the grant, so the guard that
     # runs on every iframe load is a single row read and an issued link keeps the
     # policy it was issued under.
-    pat_id = getattr(current_user, PERSONAL_ACCESS_TOKEN_ID_ATTR, None)
-    pat = (
-        db.query(PersonalAccessToken).filter(PersonalAccessToken.id == pat_id).first()
-        if pat_id else None
-    )
+    pat = db.query(PersonalAccessToken).filter(PersonalAccessToken.id == pat_id).first()
     try:
         requested_origins = normalize_allowed_origins(body.allowed_origins)
     except InvalidEmbedOrigin as exc:
@@ -171,16 +187,13 @@ def resolve_embed_link(
         )
     if requested_origins:
         effective_origins = requested_origins
-    elif pat is not None:
-        # Nothing sent → inherit what this integration declared earlier.
-        effective_origins = resolve_pat_allowed_origins(pat)
     else:
-        # Session-authenticated call (no PAT to remember it on): the restriction
-        # applies to this one link.
-        effective_origins = []
+        # Nothing sent → inherit what this integration declared earlier.
+        effective_origins = resolve_pat_allowed_origins(pat) if pat is not None else []
 
     raw_token, grant = mint_embed_grant(
         db, link, current_user.id, ttl, header=header, allowed_origins=effective_origins,
+        personal_access_token_id=pat_id,
     )
 
     logger.info(

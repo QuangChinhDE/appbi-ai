@@ -225,6 +225,7 @@ jobs:
             tests/test_public_token_lifecycle.py \
             tests/test_sql_literal_security.py \
             tests/test_trusted_proxy_client_ip.py \
+            tests/test_embed_integration_security.py \
             tests/test_report_content_widgets.py \
             tests/test_semantic_router_object_access.py \
             tests/test_semantic_state_contracts.py \

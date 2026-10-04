@@ -470,10 +470,10 @@ class EmbedGrant(Base):
     to a managed DashboardPublicLink without exposing that link's own token.
     Only the SHA-256 hash of the 256-char token is stored.
 
-    Minted by POST /api/v1/integrations/embed/resolve, authenticated with the
-    caller's Personal Access Token (PAT) — the same token the MCP uses. The
-    grant is scoped to whatever the PAT's user can access; `created_by` records
-    that user for audit.
+    Minted by POST /api/v1/integrations/embed/resolve, which accepts ONLY a
+    Personal Access Token carrying `dashboards: edit` whose owner may edit the
+    dashboard (the same bar as creating a public link). `created_by` and
+    `personal_access_token_id` record who/what minted it.
     """
     __tablename__ = "embed_grants"
 
@@ -481,6 +481,14 @@ class EmbedGrant(Base):
     link_id = Column(Integer, ForeignKey("dashboard_public_links.id", ondelete="CASCADE"), nullable=False, index=True)
     token_hash = Column(String(64), nullable=False, unique=True, index=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # The PAT that minted this grant. A grant is only as alive as its PAT:
+    # revoking (or deleting, CASCADE) the token kills every link it issued at
+    # once, instead of each living out its TTL. Null only on grants minted
+    # before migration 20261004_0001 — those are refused (fail closed).
+    personal_access_token_id = Column(
+        UUID(as_uuid=True), ForeignKey("personal_access_tokens.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
 
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     revoked_at = Column(DateTime(timezone=True), nullable=True)
