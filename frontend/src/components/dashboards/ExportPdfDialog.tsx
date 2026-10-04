@@ -15,6 +15,8 @@ export interface ExportPdfChoices {
   /** Tile placement on the paper — see PdfLayoutMode. */
   layout: PdfLayoutMode;
   pageIds: string[];
+  /** 'pptx' = the editable PowerPoint export (one slide per page). */
+  fileType?: 'pdf' | 'pptx';
 }
 
 type Props = {
@@ -49,6 +51,7 @@ export function ExportPdfDialog({ isOpen, onClose, pages, defaultPageId, isExpor
   // instead of one per tile, no table expansion) and it is what most readers
   // actually want — the report, on paper, one page per page.
   const [layout, setLayout] = useState<PdfLayoutMode>('snapshot');
+  const [fileType, setFileType] = useState<'pdf' | 'pptx'>('pdf');
   const seedSelection = React.useCallback(
     () => new Set(defaultPageId && pages.some((p) => p.id === defaultPageId)
       ? [defaultPageId]
@@ -77,7 +80,7 @@ export function ExportPdfDialog({ isOpen, onClose, pages, defaultPageId, isExpor
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-md rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
         <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-5 py-4">
-          <h2 className="text-base font-semibold text-text-primary">{t('dashboards.exportPdf.title')}</h2>
+          <h2 className="text-base font-semibold text-text-primary">{t('dashboards.export.title')}</h2>
           <button onClick={onClose} disabled={isExporting} className="text-text-tertiary hover:text-text-primary disabled:opacity-40">
             <X className="h-4 w-4" />
           </button>
@@ -105,6 +108,33 @@ export function ExportPdfDialog({ isOpen, onClose, pages, defaultPageId, isExpor
           </div>
         ) : (
           <div className="space-y-4 px-5 py-5">
+            <div>
+              <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.export.fileType')}</div>
+              <div className="grid grid-cols-2 gap-1.5" role="radiogroup" aria-label={t('dashboards.export.fileType')}>
+                {([
+                  { id: 'pdf' as const, label: 'dashboards.export.pdf', hint: 'dashboards.export.pdfHint' },
+                  { id: 'pptx' as const, label: 'dashboards.export.pptx', hint: 'dashboards.export.pptxHint' },
+                ]).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={fileType === opt.id}
+                    data-testid={`export-filetype-${opt.id}`}
+                    onClick={() => setFileType(opt.id)}
+                    className={`rounded-md border px-3 py-2 text-left transition-colors ${
+                      fileType === opt.id
+                        ? 'border-brand bg-brand/5 ring-1 ring-brand/30'
+                        : 'border-[rgb(var(--border-line))] bg-surface-2 hover:bg-surface-3'
+                    }`}
+                  >
+                    <div className="text-sm font-medium text-text-primary">{t(opt.label)}</div>
+                    <div className="text-[11px] leading-snug text-text-quaternary">{t(opt.hint)}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            {fileType === 'pdf' && (<>
             <div>
               <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.exportPdf.orientation')}</div>
               <div className="flex gap-2">
@@ -158,6 +188,7 @@ export function ExportPdfDialog({ isOpen, onClose, pages, defaultPageId, isExpor
                 ))}
               </div>
             </div>
+            </>)}
             {pages.length > 1 && (
               <div>
                 <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.exportPdf.pages', { chosen: chosenIds.length, total: pages.length })}</div>
@@ -171,9 +202,11 @@ export function ExportPdfDialog({ isOpen, onClose, pages, defaultPageId, isExpor
                 </div>
               </div>
             )}
-            <p className="text-[11px] text-text-quaternary">
-              {t('dashboards.exportPdf.tableHint')}
-            </p>
+            {fileType === 'pdf' && (
+              <p className="text-[11px] text-text-quaternary">
+                {t('dashboards.exportPdf.tableHint')}
+              </p>
+            )}
           </div>
         )}
         <div className="flex items-center justify-end gap-2 border-t border-[rgb(var(--border-line))] px-5 py-3">
@@ -181,8 +214,9 @@ export function ExportPdfDialog({ isOpen, onClose, pages, defaultPageId, isExpor
           <button
             onClick={() => {
               if (!canExport) return;
+              if (fileType === 'pptx') { onExport({ orientation, format, layout, pageIds: chosenIds, fileType }); return; }
               if (layout === 'custom') { setArrangerOpen(true); return; }
-              onExport({ orientation, format, layout, pageIds: chosenIds });
+              onExport({ orientation, format, layout, pageIds: chosenIds, fileType: 'pdf' });
             }}
             disabled={!canExport}
             className="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-50"
@@ -190,9 +224,11 @@ export function ExportPdfDialog({ isOpen, onClose, pages, defaultPageId, isExpor
             {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
             {isExporting
               ? t('dashboards.exportPdf.exportingPct', { pct })
-              : layout === 'custom'
-                ? t('dashboards.exportPdf.arrange')
-                : t('dashboards.exportPdf.title')}
+              : fileType === 'pptx'
+                ? t('dashboards.export.exportPptx')
+                : layout === 'custom'
+                  ? t('dashboards.exportPdf.arrange')
+                  : t('dashboards.exportPdf.title')}
           </button>
         </div>
       </div>

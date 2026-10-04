@@ -459,12 +459,19 @@ export function ReadonlyChartTile({
                 {kpiHeaderTitle && (
                   <p data-pdf-tile-title className={TILE_KPI_LABEL_CLASS} style={themeTitleStyle} title={kpiHeaderTitle}>{kpiHeaderTitle}</p>
                 )}
-                {/* Overlaid, not in the row: on a 2-up phone KPI the (hover-only)
-                    actions otherwise take the width the label needs. */}
-                {hasActions && (
-                  <div className="absolute right-0 top-0 flex items-center gap-1">
+                {/* Always-visible status badges (dropped filters, "as of")
+                    sit IN the row: overlaid, they covered the label — in the
+                    PDF the "Tính đến …" badge hid the KPI's name. */}
+                {(droppedBadge || cachedBadge) && (
+                  <div className="flex flex-shrink-0 items-center gap-1">
                     {droppedBadge}
                     {cachedBadge}
+                  </div>
+                )}
+                {/* Hover-only actions stay overlaid: on a 2-up phone KPI they
+                    would otherwise take the width the label needs. */}
+                {(havingToggle || exportButton) && (
+                  <div className="absolute right-0 top-0 flex items-center gap-1">
                     {havingToggle}
                     {exportButton}
                   </div>

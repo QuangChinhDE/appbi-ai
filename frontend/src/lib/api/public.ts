@@ -137,6 +137,20 @@ export const publicDashboardApi = {
     return res.data;
   },
 
+  /** Editable PowerPoint of what this reader sees (see report_pptx_service). */
+  exportPptx: async (
+    token: string,
+    sessionToken: string | undefined,
+    payload: unknown,
+  ): Promise<Blob> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.post(`/public/dashboards/${token}/exports/pptx`, payload, {
+      headers,
+      responseType: 'blob',
+    });
+    return res.data as Blob;
+  },
+
   createExportJob: async (
     token: string,
     sessionToken: string | undefined,

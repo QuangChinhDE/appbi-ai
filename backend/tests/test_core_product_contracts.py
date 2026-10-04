@@ -832,3 +832,84 @@ def test_pdf_worker_inputs_carry_the_same_fixed_as_of_on_every_page():
     qs = [parse_qs(urlparse(u).query) for u in urls]
     assert [q["page"][0] for q in qs] == ["a", "b", "c"]
     assert {q["asOf"][0] for q in qs} == {as_of}
+
+
+# ── User feedback closure: editable PowerPoint export ─────────────────────────
+
+def _tiny_png(w=400, h=200) -> str:
+    import base64, io as _io
+    from PIL import Image
+    buf = _io.BytesIO()
+    Image.new("RGB", (w, h), (59, 130, 246)).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _parse_pptx(raw: bytes):
+    import io as _io
+    from pptx import Presentation
+    return Presentation(_io.BytesIO(raw))
+
+
+def test_pptx_export_is_editable_text_native_table_and_picture_charts():
+    """FEEDBACK-02: the deck is genuinely editable where it says so — KPI label
+    and value, titles and text are text frames; the table is a native table; a
+    chart is a picture — and Vietnamese survives."""
+    from app.services.report_pptx_service import ReportPptxRequest, build_report_pptx
+
+    req = ReportPptxRequest(title="Báo cáo điều hành", footer="Báo cáo điều hành", pages=[{
+        # 1800px wide: the 660px-tall page fits one 16:9 slide at this scale.
+        "name": "Tổng quan", "width": 1800,
+        "tiles": [
+            {"kind": "kpi", "x": 0, "y": 0, "w": 290, "h": 140, "title": "Doanh thu", "value": "8.0B"},
+            {"kind": "kpi", "x": 300, "y": 0, "w": 290, "h": 140,
+             "title": "Tổng số đơn hàng trong kỳ báo cáo", "value": "920"},
+            {"kind": "chart", "x": 0, "y": 150, "w": 590, "h": 300, "title": "Doanh thu theo khu vực",
+             "image": _tiny_png()},
+            {"kind": "text", "x": 600, "y": 150, "w": 590, "h": 300, "text": "Nhận định: doanh thu tăng đều."},
+            {"kind": "table", "x": 0, "y": 460, "w": 1190, "h": 300, "title": "Chi tiết",
+             "columns": ["id", "Khu vực", "Doanh thu"],
+             "rows": [[str(i), "Miền Bắc", f"{i * 10}"] for i in range(1, 6)], "total_rows": 5},
+        ],
+    }])
+    prs = _parse_pptx(build_report_pptx(req))
+    assert len(prs.slides) == 1
+    shapes = list(prs.slides[0].shapes)
+    texts = [s.text_frame.text for s in shapes if s.has_text_frame]
+    for expected in ("Báo cáo điều hành", "Tổng quan", "Doanh thu", "8.0B",
+                     "Tổng số đơn hàng trong kỳ báo cáo", "920", "Doanh thu theo khu vực",
+                     "Nhận định: doanh thu tăng đều."):
+        assert expected in texts, expected
+    tables = [s.table for s in shapes if s.has_table]
+    assert len(tables) == 1 and tables[0].cell(0, 1).text == "Khu vực" and tables[0].cell(5, 0).text == "5"
+    assert sum(1 for s in shapes if s.shape_type == 13) == 1  # the chart picture
+    bottom = max(s.top + s.height for s in shapes)
+    assert bottom <= prs.slide_height, "a block runs off the slide"
+
+
+def test_pptx_export_keeps_shapes_and_never_runs_off_the_slide():
+    """One uniform scale keeps a tile's shape (a KPI row stays one aligned row);
+    a page taller than a slide continues on a new slide at a tile boundary; a
+    long table shows the rows that fit and counts the rest."""
+    from app.services.report_pptx_service import ReportPptxRequest, build_report_pptx
+
+    kpis = [{"kind": "kpi", "x": i * 300, "y": 0, "w": 290, "h": 140, "title": f"KPI {i}",
+             "value": str(i)} for i in range(4)]
+    tall_table = {"kind": "table", "x": 0, "y": 1400, "w": 1190, "h": 300, "title": "Bảng dài",
+                  "columns": ["a", "b"], "rows": [[str(i), "x"] for i in range(25)], "total_rows": 40}
+    req = ReportPptxRequest(title="R", pages=[{"name": "P", "width": 1200, "tiles": kpis + [tall_table]}])
+    prs = _parse_pptx(build_report_pptx(req))
+    assert len(prs.slides) == 2, "the table far below the KPI row continues on its own slide"
+    s1 = list(prs.slides[0].shapes)
+    cards = [s for s in s1 if s.shape_type == 1]  # the KPI card rectangles
+    assert len(cards) == 4
+    assert len({c.top for c in cards}) == 1 and len({c.height for c in cards}) == 1
+    gaps = [cards[i + 1].left - (cards[i].left + cards[i].width) for i in range(3)]
+    assert max(gaps) - min(gaps) <= 2, gaps
+    for slide in prs.slides:
+        for s in slide.shapes:
+            assert s.top + s.height <= prs.slide_height, "a block runs off the slide"
+    s2 = list(prs.slides[1].shapes)
+    table = next(s.table for s in s2 if s.has_table)
+    shown = len(table.rows) - 1
+    assert 1 <= shown < 25
+    assert any(f"còn {40 - shown} dòng" in s.text_frame.text for s in s2 if s.has_text_frame)

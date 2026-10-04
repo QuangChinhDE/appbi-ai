@@ -906,6 +906,21 @@ async function drawPageSnapshot(
  * Tiles are found by `data-chart-id`, which every dashboard surface already sets,
  * so this works on the builder, the public report and the embed alike.
  */
+/** Temporarily give a tile the aspect ratio of its sheet box (same width, new
+ *  height), let its charts re-measure, and return the undo. */
+async function reshapeForBox(el: HTMLElement, boxW: number, boxH: number): Promise<() => void> {
+  const rect = el.getBoundingClientRect();
+  if (!rect.width || !boxW || !boxH) return () => {};
+  const target = Math.round(rect.width * (boxH / boxW));
+  if (Math.abs(target - rect.height) < 2) return () => {};
+  const prev = el.style.height;
+  el.style.height = `${target}px`;
+  // ResizeObserver-driven charts redraw over the next frames.
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  return () => { el.style.height = prev; };
+}
+
 async function drawArrangedSheets(
   pdf: jsPDF,
   opts: PdfExportOptions,
@@ -952,7 +967,17 @@ async function drawArrangedSheets(
         continue;
       }
       try {
-        const canvas = await html2canvas(el, { scale: 1.5, useCORS: true, logging: false, backgroundColor: '#ffffff', onclone: legibleClone });
+        // Lay the live tile out at the BOX's shape before capturing it. A tile
+        // captured at its on-screen shape and letterboxed into a box of another
+        // shape was inset and centred, so a KPI row, the charts under it and the
+        // table each ended at different edges ("bố cục lệch"). Restored after.
+        const restore = await reshapeForBox(el, box.w, box.h);
+        let canvas: HTMLCanvasElement;
+        try {
+          canvas = await html2canvas(el, { scale: 1.5, useCORS: true, logging: false, backgroundColor: '#ffffff', onclone: legibleClone });
+        } finally {
+          restore();
+        }
         const aspect = canvas.height / canvas.width;
         // Letterbox: fit inside the box, keep the shape, centre what is left.
         let w = box.w;

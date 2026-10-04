@@ -10,6 +10,7 @@ Session tokens are JWTs signed with the app SECRET_KEY, valid for 2 hours.
 Send them via the X-Public-Session request header.
 """
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, Response, UploadFile, status
@@ -42,6 +43,7 @@ import uuid as _uuid
 from typing import Any
 
 from fastapi.responses import FileResponse
+from app.services.report_pptx_service import ReportPptxRequest
 
 from app.services import pdf_export_service
 from app.services.embed_link_service import embed_policy_for_token, resolve_embed_grant
@@ -4017,6 +4019,34 @@ def get_public_export_capabilities(
         "server_engine": pdf_export_service.engine_available(),
         "max_pages_per_hour": settings.PDF_QUOTA_PER_LINK_HOUR,
     }
+
+
+@router.post("/dashboards/{token}/exports/pptx")
+@_limiter.limit("10/minute")
+def export_public_dashboard_pptx(
+    token: str,
+    request: Request,
+    body: ReportPptxRequest,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Editable PowerPoint for a shared report — the same audience as its PDF.
+
+    Lays out what the reader's browser rendered (already scoped by this link's
+    locked/hidden filters); reads no data itself, so it cannot widen the link.
+    """
+    from app.services.report_pptx_service import build_report_pptx
+
+    dash, _public_filters, _link, _appearance = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    content = build_report_pptx(body)
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", (dash.name or "report")).strip("-") or "report"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f'attachment; filename="{slug}.pptx"'},
+    )
 
 
 @router.post("/dashboards/{token}/exports", status_code=status.HTTP_202_ACCEPTED)

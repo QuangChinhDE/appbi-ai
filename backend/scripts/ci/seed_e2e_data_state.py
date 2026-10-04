@@ -68,6 +68,18 @@ PDF_COLUMNS = [
     {"name": "day", "type": "date"}, {"name": "page_code", "type": "string"},
     {"name": "amount", "type": "numeric"}, {"name": "label", "type": "string"},
 ]
+# User-feedback closure: an executive page (4 KPIs with titles of very different
+# lengths, a bar, a trend and a 40-row table whose LONG headers put the column
+# filter where the sort arrow sits) — PDF first-row geometry, the filter/sort
+# hit areas and the editable PowerPoint export all run on it.
+FEEDBACK_COLUMNS = [
+    {"name": "id", "type": "integer"}, {"name": "order_date", "type": "date"},
+    {"name": "region", "type": "string"},
+    {"name": "customer_acquisition_channel", "type": "string"},
+    {"name": "doanh_thu_thuan_theo_khu_vuc", "type": "numeric"},
+    {"name": "orders", "type": "integer"}, {"name": "margin_rate", "type": "float"},
+    {"name": "profit_vnd", "type": "numeric"}, {"name": "sales_owner", "type": "string"},
+]
 RATIO = {"id": "e2e-ratio", "type": "add_column", "enabled": True,
          "params": {"newField": "ratio", "expression": "[a] / [b]", "formula": "[a] / [b]"}}
 
@@ -124,7 +136,62 @@ def _source_tables() -> None:
             "(:yesterday,'A',11,'Cũ A'),(:yesterday,'B',22,'Cũ B'),"
             "(:yesterday,'C',33,'Cũ C')"
         ), {"today": today, "yesterday": yesterday})
+        regions = ["Miền Bắc", "Miền Trung", "Miền Nam", "Tây Nguyên"]
+        channels = ["Organic Search", "Paid Social — Facebook Ads", "Referral partner program", "Direct"]
+        c.execute(sa.text(f"DROP TABLE IF EXISTS {SCHEMA}.feedback_exec"))
+        c.execute(sa.text(
+            f"CREATE TABLE {SCHEMA}.feedback_exec (id int, order_date date, region text, "
+            "customer_acquisition_channel text, doanh_thu_thuan_theo_khu_vuc numeric(16,2), orders int, "
+            "margin_rate double precision, profit_vnd numeric(16,2), sales_owner text)"
+        ))
+        # Deterministic: revenue = 125,000,000 + i*3,711,000 → total 8,042,220,000;
+        # orders = 20 + i%7 → total 920.
+        c.execute(sa.text(f"INSERT INTO {SCHEMA}.feedback_exec VALUES " + ",".join(
+            f"({i}, DATE '2026-0{(i % 9) + 1}-{(i % 27) + 1:02d}', '{regions[i % 4]}', '{channels[i % 4]}', "
+            f"{125000000 + i * 3711000}, {20 + i % 7}, {0.18 + (i % 9) / 100}, {21000000 + i * 913000}, "
+            f"'Nhân viên {i % 6}')" for i in range(1, 41))))
     eng.dispose()
+
+
+def _feedback_fixture(db, user, ds) -> dict:
+    """Executive page for the user-feedback closure (PDF / filter-sort / PPTX)."""
+    token = "e2e-feedback-exec"
+    _dataset_id, table_id = _plain_dataset(
+        db, user, ds, "E2E feedback executive", "feedback_exec", FEEDBACK_COLUMNS,
+    )
+    existing = db.query(DashboardPublicLink).filter(DashboardPublicLink.token == token).first()
+    if existing is not None:
+        return {"dashboard_id": int(existing.dashboard_id), "token": token}
+    dashboard = Dashboard(
+        name="E2E feedback executive", owner_id=user.id,
+        pages_config=[{"id": "p1", "name": "Tổng quan"}], slicers_config=[], filters_config=[],
+    )
+    db.add(dashboard); db.flush()
+    revenue = {"field": "doanh_thu_thuan_theo_khu_vuc", "agg": "sum"}
+    tiles = [
+        ("Doanh thu", "KPI", {"metrics": [revenue]}, (0, 0, 9, 6)),
+        ("Tổng số đơn hàng trong kỳ báo cáo của toàn bộ hệ thống", "KPI",
+         {"metrics": [{"field": "orders", "agg": "sum"}]}, (9, 0, 9, 6)),
+        ("Biên lợi nhuận TB (%)", "KPI", {"metrics": [{"field": "margin_rate", "agg": "avg"}]}, (18, 0, 9, 6)),
+        ("Lợi nhuận gộp (VND)", "KPI", {"metrics": [{"field": "profit_vnd", "agg": "sum"}]}, (27, 0, 9, 6)),
+        ("Doanh thu theo khu vực", "BAR", {"dimension": "region", "metrics": [revenue]}, (0, 6, 18, 10)),
+        ("Xu hướng doanh thu", "LINE",
+         {"dimension": "order_date", "timeField": "order_date", "metrics": [revenue]}, (18, 6, 18, 10)),
+        ("Chi tiết đơn hàng", "TABLE",
+         {"selectedColumns": [c["name"] for c in FEEDBACK_COLUMNS], "metrics": []}, (0, 16, 36, 12)),
+    ]
+    for title, chart_type, role, (x, y, w, h) in tiles:
+        chart = _closure_chart(db, user, table_id, f"E2E FB {title}", chart_type, role)
+        db.add(DashboardChart(
+            dashboard_id=dashboard.id, chart_id=chart.id, widget_type="chart",
+            layout={"x": x, "y": y, "w": w, "h": h, "gv": 2, "pageId": "p1", "custom_title": title},
+        ))
+    db.add(DashboardPublicLink(
+        dashboard_id=dashboard.id, name="E2E feedback executive", token=token,
+        is_active=True, created_by=user.id, filters_config=[],
+        appearance_config={"allow_data_export": True},
+    ))
+    return {"dashboard_id": int(dashboard.id), "token": token}
 
 
 def _datasource(db) -> DataSource:
@@ -417,6 +484,7 @@ def main() -> int:
         # Final closure: exact 007 parity and real multi-page relative-time PDF.
         out["closure_007"] = _closure_007_fixture(db, user, ds)
         out["closure_pdf"] = _closure_pdf_fixture(db, user, ds)
+        out["feedback_exec"] = _feedback_fixture(db, user, ds)
         db.commit()
         print(json.dumps(out))
         return 0

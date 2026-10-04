@@ -129,7 +129,12 @@ export const TILE_TITLE_CLASS = 'dashboard-tile-title min-w-0 flex-1 line-clamp-
 /** A KPI's header label: quieter than a chart title, same in both renderers. */
 // A KPI label wraps to two lines rather than truncating: on a 2-up phone row
 // the header shares ~150px with its actions, and "R…" is not a label.
-export const TILE_KPI_LABEL_CLASS = 'dashboard-kpi-label min-w-0 flex-1 line-clamp-3 break-normal hyphens-auto text-[13px] leading-snug font-medium text-text-secondary';
+// It ALWAYS occupies two lines (min-h = 2 × leading-snug) and never more: the
+// value below then sits at the same height in every card of a KPI row, however
+// long each label is — a one-line and a wrapped label used to push their values
+// to different heights ("4 ô đầu căn lệch" in the exported PDF). Longer labels
+// end in an ellipsis; the full text stays in the title tooltip.
+export const TILE_KPI_LABEL_CLASS = 'dashboard-kpi-label min-w-0 flex-1 line-clamp-2 min-h-[2.75em] break-normal hyphens-auto text-[13px] leading-snug font-medium text-text-secondary';
 
 export function tileKindOf(chartType: string | null | undefined, widgetType?: string | null): 'kpi' | 'table' | 'chart' | 'widget' | 'slicer' {
   // A slicer control is a control, not decoration: it keeps a usable height on

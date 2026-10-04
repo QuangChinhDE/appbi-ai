@@ -48,6 +48,9 @@ pdfplumber==0.11.4
 pytesseract==0.3.13
 pillow==10.4.0
 python-docx==1.1.2
+# Editable PowerPoint export of a report (services/report_pptx_service.py).
+python-pptx==1.0.2
+XlsxWriter==3.2.0
 
 # Local cross-encoder reranker for Knowledge Hub retrieval (doc_rerank_semantic).
 # onnxruntime runs the int8 ONNX export; `tokenizers` reads tokenizer.json

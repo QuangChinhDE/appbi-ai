@@ -1273,6 +1273,65 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // longer mix page A's page-scope filters into page B's numbers.
   const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
     if (!dashboard) return;
+    if (choices.fileType === 'pptx') {
+      // Editable PowerPoint: read what this reader sees on each chosen page.
+      exportInProgressRef.current = true;
+      setIsExportingPdf(true);
+      setForceVisibleAll(true);
+      setExportRenderMode('snapshot');
+      setExportProgress({ phase: 'prepare', ratio: 0, message: t('dashboards.export.exportPptx') });
+      const originalPageId = activePageId;
+      try {
+        const { exportDashboardPptx } = await import('@/lib/export-pptx');
+        const session = getPublicSession(token) ?? undefined;
+        const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
+        await exportDashboardPptx({
+          title: String(dashboard.public_link_name || dashboard.name || 'Báo cáo'),
+          footer: dashboard.public_link_name || dashboard.name || null,
+          gridCols: DASHBOARD_GRID_COLS,
+          filename: `${safePdfFilename(String(dashboard.public_link_name || dashboard.name || 'report'), 'report')}.pptx`,
+          send: (payload) => publicDashboardApi.exportPptx(token, session, payload),
+          onProgress: (ratio, message) => setExportProgress({ phase: 'capture', ratio, message: message || t('dashboards.export.exportPptx') }),
+          pages: chosen.map((p) => ({
+            name: p.name,
+            tiles: (dashboard.dashboard_charts ?? [])
+              .filter((dc) => getDashboardChartPageId(dc.layout) === p.id)
+              .map((dc) => ({
+                id: dc.id,
+                layout: { x: Number(dc.layout?.x) || 0, y: Number(dc.layout?.y) || 0, w: Number(dc.layout?.w) || DASHBOARD_GRID_COLS, h: Number(dc.layout?.h) || 6 },
+                chartType: (dc.chart as { chart_type?: string } | undefined)?.chart_type ?? null,
+                widgetType: dc.widget_type ?? null,
+                title: dc.chart?.name ?? null,
+              })),
+            getRoot: async () => {
+              setCurrentPageId(p.id);
+              setPageHiddenFilters(
+                resolvePublicPageFilterContext(dashboard as unknown as Record<string, unknown>, dashboardPages, p.id).hiddenFilters,
+              );
+              // Switching the page runs its own fetch; the extractor then waits
+              // on the shared readiness protocol before reading anything.
+              await new Promise<void>((resolve) => {
+                requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 250)));
+              });
+              return gridSectionRef.current;
+            },
+          })),
+        });
+        setIsExportDialogOpen(false);
+        toast.success(t('dashboards.export.pptxDone'));
+      } catch (err) {
+        console.error('PowerPoint export failed', err);
+        toast.error(t('dashboards.export.pptxFailed'));
+      } finally {
+        setCurrentPageId(originalPageId);
+        setForceVisibleAll(false);
+        setExportRenderMode(false);
+        setExportProgress(null);
+        setIsExportingPdf(false);
+        exportInProgressRef.current = false;
+      }
+      return;
+    }
     // Open the preview tab NOW, synchronously inside the export click, so the
     // popup blocker (which fires once the seconds-long capture has spent the
     // user activation) doesn't eat it. We fill it with the PDF when ready.
@@ -1285,7 +1344,9 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     // Preferred path: let the server render it. Falls through to the in-browser
     // engine when no worker is deployed or the job could not be completed, so
     // the button never dead-ends.
-    if (serverExportReady) {
+    // Custom is browser-rendered BY DESIGN (see runServerExport): no server
+    // attempt, and no "the server did not respond" toast — that was untrue.
+    if (serverExportReady && choices.layout !== 'custom') {
       try {
         const done = await runServerExport(choices, previewWindow);
         if (done) {
@@ -1854,11 +1915,12 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           : <Download className="h-4 w-4" />
       }
       className="print:hidden"
-      title="Export this dashboard as PDF"
+      title={t('dashboards.export.title')}
+      data-testid="public-export-open"
       data-html2canvas-ignore
     >
       <span className="hidden sm:inline">
-        {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+        {isExportingPdf ? t('dashboards.exportPdf.exporting') : t('dashboards.export.title')}
       </span>
     </Button>
   );
@@ -2202,6 +2264,9 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // render and blow up with React #310 ("rendered more hooks than last time").
   // The grouping is a sort over a handful of tiles — memoising it would cost
   // more than it saves.
+  // A tile whose content grows with its data in the full-data print (tables).
+  const isTableLikeTile = (dc: any): boolean =>
+    /^(TABLE|PIVOT|MATRIX)/i.test(String(dc?.chart?.chart_type ?? ''));
   const printBands = printMode
     ? groupIntoPrintBands(visibleDashboardCharts.map((dc) => ({
       id: dc.id,
@@ -2237,6 +2302,48 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
               {printBands.map((band, bandIndex) => {
                 const rowH = dashboardRowHeight(rowGap);
                 const px = (rows: number) => rows * rowH + Math.max(0, rows - 1) * rowGap;
+                if (printRenderMode === 'full') {
+                  // FULL-DATA export ("Keep dashboard layout"): a table expands
+                  // to every row, so a fixed-height band clipped it to the rows
+                  // that fit the authored tile (the PDF promised every row and
+                  // silently printed 4 of 40). The same 36-column geometry as a
+                  // CSS grid whose rows are AT LEAST the authored height and grow
+                  // with their content: short tiles keep the screen layout, a long
+                  // table grows and paginates instead of being cut.
+                  const growable = band.tiles.some((tile) => isTableLikeTile(tile.dc));
+                  return (
+                    <div
+                      key={`pdf-band-${bandIndex}`}
+                      className="pdf-print-row"
+                      data-print-band={bandIndex}
+                      data-print-growable={growable ? '1' : undefined}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: `repeat(${DASHBOARD_GRID_COLS}, minmax(0, 1fr))`,
+                        gridAutoRows: `minmax(${rowH}px, auto)`,
+                        columnGap: `${rowGap}px`,
+                        rowGap: `${rowGap}px`,
+                        marginBottom: `${rowGap}px`,
+                        ...(growable ? {} : { breakInside: 'avoid', pageBreakInside: 'avoid' }),
+                        ...(band.keepWithNext ? { breakAfter: 'avoid', pageBreakAfter: 'avoid' } : {}),
+                      }}
+                    >
+                      {band.tiles.map((tile) => (
+                        <div
+                          key={tile.id}
+                          style={{
+                            gridColumn: `${tile.x + 1} / span ${Math.max(1, tile.w)}`,
+                            gridRow: `${tile.y - band.top + 1} / span ${Math.max(1, tile.h)}`,
+                            minWidth: 0,
+                            ...(isTableLikeTile(tile.dc) ? {} : { breakInside: 'avoid', pageBreakInside: 'avoid' }),
+                          }}
+                        >
+                          {renderTileNode(tile.dc)}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                }
                 return (
                   <div
                     key={`pdf-band-${bandIndex}`}
@@ -2348,11 +2455,12 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                     : <Download className="h-4 w-4" />
                 }
                 className="print:hidden"
-                title="Export this dashboard as PDF"
+                title={t('dashboards.export.title')}
+      data-testid="public-export-open"
                 data-html2canvas-ignore
               >
                 <span className="hidden sm:inline">
-                  {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+                  {isExportingPdf ? t('dashboards.exportPdf.exporting') : t('dashboards.export.title')}
                 </span>
               </Button>
             </div>

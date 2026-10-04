@@ -6,6 +6,7 @@ import re
 import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
+from app.services.report_pptx_service import ReportPptxRequest
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
@@ -1913,6 +1914,36 @@ def export_dashboard_html_route(
         content=html_text,
         media_type="text/html",
         headers={"Content-Disposition": f'attachment; filename="{slug}.html"'},
+    )
+
+
+PPTX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+
+@router.post("/{dashboard_id}/export-pptx")
+def export_dashboard_pptx_route(
+    dashboard_id: int,
+    body: ReportPptxRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Editable PowerPoint of the report as the author sees it.
+
+    The browser sends the rendered content (formatted values, table cells, chart
+    pictures); this route only checks access and lays it out — it reads no data.
+    """
+    from app.services.report_pptx_service import build_report_pptx
+
+    dash = DashboardService.get_by_id(db, dashboard_id)
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_view_access(db, current_user, dash, "dashboards")
+    content = build_report_pptx(body)
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", (dash.name or "dashboard")).strip("-") or "dashboard"
+    return Response(
+        content=content,
+        media_type=PPTX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{slug}.pptx"'},
     )
 
 

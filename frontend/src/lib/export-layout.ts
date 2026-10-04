@@ -128,7 +128,9 @@ export function autoArrange(
 
   for (const c of candidates) {
     const isKpi = /KPI|CARD/i.test(c.chartType || '');
-    const w = isKpi ? 3 : 6;
+    // A table reads across: full sheet width, not a half-width box.
+    const isTable = /^(TABLE|PIVOT|MATRIX)/i.test(c.chartType || '');
+    const w = isKpi ? 3 : isTable ? SHEET_COLS : 6;
     const h = isKpi ? 2 : 4;
     if (x + w > SHEET_COLS) { x = 0; y += rowH; rowH = 0; }
     if (y + h > rows) { pushSheet(); }

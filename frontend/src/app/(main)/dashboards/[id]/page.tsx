@@ -45,6 +45,8 @@ import { applyLayoutPattern, type LayoutPattern } from '@/lib/report-patterns';
 import { measureNaturalHeight, rowsForHeight } from '@/lib/fit-content';
 import { ReportMetaProvider } from '@/lib/report-meta';
 import { widgetTypeLabel as WIDGET_TYPE_LABEL } from '@/components/dashboards/widget-forms';
+import { planKeyForElement, PRINTABLE_ELEMENT_TYPES } from '@/lib/export-layout';
+import { apiClient } from '@/lib/api-client';
 import { DashboardChartManagerModal } from '@/components/dashboards/DashboardChartManagerModal';
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
@@ -3987,8 +3989,89 @@ function DashboardDetailPageInner() {
     locked: [],
   }).map((f) => `${f.label}: ${statePageFilterFact(f, t)}`).join('  ·  '), [appliedGlobalFiltersLegacy, t]);
 
+  // The export arranger's candidates — the same shape the public view feeds it
+  // (charts + printable report elements, with their authored geometry). The
+  // builder passed none, so "Arrange it yourself" opened an empty sheet.
+  const exportPlanCandidates = React.useMemo(() => {
+    const pageNameById = new Map(dashboardPages.map((pg) => [pg.id, pg.name]));
+    return (dashboard?.dashboard_charts ?? [])
+      .filter((dc: any) => ((!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id)
+        || PRINTABLE_ELEMENT_TYPES.has(String(dc.widget_type)))
+      .map((dc: any) => ({
+        chartId: dc.widget_type && dc.widget_type !== 'chart' ? planKeyForElement(dc.id) : dc.chart_id,
+        title: dc.widget_type && dc.widget_type !== 'chart'
+          ? String(dc.widget_config?.title || dc.widget_config?.headline || (dc.widget_type === 'hero_strip' ? dashboard?.name : '') || WIDGET_TYPE_LABEL(t, dc.widget_type))
+          : dc.layout?.custom_title || dc.chart?.name || `#${dc.chart_id}`,
+        chartType: dc.widget_type && dc.widget_type !== 'chart' ? 'ELEMENT' : dc.chart?.chart_type,
+        pageId: getDashboardChartPageId(dc.layout),
+        pageName: pageNameById.get(getDashboardChartPageId(dc.layout)) || undefined,
+        layout: {
+          x: Number(dc.layout?.x ?? 0),
+          y: Number(dc.layout?.y ?? 0),
+          w: Number(dc.layout?.w ?? 12),
+          h: Number(dc.layout?.h ?? 6),
+        },
+      }));
+  }, [dashboard?.dashboard_charts, dashboard?.name, dashboardPages, t]);
+
   const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
     if (!dashboard) return;
+    if (choices.fileType === 'pptx') {
+      // Editable PowerPoint of the report as the author sees it.
+      setIsExportingPdf(true);
+      setExportRenderMode('snapshot');
+      setExportProgress({ phase: 'prepare', ratio: 0, message: t('dashboards.export.exportPptx') });
+      const originalPageId = activePageId;
+      try {
+        const { exportDashboardPptx } = await import('@/lib/export-pptx');
+        const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
+        await exportDashboardPptx({
+          title: dashboard.name || 'Dashboard',
+          subtitle: dashboard.description ?? null,
+          footer: dashboard.name || null,
+          gridCols: DASHBOARD_GRID_COLS,
+          filename: `${safePdfFilename(dashboard.name, 'dashboard')}.pptx`,
+          send: async (payload) => {
+            const res = await apiClient.post(`/dashboards/${dashboardId}/export-pptx`, payload, { responseType: 'blob' });
+            return res.data as Blob;
+          },
+          onProgress: (ratio, message) => setExportProgress({ phase: 'capture', ratio, message: message || t('dashboards.export.exportPptx') }),
+          pages: chosen.map((p) => ({
+            name: p.name,
+            tiles: (dashboard?.dashboard_charts ?? [])
+              .filter((dc: any) => getDashboardChartPageId(dc.layout) === p.id)
+              .map((dc: any) => {
+                const l = resolveDashboardChartLayout(dc.id, localLayoutOverridesRef.current) as Record<string, any>;
+                return {
+                  id: dc.id,
+                  layout: { x: Number(l?.x) || 0, y: Number(l?.y) || 0, w: Number(l?.w) || DASHBOARD_GRID_COLS, h: Number(l?.h) || 6 },
+                  chartType: dc.chart?.chart_type ?? null,
+                  widgetType: dc.widget_type ?? null,
+                  title: l?.custom_title || dc.chart?.name || null,
+                };
+              }),
+            getRoot: async () => {
+              setCurrentPageId(p.id);
+              await new Promise<void>((resolve) => {
+                requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 250)));
+              });
+              return dashboardContentRef.current;
+            },
+          })),
+        });
+        setIsExportDialogOpen(false);
+        toast.success(t('dashboards.export.pptxDone'));
+      } catch (err) {
+        console.error('PowerPoint export failed', err);
+        toast.error(t('dashboards.export.pptxFailed'));
+      } finally {
+        setCurrentPageId(originalPageId);
+        setIsExportingPdf(false);
+        setExportRenderMode(false);
+        setExportProgress(null);
+      }
+      return;
+    }
     // Open the preview tab synchronously inside the click (see openPdfPreviewTab).
     const previewWindow = openPdfPreviewTab();
     setIsExportingPdf(true);
@@ -4014,6 +4097,9 @@ function DashboardDetailPageInner() {
         orientation: choices.orientation,
         format: choices.format,
         layout: choices.layout,
+        // "Arrange it yourself": the arranged plan IS the export. It used to be
+        // dropped here, so the builder silently printed the normal layout.
+        plan: choices.plan,
         onProgress: setExportProgress,
         pages: chosen.map((p) => ({
           name: p.name,
@@ -5332,6 +5418,9 @@ function DashboardDetailPageInner() {
           pages={dashboardPages.map((p) => ({ id: p.id, name: p.name }))}
           isExporting={isExportingPdf}
           progress={exportProgress}
+          defaultPageId={activePageId}
+          planCandidates={exportPlanCandidates}
+          planPages={dashboardPages.map((p) => ({ id: p.id, name: p.name }))}
           onExport={doExportPdf}
         />
 

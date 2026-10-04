@@ -647,6 +647,9 @@ function DashboardGridInner({
           <div
             key={dc.id.toString()}
             data-grid-item-id={dc.id}
+            // The PDF arranger finds a chart tile by this, exactly as on the
+            // public view — without it the builder's arranged export was blank.
+            data-chart-id={(!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id ? dc.chart_id : undefined}
             // Editing: Shift-click adds to the selection; it must not select the
             // text of every tile between the clicks.
             className={onLayoutChange && !isNarrow ? 'select-none' : undefined}

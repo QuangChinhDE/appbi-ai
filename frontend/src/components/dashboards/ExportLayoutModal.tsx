@@ -206,8 +206,18 @@ export function ExportLayoutModal({
   const tidyActive = () => {
     if (!sheet) return;
     const placed = sheet.tiles.map((tl) => byId.get(tl.chartId)).filter(Boolean) as PlanCandidate[];
-    const [first] = autoArrange(placed, format, orientation);
-    if (first) updateSheet(sheet.id, first.tiles);
+    // Whatever no longer fits this sheet goes onto NEW sheets right after it —
+    // never silently into the tray (Tidy used to drop the report's table).
+    const [first, ...overflow] = autoArrange(placed, format, orientation);
+    if (!first) return;
+    setSheets((cur) => {
+      const at = cur.findIndex((s) => s.id === sheet.id);
+      if (at < 0) return cur;
+      const next = [...cur];
+      next.splice(at, 1, { ...cur[at], tiles: first.tiles },
+        ...overflow.map((o, i) => ({ ...o, title: `${cur[at].title || t('dashboards.exportLayout.sheetN', { n: at + 1 })} (${i + 2})` })));
+      return next;
+    });
   };
 
   const previewFor = (c?: PlanCandidate) => (
