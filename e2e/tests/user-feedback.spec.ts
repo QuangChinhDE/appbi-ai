@@ -55,6 +55,18 @@ async function assertSeparateHitAreas(page: Page) {
     expect(overlap(sort, filter), `column ${i}: filter covers the sort arrow`).toBe(0);
     expect(overlap(filter, resize), `column ${i}: resize strip covers the filter`).toBe(0);
   }
+  // The filter's own slot must not squeeze a short one-word label into a
+  // mid-word split ("regio / n"): at desktop widths it stays on one line.
+  if ((page.viewportSize()?.width ?? 0) >= 1280) {
+    for (const word of ['region', 'orders']) {
+      const label = ths.filter({ hasText: word }).first().locator('span[title]');
+      const lines = await label.evaluate((el) => {
+        const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
+        return Math.round(el.getBoundingClientRect().height / lh);
+      });
+      expect(lines, `"${word}" header splits across lines`).toBe(1);
+    }
+  }
 }
 
 async function sortAndFilterLongHeader(page: Page) {

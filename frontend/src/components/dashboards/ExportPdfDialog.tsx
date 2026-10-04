@@ -131,7 +131,8 @@ export function ExportPdfDialog({ isOpen, onClose, pages, defaultPageId, isExpor
                     onClick={() => setFileType(opt.id)}
                     className={`rounded-md border px-3 py-2 text-left transition-colors ${
                       fileType === opt.id
-                        ? 'border-brand bg-brand/5 ring-1 ring-brand/30'
+                        // Unmistakable: the file you get is decided here.
+                        ? 'border-brand bg-brand/10 ring-2 ring-brand/50'
                         : 'border-[rgb(var(--border-line))] bg-surface-2 hover:bg-surface-3'
                     }`}
                   >

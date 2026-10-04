@@ -733,12 +733,17 @@ export function TableVisualization({
         const longest = String(v ?? '').split(/\s+/).reduce((mm, w) => Math.max(mm, w.length), 0);
         return Math.max(m, longest);
       }, 0);
+      // The header's longest word sits beside its controls — the sort arrow
+      // (12px + gap) and, since it has its own slot, the filter button (16px +
+      // gap) — so budget them in px: a 2-char allowance split "region" into
+      // "regio / n" once the filter stopped overlapping the arrow.
+      const headerPx = Math.ceil(headerWord * charPx) + 18 + (enableColumnFilters ? 22 : 0);
       out[col] = Math.min(240, Math.max(MIN_FIT_COLUMN_WIDTH - (16 - cellPadX) * 2,
-        Math.ceil(Math.max(headerWord + 2, valueLen) * charPx) + cellPadX * 2));
+        Math.max(headerPx, Math.ceil(valueLen * charPx)) + cellPadX * 2));
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [colsKey, rows, columnLabels, decimalPlaces, currencySymbol, cellPadX]);
+  }, [colsKey, rows, columnLabels, decimalPlaces, currencySymbol, cellPadX, enableColumnFilters]);
   const renderColumnWidths = useMemo(() => {
     if (!shouldFitToContainer) return liveColumnWidths;
     // Water-fill so the total lands ON the container width even with a floor:
