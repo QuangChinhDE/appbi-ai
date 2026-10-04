@@ -315,6 +315,17 @@ test('export is taken from the published report and is a real PDF', async ({ pag
   test.setTimeout(240_000);
   const c = await copy(request);
   try {
+    const capabilities = await request.get(`${API}/api/v1/public/dashboards/${c.token}/exports/capabilities`);
+    expect(capabilities.status(), await capabilities.text()).toBe(200);
+    const serverEngine = Boolean((await capabilities.json()).server_engine);
+    let completedServerJob: any = null;
+    page.on('response', async response => {
+      if (!serverEngine || response.request().method() !== 'GET'
+          || !/\/exports\/[0-9a-f-]+$/.test(new URL(response.url()).pathname)
+          || response.status() !== 200) return;
+      const body = await response.json().catch(() => null);
+      if (body?.status === 'succeeded') completedServerJob = body;
+    });
     await page.goto(`/d/${c.token}`);
     await settled(page);
     const download = page.waitForEvent('download', { timeout: 200_000 });
@@ -332,10 +343,20 @@ test('export is taken from the published report and is a real PDF', async ({ pag
     // export with nothing missing, at a size a stakeholder can read. (Evidence:
     // a complete report once exported "1 chart failed to load" + "shrunk to 47%".)
     const outcome = await page.evaluate(() => (window as any).__APPBI_LAST_EXPORT__ ?? null);
-    expect(outcome, 'the exporter recorded nothing').not.toBeNull();
-    expect(outcome.warnings.filter((w: any) => w.kind === 'incomplete'), 'the export says data is missing from a loaded report').toEqual([]);
-    expect(outcome.minPrintScale, 'a sheet was printed too small to read').toBeGreaterThanOrEqual(0.62);
-    expect(outcome.pages).toBeGreaterThan(0);
+    if (serverEngine) {
+      expect(completedServerJob, 'the server worker completed no observed job').not.toBeNull();
+      expect(completedServerJob.page_count).toBeGreaterThan(0);
+      expect(completedServerJob.file_size).toBe(bytes.length);
+      expect(
+        (completedServerJob.warnings ?? []).filter((warning: any) => warning?.severity !== 'info'),
+        'the server export reports missing or degraded content',
+      ).toEqual([]);
+    } else {
+      expect(outcome, 'the browser exporter recorded nothing').not.toBeNull();
+      expect(outcome.warnings.filter((w: any) => w.kind === 'incomplete'), 'the export says data is missing from a loaded report').toEqual([]);
+      expect(outcome.minPrintScale, 'a sheet was printed too small to read').toBeGreaterThanOrEqual(0.62);
+      expect(outcome.pages).toBeGreaterThan(0);
+    }
   } finally {
     await request.delete(`${DASH}/${c.id}`);
   }
