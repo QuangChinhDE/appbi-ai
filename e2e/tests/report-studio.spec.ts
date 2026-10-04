@@ -329,8 +329,9 @@ test('export is taken from the published report and is a real PDF', async ({ pag
     await page.goto(`/d/${c.token}`);
     await settled(page);
     const download = page.waitForEvent('download', { timeout: 200_000 });
-    await page.getByRole('button', { name: /^Export PDF$/ }).first().click();
-    // The options dialog's own confirm carries the same label.
+    // The public entry opens the export dialog (PDF or PowerPoint since the
+    // user-feedback closure); PDF is the default file type, confirmed below.
+    await page.getByTestId('public-export-open').first().click();
     await page.getByRole('button', { name: /^Export PDF$/ }).last().click();
     const file = await download;
     const path = await file.path();
