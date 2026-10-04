@@ -23,7 +23,7 @@ from typing import Any
 # A config key is treated as holding a secret when its name CONTAINS any of
 # these — so unusual spellings (app_pwd, sa_json, bearer_tok, svc_credential)
 # are caught, not only a fixed allow-list.
-_SECRET_KEY_HINTS = ("password", "passwd", "pwd", "secret", "token", "key",
+_SECRET_KEY_HINTS = ("password", "passwd", "pass", "pwd", "secret", "token", "key",
                      "cred", "auth", "private", "sa_json", "json")
 # Keys that merely CONTAIN a hint but are not secrets (don't scrub their value).
 _SECRET_KEY_FALSE = ("schema", "keyspace", "key_column", "keys", "key_field",

@@ -11,18 +11,38 @@
  * now() in the app timezone — so non-report callers are unaffected.
  */
 let anchor: string | null = null;
+// True while an EXTERNALLY FIXED anchor is active (a PDF export's ?asOf). A fixed
+// anchor is immutable for the whole export: filter/page lifecycle re-stamps must
+// not "freshen" it — only clearReportAnchor() (leaving the report) ends it.
+let fixed = false;
 
-/** Begin a new logical report read: stamp one instant all its tiles will share. */
+/** Begin a new logical report read: stamp one instant all its tiles will share.
+ *  No-op while a fixed export anchor is active. */
 export function stampReportAnchor(): string {
+  if (fixed && anchor) return anchor;
   anchor = new Date().toISOString();
   return anchor;
 }
 
 /** Use a given instant as the anchor (e.g. the PDF worker's per-export as-of, so
- *  every page of one export shares one window). Falsy → stamp a fresh one. */
+ *  every page of one export shares one window) — it is then FIXED until cleared.
+ *  Falsy → stamp a fresh (non-fixed) one. */
 export function setReportAnchor(iso: string | null | undefined): string {
-  anchor = iso ? String(iso) : new Date().toISOString();
+  if (iso) {
+    anchor = String(iso);
+    fixed = true;
+  } else {
+    fixed = false;
+    anchor = new Date().toISOString();
+  }
   return anchor;
+}
+
+/** End the report read: requests made after leaving a report (Explore, Datasets,
+ *  Datasources…) must not inherit its relative-date anchor. */
+export function clearReportAnchor(): void {
+  anchor = null;
+  fixed = false;
 }
 
 /** The current report read's anchor (ISO-8601, UTC), or null if none is active. */

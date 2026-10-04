@@ -44,6 +44,8 @@ export interface ReportInspectorProps {
   onMoveToSection: (id: number, sectionId: number | null) => void;
   onSaveWidgetConfig: (id: number, config: Record<string, any>) => Promise<void>;
   onSaveReport: (patch: { name: string; description: string | null }) => Promise<void>;
+  /** The report name/description differ from the saved row (leave guard). */
+  onReportDirtyChange?: (dirty: boolean) => void;
   onPattern: (pattern: LayoutPattern) => void;
   /** Height to what the element says (text-like widgets). */
   onFitToContent: (id: number) => void;
@@ -475,13 +477,15 @@ function PatternGlyph({ pattern }: { pattern: LayoutPattern }) {
 
 // ── Nothing selected: the report ─────────────────────────────────────────────
 
-function ReportPanel({ report, onSaveReport, structure, titleOf, onSelect }: ReportInspectorProps) {
+function ReportPanel({ report, onSaveReport, onReportDirtyChange, structure, titleOf, onSelect }: ReportInspectorProps) {
   const { t } = useI18n();
   const [name, setName] = useState(report.name);
   const [description, setDescription] = useState(report.description ?? '');
   const [busy, setBusy] = useState(false);
   useEffect(() => { setName(report.name); setDescription(report.description ?? ''); }, [report.name, report.description]);
   const dirty = name.trim() !== report.name.trim() || description.trim() !== (report.description ?? '').trim();
+  useEffect(() => { onReportDirtyChange?.(dirty); }, [dirty, onReportDirtyChange]);
+  useEffect(() => () => onReportDirtyChange?.(false), [onReportDirtyChange]);
 
   const { resolved, issues, tiles } = structure;
   const inSection = new Set(resolved.sections.flatMap((s) => [s.headerId, ...s.members]));

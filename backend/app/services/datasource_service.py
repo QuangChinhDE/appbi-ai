@@ -15,6 +15,7 @@ from google.oauth2 import service_account
 import json
 
 from app.core.logging import get_logger
+from app.services.source_errors import describe_source_error
 from app.core.config import settings
 from app.models import DataSourceType
 from app.services.sql_validator import validate_select_only
@@ -858,7 +859,7 @@ class DataSourceConnectionService:
             return result[0], result[1], execution_time_ms
             
         except Exception as e:
-            logger.error(f"Query execution failed: {str(e)}")
+            logger.error(f"Query execution failed: {describe_source_error(e, config)}")
             raise
 
     @staticmethod
@@ -1411,7 +1412,7 @@ class DataSourceConnectionService:
             return columns, data
             
         except Exception as e:
-            logger.error(f"BigQuery execution failed on project {config.get('project_id')}: {str(e)}")
+            logger.error(f"BigQuery execution failed on project {config.get('project_id')}: {describe_source_error(e, config)}")
             raise
         finally:
             # Perf (#5): only close a client we OWN. A cached client is shared
@@ -1974,7 +1975,7 @@ class DataSourceConnectionService:
             n = int(getattr(write_client.get_table(new_ref), "num_rows", 0) or 0)
             return {"row_count": n, "changed": changed}
         except Exception as exc:  # noqa: BLE001 — any failure → caller full-rebuilds
-            logger.warning("[snapshot] partition-incremental not applied (%s) — full rebuild", str(exc)[:200])
+            logger.warning("[snapshot] partition-incremental not applied (%s) — full rebuild", describe_source_error(exc)[:200])
             return None
         finally:
             if read_client is not None and not _bq_client_is_cached(src, read_client):
@@ -2539,7 +2540,7 @@ class DataSourceConnectionService:
                 raise ValueError(f"Unsupported data source type: {ds_type}")
             return DataSourceConnectionService._enrich_columns_with_safe_names(raw)
         except Exception as e:
-            logger.error(f"Type inference failed: {str(e)}")
+            logger.error(f"Type inference failed: {describe_source_error(e, config)}")
             raise
 
     @staticmethod
@@ -2690,7 +2691,7 @@ class DataSourceConnectionService:
             return columns
             
         except Exception as e:
-            logger.error(f"BigQuery schema inference failed on project {config.get('project_id')}: {str(e)}")
+            logger.error(f"BigQuery schema inference failed on project {config.get('project_id')}: {describe_source_error(e, config)}")
             raise
         finally:
             if client:
@@ -2744,7 +2745,7 @@ class DataSourceConnectionService:
                 for col in data["columns"]
             ]
         except Exception as e:
-            logger.error(f"Manual type inference failed: {str(e)}")
+            logger.error(f"Manual type inference failed: {describe_source_error(e, config)}")
             raise
 
     @staticmethod
@@ -2808,7 +2809,7 @@ class DataSourceConnectionService:
             )
             return [{"name": str(column), "type": "string"} for column in columns]
         except Exception as e:
-            logger.error(f"Google Sheets type inference failed: {str(e)}")
+            logger.error(f"Google Sheets type inference failed: {describe_source_error(e, config)}")
             raise
 
     @staticmethod
@@ -2938,7 +2939,7 @@ class DataSourceConnectionService:
             else:
                 raise ValueError(f"Unsupported data source type: {ds_type}")
         except Exception as e:
-            logger.error(f"Failed to list tables: {str(e)}")
+            logger.error(f"Failed to list tables: {describe_source_error(e, config)}")
             raise
     
     @staticmethod
@@ -3090,7 +3091,7 @@ class DataSourceConnectionService:
                 try:
                     dataset_tables = list(client.list_tables(dataset_id))
                 except Exception as e:
-                    logger.warning(f"Could not list tables in dataset '{dataset_id}': {e}")
+                    logger.warning(f"Could not list tables in dataset '{dataset_id}': {describe_source_error(e, config)}")
                     continue
 
                 for table in dataset_tables:
@@ -3110,7 +3111,7 @@ class DataSourceConnectionService:
             return tables
 
         except Exception as e:
-            logger.error(f"BigQuery list tables failed on project {config.get('project_id')}: {str(e)}")
+            logger.error(f"BigQuery list tables failed on project {config.get('project_id')}: {describe_source_error(e, config)}")
             raise
         finally:
             if client:
@@ -3140,7 +3141,7 @@ class DataSourceConnectionService:
             return tables
 
         except Exception as e:
-            logger.error(f"Google Sheets list failed: {str(e)}")
+            logger.error(f"Google Sheets list failed: {describe_source_error(e, config)}")
             raise
 
     @staticmethod
@@ -3171,7 +3172,7 @@ class DataSourceConnectionService:
             logger.info(f"Manual datasource sheets listed: {len(tables)}")
             return tables
         except Exception as e:
-            logger.error(f"Manual table list failed: {str(e)}")
+            logger.error(f"Manual table list failed: {describe_source_error(e, config)}")
             raise
     
     @staticmethod
@@ -3354,7 +3355,7 @@ class DataSourceConnectionService:
             return columns, rows
 
         except Exception as e:
-            logger.error(f"Google Sheets query failed: {str(e)}")
+            logger.error(f"Google Sheets query failed: {describe_source_error(e, config)}")
             raise
     
     @staticmethod
@@ -3435,7 +3436,7 @@ class DataSourceConnectionService:
             return columns, rows
 
         except Exception as e:
-            logger.error(f"Manual table query failed: {str(e)}")
+            logger.error(f"Manual table query failed: {describe_source_error(e, config)}")
             raise
 
     # ── Schema Browser ────────────────────────────────────────────────────────
@@ -3541,7 +3542,7 @@ class DataSourceConnectionService:
             return {"schema": schema_name, "name": table_name, "type": "table",
                     "row_count": None, "columns": columns, "preview": data}
         except Exception as e:
-            raise ValueError(f"Cannot fetch table detail: {e}")
+            raise ValueError(f"Cannot fetch table detail: {describe_source_error(e, config)}")
 
     @staticmethod
     def _pg_table_detail(
@@ -3854,7 +3855,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[fk_extract] Postgres FK query failed: {exc}")
+            logger.warning(f"[fk_extract] Postgres FK query failed: {describe_source_error(exc, config)}")
             return []
 
     @staticmethod
@@ -3915,7 +3916,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[fk_extract] MySQL FK query failed: {exc}")
+            logger.warning(f"[fk_extract] MySQL FK query failed: {describe_source_error(exc, config)}")
             return []
 
     @staticmethod
@@ -3987,7 +3988,7 @@ class DataSourceConnectionService:
                     })
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[fk_extract] BigQuery FK query failed: {exc}")
+            logger.warning(f"[fk_extract] BigQuery FK query failed: {describe_source_error(exc, config)}")
             return []
 
     @staticmethod
@@ -4103,7 +4104,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[pk_extract] Postgres PK query failed: {exc}")
+            logger.warning(f"[pk_extract] Postgres PK query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
@@ -4155,7 +4156,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[pk_extract] MySQL PK query failed: {exc}")
+            logger.warning(f"[pk_extract] MySQL PK query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
@@ -4206,7 +4207,7 @@ class DataSourceConnectionService:
                     out.setdefault(key, []).append(row["column_name"])
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[pk_extract] BigQuery PK query failed: {exc}")
+            logger.warning(f"[pk_extract] BigQuery PK query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
@@ -4262,7 +4263,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[type_extract] Postgres column types query failed: {exc}")
+            logger.warning(f"[type_extract] Postgres column types query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
@@ -4312,7 +4313,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[type_extract] MySQL column types query failed: {exc}")
+            logger.warning(f"[type_extract] MySQL column types query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
@@ -4357,7 +4358,7 @@ class DataSourceConnectionService:
                     out.setdefault(key, {})[row["column_name"]] = str(row["data_type"] or "").lower()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[type_extract] BigQuery column types query failed: {exc}")
+            logger.warning(f"[type_extract] BigQuery column types query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
@@ -4421,7 +4422,7 @@ class DataSourceConnectionService:
             table_ref = client.get_table(table_ref_str)
             return [{"name": f.name, "type": f.field_type} for f in table_ref.schema]
         except Exception as e:
-            logger.warning(f"_bq_list_columns failed for table '{full_table}': {e}")
+            logger.warning(f"_bq_list_columns failed for table '{full_table}': {describe_source_error(e, config)}")
             return []
         finally:
             if client:

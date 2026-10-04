@@ -691,3 +691,127 @@ def test_datasource_test_endpoint_enforces_resource_access_before_rehydration():
         assert calls["restored"] is False, "secrets must NOT be rehydrated when access is denied"
     finally:
         (mod.DataSourceCRUDService.get_by_id, mod.require_view_access, mod._restore_sensitive_config_fields) = orig
+
+
+# ── Datasource module-wide credential-safe error boundary (final release R1) ──
+# Every reachable driver/connector exception boundary — not only Test Connection —
+# must keep configured secrets out of the API response AND the application log,
+# while keeping the actionable context (host, database, user, cause).
+
+_DS_SECRETS = {
+    "password": "Pw9!",                      # short password
+    "api_token": "tok_SYNTH_live_51abc",
+    "db_passphrase": "horse-battery-staple",  # unusual key name
+    "extra": {"nested_secret": "NESTED-S3CRET-VALUE"},
+    "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvSYNTHETIC\n-----END PRIVATE KEY-----",
+}
+_DS_LEAK = (
+    "FATAL: password authentication failed for user analyst at db.example.com "
+    "(dsn=postgresql://analyst:Pw9!@db.example.com/sales) token tok_SYNTH_live_51abc "
+    "passphrase horse-battery-staple nested NESTED-S3CRET-VALUE "
+    "Authorization: Bearer abcdefghijklmnop123 "
+    "-----BEGIN PRIVATE KEY-----\nMIIEvSYNTHETIC\n-----END PRIVATE KEY-----"
+)
+_DS_FORBIDDEN = ("Pw9!", "tok_SYNTH_live_51abc", "horse-battery-staple",
+                 "NESTED-S3CRET-VALUE", "MIIEvSYNTHETIC", "abcdefghijklmnop123")
+
+
+def _assert_safe(text: str, where: str):
+    for secret in _DS_FORBIDDEN:
+        assert secret not in text, f"{where} leaked {secret!r}: {text[:300]}"
+
+
+def _ds_client(monkeypatch, ds_type: str):
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import app.api.datasources as mod
+    import app.core.crypto as crypto
+    from app.core import get_db
+    from app.core.dependencies import get_current_user
+
+    ds = SimpleNamespace(id=7, type=SimpleNamespace(value=ds_type),
+                         config={"host": "db.example.com", "database": "sales", "username": "analyst",
+                                 "spreadsheet_id": "sheet-1", **_DS_SECRETS})
+    monkeypatch.setattr(mod.DataSourceCRUDService, "get_by_id", staticmethod(lambda db, i: ds))
+    monkeypatch.setattr(mod, "require_view_access", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "require_edit_access", lambda *a, **k: None)
+    monkeypatch.setattr(crypto, "decrypt_config", lambda cfg: dict(cfg or {}))
+
+    def boom(*a, **k):
+        raise Exception(_DS_LEAK)
+    monkeypatch.setattr(mod.DataSourceConnectionService, "execute_query", staticmethod(boom))
+    monkeypatch.setattr(mod.DataSourceConnectionService, "get_table_detail", staticmethod(boom))
+    monkeypatch.setattr(mod.DataSourceConnectionService, "get_watermark_candidates", staticmethod(boom))
+
+    class _Conn:
+        def __getattr__(self, name):
+            def op(*a, **k):
+                raise ValueError(f"Failed to {name}: {_DS_LEAK}")
+            return op
+    import app.services.google_sheets_connector as gsc
+    monkeypatch.setattr(gsc, "create_google_sheets_connector", lambda cfg: _Conn())
+
+    app = FastAPI()
+    app.state.limiter = mod._limiter
+    app.include_router(mod.router)
+    app.dependency_overrides[get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    for dep in mod.router.dependencies:  # module_floor: a real module-level gate, out of scope here
+        app.dependency_overrides[dep.dependency] = lambda: None
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.mark.parametrize("ds_type", ["postgresql", "mysql", "bigquery"])
+def test_sql_datasource_failures_never_leak_secrets_in_response_or_log(monkeypatch, caplog, ds_type):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    client = _ds_client(monkeypatch, ds_type)
+    responses = {
+        "execute query": client.post("/datasources/query", json={"data_source_id": 7, "sql_query": "select 1"}),
+        "validate sql": client.post("/datasources/validate-sql", json={"data_source_id": 7, "sql_query": "select 1"}),
+        "table detail": client.get("/datasources/7/tables/public/orders"),
+        "watermarks": client.get("/datasources/7/tables/public/orders/watermarks"),
+    }
+    for where, r in responses.items():
+        _assert_safe(r.text, f"{ds_type} {where} response")
+    # actionable context survives the redaction
+    q = responses["execute query"]
+    assert q.status_code == 400
+    assert "db.example.com" in q.text and "analyst" in q.text and "authentication failed" in q.text
+    v = responses["validate sql"].json()
+    assert v["valid"] is False and "authentication failed" in v["error"]
+    _assert_safe(caplog.text, f"{ds_type} application log")
+
+
+def test_google_sheets_connector_failures_never_leak_secrets(monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    client = _ds_client(monkeypatch, "google_sheets")
+    calls = {
+        "list": client.get("/datasources/7/gsheets/sheets"),
+        "read": client.get("/datasources/7/gsheets/Sheet1/rows"),
+        "create": client.post("/datasources/7/gsheets/sheets", json={"sheet_name": "X"}),
+        "clear": client.delete("/datasources/7/gsheets/Sheet1/rows/all"),
+    }
+    for where, r in calls.items():
+        assert r.status_code >= 400, where
+        _assert_safe(r.text, f"sheets {where} response")
+        assert "authentication failed" in r.text, f"sheets {where} lost its actionable cause"
+    _assert_safe(caplog.text, "sheets application log")
+
+
+def test_datasource_service_execute_query_log_is_scrubbed(monkeypatch, caplog):
+    """The service boundary itself (used by many callers) logs without secrets."""
+    import logging
+    from app.services import datasource_service as svc
+    caplog.set_level(logging.DEBUG)
+
+    def boom(*a, **k):
+        raise Exception(_DS_LEAK)
+    monkeypatch.setattr(svc.DataSourceConnectionService, "_execute_postgresql", staticmethod(boom), raising=False)
+    cfg = {"host": "db.example.com", "database": "sales", "username": "analyst", **_DS_SECRETS}
+    with pytest.raises(Exception):
+        svc.DataSourceConnectionService.execute_query("postgresql", cfg, "select 1", 1)
+    assert "Query execution failed" in caplog.text
+    _assert_safe(caplog.text, "execute_query service log")

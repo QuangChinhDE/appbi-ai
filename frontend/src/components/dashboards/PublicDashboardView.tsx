@@ -1,7 +1,7 @@
 ﻿'use client';
 
 import { sectionTitlesOf } from '@/lib/report-meta';
-import { setReportAnchor } from '@/lib/report-anchor';
+import { clearReportAnchor, reportAnchor, setReportAnchor, stampReportAnchor } from '@/lib/report-anchor';
 import { fitLayoutToContent, useMeasuredContentRows } from '@/lib/responsive-fit';
 import { extractParamDefs } from '@/lib/dashboard-params';
 import { groupIntoPrintBands } from '@/lib/print-bands';
@@ -421,6 +421,22 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // C4 anti-spam — see authed page. Drops accidental rapid re-clicks on a
   // selection so they don't thrash the per-page chart fetch or toggle-clear it.
   const lastCrossFilterAtRef = useRef(0);
+  // A changed viewer read (applied filters, page-scope filters, cross-filter) is a
+  // NEW logical report read → fresh relative-date anchor, stamped during render so
+  // it precedes the refetch effect. A fixed export ?asOf is immutable
+  // (stampReportAnchor is a no-op then). Leaving the report clears the anchor.
+  const readSignature = JSON.stringify([appliedViewerFilters, pageHiddenFilters, crossFilterState]);
+  const readSignatureRef = useRef<string | null>(null);
+  if (readSignatureRef.current !== readSignature) {
+    if (readSignatureRef.current !== null) stampReportAnchor();
+    readSignatureRef.current = readSignature;
+  }
+  // Unmount only (a dashboard change re-stamps during render above). The mount
+  // half re-stamps if a dev StrictMode remount cleared it.
+  useEffect(() => {
+    if (!reportAnchor()) stampReportAnchor();
+    return () => clearReportAnchor();
+  }, []);
   // Cross-highlight (PBI-parity) — opt-in per dashboard via theme_config. When
   // mode='highlight', a data-point click sets THIS (not crossFilterState), so
   // the baseline (viewer + link + page-scope filters) stays applied and the

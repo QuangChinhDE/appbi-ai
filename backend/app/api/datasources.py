@@ -25,6 +25,7 @@ from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models import DataSource, Dataset
 from app.models.resource_share import ResourceType
 from app.models.user import User
+from app.services.source_errors import describe_source_error
 from app.schemas import (
     DataSourceCreate,
     DataSourceUpdate,
@@ -50,9 +51,10 @@ router = APIRouter(
 _limiter = Limiter(key_func=get_remote_address)
 
 
-def _build_query_error_detail(exc: Exception) -> dict:
-    """Return a user-facing query error payload without hiding the root cause."""
-    message = " ".join(str(exc).split()).strip()
+def _build_query_error_detail(exc: Exception, config: Any = None) -> dict:
+    """Return a user-facing query error payload without hiding the root cause —
+    but never the datasource's configured secrets (central redaction)."""
+    message = describe_source_error(exc, config) if str(exc).strip() else ""
     return {
         "message": message or "Query execution failed. Please check your SQL and try again.",
     }
@@ -387,7 +389,8 @@ def create_data_source(
         stamp_owner_emails(db, [created])
         return created
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=describe_source_error(e, data_source.config))
 
 
 @router.put("/{data_source_id}", response_model=DataSourceResponse)
@@ -437,7 +440,8 @@ def update_data_source(
                 logger.debug("bq client cache eviction after update failed", exc_info=True)
         return data_source
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=describe_source_error(e, data_source_update.config or ds.config))
 
 
 @router.delete("/{data_source_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -592,10 +596,12 @@ def execute_query(
             execution_time_ms=execution_time_ms
         )
     except Exception as e:
-        logger.exception("Query execution failed for datasource %s", body.data_source_id)
+        # No logger.exception: the traceback would carry the raw driver message.
+        logger.error("Query execution failed for datasource %s: %s",
+                     body.data_source_id, describe_source_error(e, data_source.config))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_build_query_error_detail(e),
+            detail=_build_query_error_detail(e, data_source.config),
         )
 
 
@@ -644,7 +650,7 @@ def validate_sql(
         )
         return SqlValidateResponse(valid=True, error=None, dialect=ds_type)
     except Exception as exc:
-        error_msg = " ".join(str(exc).split()).strip()
+        error_msg = describe_source_error(exc, data_source.config)
         return SqlValidateResponse(valid=False, error=error_msg, dialect=ds_type)
 
 
@@ -692,7 +698,8 @@ def get_table_detail(
         )
         return detail
     except Exception as e:
-        logger.error(f"Table detail failed for {schema_name}.{table_name}: {e}")
+        logger.error("Table detail failed for %s.%s: %s", schema_name, table_name,
+                     describe_source_error(e, ds.config))
         raise HTTPException(status_code=500, detail="Failed to retrieve table details.")
 
 
@@ -715,7 +722,8 @@ def get_watermark_candidates(
         )
         return {"columns": candidates}
     except Exception as e:
-        logger.error(f"Watermark candidates failed for {schema_name}.{table_name}: {e}")
+        logger.error("Watermark candidates failed for %s.%s: %s", schema_name, table_name,
+                     describe_source_error(e, ds.config))
         raise HTTPException(status_code=500, detail="Failed to retrieve watermark candidates.")
 
 
@@ -745,7 +753,10 @@ def _require_gsheets_ds(data_source_id: int, db: Session, current_user: User):
     spreadsheet_id = (cfg.get("spreadsheet_id") or "").strip()
     if not spreadsheet_id:
         raise HTTPException(status_code=400, detail="Datasource missing spreadsheet_id")
-    connector = create_google_sheets_connector(cfg)
+    try:
+        connector = create_google_sheets_connector(cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=describe_source_error(exc, ds.config))
     return connector, spreadsheet_id, ds
 
 
@@ -756,12 +767,12 @@ def list_gsheets_tabs(
     current_user: User = Depends(get_current_user),
 ):
     """List all sheet tabs in the connected Google Spreadsheet."""
-    connector, spreadsheet_id, _ = _require_gsheets_ds(data_source_id, db, current_user)
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
     try:
         sheets = connector.list_sheets(spreadsheet_id)
         return {"spreadsheet_id": spreadsheet_id, "sheets": sheets}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=describe_source_error(exc, ds.config))
 
 
 class GSheetCreateRequest(BaseModel):
@@ -787,9 +798,9 @@ def create_gsheets_tab(
         result = connector.create_sheet(spreadsheet_id, body.sheet_name, body.headers)
         return {"spreadsheet_id": spreadsheet_id, **result}
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=describe_source_error(exc, ds.config))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=describe_source_error(exc, ds.config))
 
 
 @router.get("/{data_source_id}/gsheets/{sheet_name}/rows")
@@ -801,7 +812,7 @@ def read_gsheets_rows(
     current_user: User = Depends(get_current_user),
 ):
     """Read rows from a sheet tab. Returns columns + rows list."""
-    connector, spreadsheet_id, _ = _require_gsheets_ds(data_source_id, db, current_user)
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
     try:
         data = connector.get_sheet_data(spreadsheet_id, sheet_name=sheet_name)
         rows = data.get("rows") or []
@@ -815,9 +826,9 @@ def read_gsheets_rows(
             "row_count": len(rows),
         }
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=describe_source_error(exc, ds.config))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=describe_source_error(exc, ds.config))
 
 
 class GSheetAppendRequest(BaseModel):
@@ -851,9 +862,9 @@ def append_gsheets_row(
         row = connector.append_row(spreadsheet_id, sheet_name, body.values)
         return {"ok": True, "sheet_name": sheet_name, "row": row}
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=describe_source_error(exc, ds.config))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=describe_source_error(exc, ds.config))
 
 
 @router.post("/{data_source_id}/gsheets/{sheet_name}/rows/batch", status_code=status.HTTP_201_CREATED)
@@ -875,9 +886,9 @@ def append_gsheets_rows_batch(
         result = connector.append_rows(spreadsheet_id, sheet_name, body.rows)
         return {"ok": True, "sheet_name": sheet_name, **result}
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=describe_source_error(exc, ds.config))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=describe_source_error(exc, ds.config))
 
 
 @router.post("/{data_source_id}/gsheets/{sheet_name}/import-csv", status_code=status.HTTP_200_OK)
@@ -898,9 +909,9 @@ def import_csv_to_gsheet(
         result = connector.import_csv(spreadsheet_id, sheet_name, body.csv_data)
         return {"ok": True, **result}
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=describe_source_error(exc, ds.config))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=describe_source_error(exc, ds.config))
 
 
 class GSheetUpdateRequest(BaseModel):
@@ -927,9 +938,9 @@ def update_gsheets_row(
         row = connector.update_row_by_pk(spreadsheet_id, sheet_name, body.pk, body.values)
         return {"ok": True, "sheet_name": sheet_name, "row": row}
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=describe_source_error(exc, ds.config))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=describe_source_error(exc, ds.config))
 
 
 class GSheetDeleteRequest(BaseModel):
@@ -960,9 +971,9 @@ def delete_gsheets_row(
         row_num = connector.delete_row_by_pk(spreadsheet_id, sheet_name, body.pk)
         return {"ok": True, "sheet_name": sheet_name, "deleted_row": row_num}
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=describe_source_error(exc, ds.config))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=describe_source_error(exc, ds.config))
 
 
 @router.patch("/{data_source_id}/gsheets/{sheet_name}/headers")
@@ -980,9 +991,9 @@ def rename_gsheets_column(
         result = connector.rename_column(spreadsheet_id, sheet_name, body.old_name, body.new_name)
         return {"ok": True, **result}
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=describe_source_error(exc, ds.config))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=describe_source_error(exc, ds.config))
 
 
 @router.patch("/{data_source_id}/gsheets/{sheet_name}")
@@ -1000,9 +1011,9 @@ def rename_gsheets_tab(
         result = connector.rename_tab(spreadsheet_id, sheet_name, body.new_name)
         return {"ok": True, **result}
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=describe_source_error(exc, ds.config))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=describe_source_error(exc, ds.config))
 
 
 @router.delete("/{data_source_id}/gsheets/{sheet_name}/rows/all")
@@ -1019,6 +1030,6 @@ def clear_gsheets_rows(
         result = connector.clear_data_rows(spreadsheet_id, sheet_name)
         return {"ok": True, **result}
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=describe_source_error(exc, ds.config))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=describe_source_error(exc, ds.config))

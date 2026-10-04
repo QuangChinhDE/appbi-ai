@@ -1,7 +1,7 @@
 'use client';
 
 import { sectionTitlesOf } from '@/lib/report-meta';
-import { stampReportAnchor } from '@/lib/report-anchor';
+import { clearReportAnchor, reportAnchor, stampReportAnchor } from '@/lib/report-anchor';
 import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
@@ -268,6 +268,8 @@ function DashboardDetailPageInner() {
   const [pendingRemoveDashboardChartId, setPendingRemoveDashboardChartId] = useState<number | undefined>();
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState('');
+  // The Inspector's report name/description differ from the saved row.
+  const [reportDetailsDirty, setReportDetailsDirty] = useState(false);
   // Phase-15.66 — `hasUnsavedChanges` replaced by hasLocalLayoutChanges
   // (derived from localLayoutOverrides) + serverDashboard.has_draft.
   // Phase-15.80 — state holds the typed Filter union (PowerBI-style
@@ -313,6 +315,22 @@ function DashboardDetailPageInner() {
     sourceChartId: number;
     filter: BaseFilter;
   } | null>(null);
+  // A changed applied read (filters, slicers, cross-filter) is a NEW logical report
+  // read → fresh anchor, stamped during render so it precedes the tile refetches.
+  // Leaving the report clears it, so Explore/Datasets/Datasources requests made
+  // afterwards never inherit this report's relative-date anchor.
+  const readSignature = JSON.stringify([appliedGlobalFilters, appliedGlobalSlicers, crossFilterState]);
+  const readSignatureRef = React.useRef<string | null>(null);
+  if (readSignatureRef.current !== readSignature) {
+    if (readSignatureRef.current !== null) stampReportAnchor();
+    readSignatureRef.current = readSignature;
+  }
+  // Unmount only (a dashboard change re-stamps during render above). The mount
+  // half re-stamps if a dev StrictMode remount cleared it.
+  React.useEffect(() => {
+    if (!reportAnchor()) stampReportAnchor();
+    return () => clearReportAnchor();
+  }, []);
   // C4 anti-spam — timestamp of the last APPLIED cross-filter selection. Rapid
   // re-clicks (accidental double-clicks, mashing) within this window are
   // dropped so they don't thrash the dashboard or accidentally toggle-clear the
@@ -393,10 +411,9 @@ function DashboardDetailPageInner() {
   const hasAnyPendingChanges = hasLocalLayoutChanges || Boolean(serverDashboard?.has_draft) || Boolean(pendingThemeConfig);
   /** Unsaved = not yet in the server draft: local layout edits or a theme. */
   const hasUnsavedPresentation = hasLocalLayoutChanges || Boolean(pendingThemeConfig);
-  // Mirror into a ref so the (mount-only) beforeunload handler and the Back link
-  // see the current value — an unsaved theme/layout must warn before leaving.
-  const unsavedPresentationRef = React.useRef(false);
-  React.useEffect(() => { unsavedPresentationRef.current = hasUnsavedPresentation; }, [hasUnsavedPresentation]);
+  // Mirror of hasUnsavedWork (declared below, once every author buffer exists) so
+  // the mount-only leave handlers see the current value.
+  const unsavedWorkRef = React.useRef(false);
   const leaveGuardEntryRef = React.useRef(false);
   const leaveGuardBypassPopRef = React.useRef(false);
   const leaveGuardUrlRef = React.useRef('');
@@ -404,7 +421,7 @@ function DashboardDetailPageInner() {
   /** Confirm before discarding an unsaved theme/layout edit on navigation.
    *  Returns true when it is safe to leave. */
   const confirmLeaveIfUnsaved = React.useCallback((): boolean => {
-    if (!unsavedPresentationRef.current) return true;
+    if (!unsavedWorkRef.current) return true;
     return window.confirm(t('dashboards.detail.unsavedLeaveConfirm'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1134,13 +1151,16 @@ function DashboardDetailPageInner() {
   React.useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (pendingContentSaveRef.current?.hasPending() || inflightContentSavesRef.current.size > 0
-          || unsavedPresentationRef.current) {
+          || unsavedWorkRef.current) {
         e.preventDefault();
         e.returnValue = '';
       }
     };
     const onDocumentClick = (e: MouseEvent) => {
-      if (!unsavedPresentationRef.current || e.defaultPrevented || e.button !== 0
+      const dirty = unsavedWorkRef.current;
+      const contentPending = Boolean(pendingContentSaveRef.current?.hasPending())
+        || inflightContentSavesRef.current.size > 0;
+      if ((!dirty && !contentPending) || e.defaultPrevented || e.button !== 0
           || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       const anchor = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
       if (!anchor || anchor.target === '_blank' || anchor.hasAttribute('download')) return;
@@ -1149,9 +1169,18 @@ function DashboardDetailPageInner() {
 
       e.preventDefault();
       e.stopPropagation();
-      if (!confirmLeaveIfUnsaved()) return;
+      if (dirty && !confirmLeaveIfUnsaved()) return;
 
       const nextHref = `${url.pathname}${url.search}${url.hash}`;
+      // An Inspector content edit auto-saves to the draft: send it BEFORE leaving
+      // and stay (with the failure toast) if it did not land — never leave and
+      // let it fail behind the user's back.
+      if (contentPending) {
+        void settleContentEdits('flush').then((ok) => { if (ok) go(); });
+        return;
+      }
+      go();
+      function go() {
       if (leaveGuardEntryRef.current) {
         // Replace the duplicate same-URL guard entry with the accepted target.
         // Going back first and routing from popstate races Next's own history
@@ -1161,6 +1190,7 @@ function DashboardDetailPageInner() {
       } else {
         router.push(nextHref);
       }
+      }
     };
     const onPopState = () => {
       if (leaveGuardBypassPopRef.current) {
@@ -1168,7 +1198,7 @@ function DashboardDetailPageInner() {
         leaveGuardEntryRef.current = false;
         return;
       }
-      if (!unsavedPresentationRef.current) return;
+      if (!unsavedWorkRef.current) return;
 
       // The first Back only removed our same-URL guard entry. Confirm now; a
       // second Back performs the user's requested navigation when accepted.
@@ -1193,29 +1223,8 @@ function DashboardDetailPageInner() {
       window.removeEventListener('popstate', onPopState);
       document.removeEventListener('click', onDocumentClick, true);
     };
-  }, [confirmLeaveIfUnsaved, router]);
+  }, [confirmLeaveIfUnsaved, router, settleContentEdits]);
 
-  React.useEffect(() => {
-    if (hasUnsavedPresentation && !leaveGuardEntryRef.current) {
-      leaveGuardUrlRef.current = window.location.href;
-      window.history.pushState(
-        { ...window.history.state, __appbiDashboardLeaveGuard: leaveGuardKeyRef.current },
-        '',
-        leaveGuardUrlRef.current,
-      );
-      leaveGuardEntryRef.current = true;
-      return;
-    }
-    if (!hasUnsavedPresentation && leaveGuardEntryRef.current) {
-      // Save/Publish removed the dirty state. Remove the duplicate same-URL
-      // guard entry so later clean navigation has normal history and no prompt.
-      if (window.history.state?.__appbiDashboardLeaveGuard === leaveGuardKeyRef.current) {
-        leaveGuardBypassPopRef.current = true;
-        window.history.back();
-      }
-      leaveGuardEntryRef.current = false;
-    }
-  }, [hasUnsavedPresentation]);
   // The builder header's real height. It wraps to a second row when a draft's
   // actions and the tools do not fit on one; the overlays (AI Design, the
   // Inspector) sit below it, never over its second row.
@@ -1606,6 +1615,41 @@ function DashboardDetailPageInner() {
      draftGlobalSlicers, appliedGlobalSlicers, draftPageSlicers, activePageSlicers,
      draftSlicerClusterLayout, appliedSlicerClusterLayout],
   );
+
+  // EVERY Builder-local edit that is not yet persisted and would vanish on leave:
+  // unsaved layout/theme, un-applied filter/slicer edits (Apply persists them to
+  // the draft), the Inspector's report name/description (behind "Save report"),
+  // and an open header / page rename. Inspector content auto-saves and is
+  // flushed before leaving instead (see the click handler). Viewers' filter
+  // edits are preview-only, never persisted, so they do not count.
+  const headerNameDirty = isEditingName && editedName.trim() !== '' && editedName.trim() !== (dashboard?.name ?? '').trim();
+  const pageNameDirty = editingPageId != null && editedPageName.trim() !== ''
+    && editedPageName.trim() !== (dashboardPages.find((p) => p.id === editingPageId)?.name ?? '').trim();
+  const hasUnsavedWork = hasUnsavedPresentation
+    || (canEditResource && hasPendingFilterChanges)
+    || reportDetailsDirty || headerNameDirty || pageNameDirty;
+  React.useEffect(() => { unsavedWorkRef.current = hasUnsavedWork; }, [hasUnsavedWork]);
+  React.useEffect(() => {
+    if (hasUnsavedWork && !leaveGuardEntryRef.current) {
+      leaveGuardUrlRef.current = window.location.href;
+      window.history.pushState(
+        { ...window.history.state, __appbiDashboardLeaveGuard: leaveGuardKeyRef.current },
+        '',
+        leaveGuardUrlRef.current,
+      );
+      leaveGuardEntryRef.current = true;
+      return;
+    }
+    if (!hasUnsavedWork && leaveGuardEntryRef.current) {
+      // Save/Publish removed the dirty state. Remove the duplicate same-URL
+      // guard entry so later clean navigation has normal history and no prompt.
+      if (window.history.state?.__appbiDashboardLeaveGuard === leaveGuardKeyRef.current) {
+        leaveGuardBypassPopRef.current = true;
+        window.history.back();
+      }
+      leaveGuardEntryRef.current = false;
+    }
+  }, [hasUnsavedWork]);
 
   // Combined view fed into DashboardGrid/Canvas/ChartTile. Both scopes
   // contribute to the chart WHERE; per-page wins on field collision
@@ -5076,6 +5120,7 @@ function DashboardDetailPageInner() {
               onMoveToSection={handleMoveToSection}
               onSaveWidgetConfig={handleSaveWidgetConfig}
               onSaveReport={handleSaveReportDetails}
+              onReportDirtyChange={setReportDetailsDirty}
               onPattern={handleInspectorPattern}
               onFitToContent={handleFitToContent}
               onFrame={handleFrame}
