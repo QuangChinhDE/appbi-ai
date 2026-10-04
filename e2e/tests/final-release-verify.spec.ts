@@ -161,7 +161,9 @@ test('dirty Inspector report name is guarded; cancel keeps the text', async ({ p
 
     // Saving it clears the guard: a clean leave asks nothing.
     await page.getByTestId('inspector-report-save').click();
-    await expect(page.getByTestId('inspector-report-save')).toBeDisabled({ timeout: 15_000 });
+    // Disabled also means "saving"; wait for the saved name to land in the header.
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Renamed but not saved', { timeout: 15_000 });
+    await expect(page.getByTestId('inspector-report-save')).toBeDisabled();
     let dialogs = 0;
     page.on('dialog', d => { dialogs += 1; void d.dismiss(); });
     await page.getByRole('link', { name: /Datasets/i }).first().click();
