@@ -7,15 +7,19 @@ diagnostics can trace where a filter came from.
 See `docs/filter-semantics.md` §3 for the spec.
 
 Order of precedence (later layers override earlier ones on the same
-dedupe key — `link_locked` wins everything):
+dedupe key — `link_locked` wins everything; `_LAYER_ORDER` below is the
+source of truth):
 
     chart_base
-    dashboard_filter        (public_mode != 'hidden')
+    dashboard_filter        (publicMode visible)
     dashboard_slicer
     viewer_slicer           (session, public mode)
     viewer_filter           (mini-pane overrides, public mode)
+    dashboard_filter_locked (publicMode locked/hidden, authoritative)
     link_locked             (DashboardPublicLink.filters_config, authoritative)
     link_hidden             (drops the field entirely — neither slicer nor banner)
+
+Hard bounds (link limit, page scope, author bounds) apply after the merge.
 
 `link_hidden` is special: it does not contribute a value; it removes
 all entries with the same dedupe key from the merged output. The viewer

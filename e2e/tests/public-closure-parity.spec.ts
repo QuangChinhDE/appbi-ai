@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
   addChartTile, addSwitcher, bindWhatIf, chooseParam, collectTiles, dropReport, expectSameTiles, freeze,
-  freshReport, openSurface, PUBLIC_SURFACES, settle, surfaceUrl, V1, waitForTiles, type Fixture, type TileRows,
+  freshReport, openSurface, PUBLIC_SURFACES, settle, surfaceUrl, V1, waitForTiles, deleteTestPats, type Fixture, type TileRows,
 } from './_public-closure';
 
 /**
@@ -62,6 +62,7 @@ test.beforeAll(async ({ request }) => {
 
 test.afterAll(async ({ request }) => {
   await dropReport(request, f);
+  await deleteTestPats(request);
 });
 
 test('default state: every tile — twin included — has the Builder\'s numbers on /d, /embed and emb_', async ({ page }) => {

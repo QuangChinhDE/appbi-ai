@@ -51,7 +51,7 @@ python scripts/ci/guardrail_check.py --plan "Public dashboard/embed final closur
 | framing decision | `check-embed-framing-contract.mjs` | executes the middleware's decision code |
 | FE parameter parity | `check-dashboard-parameter-parity.mjs` | shared vectors + wiring |
 | one row height | `check-unified-grid-contract.mjs` | lib execution |
-| Builder ↔ /d ↔ /embed geometry + data, params, preview | `e2e/tests/public-parity.spec.ts` | Playwright, full stack |
+| Builder ↔ /d ↔ /embed geometry + data, params, preview | `e2e/tests/public-closure-*.spec.ts` (replaced `public-parity.spec.ts`) | Playwright, full stack |
 
 Every new backend test is allow-listed in `.gitignore` and listed in
 `backend-contract-tests.yml`; every FE check is in `npm run qa` (preflight).

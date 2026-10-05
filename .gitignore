@@ -55,6 +55,9 @@ docs/*
 # tests) points external developers at it, so a clone must carry it.
 !docs/embed-integration-api.md
 !docs/embed_quickstart.py
+# …and the filter contract: source comments across the backend and frontend cite
+# it by section (§2.3, §3, …), so a clone must carry it.
+!docs/filter-semantics.md
 
 # Demo/test scripts (local only)
 seed_demo.py

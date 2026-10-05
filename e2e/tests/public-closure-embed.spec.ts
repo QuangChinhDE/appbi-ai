@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
-  collectTiles, dropReport, freshReport, openSurface, settle, V1, waitForTiles, type Fixture,
+  collectTiles, deleteTestPats, dropReport, freshReport, mintTestPat, openSurface, settle, V1, waitForTiles, type Fixture,
 } from './_public-closure';
 
 /**
@@ -37,15 +37,8 @@ async function hostPage(src = 'about:blank'): Promise<{ origin: string; url: str
   return { origin: `http://127.0.0.1:${port}`, url: `http://127.0.0.1:${port}/`, setSrc: (s) => { current = s; } };
 }
 
-/** A PAT of its own: an allowlist declared at mint is remembered on the PAT. */
-async function ownPat(request: APIRequestContext): Promise<{ id: string; token: string }> {
-  const res = await request.post(`${V1}/auth/personal-access-tokens/`, {
-    data: { name: `e2e origin ${Date.now()}-${Math.random()}`, scopes: { dashboards: 'edit' }, expires_in_days: 1 },
-  });
-  expect(res.status(), await res.text()).toBe(201);
-  const body = await res.json();
-  return { id: String(body.item?.id), token: String(body.token) };
-}
+/** A PAT of its own (an allowlist declared at mint is remembered on the PAT); tracked for teardown. */
+const ownPat = (request: APIRequestContext) => mintTestPat(request, 'origin');
 
 async function mint(request: APIRequestContext, pat: string, body: Record<string, unknown>) {
   const res = await request.post(`${V1}/integrations/embed/resolve`, {
@@ -72,6 +65,7 @@ test.beforeAll(async ({ request }) => {
 test.afterAll(async ({ request }) => {
   for (const s of servers) s.close();
   await dropReport(request, f);
+  await deleteTestPats(request);
 });
 
 test('integration embed: a real PAT mint renders every tile with data in the browser', async ({ page }) => {

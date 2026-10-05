@@ -381,7 +381,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   useEffect(() => { chartDataRef.current = chartData; }, [chartData]);
   useEffect(() => { chartErrorsRef.current = chartErrors; }, [chartErrors]);
   // #2 — per-chart viewer date-hierarchy grain (BE re-query). State drives the
-  // tile's active highlight; the ref is read inside the fetch callback so a
+  // tile's active grain button; the ref is read inside the fetch callback so a
   // grain change doesn't have to be a useCallback dependency.
   const [chartGrains, setChartGrains] = useState<Record<number, string>>({});
   const chartGrainsRef = useRef<Record<number, string>>({});
@@ -511,7 +511,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   const chartRequestIdRef = useRef(0);
   // True for the whole duration of a PDF export. Export takes over page
   // switching + data fetching, so the reactive effects (slicer seed, page
-  // fetch, viewport fetch, highlight refetch) must stand down — otherwise they
+  // fetch, viewport fetch) must stand down — otherwise they
   // race the exporter, bump chartRequestIdRef and make it discard the very
   // response it is waiting for. A ref (not state) because the effects need the
   // value in the same tick the export sets it.

@@ -3307,6 +3307,8 @@ def create_public_link(
 
 
 PUBLIC_LINK_PREVIEW_MINUTES = 15
+#: Expired preview rows (any report) removed per preview mint.
+_PREVIEW_PRUNE_BATCH = 200
 
 
 class PublicLinkPreviewRequest(BaseModel):
@@ -3351,6 +3353,20 @@ def create_public_link_preview(
         )
         .delete(synchronize_session=False)
     )
+    # Housekeeping: preview rows are only ever created here, so pruning expired
+    # ones (any report) here bounds them without a scheduler. Bounded per call.
+    expired_previews = [
+        row_id for (row_id,) in db.query(DashboardPublicLink.id)
+        .filter(DashboardPublicLink.source == "preview", DashboardPublicLink.expires_at < now)
+        .limit(_PREVIEW_PRUNE_BATCH)
+        .all()
+    ]
+    if expired_previews:
+        (
+            db.query(DashboardPublicLink)
+            .filter(DashboardPublicLink.id.in_(expired_previews))
+            .delete(synchronize_session=False)
+        )
     appearance = dict(request.appearance_config or {})
     appearance.pop("ai_bot_key", None)
     appearance.pop("ai_bot_key_configured", None)

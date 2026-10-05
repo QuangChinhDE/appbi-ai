@@ -269,6 +269,26 @@ def test_a_new_preview_replaces_the_authors_previous_one(env):
         assert s.query(DashboardPublicLink).filter_by(source="preview").count() == 1
 
 
+def test_minting_a_preview_prunes_expired_previews_of_any_report_but_nothing_else(env):
+    client, S = env
+    past = datetime.now(timezone.utc) - timedelta(minutes=1)
+    future = datetime.now(timezone.utc) + timedelta(minutes=10)
+    with S() as s:
+        s.add(Dashboard(id=2, name="Other report"))
+        s.add_all([
+            DashboardPublicLink(dashboard_id=2, token="expired-preview-other", name="p", source="preview", expires_at=past),
+            DashboardPublicLink(dashboard_id=2, token="live-preview-other", name="p", source="preview", expires_at=future),
+            DashboardPublicLink(dashboard_id=2, token="expired-user-link", name="u", source="user", expires_at=past),
+        ])
+        s.commit()
+    assert client.post("/dashboards/1/public-links/preview", json={}).status_code == 200
+    with S() as s:
+        left = {l.token for l in s.query(DashboardPublicLink).all()}
+    assert "expired-preview-other" not in left
+    # A live preview and an expired USER link are not housekeeping's to remove.
+    assert {"live-preview-other", "expired-user-link"} <= left
+
+
 def test_a_preview_refuses_a_filter_the_engine_cannot_apply(env):
     client, _ = env
     bad = [{"field": "amount", "label": "Amount", "operator": "between", "value": 5, "locked": True}]
