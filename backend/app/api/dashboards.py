@@ -4,7 +4,7 @@ API router for dashboard endpoints.
 import json
 import re
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from app.services.report_pptx_service import ReportPptxRequest
 from passlib.context import CryptContext
@@ -3304,6 +3304,71 @@ def create_public_link(
     db.commit()
     db.refresh(link)
     return _sanitize_link_for_admin(link)
+
+
+PUBLIC_LINK_PREVIEW_MINUTES = 15
+
+
+class PublicLinkPreviewRequest(BaseModel):
+    """The link configuration being edited, to preview before saving it."""
+    filters_config: Optional[List[Dict[str, Any]]] = None
+    appearance_config: Optional[Dict[str, Any]] = None
+
+
+@router.post("/{dashboard_id}/public-links/preview")
+def create_public_link_preview(
+    dashboard_id: int,
+    request: PublicLinkPreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """A real preview of a link that is being configured.
+
+    Mints a SHORT-LIVED link (source='preview', 15 minutes) carrying the draft
+    link filters/appearance, so the configurator can frame the actual public
+    runtime (`/d/<token>` or `/embed/<token>`) instead of a mock. It renders what
+    a viewer of that link would get: the PUBLISHED report (the public resolver
+    never serves an editor's draft tiles), the link's server-side filters and the
+    appearance — nothing is published and the live link is not touched.
+
+    Same bar as creating a link (edit access); never listed, never password-
+    gated (the author previews the content, not the gate); an author's previous
+    previews of this report are removed when a new one is minted, and every
+    preview expires on its own.
+    """
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    _refuse_unappliable_link_filters(request.filters_config)
+    now = datetime.now(timezone.utc)
+    (
+        db.query(DashboardPublicLink)
+        .filter(
+            DashboardPublicLink.dashboard_id == dashboard_id,
+            DashboardPublicLink.source == "preview",
+            (DashboardPublicLink.created_by == current_user.id) | (DashboardPublicLink.expires_at < now),
+        )
+        .delete(synchronize_session=False)
+    )
+    appearance = dict(request.appearance_config or {})
+    appearance.pop("ai_bot_key", None)
+    appearance.pop("ai_bot_key_configured", None)
+    # A preview shows the report; it must not open (or spend) the AI bot.
+    appearance["ai_bot_enabled"] = False
+    link = DashboardPublicLink(
+        dashboard_id=dashboard_id,
+        name="Preview",
+        token=secrets.token_urlsafe(32),
+        filters_config=request.filters_config or [],
+        appearance_config=appearance,
+        created_by=current_user.id,
+        source="preview",
+        expires_at=now + timedelta(minutes=PUBLIC_LINK_PREVIEW_MINUTES),
+    )
+    db.add(link)
+    db.commit()
+    return {"token": link.token, "expires_at": link.expires_at}
 
 
 @router.patch("/{dashboard_id}/public-links/{link_id}", response_model=PublicLinkResponse)

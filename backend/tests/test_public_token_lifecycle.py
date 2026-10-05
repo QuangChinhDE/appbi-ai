@@ -236,3 +236,40 @@ def test_a_non_security_edit_keeps_sessions(env):
     sess = _login(client, link["token"], "p1")
     client.patch(f"/dashboards/1/public-links/{link['id']}", json={"name": "Renamed", "is_active": True})
     assert _status(client, link["token"], sess) == 200
+
+
+# ── configurator preview ─────────────────────────────────────────────────────
+
+def test_a_preview_is_a_real_short_lived_link_that_is_never_listed(env):
+    client, S = env
+    r = client.post("/dashboards/1/public-links/preview",
+                    json={"filters_config": [], "appearance_config": {"show_page_tabs": False, "ai_bot_enabled": True,
+                                                                       "ai_bot_key": "sk-secret"}})
+    assert r.status_code == 200, r.text
+    token = r.json()["token"]
+    assert _status(client, token) == 200
+    assert client.get("/dashboards/1/public-links").json() == []
+    with S() as s:
+        link = s.query(DashboardPublicLink).filter_by(token=token).one()
+        assert link.source == "preview" and link.expires_at is not None
+        assert link.appearance_config.get("ai_bot_enabled") is False
+        assert "ai_bot_key" not in link.appearance_config
+        link.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        s.commit()
+    assert _status(client, token) == 410
+
+
+def test_a_new_preview_replaces_the_authors_previous_one(env):
+    client, S = env
+    first = client.post("/dashboards/1/public-links/preview", json={}).json()["token"]
+    second = client.post("/dashboards/1/public-links/preview", json={}).json()["token"]
+    assert _status(client, first) == 404
+    assert _status(client, second) == 200
+    with S() as s:
+        assert s.query(DashboardPublicLink).filter_by(source="preview").count() == 1
+
+
+def test_a_preview_refuses_a_filter_the_engine_cannot_apply(env):
+    client, _ = env
+    bad = [{"field": "amount", "label": "Amount", "operator": "between", "value": 5, "locked": True}]
+    assert client.post("/dashboards/1/public-links/preview", json={"filters_config": bad}).status_code == 422

@@ -1964,19 +1964,20 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
 
 
   /**
-   * Does this surface offer PDF export?
+   * Does this surface offer report export (PDF / PowerPoint)?
    *
-   * OFF for the EMBED surface (2026-08-04, DA report: export is broken there).
-   * An embed link — the `/embed/emb_…` URL that POST
-   * /integrations/embed/resolve mints, plus any manual iframe of
-   * `/embed/<token>` — is a report living inside somebody else's app, where a
-   * half-working button is worse than none: the host has its own chrome and its
-   * viewers cannot be told "use the public link instead".
+   * PRODUCT CONTRACT (docs/features/dashboard-public-final-closure/spec.md,
+   * capability matrix): report export belongs to the public page `/d/<token>`.
+   * The embed surfaces — a stable `/embed/<token>` iframe and an integration
+   * `/embed/emb_…` grant — are a report inside another application's chrome:
+   * downloads, the export dialog and its progress live with the host there, not
+   * with us. So they offer no report export; per-tile CSV (the rows the viewer
+   * already received) follows the link's `allow_data_export` on every surface.
    *
-   * The public `/d/<token>` surface keeps its Export button.
-   *
-   * Set this back to `true` once export works when embedded — the feature is
-   * still wired underneath, only the entry point is hidden.
+   * The server agrees: an `emb_` grant is refused by the export endpoints
+   * (public._refuse_report_export_on_embed_grant). A stable token is the same
+   * credential on `/d` and `/embed`, so for it this is presentation, not a
+   * permission.
    */
   const exportEnabledOnThisSurface = !isEmbed;
 

@@ -650,29 +650,54 @@ export interface DashboardFilterField {
   sharedAcrossDataset?: boolean;
 }
 
+/**
+ * Per-link presentation. PRESENTATION ONLY — no field here restricts data: what
+ * a link can read is decided by its locked/hidden filters (filters_config) on
+ * the server. `show_page_tabs`, `allow_viewer_filters` and `allow_data_export`
+ * choose which controls the viewer sees.
+ *
+ * Retired fields (marked @deprecated) are still read from stored configs so old
+ * links parse, but the runtime ignores them; the editor never writes new values.
+ */
 export interface PublicLinkAppearanceConfig {
+  /** @deprecated Retired — only a label in the link list; the report follows the dashboard theme. */
   preset?: 'briefing' | 'editorial' | 'minimal';
+  /** @deprecated Retired — the report accent follows the dashboard theme. */
   accent_preset?: 'sky' | 'teal' | 'amber' | 'rose' | 'slate';
+  /** @deprecated Retired — the report accent follows the dashboard theme. */
   accent_color?: string | null;
+  /** @deprecated Retired — ignored by the runtime. */
   density?: 'comfortable' | 'compact';
+  /** @deprecated Retired — ignored by the runtime. */
   canvas_style?: 'soft' | 'grid' | 'plain';
+  /** @deprecated Retired — ignored by the runtime (embed chrome is fixed). */
   embed_header_mode?: 'full' | 'compact' | 'hidden';
+  /** @deprecated Retired — ignored by the runtime. */
   hero_label?: string | null;
+  /** The report title viewers see (falls back to the link name). */
   headline?: string | null;
   /** Custom report logo shown in the public/embed header instead of the
    *  auto-generated brand mark. A URL or a data: URI (uploaded image). */
   logo_url?: string | null;
+  /** @deprecated Retired — ignored by the runtime. */
   summary?: string | null;
+  /** @deprecated Retired — ignored by the runtime. */
   footer_note?: string | null;
+  /** @deprecated Retired — ignored by the runtime. */
   show_summary?: boolean;
+  /** @deprecated Retired — ignored by the runtime. */
   show_stats?: boolean;
+  /** Show page tabs (presentation; other pages are not made private). */
   show_page_tabs?: boolean;
+  /** Show filter controls (presentation; link locks apply regardless). */
   allow_viewer_filters?: boolean;
   /** When true (default), viewers can download each chart's data as CSV on the
    *  public/embed report (only the chart's already-filtered/permission-scoped
    *  rows). Admins can turn it off per link. */
   allow_data_export?: boolean;
+  /** @deprecated Retired — ignored by the runtime. */
   show_footer?: boolean;
+  /** @deprecated Retired — ignored by the runtime. */
   show_chart_type_label?: boolean;
   /** Snapshot freshness for this public link (perf #5, Stage 2). Minutes past
    *  which a snapshot is served-stale then rebuilt in the background.

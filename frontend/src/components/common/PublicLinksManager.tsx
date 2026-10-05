@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Link2, Copy, Check, Trash2, Globe, Filter, Plus, X,
   Eye, EyeOff, Clock, Loader2, ArrowLeft, Lock, Code2, Sparkles,
-  Search, ChevronDown,
+  Search, ChevronDown, RefreshCw,
 } from 'lucide-react';
 import { dashboardApi, PublicLink } from '@/lib/api/dashboards';
 import { chartApi } from '@/lib/api/charts';
@@ -355,6 +355,14 @@ function PublicLinkFieldPicker({
   );
 }
 
+/** ISO time → the `YYYY-MM-DDTHH:mm` a datetime-local input shows, in local time. */
+function toLocalInputValue(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function PublicLinksManager({
   dashboardId,
   dashboardName,
@@ -423,10 +431,24 @@ export function PublicLinksManager({
   const [extraRows, setExtraRows] = useState<BaseFilter[]>([]);
   const [formAppearance, setFormAppearance] = useState<PublicLinkAppearanceConfig>(DEFAULT_APPEARANCE);
   const [formPassword, setFormPassword] = useState('');
+  // `datetime-local` value ('' = never expires).
+  const [formExpiresAt, setFormExpiresAt] = useState('');
+  // What the input showed when the link was opened: an untouched expiry is not
+  // re-sent (the input drops seconds, and a "changed" expiry signs out every
+  // password session — a save must not do that by accident).
+  const [initialExpiresAt, setInitialExpiresAt] = useState('');
+  const expiresAtPayload = () => (formExpiresAt ? new Date(formExpiresAt).toISOString() : null);
   const [passwordEnabled, setPasswordEnabled] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [changePassword, setChangePassword] = useState(false);
   const [previewMode, setPreviewMode] = useState<'public' | 'embed'>('public');
+  // "Preview before publish" frames the REAL public runtime: a short-lived
+  // preview link (POST …/public-links/preview) carrying the configuration being
+  // edited. Nothing is saved or published by previewing.
+  const [livePreview, setLivePreview] = useState<{ token: string | null; loading: boolean; error: string | null }>({
+    token: null, loading: false, error: null,
+  });
+  const livePreviewSeq = useRef(0);
   // Create/Edit form is split into 3 intent-based tabs so the modal isn't
   // one long scroll: appearance (look/behaviour), data (link filters),
   // security (password + share URLs). The preview panel stays on the right.
@@ -684,6 +706,32 @@ export function PublicLinksManager({
   );
   const isPasswordFormValid = !requiresPasswordValue || formPassword.trim().length > 0;
   const previewTheme = useMemo(() => buildPublicLinkTheme(formAppearance), [formAppearance]);
+
+  // Mint a fresh preview link for the configuration as it stands. The latest
+  // request wins (an older response arriving late is ignored).
+  const refreshLivePreview = useCallback(async () => {
+    const seq = ++livePreviewSeq.current;
+    setLivePreview((cur) => ({ ...cur, loading: true, error: null }));
+    try {
+      const res = await dashboardApi.createPublicLinkPreview(dashboardId, {
+        filters_config: buildLinkFiltersPayload(linkActions, unifiedRows),
+        appearance_config: formAppearance as unknown as Record<string, unknown>,
+      });
+      if (seq === livePreviewSeq.current) setLivePreview({ token: res.token, loading: false, error: null });
+    } catch (err: any) {
+      if (seq !== livePreviewSeq.current) return;
+      const detail = err?.response?.data?.detail;
+      setLivePreview({ token: null, loading: false, error: typeof detail === 'string' ? detail : 'Could not prepare the preview.' });
+    }
+  }, [dashboardId, formAppearance, linkActions, unifiedRows]);
+  // Keep the preview in step with the form: refresh shortly after the last edit
+  // while the configurator is open.
+  const configuratorOpen = view === 'create' || view === 'edit';
+  useEffect(() => {
+    if (!configuratorOpen) return;
+    const handle = window.setTimeout(() => { void refreshLivePreview(); }, 700);
+    return () => window.clearTimeout(handle);
+  }, [configuratorOpen, refreshLivePreview]);
   const previewAppearance = previewTheme.appearance;
   const previewLinkName = formName.trim() || dashboardName;
   const previewTitle = previewAppearance.headline ?? previewLinkName;
@@ -745,6 +793,7 @@ export function PublicLinksManager({
         filters_config: buildLinkFiltersPayload(linkActions, unifiedRows),
         appearance_config: formAppearance,
         password,
+        expires_at: expiresAtPayload(),
       });
       setLinks((prev) => [link, ...prev]);
       resetForm();
@@ -792,6 +841,7 @@ export function PublicLinksManager({
         filters_config: buildLinkFiltersPayload(linkActions, unifiedRows),
         appearance_config: formAppearance,
         ...passwordField,
+        ...(formExpiresAt !== initialExpiresAt ? { expires_at: expiresAtPayload() } : {}),
       });
       setLinks((prev) => prev.map((link) => (link.id === editingLink.id ? updated : link)));
 
@@ -875,6 +925,8 @@ export function PublicLinksManager({
       ai_bot_key_configured: link.appearance_config?.ai_bot_key_configured,
     });
     setFormPassword('');
+    setFormExpiresAt(link.expires_at ? toLocalInputValue(link.expires_at) : '');
+    setInitialExpiresAt(link.expires_at ? toLocalInputValue(link.expires_at) : '');
     setPasswordEnabled(link.has_password);
     setShowPassword(false);
     setChangePassword(false);
@@ -894,6 +946,8 @@ export function PublicLinksManager({
     setLinkActions({});
     setFormAppearance(DEFAULT_APPEARANCE);
     setFormPassword('');
+    setFormExpiresAt('');
+    setInitialExpiresAt('');
     setPasswordEnabled(false);
     setShowPassword(false);
     setChangePassword(false);
@@ -1025,10 +1079,6 @@ export function PublicLinksManager({
   };
 
   const renderConfiguratorPreview = () => {
-    const showEmbedHeader = true;
-    const previewUrl = previewMode === 'public'
-      ? `${origin.replace(/\/$/, '')}/d/${editingLink?.token ?? 'preview-token'}`
-      : `${origin.replace(/\/$/, '')}/embed/${editingLink?.token ?? 'preview-token'}`;
 
     return (
       <div className="space-y-4 lg:sticky lg:top-0">
@@ -1070,90 +1120,39 @@ export function PublicLinksManager({
 
           <div className="mt-4 overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
             <div className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] px-4 py-2.5" style={previewTheme.topBarStyle}>
-              <span className="h-2.5 w-2.5 rounded-full bg-danger/60" />
-              <span className="h-2.5 w-2.5 rounded-full bg-warning/60" />
-              <span className="h-2.5 w-2.5 rounded-full bg-success/60" />
-              <span className="ml-2 min-w-0 truncate text-tiny text-text-tertiary">{previewUrl}</span>
+              <span className="min-w-0 flex-1 truncate text-tiny text-text-tertiary">
+                {previewMode === 'public' ? 'Public page' : 'Embed'} · {previewLinkName}
+              </span>
+              <button
+                type="button"
+                onClick={() => void refreshLivePreview()}
+                disabled={livePreview.loading}
+                className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-tiny font-emphasis text-text-secondary hover:bg-surface-2 disabled:opacity-60"
+                data-testid="public-link-preview-refresh"
+              >
+                {livePreview.loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                Refresh preview
+              </button>
             </div>
-
-            {previewMode === 'public' ? (
-              <div className="space-y-4 p-4" style={previewTheme.pageStyle}>
-                <div className="rounded-xl border p-3" style={previewTheme.panelStyle}>
-                  <div className="flex flex-col gap-3">
-                    <h4 className="truncate text-small font-strong tracking-tight text-text-primary">{previewTitle}</h4>
-
-                    <div className="flex flex-wrap gap-2">
-                      <span className="rounded-full border px-3 py-1 text-tiny font-emphasis" style={previewTheme.accentPillStyle}>
-                        Compact report rail
-                      </span>
-                      {previewAppearance.show_page_tabs && (
-                        <span className="rounded-full border px-3 py-1 text-tiny font-emphasis" style={previewTheme.neutralPillStyle}>
-                          Page tabs visible
-                        </span>
-                      )}
-                      <span className="rounded-full border px-3 py-1 text-tiny font-emphasis" style={previewTheme.neutralPillStyle}>
-                        {previewAppearance.allow_viewer_filters ? 'Viewer filters enabled' : 'Viewer filters hidden'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border p-3" style={previewTheme.canvasFrameStyle}>
-                  <div className="rounded-lg p-3" style={previewTheme.canvasInnerStyle}>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="h-28 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1" />
-                      <div className="h-28 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1" />
-                      <div className="h-36 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 sm:col-span-2" />
-                    </div>
-                  </div>
-                </div>
-              </div>
+            {livePreview.error ? (
+              <div className="p-6 text-caption text-danger" data-testid="public-link-preview-error">{livePreview.error}</div>
+            ) : livePreview.token ? (
+              <iframe
+                key={`${previewMode}:${livePreview.token}`}
+                title="Public link preview"
+                src={`/${previewMode === 'public' ? 'd' : 'embed'}/${livePreview.token}`}
+                className="block h-[560px] w-full bg-surface-1"
+                data-testid="public-link-preview-frame"
+              />
             ) : (
-              <div className="space-y-3 p-4" style={previewTheme.pageStyle}>
-                <div className="overflow-hidden rounded-xl border" style={previewTheme.shellStyle}>
-                  {showEmbedHeader ? (
-                    <div className="border-b px-4 py-3" style={previewTheme.panelStyle}>
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <h4 className="truncate text-small font-strong text-text-primary">{previewTitle}</h4>
-                        </div>
-                        <span className="rounded-full border px-2.5 py-1 text-tiny font-emphasis" style={previewTheme.neutralPillStyle}>
-                          Compact viewer rail
-                        </span>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="border-b px-4 py-3 text-tiny text-text-tertiary" style={previewTheme.panelStyle}>
-                      Embed header hidden, report starts immediately with controls and canvas.
-                    </div>
-                  )}
-
-                  <div className="border-b px-4 py-3" style={previewTheme.panelStyle}>
-                    <div className="flex flex-wrap gap-2">
-                      {previewAppearance.show_page_tabs && (
-                        <span className="rounded-full border px-3 py-1 text-tiny font-emphasis" style={previewTheme.accentPillStyle}>
-                          Tabs
-                        </span>
-                      )}
-                      <span className="rounded-full border px-3 py-1 text-tiny font-emphasis" style={previewTheme.neutralPillStyle}>
-                        {previewAppearance.allow_viewer_filters ? 'Interactive filters' : 'Locked view'}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="p-3">
-                    <div className="rounded-xl border p-3" style={previewTheme.canvasFrameStyle}>
-                      <div className="rounded-lg p-3" style={previewTheme.canvasInnerStyle}>
-                        <div className="grid gap-3">
-                          <div className="h-24 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1" />
-                          <div className="h-36 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1" />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+              <div className="flex h-40 items-center justify-center text-caption text-text-tertiary">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Preparing preview…
               </div>
             )}
+            <p className="border-t border-[rgb(var(--border-line))] px-4 py-2 text-tiny text-text-tertiary">
+              The real public runtime with this link&apos;s filters and appearance, on the published report. Nothing is
+              saved or published; the preview link expires in 15 minutes. A password, if set, is not asked here.
+            </p>
           </div>
         </div>
 
@@ -1878,6 +1877,26 @@ export function PublicLinksManager({
                         </Button>
                       )}
                     </div>
+                  )}
+                </div>
+                <div className="mt-4 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
+                  <label className="block">
+                    <span className="text-caption font-emphasis text-text-secondary">Link expires</span>
+                    <input
+                      type="datetime-local"
+                      value={formExpiresAt}
+                      onChange={(event) => setFormExpiresAt(event.target.value)}
+                      className="mt-1 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-caption text-text-primary"
+                      data-testid="public-link-expires-at"
+                    />
+                  </label>
+                  <p className="mt-1 text-tiny text-text-tertiary">
+                    Empty = never expires. After this time the link stops working; changing it signs out password sessions.
+                  </p>
+                  {formExpiresAt && (
+                    <button type="button" className="mt-1 text-tiny text-brand" onClick={() => setFormExpiresAt('')}>
+                      Clear expiry
+                    </button>
                   )}
                 </div>
                 {renderShareOutputs()}

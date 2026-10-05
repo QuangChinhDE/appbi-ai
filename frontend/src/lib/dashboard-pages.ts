@@ -444,30 +444,26 @@ export function deriveTabletLayout<T extends { x: number; y: number; w: number; 
 // made cards visibly larger than the builder on a wide monitor, which read as too
 // big / less tidy — so it's reverted to fixed.) Columns still fill the width via
 // react-grid-layout's WidthProvider; only the ROW height is pinned. On a phone
-// (< REPORT_STACK_BREAKPOINT) the layout collapses to a 1-col vertical stack at a
-// slightly tighter fixed row.
+// (< REPORT_STACK_BREAKPOINT) the layout collapses to a 1-col vertical stack —
+// at the SAME row as the Builder's phone preview (DashboardGrid narrow mode).
+// A tighter phone-only row used to make every stacked tile shorter on the
+// published report than in the Builder's preview of the same width.
 //
 // 640 grid px ≈ 710 window px after app-shell chrome, so tablets (portrait 768 /
 // landscape 1024) get the multi-column layout; only true phones stack.
 export const REPORT_STACK_BREAKPOINT = 640;
 
 /**
- * Row height (px) for the public/embed report grid, given the MEASURED grid
- * container width. FIXED at the builder's row height on desktop/tablet so the
- * published report matches the builder (no scaled-up cards); a slightly tighter
- * fixed row below the stack breakpoint (1-col phone view).
+ * Row height (px) for the public/embed report grid. ONE row on every width —
+ * the Builder's (DashboardGrid rowHeight, its phone and tablet previews
+ * included) — so a published tile is as tall as the tile the author approved.
+ * `containerWidth` is kept for call-site compatibility.
  */
 export function computeReportRowHeight(
-  containerWidth: number | null | undefined,
+  _containerWidth: number | null | undefined,
   gridGap: number = 16,
 ): number {
-  // Finer-grid row height — MUST match the builder (DashboardGrid rowHeight) so
-  // the published report is pixel-identical. Couples to the theme's grid gap
-  // (see dashboardRowHeight). A slightly tighter row below the stack breakpoint.
-  const base = dashboardRowHeight(gridGap);
-  const stackRow = Math.max(4, (72 - 2 * (Number(gridGap) || 0)) / GRID_FINER);
-  if (!containerWidth || !Number.isFinite(containerWidth) || containerWidth <= 0) return base;
-  return containerWidth < REPORT_STACK_BREAKPOINT ? stackRow : base;
+  return dashboardRowHeight(gridGap);
 }
 
 export function liftLayoutToTop<T extends { y: number }>(layouts: T[]): T[] {

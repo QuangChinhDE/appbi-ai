@@ -32,6 +32,19 @@ import path from 'node:path';
 
 const API = process.env.E2E_API_URL || 'http://localhost:8000';
 const V1 = `${API}/api/v1`;
+
+// The integration embed is minted with a Personal Access Token only (a browser
+// session is refused): one PAT with `dashboards: edit` for this run.
+let integrationPat: string | null = null;
+async function patHeaders(request: any): Promise<Record<string, string>> {
+  if (!integrationPat) {
+    const res = await request.post(`${V1}/auth/personal-access-tokens/`, {
+      data: { name: `acceptance embed ${Date.now()}`, scopes: { dashboards: 'edit' }, expires_in_days: 1 },
+    });
+    integrationPat = String((await res.json()).token);
+  }
+  return { Authorization: `Bearer ${integrationPat}` };
+}
 const DASH = `${V1}/dashboards`;
 const EVIDENCE = path.resolve(__dirname, '..', '..', 'docs', 'features', 'report-studio-v3', 'readiness', 'evidence');
 const OLIST = process.env.ACCEPT_OLIST_DASHBOARD || 'Olist commercial review';
@@ -288,7 +301,7 @@ test('R3 public tampering: the server decides the scope, a link lock ANDs with t
 
   // Embed: two claims = two isolated scopes, and a crafted request stays in its own.
   const resolve = async (value: string) => {
-    const res = await request.post(`${V1}/integrations/embed/resolve`, { data: { dashboard_id: id, filters: [{ field: 'dataset_table_3.customer_state', operator: 'in', value: [value] }] } });
+    const res = await request.post(`${V1}/integrations/embed/resolve`, { headers: await patHeaders(request), data: { dashboard_id: id, filters: [{ field: 'dataset_table_3.customer_state', operator: 'in', value: [value] }] } });
     return res.status() < 400 ? String((await res.json()).embed_path).replace(/^\/embed\//, '') : null;
   };
   const eSp = need(r, await resolve('SP'), 'an embed grant (integrations/embed/resolve)');
@@ -299,11 +312,11 @@ test('R3 public tampering: the server decides the scope, a link lock ANDs with t
   const crafted = await value(eSp, [{ ...STATE, value: ['RJ'] }]);
   check(r, 'a crafted request under the SP claim cannot read RJ (it gets SP, or nothing)',
     crafted.v !== vRj && (crafted.v === vSp || crafted.nums.every((n) => n === 0)), `${crafted.v} (SP ${vSp}, RJ ${vRj})`);
-  const bad = await request.post(`${V1}/integrations/embed/resolve`, { data: { dashboard_id: id, filters: [{ field: 'dataset_table_3.customer_state', operator: 'between', value: 5 }] } });
+  const bad = await request.post(`${V1}/integrations/embed/resolve`, { headers: await patHeaders(request), data: { dashboard_id: id, filters: [{ field: 'dataset_table_3.customer_state', operator: 'between', value: 5 }] } });
   check(r, 'a malformed embed claim is refused', bad.status() === 400, String(bad.status()));
-  const missing = await request.post(`${V1}/integrations/embed/resolve`, { data: { dashboard_id: id, filters: [] } });
+  const missing = await request.post(`${V1}/integrations/embed/resolve`, { headers: await patHeaders(request), data: { dashboard_id: id, filters: [] } });
   check(r, 'an embed with no claim is refused unless the full report is asked for', missing.status() === 400, String(missing.status()));
-  const foreignField = await request.post(`${V1}/integrations/embed/resolve`, { data: { dashboard_id: id, filters: [{ field: 'dataset_table_9.secret', operator: 'in', value: ['x'] }] } });
+  const foreignField = await request.post(`${V1}/integrations/embed/resolve`, { headers: await patHeaders(request), data: { dashboard_id: id, filters: [{ field: 'dataset_table_9.secret', operator: 'in', value: ['x'] }] } });
   check(r, 'a claim on a field that is not in the report is refused', foreignField.status() === 400, String(foreignField.status()));
 });
 
@@ -712,7 +725,7 @@ test('R9 parity: the builder, the public link and the embed show the same report
   const pub = await publicAt(context, `/d/${token}`, 1440, 2600);
   const pubTiles = Object.keys(await rects(pub)).sort();
   const pubKpi = await kpiTexts(pub);
-  const emb = await request.post(`${V1}/integrations/embed/resolve`, { data: { dashboard_id: id, full_report: true } });
+  const emb = await request.post(`${V1}/integrations/embed/resolve`, { headers: await patHeaders(request), data: { dashboard_id: id, full_report: true } });
   const embedPath = need(r, emb.status() < 400 && (await emb.json()).embed_path, 'a full-report embed grant');
   const em = await publicAt(context, embedPath, 1440, 2600);
   const emTiles = await em.evaluate(() => Array.from(document.querySelectorAll('[data-grid-item-id]')).map((e) => e.getAttribute('data-grid-item-id')!).sort());

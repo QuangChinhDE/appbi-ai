@@ -726,6 +726,16 @@ export const dashboardApi = {
     return response.data?.system_prompt ?? '';
   },
 
+  /** A short-lived link carrying a link configuration that is being edited, so
+   *  the configurator can frame the real public runtime (POST …/public-links/preview). */
+  createPublicLinkPreview: async (
+    dashboardId: number,
+    body: { filters_config?: unknown[]; appearance_config?: Record<string, unknown> },
+  ): Promise<{ token: string; expires_at: string }> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/public-links/preview`, body);
+    return response.data;
+  },
+
   createPublicLink: async (
     dashboardId: number,
     data: {
@@ -733,6 +743,7 @@ export const dashboardApi = {
       filters_config?: any[];
       appearance_config?: PublicLinkAppearanceConfig;
       password?: string;
+      expires_at?: string | null;
     },
   ): Promise<PublicLink> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/public-links`, data);
@@ -749,6 +760,8 @@ export const dashboardApi = {
       appearance_config?: PublicLinkAppearanceConfig;
       is_active?: boolean;
       password?: string;
+      /** null = never expires; omitted = unchanged. Changing it ends open password sessions. */
+      expires_at?: string | null;
     },
   ): Promise<PublicLink> => {
     const response = await apiClient.patch(`/dashboards/${dashboardId}/public-links/${linkId}`, data);
@@ -769,6 +782,8 @@ export interface PublicLink {
   appearance_config: PublicLinkAppearanceConfig | null;
   is_active: boolean;
   has_password: boolean;
+  /** ISO time after which the link answers 410; null = never expires. */
+  expires_at?: string | null;
   access_count: number;
   last_accessed_at: string | null;
   created_at: string;

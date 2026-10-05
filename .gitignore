@@ -51,6 +51,10 @@ docs/*
 # usually while something is wrong. A runbook that is only on the author's disk
 # is not a runbook.
 !docs/ops-runbook.md
+# …and the embed integration contract: code (middleware, nginx, .env.example,
+# tests) points external developers at it, so a clone must carry it.
+!docs/embed-integration-api.md
+!docs/embed_quickstart.py
 
 # Demo/test scripts (local only)
 seed_demo.py

@@ -168,6 +168,18 @@ export function PublicLinkAppearanceEditor({
         <div className="rounded-md border border-brand/20 bg-brand/10 px-4 py-3 text-caption leading-6 text-text-secondary">
           Colors and typography follow the published dashboard theme, so the shared report stays consistent with the original.
         </div>
+        <label className="mt-4 block">
+          <span className="text-caption font-emphasis text-text-secondary">Title shown to viewers</span>
+          <input
+            type="text"
+            value={appearance.headline ?? ''}
+            maxLength={200}
+            placeholder="Defaults to the link name"
+            onChange={(e) => updateField('headline', e.target.value.trim() ? e.target.value : null)}
+            className="mt-1 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-caption text-text-primary"
+            data-testid="public-link-headline"
+          />
+        </label>
       </div>
 
       <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
@@ -227,26 +239,26 @@ export function PublicLinkAppearanceEditor({
         <SectionKicker
           icon={Eye}
           label="Viewer controls"
-          description="Only keep controls that affect how people navigate or explore the report."
+          description="Presentation only. These choose what the viewer sees; they do not restrict data — to limit what a link can read, lock or hide filters under Access."
         />
 
         <div className="grid gap-2 md:grid-cols-2">
           <ToggleCard
             checked={appearance.show_page_tabs}
             label="Show page tabs"
-            description="Keep page switching visible for multi-page dashboards."
+            description="Show page switching for multi-page reports. Hiding the tabs does not make other pages private."
             onToggle={() => updateField('show_page_tabs', !appearance.show_page_tabs)}
           />
           <ToggleCard
             checked={appearance.allow_viewer_filters}
             label="Allow viewer filters"
-            description="Let viewers use filter controls on the shared report."
+            description="Show filter controls to viewers. Locked and hidden link filters still apply either way."
             onToggle={() => updateField('allow_viewer_filters', !appearance.allow_viewer_filters)}
           />
           <ToggleCard
             checked={appearance.allow_data_export}
             label="Allow data export"
-            description="Let viewers download each chart's data (CSV) — only the chart's filtered rows."
+            description="Offer a CSV download of the rows each chart already shows. Turning it off removes the button; it does not hide data the report displays."
             onToggle={() => updateField('allow_data_export', !appearance.allow_data_export)}
           />
         </div>

@@ -711,20 +711,24 @@ def _build_public_chart_filters(
     the merged list, where a pick on the same field was intersected into the
     page bound (keeping that would pin the dropdown to the current pick).
 
-    Precedence (see docs/filter-semantics.md §3):
+    Precedence (docs/features/dashboard-public-final-closure/spec.md, "Data
+    authority contract"):
 
       chart_base  (handled inside ChartService.get_chart_data)
         < dashboard_filter (Dashboard.filters_config, publicMode=visible)
         < dashboard_slicer (Dashboard.slicers_config — Phase-A column)
-        < viewer_slicer    (FE-sent runtime filter list)
+        < viewer_slicer    (FE-sent runtime filter list, incl. validated
+                            parameter-switcher filters)
         < viewer_filter    (mini-pane overrides — reserved, empty until Phase F)
         < dashboard_filter_locked (Dashboard.filters_config, publicMode=locked/hidden —
                                    authoritative, sits ABOVE the viewer layers so a
                                    slicer/viewer choice cannot relax an author lock)
         < link_locked      (DashboardPublicLink.filters_config, value-bearing entries)
 
-    `link_hidden` entries on the public link drop the matching field
-    entirely (no banner, no slicer — see filter-semantics.md §2.3).
+    A HIDDEN link entry that carries a value is ENFORCED like a lock and never
+    named to the viewer; a hidden entry WITHOUT a value removes the field's
+    controls (kill-marker) but never removes a lock on that field. Page scope,
+    link 'limit' scope and author bounds are hard bounds applied after the merge.
 
     Centralizing this means every endpoint that talks to the chart
     engine for a public viewer applies the same precedence — the

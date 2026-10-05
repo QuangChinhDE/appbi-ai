@@ -812,6 +812,20 @@ check('a wide headline block uses its width: the supporting sentences take the r
     'a wide headline still stacks its sentences under a half-width headline');
 });
 
+check('the published report uses the Builder row on every width, phones included', () => {
+  // A tighter phone-only row made every stacked tile on /d and /embed shorter
+  // than the same tile in the Builder's phone preview (DashboardGrid narrow mode).
+  for (const gap of [0, 8, 16, 24]) {
+    const builderRow = pages.computeReportRowHeight(1440, gap);
+    for (const width of [320, 390, 639, 640, 820, 1024, 1440, 2560]) {
+      assert(pages.computeReportRowHeight(width, gap) === builderRow,
+        `row ${pages.computeReportRowHeight(width, gap)}px at ${width}px (gap ${gap}) differs from the Builder's ${builderRow}px`);
+    }
+  }
+  const grid = source('components/dashboards/DashboardGrid.tsx');
+  assert(/rowPitchPx: dashboardRowHeight\(gap\) \+ gap/.test(grid), 'the Builder phone preview no longer stacks at its own row pitch');
+});
+
 if (failures.length) {
   for (const { name, error } of failures) console.error(`FAIL  ${name}\n      ${error.message}`);
   console.error(`\n${failures.length} failed, ${passed} passed`);
