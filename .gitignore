@@ -429,3 +429,4 @@ backend/_verify_gate.db
 !backend/tests/authz_http.py
 !backend/tests/test_authz_dataset_grants_http_pg.py
 !backend/tests/test_authz_workspace_http_pg.py
+!backend/tests/test_authz_datasource_secret_http_pg.py

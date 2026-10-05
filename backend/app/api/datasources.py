@@ -80,20 +80,62 @@ def _validate_datasource_connection_or_raise(ds_type: str, config: dict[str, Any
     )
 
 
+#: Non-secret fields that do not decide WHERE a stored credential is sent.
+#: Every other non-secret field is part of the connection target and must be
+#: unchanged for a stored secret to be reused (fail closed on unknown keys).
+_TARGET_NEUTRAL_FIELDS = frozenset({
+    "schema", "schema_name", "default_dataset", "sheet_name", "sheets",
+    "display_name", "description",
+})
+
+
+class SecretRebindError(ValueError):
+    """A stored secret was about to be reused against a different target."""
+
+
+def _target_identity(config: dict[str, Any] | None, sensitive) -> dict[str, Any]:
+    return {
+        k: v for k, v in (config or {}).items()
+        if k not in sensitive and k not in _TARGET_NEUTRAL_FIELDS
+    }
+
+
 def _restore_sensitive_config_fields(
     config: dict[str, Any],
     existing_config: dict[str, Any] | None,
+    *,
+    type_changed: bool = False,
 ) -> dict[str, Any]:
     """
     Rehydrate masked/blank secret fields from a stored datasource config.
 
     This keeps validation and updates working when the frontend intentionally
     leaves sensitive inputs blank to mean "keep the stored value".
+
+    A stored secret is BOUND TO ITS TARGET. If the connector type, or any
+    non-secret field that decides where the connection goes (host, port,
+    project, account, URL, auth mode, any unknown key), differs from the stored
+    one, nothing is rehydrated and SecretRebindError is raised: the caller must
+    supply the credential for the new target. Otherwise a caller could point the
+    stored password or service-account key at a host they control (authz
+    review, N-DS1).
     """
     from app.core.crypto import MASKED_PLACEHOLDER, _SENSITIVE_FIELDS
 
     restored = dict(config or {})
     stored = dict(existing_config or {})
+
+    would_restore = any(
+        restored.get(f, None) in ("", None, MASKED_PLACEHOLDER) and stored.get(f)
+        for f in _SENSITIVE_FIELDS
+    )
+    if would_restore:
+        stored_target = _target_identity(stored, _SENSITIVE_FIELDS)
+        merged = {**stored_target, **_target_identity(restored, _SENSITIVE_FIELDS)}
+        if type_changed or merged != stored_target:
+            raise SecretRebindError(
+                "Changing the connection target requires re-entering its credentials."
+            )
 
     # When the auth MODE changes (e.g. BigQuery Service Account -> Google OAuth,
     # or vice-versa) the previous mode's credential is IRRELEVANT to the new one.
@@ -415,6 +457,7 @@ def update_data_source(
             restored_config = _restore_sensitive_config_fields(
                 data_source_update.config,
                 ds.config,
+                type_changed=next_type != ds.type.value,
             )
             data_source_update.config = _normalize_google_oauth_config(
                 restored_config,
@@ -543,7 +586,25 @@ def test_data_source_connection(
         # (IDOR credential reuse). Checked BEFORE any secret is restored.
         require_view_access(db, current_user, db_ds, "data_sources")
         if db_ds.config:
-            config = _restore_sensitive_config_fields(config, db_ds.config)
+            # Reusing a stored secret is USING it: edit on the datasource, the
+            # same connector type and the same target (see
+            # _restore_sensitive_config_fields). A viewer may still test a
+            # connection with credentials they type themselves.
+            from app.core.crypto import MASKED_PLACEHOLDER, _SENSITIVE_FIELDS
+
+            reuses = any(
+                config.get(f, None) in ("", None, MASKED_PLACEHOLDER) and db_ds.config.get(f)
+                for f in _SENSITIVE_FIELDS
+            )
+            if reuses:
+                require_edit_access(db, current_user, db_ds, "data_sources")
+            try:
+                config = _restore_sensitive_config_fields(
+                    config, db_ds.config,
+                    type_changed=getattr(db_ds.type, "value", db_ds.type) != request.type.value,
+                )
+            except SecretRebindError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     config = _normalize_google_oauth_config(
         config,
