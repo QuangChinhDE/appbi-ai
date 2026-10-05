@@ -41,6 +41,9 @@ export const useChartData = (
   options?: { enabled?: boolean; keepPrevious?: boolean },
   granularity?: string,
   roleOverrides?: Record<string, string> | null,
+  /** The dashboard tile asking (a chart can sit on a report twice): its own
+   *  cache entry and request, so each tile's answer is observable. */
+  tileId?: number,
 ) => {
   // Serialize filters to a stable string so identical filter payloads share
   // the same cache entry regardless of object-reference identity.
@@ -56,8 +59,8 @@ export const useChartData = (
     // #2 — granularity is part of the key so a viewer date-hierarchy drill
     // (re-bucket at a new grain) fetches fresh data instead of re-serving the
     // prior grain's cached result.
-    queryKey: ['charts', id, 'data', context, filterKey, granularity ?? null, overridesKey],
-    queryFn: () => chartApi.getData(id, filters, context, granularity, roleOverrides),
+    queryKey: ['charts', id, 'data', context, filterKey, granularity ?? null, overridesKey, tileId ?? null],
+    queryFn: () => chartApi.getData(id, filters, context, granularity, roleOverrides, tileId),
     enabled: !!id && enabled,
     // keepPrevious — on a filter/grain change the queryKey changes; instead of
     // dropping to a blank skeleton (which made a filtered dashboard "flash

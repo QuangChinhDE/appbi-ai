@@ -69,6 +69,25 @@ export function fitLayoutToContent<T extends { i: string; x: number; y: number; 
   return items;
 }
 
+/**
+ * A KPI's natural height is what it says IN FULL. Its context line steps itself
+ * down to fit the cell it is in (KpiContext useFitLevel); measured after that
+ * step-down, a short cell looked "naturally short" and never grew — so whether a
+ * derived cell fit its KPI depended on which of the two effects ran first, and
+ * the Builder canvas and /d differed. Measure with the context at full, then
+ * restore; the context re-judges at whatever size the cell becomes.
+ */
+function measureAtFullContext(tile: HTMLElement): number {
+  const contexts = Array.from(tile.querySelectorAll<HTMLElement>('.dashboard-kpi-context[data-fit]'));
+  const saved = contexts.map((c) => [c.getAttribute('data-fit'), c.style.display] as const);
+  for (const c of contexts) { c.setAttribute('data-fit', 'full'); c.style.display = ''; }
+  try {
+    return measureNaturalHeight(tile);
+  } finally {
+    contexts.forEach((c, i) => { c.setAttribute('data-fit', saved[i][0] ?? 'full'); c.style.display = saved[i][1]; });
+  }
+}
+
 /** Elements whose height is decided by their content. */
 const CONTENT_SELECTOR = [
   '[data-widget-type="hero_strip"]', '[data-widget-type="section_header"]', '[data-widget-type="text"]',
@@ -88,23 +107,48 @@ export function useMeasuredContentRows(
 ): Record<string, number> {
   const [rows, setRows] = React.useState<Record<string, number>>({});
   const { enabled, rowHeight, gapY, minRows } = opts;
+  // A KPI's number sizes its font to its cell, so its measured height follows
+  // the cell: re-measured after every shrink, the cell kept descending, and
+  // where it stopped depended on when the timed measures landed (the Builder
+  // and /d ended a row apart on the same report). So, per width: a tile's FIRST
+  // measure (taken at its derived height) may shrink it; later measures only
+  // grow it (late content: a KPI context line, a headline's data).
+  const baseline = React.useRef<{ key: string; seen: Set<string> }>({ key: '', seen: new Set() });
   React.useEffect(() => {
     if (!enabled) { setRows((prev) => (Object.keys(prev).length ? {} : prev)); return; }
     let cancelled = false;
     const measure = () => {
       const el = root.current;
       if (!el || cancelled) return;
+      const key = `${Math.round(el.clientWidth)}|${rowHeight}|${gapY}`;
+      if (baseline.current.key !== key) {
+        // New width: back to the derived layout; the next measure is the first.
+        baseline.current = { key, seen: new Set() };
+        setRows((prev) => (Object.keys(prev).length ? {} : prev));
+        schedule();
+        return;
+      }
+      const seen = baseline.current.seen;
       const next: Record<string, number> = {};
       for (const item of Array.from(el.querySelectorAll<HTMLElement>('[data-grid-item-id]'))) {
         const tile = item.querySelector<HTMLElement>(CONTENT_SELECTOR);
         if (!tile) continue;
         const id = item.getAttribute('data-grid-item-id');
         if (!id) continue;
-        const px = measureNaturalHeight(tile);
+        // A KPI still loading has no natural height yet. Measured as a spinner,
+        // its first (shrinking) measure came from the skeleton on /d — where the
+        // chart is known before its data — and not on the Builder.
+        if (tile.matches('[data-tile-kind="kpi"]') && !tile.querySelector('.dashboard-kpi-value')) continue;
+        const px = measureAtFullContext(tile);
         if (!(px > 0)) continue;
         next[id] = Math.max(minRows ? minRows(tile) : 1, rowsForHeight(px, rowHeight, gapY));
       }
+      const remeasured = new Set(Object.keys(next).filter((k) => seen.has(k)));
+      for (const k of Object.keys(next)) seen.add(k);
       setRows((prev) => {
+        for (const k of remeasured) {
+          if (prev[k] !== undefined && prev[k] > next[k]) next[k] = prev[k];
+        }
         const keys = new Set([...Object.keys(prev), ...Object.keys(next)]);
         let changed = false;
         for (const k of keys) {
@@ -128,14 +172,14 @@ export function useMeasuredContentRows(
     // Content that changes after the first measure (a header's headline that
     // arrives with the data, a KPI's context line) is measured again. Its
     // BOX does not change (it fills its cell), so a size observer never sees
-    // it: the text itself changing is the signal (debounced).
+    // it: the text itself changing is the signal (debounced). The whole root
+    // is observed, not the tiles present now: a lazily loaded tile mounts its
+    // content after this effect ran (the Builder canvas), and its KPI context
+    // line must be measured too.
     let mo: MutationObserver | null = null;
     if (typeof MutationObserver !== 'undefined' && root.current) {
       mo = new MutationObserver(schedule);
-      for (const item of Array.from(root.current.querySelectorAll<HTMLElement>('[data-grid-item-id]'))) {
-        const tile = item.querySelector<HTMLElement>(CONTENT_SELECTOR);
-        if (tile) mo.observe(tile, { childList: true, subtree: true, characterData: true });
-      }
+      mo.observe(root.current, { childList: true, subtree: true, characterData: true });
     }
     return () => {
       cancelled = true;

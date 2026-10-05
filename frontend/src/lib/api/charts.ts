@@ -61,6 +61,7 @@ export const chartApi = {
     context: ChartDataContext = 'default',
     granularity?: string,
     roleOverrides?: Record<string, string> | null,
+    tileId?: number,
   ): Promise<ChartDataResponse> => {
     const params: Record<string, string> = {};
     if (filters && filters.length > 0) {
@@ -79,6 +80,9 @@ export const chartApi = {
     if (roleOverrides && Object.keys(roleOverrides).length > 0) {
       params.overrides = JSON.stringify(roleOverrides);
     }
+    // The dashboard tile this request is for (observability only — the server
+    // ignores it; public requests carry `tile_id` too).
+    if (tileId != null) params.tile_id = String(tileId);
     const response = await apiClient.get(`/charts/${id}/data`, { params });
     return response.data;
   },

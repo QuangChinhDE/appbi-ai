@@ -104,6 +104,9 @@ def _render_time_grain_expression(field_sql: str, grain: str, dialect: str) -> s
         if g == "year":
             return f"MAKEDATE(YEAR({field_sql}), 1)"
 
+    if dialect == "duckdb":
+        # Same as the semantic engine: DuckDB-backed manual/Sheets cells are VARCHAR.
+        return f"DATE_TRUNC('{g}', TRY_CAST({field_sql} AS TIMESTAMP))"
     return f"DATE_TRUNC('{g}', {field_sql})"
 
 

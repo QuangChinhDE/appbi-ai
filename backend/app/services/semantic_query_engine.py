@@ -1344,6 +1344,14 @@ class SemanticQueryEngine:
             from app.services.type_override_service import build_safe_cast_sql
 
             base_sql = build_safe_cast_sql(base_sql, "datetime", dialect)
+        elif dialect == "duckdb":
+            # Manual and Google Sheets sources run on DuckDB, where a cell is
+            # materialized as VARCHAR while the model records its SAMPLED type
+            # ('date') — so the text gate above cannot see it, and
+            # DATE_TRUNC('month', VARCHAR) is a Binder error: every viewer drill
+            # / time grain on such a report failed. TRY_CAST is value-preserving
+            # on a genuine DATE/TIMESTAMP and parses ISO text.
+            base_sql = f"TRY_CAST({base_sql} AS TIMESTAMP)"
 
         # SEM-P2-007 — with a non-UTC calendar timezone, the calendar join puts
         # an INSTANT on its LOCAL date. Bucketing the raw instant (UTC on

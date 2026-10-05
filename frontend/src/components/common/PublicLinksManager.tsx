@@ -1085,12 +1085,13 @@ export function PublicLinksManager({
         <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary">Preview before publish</p>
-              <p className="mt-1 text-caption text-text-tertiary">Switch between the full public page and iframe embed surface.</p>
+              <p className="text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary" data-testid="public-link-preview-title">Preview · published report</p>
+              <p className="mt-1 text-caption text-text-tertiary">What viewers of this link will see if you save these settings now. It shows the report as currently published — unpublished dashboard edits are not included.</p>
             </div>
             <div className="flex items-center rounded-full border border-[rgb(var(--border-line))] bg-surface-2 p-1">
               <button
                 type="button"
+                data-testid="public-link-preview-mode-public"
                 onClick={() => setPreviewMode('public')}
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-tiny font-emphasis transition-colors',
@@ -1104,6 +1105,7 @@ export function PublicLinksManager({
               </button>
               <button
                 type="button"
+                data-testid="public-link-preview-mode-embed"
                 onClick={() => setPreviewMode('embed')}
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-tiny font-emphasis transition-colors',
@@ -1150,8 +1152,8 @@ export function PublicLinksManager({
               </div>
             )}
             <p className="border-t border-[rgb(var(--border-line))] px-4 py-2 text-tiny text-text-tertiary">
-              The real public runtime with this link&apos;s filters and appearance, on the published report. Nothing is
-              saved or published; the preview link expires in 15 minutes. A password, if set, is not asked here.
+              The real public runtime: the published report with this link&apos;s unsaved filters and appearance.
+              Nothing is saved or published; the preview link expires in 15 minutes. A password, if set, is not asked here.
             </p>
           </div>
         </div>
@@ -1265,6 +1267,7 @@ export function PublicLinksManager({
     return (
       <div
         key={link.id}
+        data-testid={`public-link-row-${link.id}`}
         onClick={() => openEdit(link)}
         className="cursor-pointer rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-sm transition hover:shadow-linear"
       >
@@ -1290,6 +1293,7 @@ export function PublicLinksManager({
               <div className="flex items-center gap-1">
                 <IconButton
                   aria-label={link.is_active ? 'Deactivate' : 'Activate'}
+                  data-testid="public-link-toggle-active"
                   variant="ghost"
                   size="sm"
                   onClick={(event) => handleToggleActive(link, event)}
@@ -1456,6 +1460,7 @@ export function PublicLinksManager({
       <Button
         variant="primary"
         onClick={handleCreate}
+        data-testid="public-link-create"
         disabled={creating || !formName.trim() || !isPasswordFormValid}
         loading={creating}
         leadingIcon={!creating && <Plus className="h-4 w-4" />}
@@ -1469,6 +1474,7 @@ export function PublicLinksManager({
       <Button
         variant="primary"
         onClick={handleUpdate}
+        data-testid="public-link-save"
         disabled={saving || !formName.trim() || !isPasswordFormValid}
         loading={saving}
         leadingIcon={!saving && <Check className="h-4 w-4" />}
@@ -1508,6 +1514,7 @@ export function PublicLinksManager({
                     fullWidth
                     className="mt-5"
                     onClick={openCreate}
+                    data-testid="public-link-new"
                     leadingIcon={<Plus className="h-4 w-4" />}
                   >
                     Create new public link
@@ -1564,6 +1571,7 @@ export function PublicLinksManager({
                     value={formName}
                     onChange={(event) => setFormName(event.target.value)}
                     placeholder='e.g. "CEO View", "Sales Team", "Quarterly Briefing"'
+                    data-testid="public-link-name"
                     autoFocus
                   />
                   <p className="mt-2 text-caption leading-6 text-text-tertiary">
@@ -1583,6 +1591,7 @@ export function PublicLinksManager({
                     <button
                       key={t.id}
                       type="button"
+                      data-testid={`public-link-tab-${t.id}`}
                       onClick={() => setFormTab(t.id)}
                       className={cn(
                         'flex-1 rounded-md px-3 py-1.5 text-caption font-emphasis transition-colors',
@@ -1775,6 +1784,7 @@ export function PublicLinksManager({
                         <Button
                           variant="ghost"
                           size="sm"
+                          data-testid="public-link-password-change"
                           onClick={() => {
                             setChangePassword(true);
                             setPasswordEnabled(true);
@@ -1825,6 +1835,7 @@ export function PublicLinksManager({
                         </button>
                         <button
                           type="button"
+                          data-testid="public-link-password-require"
                           onClick={() => {
                             setPasswordEnabled(true);
                             if (view === 'edit') {
@@ -1851,6 +1862,7 @@ export function PublicLinksManager({
                           value={formPassword}
                           onChange={(event) => setFormPassword(event.target.value)}
                           placeholder="Enter password"
+                          data-testid="public-link-password"
                           trailingIcon={
                             <button
                               type="button"

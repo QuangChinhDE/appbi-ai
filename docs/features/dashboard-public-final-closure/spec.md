@@ -104,8 +104,37 @@ below).
   server (`parameter_fields`) and used by both surfaces; tile instance parameters run the
   same vectors on both halves. *(test_dashboard_parameter_parity,
   check-dashboard-parameter-parity.mjs)*
-- Parity of rendered geometry and data across surfaces at 1440/820/390 is asserted in
-  `e2e/tests/public-parity.spec.ts`.
+- Proven in a real browser on all four surfaces (Builder, `/d`, stable `/embed`, a PAT-minted
+  `emb_` grant), compared TILE by TILE (`dashboard_chart` id — a chart placed twice keeps
+  two answers): `e2e/tests/public-closure-*.spec.ts` (shared machinery
+  `_public-closure.ts`). Builder tiles send an observability-only `tile_id` on their
+  data requests; the public batch echoes `tile_id`.
+- Tablet/phone content-fit (`lib/responsive-fit`) gives a KPI the same height on every
+  surface: it is measured with its context line in full, only once its number has
+  rendered, and after that first measure a re-measure may only grow it (the number's
+  font follows its cell, so repeated shrinking landed on a row decided by timer order).
+
+### Interaction contract (one model, every surface)
+
+- Clicking a data point: the SOURCE tile dims its other marks (its own query is
+  unchanged) and every OTHER tile FILTERS to that value. Clicking the same point again
+  clears. A tile with `layout.highlightEnabled === false` neither emits nor receives a
+  selection.
+- There is no other interaction mode. A `theme_config.interactions.mode` switch and a
+  parallel "highlight overlay" fetch existed in the public view but nothing could enable
+  them (no writer, state never set): that dead runtime was removed rather than left
+  untested.
+- Date drill / viewer grain re-buckets server-side. In the Builder's EDIT canvas the
+  same control sets the chart's saved default grain (authoring); the viewer behaviour is
+  the Builder READ canvas (`?studio=preview`), `/d` and both embeds.
+  `layout.lockDateGrain` removes the control.
+
+### Preview contract
+
+The Public Links configurator preview shows **the published report + this link's unsaved
+settings** (filters, appearance), rendered by the real public runtime. Unpublished
+dashboard edits are not shown, and the UI says so. Previewing creates no listed link
+and publishes nothing.
 
 ## 5. Capability matrix (source of truth)
 

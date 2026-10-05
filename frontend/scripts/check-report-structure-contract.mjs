@@ -485,6 +485,19 @@ check('phone and tablet heights follow content: stack re-lays, tablet only grows
   const src = source('lib/responsive-fit.ts');
   assert(/b > a \|\| a - b > 1/.test(src), 'a one-row shortfall is ignored (content stays cut off)');
   assert(/new MutationObserver\(schedule\)/.test(src) && /characterData: true/.test(src), 'content that changes after the first measure is never measured again');
+  // A lazily loaded tile (Builder canvas) mounts its content after the effect
+  // ran; observing only the tiles present then never refit its KPI context line.
+  assert(/mo\.observe\(root\.current,/.test(src), 'only tiles mounted at effect time are observed (late tiles never refit)');
+  // Measured after the KPI context stepped down, a short cell looked naturally
+  // short and never grew (Builder vs /d differed by effect order).
+  assert(/const px = measureAtFullContext\(tile\)/.test(src) && /setAttribute\('data-fit', 'full'\)/.test(src),
+    'a KPI is measured after its context stepped down (cell never grows to fit it)');
+  // A KPI's font follows its cell: re-measured after each shrink it kept
+  // descending, landing on a row decided by timer order (Builder vs /d differed).
+  assert(/remeasured/.test(src) && /prev\[k\] > next\[k\]\) next\[k\] = prev\[k\]/.test(src),
+    'a re-measure may shrink a tile again (fit descends, timing decides the height)');
+  assert(/!tile\.querySelector\('\.dashboard-kpi-value'\)\) continue/.test(src),
+    'a loading KPI (no number yet) is measured as its first, shrinking measure');
   const pub = source('components/dashboards/PublicDashboardView.tsx');
   // The fit was once attached to a grid block that was never rendered.
   assert((pub.match(/<ResponsiveReportGrid/g) ?? []).length === 1 && (pub.match(/ref=\{fitRootRef\}/g) ?? []).length === 1,

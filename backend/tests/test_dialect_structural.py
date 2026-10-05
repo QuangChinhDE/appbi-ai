@@ -281,3 +281,40 @@ def test_live_query_and_distinct_paths_use_the_same_pattern_shapes():
     assert pattern_predicate("c", "like", "x", "BIGQUERY", quote) == "STRPOS(c, 'x') > 0"
     with pytest.raises(ValueError):
         pattern_predicate("c", "eq", "x", "bigquery", quote)
+
+
+# ── DuckDB time grain over a VARCHAR-stored date (manual / Sheets sources) ──
+# Found by the Dashboard Public closure E2E: a viewer drill (or any time grain)
+# on a report built from an uploaded spreadsheet failed with DuckDB's
+# "date_trunc(STRING_LITERAL, VARCHAR)" Binder error — the cell is VARCHAR in
+# DuckDB while the model records the sampled type 'date', so the text-cast gate
+# did not fire. Executed on a real DuckDB, not just pattern-matched.
+@pytest.mark.parametrize("grain, expected_buckets", [("month", 3), ("quarter", 2), ("year", 1)])
+def test_duckdb_time_grain_on_a_varchar_date_column_executes(grain, expected_buckets):
+    import duckdb
+
+    engine = SemanticQueryEngine(db=None, database_type="duckdb")  # type: ignore[arg-type]
+    engine.views_cache = {
+        "sales": SimpleNamespace(
+            measures=[], dimensions=[{"name": "order_month", "type": "date"}],
+            table_name="sales", name="sales",
+        )
+    }
+    expr = engine._render_dimension_with_time_grain("sales.order_month", "sales", grain)
+    assert "TRY_CAST(" in expr, expr
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (order_month VARCHAR)")
+    con.execute("INSERT INTO sales VALUES ('2024-01-01'), ('2024-02-01'), ('2024-04-01'), ('2024-04-15')")
+    rows = con.execute(f"SELECT {expr} AS b, COUNT(*) FROM sales GROUP BY 1 ORDER BY 1").fetchall()
+    assert len(rows) == expected_buckets, rows
+
+
+def test_duckdb_live_time_grain_on_a_varchar_date_column_executes():
+    import duckdb
+    from app.services.live_query_service import _render_time_grain_expression
+
+    expr = _render_time_grain_expression('"order_month"', "quarter", "duckdb")
+    con = duckdb.connect()
+    con.execute('CREATE TABLE t ("order_month" VARCHAR)')
+    con.execute("INSERT INTO t VALUES ('2024-01-01'), ('2024-05-01')")
+    assert len(con.execute(f"SELECT {expr}, COUNT(*) FROM t GROUP BY 1").fetchall()) == 2

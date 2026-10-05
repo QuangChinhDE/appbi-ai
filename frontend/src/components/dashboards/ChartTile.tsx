@@ -480,6 +480,7 @@ function ChartTileBase({
     { enabled: isActiveViewport && !isLoadingChart && Boolean(chart) && filtersReady && serverFilterKey === debouncedFilterKey, keepPrevious: true },
     viewerGrain,
     roleOverrides,
+    dashboardChartId,
   );
 
   // Cross-highlight overlay query (target tiles only): the SAME chart, the
@@ -507,6 +508,12 @@ function ChartTileBase({
     'dashboard',
     { enabled: isActiveViewport && !isLoadingChart && Boolean(chart) && filtersReady && Boolean(debouncedOverlayFilters) },
     viewerGrain,
+    // The overlay is the SAME query as the tile plus the selection: it must
+    // carry the tile's what-if swap too, or a bound tile's highlight was
+    // computed on the chart's saved dimension while the tile showed the
+    // swapped one (the public view always sent both).
+    roleOverrides,
+    dashboardChartId,
   );
 
   // Title editing state

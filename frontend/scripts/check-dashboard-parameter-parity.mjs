@@ -58,6 +58,8 @@ check('public view no longer skips field-bound / what-if switchers', !pdv.includ
 check('public view sends field-bound parameters as filters', pdv.includes('paramsToFilters(publicParamDefs'));
 check('public view sends what-if values as per-tile overrides', pdv.includes('tileRoleOverrides(') && pdv.includes('...(overrides ? { overrides } : {})'));
 check('public batch identifies the tile', pdv.includes('tile_id: dashboardChart.id'));
+check('a tile opted out of highlighting receives no selection on public (as in the Builder)',
+  /const receivesSelection = pageCrossFilterState[\s\S]{0,160}highlightEnabled !== false/.test(pdv));
 check('public switcher is interactive', /DashboardWidget[^>]*onParamChange=\{handlePublicParamChange\}/.test(pdv));
 
 if (failed) {

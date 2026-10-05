@@ -4641,6 +4641,7 @@ function DashboardDetailPageInner() {
                         <>
                           <button
                             onClick={() => { setIsPublicShareOpen(true); setIsMoreMenuOpen(false); }}
+                            data-testid="dashboard-open-public-links"
                             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                           >
                             <Globe className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
