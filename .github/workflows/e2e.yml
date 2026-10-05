@@ -34,7 +34,9 @@ on:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # ~22 min before the device-layout journeys (public-closure-responsive,
+    # ~16 min, 15 serial journeys) were added; 30 cancelled the run mid-suite.
+    timeout-minutes: 50
 
     services:
       postgres:
