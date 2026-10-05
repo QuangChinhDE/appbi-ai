@@ -20,6 +20,8 @@ const DASH = `${API}/api/v1/dashboards`;
 const FIXTURE = 'E2E Presentation fixture';
 
 type Rows = Map<number, string>;
+/** Every chart-data exchange seen, for a readable failure message. */
+const LOG: string[] = [];
 
 async function findFixture(request: APIRequestContext): Promise<number | null> {
   const res = await request.get(`${DASH}/?limit=200`);
@@ -36,6 +38,7 @@ function collect(page: Page): Rows {
   const rows: Rows = new Map();
   page.on('response', async (res: Response) => {
     const url = res.url();
+    if (/\/charts\/(\d+\/)?data/.test(url)) LOG.push(`${res.status()} ${decodeURIComponent(url.replace(/^https?:\/\/[^/]+/, '')).slice(0, 260)}`);
     if (!res.ok() || res.request().method() === 'OPTIONS') return;
     try {
       const builder = url.match(/\/api\/v1\/charts\/(\d+)\/data(\?|$)/);
@@ -164,7 +167,8 @@ test.describe.serial('public parity — same numbers as the Builder', () => {
       // Default state: South filter + BAR grouped by channel — on every surface.
       const builder = await view(page, `/dashboards/${copy.id}`);
       const barRows = JSON.parse(builder.get(bar!.chart_id) || '[]') as string[];
-      expect(barRows.length, 'Builder: what-if default (channel) did not regroup the BAR').toBe(2);
+      const barLog = LOG.filter((l) => l.includes(`/charts/${bar!.chart_id}/`)).join(' || ');
+      expect(barRows.length, `Builder: what-if default (channel) did not regroup the BAR. Exchanges: ${barLog}`).toBe(2);
       for (const route of [`/d/${copy.token}`, `/embed/${copy.token}`]) {
         expectSameNumbers(builder, await view(page, route), copy.chartIds, `${route.split('/')[1]} default`);
       }
