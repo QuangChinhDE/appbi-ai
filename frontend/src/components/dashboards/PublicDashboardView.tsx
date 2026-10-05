@@ -2,14 +2,15 @@
 
 import { sectionTitlesOf } from '@/lib/report-meta';
 import { clearReportAnchor, reportAnchor, setReportAnchor, stampReportAnchor } from '@/lib/report-anchor';
-import { fitLayoutToContent, useMeasuredContentRows } from '@/lib/responsive-fit';
+import { useMeasuredContentRows } from '@/lib/responsive-fit';
+import { resolveReportLayout, type PageProfiles } from '@/lib/responsive-layout/resolve';
 import { extractParamDefs, paramsToFilters, seedParamValues, tileDataKeys, tileRoleOverrides } from '@/lib/dashboard-params';
 import { groupIntoPrintBands } from '@/lib/print-bands';
 import { planKeyForElement, PRINTABLE_ELEMENT_TYPES } from '@/lib/export-layout';
 import { widgetTypeLabel } from '@/components/dashboards/widget-forms';
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
+import GridLayout from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
@@ -26,7 +27,6 @@ import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
 import { GridSlicerTile, FilterApplyBar, stagedSlicerIds, type SlicerControlBinding } from '@/components/dashboards/GridSlicerTile';
 import { isSlicerControl, placedSlicerIds, replaceSlicerById, slicerIdOfControl } from '@/lib/slicer-placement';
-import { withoutAbsentControls } from '@/lib/grid-arrange';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
@@ -55,10 +55,7 @@ import {
   getDashboardChartPageId,
   getDashboardChartsForPage,
   normalizeDashboardPages,
-  buildResponsiveReportLayouts,
   reportBreakpointFor,
-  REPORT_RESPONSIVE_BREAKPOINTS,
-  REPORT_RESPONSIVE_COLS,
   computeReportRowHeight,
   dashboardRowHeight,
   DASHBOARD_GRID_COLS,
@@ -74,33 +71,20 @@ import { mergeSeedWithViewerSelections, pageFilterFacts, resolvePublicPageFilter
 import { useI18n } from '@/providers/LanguageProvider';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 import { citedTilesOf } from '@/lib/report-evidence';
-import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { auditRenderedTiles } from '@/lib/dashboard-presentation/render-audit';
 import { SectionBands } from './SectionBands';
-import { readingOrder, resolveStructure, toStructTiles } from '@/lib/report-structure';
+import { resolveStructure, toStructTiles } from '@/lib/report-structure';
 import { ReportMetaProvider } from '@/lib/report-meta';
 import { ReportEvidenceProvider } from '@/lib/report-evidence';
 import { snapshotCoherence } from '@/lib/snapshot-coherence';
 
 // Phase-B5 / Phase-B9 — responsive "Fit to width" grid for the public report.
-// (Now THREE breakpoints: a tablet band between them is derived by
-// `deriveTabletLayout`, which leaves the authored layout untouched unless a tile
-// would render below its readable width — see buildResponsiveReportLayouts.)
-// Originally two:
-//   • lg  (≥ REPORT_STACK_BREAKPOINT grid px): 12 columns, the EXACT authored
-//     layout — so a desktop resize stays in lg and never reflows/jumps. The row
-//     height scales WITH the grid width (see computeReportRowHeight) so tiles keep
-//     their authored aspect ratio on a TV, laptop, or tablet alike.
-//   • xs  (< REPORT_STACK_BREAKPOINT): 1 column, a pre-derived vertical stack —
-//     a real phone view instead of micro-tiles (or the old giant stacked cards).
-// Explicit layouts for BOTH breakpoints means react-grid-layout never
-// auto-generates (and never reflows) a layout. compactType=null +
-// preventCollision preserve coordinates exactly as provided.
-const ResponsiveReportGrid = WidthProvider(Responsive);
-const REPORT_BREAKPOINTS = REPORT_RESPONSIVE_BREAKPOINTS;
-// Finer grid: 36 cols on desktop/tablet (matches the builder; ×3-migrated coords
-// render identically). Phone stack stays 1-col.
-const REPORT_COLS = REPORT_RESPONSIVE_COLS;
+// Device layouts: the report draws ONE geometry, decided by the ONE resolver
+// (lib/responsive-layout/resolve.ts) for the width its container measures —
+// desktop as authored; tablet/phone AUTO (derived) or the page's published
+// CUSTOM layout. The grid renders that geometry at that width: it never picks
+// a breakpoint, measures a width or reflows a layout of its own
+// (compactType=null + preventCollision keep coordinates exactly as given).
 
 // Measure an element's CONTENT width (excludes padding) via ResizeObserver and
 // keep it in state. Used to drive the report grid's proportional row height from
@@ -118,7 +102,12 @@ function useContentWidth(): [(node: HTMLElement | null) => void, number | null] 
     if (node && typeof ResizeObserver !== 'undefined') {
       const observer = new ResizeObserver((entries) => {
         const contentWidth = entries[0]?.contentRect?.width;
-        if (typeof contentWidth === 'number' && contentWidth > 0) setWidth(contentWidth);
+        // Whole pixels: a sub-pixel change is not a new width (no re-render, no
+        // re-resolve, no breakpoint flicker).
+        if (typeof contentWidth === 'number' && contentWidth > 0) {
+          const next = Math.round(contentWidth);
+          setWidth((prev) => (prev === next ? prev : next));
+        }
       });
       observer.observe(node);
       observerRef.current = observer;
@@ -493,19 +482,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // Finer grid: row height couples to the theme gap so the ×3-migrated layout
   // renders pixel-identical to the builder (see dashboardRowHeight).
   const reportRowHeight = computeReportRowHeight(gridWidth, getDashboardGridMargin(dashboard?.theme_config)[1]);
-  // Tablet and phone: headers, text and KPI cards take the height of what they
-  // say at that width (lib/responsive-fit) — a derived layout, never saved.
   const fitRootRef = useRef<HTMLDivElement | null>(null);
-  const fitBreakpoint = reportBreakpointFor(gridWidth);
-  const measuredContentRows = useMeasuredContentRows(
-    fitRootRef,
-    {
-      enabled: !printMode && (gridWidth ?? 0) > 0 && fitBreakpoint !== 'lg',
-      rowHeight: reportRowHeight,
-      gapY: getDashboardGridMargin(dashboard?.theme_config)[1],
-    },
-    [gridWidth, currentPageId, chartData, dashboard?.dashboard_charts],
-  );
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
@@ -627,6 +604,23 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   const visibleDashboardCharts = useMemo(
     () => getDashboardChartsForPage(dashboard?.dashboard_charts, activePageId),
     [activePageId, dashboard?.dashboard_charts],
+  );
+  // The page's published device layouts (absent = AUTO for that device).
+  const pageProfiles = ((dashboard as any)?.responsive_layouts?.pages?.[activePageId] ?? null) as PageProfiles | null;
+  // Tablet and phone AUTO: headers, text and KPI cards take the height of what
+  // they say at that width (lib/responsive-fit) — derived, never saved. A CUSTOM
+  // device layout is drawn as authored: nothing is measured for it.
+  const fitBreakpoint = reportBreakpointFor(gridWidth);
+  const fitIsCustom = fitBreakpoint !== 'lg' && pageProfiles?.[fitBreakpoint]?.mode === 'custom';
+  const measuredContentRows = useMeasuredContentRows(
+    fitRootRef,
+    {
+      enabled: !printMode && (gridWidth ?? 0) > 0 && fitBreakpoint !== 'lg' && !fitIsCustom,
+      width: gridWidth ?? 0,
+      rowHeight: reportRowHeight,
+      gapY: getDashboardGridMargin(dashboard?.theme_config)[1],
+    },
+    [currentPageId, chartData, dashboard?.dashboard_charts],
   );
 
   // Report parameters — the SAME semantics as the Builder (lib/dashboard-params):
@@ -1858,39 +1852,19 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   const gridDashboardCharts = absentControlIds.size
     ? visibleDashboardCharts.filter((dc) => !absentControlIds.has(dc.id))
     : visibleDashboardCharts;
-  const projectedBoxes = withoutAbsentControls(visibleDashboardCharts.map((dc) => ({
-    id: dc.id,
-    x: dc.layout.x || 0,
-    y: dc.layout.y || 0,
-    w: dc.layout.w || 4,
-    h: dc.layout.h || 4,
-    locked: Boolean((dc.layout as any)?.locked),
-  })), absentControlIds);
-  const layouts: Layout[] = projectedBoxes.map((b) => ({ i: b.id.toString(), x: b.x, y: b.y, w: b.w, h: b.h }));
-
-  // Desktop is authored; tablet and phone are derived from it by the same rules
-  // the builder's narrow projection uses (lib/dashboard-pages).
-  // Plain computation, not a hook: it sits below early returns and is cheap.
-  const tileKindById = new Map(visibleDashboardCharts.map((dc) => [
-    String(dc.id), tileKindOf(dc.chart?.chart_type, dc.widget_type),
-  ]));
-  const geometryById = new Map(layouts.map((l) => [l.i, l]));
-  const responsiveLayouts = buildResponsiveReportLayouts(layouts, {
-    kindOf: (item) => tileKindById.get(item.i) ?? 'chart',
-    gridWidth,
-    gridGap: getDashboardGridMargin(dashboard?.theme_config)[1],
-    // Sections read as a unit on a phone: header, then its members.
-    order: readingOrder(toStructTiles(visibleDashboardCharts, (id) => ({
-      ...((visibleDashboardCharts.find((dc) => dc.id === id)?.layout as any) ?? {}),
-      ...geometryById.get(String(id)),
-    }))).map(String),
+  // ONE resolver, ONE width: desktop as authored, tablet/phone AUTO (derived +
+  // content fit) or the page's published CUSTOM layout (drawn as stored). A
+  // control absent for this viewer closes its band — the same rule on desktop
+  // and in a custom layout.
+  const resolvedLayout = resolveReportLayout({
+    tiles: visibleDashboardCharts,
+    absentIds: absentControlIds,
+    profiles: pageProfiles,
+    containerWidth: gridWidth,
+    gap: getDashboardGridMargin(dashboard?.theme_config)[1],
+    measuredRows: measuredContentRows,
   });
-  const activeBreakpoint = reportBreakpointFor(gridWidth);
-  if (activeBreakpoint !== 'lg') {
-    responsiveLayouts[activeBreakpoint] = fitLayoutToContent(
-      responsiveLayouts[activeBreakpoint], measuredContentRows, activeBreakpoint === 'xs' ? 'stack' : 'grow',
-    );
-  }
+  const activeBreakpoint = resolvedLayout.breakpoint;
 
 
   /**
@@ -1996,7 +1970,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         return (
           <button
             key={page.id}
-            type="button"
+            type="button" data-testid={`public-page-tab-${page.id}`}
             onClick={() => {
               void handlePageSelect(page.id);
             }}
@@ -2457,7 +2431,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                 return (
                   <button
                     key={page.id}
-                    type="button"
+                    type="button" data-testid={`public-page-tab-${page.id}`}
                     onClick={() => {
                       void handlePageSelect(page.id);
                     }}
@@ -2687,22 +2661,32 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
               ref={gridMeasureRef}
               className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
             >
-              <div className="relative" ref={fitRootRef}>
+              <div
+                className="relative"
+                ref={fitRootRef}
+                // Observability (tests, audits): what this surface drew, from the ONE width.
+                data-report-width={gridWidth ?? 0}
+                data-report-breakpoint={activeBreakpoint}
+                data-report-cols={resolvedLayout.cols}
+                data-report-layout-source={resolvedLayout.source}
+                data-report-layout={JSON.stringify(resolvedLayout.layout.map(({ i, x, y, w, h }) => ({ i, x, y, w, h })))}
+              >
               {activeBreakpoint !== 'xs' && gridWidth ? (
                 <SectionBands
-                  layouts={responsiveLayouts[activeBreakpoint]}
+                  layouts={resolvedLayout.layout}
                   dashboardCharts={gridDashboardCharts}
-                  cols={REPORT_COLS[activeBreakpoint]}
+                  cols={resolvedLayout.cols}
                   rowH={reportRowHeight}
                   margin={getDashboardGridMargin(dashboard?.theme_config)}
                   width={gridWidth}
                 />
               ) : null}
-              <ResponsiveReportGrid
+              {gridWidth ? (
+              <GridLayout
                 className="layout"
-                layouts={responsiveLayouts}
-                breakpoints={REPORT_BREAKPOINTS}
-                cols={REPORT_COLS}
+                width={gridWidth}
+                layout={resolvedLayout.layout}
+                cols={resolvedLayout.cols}
                 rowHeight={reportRowHeight}
                 margin={getDashboardGridMargin(dashboard?.theme_config)}
                 isDraggable={false}
@@ -2765,7 +2749,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                     </div>
                   );
                 })}
-              </ResponsiveReportGrid>
+              </GridLayout>
+              ) : null}
               </div>
             </div>
           )}

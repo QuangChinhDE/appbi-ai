@@ -61,7 +61,6 @@ from app.services.embed_link_service import EMBED_GRANT_PREFIX, embed_policy_for
 #: browser parser is a single implementation.
 from app.services.agent_flows.wire import event_to_envelope as _event_to_envelope
 from app.services.filter_layered_merge import (
-    DEFAULT_PAGE_ID,
     DISCLOSE_KEY,
     canonical_link_entry,
     disclosed_applied_filters,
@@ -946,19 +945,14 @@ def _dedupe_filters_by_field(filters: list[dict]) -> list[dict]:
 
 def _public_page_ids(dash: Dashboard) -> list[str]:
     """Page ids as the viewer resolves them (normalizeDashboardPages)."""
-    ids: list[str] = []
-    for page in getattr(dash, "pages_config", None) or []:
-        pid = str(page.get("id") or "").strip() if isinstance(page, dict) else ""
-        if pid and pid not in ids:
-            ids.append(pid)
-    return ids or [DEFAULT_PAGE_ID]
+    from app.services.dashboard_service import dashboard_page_ids
+    return dashboard_page_ids(getattr(dash, "pages_config", None))
 
 
-def _tile_page_id(dc: DashboardChart) -> str:
-    """The page a tile is drawn on (getDashboardChartPageId)."""
-    layout = dc.layout if isinstance(dc.layout, dict) else {}
-    pid = layout.get("pageId")
-    return pid.strip() if isinstance(pid, str) and pid.strip() else DEFAULT_PAGE_ID
+def _tile_page_id(dc: DashboardChart, pages_config: Any = None) -> str:
+    """The page a tile is drawn on (dashboard_service.tile_page_id)."""
+    from app.services.dashboard_service import tile_page_id
+    return tile_page_id(dc.layout if isinstance(dc.layout, dict) else {}, pages_config)
 
 
 def _public_chart_page_ids(dash: Dashboard, chart_id: int, page_id: str | None) -> list[str]:
@@ -970,7 +964,7 @@ def _public_chart_page_ids(dash: Dashboard, chart_id: int, page_id: str | None) 
     every page the chart is on applies: never wider than any of them.
     """
     pages = sorted({
-        _tile_page_id(dc) for dc in (dash.dashboard_charts or [])
+        _tile_page_id(dc, dash.pages_config) for dc in (dash.dashboard_charts or [])
         if dc.chart_id == chart_id and not is_draft_only_item(dc)
     })
     if page_id:
@@ -1187,7 +1181,7 @@ def _pages_offering_field(dash, dataset_id, field: str) -> set[str] | None:
         refs = _public_field_refs(_NS(slicers_config=[], filters_config=[], pages_config=[],
                                       dashboard_charts=[dc]), exact=True)
         if want in refs:
-            pages.add(_tile_page_id(dc))
+            pages.add(_tile_page_id(dc, getattr(dash, "pages_config", None)))
     return pages
 
 
@@ -1966,6 +1960,16 @@ def get_public_dashboard(
         safe_appearance.pop("ai_bot_key_configured", None)
     safe_appearance.pop("ai_bot_report_context_note", None)
     dash.public_link_appearance = safe_appearance
+    # Published device layouts as a viewer gets them: the served pages, published
+    # tiles only, no author identity or revision. Shaped on the served copy only
+    # (set_committed_value): never a pending change the session could flush.
+    from sqlalchemy.orm.attributes import set_committed_value as _set_committed
+    from app.services.responsive_layouts import public_view as _responsive_public_view
+    _set_committed(dash, "responsive_layouts", _responsive_public_view(
+        dash.responsive_layouts,
+        served_page_ids=_public_page_ids(dash),
+        published_tile_ids={str(dc.id) for dc in (dash.dashboard_charts or []) if not is_draft_only_item(dc)},
+    ))
 
     # Serialize the built structure to a plain dict, cache it by token, and wake
     # any workers coalescing on this token. Returning the dict (validated by the

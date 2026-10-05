@@ -428,7 +428,8 @@ check('a tile dropped on others opens room where it lands; a vacated filter band
   const closed = arrange.closeVacatedBand([b(50, 0, 0, 8, 3), b(1, 0, 3, 12, 6)], 50);
   assert(closed.length === 1 && closed[0].y === 0, JSON.stringify(closed));
   const src = source('components/dashboards/DashboardGrid.tsx');
-  assert(/allowOverlap=\{!!onLayoutChange && !isNarrow\}/.test(src), 'the builder grid cannot carry a tile over others');
+  // Desktop authoring carries a tile over others; a device canvas never does.
+  assert(/allowOverlap=\{!!onLayoutChange && !deviceView\}/.test(src), 'the builder grid cannot carry a tile over others');
 });
 
 check("each direction puts the page's filter controls where its reading order wants them", () => {
@@ -515,7 +516,7 @@ check('the builder draws a stored overlap the way viewers see it (settled), and 
   const clean = [{ i: '1', x: 0, y: 0, w: 12, h: 6 }, { i: '2', x: 12, y: 20, w: 12, h: 6 }];
   assert(settle.settleStoredLayout(clean, 36) === clean, "a layout without overlap is not returned untouched (an author's gaps moved)");
   const grid = source('components/dashboards/DashboardGrid.tsx');
-  assert(/onLayoutChange && !isNarrow \? settleStoredLayout\(storedLayouts, DASHBOARD_GRID_COLS\)/.test(grid), 'the builder draws stored overlaps unsettled');
+  assert(/onLayoutChange && expectedBreakpoint === 'lg' \? settleStoredLayout\(storedLayouts, DASHBOARD_GRID_COLS\)/.test(grid), 'the builder draws stored overlaps unsettled');
   const page = source('app/(main)/dashboards/[id]/page.tsx');
   assert(/const pageBoxes = \(\): GridBox\[\] => settleStoredLayout\(/.test(page), 'drops are computed on the stored overlap, not on what the author sees');
 });
@@ -643,12 +644,15 @@ check('a control that draws nothing for a viewer leaves no blank band — and mo
   // controls a viewer has, on the geometry that closed the absent ones' bands.
   // (This used to match `gridDashboardCharts.map(renderTileNode)` inside a
   // `gridSectionEl` block that was never rendered, so it verified dead code.)
-  const grids = pv.match(/<ResponsiveReportGrid\b[\s\S]*?<\/ResponsiveReportGrid>/g) || [];
+  // The geometry is the responsive resolver's, which closes an absent
+  // control's band (withoutAbsentControls) for desktop and device layouts alike.
+  const grids = pv.match(/<GridLayout\b[\s\S]*?<\/GridLayout>/g) || [];
   assert(grids.length === 1, `expected exactly one public report grid, found ${grids.length}`);
-  assert(/^<ResponsiveReportGrid\b[^>]*?\blayouts=\{responsiveLayouts\}[\s\S]*?>\s*\{gridDashboardCharts\.map\(/.test(grids[0]),
-    'the public grid does not draw gridDashboardCharts on responsiveLayouts');
-  assert(/const layouts: Layout\[\] = projectedBoxes\.map\(/.test(pv) && /const projectedBoxes = withoutAbsentControls\(/.test(pv)
-      && /const responsiveLayouts = buildResponsiveReportLayouts\(layouts\b/.test(pv),
+  assert(/^<GridLayout\b[^>]*?\blayout=\{resolvedLayout\.layout\}[\s\S]*?>\s*\{gridDashboardCharts\.map\(/.test(grids[0]),
+    'the public grid does not draw gridDashboardCharts on the resolved layout');
+  const resolverSrc = source('lib/responsive-layout/resolve.ts');
+  assert(/const resolvedLayout = resolveReportLayout\(\{\s*tiles: visibleDashboardCharts,\s*absentIds: absentControlIds,/.test(pv)
+      && /withoutAbsentControls\(/.test(resolverSrc),
     'the public grid geometry is not the absent-control projection');
   assert(/const absentControlIds = filtersSeeded/.test(pv),
     'the public grid decides which controls are absent before the filters are seeded');
@@ -822,8 +826,14 @@ check('the published report uses the Builder row on every width, phones included
         `row ${pages.computeReportRowHeight(width, gap)}px at ${width}px (gap ${gap}) differs from the Builder's ${builderRow}px`);
     }
   }
+  // The Builder's phone preview and the published phone stack are ONE
+  // derivation (the resolver) at ONE pitch: the report row (width-independent,
+  // proven above) plus the gap.
   const grid = source('components/dashboards/DashboardGrid.tsx');
-  assert(/rowPitchPx: dashboardRowHeight\(gap\) \+ gap/.test(grid), 'the Builder phone preview no longer stacks at its own row pitch');
+  const resolverSrc = source('lib/responsive-layout/resolve.ts');
+  assert(/resolveReportLayout\(/.test(grid) && !/rowPitchPx:/.test(grid)
+      && /computeReportRowHeight\(REPORT_STACK_BREAKPOINT - 1, gap\) \+ gap/.test(resolverSrc),
+    'the Builder phone preview no longer stacks at the report row pitch');
 });
 
 if (failures.length) {

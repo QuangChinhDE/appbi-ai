@@ -62,9 +62,29 @@ export async function refreshAuthSession(options?: { redirectOnFailure?: boolean
   return refreshed;
 }
 
+/**
+ * The Studio preview iframe (`?studio=preview`) is a verification surface, never
+ * an editor: whatever a component, shortcut or flush path tries, no write leaves
+ * it — every non-GET to /dashboards/* and every PUT/PATCH/DELETE is refused here,
+ * before the network, regardless of the viewer's permission.
+ */
+export function isStudioPreviewWrite(method: string | undefined, url: string | undefined): boolean {
+  if (typeof window === 'undefined') return false;
+  let preview = false;
+  try { preview = new URLSearchParams(window.location.search).get('studio') === 'preview'; } catch { preview = false; }
+  if (!preview) return false;
+  const m = String(method || 'get').toLowerCase();
+  if (m === 'get' || m === 'head' || m === 'options') return false;
+  if (m !== 'post') return true;
+  return /^\/?dashboards(\/|$)/.test(String(url || '').replace(/^https?:\/\/[^/]+/, '').replace(/^\/api\/v1/, ''));
+}
+
 // Request interceptor for logging
 apiClient.interceptors.request.use(
   (config) => {
+    if (isStudioPreviewWrite(config.method, config.url)) {
+      return Promise.reject(new Error(`Studio preview is read-only: ${String(config.method).toUpperCase()} ${config.url} refused`));
+    }
     if (API_DEBUG_LOGGING) {
       console.log(`[API ${API_CLIENT_BUILD_STAMP}] ${config.method?.toUpperCase()} ${config.url}`);
     }

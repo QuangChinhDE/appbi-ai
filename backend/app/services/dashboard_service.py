@@ -2,7 +2,7 @@
 CRUD service for dashboards.
 """
 import re
-from typing import List, Optional
+from typing import Any, List, Optional
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +16,30 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 DEFAULT_DASHBOARD_PAGE = {"id": "page-1", "name": "Page 1"}
 DEFAULT_DASHBOARD_PAGE_ID = DEFAULT_DASHBOARD_PAGE["id"]
+
+
+def dashboard_page_ids(pages_config: Any) -> list:
+    """Page ids in order, as the viewer resolves them (normalizeDashboardPages)."""
+    ids: list = []
+    for page in pages_config or []:
+        pid = str(page.get("id") or "").strip() if isinstance(page, dict) else ""
+        if pid and pid not in ids:
+            ids.append(pid)
+    return ids or [DEFAULT_DASHBOARD_PAGE_ID]
+
+
+def tile_page_id(layout: Any, pages_config: Any = None) -> str:
+    """The page a tile is drawn on — ONE rule for every server path (public page
+    scope, device-layout validation and pruning, relayout). An explicit
+    ``pageId`` is that page; a legacy tile without one belongs to ``page-1`` (the
+    frontend getDashboardChartPageId contract). A report whose pages do not
+    include ``page-1`` therefore does not draw such a tile anywhere — and does
+    not start serving it either: re-homing it would publish a tile no author
+    published. ``pages_config`` is accepted for call-site symmetry."""
+    raw = layout.get("pageId") if isinstance(layout, dict) else getattr(layout, "pageId", None)
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return DEFAULT_DASHBOARD_PAGE_ID
 
 
 _NAMED_ACCENT_COLORS = {
@@ -742,7 +766,18 @@ class DashboardService:
                 # Reusable tiles: a chart can repeat on the same page, so moving
                 # or re-laying-out a tile never conflicts with another instance
                 # of the same chart. No same-page dedupe here.
-                db_dashboard_chart.layout = layout.model_dump()
+                #
+                # A LIVE write (external clients; the Builder authors through
+                # the draft). The draft-state keys are server-owned: a client's
+                # are dropped and the row's own are kept — otherwise this path
+                # could publish someone's draft-only tile (drop draftOnly) or
+                # hide a live one. `_v` is bumped, so a draft based on the old
+                # row is caught by Publish's per-tile conflict check.
+                current = db_dashboard_chart.layout if isinstance(db_dashboard_chart.layout, dict) else {}
+                incoming = strip_draft_row_keys(layout.model_dump())
+                incoming.pop("_v", None)
+                server_owned = {k: current[k] for k in DRAFT_ROW_KEYS if k in current}
+                db_dashboard_chart.layout = {**incoming, **server_owned, "_v": int(current.get("_v") or 0) + 1}
         
         db.commit()
         db.refresh(db_dashboard)

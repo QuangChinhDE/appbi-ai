@@ -58,6 +58,9 @@ docs/*
 # …and the filter contract: source comments across the backend and frontend cite
 # it by section (§2.3, §3, …), so a clone must carry it.
 !docs/filter-semantics.md
+# …and the device-layout contract (Desktop / Tablet / Phone): code across the
+# backend and frontend cites it.
+!docs/responsive-dashboard-layouts.md
 
 # Demo/test scripts (local only)
 seed_demo.py
@@ -395,6 +398,8 @@ backend/_verify_gate.db
 !backend/tests/test_embed_link_claim_operator.py
 !backend/tests/test_public_filter_authority.py
 !backend/tests/test_public_token_lifecycle.py
+!backend/tests/test_dashboard_responsive_layouts.py
+!backend/tests/test_dashboard_responsive_layouts_pg.py
 !backend/tests/test_sql_literal_security.py
 !backend/tests/test_trusted_proxy_client_ip.py
 !backend/tests/test_embed_integration_security.py

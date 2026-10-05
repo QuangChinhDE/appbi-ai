@@ -6,7 +6,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useIsStudioPreview, isStudioMessage, studioFrameId, type StudioMessage, type StudioPreviewState } from '@/lib/studio/preview-mode';
-import { StudioPreview } from '@/components/dashboards/StudioPreview';
+import { StudioPreview, STUDIO_DEVICE_WIDTH } from '@/components/dashboards/StudioPreview';
 import { pendingWork } from '@/lib/dashboard-presentation/vision-review';
 import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, Clock, GripVertical, Lock, Hand, PanelRight } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
@@ -16,7 +16,6 @@ import {
   useUpdateDashboard,
   useAddChartToDashboard,
   useRemoveChartFromDashboard,
-  useUpdateDashboardLayout,
   useUpdateDashboardDraftLayout,
   usePublishDashboard,
   useDiscardDashboardDraft,
@@ -103,6 +102,12 @@ import { GridSlicerTile, FilterApplyBar, SlicerControlScope, stagedSlicerIds } f
 import { AddSlicerModal } from '@/components/dashboards/AddSlicerModal';
 import { ArrangeBar, type TileFrame } from '@/components/dashboards/ArrangeBar';
 import { arrangeTiles, closeVacatedBand, nudgeTiles, placeBeside, resolveDrop, type ArrangeOp, type ArrangeResult, type GridBox } from '@/lib/grid-arrange';
+import {
+  freezeLayout, overlayProfiles, resolveReportLayout, withCells,
+  type CustomProfile, type DeviceBreakpoint, type GridItem, type ProfileDraft, type ResolvedLayout,
+} from '@/lib/responsive-layout/resolve';
+import { fitLayoutToContent } from '@/lib/responsive-fit';
+import type { ResolvedLayoutSummary } from '@/components/dashboards/DashboardGrid';
 import { adoptableUnder, lockedMemberOf, moveSection, resolveStructure, sectionForPosition, structureIssues, insertionFor, toStructTiles, type StructTile } from '@/lib/report-structure';
 import { pageFilterFacts, statePageFilterFact } from '@/lib/public-page-filters';
 import { settleStoredLayout } from '@/lib/grid-settle';
@@ -410,9 +415,18 @@ function DashboardDetailPageInner() {
     Record<number, Record<string, any>>
   >({});
   const hasLocalLayoutChanges = Object.keys(localLayoutOverrides).length > 0;
-  const hasAnyPendingChanges = hasLocalLayoutChanges || Boolean(serverDashboard?.has_draft) || Boolean(pendingThemeConfig);
-  /** Unsaved = not yet in the server draft: local layout edits or a theme. */
-  const hasUnsavedPresentation = hasLocalLayoutChanges || Boolean(pendingThemeConfig);
+  // Device layouts (docs/responsive-dashboard-layouts.md). The Builder canvas
+  // renders at a device's representative width; Tablet/Phone are AUTO (derived
+  // from desktop) until the author customises them. Unsaved device edits live
+  // here (pageId → md|xs → CUSTOM layout | reset marker) until Save draft.
+  const [deviceMode, setDeviceMode] = useState<'desktop' | 'tablet' | 'phone'>('desktop');
+  const [localResponsive, setLocalResponsive] = useState<Record<string, Partial<Record<DeviceBreakpoint, ProfileDraft>>>>({});
+  const localResponsiveRef = React.useRef(localResponsive);
+  localResponsiveRef.current = localResponsive;
+  const hasLocalResponsiveChanges = Object.values(localResponsive).some((perBp) => Object.keys(perBp ?? {}).length > 0);
+  const hasAnyPendingChanges = hasLocalLayoutChanges || hasLocalResponsiveChanges || Boolean(serverDashboard?.has_draft) || Boolean(pendingThemeConfig);
+  /** Unsaved = not yet in the server draft: local layout / device edits or a theme. */
+  const hasUnsavedPresentation = hasLocalLayoutChanges || hasLocalResponsiveChanges || Boolean(pendingThemeConfig);
   // Mirror of hasUnsavedWork (declared below, once every author buffer exists) so
   // the mount-only leave handlers see the current value.
   const unsavedWorkRef = React.useRef(false);
@@ -564,7 +578,6 @@ function DashboardDetailPageInner() {
   const insertBatchRef = React.useRef<{ anchorId: number; ids: number[]; closed: boolean } | null>(null);
   const [insertBatchTick, setInsertBatchTick] = useState(0);
   const removeChartMutation = useRemoveChartFromDashboard();
-  const updateLayoutMutation = useUpdateDashboardLayout();
   // Phase-15.56 — layout edits go into draft_snapshot instead of live
   // rows so public viewers stay on the published layout until the
   // editor explicitly clicks "Lưu".
@@ -606,6 +619,9 @@ function DashboardDetailPageInner() {
   };
   type UndoEntry =
     | { kind: 'layout'; prev: Record<number, Record<string, any>>; next: Record<number, Record<string, any>> }
+    // A device layout edit (Customize, a drag on the tablet/phone, Reset…): the
+    // page/breakpoint's unsaved draft before and after. Never touches desktop.
+    | { kind: 'responsive'; pageId: string; bp: DeviceBreakpoint; prev: ProfileDraft | undefined; next: ProfileDraft | undefined }
     | { kind: 'theme'; prev: any; next: any }
     | { kind: 'ai-presentation'; prev: PresentationState; next: PresentationState }
     // Removing elements. A PUBLISHED one is only marked removed in the draft, so
@@ -692,6 +708,11 @@ function DashboardDetailPageInner() {
   const applyUndoEntry = (entry: UndoEntry, dir: 'prev' | 'next') => {
     const value = dir === 'prev' ? entry.prev : entry.next;
     if (entry.kind === 'layout') { setLocalLayoutOverrides(value as any); return; }
+    if (entry.kind === 'responsive') {
+      setLocalDeviceDraft(entry.pageId, entry.bp, value as ProfileDraft | undefined, false);
+      setDeviceMode(entry.bp === 'md' ? 'tablet' : 'phone');
+      return;
+    }
     if (entry.kind === 'ai-presentation') {
       const state = value as PresentationState;
       // Undoing a design that CREATED blocks removes those draft-only rows (they
@@ -808,6 +829,80 @@ function DashboardDetailPageInner() {
     () => getDashboardChartsForPage(dashboard?.dashboard_charts, activePageId),
     [dashboard?.dashboard_charts, activePageId],
   );
+  // ── Device layouts of this page: published, then this author's saved draft,
+  //    then the unsaved edits — the input the ONE resolver draws with. ──
+  const deviceBreakpoint: DeviceBreakpoint | null = deviceMode === 'tablet' ? 'md' : deviceMode === 'phone' ? 'xs' : null;
+  const serverResponsiveDraft = (serverDashboard as any)?.draft_responsive_layouts as Record<string, Partial<Record<DeviceBreakpoint, ProfileDraft>>> | null | undefined;
+  const pageDeviceProfiles = React.useMemo(() => overlayProfiles(
+    (serverDashboard as any)?.responsive_layouts?.pages?.[activePageId] ?? null,
+    { ...(serverResponsiveDraft?.[activePageId] ?? {}), ...(localResponsive[activePageId] ?? {}) },
+  ), [serverDashboard, serverResponsiveDraft, localResponsive, activePageId]);
+  const [deviceSummary, setDeviceSummary] = useState<ResolvedLayoutSummary | null>(null);
+  const resolvedLayoutRef = React.useRef<ResolvedLayout | null>(null);
+  const deviceMeasureRef = React.useRef<(() => Record<string, number>) | null>(null);
+  const publishedDeviceRev = (pageId: string, bp: DeviceBreakpoint): number =>
+    Number((serverDashboard as any)?.responsive_layouts?.pages?.[pageId]?.[bp]?.rev ?? 0) || 0;
+  /** One page/breakpoint's unsaved device draft (undefined = drop it). */
+  function setLocalDeviceDraft(pageId: string, bp: DeviceBreakpoint, next: ProfileDraft | undefined, record = true) {
+    const all = localResponsiveRef.current;
+    const prev = all[pageId]?.[bp];
+    const page = { ...(all[pageId] ?? {}) };
+    if (next) page[bp] = next; else delete page[bp];
+    const updated = { ...all, [pageId]: page };
+    localResponsiveRef.current = updated;
+    setLocalResponsive(updated);
+    if (record) pushUndo({ kind: 'responsive', pageId, bp, prev, next });
+  }
+  const currentCustom = (bp: DeviceBreakpoint): CustomProfile | null => {
+    const p = pageDeviceProfiles[bp];
+    return p && p.mode === 'custom' ? p : null;
+  };
+  /** Customize: freeze exactly what the device shows now (content fit included). */
+  const handleCustomizeDevice = () => {
+    const resolved = resolvedLayoutRef.current;
+    if (!deviceBreakpoint || !resolved || resolved.breakpoint !== deviceBreakpoint || resolved.source !== 'auto') return;
+    setLocalDeviceDraft(activePageId, deviceBreakpoint, freezeLayout(resolved, { source: 'auto-freeze' }));
+  };
+  /** Back to the derived layout (a draft change: published state untouched). */
+  const handleResetDevice = () => {
+    if (!deviceBreakpoint) return;
+    setLocalDeviceDraft(activePageId, deviceBreakpoint, { mode: 'auto' });
+  };
+  /** Freeze the CURRENT desktop's derived layout as a new custom layout. */
+  const handleRegenerateDevice = () => {
+    if (!deviceBreakpoint) return;
+    const auto = resolveReportLayout({
+      tiles: visibleDashboardCharts,
+      profiles: null,
+      containerWidth: STUDIO_DEVICE_WIDTH[deviceMode],
+      gap: getDashboardGridMargin(dashboard?.theme_config)[1],
+    });
+    setLocalDeviceDraft(activePageId, deviceBreakpoint, freezeLayout(auto, { source: 'regenerate' }));
+  };
+  /** The explicit content fit of a custom layout: measured once, written into the draft. */
+  const handleFitDeviceHeights = () => {
+    const profile = deviceBreakpoint ? currentCustom(deviceBreakpoint) : null;
+    const resolved = resolvedLayoutRef.current;
+    if (!deviceBreakpoint || !profile || !resolved) return;
+    const measured = deviceMeasureRef.current?.() ?? {};
+    const placed = resolved.layout.filter((c) => profile.items[c.i]);
+    setLocalDeviceDraft(activePageId, deviceBreakpoint, withCells(profile, fitLayoutToContent(placed, measured, 'grow')));
+  };
+  /** Needs review → Add below: write where the new tiles are drawn into the layout. */
+  const handleAddOrphansBelow = () => {
+    const profile = deviceBreakpoint ? currentCustom(deviceBreakpoint) : null;
+    const resolved = resolvedLayoutRef.current;
+    if (!deviceBreakpoint || !profile || !resolved) return;
+    const orphanCells = resolved.layout.filter((c) => resolved.orphans.includes(c.i));
+    const kept = { ...profile, items: Object.fromEntries(Object.entries(profile.items).filter(([id]) => !resolved.dropped.includes(id))) };
+    setLocalDeviceDraft(activePageId, deviceBreakpoint, withCells(kept, orphanCells));
+  };
+  /** A drag/resize on a custom device layout: that layout only, never desktop. */
+  const handleDeviceLayoutChange = (bp: DeviceBreakpoint, cells: GridItem[]) => {
+    const profile = currentCustom(bp);
+    if (!profile) return;
+    setLocalDeviceDraft(activePageId, bp, withCells(profile, cells));
+  };
   // Slicers whose control sits on THIS page's grid (lib/slicer-placement). The
   // filter bar does not repeat them; nothing about what they filter changes.
   const placedSlicerIdsOnPage = React.useMemo(
@@ -1409,7 +1504,8 @@ function DashboardDetailPageInner() {
     blocks: null,
     presentation: pendingThemeConfig ? { theme: pendingThemeConfig, slicerCluster: {} } : null,
     pageId: activePageId ?? null,
-  }), [localLayoutOverrides, pendingThemeConfig, activePageId]);
+    responsive: localResponsive[activePageId] ?? null,
+  }), [localLayoutOverrides, pendingThemeConfig, activePageId, localResponsive]);
   const studioAfter = React.useMemo<StudioPreviewState>(() => {
     const merged: Record<number, Record<string, unknown>> = { ...(localLayoutOverrides as any) };
     for (const [id, o] of Object.entries(previewLayoutOverrides ?? {})) merged[Number(id)] = { ...(merged[Number(id)] ?? {}), ...(o as any) };
@@ -1421,8 +1517,11 @@ function DashboardDetailPageInner() {
         ? { theme, slicerCluster: previewPresentation?.slicerCluster ?? {} }
         : null,
       pageId: activePageId ?? null,
+      // An AI design changes desktop only: the device layouts shown are the
+      // author's (AUTO devices follow the new desktop; CUSTOM ones stay).
+      responsive: localResponsive[activePageId] ?? null,
     };
-  }, [localLayoutOverrides, previewLayoutOverrides, previewBlocks, previewPresentation, pendingThemeConfig, activePageId]);
+  }, [localLayoutOverrides, previewLayoutOverrides, previewBlocks, previewPresentation, pendingThemeConfig, activePageId, localResponsive]);
 
   // Studio preview (inside the iframe): show exactly the state the author's tab
   // sends — before or after an AI design — through the same overlays the canvas
@@ -1439,6 +1538,14 @@ function DashboardDetailPageInner() {
       setPreviewBlocks(m.state.blocks && m.state.blocks.length ? (m.state.blocks as any[]) : null);
       setPreviewPresentation((m.state.presentation as any) ?? null);
       if (m.state.pageId) setCurrentPageId(m.state.pageId);
+      // Read-only verification of the author's unsaved device layouts (nothing
+      // here can be saved: the preview's API client refuses every write).
+      if (m.state.pageId) {
+        const page = m.state.pageId;
+        const next = { [page]: (m.state.responsive as any) ?? {} };
+        localResponsiveRef.current = next;
+        setLocalResponsive(next);
+      }
     };
     window.addEventListener('message', onMessage);
     window.parent?.postMessage({ type: 'appbi-studio-ready', frame } satisfies StudioMessage, window.location.origin);
@@ -1999,6 +2106,31 @@ function DashboardDetailPageInner() {
     }
   };
 
+  /** Stage the unsaved device layouts: one request per page/breakpoint (never
+   *  per tile, never per drag), each with the published revision it started from. */
+  const flushLocalResponsiveToDraft = async (): Promise<boolean> => {
+    const entries = Object.entries(localResponsiveRef.current)
+      .flatMap(([pageId, perBp]) => Object.entries(perBp ?? {}).map(([bp, profile]) => ({ pageId, bp: bp as DeviceBreakpoint, profile: profile as ProfileDraft })));
+    if (!entries.length) return true;
+    try {
+      let latest: any = null;
+      for (const e of entries) {
+        latest = await dashboardApi.updateDraftResponsive(dashboardId, {
+          pageId: e.pageId, breakpoint: e.bp, profile: e.profile as any, baseRev: publishedDeviceRev(e.pageId, e.bp),
+        });
+      }
+      if (latest) queryClient.setQueryData(['dashboards', dashboardId], latest);
+      localResponsiveRef.current = {};
+      setLocalResponsive({});
+      return true;
+    } catch (err: any) {
+      console.error('Failed to save device layout draft:', err);
+      const detail = err?.response?.data?.detail;
+      if (typeof detail === 'string') toast.error(detail);
+      return false;
+    }
+  };
+
   /** Stage everything unsaved into the server draft. All-or-report: each part
    *  is attempted, and the caller learns which failed — nothing is reported as
    *  saved that the server did not accept. */
@@ -2007,6 +2139,7 @@ function DashboardDetailPageInner() {
     setIsStagingDraft(true);
     try {
       if (!(await flushLocalLayoutsToDraft())) failed.push('layout');
+      if (!(await flushLocalResponsiveToDraft())) failed.push('device-layout');
       if (!(await stagePendingTheme())) failed.push('theme');
       if (!(await stageSlicerClusterLayout())) failed.push('filters');
     } finally {
@@ -2045,12 +2178,16 @@ function DashboardDetailPageInner() {
     if (canEditResource && hasLocalLayoutChanges) {
       await flushLocalLayoutsToDraft();
     }
+    // A page's unsaved device layout goes to the draft too (nothing is lost).
+    if (canEditResource && hasLocalResponsiveChanges) {
+      await flushLocalResponsiveToDraft();
+    }
     // Page switch flushes overrides + changes which charts are on-screen — the
     // undo entries (keyed to the previous page's override map) no longer apply.
     resetUndo();
     setCurrentPageId(pageId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePageId, canEditResource, hasLocalLayoutChanges]);
+  }, [activePageId, canEditResource, hasLocalLayoutChanges, hasLocalResponsiveChanges]);
 
   // Phase-B18 — Ctrl/Cmd+S saves the draft quickly (and blocks the browser's
   // Save-page dialog). A ref holds the latest closure so the listener stays
@@ -2131,6 +2268,8 @@ function DashboardDetailPageInner() {
       const detail = err?.response?.data?.detail;
       if (err?.response?.status === 409 && detail?.code === 'shared_draft_other_authors') {
         setSharedChoice({ action: 'publish', authors: detail.authors ?? [], rev: detail.rev, tileBaseV });
+      } else if (err?.response?.status === 409 && detail?.code === 'responsive_conflict') {
+        setPublishConflict({ editor: null, tiles: deviceConflictLabels(detail.responsive) });
       } else if (err?.response?.status === 409) {
         setPublishConflict({
           editor: err?.response?.data?.detail?.last_editor ?? null,
@@ -2141,6 +2280,13 @@ function DashboardDetailPageInner() {
       }
     }
   };
+
+  /** "Page 1 · Tablet" for a responsive_conflict entry "page-1:md". */
+  const deviceConflictLabels = (keys: unknown): string[] => (Array.isArray(keys) ? keys : []).map((k) => {
+    const [pageId, bp] = String(k).split(':');
+    const page = dashboardPages.find((pg) => pg.id === pageId);
+    return `${page?.name ?? pageId} · ${t(bp === 'xs' ? 'dashboards.device.phone' : 'dashboards.device.tablet')}`;
+  });
 
   // Phase-B17 — user chose "overwrite" in the conflict dialog: republish with force.
   const handleForcePublish = async () => {
@@ -2159,6 +2305,8 @@ function DashboardDetailPageInner() {
     // discard is the last word (nothing is written back into the draft after it).
     await settleContentEdits('cancel');
     setLocalLayoutOverrides({});
+    localResponsiveRef.current = {};
+    setLocalResponsive({});
     // An unsaved theme lives only in page state — dropping it reverts colour.
     // A STAGED theme is in the server draft and goes with discard-draft below.
     setPendingThemeConfig(null);
@@ -2194,7 +2342,9 @@ function DashboardDetailPageInner() {
         toast.success(t(include ? 'dashboards.detail.revertedToPublished' : 'dashboards.detail.sharedChoice.discardedMine'));
       }
     } catch (err: any) {
-      if (err?.response?.status === 409) {
+      if (err?.response?.status === 409 && err?.response?.data?.detail?.code === 'responsive_conflict') {
+        setPublishConflict({ editor: null, tiles: deviceConflictLabels(err.response.data.detail.responsive) });
+      } else if (err?.response?.status === 409) {
         setPublishConflict({ editor: err?.response?.data?.detail?.last_editor ?? null, tiles: err?.response?.data?.detail?.tiles ?? [] });
       } else {
         toast.error(t(choice.action === 'publish' ? 'dashboards.detail.publishFailed' : 'dashboards.detail.discardDraftFailed'));
@@ -2698,17 +2848,29 @@ function DashboardDetailPageInner() {
     if (!dashboardChart) return;
     if (getDashboardChartPageId(dashboardChart.layout) === pageId) return;
 
+    // A page move is a draft change like any other layout edit: staged into the
+    // caller's draft (with any pending local edits), published by Publish,
+    // reverted by Discard. It used to write the LIVE layout (PUT /layout), so
+    // the move — and whatever draft geometry the tile had — went public at once.
+    // The tile lands below the target page's content, never on top of a tile.
+    const targetBottom = (dashboard.dashboard_charts ?? [])
+      .filter((dc) => dc.id !== dashboardChartId && getDashboardChartPageId(dc.layout) === pageId)
+      .reduce((bottom, dc) => Math.max(bottom, (Number(dc.layout?.y) || 0) + (Number(dc.layout?.h) || 0)), 0);
     try {
-      await updateLayoutMutation.mutateAsync({
+      const mergedLayouts: Record<number, Record<string, any>> = {};
+      for (const [id, layout] of Object.entries(localLayoutOverrides)) mergedLayouts[Number(id)] = layout;
+      mergedLayouts[dashboardChartId] = {
+        ...dashboardChart.layout,
+        ...(localLayoutOverrides[dashboardChartId] ?? {}),
+        pageId,
+        x: 0,
+        y: targetBottom,
+      };
+      await updateDraftLayoutMutation.mutateAsync({
         dashboardId,
-        chartLayouts: [{
-          id: dashboardChartId,
-          layout: {
-            ...dashboardChart.layout,
-            pageId,
-          },
-        }],
+        chartLayouts: Object.entries(mergedLayouts).map(([id, layout]) => ({ id: Number(id), layout })),
       });
+      setLocalLayoutOverrides({});
       resetUndo(); // chart moved pages — layout undo entries reference the old page set
       toast.success(t('dashboards.detail.chartMoved'));
     } catch (error) {
@@ -3710,7 +3872,8 @@ function DashboardDetailPageInner() {
     handleLayoutChange(result.moved.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })) as Layout[]);
     if (result.skippedLocked > 0) toast.info(t('dashboards.arrange.lockedSkipped'));
   };
-  const handleArrange = (op: ArrangeOp) => commitArrange(arrangeTiles(op, pageBoxes(), selectedTileIds));
+  // Desktop arrange tools edit DESKTOP geometry: not offered on a device canvas.
+  const handleArrange = (op: ArrangeOp) => { if (deviceMode === 'desktop') commitArrange(arrangeTiles(op, pageBoxes(), selectedTileIds)); };
   // Frame of the selected CHARTS (a widget frames itself). One undo step; it is
   // layout state, so it is a draft edit published with the rest.
   const selectedChartIds = selectedTileIds.filter((id) => {
@@ -3943,7 +4106,7 @@ function DashboardDetailPageInner() {
   }, []);
   const nudgeRef = React.useRef<(d: { dx: number; dy: number }) => void>(() => {});
   nudgeRef.current = (d) => commitArrange(nudgeTiles(pageBoxes(), selectedTileIds, d));
-  const keyboardArrangeOn = designMode === 'manual' && canEditThisPage && selectedTileIds.length > 0;
+  const keyboardArrangeOn = designMode === 'manual' && canEditThisPage && selectedTileIds.length > 0 && deviceMode === 'desktop';
   React.useEffect(() => {
     if (!keyboardArrangeOn) return;
     const onKey = (e: KeyboardEvent) => {
@@ -4310,6 +4473,7 @@ function DashboardDetailPageInner() {
                     <div className="relative shrink-0">
                       <button
                         type="button"
+                        data-testid="builder-pages-menu"
                         onClick={() => { setIsPagesMenuOpen((v) => !v); setIsMoreMenuOpen(false); }}
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                         title={t('dashboards.detail.switchPage')}
@@ -4367,6 +4531,7 @@ function DashboardDetailPageInner() {
                                     )}
                                     <button
                                       type="button"
+                                      data-testid={`builder-page-${page.id}`}
                                       onClick={() => handleSwitchPage(page.id)}
                                       className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
                                     >
@@ -5003,7 +5168,70 @@ function DashboardDetailPageInner() {
           </div>
         )}
         <ExportModeContext.Provider value={exportRenderMode}>
-        {designMode === 'manual' && canEditThisPage && !isExportingPdf && (
+        {/* Device layouts: Desktop is the authored layout; Tablet and Phone are
+            AUTO (derived from desktop) until customised. The canvas renders at
+            the device's representative width; the resolver decides the layout. */}
+        {!studioPreview && !isExportingPdf && (
+          <div data-testid="device-bar" className="mb-2 flex flex-wrap items-center gap-2 text-[12.5px]">
+            <div className="inline-flex rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-0.5" role="group" aria-label={t('dashboards.device.label')}>
+              {(['desktop', 'tablet', 'phone'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  data-testid={`device-mode-${m}`}
+                  aria-pressed={deviceMode === m}
+                  onClick={() => setDeviceMode(m)}
+                  className={`rounded px-2.5 py-1 font-medium transition-colors ${deviceMode === m ? 'bg-brand/15 text-brand' : 'text-text-tertiary hover:text-text-secondary'}`}
+                >
+                  {t(`dashboards.device.${m}`)}
+                </button>
+              ))}
+            </div>
+            {deviceBreakpoint && deviceSummary?.breakpoint === deviceBreakpoint && (
+              deviceSummary.source === 'custom' ? (
+                <>
+                  <span data-testid="device-status-custom" className="rounded bg-brand/10 px-2 py-0.5 font-medium text-brand">{t('dashboards.device.custom')}</span>
+                  {deviceSummary.stale && (
+                    <span data-testid="device-status-stale" className="text-warning">{t('dashboards.device.stale')}</span>
+                  )}
+                  {deviceSummary.orphans.length > 0 && (
+                    <span data-testid="device-status-needs-review" className="text-warning">
+                      {t('dashboards.device.needsReview', { n: deviceSummary.orphans.length })}
+                    </span>
+                  )}
+                  {canEditThisPage && (
+                    <>
+                      {deviceSummary.orphans.length > 0 && (
+                        <button type="button" data-testid="device-add-below" onClick={handleAddOrphansBelow} className="rounded-md border border-[rgb(var(--border-line))] px-2 py-0.5 text-text-secondary hover:text-text-primary">
+                          {t('dashboards.device.addBelow')}
+                        </button>
+                      )}
+                      <button type="button" data-testid="device-fit-heights" onClick={handleFitDeviceHeights} className="rounded-md border border-[rgb(var(--border-line))] px-2 py-0.5 text-text-secondary hover:text-text-primary">
+                        {t('dashboards.device.fitHeights')}
+                      </button>
+                      <button type="button" data-testid="device-regenerate" onClick={handleRegenerateDevice} className="rounded-md border border-[rgb(var(--border-line))] px-2 py-0.5 text-text-secondary hover:text-text-primary">
+                        {t('dashboards.device.regenerate')}
+                      </button>
+                      <button type="button" data-testid="device-reset" onClick={handleResetDevice} className="rounded-md border border-[rgb(var(--border-line))] px-2 py-0.5 text-text-secondary hover:text-text-primary">
+                        {t('dashboards.device.reset')}
+                      </button>
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span data-testid="device-status-auto" className="rounded bg-surface-2 px-2 py-0.5 font-medium text-text-secondary">{t('dashboards.device.auto')}</span>
+                  {canEditThisPage && (
+                    <button type="button" data-testid="device-customize" onClick={handleCustomizeDevice} className="rounded-md bg-brand px-2.5 py-0.5 font-medium text-white hover:opacity-90">
+                      {t('dashboards.device.customize')}
+                    </button>
+                  )}
+                </>
+              )
+            )}
+          </div>
+        )}
+        {designMode === 'manual' && canEditThisPage && !isExportingPdf && deviceMode === 'desktop' && (
           <ArrangeBar
             count={selectedTileIds.length}
             onArrange={handleArrange}
@@ -5024,9 +5252,22 @@ function DashboardDetailPageInner() {
         >
         {(
           <ReportMetaProvider value={reportMeta}>
+          {/* A device canvas renders at that device's representative width (its
+              report container IS that wide): the layout drawn is the one a
+              viewer at that width gets. */}
+          <div
+            data-device-frame={deviceMode}
+            style={deviceBreakpoint && !studioPreview ? { width: STUDIO_DEVICE_WIDTH[deviceMode], margin: '0 auto' } : undefined}
+          >
           <DashboardGrid
             dashboardId={dashboardId}
             dashboardCharts={visibleDashboardCharts}
+            editorDesktop={deviceMode === 'desktop' && !studioPreview}
+            deviceProfiles={pageDeviceProfiles}
+            onDeviceLayoutChange={canEditThisPage && deviceBreakpoint && !studioPreview ? handleDeviceLayoutChange : undefined}
+            onResolved={setDeviceSummary}
+            resolvedRef={resolvedLayoutRef}
+            measureRef={deviceMeasureRef}
             // In the Studio preview iframe, an IntersectionObserver measures
             // against the TOP-level viewport, so tiles in the part of the frame
             // scrolled out of the overlay would never mount. The preview is a
@@ -5093,6 +5334,7 @@ function DashboardDetailPageInner() {
             onParamChange={handleParamChange}
             onBindParameter={canEditThisPage ? setBindingChartId : undefined}
           />
+          </div>
           </ReportMetaProvider>
         )}
         </div>
