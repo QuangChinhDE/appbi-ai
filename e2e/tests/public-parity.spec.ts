@@ -125,6 +125,9 @@ async function selectSwitcher(page: Page, tileId: number, value: string) {
 let fixtureId: number | null = null;
 
 test.describe.serial('public parity — same numbers as the Builder', () => {
+  // Each test walks several full report loads (Builder, /d, /embed) and dwells on
+  // every tile so lazy tiles load: far longer than the 60s default for one click.
+  test.describe.configure({ timeout: 300_000 });
   test.beforeAll(async ({ request }) => {
     fixtureId = await findFixture(request);
     if (fixtureId == null && process.env.CI) {
