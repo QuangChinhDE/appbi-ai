@@ -323,7 +323,7 @@ export default function BuilderLivePreview({
 
   // ── Reload iframe when active screen changes (jump to that screen) ─
   const previewUrl = useMemo(() => {
-    if (!activeWs) return null;
+    if (!activeWs?.token) return null;
     return `/ws/${activeWs.token}/workboards/${workboard.id}`;
   }, [activeWs, workboard.id]);
 

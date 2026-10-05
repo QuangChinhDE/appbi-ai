@@ -42,12 +42,14 @@ _CAPS: dict[str, Set[str]] = {
 
 
 def _team_ids(db: Session, user: User) -> list:
-    try:
-        from app.models.team import TeamMember
-        rows = db.query(TeamMember.team_id).filter(TeamMember.user_id == user.id).all()
-        return [r[0] for r in rows]
-    except Exception:  # noqa: BLE001 — teams optional
-        return []
+    """Teams the user belongs to. Resolved through TeamMembership — the model the
+    generic share engine uses. This used to import a `TeamMember` class that has
+    never existed, swallow the ImportError and return [], so every team grant was
+    silently ignored while the grants UI showed it as granted."""
+    from app.models.team import TeamMembership
+
+    rows = db.query(TeamMembership.team_id).filter(TeamMembership.user_id == user.id).all()
+    return [r[0] for r in rows]
 
 
 def _module_capability_ceiling(user: User) -> Set[str]:
@@ -186,29 +188,103 @@ def require_view_lineage(db: Session, user: User, child_dataset_id: int) -> None
             )
 
 
-def set_grant(db: Session, dataset_id: int, *, verb: str,
-              user_id=None, team_id=None, granted_by=None) -> DatasetGrant:
-    """Upsert a single grant (one verb per principal per dataset)."""
-    if verb not in VALID_VERBS:
-        raise ValueError(f"Invalid verb '{verb}'")
-    if (user_id is None) == (team_id is None):
-        raise ValueError("Exactly one of user_id / team_id must be set")
+#: Verbs a holder of `reshare` (but not `manage`) may hand out. Re-sharing passes
+#: on what you can USE, never the right to administer: reshare/edit/manage stay
+#: with `manage` holders (owner, module admin, an explicit manage grant).
+_RESHARE_DELEGABLE = ("view", "explore", "build")
+
+
+def delegable_verbs(caps: Set[str]) -> Set[str]:
+    """The verbs a principal with capability set `caps` may grant or revoke.
+
+    A grant can never carry more than the grantor holds: every verb returned has
+    its whole capability set inside `caps`."""
+    if "manage" in caps:
+        return set(VALID_VERBS)
+    if "reshare" not in caps:
+        return set()
+    return {v for v in _RESHARE_DELEGABLE if _CAPS[v] <= caps}
+
+
+class GrantError(Exception):
+    """A grant/revoke request that must be refused. `status` is the HTTP status."""
+
+    def __init__(self, status: int, detail: str):
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
+def parse_target(user_id, team_id):
+    """Exactly one of user_id / team_id, as a UUID. Anything else is a 400 —
+    an absent or empty target must never be read as "every grant"."""
+    import uuid as _uuid
+
+    def _one(v):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        try:
+            return _uuid.UUID(str(v))
+        except (ValueError, AttributeError, TypeError):
+            raise GrantError(400, "Invalid grant target id") from None
+
+    u, t = _one(user_id), _one(team_id)
+    if (u is None) == (t is None):
+        raise GrantError(400, "Exactly one of user_id / team_id must be set")
+    return u, t
+
+
+def _existing(db: Session, dataset_id: int, user_id, team_id):
     q = db.query(DatasetGrant).filter(DatasetGrant.dataset_id == dataset_id)
-    q = q.filter(DatasetGrant.user_id == user_id) if user_id else q.filter(DatasetGrant.team_id == team_id)
-    row = q.first()
+    if user_id is not None:
+        return q.filter(DatasetGrant.user_id == user_id, DatasetGrant.team_id.is_(None)).first()
+    return q.filter(DatasetGrant.team_id == team_id, DatasetGrant.user_id.is_(None)).first()
+
+
+def grant_as(db: Session, actor: User, dataset: Dataset, *, verb, user_id=None, team_id=None) -> DatasetGrant:
+    """Grant `verb` on `dataset` to one user or team, ON BEHALF OF `actor`.
+
+    Refused when: the verb is unknown; the target is not exactly one valid,
+    existing user/team; the actor targets themselves; the verb exceeds what the
+    actor may delegate; or an existing grant on that target already exceeds it
+    (a re-sharer may not downgrade a manager)."""
+    from app.models.team import Team
+
+    if verb not in VALID_VERBS:
+        raise GrantError(400, f"Invalid verb '{verb}'")
+    u, t = parse_target(user_id, team_id)
+    if u is not None and u == actor.id:
+        raise GrantError(403, "You cannot change your own access to this dataset")
+    if u is not None and db.get(User, u) is None:
+        raise GrantError(400, "Unknown user")
+    if t is not None and db.get(Team, t) is None:
+        raise GrantError(400, "Unknown team")
+    allowed = delegable_verbs(dataset_capabilities(db, actor, dataset))
+    if verb not in allowed:
+        raise GrantError(403, f"You cannot grant '{verb}' on this dataset")
+    row = _existing(db, dataset.id, u, t)
+    if row is not None and row.verb not in allowed:
+        raise GrantError(403, f"You cannot change an existing '{row.verb}' grant")
     if row is None:
-        row = DatasetGrant(dataset_id=dataset_id, user_id=user_id, team_id=team_id,
-                           verb=verb, granted_by=granted_by)
+        row = DatasetGrant(dataset_id=dataset.id, user_id=u, team_id=t, verb=verb, granted_by=actor.id)
         db.add(row)
     else:
         row.verb = verb
+        row.granted_by = actor.id
     db.commit()
     return row
 
 
-def revoke_grant(db: Session, dataset_id: int, *, user_id=None, team_id=None) -> int:
-    q = db.query(DatasetGrant).filter(DatasetGrant.dataset_id == dataset_id)
-    q = q.filter(DatasetGrant.user_id == user_id) if user_id else q.filter(DatasetGrant.team_id == team_id)
-    n = q.delete()
+def revoke_as(db: Session, actor: User, dataset: Dataset, *, user_id=None, team_id=None) -> int:
+    """Revoke the ONE grant held by one user or team. Deletes at most one row;
+    a missing/blank/both target is a 400, never a filter that matches everything."""
+    u, t = parse_target(user_id, team_id)
+    row = _existing(db, dataset.id, u, t)
+    if row is None:
+        return 0
+    allowed = delegable_verbs(dataset_capabilities(db, actor, dataset))
+    if row.verb not in allowed:
+        raise GrantError(403, f"You cannot revoke a '{row.verb}' grant")
+    db.delete(row)
     db.commit()
-    return n
+    return 1

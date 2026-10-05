@@ -2846,13 +2846,12 @@ def set_dataset_grant(
         raise HTTPException(status_code=404, detail="Dataset not found")
     dataset_grants_service.require_capability(db, current_user, ds, "reshare")
     try:
-        g = dataset_grants_service.set_grant(
-            db, dataset_id, verb=body.get("verb"),
+        g = dataset_grants_service.grant_as(
+            db, current_user, ds, verb=body.get("verb"),
             user_id=body.get("user_id"), team_id=body.get("team_id"),
-            granted_by=current_user.id,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except dataset_grants_service.GrantError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
     return {"ok": True, "id": g.id, "verb": g.verb}
 
 
@@ -2871,7 +2870,10 @@ def revoke_dataset_grant(
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
     dataset_grants_service.require_capability(db, current_user, ds, "reshare")
-    n = dataset_grants_service.revoke_grant(db, dataset_id, user_id=user_id, team_id=team_id)
+    try:
+        n = dataset_grants_service.revoke_as(db, current_user, ds, user_id=user_id, team_id=team_id)
+    except dataset_grants_service.GrantError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
     return {"ok": True, "revoked": n}
 
 

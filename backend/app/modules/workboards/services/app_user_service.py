@@ -250,29 +250,68 @@ def app_user_to_payload(
     return payload
 
 
+def _staff_workboard_level(db: Session, workboard: Workboard, app_user: Dict[str, Any]) -> str:
+    """The AppBI staff member's OWN object-level authority on ``workboard``.
+
+    A staff identity in a workspace is a person, not a capability: the workspace
+    token and the `workboards` module level say nothing about THIS workboard.
+    The decision is the same one the authenticated Workboard API makes —
+    ``get_effective_permission`` on the workboard, plus access to the dataset it
+    is bound to. Anything unresolvable is ``none``.
+    """
+    import uuid as _uuid
+
+    from fastapi import HTTPException
+
+    from app.core.dependencies import get_effective_permission
+    from app.models.user import User, UserStatus
+    from app.modules.workboards.permissions import require_dataset_binding_access
+
+    raw = app_user.get("_appbi_user_id")
+    if not raw:
+        return "none"
+    try:
+        user = db.query(User).filter(User.id == _uuid.UUID(str(raw))).first()
+    except (ValueError, TypeError):
+        return "none"
+    if user is None or getattr(user, "status", None) != UserStatus.ACTIVE:
+        return "none"
+    level = get_effective_permission(db, user, workboard, "workboards")
+    if level == "none":
+        return "none"
+    try:
+        require_dataset_binding_access(db, user, workboard.dataset_id)
+    except HTTPException:
+        return "none"
+    return level
+
+
 def can_app_user_access_workboard(
     db: Session,
     workboard: Workboard,
     app_user: Dict[str, Any],
 ) -> bool:
-    """True when the JWT identity is allowed to open ``workboard``.
+    """True when the session identity may open ``workboard``.
 
-    AppBI staff (preview/internal-mode sessions) bypass; otherwise the
-    identity must originate from this workboard's own app-user rows -
-    confirmed by the ``workboard_id`` claim baked into the JWT at login.
+    * A workboard app user must come from this workboard's own app-user rows,
+      proven by the ``workboard_id`` claim baked in at login. A session without
+      that claim is refused — it cannot be tied to any workboard.
+    * An AppBI staff identity (``_internal``) needs its own object-level access
+      to the workboard. The level is stamped on the identity (``_staff_level``,
+      ``_staff_workboard_id``) so the runtime can require ``edit`` for writes.
+      Holding the workspace token, or the module, is never enough.
     """
     if not isinstance(app_user, dict):
         return False
     if app_user.get("_internal"):
-        return True
+        level = _staff_workboard_level(db, workboard, app_user)
+        app_user["_staff_level"] = level
+        app_user["_staff_workboard_id"] = int(workboard.id)
+        return level != "none"
     bound = app_user.get("workboard_id")
     if bound is None:
-        # Legacy session minted before this migration — let it through but
-        # log so we can spot lingering stale tokens.
-        logger.info(
-            "app_user session has no workboard_id binding (legacy token)"
-        )
-        return True
+        logger.info("app_user session has no workboard_id binding (legacy token) - refused")
+        return False
     try:
         return int(bound) == int(workboard.id)
     except (TypeError, ValueError):
@@ -376,6 +415,9 @@ def create_internal_session_token(
             "role": "appbi_staff",
             "full_name": full_name,
             "_internal": True,
+            # The person behind the session. Every per-workboard decision
+            # re-derives authority from this id; there is no implicit access.
+            "_appbi_user_id": str(getattr(appbi_user, "id", "") or ""),
         },
     }
     if extra_claims:

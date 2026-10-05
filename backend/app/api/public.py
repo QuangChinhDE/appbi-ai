@@ -2074,6 +2074,13 @@ if settings.WORKBOARDS_ENABLED:
             return None
         try:
             payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+            # Only an ACCESS token is a staff bearer. A refresh token (7 days,
+            # not consumed here), an OAuth state, or a token with no type were
+            # all accepted before, because this decoder never asked.
+            from app.core.dependencies import ACCESS_TOKEN_TYPE
+
+            if payload.get("type") != ACCESS_TOKEN_TYPE:
+                return None
             user_id = payload.get("sub")
             if not user_id:
                 return None
@@ -2327,6 +2334,18 @@ if settings.WORKBOARDS_ENABLED:
                 detail=detail,
             )
         return app_user
+
+    def _require_staff_write(app_user: dict | None) -> None:
+        """A durable write through a workspace by an AppBI staff identity needs
+        EDIT on the workboard (the level was resolved by
+        ``can_app_user_access_workboard``). App users are governed by their
+        screen rules downstream."""
+        if isinstance(app_user, dict) and app_user.get("_internal"):
+            if app_user.get("_staff_level") not in ("edit", "full"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Editing this workboard requires edit access.",
+                )
 
     def _resolve_workboard_for_workspace(
         db: Session,
@@ -2984,6 +3003,7 @@ if settings.WORKBOARDS_ENABLED:
         wb = _resolve_workboard_for_workspace(
             db, ws, workboard_id, request=request, app_user=app_user
         )
+        _require_staff_write(app_user)
         data = await file.read()
         try:
             media = media_service.store_media(
@@ -3106,6 +3126,7 @@ if settings.WORKBOARDS_ENABLED:
         wb = _resolve_workboard_for_workspace(
             db, ws, workboard_id, request=request, app_user=app_user
         )
+        _require_staff_write(app_user)
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
@@ -3387,6 +3408,7 @@ if settings.WORKBOARDS_ENABLED:
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws, db=db)
         wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request, app_user=app_user)
+        _require_staff_write(app_user)
         sub = (body or {}).get("subscription") if isinstance(body, dict) else None
         unsub = (body or {}).get("unsubscribe") if isinstance(body, dict) else None
         username = app_user.get("username") if isinstance(app_user, dict) else None
@@ -3414,6 +3436,7 @@ if settings.WORKBOARDS_ENABLED:
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws, db=db)
         wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request, app_user=app_user)
+        _require_staff_write(app_user)
         username = app_user.get("username") if isinstance(app_user, dict) else None
         sent = push_service.send_to_user(
             db, wb.id, username,

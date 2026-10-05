@@ -426,3 +426,6 @@ backend/_verify_gate.db
 !backend/tests/test_authz_route_inventory.py
 !backend/tests/test_authz_db_role_pg.py
 !backend/tests/test_workboard_app_user_roles.py
+!backend/tests/authz_http.py
+!backend/tests/test_authz_dataset_grants_http_pg.py
+!backend/tests/test_authz_workspace_http_pg.py
