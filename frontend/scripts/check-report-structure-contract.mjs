@@ -374,9 +374,18 @@ check('a public link states its own title, and a switcher never states a value t
   const meta = src.slice(src.indexOf('const reportMeta = {'), src.indexOf('const reportMeta = {') + 400);
   assert(/name: presentationTitle,/.test(meta), 'the report header states something other than the link title (headline, link name, report name)');
   assert(/const reportTitle = dashboard\.public_link_name \|\| dashboard\.name/.test(src), 'the PDF title is not the link title');
+  // A switcher states exactly the value the page applies. This used to be met
+  // by NOT seeding field-/what-if-bound switchers (public did not apply them);
+  // public now applies parameters like the Builder, so the value shown IS the
+  // value sent: the same `publicParamValues` feeds the widget, the filters and
+  // the per-tile overrides (scripts/check-dashboard-parameter-parity.mjs).
   const seed = src.slice(src.indexOf('const publicParams'), src.indexOf('const reportMeta = {'));
-  assert(/def\.field \|\| whatIfBound\.has\(def\.paramName\)/.test(seed), 'a field- or what-if-bound switcher shows a selection public does not apply');
-  assert(/def\.default \?\? def\.options\[0\]/.test(seed), 'a text-only switcher ignores the author default');
+  assert(/const publicParams: Record<string, any> = publicParamValues;/.test(seed), 'the switchers show values other than the ones the page applies');
+  assert(/paramsToFilters\(publicParamDefs, publicParamValues/.test(src) && /tileRoleOverrides\([\s\S]{0,120}publicParamValues/.test(src),
+    'the values shown are not the values the data requests carry');
+  const lib = source('lib/dashboard-params.ts');
+  assert(/def\.default \?\? def\.options\[0\]\?\.value/.test(lib) && /seedParamValues\(publicParamDefs/.test(src),
+    'a switcher ignores the author default');
 });
 
 check('the builder overlays sit below the header as it is, never over its second row', () => {

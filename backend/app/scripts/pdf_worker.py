@@ -127,6 +127,12 @@ def _render_url(job: DashboardExportJob, page_id: str) -> str:
     # The page needs to know which export this is: 'full' expands every table to
     # all its rows, 'snapshot' (default) prints what the report shows. Sending it
     # here is what stops a snapshot job from paying for a thousand-row DOM.
+    # Report parameter values at export time (switchers): the render page seeds
+    # them, so the file shows the slice the viewer was looking at.
+    report_params = params.get("params") or {}
+    if report_params:
+        raw = json.dumps(report_params, ensure_ascii=False).encode("utf-8")
+        query["params"] = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
     query["layout"] = "full" if _is_full_data(job) else "snapshot"
     # One relative-date anchor for every page of this export (A3): the FE resolves
     # relative presets against it, so all pages share one window even if the render

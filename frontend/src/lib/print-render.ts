@@ -20,6 +20,8 @@ export interface PrintRenderOptions {
   pageId: string | null;
   /** Viewer slicer/filter selections to re-apply before printing. */
   filters: BaseFilter[];
+  /** Report parameter values (switchers) the viewer had at export time. */
+  params: Record<string, string>;
   /** The export's single relative-date anchor (ISO-8601), passed by the PDF
    *  worker so every page of one export shares one window (A3). Null → stamp fresh. */
   asOf: string | null;
@@ -47,6 +49,20 @@ function decodeFilters(raw: string | null): BaseFilter[] {
   }
 }
 
+function decodeParams(raw: string | null): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const json = decodeURIComponent(escape(window.atob(raw.replace(/-/g, '+').replace(/_/g, '/'))));
+    const parsed = JSON.parse(json);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed)) if (typeof v === 'string') out[k] = v;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /** Returns null when this is a NORMAL page view (no print rendering requested). */
 export function parsePrintRenderOptions(search: string): PrintRenderOptions | null {
   const params = new URLSearchParams(search || '');
@@ -54,6 +70,7 @@ export function parsePrintRenderOptions(search: string): PrintRenderOptions | nu
   return {
     pageId: params.get('page') || null,
     filters: decodeFilters(params.get('filters')),
+    params: decodeParams(params.get('params')),
     asOf: params.get('asOf') || null,
     layout: params.get('layout') === 'full' ? 'full' : 'snapshot',
   };

@@ -34,6 +34,12 @@ import {
 import { inferQueryColumns } from '@/lib/explore-query';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { ChartParameter, ColumnMetadata } from '@/types/api';
+import {
+  DATE_MAPPING_TYPES,
+  NUMERIC_MAPPING_TYPES,
+  buildInstanceParameterFilters,
+  type InstanceParameterDef,
+} from '@/lib/chart-instance-parameters';
 
 interface ChartDetailModalProps {
   chartId: number;
@@ -53,92 +59,17 @@ interface ChartDetailModalProps {
 
 type DetailPanelTab = 'appearance' | 'data';
 
-const NUMERIC_MAPPING_TYPES = new Set(['number', 'integer', 'float', 'double', 'decimal', 'numeric', 'bigint', 'int']);
-const DATE_MAPPING_TYPES = new Set(['date', 'datetime', 'timestamp', 'time']);
 const TABLE_LIKE_CHART_TYPES = new Set(['TABLE', 'MATRIX']);
 const SCATTER_LIKE_CHART_TYPES = new Set(['SCATTER', 'BUBBLE', 'MAP_POINT', 'NINE_BOX']);
 const NO_DIMENSION_METRIC_CHART_TYPES = new Set(['KPI', 'GAUGE', 'BULLET']);
 const PIE_LIKE_CHART_TYPES = new Set(['PIE', 'DONUT', 'POLAR_AREA']);
 
-function resolveParameterMappingType(param: {
-  parameter_type?: string | null;
-  column_mapping?: { type?: string | null } | null;
-}) {
-  const mappingType = (param.column_mapping?.type ?? '').toLowerCase();
-  if (mappingType && mappingType !== 'string') return mappingType;
-
-  const parameterType = (param.parameter_type ?? '').toLowerCase();
-  if (parameterType === 'time_range') return 'date';
-  if (parameterType === 'measure') return 'number';
-  return mappingType || 'string';
-}
-
-function coerceParameterAtom(rawValue: unknown, mappingType: string) {
-  if (rawValue === undefined || rawValue === null) return rawValue;
-  if (NUMERIC_MAPPING_TYPES.has(mappingType)) {
-    const num = typeof rawValue === 'number' ? rawValue : Number(String(rawValue).trim());
-    return Number.isFinite(num) ? num : String(rawValue).trim();
-  }
-  return typeof rawValue === 'string' ? rawValue.trim() : rawValue;
-}
-
 function buildParameterFilters(
-  chartParameters: ChartParameter[] | null | undefined,
+  chartParameters: InstanceParameterDef[] | null | undefined,
   instanceParameters: Record<string, any> | null | undefined,
 ) {
-  if (!chartParameters?.length || !instanceParameters) {
-    return undefined;
-  }
-
-  const filters: Record<string, unknown>[] = [];
-  for (const param of chartParameters) {
-    const mappedColumn = param.column_mapping?.column;
-    const rawValue = instanceParameters[param.parameter_name];
-    if (!mappedColumn || rawValue === undefined || rawValue === null) continue;
-
-    const mappingType = resolveParameterMappingType(param);
-    const isDateType = DATE_MAPPING_TYPES.has(mappingType);
-    const textValue = typeof rawValue === 'string' ? rawValue.trim() : '';
-    if (typeof rawValue === 'string' && !textValue) continue;
-
-    const isRangeValue = typeof rawValue === 'string'
-      && (textValue.includes('..') || (isDateType && textValue.includes(',')));
-    if (isRangeValue) {
-      const parts = (textValue.includes('..') ? textValue.split('..') : textValue.split(','))
-        .map((part) => part.trim())
-        .filter(Boolean);
-      if (parts.length > 0) {
-        filters.push({
-          field: mappedColumn,
-          operator: 'between',
-          value: [
-            parts[0] ? coerceParameterAtom(parts[0], mappingType) : null,
-            parts[1] ? coerceParameterAtom(parts[1], mappingType) : null,
-          ],
-        });
-        continue;
-      }
-    }
-
-    if (Array.isArray(rawValue) || (typeof rawValue === 'string' && textValue.includes(','))) {
-      const values = (Array.isArray(rawValue) ? rawValue : textValue.split(','))
-        .map((part) => String(part).trim())
-        .filter(Boolean)
-        .map((part) => coerceParameterAtom(part, mappingType));
-      if (values.length > 0) {
-        filters.push({ field: mappedColumn, operator: 'in', value: values });
-        continue;
-      }
-    }
-
-    filters.push({
-      field: mappedColumn,
-      operator: 'eq',
-      value: coerceParameterAtom(rawValue, mappingType),
-    });
-  }
-
-  return filters.length > 0 ? filters : undefined;
+  const filters = buildInstanceParameterFilters(chartParameters, instanceParameters);
+  return filters.length > 0 ? (filters as unknown as Record<string, unknown>[]) : undefined;
 }
 
 function getErrorMessage(error: unknown, fallback: string) {

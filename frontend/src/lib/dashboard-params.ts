@@ -125,17 +125,33 @@ function resolveParamColumn(
  * (text-only) or without a value are skipped. Pass the dashboard's available
  * columns so the field resolves on semantic datasets.
  */
+/** The server's resolution of each switcher's column (`parameter_fields`). */
+export type ResolvedParamFields = Record<string, {
+  field: string;
+  semanticField?: string;
+  fieldKey?: string;
+  datasetId?: number;
+}>;
+
 export function paramsToFilters(
   defs: ParamDef[],
   values: Record<string, string>,
   columns?: ColumnInfo[],
+  serverResolved?: ResolvedParamFields | null,
 ): BaseFilter[] {
   const filters: BaseFilter[] = [];
   for (const def of defs) {
     if (!def.field) continue;
     const value = values[def.paramName];
     if (value === undefined || value === null || value === '') continue;
-    const resolved = resolveParamColumn(def.field, columns);
+    // The server resolves a switcher's column ONCE for every surface
+    // (dashboard_parameters.resolve_switcher_fields → `parameter_fields`), so
+    // the Builder and a published link filter the SAME column. The local
+    // lookup is only the fallback for a response that predates it.
+    const fromServer = serverResolved?.[def.paramName];
+    const resolved = fromServer
+      ? { ...fromServer, type: 'dropdown' as FilterType }
+      : resolveParamColumn(def.field, columns);
     filters.push({
       id: `param-${def.paramName}`,
       operator: 'in',
@@ -145,4 +161,59 @@ export function paramsToFilters(
     });
   }
   return filters;
+}
+
+/**
+ * What-if: the {dimension?, metric?} override a tile's bindings
+ * (`parameters.__whatifBindings`) resolve to under the current parameter
+ * values. ONE implementation for the Builder tile and every public surface; the
+ * server accepts on a public link only values the bound switcher offers.
+ */
+export function tileRoleOverrides(
+  instanceParameters: Record<string, unknown> | null | undefined,
+  paramValues: Record<string, string> | null | undefined,
+): Record<string, string> | null {
+  const bindings = (instanceParameters as any)?.__whatifBindings;
+  if (!Array.isArray(bindings) || !paramValues) return null;
+  const out: Record<string, string> = {};
+  for (const b of bindings) {
+    if (!b || (b.role !== 'dimension' && b.role !== 'metric')) continue;
+    const val = paramValues[b.param];
+    if (typeof val === 'string' && val.trim()) out[b.role] = val.trim();
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${stableJson(obj[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+/**
+ * The key a public view stores each chart tile's data under. A chart sitting on
+ * the report more than once with DIFFERENT tile parameters (author-set values
+ * or what-if bindings) gets one answer per tile, keyed `-tileId` (tile ids and
+ * chart ids never collide that way); every other tile keeps its `chart_id` key,
+ * so a report without such duplicates behaves exactly as before.
+ */
+export function tileDataKeys(
+  charts: Array<{ id: number; chart_id?: number | null; widget_type?: string | null; parameters?: unknown }> | null | undefined,
+): Map<number, number> {
+  const sigsByChart = new Map<number, Set<string>>();
+  const rows = (charts ?? []).filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
+  for (const dc of rows) {
+    const p = dc.parameters && typeof dc.parameters === 'object' ? dc.parameters : {};
+    const sig = stableJson(p);
+    if (!sigsByChart.has(dc.chart_id!)) sigsByChart.set(dc.chart_id!, new Set());
+    sigsByChart.get(dc.chart_id!)!.add(sig);
+  }
+  const keys = new Map<number, number>();
+  for (const dc of rows) {
+    keys.set(dc.id, (sigsByChart.get(dc.chart_id!)?.size ?? 1) > 1 ? -dc.id : dc.chart_id!);
+  }
+  return keys;
 }

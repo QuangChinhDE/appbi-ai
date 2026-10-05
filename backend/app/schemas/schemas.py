@@ -690,6 +690,11 @@ class DashboardResponse(DashboardBase):
     # has unpublished edits in it (see dashboards._shared_draft_state).
     shared_draft: Optional[Dict[str, Any]] = None
     available_filter_fields: Optional[List[Dict[str, Any]]] = None
+    # The column each field-bound parameter switcher filters, resolved ONCE by
+    # the server (dashboard_parameters.resolve_switcher_fields) and used as is by
+    # the Builder and every public surface: {paramName: {field, semanticField?,
+    # fieldKey?, datasetId?}}.
+    parameter_fields: Optional[Dict[str, Dict[str, Any]]] = None
     public_link_name: Optional[str] = None
     public_link_appearance: Optional[Dict[str, Any]] = None
     # Phase-15.56 — draft layout overlay. Set when the editor has

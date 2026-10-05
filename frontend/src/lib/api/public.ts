@@ -83,6 +83,8 @@ export const publicDashboardApi = {
     filters?: BaseFilter[],
     granularity?: string,
     pageId?: string,
+    tileId?: number,
+    overrides?: Record<string, string> | null,
   ): Promise<any> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     // #2 — viewer date-hierarchy: re-bucket the time axis at the grain the
@@ -92,6 +94,9 @@ export const publicDashboardApi = {
     if (granularity) params.granularity = granularity;
     // The page being shown: the server applies that page's scope itself.
     if (pageId) params.page_id = pageId;
+    // The tile (its own parameter values apply) and its what-if selection.
+    if (tileId != null) params.tile_id = String(tileId);
+    if (overrides && Object.keys(overrides).length > 0) params.overrides = JSON.stringify(overrides);
     const res = await publicClient.get(
       `/public/dashboards/${token}/charts/${chartId}/data`,
       {
@@ -110,9 +115,17 @@ export const publicDashboardApi = {
   getChartsDataBatch: async (
     token: string,
     sessionToken: string | undefined,
-    items: Array<{ chart_id: number; filters?: BaseFilter[]; granularity?: string }>,
+    items: Array<{
+      chart_id: number;
+      /** The tile: a chart may sit on the report twice with its own parameters. */
+      tile_id?: number;
+      filters?: BaseFilter[];
+      granularity?: string;
+      /** What-if selection bound to this tile ({dimension?, metric?}). */
+      overrides?: Record<string, string>;
+    }>,
     pageId?: string,
-  ): Promise<{ results: Array<{ chart_id: number; data?: any; error?: string; status?: number }> }> => {
+  ): Promise<{ results: Array<{ chart_id: number; tile_id?: number; data?: any; error?: string; status?: number }> }> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     const res = await publicClient.post(
       `/public/dashboards/${token}/charts/data`,
@@ -160,6 +173,8 @@ export const publicDashboardApi = {
       page_format?: string;
       layout?: string;
       filters?: BaseFilter[];
+      /** Report parameter values at export time, so the file shows the same slice. */
+      params?: Record<string, string>;
       session?: string;
     },
   ): Promise<PublicExportJob> => {

@@ -788,6 +788,8 @@ export interface Dashboard {
   public_link_locked_filters?: Array<{ field: string; label?: string | null; value: unknown; operator?: string; semanticField?: string; datePreset?: string }>;
   pages_config?: DashboardPageConfig[];
   available_filter_fields?: DashboardFilterField[];
+  /** Server-resolved column of each field-bound parameter switcher (dashboard_parameters.resolve_switcher_fields). */
+  parameter_fields?: Record<string, { field: string; semanticField?: string; fieldKey?: string; datasetId?: number }> | null;
   public_link_name?: string | null;
   public_link_appearance?: PublicLinkAppearanceConfig | null;
   layout_mode?: DashboardLayoutMode;

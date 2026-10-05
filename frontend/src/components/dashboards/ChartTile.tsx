@@ -40,6 +40,8 @@ import { useI18n } from '@/providers/LanguageProvider';
 import { CachedLiveBadge } from '@/components/dashboards/CachedLiveBadge';
 import type { ChartSemanticBinding, DashboardPageConfig } from '@/types/api';
 import { ChartDetailModal } from './ChartDetailModal';
+import { buildInstanceParameterFilters } from '@/lib/chart-instance-parameters';
+import { tileRoleOverrides } from '@/lib/dashboard-params';
 import { resolveTileFrameStyle, tileKindOf, TILE_TITLE_CLASS, TILE_KPI_LABEL_CLASS } from '@/lib/dashboard-presentation/tile-frame';
 
 interface ChartTileProps {
@@ -193,31 +195,6 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-const NUMERIC_MAPPING_TYPES = new Set(['number', 'integer', 'float', 'double', 'decimal', 'numeric', 'bigint', 'int']);
-const DATE_MAPPING_TYPES = new Set(['date', 'datetime', 'timestamp', 'time']);
-
-function resolveParameterMappingType(param: {
-  parameter_type?: string | null;
-  column_mapping?: { type?: string | null } | null;
-}) {
-  const mappingType = (param.column_mapping?.type ?? '').toLowerCase();
-  if (mappingType && mappingType !== 'string') return mappingType;
-
-  const parameterType = (param.parameter_type ?? '').toLowerCase();
-  if (parameterType === 'time_range') return 'date';
-  if (parameterType === 'measure') return 'number';
-  return mappingType || 'string';
-}
-
-function coerceParameterAtom(rawValue: unknown, mappingType: string) {
-  if (rawValue === undefined || rawValue === null) return rawValue;
-  if (NUMERIC_MAPPING_TYPES.has(mappingType)) {
-    const num = typeof rawValue === 'number' ? rawValue : Number(String(rawValue).trim());
-    return Number.isFinite(num) ? num : String(rawValue).trim();
-  }
-  return typeof rawValue === 'string' ? rawValue.trim() : rawValue;
-}
-
 function expandLinkedFilterTargets(filter: BaseFilter): BaseFilter[] {
   const primaryTarget = filter.fieldKey ?? filter.semanticField ?? filter.field;
   const refs = [primaryTarget, ...(filter.linkedFields ?? [])]
@@ -318,55 +295,12 @@ function ChartTileBase({
   );
   const tileCurrencyMap = useMemo(() => buildSemanticCurrencyMap(tileDatasetModel?.views), [tileDatasetModel]);
 
-  const parameterFilters = useMemo(() => {
-    if (!chart?.parameters?.length || !instanceParameters) return [];
-
-    const filters: Record<string, unknown>[] = [];
-    for (const param of chart.parameters) {
-      const mappedColumn = param.column_mapping?.column;
-      const rawValue = instanceParameters[param.parameter_name];
-      if (!mappedColumn || rawValue === undefined || rawValue === null) continue;
-
-      const mappingType = resolveParameterMappingType(param);
-      const isDateType = DATE_MAPPING_TYPES.has(mappingType);
-      const textValue = typeof rawValue === 'string' ? rawValue.trim() : '';
-      if (typeof rawValue === 'string' && !textValue) continue;
-
-      const isRangeValue = typeof rawValue === 'string'
-        && (textValue.includes('..') || (isDateType && textValue.includes(',')));
-      if (isRangeValue) {
-        const parts = (textValue.includes('..') ? textValue.split('..') : textValue.split(','))
-          .map(part => part.trim())
-          .filter(Boolean);
-        if (parts.length > 0) {
-          filters.push({
-            field: mappedColumn,
-            operator: 'between',
-            value: [
-              parts[0] ? coerceParameterAtom(parts[0], mappingType) : null,
-              parts[1] ? coerceParameterAtom(parts[1], mappingType) : null,
-            ],
-          });
-          continue;
-        }
-      }
-
-      if (Array.isArray(rawValue) || (typeof rawValue === 'string' && textValue.includes(','))) {
-        const values = (Array.isArray(rawValue) ? rawValue : textValue.split(','))
-          .map(part => String(part).trim())
-          .filter(Boolean)
-          .map(part => coerceParameterAtom(part, mappingType));
-        if (values.length > 0) {
-          filters.push({ field: mappedColumn, operator: 'in', value: values });
-          continue;
-        }
-      }
-
-      filters.push({ field: mappedColumn, operator: 'eq', value: coerceParameterAtom(rawValue, mappingType) });
-    }
-
-    return filters;
-  }, [chart?.parameters, instanceParameters]);
+  // The tile's author-set parameter values — one implementation shared with the
+  // chart detail modal and (its backend twin) every public surface.
+  const parameterFilters = useMemo(
+    () => buildInstanceParameterFilters(chart?.parameters, instanceParameters) as unknown as Record<string, unknown>[],
+    [chart?.parameters, instanceParameters],
+  );
 
   // Phase-15.81 v6 — "Filters on this visual" was removed from the
   // FilterPane UI (per-visual filtering moved into each chart's own
@@ -506,17 +440,10 @@ function ChartTileBase({
   // What-if / field parameter — resolve this tile's binding
   // (instanceParameters.__whatifBindings) against the live dashboard param
   // values into a {dimension?, metric?} override sent to the chart-data query.
-  const roleOverrides = useMemo(() => {
-    const bindings = (instanceParameters as any)?.__whatifBindings;
-    if (!Array.isArray(bindings) || !dashboardParams) return null;
-    const out: Record<string, string> = {};
-    for (const b of bindings) {
-      if (!b || (b.role !== 'dimension' && b.role !== 'metric')) continue;
-      const val = dashboardParams[b.param];
-      if (typeof val === 'string' && val.trim()) out[b.role] = val.trim();
-    }
-    return Object.keys(out).length > 0 ? out : null;
-  }, [instanceParameters, dashboardParams]);
+  const roleOverrides = useMemo(
+    () => tileRoleOverrides(instanceParameters as Record<string, unknown> | undefined, dashboardParams as Record<string, string> | undefined),
+    [instanceParameters, dashboardParams],
+  );
 
   // Debounce server filters to avoid cascading API calls on rapid cross-filter / dashboard filter changes
   const serverFilterKey = useMemo(

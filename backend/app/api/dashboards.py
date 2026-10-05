@@ -1815,6 +1815,12 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     overrides["has_draft"] = (bool(normalized_layouts) or has_filter_draft or rows_in_draft
                               or bool(my_widget_configs) or bool(my_parameters))
     overrides["shared_draft"] = _shared_draft_state(dash, snapshot, user_key)
+    # The same server resolution the public surfaces get (over THIS editor's view,
+    # draft tiles included), so the Builder filters the column a published link will.
+    from app.services.dashboard_parameters import resolve_switcher_fields
+    overrides["parameter_fields"] = resolve_switcher_fields(
+        overrides.get("dashboard_charts", base.dashboard_charts), include_drafts=True,
+    )
 
     enriched = base.model_copy(update=overrides)
     logger.info(

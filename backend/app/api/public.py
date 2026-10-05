@@ -25,6 +25,14 @@ from app.core.config import settings
 from app.core.dependencies import ALGORITHM
 from app.core.logging import get_logger
 from app.core.log_safety import token_ref
+from app.services.dashboard_parameters import (
+    ParameterRefused,
+    dashboard_parameters,
+    resolve_switcher_fields,
+    split_switcher_filters,
+    tile_instance_filters,
+    validate_role_overrides,
+)
 from app.models.models import Dashboard, DashboardChart, DashboardPublicLink
 from app.schemas import ChartDataResponse, DashboardResponse
 from app.services.dashboard_service import DRAFT_ROW_KEYS, is_draft_only_item, strip_draft_row_keys
@@ -732,6 +740,19 @@ def _build_public_chart_filters(
     # publish time regardless of a fresh token. Re-attach the stored token here
     # so `normalize_filter_conditions` recomputes it to the current window. A
     # filter that already carries a token (explicit viewer choice) is untouched.
+    # A field-bound parameter switcher's filter (id `param-<name>`) is accepted
+    # only as exactly what that author control can produce — its field, one of
+    # its options — and joins the viewer layer below the locks like a slicer
+    # pick. Anything claiming to be one and not matching is refused, not dropped.
+    switcher_filters: list[dict] = []
+    if viewer_filters:
+        try:
+            _dcs = getattr(dash, "dashboard_charts", None) or []
+            switcher_filters, viewer_filters = split_switcher_filters(
+                viewer_filters, dashboard_parameters(_dcs), resolve_switcher_fields(_dcs),
+            )
+        except ParameterRefused as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if viewer_filters:
         allowed, bare_allowed = viewer_allowed or _viewer_allowed(dash, link_filters_config)
         # calendarField / calendarSourceField pick the COLUMN a raw-table date
@@ -741,6 +762,7 @@ def _build_public_chart_filters(
             logger.info("filter_merge context=%s dropped=%s", context_for_log,
                         ["viewer_field_not_exposed"] * (len(viewer_filters) - len(kept)))
         viewer_filters = kept
+    viewer_filters = [*(viewer_filters or []), *switcher_filters]
     viewer_filters = _reattach_authoritative_date_presets(
         viewer_filters, _authoritative_date_presets(dash),
     )
@@ -1345,6 +1367,18 @@ def _public_field_refs(dash: Any, *, exact: bool = False) -> set[str]:
         for m in sb.get("calendarFieldMappings") or []:
             if isinstance(m, dict) and norm(m.get("sourceField")) in used_bare and m.get("semanticField"):
                 refs.add(norm(m.get("semanticField")))
+    # Parameter switchers are served controls too: a field-bound switcher's
+    # field is one the report filters by, and the options of a switcher a chart
+    # binds its dimension/metric to are fields that chart reads when switched
+    # (so their labels and formats must be served like any other read field).
+    params = dashboard_parameters(getattr(dash, "dashboard_charts", None) or [])
+    for d in params.switchers.values():
+        if d.field:
+            refs.add(norm(d.field))
+    for f in params.option_fields_of_bound_params(
+        dc for dc in (getattr(dash, "dashboard_charts", None) or []) if not is_draft_only_item(dc)
+    ):
+        refs.add(norm(f))
     return refs
 
 
@@ -1843,6 +1877,7 @@ def get_public_dashboard(
     # however, is the picker inventory and MUST cover both scopes.
     dash.public_filters_config = top_bar_filters
     dash.available_filter_fields = _build_public_filter_fields(db, dash, field_inventory, legacy_scan=False)
+    dash.parameter_fields = resolve_switcher_fields(dash.dashboard_charts or [])
     # Phase-B19 — attach the dataset semantic models for every chart's dataset so
     # a LOGGED-OUT public viewer's tiles can build label/format maps WITHOUT the
     # authed GET /datasets/{id}/model call. That call 401'd for anonymous viewers
@@ -3638,7 +3673,7 @@ def get_public_filter_distinct_values(
         sanitized_viewer_filters,
         page_ids=_distinct_pages,
         chart_dataset_id=dataset_id,
-        context_for_log=f"distinct_values:{token}:{dataset_id}:{field}",
+        context_for_log=f"distinct_values:{token_ref(token)}:{dataset_id}:{field}",
         hard_bounds_out=raw_hard_bounds,
     )
     # The dropdown self-strips every condition on its own field (so it is not
@@ -3746,6 +3781,14 @@ def get_public_chart_data(
         default=None,
         description="The page the viewer is showing; its page-scope filters are applied server-side.",
     ),
+    tile_id: int | None = Query(
+        default=None,
+        description="The dashboard tile (a chart may sit on the report more than once); its own parameters apply.",
+    ),
+    overrides: str | None = Query(
+        default=None,
+        description="JSON {dimension?, metric?}: the what-if parameter values bound to this tile.",
+    ),
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
 ):
@@ -3772,7 +3815,7 @@ def get_public_chart_data(
             DashboardChart.chart_id == chart_id,
         )
         .all()
-        if not is_draft_only_item(dc)
+        if not is_draft_only_item(dc) and (tile_id is None or dc.id == tile_id)
     ), None)
     if not link:
         raise HTTPException(
@@ -3799,8 +3842,12 @@ def get_public_chart_data(
         viewer_filters,
         page_ids=_public_chart_page_ids(dash, chart_id, page_id),
         chart_dataset_id=_chart_dataset_id(dash, chart_id),
-        context_for_log=f"chart_data:{token}:{chart_id}",
+        context_for_log=f"chart_data:{token_ref(token)}:{chart_id}",
     )
+    # The tile's own author-set parameter values, exactly as the Builder applies
+    # them (app/services/dashboard_parameters.py), and its what-if swap.
+    combined_filters = [*combined_filters, *tile_instance_filters(link)]
+    role_overrides = _public_role_overrides(dash, link, overrides)
 
     # #2 — viewer date-hierarchy drill grain (validate against a whitelist;
     # unknown values are ignored so a stray param can't break the query).
@@ -3815,6 +3862,7 @@ def get_public_chart_data(
             filter_context="dashboard",
             granularity_override=granularity_override,
             snapshot_ttl_minutes=_resolve_public_snapshot_ttl(_chart_appearance),
+            role_overrides=role_overrides,
         ), combined_filters)
     except ValueError as exc:
         # Phase-12.7: previously this swallowed the engine's Vietnamese
@@ -3841,8 +3889,30 @@ def get_public_chart_data(
         )
 
 
+def _public_role_overrides(dash: Dashboard, tile: Any, raw: Any) -> dict | None:
+    """A viewer's what-if selection for one tile, accepted only as a value the
+    tile's bound switcher offers (dashboard_parameters.validate_role_overrides)."""
+    if raw in (None, "", {}):
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid overrides parameter.") from exc
+    try:
+        return validate_role_overrides(tile, raw, dashboard_parameters(getattr(dash, "dashboard_charts", None) or []))
+    except ParameterRefused as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 class _PublicChartsBatchItem(BaseModel):
     chart_id: int
+    # The tile this request is for. A chart may sit on a report more than once,
+    # each tile with its own parameter values / what-if binding; absent (older
+    # client) = the chart's first published tile.
+    tile_id: int | None = None
+    # What-if selections bound to this tile: {"dimension"?: field, "metric"?: field}.
+    overrides: dict | None = None
     # Viewer filters for THIS chart (already scope-bounded + cross-filter-merged
     # by the FE, exactly like the single-chart endpoint's `filters` query param).
     filters: list[dict] | None = None
@@ -3881,60 +3951,76 @@ def get_public_charts_data_batch(
         token, db, session_token=x_public_session, track_access=False,
     )
     ttl = _resolve_public_snapshot_ttl(_chart_appearance)
-    valid_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id and not is_draft_only_item(dc)}
+    published = [dc for dc in (dash.dashboard_charts or []) if dc.chart_id and not is_draft_only_item(dc)]
+    tiles_by_id = {dc.id: dc for dc in published}
+    first_tile_of_chart: dict[int, Any] = {}
+    for dc in published:
+        first_tile_of_chart.setdefault(dc.chart_id, dc)
 
     items: list[dict] = []
-    filters_by_chart: dict[int, list[dict]] = {}
-    not_found: list[int] = []
+    # Keyed by TILE: a chart may sit on the page twice with different parameter
+    # values or what-if bindings, and each tile gets its own query and answer.
+    # An older client that sends no tile_id is keyed by chart (its first tile).
+    filters_by_key: dict[str, list[dict]] = {}
+    meta_by_key: dict[str, dict] = {}
+    not_found: list[dict] = []
     build_errors: list[dict] = []
-    seen: set[int] = set()
+    seen: set[str] = set()
+    params = dashboard_parameters(dash.dashboard_charts or [])
     # What a viewer's filter may name: computed once for the whole page.
     viewer_allowed = _viewer_allowed(dash, public_filters)
     for it in body.items:
         cid = int(it.chart_id)
-        if cid in seen:
+        key = f"t{int(it.tile_id)}" if it.tile_id is not None else f"c{cid}"
+        if key in seen:
             continue
-        seen.add(cid)
-        if cid not in valid_ids:
-            not_found.append(cid)
+        seen.add(key)
+        echo = {"chart_id": cid, **({"tile_id": int(it.tile_id)} if it.tile_id is not None else {})}
+        tile = tiles_by_id.get(int(it.tile_id)) if it.tile_id is not None else first_tile_of_chart.get(cid)
+        if tile is None or tile.chart_id != cid:
+            not_found.append(echo)
             continue
         try:
             chart_pages = _public_chart_page_ids(dash, cid, body.page_id)
         except HTTPException:
-            not_found.append(cid)
+            not_found.append(echo)
             continue
-        # Isolate the filter build PER CHART. `get_charts_data_batch` already
+        # Isolate the filter build PER TILE. `get_charts_data_batch` already
         # runs each chart's query in its own try/except-guarded worker, but the
         # filter merge ran here in a shared loop with no guard — so one chart
         # whose merge raised (e.g. a malformed slicer/filter in the stored
         # config or link) took down the WHOLE page's response (every tile 500s),
-        # not just its own tile. Degrade to a per-chart error instead.
+        # not just its own tile. Degrade to a per-tile error instead.
         try:
             viewer_filters = [f for f in (it.filters or []) if isinstance(f, dict)]
             combined_filters = _build_public_chart_filters(
                 dash, public_filters, viewer_filters,
                 page_ids=chart_pages,
                 chart_dataset_id=_chart_dataset_id(dash, cid),
-                context_for_log=f"chart_data_batch:{token}:{cid}",
+                context_for_log=f"chart_data_batch:{token_ref(token)}:{cid}",
                 viewer_allowed=viewer_allowed,
             )
+            combined_filters = [*combined_filters, *tile_instance_filters(tile)]
+            role_overrides = validate_role_overrides(tile, it.overrides, params)
+        except (HTTPException, ParameterRefused) as exc:
+            build_errors.append({**echo, "error": str(getattr(exc, "detail", None) or exc), "status": 400})
+            continue
         except Exception:
             logger.exception("chart_data_batch: filter build failed for chart=%s", cid)
-            build_errors.append({
-                "chart_id": cid,
-                "error": "Could not apply filters for this chart.",
-                "status": 400,
-            })
+            build_errors.append({**echo, "error": "Could not apply filters for this chart.", "status": 400})
             continue
-        filters_by_chart[cid] = combined_filters
+        filters_by_key[key] = combined_filters
+        meta_by_key[key] = echo
         _grain = str(it.granularity or "").strip().lower()
         grain = _grain if _grain in {"raw", "day", "week", "month", "quarter", "year"} else None
         items.append({
             "chart_id": cid,
+            "key": key,
             "extra_filters": combined_filters or None,
             "filter_context": "dashboard",
             "granularity_override": grain,
             "snapshot_ttl_minutes": ttl,
+            "role_overrides": role_overrides,
         })
 
     # Serialize INSIDE each worker thread (session still open) so the Chart ORM
@@ -3945,25 +4031,22 @@ def get_public_charts_data_batch(
     )
 
     results: list[dict] = []
-    for r in raw_results:
+    for item, r in zip(items, raw_results):
+        key = item["key"]
+        echo = meta_by_key[key]
         if r.get("ok"):
-            results.append({"chart_id": r["chart_id"],
-                            "data": _public_chart_payload(r["data"], filters_by_chart.get(r["chart_id"]))})
+            results.append({**echo, "data": _public_chart_payload(r["data"], filters_by_key.get(key))})
         else:
             results.append({
-                "chart_id": r["chart_id"],
-                "error": _public_error_text(str(r.get("error") or ""), filters_by_chart.get(r["chart_id"])),
+                **echo,
+                "error": _public_error_text(str(r.get("error") or ""), filters_by_key.get(key)),
                 "status": r.get("status", 500),
                 # the refusal category (an enum) — the tile tells a refusal from a failure
                 "category": r.get("category"),
             })
-    for cid in not_found:
-        results.append({
-            "chart_id": cid,
-            "error": "Chart not found in this shared dashboard.",
-            "status": 404,
-        })
-    # Per-chart filter-build failures (isolated above) surface as that tile's
+    for echo in not_found:
+        results.append({**echo, "error": "Chart not found in this shared dashboard.", "status": 404})
+    # Per-tile filter-build failures (isolated above) surface as that tile's
     # own error, so the rest of the page still renders.
     results.extend(build_errors)
     return {"results": results}
@@ -4042,6 +4125,9 @@ class _ExportCreateBody(BaseModel):
     # The viewer's slicer selections at click time, so the rendered PDF is the
     # slice they were looking at (the render page re-applies them).
     filters: list[dict] | None = None
+    # Report parameter values (switcher name -> value) at export time. Each one
+    # is re-validated by the data endpoints when the worker renders the page.
+    params: dict[str, str] | None = None
     # Session token for a password-protected link — the worker must be able to
     # open the same protected view the requester can.
     session: str | None = None
@@ -4161,6 +4247,11 @@ def create_public_export_job(
             else "snapshot"
         ),
         "filters": [f for f in (body.filters or []) if isinstance(f, dict)],
+        "params": {
+            str(k)[:100]: str(v)[:500]
+            for k, v in list((body.params or {}).items())[:50]
+            if isinstance(k, str) and isinstance(v, str)
+        },
         "surface": "public",
         "session": body.session or x_public_session or None,
     }
@@ -4431,7 +4522,7 @@ def get_dashboard_ai_briefing_guess(
     try:
         ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
                                         viewer_filters,
-                                        context_for_log=f"ai_bot:{token}")
+                                        context_for_log=f"ai_bot:{token_ref(token)}")
         combined_filters = ctx.public_filters
         recon = build_proactive_recon(ctx)
         guess = guess_briefing_from_recon(
@@ -4513,7 +4604,7 @@ async def post_dashboard_ai_briefing_brief(
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
     ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
                                     [item for item in viewer_filters_body if isinstance(item, dict)],
-                                    context_for_log=f"ai_bot_briefing:{token}")
+                                    context_for_log=f"ai_bot_briefing:{token_ref(token)}")
     combined_filters = ctx.public_filters
     recon = build_proactive_recon(ctx)
     user_prompt = build_executive_brief_user_prompt(
@@ -4947,7 +5038,7 @@ async def chat_dashboard_ai_agent(
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
     ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
                                     [item for item in viewer_filters_body if isinstance(item, dict)],
-                                    context_for_log=f"ai_bot_chat_extra:{token}")
+                                    context_for_log=f"ai_bot_chat_extra:{token_ref(token)}")
     combined_filters = ctx.public_filters
 
     # Phase A + B: parse briefing + state, default-construct if missing.
@@ -5312,7 +5403,7 @@ async def explore_dashboard_ai_agent(
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
     ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
                                     [item for item in viewer_filters_body if isinstance(item, dict)],
-                                    context_for_log=f"ai_bot_explore:{token}")
+                                    context_for_log=f"ai_bot_explore:{token_ref(token)}")
     combined_filters = ctx.public_filters
     # Guarded BEFORE the run starts. This endpoint fans one briefing out into a
     # multi-round exploration, so an instruction smuggled into `smart_goal` is

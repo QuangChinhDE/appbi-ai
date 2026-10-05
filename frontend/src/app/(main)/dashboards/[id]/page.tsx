@@ -3316,8 +3316,8 @@ function DashboardDetailPageInner() {
   // columns so it carries the semantic identity the engine needs, then append
   // to the page's effective filter set fed into every tile.
   const paramFilters = React.useMemo(
-    () => paramsToFilters(paramDefs, paramValues, resolvedAvailableColumns),
-    [paramDefs, paramValues, resolvedAvailableColumns],
+    () => paramsToFilters(paramDefs, paramValues, resolvedAvailableColumns, dashboard?.parameter_fields),
+    [paramDefs, paramValues, resolvedAvailableColumns, dashboard?.parameter_fields],
   );
   // What the report header says about the context: the filters the charts are
   // queried with right now, stated as a reader reads them.

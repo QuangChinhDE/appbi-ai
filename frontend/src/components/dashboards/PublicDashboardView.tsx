@@ -3,7 +3,7 @@
 import { sectionTitlesOf } from '@/lib/report-meta';
 import { clearReportAnchor, reportAnchor, setReportAnchor, stampReportAnchor } from '@/lib/report-anchor';
 import { fitLayoutToContent, useMeasuredContentRows } from '@/lib/responsive-fit';
-import { extractParamDefs } from '@/lib/dashboard-params';
+import { extractParamDefs, paramsToFilters, seedParamValues, tileDataKeys, tileRoleOverrides } from '@/lib/dashboard-params';
 import { groupIntoPrintBands } from '@/lib/print-bands';
 import { planKeyForElement, PRINTABLE_ELEMENT_TYPES } from '@/lib/export-layout';
 import { widgetTypeLabel } from '@/components/dashboards/widget-forms';
@@ -639,6 +639,44 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     [activePageId, dashboard?.dashboard_charts],
   );
 
+  // Report parameters — the SAME semantics as the Builder (lib/dashboard-params):
+  // the page's switchers are seeded with their default (else first option), a
+  // field-bound switcher filters every chart on the page, a what-if switcher
+  // swaps the bound tiles' dimension/metric, and the viewer can switch them.
+  // The server accepts only values the author's switchers offer
+  // (app/services/dashboard_parameters.py).
+  const publicParamDefs = useMemo(() => extractParamDefs(visibleDashboardCharts), [visibleDashboardCharts]);
+  const [publicParamState, setPublicParamState] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setPublicParamState((prev) => seedParamValues(publicParamDefs, prev));
+  }, [publicParamDefs]);
+  // Seeded synchronously as well, so the first fetch already carries the
+  // defaults (no throwaway query before the seed effect lands).
+  // A server-rendered export carries the values the viewer had (?params=); the
+  // viewer's own switches, if any, win over them.
+  const publicParamValues = useMemo(
+    () => seedParamValues(
+      publicParamDefs,
+      printOptions?.params ? { ...printOptions.params, ...publicParamState } : publicParamState,
+    ),
+    [publicParamDefs, publicParamState, printOptions?.params],
+  );
+  const handlePublicParamChange = useCallback(
+    (name: string, value: any) => setPublicParamState((prev) => ({ ...seedParamValues(publicParamDefs, prev), [name]: value == null ? '' : String(value) })),
+    [publicParamDefs],
+  );
+  const publicParamFilters = useMemo(
+    () => paramsToFilters(publicParamDefs, publicParamValues, undefined, dashboard?.parameter_fields),
+    [publicParamDefs, publicParamValues, dashboard?.parameter_fields],
+  );
+  // Where each tile's data lives (chart id, or -tileId for a chart placed twice
+  // with different tile parameters — lib/dashboard-params.tileDataKeys).
+  const tileKeys = useMemo(() => tileDataKeys(dashboard?.dashboard_charts), [dashboard?.dashboard_charts]);
+  const dataKeyOf = useCallback(
+    (dc: { id: number; chart_id: number }) => tileKeys.get(dc.id) ?? dc.chart_id,
+    [tileKeys],
+  );
+
   // Phase-F (PBI-parity rework) — collect filter entries with
   // `publicMode === 'locked'` for the banner row. Locked entries are
   // applied at the chart-data layer (BE enforces) but the viewer is
@@ -871,9 +909,18 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       // chart_id and never need a /charts/{id}/data round-trip.
       .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
     // When chartIds is supplied (lazy viewport mode), only fetch those tiles.
-    const targetCharts = options?.chartIds
+    // One request per data key: two tiles of the same chart with the same tile
+    // parameters share one answer, as before.
+    const requestedCharts = options?.chartIds
       ? allCharts.filter((dc) => options.chartIds!.includes(dc.chart_id))
       : allCharts;
+    const seenKeys = new Set<number>();
+    const targetCharts = requestedCharts.filter((dc) => {
+      const key = dataKeyOf(dc);
+      if (seenKeys.has(key)) return false;
+      seenKeys.add(key);
+      return true;
+    });
 
     if (!options?.silent) {
       setChartsLoading(true);
@@ -913,24 +960,37 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           : pageCrossFilterState
             ? [...viewerFilterSet, pageCrossFilterState.filter]
             : viewerFilterSet;
+        const overrides = tileRoleOverrides(
+          dashboardChart.parameters as Record<string, unknown> | undefined,
+          publicParamValues,
+        );
         return {
           chart_id: dashboardChart.chart_id,
-          filters: applyScopeBound(baseViewerFilters, hiddenFilterSet),
+          tile_id: dashboardChart.id,
+          // The page's switcher filters join the viewer's own choices; the server
+          // bounds both by the page scope and the link's locks.
+          filters: [...applyScopeBound(baseViewerFilters, hiddenFilterSet), ...publicParamFilters],
           granularity: chartGrainsRef.current[dashboardChart.chart_id],
+          ...(overrides ? { overrides } : {}),
         };
       });
 
-      type BatchEntry = { chartId: number; data: any; error: string | null; status?: number };
+      type BatchEntry = { chartId: number; key: number; data: any; error: string | null; status?: number };
       let entries: BatchEntry[];
       try {
         const resp = await publicDashboardApi.getChartsDataBatch(token, sessionToken, batchItems, pageId);
-        const byId = new Map<number, { data?: any; error?: string; status?: number }>();
-        for (const r of resp.results || []) byId.set(r.chart_id, r);
+        const byTile = new Map<number, { data?: any; error?: string; status?: number }>();
+        const byChart = new Map<number, { data?: any; error?: string; status?: number }>();
+        for (const r of resp.results || []) {
+          if (r.tile_id != null) byTile.set(r.tile_id, r);
+          else byChart.set(r.chart_id, r);
+        }
         entries = targetCharts.map((dc) => {
-          const r = byId.get(dc.chart_id);
-          if (r && r.data) return { chartId: dc.chart_id, data: r.data, error: null };
+          const r = byTile.get(dc.id) ?? byChart.get(dc.chart_id);
+          if (r && r.data) return { chartId: dc.chart_id, key: dataKeyOf(dc), data: r.data, error: null };
           return {
             chartId: dc.chart_id,
+            key: dataKeyOf(dc),
             data: null,
             error: r?.error || 'Could not load this chart.',
             status: r?.status,
@@ -949,7 +1009,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         // Whole-batch transport failure → mark every target tile errored so the
         // page shows the error state instead of an infinite spinner.
         const msg = getErrorMessage(err);
-        entries = targetCharts.map((dc) => ({ chartId: dc.chart_id, data: null, error: msg }));
+        entries = targetCharts.map((dc) => ({ chartId: dc.chart_id, key: dataKeyOf(dc), data: null, error: msg }));
       }
 
       if (requestId !== chartRequestIdRef.current) {
@@ -970,10 +1030,10 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       const nextData = { ...chartDataRef.current };
       const nextErrors = { ...chartErrorsRef.current };
       for (const entry of entries) {
-        if (entry.data) nextData[entry.chartId] = entry.data;
-        else delete nextData[entry.chartId];
-        if (entry.error) nextErrors[entry.chartId] = entry.error;
-        else delete nextErrors[entry.chartId];
+        if (entry.data) nextData[entry.key] = entry.data;
+        else delete nextData[entry.key];
+        if (entry.error) nextErrors[entry.key] = entry.error;
+        else delete nextErrors[entry.key];
       }
       // ONE view, ONE generation per dataset. A publish that landed between two
       // reads leaves older tiles beside newer ones: re-read this page's older
@@ -981,14 +1041,15 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       let coherence = snapshotCoherence(nextData);
       if (!coherence.coherent) {
         generationMovedRef.current = true;
-        const onPage = new Set(allCharts.map((dc) => dc.chart_id));
+        const onPage = new Set(allCharts.map((dc) => dataKeyOf(dc)));
         for (const id of coherence.stale) if (!onPage.has(id)) delete nextData[id];
-        const reread = batchItems.filter((item) => coherence.stale.includes(item.chart_id));
+        const reread = batchItems.filter((_item, i) => coherence.stale.includes(dataKeyOf(targetCharts[i])));
         if (reread.length) {
           try {
             const again = await publicDashboardApi.getChartsDataBatch(token, sessionToken, reread, pageId);
             for (const r of again.results || []) {
-              if (r.data) nextData[r.chart_id] = r.data;
+              const dc = targetCharts.find((d) => (r.tile_id != null ? d.id === r.tile_id : d.chart_id === r.chart_id));
+              if (r.data) nextData[dc ? dataKeyOf(dc) : r.chart_id] = r.data;
             }
           } catch {
             /* the mixed state is reported below */
@@ -1016,7 +1077,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         setIsApplyingFilters(false);
       }
     }
-  }, [appliedViewerFilters, crossFilterState, dashboard, dashboardPages, activePageId, scheduleSessionExpiry, token]);
+  }, [appliedViewerFilters, crossFilterState, dashboard, dashboardPages, activePageId, scheduleSessionExpiry, token, dataKeyOf, publicParamFilters, publicParamValues]);
 
   // Cross-highlight (public): when a selection is active, fetch a PARALLEL
   // P-filtered dataset per TARGET chart (baseline viewer/page filters + the
@@ -1044,13 +1105,14 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       const entries = await runWithConcurrency(
         targets,
         async (dc) => {
-          const requestFilters = applyScopeBound(
-            [...appliedViewerFilters, highlightState.filter],
-            pageHiddenFiltersRef.current,
-          );
+          const requestFilters = [
+            ...applyScopeBound([...appliedViewerFilters, highlightState.filter], pageHiddenFiltersRef.current),
+            ...publicParamFilters,
+          ];
           try {
             const data = await publicDashboardApi.getChartData(
               token, dc.chart_id, session ?? undefined, requestFilters, chartGrainsRef.current[dc.chart_id], activePageId,
+              dc.id, tileRoleOverrides(dc.parameters as Record<string, unknown> | undefined, publicParamValues),
             );
             return { chartId: dc.chart_id, data };
           } catch {
@@ -1065,7 +1127,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       setHighlightChartData(map);
     })();
     return () => { cancelled = true; };
-  }, [highlightState, interactionsMode, activePageId, appliedViewerFilters, dashboard, token]);
+  }, [highlightState, interactionsMode, activePageId, appliedViewerFilters, dashboard, token, publicParamFilters, publicParamValues]);
 
   // Drop the highlight when its source tile leaves the page; clear the unused
   // interaction state when the mode flips, so they never overlap.
@@ -1203,6 +1265,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         page_format: choices.format,
         layout: choices.layout,
         filters: appliedViewerFiltersRef.current,
+        params: publicParamValues,
         session,
       });
     } catch (err: any) {
@@ -1315,7 +1378,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
               // the deck with no KPI values and no tables — silently.
               const pending = getDashboardChartsForPage(dashboard.dashboard_charts ?? [], p.id)
                 .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id
-                  && !chartDataRef.current[dc.chart_id])
+                  && !chartDataRef.current[dataKeyOf(dc)])
                 .map((dc) => dc.chart_id);
               if (pending.length) {
                 await fetchChartsForPage(p.id, session, null, {
@@ -1430,8 +1493,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         // Read the CURRENT data map (not a closure snapshot): earlier pages of
         // this same export have already written into it.
         let pending = targetCharts
-          .map((dc) => dc.chart_id)
-          .filter((id) => !chartDataRef.current[id]);
+          .filter((dc) => !chartDataRef.current[dataKeyOf(dc)])
+          .map((dc) => dc.chart_id);
         // The snapshot export exists to be fast: it takes ONE shot at a failed
         // chart and lists what is missing, rather than spending seconds of
         // backoff per tile. The full-data export keeps retrying.
@@ -1629,8 +1692,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     if (!dashboard) return;
     const targets = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
       .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id)
-      .map((dc) => dc.chart_id)
-      .filter((id) => !chartDataRef.current[id]);
+      .filter((dc) => !chartDataRef.current[dataKeyOf(dc)])
+      .map((dc) => dc.chart_id);
     if (!targets.length) return;
     const { controlSeed, hiddenFilters } = resolvePublicPageFilterContext(
       dashboard as unknown as Record<string, unknown>, dashboardPages, pageId,
@@ -1763,9 +1826,9 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
     if (targetCharts.length === 0) return true;
     return targetCharts.every((dashboardChart) => (
-      Boolean(chartData[dashboardChart.chart_id]) || Boolean(chartErrors[dashboardChart.chart_id])
+      Boolean(chartData[dataKeyOf(dashboardChart)]) || Boolean(chartErrors[dataKeyOf(dashboardChart)])
     ));
-  }, [chartData, chartErrors, dashboard]);
+  }, [chartData, chartErrors, dashboard, dataKeyOf]);
 
   // PDF export now fetches each page's data on-demand inside doExportPdf, so the
   // dashboard load path no longer prefetches all pages. This was the single
@@ -2161,23 +2224,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // What the report header says: the link's title for its audience, the
   // report's description, and the filters this surface applies (the same
   // wording as the PDF header).
-  // A switcher states a value only where that value is what the page applies.
-  // The public data path does not turn a parameter into a chart filter or a
-  // what-if swap, so a switcher bound to a field, or one a chart is bound to,
-  // shows no selection here (it would state a filter the charts ignore). A
-  // text-only parameter is seeded like the builder: its default, else its
-  // first option.
-  const whatIfBound = new Set<string>();
-  for (const dc of visibleDashboardCharts) {
-    const bindings = ((dc.parameters ?? {}) as any)?.__whatifBindings;
-    if (Array.isArray(bindings)) for (const b of bindings) if (b?.param) whatIfBound.add(String(b.param));
-  }
-  const publicParams: Record<string, any> = {};
-  for (const def of extractParamDefs(visibleDashboardCharts)) {
-    if (def.field || whatIfBound.has(def.paramName) || publicParams[def.paramName] !== undefined) continue;
-    const seed = def.default ?? def.options[0]?.value;
-    if (seed !== undefined) publicParams[def.paramName] = seed;
-  }
+  // Switchers show — and apply — the same values the Builder does.
+  const publicParams: Record<string, any> = publicParamValues;
   const reportMeta = {
     // The title the link presents to its audience (headline, else the link's
     // name, else the report's) — the same as the masthead and the PDF: a
@@ -2204,7 +2252,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           <div className="h-full w-full" data-tile-id={dashboardChart.id} data-tile-kind="widget" data-widget-type={wtype ?? undefined}>
             {isSlicerControl(dashboardChart)
               ? <GridSlicerTile tile={dashboardChart} binding={publicSlicerBinding} />
-              : <ReportMetaProvider value={reportMeta}><DashboardWidget widget={dashboardChart} params={publicParams} /></ReportMetaProvider>}
+              : <ReportMetaProvider value={reportMeta}><DashboardWidget widget={dashboardChart} params={publicParams} onParamChange={handlePublicParamChange} /></ReportMetaProvider>}
           </div>
         ) : (
           <div
@@ -2217,7 +2265,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
               borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))',
             }}
           >
-            <ReportMetaProvider value={reportMeta}><DashboardWidget widget={dashboardChart} params={publicParams} /></ReportMetaProvider>
+            <ReportMetaProvider value={reportMeta}><DashboardWidget widget={dashboardChart} params={publicParams} onParamChange={handlePublicParamChange} /></ReportMetaProvider>
           </div>
         )}
       </div>
@@ -2233,8 +2281,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     }
 
     const chart = dashboardChart.chart;
-    const payload = chartData[dashboardChart.chart_id];
-    const chartError = chartErrors[dashboardChart.chart_id];
+    const payload = chartData[dataKeyOf(dashboardChart)];
+    const chartError = chartErrors[dataKeyOf(dashboardChart)];
     const title = dashboardChart.layout.custom_title ?? '';
 
     return (
@@ -2792,8 +2840,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                   }
 
                   const chart = dashboardChart.chart;
-                  const payload = chartData[dashboardChart.chart_id];
-                  const chartError = chartErrors[dashboardChart.chart_id];
+                  const payload = chartData[dataKeyOf(dashboardChart)];
+                  const chartError = chartErrors[dataKeyOf(dashboardChart)];
                   // Phase-B11 — no auto chart-name title; only an explicit one.
                   const title = dashboardChart.layout.custom_title ?? '';
 
