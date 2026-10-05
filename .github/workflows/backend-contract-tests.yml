@@ -502,3 +502,100 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_pair5_data_state_pg.py
+
+  # ── Authorization / security gate ─────────────────────────────────────────
+  #
+  # EVERY MODULE MOUNTED, PINNED DEPENDENCIES, REAL POSTGRES ROLES.
+  #
+  # The unit job above runs with Workboards off, so the Workboard and Workspace
+  # routes — the surface with the worst authorization findings — were never in
+  # the route walk at all. This job turns every optional module on and fails if
+  # any expected router is missing or if the walk sees fewer routes than the
+  # floor in test_authz_route_inventory.py (a walk over zero routes once passed).
+  #
+  # The Postgres half connects as the non-superuser `appbi_app` role the
+  # migrations provision. SQLite cannot show that a policy holds, and the owner
+  # role bypasses every policy, so AUTHZ_PG_REQUIRED=1 makes a missing database
+  # a failure rather than a skip.
+  authz-security:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: appbi
+          POSTGRES_PASSWORD: appbi
+          POSTGRES_DB: appbi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}/backend
+      ENVIRONMENT: test
+      METADATA_CATALOG_ENABLED: "true"
+      GOVERN_ENABLED: "true"
+      WORKBOARDS_ENABLED: "true"
+      OBSERVABILITY_ENABLED: "true"
+      AUTHZ_PG_REQUIRED: "1"
+      AUTHZ_PG_OWNER_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
+      AUTHZ_PG_APP_URL: "postgresql://appbi_app:appbi_app@localhost:5432/appbi"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install backend dependencies (pinned)
+        run: pip install -r requirements.txt
+
+      - name: Build the schema and give the app role a login
+        env:
+          DATABASE_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
+        run: |
+          alembic upgrade head
+          PGPASSWORD=appbi psql -h localhost -U appbi -d appbi -v ON_ERROR_STOP=1 \
+            -c "ALTER ROLE appbi_app LOGIN PASSWORD 'appbi_app'"
+
+      - name: GATE — authorization route walk + security suites (all modules mounted)
+        env:
+          DATABASE_URL: "sqlite:///./ci_security.db"
+        run: |
+          set -o pipefail
+          python -m pytest -q --tb=short -p no:cacheprovider -rs \
+            tests/test_authz_route_inventory.py \
+            tests/test_module_floor.py \
+            tests/test_workboard_app_user_roles.py \
+            --junitxml=/tmp/authz.xml 2>&1 | tee /tmp/authz.log
+
+      - name: GATE — Postgres role + row-level security (app role, not owner)
+        env:
+          DATABASE_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
+        run: |
+          python -m pytest -q --tb=short -p no:cacheprovider -rs \
+            tests/test_authz_db_role_pg.py
+
+      - name: No security test was skipped
+        if: always()
+        run: |
+          python - <<'PY'
+          import pathlib, sys, xml.etree.ElementTree as ET
+          p = pathlib.Path('/tmp/authz.xml')
+          if not p.exists():
+              sys.exit('no JUnit report: the security suite did not run')
+          root = ET.parse(p).getroot()
+          suites = [root] if root.tag == 'testsuite' else list(root)
+          tests = sum(int(s.get('tests', 0)) for s in suites)
+          skipped = sum(int(s.get('skipped', 0)) for s in suites)
+          print(f'authz security: {tests} tests, {skipped} skipped')
+          if tests == 0 or skipped:
+              sys.exit('a security suite that collects nothing or skips is not coverage')
+          PY

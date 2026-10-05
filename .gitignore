@@ -420,3 +420,9 @@ backend/_verify_gate.db
 !backend/tests/test_pair4_surfaces_pg.py
 !backend/tests/test_pair5_data_state_pg.py
 !backend/tests/test_core_product_contracts.py
+
+# Authorization / security suites (security/authz-remediation). Run by the
+# `authz-security` job in backend-contract-tests.yml with every module mounted.
+!backend/tests/test_authz_route_inventory.py
+!backend/tests/test_authz_db_role_pg.py
+!backend/tests/test_workboard_app_user_roles.py
