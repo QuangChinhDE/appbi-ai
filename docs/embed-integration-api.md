@@ -76,7 +76,7 @@ There is no per-grant revoke endpoint; rotate the PAT if a URL leaked.
 | Field | Type | Notes |
 |---|---|---|
 | `dashboard_id` | int | Required. |
-| `filters` | list | Locked filters. Each needs a field identity on the dashboard (`semanticField` + `datasetId`, as the dashboard's own filters use) and a non-empty value. Unknown fields or unappliable operator/value pairs are `400`. |
+| `filters` | list | Locked filters, each `{field?, semanticField?, datasetId?, operator, value}` with a non-empty value. **Field identity** (§3.1): send `semanticField` + `datasetId` to name one field exactly; a bare `field` is accepted only when exactly one filterable field of the dashboard has that name. Unknown, ambiguous or mismatched identities and unappliable operator/value pairs are `400`. |
 | `full_report` | bool | Must be `true` to embed **without** filters. No filters and no `full_report` is `400`, so a forgotten scope cannot leak the whole dataset. |
 | `allowed_origins` | list[str] | Sites allowed to frame the URL (see §4). **Remembered on the PAT** and applied to every later mint. Omitted or `[]` keeps what the PAT already declared; it never clears it. |
 | `header` | str ≤ 200 | Title the embedded report shows. |
@@ -100,9 +100,58 @@ There is no per-grant revoke endpoint; rotate the PAT if a URL leaked.
 | `401` | Missing, malformed, revoked or expired PAT. |
 | `403` | Not a PAT (browser session), PAT scope below `dashboards: edit`, or the PAT's owner cannot edit the dashboard. |
 | `404` | Dashboard not found. |
-| `400` | Unknown/unappliable filter, empty value, no filters without `full_report`, or an invalid `allowed_origins` entry. |
+| `400` | Unknown field, **ambiguous bare field** (several fields share the name — send `semanticField` + `datasetId`), `datasetId` that is not the named field's dataset, `field` that contradicts `semanticField`, unappliable operator/value, empty value, no filters without `full_report`, or an invalid `allowed_origins` entry. |
 | `422` | Body validation (e.g. `header` > 200 chars). |
 | `429` | Rate limit — keyed per PAT (`EMBED_RESOLVE_RATE_LIMIT`). |
+
+### 3.1 Filter identity — never a guess
+
+A dashboard can expose two different fields with the same bare name (say
+`orders.region` and `customers.region`). The resolver picks exactly one field or
+refuses:
+
+| You send | Result |
+|---|---|
+| `semanticField` (optionally + `datasetId`) | that exact field; a `datasetId` that is not its dataset → `400` |
+| a qualified name in `field` (e.g. `"orders.region"`) | same as `semanticField` |
+| a bare `field` that one filterable field has | that field |
+| a bare `field` that several fields have | `400` — ambiguous; send `semanticField` + `datasetId` |
+| a name no filterable field has | `400` |
+
+The stored lock is the resolved identity — `datasetId` + `semanticField` + the
+bare column `field`, the same shape a lock made in the Public Links dialog has —
+and `filter_hash` is computed from it. So spelling, case and value order do not
+matter (equivalent filters → same managed link), and two different fields that
+share a bare name are two different scopes.
+
+### 3.2 Data contract — one runtime
+
+An `emb_` grant resolves to its managed link, and from there **every** data path
+(chart data, batch, slicer values, structure) is the ordinary public runtime: the
+published report, the link's locked filters merged by the same rules as any public
+link (`docs/filter-semantics.md` §3), the same chart engine. There is no separate
+query path. For the same published report, locked filters, page, parameters and
+viewer interaction, an `emb_` returns the same business result as a public link
+locked to the same filters; the Builder's own query with those filters agrees.
+
+What differs is only integration policy: short-lived grant, PAT binding (revoke the
+PAT → every grant it minted ends), origin allowlist, embed-only surface, the
+`header`, and no report export / AI.
+
+Inside the lock: parameters and what-if switchers, cross-filter and date drill
+work and never leave the scope; page filters intersect with the lock (neither
+replaces the other); a viewer cannot remove or widen it; the locked field has no
+viewer control (its dropdown offers nothing) and other dropdowns offer only values
+inside the lock.
+
+### 3.3 What an embed inherits — the published dashboard, not a Public Link
+
+The request names a **dashboard**, not a Public Link, and the managed link it
+creates starts with an empty appearance. So an embed shows what belongs to the
+published dashboard itself (layout, theme, pages, parameters, tile settings) and
+does **not** inherit the link-specific settings (headline, appearance, link
+filters, password) of any Public Link someone made in the dialog. Embedding "a
+copy of Public Link X" would be a new capability, not part of this API.
 
 ---
 

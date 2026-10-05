@@ -53,8 +53,17 @@ the test that locks it. Source of truth for the capability matrix referenced fro
 8. `EMBED_FRAME_ANCESTORS` is always emitted as its own CSP on `/d` and `/embed`, so a grant
    allowlist can narrow it, never widen it.
 9. Report export (PDF/PPTX) is refused for `emb_` tokens.
+10. A locked filter names exactly one field: `semanticField` (+ a `datasetId` that must be its
+    dataset), or a bare `field` only when one filterable field has it; ambiguous / unknown /
+    mismatched → 400. The stored lock is `datasetId + semanticField + bare field` (the dialog's
+    shape) and `filter_hash` is computed from it.
+11. One runtime: an `emb_` resolves to its managed link and reads through the ordinary public
+    paths — same published report, same merge, same engine. It answers exactly as a public link
+    locked to the same filters. It inherits the published dashboard, not any Public Link's
+    settings (`docs/embed-integration-api.md` §3.1–3.3).
 
-*(test_embed_integration_security, scripts/check-embed-framing-contract.mjs)*
+*(test_embed_integration_security, test_public_authoritative_bounds_pg `test_api_embed_*`,
+e2e public-closure-api-embed.spec.ts, scripts/check-embed-framing-contract.mjs)*
 
 ## 3. Data authority contract
 

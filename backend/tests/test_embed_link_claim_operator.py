@@ -44,3 +44,20 @@ def test_the_chart_engine_receives_the_exclusion():
     merged = public_api._build_public_chart_filters(dash, locked, [])
     applied = [f for f in merged if (f.get("field") == "customer_state")]
     assert applied and all(f.get("operator") == "not_in" for f in applied), applied
+
+
+def test_a_bare_name_equal_to_an_unqualified_inventory_ref_is_still_counted_for_ambiguity(monkeypatch):
+    """An inventory item without a semanticField is keyed by its bare field; a
+    caller's bare `field` equal to it must still be checked for uniqueness, not
+    taken as an exact reference (that was the first-match behaviour again)."""
+    from fastapi import HTTPException
+
+    inventory = [{"field": "region", "semanticField": None, "datasetId": 7},
+                 {"field": "region", "semanticField": "customers.region", "datasetId": 8}]
+    monkeypatch.setattr(public_api, "_build_public_filter_fields", lambda *_a, **_k: list(inventory))
+    with pytest.raises(HTTPException) as exc:
+        svc.validate_and_lock_filters(None, SimpleNamespace(), [{"field": "region", "operator": "in", "value": ["N"]}])
+    assert exc.value.status_code == 400 and "ambiguous" in str(exc.value.detail)
+    [entry] = svc.validate_and_lock_filters(None, SimpleNamespace(), [
+        {"field": "region", "semanticField": "customers.region", "datasetId": 8, "operator": "in", "value": ["N"]}])
+    assert entry["semanticField"] == "customers.region" and entry["datasetId"] == 8 and entry["field"] == "region"
