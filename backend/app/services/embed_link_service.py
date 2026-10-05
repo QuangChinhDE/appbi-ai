@@ -100,6 +100,76 @@ def compute_filter_hash(dashboard_id: int, canonical_filters: list[dict]) -> str
 # Validation against the dashboard's real filterable fields
 # ---------------------------------------------------------------------------
 
+def _dataset_key(value) -> int | None:
+    try:
+        return int(value) if value is not None and str(value).strip() != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _bare_names(item: dict) -> set[str]:
+    sem = str(item.get("semanticField") or "").strip()
+    names = {str(item.get(k) or "").strip().lower() for k in ("field", "name")}
+    if "." in sem:
+        names.add(sem.rsplit(".", 1)[1].lower())
+    return names - {""}
+
+
+def _bare_field_of(item: dict) -> str:
+    for key in ("field", "name"):
+        value = str(item.get(key) or "").strip()
+        if value and "." not in value:
+            return value
+    sem = str(item.get("semanticField") or "").strip()
+    return sem.rsplit(".", 1)[-1] if sem else str(item.get("field") or "").strip()
+
+
+def _resolve_filter_identity(candidates: dict[tuple, dict], f: dict, raw_ref: str) -> dict:
+    """The ONE filterable field a caller's filter names — never a guess.
+
+    - ``semanticField`` (or a qualified ``field``) selects that exact field; a
+      ``datasetId`` given with it must be that field's dataset.
+    - A bare ``field`` is accepted only when exactly one filterable field has that
+      name; several → 400 asking for semanticField + datasetId.
+    Zero matches → 400. A different dataset is never chosen silently.
+    """
+    def refuse(detail: str):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+    wanted_ds = _dataset_key(f.get("datasetId"))
+    if f.get("datasetId") not in (None, "") and wanted_ds is None:
+        refuse(f"Filter '{raw_ref}' has an invalid datasetId.")
+    sem = str(f.get("semanticField") or "").strip()
+    fld = str(f.get("field") or "").strip()
+    # Only a dotted name is a qualified reference; a bare name always goes
+    # through the uniqueness count below, even when it equals some item's ref.
+    qualified = sem or (fld if "." in fld and any(ref == fld.lower() for _ds, ref in candidates) else "")
+
+    if qualified:
+        hits = [(ds, item) for (ds, ref), item in candidates.items() if ref == qualified.lower()]
+        if not hits:
+            refuse(f"Field '{qualified}' is not filterable on this dashboard.")
+        if wanted_ds is not None:
+            hits = [(ds, item) for ds, item in hits if ds == wanted_ds]
+            if not hits:
+                refuse(f"Field '{qualified}' does not belong to dataset {wanted_ds}.")
+        if len(hits) > 1:
+            refuse(f"Field '{qualified}' exists in several datasets; provide datasetId.")
+        match = hits[0][1]
+        if fld and sem and fld.lower() not in _bare_names(match) and fld.lower() != sem.lower():
+            refuse(f"Filter field '{fld}' does not match semanticField '{sem}'.")
+        return match
+
+    hits = [(ds, item) for (ds, _ref), item in candidates.items() if fld.lower() in _bare_names(item)]
+    if wanted_ds is not None:
+        hits = [(ds, item) for ds, item in hits if ds == wanted_ds]
+    if not hits:
+        refuse(f"Field '{raw_ref}' is not filterable on this dashboard.")
+    if len(hits) > 1:
+        refuse(f"Field '{raw_ref}' is ambiguous on this dashboard; provide semanticField + datasetId.")
+    return hits[0][1]
+
+
 def validate_and_lock_filters(db: Session, dash: Dashboard, filters: list[dict]) -> list[dict]:
     """Validate incoming filters against the dashboard's allowed public filter
     fields and return LOCKED link entries (value-bearing, not hidden).
@@ -120,15 +190,15 @@ def validate_and_lock_filters(db: Session, dash: Dashboard, filters: list[dict])
     from app.api.public import _build_public_filter_fields
 
     allowed = _build_public_filter_fields(db, dash, [])
-    by_sem = {}
-    by_field = {}
+    # One candidate per filterable IDENTITY (datasetId, semanticField): the
+    # inventory lists a field once per source (chart scan, slicer), and two
+    # different fields may share a bare name (orders.region, customers.region).
+    candidates: dict[tuple, dict] = {}
     for item in allowed:
         sem = str(item.get("semanticField") or "").strip()
-        fld = str(item.get("field") or "").strip()
-        if sem:
-            by_sem[sem.lower()] = item
-        if fld:
-            by_field.setdefault(fld.lower(), item)
+        ref = sem or str(item.get("field") or "").strip()
+        if ref:
+            candidates.setdefault((_dataset_key(item.get("datasetId")), ref.lower()), item)
 
     locked: list[dict] = []
     for f in filters:
@@ -147,14 +217,15 @@ def validate_and_lock_filters(db: Session, dash: Dashboard, filters: list[dict])
             if empty:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Filter '{raw_ref}' has no value.")
 
-        match = by_sem.get(raw_ref.lower()) or by_field.get(raw_ref.lower())
-        if not match:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Field '{raw_ref}' is not filterable on this dashboard.",
-            )
+        match = _resolve_filter_identity(candidates, f, raw_ref)
         locked.append({
-            "field": match.get("field") or match.get("semanticField"),
+            # The bare column name, as a link made in the Public Links dialog
+            # stores it (column.name). The inventory carries it as `field` or
+            # `name`; storing the qualified name here made the lock a different
+            # dedupe key from a filter on the same field, so it ANDed with it
+            # instead of replacing it — an emb_ and an equivalent link answered
+            # the same request differently.
+            "field": _bare_field_of(match),
             "semanticField": match.get("semanticField"),
             "datasetId": match.get("datasetId"),
             # A list under eq means "one of these"; an exclusion stays an exclusion

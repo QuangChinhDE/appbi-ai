@@ -48,4 +48,5 @@ Builder on every surface — proven by tracked tests that run in CI.
 - Workboard internals beyond the token-authority change (manual-mode token validation).
 - Literal escaping in author-only SQL paths (data-quality rules, type overrides,
   transformation compiler) — listed as residual risk.
-- Fixing stale references to `docs/filter-semantics.md` across the semantic layer.
+- ~~Fixing stale references to `docs/filter-semantics.md` across the semantic layer.~~
+  Resolved in the hygiene follow-up: the file now exists and every cited section resolves.

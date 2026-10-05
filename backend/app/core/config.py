@@ -223,8 +223,8 @@ class Settings(BaseSettings):
     # ── Filter-system migration toggles (PBI-parity migration) ──────────
     # Default OFF — legacy code path unchanged. Phase 0/1 ship the foundations;
     # callers begin opting-in once golden-harness + production smoke-tests pass.
-    # Documented in docs/filter-migration-pbi-parity.md and per-phase files
-    # under docs/phases/.
+    # (The migration plan doc was not retained; the current filter contract is
+    # docs/filter-semantics.md.)
     #
     # ── DECISION (2026-06-02): these three flags STAY OFF permanently. ──
     # The always-on **measure-isolation engine** (base-invariance: each measure

@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import {
   collectTiles, DASH, dataQuiet, dropReport, expectSameTiles, freeze, freshReport, openSurface, PUBLIC_SURFACES,
-  settle, waitForTiles, type Fixture, type Surface, type TileRows,
+  settle, waitForTiles, deleteTestPats, type Fixture, type Surface, type TileRows,
 } from './_public-closure';
 
 /**
@@ -65,6 +65,7 @@ test.beforeAll(async ({ request }) => {
 
 test.afterAll(async ({ request }) => {
   await dropReport(request, f);
+  await deleteTestPats(request);
 });
 
 test('cross-filter: a bar click filters every other tile to the same numbers on all surfaces; clearing restores them', async ({ page }) => {
@@ -119,6 +120,42 @@ test('highlight opt-out: a tile with highlightEnabled=false neither filters nor 
   }
   await patchLayout(request, f!.id, pie, { highlightEnabled: true });
   await request.post(`${DASH}/${f!.id}/publish`, { data: { force: true } });
+});
+
+test('highlight opt-out: a tile with highlightEnabled=false cannot be a SOURCE — clicking it leaves every other tile at its baseline, on every surface', async ({ page, request }) => {
+  // The same BAR that, opted in, filters every other tile (cross-filter test above).
+  await patchLayout(request, f!.id, bar, { highlightEnabled: false });
+  const pub = await request.post(`${DASH}/${f!.id}/publish`, { data: { force: true } });
+  expect(pub.status(), await pub.text()).toBeLessThan(400);
+  try {
+    const tiles = f!.charts.map((c) => c.tile);
+    const targets = tiles.filter((t) => t !== bar);
+    const kpis = f!.charts.filter((c) => c.type === 'KPI').map((c) => c.tile);
+    for (const s of ['builder', ...PUBLIC_SURFACES] as Surface[]) {
+      const baseline = await openSurface(page, f!, s, tiles);
+      const headline = async (tile: number) => (await page.locator(`${scopeOf(s)} [data-grid-item-id="${tile}"]`).first().innerText())
+        .match(/\$?\d[\d.,]*\s?[KMB]?/)?.[0] ?? '';
+      const before = await Promise.all(kpis.map(headline));
+      const after = collectTiles(page);
+      await clickFirstBar(page, scopeOf(s), bar);
+      // An emitted selection re-asks every target with a filter (the cross-filter
+      // test proves this same click does so when the tile is opted in). Wait past
+      // the selection handler's guard and for the network to go quiet.
+      await page.waitForTimeout(400);
+      await dataQuiet(page);
+      const rows = freeze(after);
+      for (const t of targets) {
+        if (rows.has(t)) {
+          expect(rows.get(t)!.rows, `${s}: clicking the opted-out BAR changed the data of tile ${t}`).toBe(baseline.get(t)!.rows);
+        }
+      }
+      // What the reader sees is unchanged too.
+      expect(await Promise.all(kpis.map(headline)), `${s}: clicking the opted-out BAR changed a KPI`).toEqual(before);
+    }
+  } finally {
+    await patchLayout(request, f!.id, bar, { highlightEnabled: true });
+    await request.post(`${DASH}/${f!.id}/publish`, { data: { force: true } });
+  }
 });
 
 test('date drill: re-bucketing the time series gives the same rows on all surfaces', async ({ page }) => {

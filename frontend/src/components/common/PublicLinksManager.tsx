@@ -81,6 +81,7 @@ function LinkValueChips({
       ))}
       <input
         type="text"
+        data-testid="public-link-filter-value"
         value={draft}
         list={listId}
         onChange={(e) => {
@@ -233,6 +234,7 @@ function PublicLinkFieldPicker({
     <div className="mt-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2">
       <button
         type="button"
+        data-testid="public-link-field-picker"
         disabled={disabled}
         aria-expanded={open}
         onClick={() => {
@@ -268,6 +270,7 @@ function PublicLinkFieldPicker({
               <Search className="h-4 w-4 shrink-0 text-text-quaternary" />
               <input
                 autoFocus
+                data-testid="public-link-field-search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Tìm theo tên cột, bảng, dataset..."
@@ -321,6 +324,7 @@ function PublicLinkFieldPicker({
                         key={`${columnKey}-${index}`}
                         type="button"
                         title={getColumnTechnicalName(column)}
+                        data-testid={`public-link-field-option-${column.name}`}
                         onClick={() => addColumn(column)}
                         className="group flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-colors hover:bg-surface-2"
                       >
@@ -1687,7 +1691,7 @@ export function PublicLinksManager({
                                   { opt: 'hide' as const, label: '🚫 Ẩn', on: 'bg-[rgba(255,255,255,0.10)] text-text-secondary' },
                                 ];
                                 return (
-                                  <div key={row.key} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-2.5">
+                                  <div key={row.key} data-testid={`public-link-filter-row-${row.source}-${row.field}`} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-2.5">
                                     <div className="flex items-center justify-between gap-2">
                                       <div className="flex min-w-0 items-center gap-2">
                                         <span className="truncate font-emphasis text-caption text-text-primary">{row.label}</span>
@@ -1699,6 +1703,7 @@ export function PublicLinksManager({
                                             <button
                                               key={opt}
                                               type="button"
+                                              data-testid={`public-link-filter-action-${opt}`}
                                               onClick={() => setLinkActions((prev) => ({
                                                 ...prev,
                                                 [row.key]: { action: opt, value: (opt === 'lock' || opt === 'hide' || opt === 'limit') ? (prev[row.key]?.value ?? row.value) : undefined },

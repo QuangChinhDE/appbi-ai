@@ -179,6 +179,8 @@ export function expectSameTiles(expected: TileRows, actual: TileRows, tiles: num
 
 export type Fixture = {
   id: number;
+  /** Charts the duplicate created (not the seeded fixture's) — deleted in teardown. */
+  ownCharts: number[];
   token: string;
   emb: string;
   charts: Array<{ tile: number; chart: number; type: string; name: string }>;
@@ -191,9 +193,16 @@ export async function freshReport(
   author?: (id: number, charts: Fixture['charts']) => Promise<void>,
 ): Promise<Fixture> {
   const fixtureId = await findFixture(request);
+  const seeded = new Set(((await (await request.get(`${DASH}/${fixtureId}`)).json()).dashboard_charts as any[])
+    .map((dc) => dc.chart_id).filter((c) => c != null));
   const dup = await request.post(`${DASH}/${fixtureId}/duplicate`);
   expect(dup.status(), await dup.text()).toBeLessThan(400);
   const copy = await dup.json();
+  // Duplicating creates chart copies that deleting the dashboard does not remove
+  // (they carry no report-copy mark). Teardown deletes exactly these — never a
+  // chart the seeded fixture uses.
+  const ownCharts = [...new Set((copy.dashboard_charts as any[]).map((dc) => dc.chart_id as number)
+    .filter((c) => c != null && !seeded.has(c)))];
   const charts = (copy.dashboard_charts as any[])
     .filter((dc) => (dc.widget_type ?? 'chart') === 'chart' && dc.chart_id)
     .map((dc) => ({ tile: dc.id, chart: dc.chart_id, type: String(dc.chart?.chart_type ?? '').toUpperCase(), name: dc.chart?.name ?? '' }));
@@ -211,6 +220,7 @@ export async function freshReport(
   const emb = await mintEmbed(request, copy.id, { full_report: true });
   return {
     id: copy.id,
+    ownCharts,
     token: (await link.json()).token,
     emb,
     charts: all,
@@ -222,23 +232,66 @@ export async function freshReport(
   };
 }
 
-export async function dropReport(request: APIRequestContext, f: { id: number } | null | undefined) {
-  if (f) await request.delete(`${DASH}/${f.id}`).catch(() => {});
+/**
+ * Teardown of one fresh report. Deleting the dashboard cascades its public
+ * links (user, preview, managed embed) and, through them, their embed grants
+ * (FK ON DELETE CASCADE); its chart copies are deleted explicitly. Best effort:
+ * reported, never thrown, so it cannot mask the failure it follows.
+ */
+export async function dropReport(request: APIRequestContext, f: { id: number; ownCharts?: number[] } | null | undefined) {
+  if (!f) return;
+  const del = await request.delete(`${DASH}/${f.id}`).catch(() => null);
+  if (del && !del.ok() && del.status() !== 404) console.warn(`e2e teardown: dashboard ${f.id} not deleted (HTTP ${del.status()})`);
+  for (const c of f.ownCharts ?? []) {
+    const r = await request.delete(`${V1}/charts/${c}`).catch(() => null);
+    if (r && !r.ok() && r.status() !== 404) console.warn(`e2e teardown: chart ${c} not deleted (HTTP ${r.status()})`);
+  }
 }
 
 // ── integration embed: a real PAT, a real grant ─────────────────────────────
 
+// Every PAT this suite mints, by id — so teardown deletes exactly those and
+// nothing else. Module state is per worker; a spec file's afterAll calls
+// deleteTestPats once its tests are done, never in between.
+const createdPatIds = new Set<string>();
 let pat: { id: string; token: string } | null = null;
 
-export async function integrationPat(request: APIRequestContext): Promise<{ id: string; token: string }> {
-  if (pat) return pat;
+/** Mint a PAT this suite owns (tracked for teardown). The token is never logged. */
+export async function mintTestPat(request: APIRequestContext, label: string): Promise<{ id: string; token: string }> {
   const res = await request.post(`${V1}/auth/personal-access-tokens/`, {
-    data: { name: `e2e closure ${Date.now()}`, scopes: { dashboards: 'edit' }, expires_in_days: 1 },
+    data: { name: `e2e ${label} ${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, scopes: { dashboards: 'edit' }, expires_in_days: 1 },
   });
-  expect(res.status(), await res.text()).toBe(201);
+  expect(res.status(), `minting a PAT (${label}) failed: HTTP ${res.status()}`).toBe(201);
   const body = await res.json();
-  pat = { id: String(body.item?.id ?? ''), token: String(body.token) };
+  const id = String(body.item?.id ?? '');
+  expect(id, 'a minted PAT came back without an id — it could not be cleaned up').toBeTruthy();
+  createdPatIds.add(id);
+  return { id, token: String(body.token) };
+}
+
+/** The suite's shared integration PAT (one per worker until teardown). */
+export async function integrationPat(request: APIRequestContext): Promise<{ id: string; token: string }> {
+  if (!pat) pat = await mintTestPat(request, 'closure');
   return pat;
+}
+
+/**
+ * Teardown: permanently delete every PAT this worker minted (their grants
+ * cascade). Best effort — a cleanup failure is reported, never thrown, so it
+ * cannot mask the test failure it follows. A PAT a test already revoked is
+ * still deleted (revoke is a soft delete).
+ */
+export async function deleteTestPats(request: APIRequestContext) {
+  for (const id of [...createdPatIds]) {
+    try {
+      const res = await request.delete(`${V1}/auth/personal-access-tokens/${id}/permanent`);
+      if (res.ok() || res.status() === 404) createdPatIds.delete(id);
+      else console.warn(`e2e teardown: PAT ${id} not deleted (HTTP ${res.status()})`);
+    } catch (e) {
+      console.warn(`e2e teardown: PAT ${id} not deleted (${(e as Error).message})`);
+    }
+  }
+  pat = null;
 }
 
 /** Mint an `emb_` grant with a PAT (a browser session is refused by contract). Returns the path. */
