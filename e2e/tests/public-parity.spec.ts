@@ -69,6 +69,14 @@ async function settle(page: Page) {
       el.scrollTo(0, 0);
     }
   });
+  // Tiles fetch lazily once they have been IN the viewport for a moment; a fast
+  // sweep can pass a tile before it asks for data. Visit each one and dwell.
+  const ids = await page.$$eval('[data-grid-item-id]', (els) => els.map((el) => el.getAttribute('data-grid-item-id') || ''));
+  for (const id of ids) {
+    const tile = page.locator(`[data-grid-item-id="${id}"]`).first();
+    await tile.scrollIntoViewIfNeeded().catch(() => {});
+    await page.waitForTimeout(450);
+  }
   await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
   await page.waitForTimeout(800);
 }
