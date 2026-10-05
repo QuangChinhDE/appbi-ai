@@ -184,12 +184,25 @@ test.describe.serial('public parity — same numbers as the Builder', () => {
         expectSameNumbers(builder, await view(page, route), copy.chartIds, `${route.split('/')[1]} default`);
       }
 
-      // The viewer switches — same switches in the Builder — same numbers again.
-      const builderAfter = collect(page);
-      await page.goto(`/dashboards/${copy.id}`);
-      await settle(page);
-      await selectSwitcher(page, regionTile, 'North');
-      await selectSwitcher(page, dimTile, 'region');
+      // The viewer switches on /d and /embed (real UI). The expected numbers are
+      // what the Builder's own data path returns for the same selection: its
+      // chart-data endpoint with the server-resolved switcher column
+      // (`parameter_fields`) and the tile's what-if override — exactly the
+      // request a Builder tile sends.
+      const dash = await (await request.get(`${DASH}/${copy.id}`)).json();
+      const pf = dash.parameter_fields?.region;
+      expect(pf?.semanticField, 'the server did not resolve the switcher column').toBeTruthy();
+      const builderAfter: Rows = new Map();
+      for (const t of copy.tiles) {
+        const params = new URLSearchParams({
+          context: 'dashboard',
+          filters: JSON.stringify([{ id: 'param-region', operator: 'in', value: ['North'], label: 'Region', type: 'dropdown', ...pf }]),
+        });
+        if (t.id === bar!.id) params.set('overrides', JSON.stringify({ dimension: 'region' }));
+        const res = await request.get(`${API}/api/v1/charts/${t.chart_id}/data?${params}`);
+        expect(res.status(), await res.text()).toBe(200);
+        builderAfter.set(t.chart_id, canon((await res.json()).data));
+      }
       for (const route of [`/d/${copy.token}`, `/embed/${copy.token}`]) {
         const pubRows = collect(page);
         await page.goto(route);
