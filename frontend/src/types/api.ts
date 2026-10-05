@@ -829,6 +829,11 @@ export interface Dashboard {
   /** Editor only: the shared filters/pages/theme draft — its revision and the
    *  OTHER authors with unpublished edits in it (Publish/Discard ask first). */
   shared_draft?: { rev: string; has_changes: boolean; other_authors: string[] } | null;
+  /** Published Tablet (md) / Phone (xs) layouts — absent = AUTO (derived).
+   *  docs/responsive-dashboard-layouts.md. */
+  responsive_layouts?: import('./responsive-layout').ResponsiveLayoutsDoc | null;
+  /** Editor only: THIS author's unpublished device layouts. */
+  draft_responsive_layouts?: Record<string, Partial<Record<'md' | 'xs', import('./responsive-layout').ProfileDraft>>> | null;
 }
 
 export interface DashboardCreate {

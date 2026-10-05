@@ -2206,9 +2206,16 @@ check('RESPONSIVE proof: the phone stack keeps order and a readable height per k
   assertEqual(out.map((it) => it.i), ['c', 'k'], 'reading order lost in the stack');
   assert(out.find((it) => it.i === 'k').h * 24 >= pages.STACK_MIN_HEIGHT_PX.kpi, 'a stacked KPI is too short');
   assert(out.find((it) => it.i === 'c').h * 24 >= pages.STACK_MIN_HEIGHT_PX.chart, 'a stacked chart is too short');
-  // The builder's narrow projection is the same rule, not a second one.
+  // The builder's narrow projection is the same rule, not a second one: the
+  // grid draws through THE responsive resolver, which owns the phone stack
+  // (and the public report draws through the same resolver).
   const gridSrc = readFileSync(resolve(SRC, 'components/dashboards/DashboardGrid.tsx'), 'utf8');
-  assert(gridSrc.includes('REPORT_STACK_BREAKPOINT') && gridSrc.includes('deriveStackedLayout('), 'the builder projects narrow screens differently from the report');
+  const resolverSrc = readFileSync(resolve(SRC, 'lib/responsive-layout/resolve.ts'), 'utf8');
+  const publicSrc = readFileSync(resolve(SRC, 'components/dashboards/PublicDashboardView.tsx'), 'utf8');
+  assert(gridSrc.includes('REPORT_STACK_BREAKPOINT') && gridSrc.includes('resolveReportLayout(') && !gridSrc.includes('deriveStackedLayout('),
+    'the builder projects narrow screens differently from the report');
+  assert(resolverSrc.includes('deriveStackedLayout(') && publicSrc.includes('resolveReportLayout('),
+    'the phone stack is not the one rule both surfaces draw with');
 });
 
 // ── The render audit's arithmetic ───────────────────────────────────────────

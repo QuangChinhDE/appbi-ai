@@ -704,6 +704,14 @@ class DashboardResponse(DashboardBase):
     # live rows and clears the field.
     draft_layouts: Optional[Dict[int, Dict[str, Any]]] = None
     has_draft: bool = False
+    # Authored Tablet (md) / Phone (xs) layouts. Editors: the PUBLISHED document
+    # ({version, pages: {pageId: {md|xs: profile}}}); public/embed: its viewer
+    # projection (served pages, published tiles, no provenance). Absent = AUTO.
+    # Changed only by Publish (never by DashboardUpdate).
+    responsive_layouts: Optional[Dict[str, Any]] = None
+    # Editor only: THIS author's unpublished device layouts,
+    # {pageId: {md|xs: profile | {"mode": "auto"}}}.
+    draft_responsive_layouts: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(from_attributes=True)
 

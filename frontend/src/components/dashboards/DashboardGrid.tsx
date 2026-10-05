@@ -1,8 +1,9 @@
 'use client';
 
-import { fitLayoutToContent, useMeasuredContentRows } from '@/lib/responsive-fit';
+import { measureContentRows, useMeasuredContentRows } from '@/lib/responsive-fit';
+import { resolveReportLayout, type DeviceBreakpoint, type GridItem, type PageProfiles, type ResolvedLayout } from '@/lib/responsive-layout/resolve';
 import React, { useRef, useState, useEffect } from 'react';
-import GridLayout, { WidthProvider, Layout } from 'react-grid-layout';
+import GridLayout, { Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { ChartTile } from './ChartTile';
@@ -14,20 +15,30 @@ import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { Loader2, LayoutDashboard } from 'lucide-react';
 import { getDashboardGridMargin } from './DashboardThemeProvider';
-import { DASHBOARD_GRID_COLS, REPORT_STACK_BREAKPOINT, dashboardRowHeight, deriveStackedLayout, deriveTabletLayout, reportBreakpointFor } from '@/lib/dashboard-pages';
+import { DASHBOARD_GRID_COLS, REPORT_STACK_BREAKPOINT, RESPONSIVE_MIN_WIDTH_PX, STACK_MIN_HEIGHT_PX, dashboardRowHeight, reportBreakpointFor, type ResponsiveTileKind } from '@/lib/dashboard-pages';
 import { settleStoredLayout } from '@/lib/grid-settle';
 import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { useExportMode } from '@/lib/export-mode';
 import { useI18n } from '@/providers/LanguageProvider';
 import { ReportEvidenceProvider, citedTilesOf } from '@/lib/report-evidence';
 import { isSlicerControl } from '@/lib/slicer-placement';
-import { readingOrder, toStructTiles } from '@/lib/report-structure';
 
-// Non-responsive grid: a single 12-column layout that simply scales cell
-// width with the container. Avoiding ResponsiveGridLayout means opening
-// DevTools (or any viewport shrink) won't reflow charts onto a different
-// breakpoint and clobber the saved layout.
-const FixedGridLayout = WidthProvider(GridLayout);
+// Non-responsive grid: ONE layout at the ONE width this component measures
+// (gridWidth). Which layout that is — authored desktop, a derived device
+// layout or a CUSTOM one — is decided by the responsive resolver, never by the
+// grid: no ResponsiveGridLayout, no WidthProvider measuring a second width.
+
+/** Readable floors for a device layout's cells (drag/resize minimums). */
+function deviceMinCells(kind: ResponsiveTileKind, bp: DeviceBreakpoint, rowPitch: number): { minW: number; minH: number } {
+  const refWidth = bp === 'md' ? 820 : 390;
+  const colPx = refWidth / DASHBOARD_GRID_COLS;
+  const minW = Math.min(DASHBOARD_GRID_COLS, Math.max(kind === 'widget' ? 2 : 3, Math.ceil((RESPONSIVE_MIN_WIDTH_PX[kind] ?? 0) / colPx)));
+  const minH = Math.max(1, Math.ceil((STACK_MIN_HEIGHT_PX[kind] ?? 0) / Math.max(1, rowPitch)));
+  return { minW, minH };
+}
+
+/** What the grid resolved, for the Builder's device badges and Customize. */
+export type ResolvedLayoutSummary = Pick<ResolvedLayout, 'breakpoint' | 'source' | 'stale' | 'orphans' | 'dropped' | 'desktopFingerprint'>;
 
 /** The element that scrolls the builder (the app scrolls inside <main>). */
 function scrollParentOf(el: HTMLElement | null): HTMLElement | null {
@@ -215,6 +226,19 @@ interface DashboardGridProps {
   /** Bumped by the page when it refuses a gesture: the grid then re-reads the
    *  stored layout instead of keeping the tile where it was dropped. */
   layoutRevision?: number;
+  /** The Builder's DESKTOP authoring canvas: draws the authored grid at any
+   *  width >= the phone breakpoint (viewer surfaces use the width bands). */
+  editorDesktop?: boolean;
+  /** The page's device layouts (published, with the author's draft over them). */
+  deviceProfiles?: PageProfiles | null;
+  /** Edit cells of a CUSTOM device layout (Builder device mode only). */
+  onDeviceLayoutChange?: (breakpoint: DeviceBreakpoint, cells: GridItem[]) => void;
+  /** Receives what the grid resolved (badges: auto/custom, stale, orphans). */
+  onResolved?: (summary: ResolvedLayoutSummary) => void;
+  /** Holds the full resolution of the last render (Customize freezes it). */
+  resolvedRef?: React.MutableRefObject<ResolvedLayout | null>;
+  /** Holds a one-shot content measurement (the explicit "Fit heights to content"). */
+  measureRef?: React.MutableRefObject<(() => Record<string, number>) | null>;
 }
 
 
@@ -257,6 +281,12 @@ function DashboardGridInner({
   onBindParameter,
   renderSlicerControl,
   layoutRevision = 0,
+  editorDesktop = false,
+  deviceProfiles = null,
+  onDeviceLayoutChange,
+  onResolved,
+  resolvedRef,
+  measureRef,
 }: DashboardGridProps) {
   const { t } = useI18n();
   // Convert backend layout to react-grid-layout format.
@@ -287,20 +317,29 @@ function DashboardGridInner({
     const el = gridWrapRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect?.width ?? 0;
-      // Only react to real changes: a sub-pixel jitter here would re-render the
-      // whole grid on every scroll-driven layout pass.
-      setGridWidth((prev) => (Math.abs(prev - w) > 0.5 ? w : prev));
+      // Whole pixels, only on a real change: a sub-pixel jitter here would
+      // re-render the whole grid on every scroll-driven layout pass. This is the
+      // ONE width of this report: breakpoint, resolver and grid all read it.
+      // A collapsed/hidden canvas reports 0 — that is not a width: keep the
+      // last one, or the grid unmounts and every tile loses its lazy-mount
+      // state (below-fold tiles fell back to blank placeholders).
+      const w = Math.round(entries[0]?.contentRect?.width ?? 0);
+      if (w <= 0) return;
+      setGridWidth((prev) => (prev === w ? prev : w));
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  // Below the report's phone breakpoint the authored arrangement stops being
-  // readable rather than merely tight (a 4-KPI console at 390px gave 53px cards
-  // and "16.0M" rendered as "1"). The SAME threshold and the SAME stack rule as
-  // the published report, so narrowing the builder previews the phone view.
-  const isNarrow = gridWidth > 0 && gridWidth < REPORT_STACK_BREAKPOINT;
+  // Which layout this canvas draws is the RESOLVER's decision (one rule for the
+  // Builder, the Studio preview and every public surface): desktop as authored;
+  // below 1024px of report width the tablet, below 640 the phone — AUTO
+  // (derived from desktop, content-fitted) or the page's CUSTOM layout. The
+  // Builder's desktop authoring canvas keeps the authored grid down to the
+  // phone breakpoint (an author edits desktop in a narrow window).
+  const forceBreakpoint = editorDesktop && gridWidth >= REPORT_STACK_BREAKPOINT ? 'lg' as const : undefined;
+  const expectedBreakpoint = forceBreakpoint ?? reportBreakpointFor(gridWidth);
+  const expectedCustom = expectedBreakpoint !== 'lg' && deviceProfiles?.[expectedBreakpoint]?.mode === 'custom';
   // The last press on a drag handle that did not move (see onDragStop: double-click).
   const lastStillPressRef = React.useRef<{ id: string; at: number } | null>(null);
 
@@ -330,54 +369,58 @@ function DashboardGridInner({
   // Editing lets a dragged tile pass over others (allowOverlap), which also stops
   // the grid settling a stored overlap the way the public report does. Settle it
   // here with the library's own rule, so the author sees what viewers see.
-  const authoredLayouts = onLayoutChange && !isNarrow ? settleStoredLayout(storedLayouts, DASHBOARD_GRID_COLS) : storedLayouts;
+  const authoredLayouts = onLayoutChange && expectedBreakpoint === 'lg' ? settleStoredLayout(storedLayouts, DASHBOARD_GRID_COLS) : storedLayouts;
 
-  /**
-   * The same tiles, stacked, for a viewport too narrow to hold the grid.
-   *
-   * This is a PROJECTION, never a save: widen the window and the original comes
-   * back untouched. It is the published report's phone stack (reading order,
-   * readable height floor per kind), laid on this grid's 36 columns.
-   */
-  const narrowLayouts = React.useMemo(() => {
-    if (!isNarrow) return authoredLayouts;
-    const kindById = new Map(dashboardCharts.map((dc) => [String(dc.id), tileKindOf(dc.chart?.chart_type, dc.widget_type)]));
-    const gap = getDashboardGridMargin(themeConfig)[1];
-    const geometry = new Map(authoredLayouts.map((l) => [l.i, l]));
-    return deriveStackedLayout(authoredLayouts, {
-      kindOf: (item) => kindById.get(item.i) ?? 'chart',
-      rowPitchPx: dashboardRowHeight(gap) + gap,
-      cols: DASHBOARD_GRID_COLS,
-      order: readingOrder(toStructTiles(dashboardCharts, (id) => ({
-        ...((dashboardCharts.find((dc) => dc.id === id)?.layout as any) ?? {}),
-        ...geometry.get(String(id)),
-      }))).map(String),
-    }).map((item) => ({ ...item, static: true }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isNarrow, JSON.stringify(authoredLayouts), dashboardCharts, themeConfig]);
-
-  // The preview of a tablet is the published tablet: the same derivation, at
-  // the width the preview frame has (lib/dashboard-pages buildResponsiveReportLayouts).
-  const tabletPreview = publicProjection && !isNarrow && reportBreakpointFor(gridWidth) === 'md';
-  const tabletLayouts = React.useMemo(() => {
-    if (!tabletPreview) return authoredLayouts;
-    const kindById = new Map(dashboardCharts.map((dc) => [String(dc.id), tileKindOf(dc.chart?.chart_type, dc.widget_type)]));
-    return deriveTabletLayout(authoredLayouts, { kindOf: (item) => kindById.get(item.i) ?? 'chart', referenceWidthPx: gridWidth })
-      .map((item) => ({ ...item, static: true }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabletPreview, gridWidth, JSON.stringify(authoredLayouts), dashboardCharts]);
-
-  // Phone and tablet previews size headers, text and KPI cards to what they say
-  // at that width, exactly as the published report does (lib/responsive-fit).
+  // AUTO tablet/phone: headers, text and KPI cards take the height of what they
+  // say at this width, exactly as the published report does (lib/responsive-fit).
+  // Nothing is measured for desktop or for a CUSTOM device layout.
   const fitGap = getDashboardGridMargin(themeConfig)[1];
   const measuredContentRows = useMeasuredContentRows(
     gridWrapRef,
-    { enabled: isNarrow || tabletPreview, rowHeight: dashboardRowHeight(fitGap), gapY: fitGap },
-    [gridWidth, dashboardCharts],
+    { enabled: gridWidth > 0 && expectedBreakpoint !== 'lg' && !expectedCustom, width: gridWidth, rowHeight: dashboardRowHeight(fitGap), gapY: fitGap },
+    [dashboardCharts],
   );
-  const layouts = isNarrow
-    ? fitLayoutToContent(narrowLayouts, measuredContentRows, 'stack')
-    : tabletPreview ? fitLayoutToContent(tabletLayouts, measuredContentRows, 'grow') : authoredLayouts;
+  if (measureRef) {
+    measureRef.current = () => (gridWrapRef.current ? measureContentRows(gridWrapRef.current, dashboardRowHeight(fitGap), fitGap) : {});
+  }
+  const resolved = React.useMemo(() => resolveReportLayout({
+    tiles: dashboardCharts,
+    profiles: deviceProfiles,
+    containerWidth: gridWidth,
+    gap: fitGap,
+    measuredRows: measuredContentRows,
+    forceBreakpoint,
+  }), [dashboardCharts, deviceProfiles, gridWidth, fitGap, measuredContentRows, forceBreakpoint]);
+  if (resolvedRef) resolvedRef.current = resolved;
+  const deviceView = resolved.breakpoint !== 'lg';
+  const deviceBreakpoint = deviceView ? resolved.breakpoint as DeviceBreakpoint : null;
+  // A CUSTOM device layout is edited in the Builder's device mode only (never
+  // in a narrow desktop canvas, never in the Studio preview, never AUTO).
+  const editableDevice = Boolean(deviceBreakpoint && resolved.source === 'custom' && onDeviceLayoutChange);
+  const orphanSet = React.useMemo(() => new Set(resolved.orphans), [resolved.orphans]);
+  const summaryKey = `${resolved.breakpoint}|${resolved.source}|${resolved.stale}|${resolved.orphans.join(',')}|${resolved.dropped.join(',')}|${resolved.desktopFingerprint}`;
+  React.useEffect(() => {
+    onResolved?.({
+      breakpoint: resolved.breakpoint, source: resolved.source, stale: resolved.stale,
+      orphans: resolved.orphans, dropped: resolved.dropped, desktopFingerprint: resolved.desktopFingerprint,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summaryKey]);
+  const deviceRowPitch = dashboardRowHeight(fitGap) + fitGap;
+  const layouts = deviceBreakpoint
+    ? resolved.layout.map((cell) => {
+      const dc = dashboardCharts.find((d) => String(d.id) === cell.i);
+      const kind = tileKindOf(dc?.chart?.chart_type, dc?.widget_type) as ResponsiveTileKind;
+      return {
+        ...cell,
+        ...(editableDevice ? deviceMinCells(kind, deviceBreakpoint, deviceRowPitch) : {}),
+        static: !editableDevice,
+        resizeHandles: RESIZE_HANDLES,
+        rev: layoutRevision,
+      };
+    })
+    : authoredLayouts;
+  const gridCols = resolved.cols;
 
   // Persist ONLY the tile the user just finished manipulating. react-grid-layout
   // hands the moved item as the 3rd onDragStop/onResizeStop arg; we forward JUST
@@ -387,11 +430,17 @@ function DashboardGridInner({
   // move; this guarantees we don't RECORD them either.) Persisting on "stop" — not
   // the mid-drag events — keeps the draft from jumping on reload.
   const persistItem = (item?: Layout) => {
-    if (!onLayoutChange || !item) return;
+    if (!item) return;
     const prev = layouts.find((l) => l.i === item.i);
     const changed = !prev
       || item.x !== prev.x || item.y !== prev.y || item.w !== prev.w || item.h !== prev.h;
-    if (changed) onLayoutChange([item]);
+    if (!changed) return;
+    // A device gesture edits the device layout — never desktop.
+    if (deviceBreakpoint) {
+      if (editableDevice) onDeviceLayoutChange!(deviceBreakpoint, [{ i: item.i, x: item.x, y: item.y, w: item.w, h: item.h }]);
+      return;
+    }
+    if (onLayoutChange) onLayoutChange([item]);
   };
 
   // A narrative's evidence mounts with the page (see citedTilesOf). Every hook
@@ -423,23 +472,34 @@ function DashboardGridInner({
   const gridMargin = getDashboardGridMargin(themeConfig);
   const gridRowHeight = dashboardRowHeight(gridMargin[1]);
   return (
-    <div ref={gridWrapRef} className="relative">
+    <div
+      ref={gridWrapRef}
+      className="relative"
+      // Observability (tests, audits): what this surface drew, from the ONE width.
+      data-report-width={gridWidth}
+      data-report-breakpoint={resolved.breakpoint}
+      data-report-cols={gridCols}
+      data-report-layout-source={resolved.source}
+      data-report-layout={JSON.stringify(layouts.map(({ i, x, y, w, h }) => ({ i, x, y, w, h })))}
+    >
       <SectionBands
         layouts={layouts}
         dashboardCharts={dashboardCharts}
-        cols={DASHBOARD_GRID_COLS}
+        cols={gridCols}
         rowH={gridRowHeight}
         margin={gridMargin}
         width={gridWidth}
       />
-    <FixedGridLayout
+    {gridWidth > 0 ? (
+    <GridLayout
+      width={gridWidth}
       // `rgl-no-anim` (edit mode only) kills the library's 200ms position
       // transition on ALL tiles so a settled drag doesn't leave siblings sliding
       // — the builder prioritises pixel accuracy / cursor-fidelity. Public keeps
       // the transition (plain `layout`).
-      className={onLayoutChange ? 'layout rgl-no-anim' : 'layout'}
+      className={onLayoutChange || editableDevice ? 'layout rgl-no-anim' : 'layout'}
       layout={layouts}
-      cols={DASHBOARD_GRID_COLS}
+      cols={gridCols}
       rowHeight={gridRowHeight}
       margin={gridMargin}
       onDragStart={(_l, _o, _n, _p, event) => autoScroll.start(event as unknown as MouseEvent)}
@@ -448,7 +508,7 @@ function DashboardGridInner({
       onResize={(_l, _o, _n, _p, event) => autoScroll.move(event as unknown as MouseEvent)}
       onDragStop={(_layout, oldItem, newItem, _placeholder, event) => {
         autoScroll.stop();
-        if (!isNarrow) persistItem(newItem);
+        persistItem(newItem);
         // A press on a widget's body starts a drag, and the grid's placeholder
         // then covers the widget, so the click never reaches it. A drag that
         // ended where it began IS the click: it selects (Shift/Cmd/Ctrl adds).
@@ -476,13 +536,13 @@ function DashboardGridInner({
           lastStillPressRef.current = null;
         }
       }}
-      onResizeStop={(_layout, _oldItem, newItem) => { autoScroll.stop(); if (!isNarrow) persistItem(newItem); }}
+      onResizeStop={(_layout, _oldItem, newItem) => { autoScroll.stop(); persistItem(newItem); }}
       draggableHandle=".drag-handle"
       // Never start a drag from an interactive control or the widget's own
       // edit/delete cluster (whole widget bodies are now drag handles).
       draggableCancel=".no-drag, button, select, input, textarea, a, label"
-      isDraggable={!!onLayoutChange && !isNarrow}
-      isResizable={!!onLayoutChange && !isNarrow}
+      isDraggable={deviceView ? editableDevice : !!onLayoutChange}
+      isResizable={deviceView ? editableDevice : !!onLayoutChange}
       // Grid arrange model = FREE-FORM / WYSIWYG (matches the published report,
       // which renders with compactType={null} + preventCollision). A tile stays
       // EXACTLY where the user drops it; dragging one tile never reflows the
@@ -496,8 +556,10 @@ function DashboardGridInner({
       // Editing: a tile may be carried over others and dropped there — the page
       // then opens room where it lands (lib/grid-arrange resolveDrop), so the
       // stored layout never overlaps. Viewing: nothing moves at all.
-      allowOverlap={!!onLayoutChange && !isNarrow}
-      preventCollision={!onLayoutChange || isNarrow}
+      // A device layout is edited without overlap: a drop on an occupied cell
+      // returns the tile (the saved layout is always valid as it stands).
+      allowOverlap={!!onLayoutChange && !deviceView}
+      preventCollision={!onLayoutChange || deviceView}
     >
       {dashboardCharts.map((dc) => {
         const isWidget = dc.widget_type && dc.widget_type !== 'chart';
@@ -544,7 +606,7 @@ function DashboardGridInner({
             // its own controls is that control's, not a selection.
             // Only a widget that cannot be dragged (locked, or not editable)
             // gets a real click; a draggable one is selected from onDragStop.
-            onClick={onFocusChart && !(canEdit && onLayoutChange && !isNarrow && !(dc.layout as any)?.locked) ? (event) => {
+            onClick={onFocusChart && !(canEdit && onLayoutChange && !deviceView && !(dc.layout as any)?.locked) ? (event) => {
               if ((event.target as HTMLElement).closest('button, input, select, textarea, a, [role="menu"], [data-slicer-menu]')) return;
               onFocusChart(dc.id, event.shiftKey || event.metaKey || event.ctrlKey);
             } : undefined}
@@ -652,8 +714,8 @@ function DashboardGridInner({
             data-chart-id={(!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id ? dc.chart_id : undefined}
             // Editing: Shift-click adds to the selection; it must not select the
             // text of every tile between the clicks.
-            className={onLayoutChange && !isNarrow ? 'select-none' : undefined}
-            onDoubleClick={onOpenInspector && !isNarrow ? (event) => {
+            className={onLayoutChange && !deviceView ? 'select-none' : undefined}
+            onDoubleClick={onOpenInspector && !deviceView ? (event) => {
               // A double-click inside a control (a slicer, an input, a menu) is that control's.
               if ((event.target as HTMLElement).closest('input, textarea, select, [role="menu"], [data-slicer-menu], [contenteditable="true"]')) return;
               onOpenInspector(dc.id);
@@ -670,7 +732,8 @@ function DashboardGridInner({
           </div>
         );
       })}
-    </FixedGridLayout>
+    </GridLayout>
+    ) : null}
     </div>
   );
 }

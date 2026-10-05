@@ -20,6 +20,9 @@ export type StudioPreviewState = {
   blocks: unknown[] | null;
   presentation: { theme: Record<string, unknown>; slicerCluster: Record<string, unknown> } | null;
   pageId: string | null;
+  /** The author's unsaved device layouts of that page (md|xs → custom | reset),
+   *  shown read-only over the saved draft — the frame never saves them. */
+  responsive?: Record<string, unknown> | null;
 };
 
 export type StudioMessage =

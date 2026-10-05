@@ -6088,21 +6088,32 @@ def _serialize_chart_for_snapshot(chart: Chart) -> Dict[str, Any]:
 
 
 def serialize_dashboard_snapshot(dashboard: Dashboard) -> Dict[str, Any]:
-    """Serialize a live dashboard into a portable, verbatim snapshot dict.
+    """Serialize a dashboard's PUBLISHED state into a portable snapshot dict.
 
     The dashboard must be loaded with its ``dashboard_charts`` (and each
     tile's ``chart``) — ``DashboardService.get_by_id`` already eager-loads
     that graph. No DB access happens here.
+
+    Published state only: a tile that exists only in someone's draft
+    (``draftOnly``) is not part of the report and is not copied, and the
+    draft-state keys a live row carries (draftOnly/draftOwner/draftRemoved/
+    draftRemovedBy) are stripped — a copy used to carry another author's
+    unpublished blocks, still marked as theirs. The published device layouts
+    travel with the tiles (rebuild maps them onto the copy's tile ids).
     """
+    from app.services.dashboard_service import is_draft_only_item, strip_draft_row_keys
+
     tiles: List[Dict[str, Any]] = []
     for dc in dashboard.dashboard_charts or []:
+        if is_draft_only_item(dc):
+            continue
         widget_type = str(dc.widget_type or "chart").strip().lower() or "chart"
         tile: Dict[str, Any] = {
             "dashboard_chart_id": dc.id,
             "widget_type": widget_type,
             "widget_config": dc.widget_config or {},
             "parameters": dc.parameters or {},
-            "layout": dc.layout or {},
+            "layout": strip_draft_row_keys(dc.layout or {}),
         }
         if widget_type == "chart" and dc.chart is not None:
             tile["chart"] = _serialize_chart_for_snapshot(dc.chart)
@@ -6125,6 +6136,7 @@ def serialize_dashboard_snapshot(dashboard: Dashboard) -> Dict[str, Any]:
             "slicers_config": dashboard.slicers_config or [],
             "slicer_cluster_layout": dashboard.slicer_cluster_layout or None,
             "public_filters_config": dashboard.public_filters_config or [],
+            "responsive_layouts": getattr(dashboard, "responsive_layouts", None) or None,
         },
         "charts": tiles,
     }
@@ -6302,11 +6314,18 @@ def rebuild_dashboard_from_snapshot(
     db.flush()
 
     # --- Recreate each tile verbatim. ---
+    # Old tile id → the copy's row: tile ids are references too (a member's
+    # layout.sectionId, the device layouts' items), rewritten once all exist.
+    created: List[Any] = []
     for tile in tiles:
         if not isinstance(tile, dict):
             continue
         widget_type = str(tile.get("widget_type") or "chart").strip().lower() or "chart"
         layout = tile.get("layout") if isinstance(tile.get("layout"), dict) else {}
+        # A snapshot from an older export may still carry draft-state keys.
+        from app.services.dashboard_service import strip_draft_row_keys
+        layout = strip_draft_row_keys(layout)
+        old_tile_id = tile.get("dashboard_chart_id")
         chart_spec = tile.get("chart") if isinstance(tile.get("chart"), dict) else None
 
         if widget_type == "chart" and chart_spec is not None:
@@ -6356,31 +6375,41 @@ def rebuild_dashboard_from_snapshot(
                     )
                 )
 
-            db.add(
-                DashboardChart(
-                    dashboard_id=dashboard_obj.id,
-                    chart_id=new_chart.id,
-                    widget_type="chart",
-                    widget_config=tile.get("widget_config") if isinstance(tile.get("widget_config"), dict) else None,
-                    layout=layout,
-                    parameters=tile.get("parameters") if isinstance(tile.get("parameters"), dict) else {},
-                )
+            row = DashboardChart(
+                dashboard_id=dashboard_obj.id,
+                chart_id=new_chart.id,
+                widget_type="chart",
+                widget_config=tile.get("widget_config") if isinstance(tile.get("widget_config"), dict) else None,
+                layout=layout,
+                parameters=tile.get("parameters") if isinstance(tile.get("parameters"), dict) else {},
             )
+            db.add(row)
+            created.append((old_tile_id, row))
         else:
             # Non-chart widget (text/image/shape/countdown/parameter_switcher).
-            db.add(
-                DashboardChart(
-                    dashboard_id=dashboard_obj.id,
-                    chart_id=None,
-                    widget_type=widget_type,
-                    widget_config=normalize_dashboard_widget_config(
-                        widget_type,
-                        tile.get("widget_config") if isinstance(tile.get("widget_config"), dict) else {},
-                    ),
-                    layout=layout,
-                    parameters={},
-                )
+            row = DashboardChart(
+                dashboard_id=dashboard_obj.id,
+                chart_id=None,
+                widget_type=widget_type,
+                widget_config=normalize_dashboard_widget_config(
+                    widget_type,
+                    tile.get("widget_config") if isinstance(tile.get("widget_config"), dict) else {},
+                ),
+                layout=layout,
+                parameters={},
             )
+            db.add(row)
+            created.append((old_tile_id, row))
+
+    db.flush()
+    id_map = {str(old): str(row.id) for old, row in created if old is not None}
+    for _old, row in created:
+        section = row.layout.get("sectionId") if isinstance(row.layout, dict) else None
+        if section is not None:
+            # A header that was not copied (a draft-only one) is no section of the copy.
+            row.layout = {**row.layout, "sectionId": int(id_map[str(section)]) if str(section) in id_map else None}
+    from app.services.responsive_layouts import remap as _remap_responsive
+    dashboard_obj.responsive_layouts = _remap_responsive(dash_meta.get("responsive_layouts"), id_map)
 
     _place_slicer_controls(db, dashboard_obj)
     db.commit()
