@@ -141,6 +141,42 @@ def _resolve_sheets_datasource(db: Session, datasource_id: int) -> DataSource:
     return ds
 
 
+_BOUND_STORE_MARKER = "Bound Google Sheets store for operational dataset {dataset_id}"
+
+
+def _bound_store_datasource(db: Session, dataset: Dataset, cred_ds: DataSource,
+                            cred_cfg: Dict[str, Any], spreadsheet_id: str, owner_id: Any) -> DataSource:
+    """The DataSource the bound tables must READ. A Sheets datasource reads the
+    spreadsheet in ITS OWN config, so binding spreadsheet B through a credential
+    whose config points at A registered every table on A while the destination
+    claimed B. Same spreadsheet → the credential datasource itself. Different →
+    one store datasource per (dataset, spreadsheet) cloned from the credential
+    with B, reused by a retry instead of duplicated."""
+    if str(cred_cfg.get("spreadsheet_id") or "").strip() == spreadsheet_id:
+        return cred_ds
+    marker = _BOUND_STORE_MARKER.format(dataset_id=dataset.id)
+    for cand in db.query(DataSource).filter(DataSource.description == marker).all():
+        try:
+            if str(decrypt_config(cand.config).get("spreadsheet_id") or "").strip() == spreadsheet_id:
+                return cand
+        except Exception:  # noqa: BLE001 — an unreadable candidate is simply not reused
+            continue
+    store_cfg = dict(cred_cfg)
+    store_cfg["spreadsheet_id"] = spreadsheet_id
+    store_cfg.pop("sheet_name", None)
+    store_ds = DataSource(
+        name=_unique_ds_name(db, f"{dataset.name or f'Dataset {dataset.id}'} · bound store"),
+        type=DataSourceType(DEST_KIND_SHEETS),
+        description=marker,
+        config=encrypt_config(store_cfg),
+        owner_id=owner_id if owner_id is not None else getattr(dataset, "owner_id", None),
+    )
+    db.add(store_ds)
+    db.commit()
+    db.refresh(store_ds)
+    return store_ds
+
+
 def _unique_ds_name(db: Session, base: str) -> str:
     name = (base or "OLTP store").strip()[:230]
     candidate = name
@@ -158,7 +194,18 @@ def _register_tables(
     specs: List[Tuple[str, List[Dict[str, Any]]]],
 ) -> List[int]:
     registered: List[int] = []
+    existing = {
+        t.source_table_name: t
+        for t in db.query(DatasetTable).filter(
+            DatasetTable.dataset_id == dataset_id, DatasetTable.datasource_id == store_ds_id
+        ).all()
+    }
     for tab_name, columns in specs:
+        if tab_name in existing:
+            # A retry after a partial failure: the tab is already registered on
+            # this store — never a second DatasetTable for the same tab.
+            registered.append(existing[tab_name].id)
+            continue
         table = DatasetCRUDService.add_table_to_dataset(
             db,
             dataset_id,
@@ -307,13 +354,14 @@ def provision_google_sheets_destination(
         if not specs:
             raise ValueError("bind mode found no tabs to register")
 
-        registered = _register_tables(db, dataset_id, cred_ds.id, specs)
+        store_ds = _bound_store_datasource(db, dataset, cred_ds, cred_cfg, target_ss, owner_id)
+        registered = _register_tables(db, dataset_id, store_ds.id, specs)
         _set_destination(
             db,
             dataset,
             {
                 "kind": DEST_KIND_SHEETS,
-                "datasource_id": cred_ds.id,
+                "datasource_id": store_ds.id,
                 "spreadsheet_id": target_ss,
                 "managed": False,
             },
@@ -323,7 +371,7 @@ def provision_google_sheets_destination(
         return {
             "dataset_id": dataset_id,
             "mode": "bind",
-            "destination_datasource_id": cred_ds.id,
+            "destination_datasource_id": store_ds.id,
             "spreadsheet_id": target_ss,
             "managed": False,
             "tables": registered,
