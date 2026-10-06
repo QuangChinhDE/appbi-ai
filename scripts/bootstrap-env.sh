@@ -105,10 +105,12 @@ if [ -z "$(env_get DATABASE_URL)" ] \
   env_set DB_PASSWORD "$(rand_hex 16)";             generated+=("DB_PASSWORD")
 fi
 
-# ── 4. admin password: keep a KNOWN value so the user can actually log in ───
+# ── 4. admin password: a RANDOM per-install value, printed once ─────────────
+# Never a known default: a deployment that kept a shared default password had
+# an administrator anyone could log into. The value lives only in this .env.
 admin_defaulted=0
 if is_placeholder "$(env_get ADMIN_PASSWORD)"; then
-  env_set ADMIN_PASSWORD "123456"; admin_defaulted=1
+  env_set ADMIN_PASSWORD "$(rand_hex 12)Aa9!"; admin_defaulted=1
 fi
 
 # ── 4b. modules ON by default — force product-module flags to true ─────────
@@ -149,7 +151,8 @@ rm -f "$orig"
 [ ${#generated[@]} -gt 0 ] && echo "  [env] generated secrets:  ${generated[*]}"
 [ ${#modules_on[@]} -gt 0 ] && echo "  [env] modules forced ON:  ${modules_on[*]}"
 if [ "$admin_defaulted" = "1" ]; then
-  echo "  [env] WARNING: ADMIN_PASSWORD was a placeholder -> defaulted to '123456'. Change it in .env for production."
+  echo "  [env] ADMIN_PASSWORD was a placeholder -> generated a random one: $(env_get ADMIN_PASSWORD)"
+  echo "  [env] (stored only in .env; it is used once, for the first administrator)"
 fi
 if [ ${#deprecated[@]} -gt 0 ]; then
   echo "  [env] WARNING: deprecated keys still in .env (safe to remove): ${deprecated[*]}"

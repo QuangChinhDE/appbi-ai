@@ -123,7 +123,7 @@ services:
       VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@appbi.io}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@appbi.io}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-123456}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ADMIN_NAME: ${ADMIN_NAME:-Admin}
       DATA_DIR: /app/.data
       # Server-side PDF export: the API only accepts render jobs when a

@@ -591,6 +591,7 @@ jobs:
         run: |
           python -m pytest -q --tb=short -p no:cacheprovider -rs \
             tests/test_authz_db_role_pg.py \
+            tests/test_authz_bootstrap_admin_pg.py \
             tests/test_authz_dataset_grants_http_pg.py \
             tests/test_authz_workspace_http_pg.py \
             tests/test_authz_datasource_secret_http_pg.py \
