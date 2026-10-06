@@ -18,7 +18,7 @@ import pytest
 import sqlalchemy as sa
 
 from tests import pair2_topology as T
-from tests.pair3_world import chart_config, chart_world, runtime_filters, save_chart
+from tests.pair3_world import chart_config, chart_world, own_with_datasource, runtime_filters, save_chart
 from tests.test_pair2_golden_topology_pg import _norm, canon
 
 
@@ -593,6 +593,7 @@ def test_a_custom_sql_chart_runs_its_own_sql_and_says_so(pg):
                "customRoleConfig": {"dimension": "product", "metrics": [{"field": "amount", "agg": "sum"}]},
                "roleConfig": {"dimension": "p2_regions.name", "metrics": [{"field": "p2_sales.revenue", "agg": "auto"}]}}
         chart = save_chart(w, "p2_sales", {}, chart_type="BAR", config=cfg)
+        own_with_datasource(w, chart)  # custom SQL runs under its owner's datasource right
         out = ChartService.get_chart_data(w.db, chart.id)
         rows = {r.get("product"): _norm(r.get("sum__amount")) for r in out["data"]}  # the live contract: agg__column
         assert rows == {"Pen": 141, "Ink": 57}, out["data"]
