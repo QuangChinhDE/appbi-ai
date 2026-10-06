@@ -232,7 +232,8 @@ async def upload_workboard_media(
     from app.modules.workboards.services import media_service
 
     wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
+    # A durable write (stored file): edit, not view.
+    require_edit_access(db, current_user, wb, "workboards")
     data = await file.read()
     try:
         media = media_service.store_media(
@@ -1611,7 +1612,17 @@ def export_workboard_template(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
+    # Exporting a workboard is copying its definition out: edit. Including
+    # credentials (app users' PIN hashes, crackable offline) is a separate,
+    # owner/admin-only action, and audited.
+    require_edit_access(db, current_user, wb, "workboards")
+    if include_credentials:
+        require_full_access(db, current_user, wb, "workboards")
+        audit(
+            db, AuditAction.DATA_EXPORTED,
+            user_id=current_user.id, resource_type="workboard", resource_id=str(wb.id),
+            details={"export": "workboard_template", "include_credentials": True},
+        )
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     bundle = _template_svc.export_workboard(
         db, wb, include_credentials=include_credentials

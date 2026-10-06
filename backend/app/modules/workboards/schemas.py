@@ -2734,7 +2734,7 @@ class AppUserCreate(BaseModel):
     """
 
     username: str = Field(..., min_length=1, max_length=255)
-    pin: str = Field(..., min_length=1, max_length=128)
+    pin: str = Field(..., min_length=6, max_length=128)
     full_name: Optional[str] = Field(default=None, max_length=255)
     role: Optional[str] = Field(default=None, max_length=64)
     active: bool = True
@@ -2747,7 +2747,7 @@ class AppUserUpdate(BaseModel):
     """All fields optional; PATCH semantics. Pass ``pin`` to reset PIN."""
 
     username: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    pin: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    pin: Optional[str] = Field(default=None, min_length=6, max_length=128)
     full_name: Optional[str] = Field(default=None, max_length=255)
     role: Optional[str] = Field(default=None, max_length=64)
     active: Optional[bool] = None

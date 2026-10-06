@@ -225,11 +225,16 @@ def test_runtime_write_is_workboard_delegated_but_opens_no_dataset_action(client
 
 
 def test_dataset_build_can_publish_positive_control(client, db, world):  # noqa: F811
+    """A workboard OWNER whose only dataset authority is a `build` grant may
+    publish it (publish = owner, decision Q3; binding = dataset build)."""
     from app.models.dataset import DatasetGrant
+    from app.modules.workboards.models import Workboard
 
     u = make_user(db, "wb-builder", workboards="edit", datasets="edit")
-    share(db, "workboard", world["wb"].id, u, "edit", world["owner"])
     db.add(DatasetGrant(dataset_id=world["ds"].id, user_id=u.id, verb="build", granted_by=world["owner"].id))
+    wb = Workboard(name="mine", slug=f"mine-{uuid.uuid4().hex[:8]}", dataset_id=world["ds"].id,
+                   primary_table_id=world["wb"].primary_table_id, owner_id=u.id, layout_json={})
+    db.add(wb)
     db.commit()
-    r = client.post(f"/api/v1/workboards/{world['wb'].id}/publish", headers=u.headers)
+    r = client.post(f"/api/v1/workboards/{wb.id}/publish", headers=u.headers)
     assert r.status_code != 403, r.text

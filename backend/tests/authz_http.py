@@ -48,6 +48,12 @@ if "app.core.database" in _sys.modules:
 os.environ["DATABASE_URL"] = OWNER_URL
 os.environ["DATABASE_URL_APP"] = APP_URL
 os.environ.setdefault("ENVIRONMENT", "test")
+# Production refuses to start without an encryption key; secrets at rest must be
+# real ciphertext here too, or every "is this encrypted?" path tests plaintext.
+if not os.environ.get("DATASOURCE_ENCRYPTION_KEY"):
+    from cryptography.fernet import Fernet
+
+    os.environ["DATASOURCE_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 for _flag in ("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED", "WORKBOARDS_ENABLED", "OBSERVABILITY_ENABLED"):
     os.environ.setdefault(_flag, "true")
 
