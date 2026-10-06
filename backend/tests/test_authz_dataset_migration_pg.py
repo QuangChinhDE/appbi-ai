@@ -106,3 +106,25 @@ def test_legacy_dataset_shares_become_canonical_grants(db_url):
         verbs = [r[0] for r in c.execute(text("SELECT verb FROM dataset_grants WHERE dataset_id = :d"), {"d": ds})]
         assert verbs == ["reshare"]
     eng.dispose()
+
+
+def test_dead_module_permissions_table_is_archived_then_dropped_and_restorable(db_url):
+    _alembic(db_url, command.upgrade, "20261008_0003")
+    eng = create_engine(db_url)
+    uid = uuid.uuid4()
+    with eng.begin() as c:
+        c.execute(text("INSERT INTO users (id, email, full_name, status, permissions) "
+                       "VALUES (:i, :e, 'mp', 'active', '{}'::jsonb)"), {"i": uid, "e": f"mp-{uid.hex[:6]}@m.test"})
+        c.execute(text("INSERT INTO module_permissions (user_id, module, permission) "
+                       "VALUES (:u, 'dashboard', 'edit')"), {"u": uid})
+    _alembic(db_url, command.upgrade, "20261008_0004")
+    with eng.connect() as c:
+        assert c.execute(text("SELECT to_regclass('module_permissions')")).scalar() is None
+        arch = c.execute(text("SELECT payload FROM authz_impact_reports "
+                              "WHERE name='module_permissions_archive' ORDER BY id DESC LIMIT 1")).scalar()
+        assert arch["count"] == 1 and arch["rows"][0]["permission"] == "edit"
+    _alembic(db_url, command.downgrade, "20261008_0003")
+    with eng.connect() as c:
+        assert c.execute(text("SELECT permission::text FROM module_permissions WHERE user_id = :u"),
+                         {"u": uid}).scalar() == "edit"
+    eng.dispose()
