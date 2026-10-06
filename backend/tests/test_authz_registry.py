@@ -33,6 +33,7 @@ def test_old_names_are_the_registry():
 
 def test_share_map_agrees_with_the_registry():
     import app.services.agent_flows.credentials  # noqa: F401  (registers ai_credential)
+    import app.modules.workboards.workspace_admin_api  # noqa: F401  (registers workspace)
     from app.core.share_access import _RESOURCE_MODEL_MAP
 
     for rtype, (model, module, key) in _RESOURCE_MODEL_MAP.items():

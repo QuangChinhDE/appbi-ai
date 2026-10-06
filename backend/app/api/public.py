@@ -2146,7 +2146,11 @@ if settings.WORKBOARDS_ENABLED:
         """
         data = _read_workspace_session_from_request(request, workspace)
         if data:
-            return data.get("app_user") or {}
+            if db is None:
+                return None  # cannot verify freshness: fail closed
+            # Re-read the identity: deactivation, PIN/role change or logout
+            # (session_epoch) end the session now, not at the token's expiry.
+            return app_user_service.refresh_session_identity(db, data)
         if (workspace.access_mode or "internal") == "internal" and db is not None:
             user = _try_appbi_user_from_request(request, db)
             if user is not None and _staff_may_use_workboards(user):
@@ -2219,9 +2223,22 @@ if settings.WORKBOARDS_ENABLED:
 
 
     @router.post("/workspaces/{token}/logout")
-    def workspace_logout(token: str, response: Response, db: Session = Depends(get_db)):
-        # Don't 404 here â€” let users clear their cookie even if the
+    def workspace_logout(token: str, request: Request, response: Response, db: Session = Depends(get_db)):
+        # Don't 404 here - let users clear their cookie even if the
         # workspace was deleted, otherwise they'd be stuck.
+        # Logout ENDS the session server-side too: a copied cookie stops working.
+        try:
+            raw = request.cookies.get(_workspace_cookie_name(token)) or request.headers.get("X-Workspace-Session")
+            data = app_user_service.decode_session_token(raw, token) if raw else None
+            if data and data.get("auid") is not None:
+                from app.modules.workboards.models import WorkboardAppUser as _AU
+
+                row = db.query(_AU).filter(_AU.id == int(data["auid"])).first()
+                if row is not None:
+                    app_user_service.bump_session_epoch(row)
+                    db.commit()
+        except Exception:  # noqa: BLE001 - clearing the cookie must still happen
+            db.rollback()
         response.delete_cookie(
             key=_workspace_cookie_name(token),
             path="/",

@@ -368,6 +368,9 @@ def create_session_token(
         "exp": now + timedelta(seconds=ttl),
         "iat": now,
         "app_user": app_user_to_payload(user, scope_context=scope_context),
+        # Identity + revocation generation, re-checked against the DB per request.
+        "auid": int(user.id),
+        "ep": int(user.session_epoch or 0),
     }
     if extra_claims:
         for key, value in extra_claims.items():
@@ -415,6 +418,9 @@ def create_internal_session_token(
             # re-derives authority from this id; there is no implicit access.
             "_appbi_user_id": str(getattr(appbi_user, "id", "") or ""),
         },
+        # The AppBI user's security stamp: a password change / deactivation
+        # ends their staff sessions in every workspace too.
+        "ss": getattr(appbi_user, "security_stamp", None) or "",
     }
     if extra_claims:
         for key, value in extra_claims.items():
@@ -626,3 +632,45 @@ def _jsonb_text():
     from sqlalchemy import String
 
     return String
+
+
+
+def bump_session_epoch(user: WorkboardAppUser) -> None:
+    """End every session of this app user (caller commits)."""
+    user.session_epoch = int(user.session_epoch or 0) + 1
+
+
+def refresh_session_identity(db: Session, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The CURRENT identity behind a decoded workspace session, or None.
+
+    App-user sessions: the row must still exist, be active, belong to the bound
+    workboard and carry the same session_epoch; role and context are re-read
+    from the row (they used to be frozen in the JWT for the whole TTL).
+    Staff sessions: the AppBI user must be active with the same security stamp.
+    """
+    import uuid as _uuid
+
+    from app.models.user import User, UserStatus
+
+    app_user = data.get("app_user") or {}
+    if app_user.get("_internal"):
+        try:
+            u = db.query(User).filter(User.id == _uuid.UUID(str(app_user.get("_appbi_user_id")))).first()
+        except (ValueError, TypeError):
+            return None
+        if u is None or u.status != UserStatus.ACTIVE:
+            return None
+        if (data.get("ss") or "") != (getattr(u, "security_stamp", None) or ""):
+            return None
+        return app_user
+    auid = data.get("auid")
+    if auid is None:
+        return None  # a session minted before revocation existed: sign in again
+    row = db.query(WorkboardAppUser).filter(WorkboardAppUser.id == int(auid)).first()
+    if row is None or not row.active:
+        return None
+    if int(row.session_epoch or 0) != int(data.get("ep", -1)):
+        return None
+    if app_user.get("workboard_id") is not None and int(app_user["workboard_id"]) != int(row.workboard_id):
+        return None
+    return app_user_to_payload(row, scope_context=compute_scope_context(db, row))

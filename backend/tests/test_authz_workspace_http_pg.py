@@ -240,3 +240,30 @@ def test_dataset_build_can_publish_positive_control(client, db, world):  # noqa:
     db.commit()
     r = client.post(f"/api/v1/workboards/{wb.id}/publish", headers=u.headers)
     assert r.status_code != 403, r.text
+
+
+# ── Workspace is a shareable resource (decision Q5) ─────────────────────────
+
+def test_workspace_shares_are_access_and_management_but_never_data(client, db, world):  # noqa: F811
+    wid = world["ws"].id
+    viewer = make_user(db, "ws-sharedview", workboards="edit", datasets="edit")
+    manager = make_user(db, "ws-sharededit", workboards="edit", datasets="edit")
+    r = client.post(f"/api/v1/shares/workspace/{wid}", headers=world["owner"].headers,
+                    json={"user_id": str(viewer.id), "permission": "view"})
+    assert r.status_code in (200, 201), r.text
+    r = client.post(f"/api/v1/shares/workspace/{wid}", headers=world["owner"].headers,
+                    json={"user_id": str(manager.id), "permission": "edit"})
+    assert r.status_code in (200, 201), r.text
+    # view share: sees it, cannot manage it
+    assert client.get(f"/api/v1/workspaces/{wid}", headers=viewer.headers).status_code == 200
+    assert client.patch(f"/api/v1/workspaces/{wid}", headers=viewer.headers,
+                        json={"name": "x"}).status_code == 403
+    # edit share: manages it, cannot delete it
+    assert client.patch(f"/api/v1/workspaces/{wid}", headers=manager.headers,
+                        json={"name": "managed"}).status_code == 200
+    assert client.delete(f"/api/v1/workspaces/{wid}", headers=manager.headers).status_code == 403
+    # neither gets workboard data from the workspace share
+    for who in (viewer, manager):
+        r = client.get(f"/api/v1/public/workspaces/{world['ws'].token}/workboards/{world['wb'].id}/app",
+                       headers=who.headers)
+        assert r.status_code == 403, r.text

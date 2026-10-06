@@ -95,6 +95,8 @@ RESOURCES: Tuple[ResourceSpec, ...] = (
     ResourceSpec("chart", "Chart", "explore_charts"),
     ResourceSpec("dashboard", "Dashboard", "dashboards"),
     ResourceSpec("workboard", "Workboard", "workboards"),
+    ResourceSpec("workspace", "WorkboardWorkspace", "workboards",
+                 notes="portal: view share = see it; edit share = manage it; never workboard data"),
     ResourceSpec("knowledge_doc", "GovernKnowledgeDoc", "govern"),
     ResourceSpec("agent_brain", "AgentBrainVersion", "agent_flows", share_key="brain_key",
                  owner_attrs=("owner_email",),

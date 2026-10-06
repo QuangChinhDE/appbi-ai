@@ -603,6 +603,7 @@ jobs:
             tests/test_authz_dataset_grants_http_pg.py \
             tests/test_authz_dataset_migration_pg.py \
             tests/test_authz_workspace_http_pg.py \
+            tests/test_authz_workspace_session_pg.py \
             tests/test_authz_datasource_secret_http_pg.py \
             tests/test_authz_workspace_route_matrix_pg.py \
             tests/test_authz_observability_http_pg.py \

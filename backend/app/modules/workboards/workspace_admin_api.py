@@ -41,17 +41,21 @@ def _module_level(user: User) -> str:
     return get_user_module_permission(user, "workboards") or "none"
 
 
-def _may_manage(user: User, ws: WorkboardWorkspace) -> bool:
-    """Owner (holding the module at edit) or the Workboards module admin.
-
-    The workspace is a resource with an owner. Holding `workboards: edit` alone
-    used to be enough to rename, re-mode, re-point, rotate or delete anyone's
-    workspace; it no longer is."""
+def _may_manage(user: User, ws: WorkboardWorkspace, db: Session | None = None) -> bool:
+    """Owner (module >= edit), Workboards module admin, or someone the workspace
+    was shared with at EDIT (decision Q5: a workspace is a resource with owner
+    and shares). A workspace share is never workboard data authority."""
     from app.core.permissions import is_module_admin, module_at_least
 
     if is_module_admin(user, "workboards"):
         return True
-    return module_at_least(user, "workboards", "edit") and ws.owner_id is not None and ws.owner_id == user.id
+    if module_at_least(user, "workboards", "edit") and ws.owner_id is not None and ws.owner_id == user.id:
+        return True
+    if db is not None:
+        from app.core.dependencies import get_effective_permission
+
+        return get_effective_permission(db, user, ws, "workboards") in ("edit", "full")
+    return False
 
 
 def _menu_workboards(db: Session, ws: WorkboardWorkspace) -> List[Workboard]:
@@ -70,7 +74,11 @@ def _may_see(db: Session, user: User, ws: WorkboardWorkspace) -> bool:
     """Managers, plus anyone who can open at least one workboard it delivers."""
     from app.core.dependencies import get_effective_permission
 
-    if _may_manage(user, ws):
+    if _may_manage(user, ws, db):
+        return True
+    from app.core.dependencies import get_effective_permission as _gep
+
+    if _gep(db, user, ws, "workboards") != "none":  # shared with them (view)
         return True
     return any(
         get_effective_permission(db, user, wb, "workboards") != "none"
@@ -82,7 +90,7 @@ def _load_for(db: Session, user: User, workspace_id: int, *, manage: bool) -> Wo
     ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
     if ws is None or not _may_see(db, user, ws):
         raise HTTPException(status_code=404, detail="Workspace not found.")
-    if manage and not _may_manage(user, ws):
+    if manage and not _may_manage(user, ws, db):
         raise HTTPException(
             status_code=403,
             detail="Only the workspace owner or a Workboards admin can do this.",
@@ -197,11 +205,11 @@ def list_workspaces(
         .order_by(WorkboardWorkspace.created_at.desc())
         .all()
     )
-    return [_serialise_for(user, ws) for ws in rows if _may_see(db, user, ws)]
+    return [_serialise_for(user, ws, db) for ws in rows if _may_see(db, user, ws)]
 
 
-def _serialise_for(user: User, ws: WorkboardWorkspace) -> WorkspaceAdminResponse:
-    reveal = _may_manage(user, ws) or (ws.access_mode or "internal") == "internal"
+def _serialise_for(user: User, ws: WorkboardWorkspace, db: Session | None = None) -> WorkspaceAdminResponse:
+    reveal = _may_manage(user, ws, db) or (ws.access_mode or "internal") == "internal"
     return _serialise(ws, reveal_token=reveal)
 
 
@@ -242,7 +250,7 @@ def get_workspace(
     user: User = Depends(require_permission("workboards", "view")),
 ):
     ws = _load_for(db, user, workspace_id, manage=False)
-    return _serialise_for(user, ws)
+    return _serialise_for(user, ws, db)
 
 
 @router.patch("/{workspace_id}", response_model=WorkspaceAdminResponse)
@@ -462,6 +470,10 @@ def delete_workspace(
     user: User = Depends(require_permission("workboards", "edit")),
 ):
     ws = _load_for(db, user, workspace_id, manage=True)
+    # Deleting is the owner's (or the module admin's), not an edit sharee's.
+    from app.core.dependencies import require_full_access
+
+    require_full_access(db, user, ws, "workboards")
     db.delete(ws)
     db.commit()
 
@@ -677,3 +689,11 @@ def suggest_relationships(
                 )
             )
     return out
+
+
+
+# A workspace is shareable through the generic /shares endpoints (decision Q5).
+from app.core.share_access import register_share_resource as _register_share  # noqa: E402
+from app.models.resource_share import ResourceType as _RT  # noqa: E402
+
+_register_share(_RT.WORKSPACE, WorkboardWorkspace, "workboards", "id")

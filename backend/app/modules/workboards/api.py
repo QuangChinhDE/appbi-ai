@@ -2132,6 +2132,10 @@ def update_app_user(
 
     if "pin" in data and data["pin"]:
         user.pin_hash = app_user_service.hash_pin(data["pin"])
+    # A changed PIN, role, context, name, or deactivation ends this app user's
+    # existing sessions (they carried the old identity for up to the TTL).
+    if any(k in data for k in ("pin", "role", "active", "context", "username")):
+        app_user_service.bump_session_epoch(user)
 
     for field in ("full_name", "role", "active"):
         if field in data:
