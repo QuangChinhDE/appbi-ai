@@ -96,3 +96,37 @@ def test_role_change_is_seen_on_the_next_request(client, db, world):  # noqa: F8
     client.cookies.clear()
     r = client.get(f"/api/v1/public/workspaces/{world['ws'].token}/menu", headers=h)
     assert r.status_code == 200 and r.json()["app_user"]["role"] == "admin"
+
+
+# ── H6: public-runtime media upload needs a write-capable role + a quota ──────
+
+def _upload(client, w, h):  # noqa: F811
+    client.cookies.clear()
+    return client.post(f"/api/v1/public/workspaces/{w['ws'].token}/workboards/{w['wb'].id}/media",
+                       headers=h, files={"file": ("a.png", b"\x89PNG\r\n\x1a\n" + b"\0" * 32, "image/png")})
+
+
+def test_read_only_app_user_cannot_upload(client, world):  # noqa: F811
+    assert _upload(client, world, _login(client, world)).status_code == 403
+
+
+def test_privileged_app_user_can_upload_positive_control(client, db, world):  # noqa: F811
+    from app.modules.workboards.models import WorkboardAppUser
+
+    row = db.get(WorkboardAppUser, world["au"].id)
+    row.role = "owner"
+    db.commit()
+    assert _upload(client, world, _login(client, world)).status_code in (200, 201)
+
+
+def test_uploads_are_capped_per_workboard(client, db, world, monkeypatch):  # noqa: F811
+    from app.modules.workboards.models import WorkboardAppUser
+
+    row = db.get(WorkboardAppUser, world["au"].id)
+    row.role = "owner"
+    db.commit()
+    monkeypatch.setenv("WORKBOARD_MEDIA_HOURLY_LIMIT", "2")
+    h = _login(client, world)
+    assert _upload(client, world, h).status_code in (200, 201)
+    assert _upload(client, world, h).status_code in (200, 201)
+    assert _upload(client, world, h).status_code == 429

@@ -3003,6 +3003,38 @@ if settings.WORKBOARDS_ENABLED:
         return {"action": "insert", **result}
 
 
+    def _require_app_user_media_write(db: Session, wb, app_user: dict | None) -> None:
+        """A stored upload is a durable write. A mini-app user may upload only
+        if their role may insert or update on at least one screen of this
+        workboard (the same rules row writes use), and uploads are capped per
+        workboard per hour (WORKBOARD_MEDIA_HOURLY_LIMIT, default 300) so a
+        signed-in account cannot fill the database. Staff are gated by
+        _require_staff_write (edit on the workboard)."""
+        import os as _os
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        from app.modules.workboards.models import WorkboardMedia
+
+        if isinstance(app_user, dict) and not app_user.get("_internal"):
+            identity = identity_from_app_user(app_user)
+            from app.modules.workboards.roles import is_privileged_role
+
+            layout = screen_runtime.parse_layout(wb)
+            can_write = is_privileged_role(identity.role) or any(
+                screen_runtime._can_write_op(sc, identity, op=op)
+                for sc in (layout.screens or []) for op in ("insert", "update")
+            )
+            if not can_write:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail="Your role cannot upload files in this app.")
+        limit = int(_os.environ.get("WORKBOARD_MEDIA_HOURLY_LIMIT", "300") or 300)
+        since = _dt.now(_tz.utc) - _td(hours=1)
+        recent = (db.query(WorkboardMedia)
+                  .filter(WorkboardMedia.workboard_id == wb.id, WorkboardMedia.created_at >= since).count())
+        if recent >= limit:
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                                detail="Upload limit reached for this app; try again later.")
+
     @router.post("/workspaces/{token}/workboards/{workboard_id}/media")
     async def workspace_upload_media(
         token: str,
@@ -3022,6 +3054,7 @@ if settings.WORKBOARDS_ENABLED:
             db, ws, workboard_id, request=request, app_user=app_user
         )
         _require_staff_write(app_user)
+        _require_app_user_media_write(db, wb, app_user)
         data = await file.read()
         try:
             media = media_service.store_media(
