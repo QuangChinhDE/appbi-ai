@@ -168,7 +168,7 @@ Owner = manage. Module admin (`datasets: full`) = manage (`via=module_admin`). L
 
 ### 11. Dashboard / Public / Embed
 
-- `publish` (alias `manage_public_surface`) = owner or dashboard module admin, or an explicit future publish grant; shared `edit` never implies it. It gates public-link create/update/delete/rotate, embed mint and assistant binding.
+- `publish` (alias `manage_public_surface`) = owner or dashboard module admin, or an explicit future publish grant; shared `edit` never implies it. It gates PUBLIC surfaces (links, embeds, assistants on links, workboard runtime). The internal dashboard draft→published step is co-authoring and stays at `edit`. It gates public-link create/update/delete/rotate, embed mint and assistant binding.
 - Public-link list masks `token` unless `manage_public_surface`.
 - Snapshot refresh requires `trigger_compute` (= edit) and is rate limited.
 - Embed grant liveness additionally checks that the minting user is active and still holds `manage_public_surface`.

@@ -88,9 +88,14 @@ def _view(vid, name, table_id, dims):
 @pytest.fixture()
 def db():
     engine = create_engine("sqlite://", future=True)
+    from app.models.dataset import DatasetGrant
     from app.models.models import Chart
+    from app.models.team import TeamMembership
 
+    # The Dataset policy reads grants and team memberships (no rows here: the
+    # shares this file states are what decides).
     Base.metadata.create_all(engine, tables=[
+        TeamMembership.__table__, DatasetGrant.__table__,
         Dataset.__table__, DatasetTable.__table__, Chart.__table__,
         SemanticView.__table__, SemanticModel.__table__, SemanticExplore.__table__,
     ])

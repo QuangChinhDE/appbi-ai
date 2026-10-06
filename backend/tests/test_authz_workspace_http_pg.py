@@ -218,8 +218,10 @@ def test_runtime_write_is_workboard_delegated_but_opens_no_dataset_action(client
     # Data entry through the workboard is the workboard's (edit) authority...
     assert _upload(client, world, binder).status_code in (200, 201)
     # ...and grants nothing on the dataset itself: no raw rows, no model edit.
-    ds = world["ds"].id
-    assert client.get(f"/api/v1/datasets/{ds}/tables", headers=binder.headers).status_code in (403, 404)
+    ds, tid = world["ds"].id, world["wb"].primary_table_id
+    # `view` on the dataset = metadata only: no raw rows (explore), no model edit.
+    assert client.post(f"/api/v1/datasets/{ds}/tables/{tid}/preview", headers=binder.headers,
+                       json={}).status_code == 403
     assert client.put(f"/api/v1/datasets/{ds}", headers=binder.headers,
                       json={"name": "x"}).status_code in (403, 404)
 

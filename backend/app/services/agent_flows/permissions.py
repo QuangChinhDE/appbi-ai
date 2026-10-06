@@ -55,8 +55,13 @@ def attachable_datasets(db: Session, user: Any) -> set[int]:
     """Datasets whose semantic model THIS user may point a step at."""
     from app.models.dataset import Dataset
 
+    # Attaching a dataset to a flow is building on it: the Dataset policy's
+    # `build`, from the same readable scope the dataset list shows (one batch).
+    from app.services.dataset_grants_service import batch_dataset_capabilities
+
     rows = _owned_or_shared(db, Dataset, ResourceType.DATASET, user).all()
-    return {int(r.id) for r in rows}
+    caps = batch_dataset_capabilities(db, user, rows)
+    return {int(r.id) for r in rows if "build" in caps.get(r.id, set())}
 
 
 def check_attachments(db: Session, user: Any, brain: Brain) -> list[str]:

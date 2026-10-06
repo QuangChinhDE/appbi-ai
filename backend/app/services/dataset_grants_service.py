@@ -123,23 +123,16 @@ def dataset_capabilities(db: Session, user: User, dataset: Dataset) -> Set[str]:
             caps |= _CAPS[g.verb]
 
     # Legacy ResourceShare(DATASET), read through the canonical verbs:
-    # VIEW -> explore, EDIT -> edit. No exception handler: a failure here is an
-    # authorization error, not a reason to answer with less information.
-    from app.models.resource_share import ResourceShare, ResourceType, SharePermission
+    # VIEW -> explore, EDIT -> edit - resolved by the SHARE ENGINE's own lookup
+    # (user + team), so there is one share resolution in the product. No
+    # exception handler: a failure here is an authorization error.
+    from app.core import dependencies as _deps
+    from app.models.resource_share import ResourceType
 
-    shares = (
-        db.query(ResourceShare)
-        .filter(
-            ResourceShare.resource_type == ResourceType.DATASET,
-            ResourceShare.resource_id == str(dataset.id),
-        )
-        .all()
-    )
-    for s in shares:
-        applies = (s.user_id == user.id) or (s.team_id is not None and s.team_id in team_ids)
-        if not applies:
-            continue
-        caps |= _CAPS["edit"] if s.permission == SharePermission.EDIT else _CAPS["explore"]
+    share = _deps.get_highest_share_for_resource(db, user, ResourceType.DATASET, str(dataset.id))
+    if share is not None:
+        lvl = getattr(share.permission, "value", share.permission)
+        caps |= _CAPS["edit"] if lvl == "edit" else _CAPS["explore"]
 
     return caps & ceiling
 
@@ -291,3 +284,78 @@ def revoke_as(db: Session, actor: User, dataset: Dataset, *, user_id=None, team_
     db.delete(row)
     db.commit()
     return 1
+
+
+def _legacy_share_caps(db: Session, user: User, datasets) -> dict:
+    """{dataset_id: caps} from legacy ResourceShare(DATASET) rows, through the
+    share engine (core.dependencies.get_highest_share_permissions: user + team)."""
+    from app.core import dependencies as _deps
+    from app.models.resource_share import ResourceType
+
+    ids = [str(d.id) for d in datasets]
+    if not ids:
+        return {}
+    levels = _deps.get_highest_share_permissions(db, user, ResourceType.DATASET, ids)
+    return {
+        int(rid): set(_CAPS["edit"] if lvl == "edit" else _CAPS["explore"])
+        for rid, lvl in levels.items() if lvl in ("view", "edit")
+    }
+
+
+def level_from_capabilities(caps: Set[str]) -> str:
+    """The generic effective level that corresponds to a Dataset capability set.
+
+    Every generic object check (get_effective_permission, require_*_access, the
+    `user_permission` the API returns) reads a Dataset THROUGH this mapping, so
+    the generic tier and the Dataset policy can no longer give two answers:
+        manage -> full, edit -> edit, any other capability -> view, none -> none.
+    """
+    if "manage" in caps:
+        return "full"
+    if "edit" in caps:
+        return "edit"
+    return "view" if caps else "none"
+
+
+def batch_dataset_capabilities(db: Session, user: User, datasets) -> dict:
+    """``dataset_capabilities`` for many datasets with a constant number of
+    queries (list endpoints). Must agree row for row with the single version."""
+    from app.core.permissions import get_user_module_permission
+
+    datasets = [d for d in datasets if d is not None]
+    out = {d.id: set() for d in datasets}
+    if user is None or not datasets:
+        return out
+    ceiling = _module_capability_ceiling(user)
+    if not ceiling:
+        return out
+    if get_user_module_permission(user, "datasets") == "full":
+        return {d.id: set(_CAPS["manage"]) for d in datasets}
+    ids = [d.id for d in datasets]
+    team_ids = _team_ids(db, user)
+    grants = db.query(DatasetGrant).filter(DatasetGrant.dataset_id.in_(ids)).all()
+    legacy = _legacy_share_caps(db, user, datasets)
+    for d in datasets:
+        if d.owner_id is not None and d.owner_id == user.id:
+            out[d.id] = set(_CAPS["manage"]) & ceiling
+            continue
+        caps: Set[str] = set()
+        for g in grants:
+            if g.dataset_id == d.id and g.verb in _CAPS and (
+                g.user_id == user.id or (g.team_id is not None and g.team_id in team_ids)
+            ):
+                caps |= _CAPS[g.verb]
+        caps |= legacy.get(d.id, set())
+        out[d.id] = caps & ceiling
+    return out
+
+
+def grants_scope_subquery(user: User, db: Session):
+    """SELECT dataset_id the user holds a DatasetGrant on (directly or via a team)."""
+    from sqlalchemy import or_, select
+
+    team_ids = _team_ids(db, user)
+    cond = DatasetGrant.user_id == user.id
+    if team_ids:
+        cond = or_(cond, DatasetGrant.team_id.in_(team_ids))
+    return select(DatasetGrant.dataset_id).where(cond)

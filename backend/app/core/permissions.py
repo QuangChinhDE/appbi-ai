@@ -117,12 +117,14 @@ def _owned_or_shared(
         .where(share_target_filter_for_user(user))
     )
 
-    return q.filter(
-        or_(
-            owner_predicate,
-            cast(model.id, String).in_(shared_ids_subq),
-        )
-    )
+    visible = [owner_predicate, cast(model.id, String).in_(shared_ids_subq)]
+    if resource_type == ResourceType.DATASET:
+        # The Dataset policy also grants through DatasetGrant (user or team):
+        # the list must show exactly what the object check allows.
+        from app.services.dataset_grants_service import grants_scope_subquery
+
+        visible.append(model.id.in_(grants_scope_subquery(user, db)))
+    return q.filter(or_(*visible))
 
 
 # Keep old name for backward-compat with any remaining imports

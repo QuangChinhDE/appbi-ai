@@ -485,6 +485,12 @@ def get_effective_permission(db: Session, user: User, resource, module: str) -> 
     `require_full_access` below must stay in step, or the UI hides a button the API
     would have honoured.
     """
+    if type(resource).__name__ == "Dataset":
+        # ONE Dataset decision: the canonical capability model, read as a level.
+        from app.services import dataset_grants_service as _dgs
+
+        return _dgs.level_from_capabilities(_dgs.dataset_capabilities(db, user, resource))
+
     perms = _normalize_permissions(user)
     module_level = _sanitize_permission_level(perms.get(module, "none"))
 
@@ -517,6 +523,12 @@ def batch_effective_permissions(
     min(module_level, relation) cap on owned rows, which is why the owner branch
     here goes through _min_permission_level rather than returning "full".
     """
+    if resources and type(resources[0]).__name__ == "Dataset":
+        from app.services import dataset_grants_service as _dgs
+
+        caps = _dgs.batch_dataset_capabilities(db, user, resources)
+        return {rid: _dgs.level_from_capabilities(c) for rid, c in caps.items()}
+
     perms = _normalize_permissions(user)
     module_level = _sanitize_permission_level(perms.get(module, "none"))
 
@@ -543,14 +555,8 @@ def batch_effective_permissions(
         resource_ids = [_share_key_for(r) for r in resources]
         share_lookup = get_highest_share_permissions(db, user, rt, resource_ids)
 
-    user_email = str(getattr(user, "email", "") or "").strip().lower()
-
     for r in resources:
-        owner_id = getattr(r, "owner_id", None)
-        owner_email = getattr(r, "owner_email", None)
-        is_owner = (owner_id is not None and str(owner_id) == str(user.id)) or bool(
-            owner_email and user_email and str(owner_email).strip().lower() == user_email
-        )
+        is_owner = _is_owner(user, r)  # registry owner columns, as the single check
 
         relation = "full" if is_owner else share_lookup.get(_share_key_for(r)) or "none"
         if relation == "none":
@@ -615,8 +621,23 @@ def can_publish(db: Session, user: User, resource, module: str) -> bool:
 
     Held by the resource OWNER (with the module at edit) or the MODULE ADMIN -
     exactly `effective == "full"` today. A shared `edit` never implies it. An
-    explicit publish grant can be added here later without touching callers."""
-    return get_effective_permission(db, user, resource, module) == "full"
+    explicit publish grant can be added here later without touching callers.
+
+    Computed from its two real parts, NOT from `effective == "full"`: that value
+    is capped by a PAT's module scope, so a token scoped `dashboards: edit` could
+    never publish even its owner's own dashboard (and embeds are minted only
+    with a PAT). Ownership is a relation; the entitlement is a ceiling (Q8):
+      owner  + capped module level >= edit  -> publish
+      module admin (capped level == full)   -> publish
+    The PAT cap still applies to both, so a token never exceeds its owner."""
+    level = _sanitize_permission_level(_normalize_permissions(user).get(module, "none"))
+    if level == "full":
+        return True
+    if type(resource).__name__ == "Dataset":
+        from app.services.dataset_grants_service import dataset_capabilities
+
+        return "manage" in dataset_capabilities(db, user, resource)
+    return LEVEL_ORDER[level] >= LEVEL_ORDER["edit"] and _is_owner(user, resource)
 
 
 def require_publish_access(db: Session, user: User, resource, module: str):

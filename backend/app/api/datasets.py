@@ -22,6 +22,7 @@ from app.core.dependencies import (
     get_effective_permission,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
+from app.core.authz import decision as _authz
 from app.models import DataSource, Chart, Dashboard, DashboardChart, Dataset, DatasetTable
 from app.models.models import DashboardPublicLink
 from app.models.resource_share import ResourceType
@@ -2462,9 +2463,7 @@ def refresh_dataset_snapshots(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.TRIGGER_COMPUTE, dataset_obj)
 
     # ASYNC: kick a background rebuild and return immediately (see
     # snapshot_service.start_manual_refresh) so a large extract-load never blocks
@@ -2506,9 +2505,7 @@ def stop_dataset_snapshot_sync(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm in ("none", "view"):
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.TRIGGER_COMPUTE, dataset_obj)
 
     sync_control.request_stop(dataset_id)
     # Reflect intent immediately so the UI can show "Đang dừng…" before the loop
@@ -4326,9 +4323,7 @@ def preview_dataset_table(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -4492,9 +4487,7 @@ def export_dataset_table_excel(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -4575,9 +4568,7 @@ def execute_dataset_table_query(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -5025,7 +5016,7 @@ def get_dataset_model_distinct_values(
     ).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)  # raw values
 
     filter_context: list[dict] = []
     if filters:
@@ -6485,7 +6476,7 @@ def preview_quality_rule(
 ):
     """Preview a rule's SQL and descriptions without saving it."""
     ds = _get_dataset_or_404(db, dataset_id)
-    require_view_access(db, current_user, ds, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, ds)  # raw values
 
     config_dict = body.config.model_dump(exclude_none=True) if body.config else {}
     result = DatasetQualityService.preview_rule(
@@ -6508,7 +6499,7 @@ def test_quality_rule(
 ):
     """Execute a rule preview against live data without saving it."""
     ds = _get_dataset_or_404(db, dataset_id)
-    require_view_access(db, current_user, ds, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, ds)  # raw values
 
     config_dict = body.config.model_dump(exclude_none=True) if body.config else {}
     result = DatasetQualityService.test_rule(
@@ -6933,9 +6924,7 @@ def get_column_summary_endpoint(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
 
     table = db.query(DatasetTable).filter(
         DatasetTable.id == table_id,
@@ -6984,9 +6973,7 @@ def get_table_profile(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:

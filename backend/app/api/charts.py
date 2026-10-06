@@ -21,6 +21,7 @@ from app.core.dependencies import (
     batch_effective_permissions,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
+from app.core.authz import decision as _authz
 from app.models.models import Chart, ChartMetadata, ChartType, DashboardChart, Dashboard
 from app.models.dataset import Dataset, DatasetTable
 from app.models.resource_share import ResourceType
@@ -362,7 +363,8 @@ def ai_chart_preview(
     Requires explore_charts >= view permission.
     """
     dataset_obj, _db_table = _get_dataset_for_chart_table(db, payload.dataset_table_id)
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    # Saving creates content from the dataset (build); an unsaved preview is a query (explore).
+    _authz.require(db, current_user, _authz.Action.BUILD if payload.save else _authz.Action.EXPLORE, dataset_obj)
     if payload.save:
         # The normalized (PAT-capped) level: a raw read of user.permissions let a
         # token scoped to explore_charts:view save charts as its edit-level owner.
@@ -461,7 +463,7 @@ def preview_chart_data(
 ):
     """Preview chart runtime for Explore using the saved-chart execution path."""
     dataset_obj, _ = _get_dataset_for_chart_table(db, payload.dataset_table_id)
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
 
     try:
         result = ChartService.preview_chart_data(
@@ -806,7 +808,7 @@ def dry_run_create_chart(
             changes=changes,
             validation_errors=[f"dataset_table_id: {exc.detail}"],
         )
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
 
     runtime_errors: List[str] = []
     runtime_root_cause: Optional[str] = None
@@ -908,7 +910,7 @@ def create_chart(
     """Create a new chart."""
     try:
         dataset_obj, _ = _get_dataset_for_chart_table(db, chart.dataset_table_id)
-        require_view_access(db, current_user, dataset_obj, "datasets")
+        _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)
         new_chart = ChartService.create(db, chart, owner_id=current_user.id)
         new_chart = ChartService.get_by_id(db, new_chart.id)
         if new_chart:
@@ -941,7 +943,11 @@ def update_chart(
     require_edit_access(db, current_user, chart_obj, "explore_charts")
     if chart_update.dataset_table_id is not None:
         dataset_obj, _ = _get_dataset_for_chart_table(db, chart_update.dataset_table_id)
-        require_view_access(db, current_user, dataset_obj, "datasets")
+        # Re-binding a chart to another table is building new content from that
+        # dataset (build). Saving the chart on the table it already uses keeps
+        # the read check: the content was built by whoever held build then.
+        rebinding = chart_update.dataset_table_id != getattr(chart_obj, "dataset_table_id", None)
+        _authz.require(db, current_user, _authz.Action.BUILD if rebinding else _authz.Action.READ, dataset_obj)
     try:
         chart = ChartService.update(db, chart_id, chart_update)
         if chart:

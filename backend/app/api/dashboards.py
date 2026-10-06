@@ -31,6 +31,7 @@ from app.core.dependencies import (
     get_effective_permission,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
+from app.core.authz import decision as _authz
 from app.models.models import Chart, DashboardChart, Dashboard, DashboardPublicLink, DataSource, DataSourceType
 from app.models.dataset import Dataset, DatasetTable
 from app.models.resource_share import ResourceType
@@ -1136,7 +1137,7 @@ async def prepare_html_import_draft(
         dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         if not dataset_obj:
             raise HTTPException(status_code=404, detail="Dataset not found.")
-        require_edit_access(db, current_user, dataset_obj, "datasets")
+        _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
         db_tables = (
             db.query(DatasetTable)
             .filter(
@@ -2293,7 +2294,7 @@ def start_report_from_data(
     dataset = db.query(_Dataset).filter(_Dataset.id == body.dataset_id).first()
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found")
-    require_view_access(db, current_user, dataset, "datasets")
+    _authz.require(db, current_user, _authz.Action.BUILD, dataset)  # a dashboard from this dataset
     try:
         return build_report_starter(db, dataset_id=body.dataset_id, goal=body.goal, name=body.name,
                                     owner_id=current_user.id)
@@ -2975,7 +2976,10 @@ def publish_dashboard_draft(
     dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
-    require_publish_access(db, current_user, dash, "dashboards")
+    # Draft -> published WITHIN the product is co-authoring (shared editors
+    # publish their own edits); it is not a public surface, so it stays edit.
+    # Public publication (links, embeds, assistants on links) requires publish.
+    require_edit_access(db, current_user, dash, "dashboards")
 
     user_key = str(current_user.id)
     snapshot = dict(dash.draft_snapshot or {})

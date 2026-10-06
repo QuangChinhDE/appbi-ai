@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.dependencies import require_edit_access, require_view_access
+from app.core.authz import decision as _authz
 from app.core.logging import get_logger
 from app.models import Dashboard
 from app.models.dataset import Dataset, DatasetTable
@@ -732,7 +733,7 @@ def _load_existing_source_profile(
     if not dataset_obj:
         raise ValueError("Dataset not found")
 
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
 
     columns_cache = db_table.columns_cache if isinstance(db_table.columns_cache, dict) else {}
     cached_columns = columns_cache.get("columns") if isinstance(columns_cache, dict) else None
@@ -798,7 +799,7 @@ def _load_existing_dataset_profiles(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise ValueError("Dataset not found")
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
 
     db_tables = (
         db.query(DatasetTable)
@@ -5183,7 +5184,7 @@ def build_dashboard_from_import(
             dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
             if not dataset_obj:
                 raise ValueError("Dataset not found.")
-            require_view_access(db, current_user, dataset_obj, "datasets")
+            _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
             resolved_dataset_id = dataset_obj.id
 
             db_tables = (
@@ -5207,7 +5208,7 @@ def build_dashboard_from_import(
             dataset_obj = db.query(Dataset).filter(Dataset.id == db_table.dataset_id).first()
             if not dataset_obj:
                 raise ValueError("Dataset not found.")
-            require_view_access(db, current_user, dataset_obj, "datasets")
+            _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
             resolved_dataset_id = dataset_obj.id
         else:
             raise ValueError("dataset_id or dataset_table_id is required when building from an existing source.")
@@ -6265,7 +6266,7 @@ def rebuild_dashboard_from_snapshot(
             missing_ids.append(table_id)
             continue
         try:
-            require_view_access(db, current_user, dataset, "datasets")
+            _authz.require(db, current_user, _authz.Action.BUILD, dataset)  # a dashboard from this dataset
         except Exception:
             forbidden_ids.append(table_id)
 
