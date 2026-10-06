@@ -22,6 +22,8 @@ from app.core.dependencies import (
     get_effective_permission,
     require_edit_access,
     require_full_access,
+    require_publish_access,
+    can_publish,
     require_permission,
     require_view_access,
     _normalize_permissions,
@@ -663,7 +665,7 @@ def publish_workboard(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _assert_owner_pin_rotated(db, wb.id)
     wb = _promote_workboard_to_published(db, wb, creator=current_user)
@@ -691,7 +693,7 @@ def unpublish_workboard(
     public runtime resolver then 404s the app — but keeps the published snapshot
     intact so a later Publish can promote the (possibly edited) draft again."""
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     wb.is_published = False
     db.commit()
     db.refresh(wb)
@@ -1480,7 +1482,15 @@ def list_public_links(
 ):
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    return WorkboardPublicLinkService.list_links(wb)
+    publisher = can_publish(db, current_user, wb, "workboards")
+    out = []
+    for link in WorkboardPublicLinkService.list_links(wb):
+        item = WorkboardPublicLinkResponse.model_validate(link)
+        out.append(item.model_copy(update={
+            "token": item.token if publisher else None,
+            "capabilities": {"manage": publisher, "reveal_token": publisher},
+        }))
+    return out
 
 
 @router.post(
@@ -1496,7 +1506,7 @@ def create_public_link(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _assert_owner_pin_rotated(db, wb.id)
     if not wb.is_published:
@@ -1533,7 +1543,7 @@ def update_public_link(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     updated = WorkboardPublicLinkService.update_link(
         db,
@@ -1558,7 +1568,7 @@ def delete_public_link(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     deleted = WorkboardPublicLinkService.delete_link(db, wb, link_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Public link not found")

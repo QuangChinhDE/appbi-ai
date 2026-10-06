@@ -2799,7 +2799,8 @@ class WorkboardPublicLinkUpdate(BaseModel):
 class WorkboardPublicLinkResponse(BaseModel):
     id: str
     name: str
-    token: str
+    # Anonymous bearer capability: null unless the caller may publish the workboard.
+    token: Optional[str] = None
     mode: Literal["form", "view"] = "form"
     view_id: Optional[str] = None
     is_active: bool = True
@@ -2808,6 +2809,7 @@ class WorkboardPublicLinkResponse(BaseModel):
     last_accessed_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    capabilities: Optional[Dict[str, bool]] = None
 
 
 # ---------------------------------------------------------------------------

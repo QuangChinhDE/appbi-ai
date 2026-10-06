@@ -26,6 +26,8 @@ from app.core.dependencies import (
     require_view_access,
     require_edit_access,
     require_full_access,
+    require_publish_access,
+    can_publish,
     get_effective_permission,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
@@ -2973,7 +2975,7 @@ def publish_dashboard_draft(
     dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
-    require_edit_access(db, current_user, dash, "dashboards")
+    require_publish_access(db, current_user, dash, "dashboards")
 
     user_key = str(current_user.id)
     snapshot = dict(dash.draft_snapshot or {})
@@ -3354,6 +3356,7 @@ def list_public_links(
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
     require_view_access(db, current_user, dash, "dashboards")
+    publisher = can_publish(db, current_user, dash, "dashboards")
     # Hide workboard-managed links — they belong to a workboard screen's
     # lifecycle and are surfaced through the Workboard builder UI instead.
     links = (
@@ -3365,7 +3368,14 @@ def list_public_links(
         .order_by(DashboardPublicLink.created_at.desc())
         .all()
     )
-    return [_sanitize_link_for_admin(link) for link in links]
+    out = []
+    for link in links:
+        item = PublicLinkResponse.model_validate(_sanitize_link_for_admin(link))
+        out.append(item.model_copy(update={
+            "token": item.token if publisher else None,
+            "capabilities": {"manage": publisher, "reveal_token": publisher},
+        }))
+    return out
 
 
 def _refuse_unappliable_link_filters(filters_config) -> None:
@@ -3395,7 +3405,7 @@ def create_public_link(
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    require_edit_access(db, current_user, dash, "dashboards")
+    require_publish_access(db, current_user, dash, "dashboards")
     _refuse_unappliable_link_filters(request.filters_config)
     link = DashboardPublicLink(
         dashboard_id=dashboard_id,
@@ -3506,7 +3516,7 @@ def update_public_link(
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    require_edit_access(db, current_user, dash, "dashboards")
+    require_publish_access(db, current_user, dash, "dashboards")
     link = (
         db.query(DashboardPublicLink)
         .filter(DashboardPublicLink.id == link_id, DashboardPublicLink.dashboard_id == dashboard_id)
@@ -3580,7 +3590,7 @@ def delete_public_link(
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    require_edit_access(db, current_user, dash, "dashboards")
+    require_publish_access(db, current_user, dash, "dashboards")
     link = (
         db.query(DashboardPublicLink)
         .filter(DashboardPublicLink.id == link_id, DashboardPublicLink.dashboard_id == dashboard_id)

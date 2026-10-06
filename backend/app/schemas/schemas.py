@@ -632,7 +632,9 @@ class PublicLinkResponse(BaseModel):
     id: int
     dashboard_id: int
     name: str
-    token: str
+    # The anonymous bearer capability. Null unless the caller may PUBLISH the
+    # dashboard (owner / module admin); viewers used to receive every token.
+    token: Optional[str] = None
     filters_config: Optional[List[Dict[str, Any]]] = None
     appearance_config: Optional[Dict[str, Any]] = None
     is_active: bool
@@ -642,6 +644,9 @@ class PublicLinkResponse(BaseModel):
     last_accessed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    # Backend-computed: what THIS caller may do with the link (UX only; every
+    # mutation is re-checked server-side).
+    capabilities: Optional[Dict[str, bool]] = None
 
     model_config = ConfigDict(from_attributes=True)
 

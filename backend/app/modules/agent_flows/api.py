@@ -989,7 +989,7 @@ class BindingWrite(BaseModel):
     store_question_content: bool = True
 
 
-def _link_and_dashboard(db: Session, link_id: int, user: User):
+def _link_and_dashboard(db: Session, link_id: int, user: User, *, publish: bool = False):
     """The link and its report — only if the caller may see that report.
 
     THE REPORT IS CHECKED, NOT JUST THE MODULE. A link id is an integer chosen
@@ -1014,6 +1014,13 @@ def _link_and_dashboard(db: Session, link_id: int, user: User):
     if dashboard is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo của link")
     require_view_access(db, user, dashboard, "dashboards")
+    if publish:
+        # Choosing which assistant answers ANONYMOUS viewers of a public link
+        # changes what the public surface does: it is a publish action on the
+        # dashboard (decision Q3), not something a viewer may do.
+        from app.core.dependencies import require_publish_access
+
+        require_publish_access(db, user, dashboard, "dashboards")
     return link, dashboard
 
 
@@ -1152,7 +1159,7 @@ def save_binding(
     body: BindingWrite, db: Session = Depends(get_db), user: User = Depends(can_assign)
 ) -> dict[str, Any]:
     """Assign. Refused while anything required is unresolved."""
-    link, dashboard = _link_and_dashboard(db, body.link_id, user)
+    link, dashboard = _link_and_dashboard(db, body.link_id, user, publish=True)
     flow = _usable_flow(db, user, body.brain_key)
     contract = binding_service.DataContract.model_validate(body.data_contract or {})
 
@@ -1175,15 +1182,15 @@ def save_binding(
 def delete_binding(
     link_id: int, db: Session = Depends(get_db), user: User = Depends(can_assign)
 ) -> dict[str, str]:
+    # Authorize FIRST: whether a link has an assistant is not something to tell
+    # a caller who may not change it, and nothing is touched before the check.
+    _link_and_dashboard(db, link_id, user, publish=True)
     binding = binding_service.get_for_link(db, link_id)
     if binding is None:
         raise HTTPException(status_code=404, detail="Link này chưa gán flow nào")
     brain_key = binding.brain_key
+    # Deleting the binding IS unassigning the flow.
     db.delete(binding)
-    # Deleting the binding IS unassigning the flow — there is no longer a copy of
-    # the flow key on the link to clear as well. Kept as a permission check on the
-    # link, which unassigning still requires.
-    _link_and_dashboard(db, link_id, user)
     db.commit()
     reg._audit(db, "AGENT_FLOW_UNASSIGNED", brain_key, _actor(user), {"link_id": link_id})
     return {"status": "deleted"}

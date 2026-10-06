@@ -269,7 +269,10 @@ export type WorkboardImportResponse = Workboard & {
 export interface WorkboardPublicLink {
   id: string;
   name: string;
-  token: string;
+  /** Null unless the caller may publish (owner / module admin). */
+  token: string | null;
+  /** Backend-computed actions for THIS caller (UX only). */
+  capabilities?: { manage: boolean; reveal_token: boolean } | null;
   is_active: boolean;
   has_password: boolean;
   access_count: number;

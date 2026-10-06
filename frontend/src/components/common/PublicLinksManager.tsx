@@ -1351,7 +1351,8 @@ export function PublicLinksManager({
               </div>
             </div>
 
-            {link.is_active && (
+            {/* The token is only sent to callers who may publish this dashboard. */}
+            {link.is_active && link.token && (
               <div className="space-y-2">
                 <div className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
                   <Link2 className="h-4 w-4 text-text-quaternary" />

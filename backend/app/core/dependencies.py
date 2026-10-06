@@ -631,3 +631,22 @@ def require_full_access(db: Session, user: User, resource, module: str):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Permission denied: owner or full access required",
         )
+
+
+def can_publish(db: Session, user: User, resource, module: str) -> bool:
+    """PUBLISH is its own action (decision Q3): making a resource visible to
+    others - a dashboard's published version, a public link or embed, a
+    workboard's live runtime, an assistant bound to a public link.
+
+    Held by the resource OWNER (with the module at edit) or the MODULE ADMIN -
+    exactly `effective == "full"` today. A shared `edit` never implies it. An
+    explicit publish grant can be added here later without touching callers."""
+    return get_effective_permission(db, user, resource, module) == "full"
+
+
+def require_publish_access(db: Session, user: User, resource, module: str):
+    if not can_publish(db, user, resource, module):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Publishing requires the owner or a module administrator.",
+        )

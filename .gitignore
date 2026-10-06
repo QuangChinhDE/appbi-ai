@@ -441,3 +441,4 @@ backend/_verify_gate.db
 !backend/tests/test_authz_observability_http_pg.py
 !backend/tests/test_permission_caps.py
 !backend/tests/test_authz_token_domains_http_pg.py
+!backend/tests/test_authz_publish_http_pg.py
