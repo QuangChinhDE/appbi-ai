@@ -644,7 +644,10 @@ def execute_query(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Data source with ID {body.data_source_id} not found"
         )
+    # Arbitrary SQL against the WHOLE source, with its stored credential: that
+    # is using the secret (edit), not viewing the datasource's metadata.
     require_view_access(db, current_user, data_source, "data_sources")
+    require_edit_access(db, current_user, data_source, "data_sources")
 
     try:
         columns, data, execution_time_ms = DataSourceConnectionService.execute_query(

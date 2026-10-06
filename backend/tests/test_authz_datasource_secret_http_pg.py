@@ -99,3 +99,62 @@ def test_update_cannot_repoint_the_stored_secret(client, world, monkeypatch):  #
     r = client.put(f"/api/v1/datasources/{world['ds'].id}", headers=world["editor"].headers,
                    json={"config": cfg})
     assert r.status_code == 400, r.text
+
+
+# ── Network level: the backend never connects to a forbidden destination ──────
+
+@pytest.fixture()
+def listener():
+    import socket
+    import threading
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(5)
+    sock.settimeout(0.2)
+    state = {"n": 0, "stop": False}
+
+    def run():
+        while not state["stop"]:
+            try:
+                c, _ = sock.accept()
+                state["n"] += 1
+                c.close()
+            except OSError:
+                continue
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    yield sock.getsockname()[1], state
+    state["stop"] = True
+    t.join(1)
+    sock.close()
+
+
+def test_viewer_own_credentials_cannot_reach_loopback(client, world, listener, monkeypatch):  # noqa: F811
+    """A viewer testing a connection with credentials THEY type cannot turn the
+    backend into a scanner of its own loopback / private network."""
+    monkeypatch.delenv("DATASOURCE_ALLOW_LOOPBACK", raising=False)
+    port, state = listener
+    for host in ("127.0.0.1", "localhost", "169.254.169.254", "2130706433"):
+        r = client.post("/api/v1/datasources/test", headers=world["viewer"].headers,
+                        json={"type": "postgresql", "config": {"host": host, "port": port, "database": "d",
+                                                              "username": "u", "password": "typed"}})
+        assert r.status_code == 200 and r.json()["success"] is False, (host, r.text)
+    assert state["n"] == 0
+
+
+def test_stored_secret_never_reaches_a_listener(client, world, listener, monkeypatch):  # noqa: F811
+    """With the target changed to a host the caller controls, the stored
+    secret is refused before any connection (also by owners)."""
+    monkeypatch.setenv("DATASOURCE_ALLOW_LOOPBACK", "true")   # even if loopback were allowed
+    port, state = listener
+    r = _test(client, world["owner"], world["ds"].id, host="127.0.0.1", port=port)
+    assert r.status_code == 400, r.text
+    assert state["n"] == 0
+
+
+def test_viewer_cannot_run_sql_on_the_source(client, world):  # noqa: F811
+    r = client.post("/api/v1/datasources/query", headers=world["viewer"].headers,
+                    json={"data_source_id": world["ds"].id, "sql_query": "SELECT 1"})
+    assert r.status_code == 403, r.text
