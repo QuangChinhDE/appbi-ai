@@ -124,17 +124,35 @@ test.afterAll(async ({ request }) => {
 test('26 · readable on Tablet and Phone: titles get real width, KPI values unclipped, plot areas, the table after a scroll', async ({ page }) => {
   test.setTimeout(600_000);
   const guard = guardErrors(page);
-  // The everyday viewer state: answers re-served from the result cache carry an
-  // "As of HH:MM" badge in the tile header once they are a minute old. Warm the
-  // cache, then reload until the badge is really there — the header is checked
-  // in the state that squeezes it, not only on a cold first load.
+  // The everyday viewer state: answers re-served from the server's result cache
+  // carry an "As of HH:MM" badge in the tile header once they are a minute old
+  // (the age is judged by the browser's clock). Warm the cache with a real load,
+  // then let the BROWSER be two minutes later (time keeps flowing; nothing in the
+  // app is touched) and reload: the server's real cached answers now show the
+  // badge, and the header is checked in the state that squeezes it.
+  const freshness = new Map<number, unknown>();
+  page.on('response', async (res) => {
+    if (!res.url().endsWith('/charts/data') || res.request().method() !== 'POST') return;
+    try {
+      for (const r of (await res.json())?.results ?? []) {
+        const d = r?.data?.debug ?? {};
+        freshness.set(Number(r.tile_id), { cached: d.result_cached, asOf: d.result_as_of, snapshot: d.snapshot_as_of });
+      }
+    } catch { /* not a chart answer */ }
+  });
   await dAt(page, PHONE);
   await visitAll(page);
+  await page.clock.install({ time: Date.now() + 120_000 });
+  await page.clock.resume();
   await expect.poll(async () => {
     await page.reload();
     await page.waitForSelector('[data-report-layout] [data-tile-id]');
+    await visitAll(page);
     return page.locator('[data-testid="tile-cached-as-of"]').count();
-  }, { message: 'no tile ever showed the cached "As of" badge', timeout: 180_000, intervals: [15_000] }).toBeGreaterThan(0);
+  }, {
+    message: `no tile showed the cached "As of" badge; what the server said per tile: ${JSON.stringify([...freshness])}`,
+    timeout: 120_000, intervals: [5_000],
+  }).toBeGreaterThan(0);
   for (const width of [TABLET, PHONE]) {
     await dAt(page, width);
     await visitAll(page);
