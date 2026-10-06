@@ -583,7 +583,7 @@ jobs:
             tests/test_authz_route_inventory.py \
             tests/test_module_floor.py \
             tests/test_workboard_app_user_roles.py \
-            --junitxml=/tmp/authz.xml 2>&1 | tee /tmp/authz.log
+            --junitxml=/tmp/authz-core.xml 2>&1 | tee /tmp/authz-core.log
 
       - name: GATE — Postgres role + row-level security (app role, not owner)
         env:
@@ -593,21 +593,31 @@ jobs:
             tests/test_authz_db_role_pg.py \
             tests/test_authz_dataset_grants_http_pg.py \
             tests/test_authz_workspace_http_pg.py \
-            tests/test_authz_datasource_secret_http_pg.py
+            tests/test_authz_datasource_secret_http_pg.py \
+            --junitxml=/tmp/authz-pg.xml
 
-      - name: No security test was skipped
+      # EVERY MANDATORY SECURITY SUITE, NOT JUST THE FIRST.
+      #
+      # Each security step writes its own JUnit report. A suite whose report is
+      # missing, collected nothing, or skipped / errored / failed anything fails
+      # the job - a Postgres suite that silently skipped is not coverage.
+      - name: No security test was skipped (all suites)
         if: always()
         run: |
           python - <<'PY'
           import pathlib, sys, xml.etree.ElementTree as ET
-          p = pathlib.Path('/tmp/authz.xml')
-          if not p.exists():
-              sys.exit('no JUnit report: the security suite did not run')
-          root = ET.parse(p).getroot()
-          suites = [root] if root.tag == 'testsuite' else list(root)
-          tests = sum(int(s.get('tests', 0)) for s in suites)
-          skipped = sum(int(s.get('skipped', 0)) for s in suites)
-          print(f'authz security: {tests} tests, {skipped} skipped')
-          if tests == 0 or skipped:
-              sys.exit('a security suite that collects nothing or skips is not coverage')
+          bad = []
+          for name in ('authz-core', 'authz-pg'):
+              p = pathlib.Path(f'/tmp/{name}.xml')
+              if not p.exists():
+                  bad.append(f'{name}: no JUnit report (suite did not run)')
+                  continue
+              root = ET.parse(p).getroot()
+              suites = [root] if root.tag == 'testsuite' else list(root)
+              n = {k: sum(int(x.get(k, 0)) for x in suites) for k in ('tests', 'skipped', 'failures', 'errors')}
+              print(f"{name}: {n['tests']} tests, {n['skipped']} skipped, {n['failures']} failed, {n['errors']} errors")
+              if n['tests'] == 0 or n['skipped'] or n['failures'] or n['errors']:
+                  bad.append(f'{name}: {n}')
+          if bad:
+              sys.exit('security suites not fully executed:\n  ' + '\n  '.join(bad))
           PY

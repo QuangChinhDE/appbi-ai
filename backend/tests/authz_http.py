@@ -32,6 +32,19 @@ if not (OWNER_URL and APP_URL):
     pytest.skip("authz HTTP suite needs AUTHZ_PG_OWNER_URL and AUTHZ_PG_APP_URL",
                 allow_module_level=True)
 
+import sys as _sys
+
+if "app.core.database" in _sys.modules:
+    # The engines are built at import. If another suite in this process imported
+    # the app first (e.g. against SQLite), these tests would silently run on that
+    # database instead of Postgres - a green result proving nothing.
+    _bound = str(_sys.modules["app.core.database"].engine.url)
+    if not _bound.startswith("postgresql"):
+        raise RuntimeError(
+            f"authz HTTP suite must own its process: app already bound to {_bound!r}. "
+            "Run Postgres security suites in a separate pytest invocation."
+        )
+
 os.environ["DATABASE_URL"] = OWNER_URL
 os.environ["DATABASE_URL_APP"] = APP_URL
 os.environ.setdefault("ENVIRONMENT", "test")
