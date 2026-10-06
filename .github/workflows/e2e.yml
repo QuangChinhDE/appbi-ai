@@ -111,6 +111,10 @@ jobs:
       # deployment where Agent Flows was switched off. `.env.example` and
       # docker-compose both turn it on, so CI now matches what ships.
       METADATA_CATALOG_ENABLED: "true"
+      # The authorization gate (project `security`) exercises the public
+      # workspace routes, which are only mounted with Workboards on; without it
+      # every workspace assertion is a 404 before any auth check runs.
+      WORKBOARDS_ENABLED: "true"
       PYTHONPATH: ${{ github.workspace }}/backend
       E2E_BASE_URL: http://localhost:3000
       E2E_API_URL: http://localhost:8000

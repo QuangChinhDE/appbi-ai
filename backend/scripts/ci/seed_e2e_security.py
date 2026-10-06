@@ -73,8 +73,10 @@ def main() -> int:
         db.flush()
         db.add(TeamMembership(team_id=team.id, user_id=member.id))
 
-        dsrc = DataSource(name=f"sec-src-{run}", type=DataSourceType.POSTGRESQL, owner_id=owner.id,
-                          config={"host": "warehouse.invalid", "port": 5432, "database": "sales",
+        dsrc = DataSource(name=f"sec-src-{run}", type=DataSourceType.MYSQL, owner_id=owner.id,
+                          # MySQL, not Postgres: other specs pick "the first Postgres source"
+                          # from the admin's picker, and this one points nowhere.
+                          config={"host": "warehouse.invalid", "port": 3306, "database": "sales",
                                   "username": "svc", "password": f"stored-secret-{run}"})
         db.add(dsrc)
         ds = Dataset(name=f"sec-ds-{run}", owner_id=owner.id)
