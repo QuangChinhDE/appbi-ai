@@ -46,16 +46,17 @@ def db_url():
 
 
 def _alembic(url, fn, rev):
-    cfg = Config(str(BACKEND / "alembic.ini"))
-    cfg.set_main_option("script_location", str(BACKEND / "alembic"))
-    cfg.set_main_option("sqlalchemy.url", url)
-    old = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = url
-    try:
-        fn(cfg, rev)
-    finally:
-        if old is not None:
-            os.environ["DATABASE_URL"] = old
+    """Run alembic in a SUBPROCESS against ``url``. alembic/env.py takes its URL
+    from app settings, which are cached at import: in a process that already
+    imported the app it would migrate THAT database instead of this one."""
+    import subprocess
+    import sys
+
+    cmd = "upgrade" if fn is command.upgrade else "downgrade"
+    env = {**os.environ, "DATABASE_URL": url}
+    r = subprocess.run([sys.executable, "-m", "alembic", cmd, rev], cwd=str(BACKEND), env=env,
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stderr[-3000:]
 
 
 def test_legacy_dataset_shares_become_canonical_grants(db_url):
