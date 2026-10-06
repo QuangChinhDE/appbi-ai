@@ -336,7 +336,7 @@ class DatasetCRUDService:
                 **((incoming_settings or {}).get("calendar_dimension") or {}),
             }
             db_dataset.settings = normalize_dataset_settings(
-                {"calendar_dimension": merged_calendar_settings},
+                {**current_settings, "calendar_dimension": merged_calendar_settings},
                 enabled_default=bool(
                     (current_settings.get("calendar_dimension") or {}).get("enabled", False)
                 ),

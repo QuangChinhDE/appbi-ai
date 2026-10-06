@@ -186,6 +186,45 @@ def require_view_lineage(db: Session, user: User, child_dataset_id: int) -> None
             )
 
 
+def require_grant_authority(db: Session, caller: User, dataset: Dataset, *, verb: Optional[str],
+                            user_id=None, team_id=None) -> None:
+    """Authorize a grant change BEFORE it is written. Raises 400/403.
+
+    A verb is grantable only when its whole capability set lies inside the
+    caller's own: `reshare` alone ({view, reshare}) may hand out view/reshare,
+    never manage. An existing grant may be replaced or revoked only by someone
+    who could have granted it, and below `manage` nobody rewrites their own row
+    (revoking it — ``verb=None`` — only ever lowers access, so that stays open)."""
+    from fastapi import HTTPException, status
+
+    if (user_id is None) == (team_id is None):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Exactly one of user_id / team_id must be set")
+    if verb is not None and verb not in VALID_VERBS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid verb '{verb}'")
+    mine = dataset_capabilities(db, caller, dataset)
+    if "reshare" not in mine:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Bạn không có quyền 'reshare' trên Dataset này.")
+    if "manage" in mine:
+        return
+    q = db.query(DatasetGrant).filter(DatasetGrant.dataset_id == dataset.id)
+    q = q.filter(DatasetGrant.user_id == user_id) if user_id is not None else q.filter(DatasetGrant.team_id == team_id)
+    existing = q.first()
+    is_self = user_id is not None and str(user_id) == str(caller.id)
+    if verb is None and is_self:
+        return
+    if is_self:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Không thể tự thay đổi quyền của chính mình trên Dataset này.")
+    if verb is not None and not _CAPS[verb] <= mine:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail=f"Không thể cấp quyền '{verb}' vượt quá quyền bạn đang có.")
+    if existing is not None and existing.verb in _CAPS and not _CAPS[existing.verb] <= mine:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail=f"Không thể thay đổi quyền '{existing.verb}' cao hơn quyền bạn đang có.")
+
+
 def set_grant(db: Session, dataset_id: int, *, verb: str,
               user_id=None, team_id=None, granted_by=None) -> DatasetGrant:
     """Upsert a single grant (one verb per principal per dataset)."""

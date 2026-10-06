@@ -170,6 +170,11 @@ def reconcile_stuck_runs(db: Session, dataset_id: Optional[int] = None, force: b
         for run in q.all():
             if not force and _qc.is_claimed_global(_lease_key(run.dataset_id)):
                 continue  # a live sync holds the lease — genuinely in flight
+            if _sync_looks_alive(run.dataset_id):
+                # Progress is still moving SOMEWHERE: another worker's live sync
+                # (a restart here must not fail it or free its lease), or a sync
+                # that outlived its lease TTL. Only a provably dead run is reaped.
+                continue
             if force:
                 # Startup: a fresh process runs no sync, so a still-claimed lease
                 # is a crash leftover — free it so it can't block the next sync.
@@ -698,6 +703,11 @@ def _sync_and_publish_blocking(
         reason = ("Không có nơi lưu snapshot: dataset này chưa có BigQuery datasource nào bật "
                   "materialization (snapshot host), nên không bảng nào được dựng. Thêm một "
                   "BigQuery host để Sync & Publish.")
+    if not ok and result.get("errors"):
+        names = {t.id: (t.display_name or t.source_table_name or f"#{t.id}")
+                 for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()}
+        causes = [f"{names.get(tid, tid)}: {err}" for tid, err in sorted(result["errors"].items())]
+        reason = f"{reason} " + " | ".join(causes[:3]) if reason else " | ".join(causes[:3])
     if ok and authored_design_fingerprint(db, dataset_id) != locked_authored:
         ok, reason = False, ("Thiết kế dataset đã thay đổi trong lúc đồng bộ — generation vừa dựng không "
                              "khớp một thiết kế duy nhất nên không được publish. Bấm Sync & Publish lại.")

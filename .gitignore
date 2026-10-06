@@ -418,6 +418,14 @@ backend/_verify_gate.db
 !backend/tests/test_public_authoritative_bounds.py
 !backend/tests/test_public_authoritative_bounds_pg.py
 !backend/tests/test_publish_candidate_generation.py
+!backend/tests/test_dataset_grant_authority.py
+!backend/tests/test_failed_candidate_not_resumed.py
+!backend/tests/test_dataset_settings_namespaces.py
+!backend/tests/test_reaper_spares_live_runs.py
+!backend/tests/test_dataset_source_boundary_caches.py
+!backend/tests/test_dataset_preview_is_read_only.py
+!backend/tests/test_quality_run_overlap.py
+!backend/tests/test_refresh_follows_publish_lifecycle.py
 !backend/tests/test_pair1_baseline_parity.py
 !backend/tests/test_pair2_golden_topology_pg.py
 !backend/tests/test_pair3_chartservice_pg.py

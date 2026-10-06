@@ -49,11 +49,12 @@ from __future__ import annotations
 import json
 import re
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
@@ -1817,6 +1818,33 @@ class DatasetQualityService:
         db.refresh(run)
         return run
 
+    #: A queued/running quality run older than this is presumed dead (its
+    #: background task died with a restart) and no longer blocks new runs.
+    STALE_RUN_SECONDS = 2 * 60 * 60
+
+    @staticmethod
+    def reap_stale_runs(db: Session, dataset_id: int) -> int:
+        """Fail queued/running runs left behind by a restart. Nothing else ever
+        finalized them, so `has_active_run` skipped every scheduled tick — and
+        every manual run — for that dataset forever."""
+        cutoff = datetime.utcnow() - timedelta(seconds=DatasetQualityService.STALE_RUN_SECONDS)
+        stale = (
+            db.query(DatasetQualityRun)
+            .filter(
+                DatasetQualityRun.dataset_id == dataset_id,
+                DatasetQualityRun.status.in_(("queued", "running")),
+                func.coalesce(DatasetQualityRun.started_at, DatasetQualityRun.created_at) < cutoff,
+            )
+            .all()
+        )
+        for run in stale:
+            run.status = "failed"
+            run.completed_at = datetime.utcnow()
+            run.error_message = run.error_message or "Bị gián đoạn (server khởi động lại) — chạy lại kiểm tra."
+        if stale:
+            db.commit()
+        return len(stale)
+
     @staticmethod
     def has_active_run(db: Session, dataset_id: int) -> bool:
         """Return True if a run is currently queued or running for the dataset."""
@@ -1845,6 +1873,7 @@ class DatasetQualityService:
         Returns the newly-created run, or None if `allow_overlap=False` and
         another run is already active for this dataset.
         """
+        DatasetQualityService.reap_stale_runs(db, dataset_id)
         if not allow_overlap and DatasetQualityService.has_active_run(db, dataset_id):
             logger.info(
                 "[quality_run] Skipped trigger for dataset %s: another run is active",

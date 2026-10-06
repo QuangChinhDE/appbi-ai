@@ -235,6 +235,14 @@ jobs:
             tests/test_relationship_contract.py \
             tests/test_public_authoritative_bounds.py \
             tests/test_publish_candidate_generation.py \
+            tests/test_dataset_grant_authority.py \
+            tests/test_failed_candidate_not_resumed.py \
+            tests/test_dataset_settings_namespaces.py \
+            tests/test_reaper_spares_live_runs.py \
+            tests/test_dataset_source_boundary_caches.py \
+            tests/test_dataset_preview_is_read_only.py \
+            tests/test_quality_run_overlap.py \
+            tests/test_refresh_follows_publish_lifecycle.py \
             tests/test_semantic_health.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
       # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
       #

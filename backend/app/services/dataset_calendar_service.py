@@ -170,13 +170,16 @@ def normalize_dataset_settings(
     *,
     enabled_default: bool,
 ) -> Dict[str, Any]:
+    """Normalize the calendar namespace; every other namespace (snapshot_config,
+    model_layout, destination, …) is owned by another subsystem and passes
+    through untouched — dropping them here erased a configured snapshot
+    schedule or model layout whenever the Calendar was edited."""
     raw = dict(raw_settings or {})
-    return {
-        "calendar_dimension": normalize_calendar_dimension_settings(
-            raw.get("calendar_dimension"),
-            enabled_default=enabled_default,
-        )
-    }
+    raw["calendar_dimension"] = normalize_calendar_dimension_settings(
+        raw.get("calendar_dimension"),
+        enabled_default=enabled_default,
+    )
+    return raw
 
 
 def get_dataset_settings(dataset: Dataset | Any, *, enabled_default: bool = False) -> Dict[str, Any]:
@@ -236,7 +239,7 @@ def exclude_calendar_join(
     exclusions.append(key)
     calendar_settings["excluded_auto_joins"] = exclusions
     dataset.settings = normalize_dataset_settings(
-        {"calendar_dimension": calendar_settings},
+        {**current_settings, "calendar_dimension": calendar_settings},
         enabled_default=bool(calendar_settings.get("enabled", enabled_default)),
     )
     return True
