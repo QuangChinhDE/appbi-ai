@@ -65,16 +65,24 @@ class _Share:
 
 
 @pytest.fixture()
-def shares(monkeypatch):
-    """{user_id: level} — who the dataset was shared with, and how far."""
-    granted: dict = {}
+def shares(db):
+    """{user_id: level} — who dataset 1 was shared with, and how far.
 
-    def _lookup(_db, user, _rt, _rid):
-        level = granted.get(user.id)
-        return _Share(level) if level else None
+    Dataset access is stored as DatasetGrant only (authz migration
+    20261008_0001): a share of level view/edit is the grant the ShareDialog
+    writes - view -> explore, edit -> edit. Setting a key writes that grant."""
+    from app.models.dataset import DatasetGrant
 
-    monkeypatch.setattr("app.core.dependencies.get_highest_share_for_resource", _lookup)
-    return granted
+    class _Granted(dict):
+        def __setitem__(self, uid, level):
+            super().__setitem__(uid, level)
+            db.query(DatasetGrant).filter(DatasetGrant.dataset_id == 1,
+                                          DatasetGrant.user_id == uid).delete()
+            db.add(DatasetGrant(dataset_id=1, user_id=uid,
+                                verb={"view": "explore", "edit": "edit"}[level]))
+            db.commit()
+
+    return _Granted()
 
 
 def _view(vid, name, table_id, dims):

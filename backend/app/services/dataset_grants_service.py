@@ -122,17 +122,8 @@ def dataset_capabilities(db: Session, user: User, dataset: Dataset) -> Set[str]:
         if applies and g.verb in _CAPS:
             caps |= _CAPS[g.verb]
 
-    # Legacy ResourceShare(DATASET), read through the canonical verbs:
-    # VIEW -> explore, EDIT -> edit - resolved by the SHARE ENGINE's own lookup
-    # (user + team), so there is one share resolution in the product. No
-    # exception handler: a failure here is an authorization error.
-    from app.core import dependencies as _deps
-    from app.models.resource_share import ResourceType
-
-    share = _deps.get_highest_share_for_resource(db, user, ResourceType.DATASET, str(dataset.id))
-    if share is not None:
-        lvl = getattr(share.permission, "value", share.permission)
-        caps |= _CAPS["edit"] if lvl == "edit" else _CAPS["explore"]
+    # There is no second storage: legacy ResourceShare(DATASET) rows were
+    # converted to grants by migration 20261008_0001 and are no longer read.
 
     return caps & ceiling
 
@@ -286,22 +277,6 @@ def revoke_as(db: Session, actor: User, dataset: Dataset, *, user_id=None, team_
     return 1
 
 
-def _legacy_share_caps(db: Session, user: User, datasets) -> dict:
-    """{dataset_id: caps} from legacy ResourceShare(DATASET) rows, through the
-    share engine (core.dependencies.get_highest_share_permissions: user + team)."""
-    from app.core import dependencies as _deps
-    from app.models.resource_share import ResourceType
-
-    ids = [str(d.id) for d in datasets]
-    if not ids:
-        return {}
-    levels = _deps.get_highest_share_permissions(db, user, ResourceType.DATASET, ids)
-    return {
-        int(rid): set(_CAPS["edit"] if lvl == "edit" else _CAPS["explore"])
-        for rid, lvl in levels.items() if lvl in ("view", "edit")
-    }
-
-
 def level_from_capabilities(caps: Set[str]) -> str:
     """The generic effective level that corresponds to a Dataset capability set.
 
@@ -334,7 +309,6 @@ def batch_dataset_capabilities(db: Session, user: User, datasets) -> dict:
     ids = [d.id for d in datasets]
     team_ids = _team_ids(db, user)
     grants = db.query(DatasetGrant).filter(DatasetGrant.dataset_id.in_(ids)).all()
-    legacy = _legacy_share_caps(db, user, datasets)
     for d in datasets:
         if d.owner_id is not None and d.owner_id == user.id:
             out[d.id] = set(_CAPS["manage"]) & ceiling
@@ -345,7 +319,6 @@ def batch_dataset_capabilities(db: Session, user: User, datasets) -> dict:
                 g.user_id == user.id or (g.team_id is not None and g.team_id in team_ids)
             ):
                 caps |= _CAPS[g.verb]
-        caps |= legacy.get(d.id, set())
         out[d.id] = caps & ceiling
     return out
 
@@ -359,3 +332,41 @@ def grants_scope_subquery(user: User, db: Session):
     if team_ids:
         cond = or_(cond, DatasetGrant.team_id.in_(team_ids))
     return select(DatasetGrant.dataset_id).where(cond)
+
+
+# ── The generic /shares API, for datasets, is an adapter over grants ─────────
+# The ShareDialog speaks view/edit. For a dataset: view -> `explore`,
+# edit -> `edit` (the same reading legacy shares got). Every write goes through
+# grant_as / revoke_as, so the anti-escalation rules apply here too.
+
+SHARE_TO_VERB = {"view": "explore", "edit": "edit"}
+
+
+def share_level_of(verb: str) -> str:
+    return "edit" if verb in ("edit", "manage") else "view"
+
+
+def cascade_grant(db: Session, dataset_id: int, verb: str, *, user_id=None, team_id=None,
+                  granted_by=None, source: str) -> None:
+    """Grant created by sharing something that USES the dataset (a dashboard).
+    Never downgrades or replaces an existing grant that already covers it;
+    tagged with ``source`` so revoking that share removes only what it added."""
+    u, t = (user_id, None) if user_id is not None else (None, team_id)
+    row = _existing(db, dataset_id, u, t)
+    if row is not None:
+        if _CAPS.get(row.verb, set()) >= _CAPS[verb]:
+            return
+        if row.source is None or row.source == "legacy_share":
+            return  # a direct grant is never rewritten by a cascade
+        row.verb = verb
+        row.source = source
+        return
+    db.add(DatasetGrant(dataset_id=dataset_id, user_id=u, team_id=t, verb=verb,
+                        granted_by=granted_by, source=source))
+
+
+def revoke_cascade_grants(db: Session, dataset_ids, *, user_id=None, team_id=None, source: str) -> int:
+    q = db.query(DatasetGrant).filter(DatasetGrant.dataset_id.in_(list(dataset_ids)),
+                                      DatasetGrant.source == source)
+    q = q.filter(DatasetGrant.user_id == user_id) if user_id is not None else q.filter(DatasetGrant.team_id == team_id)
+    return q.delete(synchronize_session=False)

@@ -206,12 +206,29 @@ def test_module_admin_manages_any_dataset_explicitly(client, db):  # noqa: F811
     ("view", {"view", "explore"}),
     ("edit", {"view", "explore", "build", "edit"}),
 ])
-def test_legacy_resource_share_maps_to_canonical_verbs(client, db, level, expected):  # noqa: F811
-    from tests.authz_http import share
-
+def test_the_share_dialog_writes_canonical_grants(client, db, level, expected):  # noqa: F811
+    """POST /shares/dataset/{id} (the ShareDialog) is an adapter over grants:
+    view -> explore (no build), edit -> edit (no publish / reshare / manage)."""
     owner = make_user(db, "c-lo", datasets="edit")
     sharee = make_user(db, "c-ls", datasets="edit")
     ds = _dataset(db, owner)
-    share(db, "dataset", ds.id, sharee, level, owner)
+    r = client.post(f"/api/v1/shares/dataset/{ds.id}", headers=owner.headers,
+                    json={"user_id": str(sharee.id), "permission": level})
+    assert r.status_code in (200, 201), r.text
+    assert r.json()["permission"] == level
     code, caps = _caps(client, sharee, ds.id)
     assert code == 200 and caps == expected
+    listed = client.get(f"/api/v1/shares/dataset/{ds.id}", headers=owner.headers).json()
+    assert [x["permission"] for x in listed if x["user_id"] == str(sharee.id)] == [level]
+
+
+def test_no_resource_share_row_is_ever_written_for_a_dataset(client, db):  # noqa: F811
+    from app.models.resource_share import ResourceShare, ResourceType
+
+    owner = make_user(db, "c-o2", datasets="edit")
+    sharee = make_user(db, "c-s2", datasets="edit")
+    ds = _dataset(db, owner)
+    client.post(f"/api/v1/shares/dataset/{ds.id}", headers=owner.headers,
+                json={"user_id": str(sharee.id), "permission": "edit"})
+    assert db.query(ResourceShare).filter(ResourceShare.resource_type == ResourceType.DATASET,
+                                          ResourceShare.resource_id == str(ds.id)).count() == 0

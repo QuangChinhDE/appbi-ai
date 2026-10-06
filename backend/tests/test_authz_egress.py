@@ -148,8 +148,13 @@ class _Redirect(http.server.BaseHTTPRequestHandler):
     target = ""
 
     def do_POST(self):  # noqa: N802
+        # Read the whole request first: replying while the client is still
+        # sending makes Windows abort the connection (a flaky test, not a
+        # product behaviour).
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
         self.send_response(302)
         self.send_header("Location", self.target)
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def log_message(self, *a):

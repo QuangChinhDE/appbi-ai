@@ -129,8 +129,18 @@ def db():
 
 
 def share(db, resource_type: str, resource_id, who: Principal, level: str, by: Principal) -> None:
-    """A ResourceShare row (the generic share engine), as the UI would create it."""
+    """A share as the UI would create it. For a dataset that is a DatasetGrant
+    (one storage since migration 20261008_0001; view -> explore, edit -> edit,
+    exactly what POST /shares/dataset/... writes); otherwise a ResourceShare."""
     from app.models.resource_share import ResourceShare, ResourceType, SharePermission
+
+    if resource_type == "dataset":
+        from app.models.dataset import DatasetGrant
+
+        db.add(DatasetGrant(dataset_id=int(resource_id), user_id=who.id,
+                            verb={"view": "explore", "edit": "edit"}[level], granted_by=by.id))
+        db.commit()
+        return
 
     db.add(ResourceShare(
         resource_type=ResourceType(resource_type),
