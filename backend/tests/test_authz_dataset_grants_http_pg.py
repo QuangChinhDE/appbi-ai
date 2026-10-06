@@ -153,3 +153,65 @@ def test_team_grant_reaches_team_members(client, world):  # noqa: F811
     # negative control: a non-member gets nothing from the team grant
     r = client.get(f"/api/v1/datasets/{ds.id}/destination", headers=world["outsider"].headers)
     assert r.status_code == 403, r.text
+
+
+# ── Module level is a CEILING, never a capability (final Dataset contract) ──
+
+def _caps(client, who, ds_id):  # noqa: F811
+    r = client.get(f"/api/v1/datasets/{ds_id}/grants", headers=who.headers)
+    return r.status_code, (set(r.json().get("my_capabilities", [])) if r.status_code == 200 else None)
+
+
+def _dataset(db, owner):  # noqa: F811
+    from app.models.dataset import Dataset
+
+    ds = Dataset(name=f"ceil-{uuid.uuid4().hex[:6]}", owner_id=owner.id)
+    db.add(ds)
+    db.commit()
+    return ds
+
+
+def test_module_edit_without_relation_is_not_manage(client, db):  # noqa: F811
+    owner = make_user(db, "c-owner", datasets="edit")
+    stranger = make_user(db, "c-stranger", datasets="edit")
+    ds = _dataset(db, owner)
+    assert client.post(f"/api/v1/datasets/{ds.id}/publish", headers=stranger.headers).status_code == 403
+    assert client.post(f"/api/v1/datasets/{ds.id}/grants", headers=stranger.headers,
+                       json={"user_id": str(owner.id), "verb": "view"}).status_code == 403
+
+
+def test_owner_with_module_view_stays_view_class(client, db):  # noqa: F811
+    owner = make_user(db, "c-viewowner", datasets="view")
+    ds = _dataset(db, owner)
+    code, caps = _caps(client, owner, ds.id)
+    assert code == 200 and caps == {"view", "explore"}
+
+
+def test_owner_with_module_edit_is_manager_positive_control(client, db):  # noqa: F811
+    owner = make_user(db, "c-editowner", datasets="edit")
+    ds = _dataset(db, owner)
+    code, caps = _caps(client, owner, ds.id)
+    assert code == 200 and caps == {"view", "explore", "build", "edit", "reshare", "manage"}
+
+
+def test_module_admin_manages_any_dataset_explicitly(client, db):  # noqa: F811
+    owner = make_user(db, "c-o", datasets="edit")
+    admin = make_user(db, "c-admin", datasets="full")
+    ds = _dataset(db, owner)
+    code, caps = _caps(client, admin, ds.id)
+    assert code == 200 and "manage" in caps
+
+
+@pytest.mark.parametrize("level,expected", [
+    ("view", {"view", "explore"}),
+    ("edit", {"view", "explore", "build", "edit"}),
+])
+def test_legacy_resource_share_maps_to_canonical_verbs(client, db, level, expected):  # noqa: F811
+    from tests.authz_http import share
+
+    owner = make_user(db, "c-lo", datasets="edit")
+    sharee = make_user(db, "c-ls", datasets="edit")
+    ds = _dataset(db, owner)
+    share(db, "dataset", ds.id, sharee, level, owner)
+    code, caps = _caps(client, sharee, ds.id)
+    assert code == 200 and caps == expected

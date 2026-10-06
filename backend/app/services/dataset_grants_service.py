@@ -1,21 +1,33 @@
 """
-Dataset access — Power-BI-style verbs on a Dataset as a governed asset (Phase 1).
+Dataset access — the canonical Dataset capability model.
 
-DELIBERATELY NOT a linear level ladder. Build and Reshare are independent
-CAPABILITIES, not "higher than edit" — so a legacy ResourceShare(EDIT) is NEVER
-silently upgraded into Build/Reshare (governance principle #4). Access is the
-UNION of the capability sets of every grant the user holds (own + user grant +
-team grants + admin), plus a compatibility bridge from the old ResourceShare
-(DATASET view/edit → view / edit only).
+Capabilities (what a holder may do with ONE dataset):
 
-Verbs and what each UNLOCKS:
-  view     → {view}                      consume dashboards on the dataset
-  explore  → {view, explore}             ad-hoc query / preview
-  build    → {view, explore, build}      create NEW content from it (dashboards,
-                                          or a downstream Dataset that references it)
-  reshare  → {view, reshare}             grant access to others
-  edit     → {view, explore, edit}       modify the design (NOT build/reshare)
-  manage   → all six                     owner-equivalent: grants, publish, delete
+  view     metadata / basic consumption
+  explore  raw rows: preview, query, export
+  build    use the dataset as input to downstream content (charts,
+           dashboards, workboards, compositions, agent-flow attachments)
+  edit     change the dataset definition / model
+  reshare  delegate a subset of what the holder can use
+  manage   owner-equivalent administration (publish, destination, grant any
+           verb, delete)
+
+Grant verbs and the capabilities they carry:
+
+  view     -> {view}
+  explore  -> {view, explore}
+  build    -> {view, explore, build}
+  edit     -> {view, explore, build, edit}
+  reshare  -> {view, reshare}
+  manage   -> all six
+
+Legacy ResourceShare(DATASET) rows are read through the same table:
+  VIEW -> explore (no build), EDIT -> edit (no publish / reshare / manage).
+
+The `datasets` MODULE level is a ceiling, never a source of capability:
+  none -> nothing;  view -> at most {view, explore};
+  edit -> no ceiling on the verbs a relation (owner / grant) gives;
+  full -> module administrator: manage on every dataset, explicitly.
 """
 from __future__ import annotations
 
@@ -36,7 +48,7 @@ _CAPS: dict[str, Set[str]] = {
     "explore": {"view", "explore"},
     "build": {"view", "explore", "build"},
     "reshare": {"view", "reshare"},
-    "edit": {"view", "explore", "edit"},
+    "edit": {"view", "explore", "build", "edit"},
     "manage": {"view", "explore", "build", "reshare", "edit", "manage"},
 }
 
@@ -62,19 +74,16 @@ def _module_capability_ceiling(user: User) -> Set[str]:
     owner whose module level was `none`, which is the same owner-outranks-the-
     matrix bug the object-level tier had.
     """
-    try:
-        from app.core.permissions import get_user_module_permission
+    from app.core.permissions import get_user_module_permission
 
-        level = get_user_module_permission(user, "datasets")
-    except Exception:  # noqa: BLE001 — never fail open on a lookup error
-        return set()
+    level = get_user_module_permission(user, "datasets")
 
-    if level == "full":
+    # A CEILING: these sets bound what a relation can give; they never give
+    # anything on their own (a user with no relation to a dataset gets nothing
+    # whatever their module level, except a module administrator - see
+    # dataset_capabilities).
+    if level in ("full", "edit"):
         return set(_CAPS["manage"])
-    if level == "edit":
-        # Everything an owner does day to day. `reshare` and `manage` stay with
-        # module-full, matching require_full_access on the object-level tier.
-        return {"view", "explore", "build", "edit", "reshare", "manage"}
     if level == "view":
         return {"view", "explore"}
     return set()
@@ -96,13 +105,11 @@ def dataset_capabilities(db: Session, user: User, dataset: Dataset) -> Set[str]:
     if dataset.owner_id is not None and dataset.owner_id == user.id:
         return set(_CAPS["manage"]) & ceiling
 
-    # Admin / module-full on datasets → manage.
-    try:
-        from app.core.permissions import get_user_module_permission
-        if get_user_module_permission(user, "datasets") == "full":
-            return set(_CAPS["manage"])
-    except Exception:  # noqa: BLE001
-        pass
+    # Module administrator: manage on every dataset, explicitly.
+    from app.core.permissions import get_user_module_permission
+
+    if get_user_module_permission(user, "datasets") == "full":
+        return set(_CAPS["manage"])
 
     team_ids = _team_ids(db, user)
     grants = (
@@ -115,28 +122,24 @@ def dataset_capabilities(db: Session, user: User, dataset: Dataset) -> Set[str]:
         if applies and g.verb in _CAPS:
             caps |= _CAPS[g.verb]
 
-    # Compatibility bridge from the legacy shared ResourceShare (principle #4:
-    # edit → edit ONLY, never build/reshare).
-    try:
-        from app.models.resource_share import ResourceShare, ResourceType, SharePermission
-        shares = (
-            db.query(ResourceShare)
-            .filter(
-                ResourceShare.resource_type == ResourceType.DATASET,
-                ResourceShare.resource_id == str(dataset.id),
-            )
-            .all()
+    # Legacy ResourceShare(DATASET), read through the canonical verbs:
+    # VIEW -> explore, EDIT -> edit. No exception handler: a failure here is an
+    # authorization error, not a reason to answer with less information.
+    from app.models.resource_share import ResourceShare, ResourceType, SharePermission
+
+    shares = (
+        db.query(ResourceShare)
+        .filter(
+            ResourceShare.resource_type == ResourceType.DATASET,
+            ResourceShare.resource_id == str(dataset.id),
         )
-        for s in shares:
-            applies = (s.user_id == user.id) or (s.team_id is not None and s.team_id in team_ids)
-            if not applies:
-                continue
-            if s.permission == SharePermission.EDIT:
-                caps |= _CAPS["edit"]
-            else:
-                caps |= _CAPS["view"]
-    except Exception:  # noqa: BLE001 — resource-share bridge is best-effort
-        pass
+        .all()
+    )
+    for s in shares:
+        applies = (s.user_id == user.id) or (s.team_id is not None and s.team_id in team_ids)
+        if not applies:
+            continue
+        caps |= _CAPS["edit"] if s.permission == SharePermission.EDIT else _CAPS["explore"]
 
     return caps & ceiling
 

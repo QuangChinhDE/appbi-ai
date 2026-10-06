@@ -780,7 +780,7 @@ def audit_workboard(
     """
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    require_dataset_binding_access(db, current_user, wb.dataset_id, capability="view")
     return compute_workboard_audit(db, wb)
 
 
@@ -1352,7 +1352,7 @@ def access_audit_workboard(
 
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    require_dataset_binding_access(db, current_user, wb.dataset_id, capability="view")
 
     return audit_workboard_access(db, workboard=wb)
 
@@ -1375,7 +1375,7 @@ def set_table_miniapp_share(
 
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    require_dataset_binding_access(db, current_user, wb.dataset_id, capability="manage")
 
     table = (
         db.query(_DatasetTable)

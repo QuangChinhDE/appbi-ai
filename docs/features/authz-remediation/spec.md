@@ -67,17 +67,17 @@ Storage: `dataset_grants` (user or team target), plus ownership. ResourceShare(D
 | view | read (metadata, aggregated chart reads through a chart the caller can read) |
 | explore | + raw rows, preview, query, export |
 | build | + create/rebind charts, dashboards, workboards, compositions, agent-flow attachments on this dataset |
-| reshare | + grant/revoke ≤ own verbs, excluding `reshare`/`edit`/`manage` (decision Q1) |
+| reshare | view + reshare: grant/revoke only `view`/`explore`/`build` and only those the holder has |
 | edit | view + explore + build + model/table/dictionary edits |
 | manage | everything incl. publish, destination, delete, grant any verb |
 
-Owner = manage. Module admin = manage (`via=module_admin`). All capped by entitlement:
+Owner = manage. Module admin (`datasets: full`) = manage (`via=module_admin`). Legacy ResourceShare VIEW = explore, EDIT = edit. All capped by entitlement:
 
 | Entitlement | Verbs allowed |
 |---|---|
 | none | ∅ |
 | view | view, explore |
-| edit | all verbs |
+| edit | no ceiling on what a relation gives (the entitlement alone gives nothing) |
 
 **Grant rules:**
 - The grantor must hold `grant`. The granted verb must be ≤ the grantor's delegable set.
@@ -263,7 +263,7 @@ Public/embed pages keep using `publicClient` only (no change).
 See §4–§11. Users losing access because of a narrowing are listed by the migration report:
 - edit-sharees no longer publish;
 - workspace module-edit users no longer manage others' workspaces;
-- dataset VIEW sharees keep explore/build by migration.
+- dataset VIEW sharees keep view + explore and LOSE build (impact report lists their downstream assets);
 
 ## Edge cases
 

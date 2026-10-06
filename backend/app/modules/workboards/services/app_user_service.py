@@ -255,17 +255,14 @@ def _staff_workboard_level(db: Session, workboard: Workboard, app_user: Dict[str
 
     A staff identity in a workspace is a person, not a capability: the workspace
     token and the `workboards` module level say nothing about THIS workboard.
-    The decision is the same one the authenticated Workboard API makes —
-    ``get_effective_permission`` on the workboard, plus access to the dataset it
-    is bound to. Anything unresolvable is ``none``.
+    The decision is the same one the authenticated Workboard API makes:
+    ``get_effective_permission`` on the workboard. Anything unresolvable is
+    ``none``.
     """
     import uuid as _uuid
 
-    from fastapi import HTTPException
-
     from app.core.dependencies import get_effective_permission
     from app.models.user import User, UserStatus
-    from app.modules.workboards.permissions import require_dataset_binding_access
 
     raw = app_user.get("_appbi_user_id")
     if not raw:
@@ -276,14 +273,9 @@ def _staff_workboard_level(db: Session, workboard: Workboard, app_user: Dict[str
         return "none"
     if user is None or getattr(user, "status", None) != UserStatus.ACTIVE:
         return "none"
-    level = get_effective_permission(db, user, workboard, "workboards")
-    if level == "none":
-        return "none"
-    try:
-        require_dataset_binding_access(db, user, workboard.dataset_id)
-    except HTTPException:
-        return "none"
-    return level
+    # Runtime data access is authorized by the WORKBOARD (see
+    # permissions.require_dataset_binding_access for the delegation contract).
+    return get_effective_permission(db, user, workboard, "workboards")
 
 
 def can_app_user_access_workboard(

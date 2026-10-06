@@ -191,3 +191,45 @@ def test_menu_entry_requires_edit_on_that_workboard(client, world):  # noqa: F81
 def test_unknown_menu_slug_is_refused(client, world):  # noqa: F811
     body = {"name": "x", "menu_config": [{"workboard_slug": f"nope-{uuid.uuid4().hex}", "label": "x"}]}
     assert client.post("/api/v1/workspaces", headers=world["owner"].headers, json=body).status_code == 400
+
+
+# ── Workboard <-> Dataset contract (binding needs BUILD; runtime is delegated) ──
+
+@pytest.fixture()
+def binder(db, world):  # noqa: F811
+    """Workboard editor whose ONLY dataset authority is a `view` grant."""
+    from app.models.dataset import DatasetGrant
+
+    u = make_user(db, "wb-binder", workboards="edit", datasets="edit")
+    share(db, "workboard", world["wb"].id, u, "edit", world["owner"])
+    db.add(DatasetGrant(dataset_id=world["ds"].id, user_id=u.id, verb="view", granted_by=world["owner"].id))
+    db.commit()
+    return u
+
+
+def test_dataset_view_cannot_bind_or_publish_a_workboard(client, world, binder):  # noqa: F811
+    wid = world["wb"].id
+    assert client.post(f"/api/v1/workboards/{wid}/publish", headers=binder.headers).status_code == 403
+    assert client.post(f"/api/v1/workboards/{wid}/rebind/preview", headers=binder.headers,
+                       json={"dataset_id": world["ds"].id}).status_code in (403, 422)
+
+
+def test_runtime_write_is_workboard_delegated_but_opens_no_dataset_action(client, world, binder):  # noqa: F811
+    # Data entry through the workboard is the workboard's (edit) authority...
+    assert _upload(client, world, binder).status_code in (200, 201)
+    # ...and grants nothing on the dataset itself: no raw rows, no model edit.
+    ds = world["ds"].id
+    assert client.get(f"/api/v1/datasets/{ds}/tables", headers=binder.headers).status_code in (403, 404)
+    assert client.put(f"/api/v1/datasets/{ds}", headers=binder.headers,
+                      json={"name": "x"}).status_code in (403, 404)
+
+
+def test_dataset_build_can_publish_positive_control(client, db, world):  # noqa: F811
+    from app.models.dataset import DatasetGrant
+
+    u = make_user(db, "wb-builder", workboards="edit", datasets="edit")
+    share(db, "workboard", world["wb"].id, u, "edit", world["owner"])
+    db.add(DatasetGrant(dataset_id=world["ds"].id, user_id=u.id, verb="build", granted_by=world["owner"].id))
+    db.commit()
+    r = client.post(f"/api/v1/workboards/{world['wb'].id}/publish", headers=u.headers)
+    assert r.status_code != 403, r.text
