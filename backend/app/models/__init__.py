@@ -13,7 +13,6 @@ from app.models.models import (
     DashboardChart,
     ChartMetadata,
     ChartParameter,
-    SyncJob,
 )
 from app.models.semantic import (
     SemanticView,
@@ -88,7 +87,6 @@ __all__ = [
     "DatasetQualityRun",
     "DatasetQualitySchedule",
     "SemanticExplore",
-    "SyncJob",
     "MonitoredMetric",
     "AnomalyAlert",
     "ObservabilityMonitor",

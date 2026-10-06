@@ -7,6 +7,7 @@ import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Plus, Database, Edit, TestTube, Trash2, Clock, Search, Share2, ChevronDown } from 'lucide-react';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { SOURCE_ERROR_LABEL, SourceHealthBadge, blockersToConstraints, describeBlockers } from '@/components/datasources/SourceHealth';
 import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
@@ -41,7 +42,7 @@ import type { DataSource, QueryExecuteResponse } from '@/types/api';
 
 const DS_TYPE_LABEL: Record<string, string> = {
   postgresql: 'PostgreSQL', mysql: 'MySQL', bigquery: 'BigQuery',
-  google_sheets: 'Google Sheets', manual: 'Manual Table',
+  google_sheets: 'Google Sheets', google_docs: 'Google Docs', manual: 'Manual Table',
 };
 
 type View = 'list' | 'query';
@@ -130,10 +131,11 @@ export default function DataSourcesPage() {
       setSourceToDelete(null);
     } catch (error: any) {
       const detail = error.response?.data?.detail;
-      if (detail?.constraints) {
-        setDeleteConstraints(detail.constraints);
+      if (detail?.code === 'source_in_use' && Array.isArray(detail.blockers)) {
+        // Structured blockers from the service: [{kind, id, name}].
+        setDeleteConstraints(blockersToConstraints(detail.blockers));
       } else {
-        toast.error(`Không thể xóa: ${detail || error.message}`);
+        toast.error(`Không thể xóa: ${typeof detail === 'string' ? detail : detail?.message || error.message}`);
         setSourceToDelete(null);
       }
     } finally {
@@ -164,19 +166,30 @@ export default function DataSourcesPage() {
     if (!confirmed) return;
     setIsBulkDeleting(true);
     let successCount = 0;
-    let failCount = 0;
+    const failures: string[] = [];
     for (const id of selectedIds) {
+      const name = dataSources.find((s) => s.id === id)?.name ?? `#${id}`;
       try {
         await deleteMutation.mutateAsync(id);
         successCount++;
-      } catch {
-        failCount++;
+      } catch (error: any) {
+        const detail = error?.response?.data?.detail;
+        // Name each blocked source and what still uses it (409 source_in_use).
+        if (detail?.code === 'source_in_use') {
+          failures.push(`${name}: used by ${describeBlockers(detail.blockers)}`);
+        } else {
+          failures.push(`${name}: ${typeof detail === 'string' ? detail : detail?.message || error?.message || 'failed'}`);
+        }
       }
     }
     setSelectedIds(new Set());
     setIsBulkDeleting(false);
     if (successCount > 0) toast.success(`Deleted ${successCount} data source(s)`);
-    if (failCount > 0) toast.error(`Failed to delete ${failCount} data source(s)`);
+    if (failures.length > 0) {
+      toast.error(`Could not delete ${failures.length} data source(s)`, {
+        description: failures.join(' · '),
+      });
+    }
   };
 
   const handleEdit = (dataSource: DataSource) => {
@@ -186,10 +199,15 @@ export default function DataSourcesPage() {
   const handleTest = async (dataSource: DataSource) => {
     try {
       const result = await testMutation.mutateAsync({ id: dataSource.id });
-      if (result.success) {
+      // Structured result (status + error category). useTestDataSource
+      // re-reads the list so the persisted health badge reflects this test.
+      if (result.status === 'ok') {
         toast.success(`Connection successful: ${result.message}`);
+      } else if (result.status === 'warning') {
+        toast.warning(`Connected with warnings: ${result.warnings?.[0] || result.message}`);
       } else {
-        toast.error(`Connection failed: ${result.message}`);
+        const reason = result.error_code ? SOURCE_ERROR_LABEL[result.error_code] : 'Connection failed';
+        toast.error(`${reason}: ${result.message}`);
       }
     } catch (error: any) {
       toast.error(error.response?.data?.detail || error.message);
@@ -437,6 +455,7 @@ export default function DataSourcesPage() {
                                 <div className="flex items-center gap-1.5 mt-0.5">
                                   <OwnerBadge email={ds.owner_email} />
                                   <Badge variant="neutral" size="sm">{typeLabel}</Badge>
+                                  <SourceHealthBadge source={ds} />
                                 </div>
                               </div>
                             </div>

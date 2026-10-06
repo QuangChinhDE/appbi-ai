@@ -85,12 +85,10 @@ class DataSourceUpdate(BaseModel):
     config: Optional[Dict[str, Any]] = None
     type: Optional[DataSourceTypeSchema] = None
     
-    @model_validator(mode='after')
-    def validate_config(self):
-        """Validate config if both type and config are provided."""
-        if self.config is not None and self.type is not None:
-            self.config = validate_datasource_config(self.type.value, self.config)
-        return self
+    # `type` is accepted only to REFUSE a change (immutable after create — the
+    # service raises source_type_immutable). `config` may be partial: the
+    # service merges it with the stored config and validates the FINAL result
+    # with the provider schema (DataSourceCRUDService.update).
 
 
 class DataSourceResponse(DataSourceBase):
@@ -99,10 +97,18 @@ class DataSourceResponse(DataSourceBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    config_version: int = 1
+    last_test_status: Optional[str] = None
+    last_tested_at: Optional[datetime] = None
+    last_error_code: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    # What this provider can do (services/source_capabilities, stamped by the
+    # router like user_permission) — the frontend filters pickers by it.
+    capabilities: Optional[Dict[str, bool]] = None
 
     @field_serializer('config')
     def mask_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -151,10 +157,28 @@ class DataSourceDraftTestRequest(BaseModel):
     data_source_id: int | None = None
 
 
+class DataSourceTestChecks(BaseModel):
+    auth: Literal["ok", "failed", "skipped", "warning"] = "skipped"
+    reachable: Literal["ok", "failed", "skipped", "warning"] = "skipped"
+    queryable: Literal["ok", "failed", "skipped", "warning"] = "skipped"
+    discoverable: Literal["ok", "failed", "skipped", "warning"] = "skipped"
+
+
 class DataSourceTestResponse(BaseModel):
-    """Schema for data source test result."""
+    """Structured connection test (F16). `success`/`message` kept for older
+    clients; `message` and `warnings` are always redacted."""
     success: bool
     message: str
+    status: Literal["ok", "warning", "error"] = "ok"
+    provider: Optional[str] = None
+    checks: DataSourceTestChecks = Field(default_factory=DataSourceTestChecks)
+    error_code: Optional[Literal[
+        "auth", "network", "permission", "missing_resource", "invalid_config", "query",
+        "timeout", "quota", "unsupported", "internal", "policy_blocked",
+    ]] = None
+    warnings: List[str] = Field(default_factory=list)
+    duration_ms: int = 0
+    tested_at: Optional[datetime] = None
 
 
 # Chart Schemas

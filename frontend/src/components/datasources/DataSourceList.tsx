@@ -9,6 +9,7 @@ import { DataSource } from '@/types/api';
 import { Database, Loader2, Trash2, TestTube, Share2 } from 'lucide-react';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
+import { SourceHealthBadge } from '@/components/datasources/SourceHealth';
 import { FilterTag, type FilterTagTone } from '@/components/ui/FilterTag';
 import { IconButton } from '@/components/ui/Button';
 
@@ -62,6 +63,8 @@ export default function DataSourceList({
         return { label: 'BigQuery', tone: 'success' };
       case 'google_sheets':
         return { label: 'Google Sheets', tone: 'success' };
+      case 'google_docs':
+        return { label: 'Google Docs', tone: 'info' };
       case 'manual':
         return { label: 'Manual Table', tone: 'info' };
       default:
@@ -171,6 +174,7 @@ export default function DataSourceList({
                     >
                       {typeMeta.label}
                     </FilterTag>
+                    <SourceHealthBadge source={ds} />
                     {accessMeta.value !== 'full' && (
                       <FilterTag
                         tone={accessMeta.tone}

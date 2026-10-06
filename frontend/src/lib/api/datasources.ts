@@ -5,6 +5,7 @@ import apiClient from '@/lib/api-client';
 import {
   DataSource,
   DataSourceCreate,
+  DataSourceTestResult,
   DataSourceUpdate,
   QueryExecuteRequest,
   QueryExecuteResponse,
@@ -60,7 +61,7 @@ export const dataSourceApi = {
 
   // Retest a SAVED source: type, destination and secret come only from the
   // persisted row (object edit required).
-  test: async (id: number): Promise<{ success: boolean; message: string }> => {
+  test: async (id: number): Promise<DataSourceTestResult> => {
     const response = await apiClient.post(`/datasources/${id}/test`);
     return response.data;
   },
@@ -71,7 +72,7 @@ export const dataSourceApi = {
     type: string,
     config: Record<string, any>,
     data_source_id?: number,
-  ): Promise<{ success: boolean; message: string }> => {
+  ): Promise<DataSourceTestResult> => {
     const response = await apiClient.post('/datasources/test-draft', { type, config, data_source_id });
     return response.data;
   },

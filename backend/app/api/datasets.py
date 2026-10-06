@@ -3374,6 +3374,7 @@ def add_table_to_dataset(
             if not datasource:
                 raise HTTPException(status_code=404, detail="Datasource not found")
             require_view_access(db, current_user, datasource, "data_sources")
+            _require_tabular_source(datasource)
 
         # Validate SQL query if source_kind is datasource-backed 'sql_query'
         if table.source_kind == "sql_query":
@@ -4831,6 +4832,16 @@ def regenerate_table_description(
     return {"status": "queued", "generation_status": "queued"}
 
 
+def _require_tabular_source(datasource) -> None:
+    """F15: a provider without tables (google_docs) is refused by every tabular
+    path with 400 {code: source_not_tabular}."""
+    from app.services.source_capabilities import SourceNotTabularError, require_capability
+    try:
+        require_capability(datasource.type, "tabular")
+    except SourceNotTabularError as exc:
+        raise HTTPException(status_code=400, detail={"code": exc.code, "message": str(exc)})
+
+
 # ===== Datasource Table List Endpoint =====
 
 @router.get(
@@ -4850,6 +4861,7 @@ def list_datasource_tables(
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
     require_view_access(db, current_user, datasource, "data_sources")
+    _require_tabular_source(datasource)
     
     try:
         tables = DataSourceConnectionService.list_tables(
@@ -4903,6 +4915,7 @@ def list_datasource_table_columns(
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
     require_view_access(db, current_user, datasource, "data_sources")
+    _require_tabular_source(datasource)
     try:
         columns = DataSourceConnectionService.list_columns(
             ds_id=datasource.id,

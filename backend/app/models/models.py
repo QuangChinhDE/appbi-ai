@@ -3,7 +3,7 @@ SQLAlchemy models for the BI application.
 """
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean, Enum, Float,
-    UniqueConstraint,
+    UniqueConstraint, Index, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship, validates
@@ -74,7 +74,8 @@ class DataSource(Base):
     __tablename__ = "data_sources"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), unique=True, nullable=False, index=True)
+    # Unique per owner (uq_data_sources_owner_name / uq_data_sources_ownerless_name).
+    name = Column(String(255), nullable=False, index=True)
     type = Column(Enum(DataSourceType, values_callable=lambda obj: [e.value for e in obj]), nullable=False)
     description = Column(Text, nullable=True)
     
@@ -84,9 +85,13 @@ class DataSource(Base):
     # BigQuery: {project_id, credentials_json, dataset}
     config = Column(JSON, nullable=False)
 
-    # Sync configuration (schedule + per-table strategies + retry + notification)
-    # Format: {schedule: {...}, tables: {...}, retry: {...}, notification: {...}}
-    sync_config = Column(JSON, nullable=True)
+    # Bumped on every connection-affecting config change (source_lifecycle).
+    config_version = Column(Integer, nullable=False, default=1, server_default="1")
+
+    # Latest connection test (source_health.record_health). Never a message.
+    last_test_status = Column(String(16), nullable=True)   # ok | warning | error
+    last_tested_at = Column(DateTime(timezone=True), nullable=True)
+    last_error_code = Column(String(32), nullable=True)
 
     # Ownership
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -95,8 +100,14 @@ class DataSource(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    # Relationships
-    sync_jobs = relationship("SyncJob", back_populates="data_source", cascade="all, delete-orphan")
+    __table_args__ = (
+        Index("uq_data_sources_owner_name", "owner_id", "name", unique=True,
+              postgresql_where=text("owner_id IS NOT NULL"),
+              sqlite_where=text("owner_id IS NOT NULL")),
+        Index("uq_data_sources_ownerless_name", "name", unique=True,
+              postgresql_where=text("owner_id IS NULL"),
+              sqlite_where=text("owner_id IS NULL")),
+    )
 
 
 class Chart(Base):
@@ -434,40 +445,6 @@ class ChartParameter(Base):
 
     # Relationships
     chart = relationship("Chart", back_populates="parameters")
-
-
-class SyncJob(Base):
-    """
-    Record of a single sync job execution for a data source.
-    Tracks status, timing, rows affected, and errors.
-    """
-    __tablename__ = "sync_jobs"
-
-    id = Column(Integer, primary_key=True, index=True)
-    data_source_id = Column(Integer, ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True)
-
-    # "running" | "success" | "failed" | "timeout"
-    status = Column(String(20), nullable=False, default="running")
-
-    # "full_refresh" | "incremental" | "append_only" | "manual"
-    mode = Column(String(30), nullable=False)
-
-    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    finished_at = Column(DateTime(timezone=True), nullable=True)
-
-    # Rows affected in this run
-    rows_synced = Column(Integer, nullable=True)
-    rows_failed = Column(Integer, nullable=True)
-
-    error_message = Column(Text, nullable=True)
-
-    # "schedule" | "manual"
-    triggered_by = Column(String(50), nullable=True, default="manual")
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    # Relationships
-    data_source = relationship("DataSource", back_populates="sync_jobs")
 
 
 # ---------------------------------------------------------------------------

@@ -61,8 +61,13 @@ export const useDeleteDataSource = () => {
 };
 
 export const useTestDataSource = () => {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id }: { id: number }) => dataSourceApi.test(id),
+    // A saved-source test persists last health on the source.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['datasources'] });
+    },
   });
 };
 

@@ -35,7 +35,7 @@ export default function EditDataSourcePage() {
       });
       router.push('/datasources');
     } catch (error: any) {
-      toast.error(`Failed to update data source: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to update data source: ${typeof error.response?.data?.detail === 'string' ? error.response.data.detail : error.response?.data?.detail?.message || error.message}`);
     }
   };
 

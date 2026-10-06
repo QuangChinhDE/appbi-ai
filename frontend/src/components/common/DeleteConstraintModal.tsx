@@ -27,6 +27,8 @@ const TYPE_LABELS: Record<string, { label: string; cls: string }> = {
   dashboard: { label: 'Dashboard', cls: 'bg-brand/12 text-brand' },
   dataset: { label: 'Dataset', cls: 'bg-warning/12 text-warning' },
   lookup: { label: 'LOOKUP', cls: 'bg-warning/12 text-warning' },
+  dataset_snapshot: { label: 'Snapshot host', cls: 'bg-warning/12 text-warning' },
+  knowledge_doc: { label: 'Knowledge doc', cls: 'bg-info/12 text-info' },
 };
 
 function ConstraintBadge({ type }: { type: string }) {

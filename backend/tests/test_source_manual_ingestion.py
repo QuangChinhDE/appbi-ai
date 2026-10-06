@@ -25,7 +25,7 @@ from starlette.datastructures import Headers, UploadFile
 from app.core.config import settings
 from app.core.database import Base
 from app.models.manual_source_asset import ManualSourceAsset
-from app.models.models import DataSource, DataSourceType, SyncJob
+from app.models.models import DataSource, DataSourceType
 from app.schemas import DataSourceCreate, DataSourceUpdate
 from app.services.datasource_crud_service import DataSourceCRUDService
 from app.services.manual_assets import service as assets_service
@@ -63,9 +63,15 @@ def db(monkeypatch, storage):
     from cryptography.fernet import Fernet
 
     monkeypatch.setattr(settings, "DATASOURCE_ENCRYPTION_KEY", Fernet.generate_key().decode(), raising=False)
-    from app.models.dataset import DatasetTable
+    from app.models.dataset import Dataset, DatasetTable, DatasetTableSnapshot
+    from app.models.governance import GovernKnowledgeDoc
+    from app.models.resource_share import ResourceShare
 
-    tables = [DataSource.__table__, SyncJob.__table__, ManualSourceAsset.__table__, DatasetTable.__table__]
+    # Source delete checks its dependents (datasets, hosted snapshots, knowledge
+    # docs) and removes its shares, so those tables must exist (Phase B).
+    tables = [DataSource.__table__, ManualSourceAsset.__table__, Dataset.__table__,
+              DatasetTable.__table__, DatasetTableSnapshot.__table__,
+              GovernKnowledgeDoc.__table__, ResourceShare.__table__]
     for table in tables:
         for col in table.columns:
             d = col.server_default

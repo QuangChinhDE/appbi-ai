@@ -590,13 +590,18 @@ def _bigquery_client_cache_key(config: Dict[str, Any]) -> str | None:
         # the connected AppBI user id (the credential owner) + project, so two
         # datasources sharing one Google identity reuse one warm client. The
         # id may be encrypted in the raw config; decrypt to get a stable key.
-        from app.core.crypto import decrypt_config
-        dc = decrypt_config(config)
-        owner = str(dc.get("google_oauth_user_id") or "").strip()
-        if not owner:
+        #
+        # F7: the key is the identity of the GOOGLE credential actually used
+        # (account + client + refresh-token fingerprint, never the token), not
+        # the AppBI user who attached it — the same AppBI user can connect two
+        # sources to two Google accounts, and those must never share a client.
+        # Reconnecting (new refresh token) yields a new key.
+        from app.services.source_lifecycle import google_credential_identity
+        identity = google_credential_identity(config)
+        if not identity:
             return None  # can't key it safely → rebuild every time (old behaviour)
-        project_id = str(dc.get("project_id") or config.get("project_id") or "").strip()
-        return f"google_oauth:{project_id}:{owner}"
+        project_id = str(config.get("project_id") or "").strip()
+        return f"google_oauth:{project_id}:{identity}"
     try:
         creds_json = _resolve_gcp_credentials_json(config)
     except ValueError:
@@ -751,6 +756,23 @@ def _apply_optional_limit(sql_query: str, limit: int | None) -> str:
     return f"{normalized} LIMIT {int(limit)}"
 
 
+# F16: the structured connection test (source_health.run_connection_test) reads
+# what the last provider test in THIS context raised / recorded, so the tuple
+# API (success, message) stays unchanged for its many callers.
+import contextvars as _contextvars
+_LAST_TEST_EXC: "_contextvars.ContextVar[Optional[BaseException]]" = _contextvars.ContextVar(
+    "appbi_source_last_test_exc", default=None)
+_LAST_TEST_DETAIL: "_contextvars.ContextVar[Optional[Dict[str, Any]]]" = _contextvars.ContextVar(
+    "appbi_source_last_test_detail", default=None)
+
+
+def _require_source_capability(ds_type: Any, capability: str) -> None:
+    """F15: every tabular entry point refuses a provider without tables
+    (google_docs) with SourceNotTabularError (code source_not_tabular)."""
+    from app.services.source_capabilities import require_capability
+    require_capability(ds_type, capability)
+
+
 class DataSourceConnectionService:
     """Service for managing connections to external data sources."""
     
@@ -794,6 +816,7 @@ class DataSourceConnectionService:
                 logger.error("Connection test failed: %s", safe_message or "Unknown source error")
             return success, safe_message
         except Exception as e:
+            _LAST_TEST_EXC.set(e)
             safe_error = describe_source_error(e, config)
             logger.error("Connection test failed: %s", safe_error)
             return False, f"Connection failed: {safe_error}"
@@ -824,6 +847,7 @@ class DataSourceConnectionService:
             email = config.get("google_oauth_email") or "the connected account"
             return True, f"Google account connected ({email}) with permission to read Docs."
         except Exception as exc:  # noqa: BLE001
+            _LAST_TEST_EXC.set(exc)
             return False, f"Google Docs connection failed: {exc}"
 
     @staticmethod
@@ -846,6 +870,7 @@ class DataSourceConnectionService:
                     _pg_set_search_path(cur, schema)
             return True, "Connection successful"
         except Exception as e:
+            _LAST_TEST_EXC.set(e)
             return False, str(e)
         finally:
             if conn:
@@ -866,6 +891,7 @@ class DataSourceConnectionService:
             )
             return True, "Connection successful"
         except Exception as e:
+            _LAST_TEST_EXC.set(e)
             return False, str(e)
         finally:
             if conn:
@@ -873,38 +899,81 @@ class DataSourceConnectionService:
     
     @staticmethod
     def _test_bigquery(config: Dict[str, Any]) -> Tuple[bool, str]:
-        """Test BigQuery connection."""
+        """Test BigQuery connection.
+
+        Stages (recorded for the structured health result, F16): build the
+        client (auth), ``SELECT 1`` (reachable + queryable), then list tables of
+        the default dataset or datasets of the project (discoverable). A query
+        that works while listing fails is a WARNING, not a failure: the source
+        can run SQL but the table picker will be empty."""
+        checks = {"auth": "skipped", "reachable": "skipped", "queryable": "skipped", "discoverable": "skipped"}
+        detail: Dict[str, Any] = {"checks": checks, "warnings": [], "warning_code": None}
+        _LAST_TEST_DETAIL.set(detail)
         client = None
         try:
-            client = _build_bigquery_client(config)
+            try:
+                client = _build_bigquery_client(config)
+            except Exception:
+                checks["auth"] = "failed"
+                raise
+            checks["auth"] = "ok"
             # Test basic API access
             query = "SELECT 1"
-            client.query(query).result()
+            try:
+                client.query(query).result()
+            except Exception as qe:
+                from app.services.source_errors import classify_source_error
+                code = classify_source_error(qe)
+                if code == "auth":
+                    checks["auth"] = "failed"
+                elif code in ("network", "timeout"):
+                    checks["reachable"] = "failed"
+                else:
+                    checks["reachable"] = "ok"
+                    checks["queryable"] = "failed"
+                raise
+            checks["reachable"] = "ok"
+            checks["queryable"] = "ok"
 
             # Also verify dataset/table listing permission — this is what the datasource
             # actually needs after connecting.  If default_dataset is set, probe that
             # dataset directly (covers per-dataset IAM roles).  Otherwise attempt a
             # project-level dataset listing so the user gets an early warning.
-            default_dataset = config.get("default_dataset", "").strip()
+            default_dataset = str(config.get("default_dataset") or "").strip()
             if default_dataset:
                 try:
                     list(client.list_tables(default_dataset, max_results=1))
                 except Exception as e:
-                    return True, f"Connection successful, but could not list tables in dataset '{default_dataset}': {e}"
+                    from app.services.source_errors import classify_source_error
+                    checks["discoverable"] = "failed"
+                    detail["warning_code"] = classify_source_error(e)
+                    msg = f"Connection successful, but could not list tables in dataset '{default_dataset}': {e}"
+                    detail["warnings"].append(msg)
+                    return True, msg
             else:
                 try:
                     datasets = list(client.list_datasets(max_results=1))
                     if not datasets:
-                        return True, (
+                        checks["discoverable"] = "warning"
+                        msg = (
                             "Connection successful, but no datasets found in the project. "
                             "Check that the connected credential has bigquery.datasets.list on the project, "
                             "or set a Default Dataset to target a specific dataset."
                         )
+                        detail["warnings"].append(msg)
+                        return True, msg
                 except Exception as e:
-                    return True, f"Connection successful, but could not list datasets: {e}. Set a Default Dataset if the credential only has per-dataset access."
+                    from app.services.source_errors import classify_source_error
+                    checks["discoverable"] = "failed"
+                    detail["warning_code"] = classify_source_error(e)
+                    msg = f"Connection successful, but could not list datasets: {e}. Set a Default Dataset if the credential only has per-dataset access."
+                    detail["warnings"].append(msg)
+                    return True, msg
 
+            checks["discoverable"] = "ok"
             return True, "Connection successful"
         except Exception as e:
+            _LAST_TEST_EXC.set(e)
             return False, str(e)
         finally:
             # F11: a test must never tear down the warm client other requests share.
@@ -925,6 +994,7 @@ class DataSourceConnectionService:
                 return True, f"Connection successful — {len(sheets)} sheet(s) found"
             return False, "Failed to connect to Google Sheets. Check that the spreadsheet is shared with the service account."
         except Exception as e:
+            _LAST_TEST_EXC.set(e)
             return False, str(e)
     
     @staticmethod
@@ -965,6 +1035,7 @@ class DataSourceConnectionService:
         Raises:
             ValueError: If query is not a SELECT statement
         """
+        _require_source_capability(ds_type, "query")
         # Validate SQL query for safety (lexed in the source's own dialect)
         validate_select_only(sql_query, ds_type)
 
@@ -1029,6 +1100,7 @@ class DataSourceConnectionService:
         bounded; Postgres/MySQL run in a READ ONLY transaction; BigQuery always
         carries ``maximum_bytes_billed``. Internal analytical execution does not
         come through here and keeps its own limits."""
+        _require_source_capability(ds_type, "query")
         cap = max(1, int(settings.SOURCE_QUERY_MAX_ROWS or 1))
         effective = min(int(limit), cap) if limit else cap
         timeout = max(1, min(int(timeout_seconds or 30), 300))
@@ -1058,6 +1130,7 @@ class DataSourceConnectionService:
         a READ ONLY transaction (parsed + planned, no rows produced). BigQuery: a
         dry run (no bytes billed). Sheets/manual: an in-memory one-row probe.
         Raises on an invalid statement."""
+        _require_source_capability(ds_type, "query")
         validate_select_only(sql_query, ds_type)
         body = _normalize_sql_query(sql_query)
         if ds_type == DataSourceType.BIGQUERY.value:
@@ -2745,6 +2818,7 @@ class DataSourceConnectionService:
               Always unique within the result set.
             - `type`: inferred SQL type token.
         """
+        _require_source_capability(ds_type, "query")
         try:
             if ds_type == DataSourceType.POSTGRESQL.value:
                 raw = DataSourceConnectionService._infer_postgresql_types(config, sql_query)
@@ -3143,6 +3217,7 @@ class DataSourceConnectionService:
         Returns:
             List of table dicts with 'name', 'schema', and 'type' keys
         """
+        _require_source_capability(ds_type, "discover")
         from app.core.crypto import decrypt_config
         config = decrypt_config(config)
         try:
@@ -3667,6 +3742,7 @@ class DataSourceConnectionService:
         Return a schema-browser tree: list of schemas, each with tables/views + row counts.
         Currently implemented for PostgreSQL; other types delegate to list_tables().
         """
+        _require_source_capability(ds_type, "discover")
         from app.core.crypto import decrypt_config
         config = decrypt_config(config)
         if ds_type == DataSourceType.POSTGRESQL.value:
@@ -3746,6 +3822,7 @@ class DataSourceConnectionService:
         Return detailed metadata for a single table: columns with PK/FK/IDX flags
         and a small preview dataset.
         """
+        _require_source_capability(ds_type, "discover")
         if ds_type == DataSourceType.POSTGRESQL.value:
             return DataSourceConnectionService._pg_table_detail(
                 config, schema_name, table_name, preview_rows
@@ -3891,6 +3968,7 @@ class DataSourceConnectionService:
         table_name: str,
     ) -> List[Dict[str, str]]:
         """Return columns suitable as watermark (timestamp/date/integer types)."""
+        _require_source_capability(ds_type, "discover")
         from app.core.crypto import decrypt_config
         config = decrypt_config(config)
 
@@ -3946,6 +4024,7 @@ class DataSourceConnectionService:
         Return columns for a specific table via live source query.
         Each item: {"name": str, "type": str}
         """
+        _require_source_capability(ds_type, "discover")
         from app.core.crypto import decrypt_config
 
         config = decrypt_config(config)

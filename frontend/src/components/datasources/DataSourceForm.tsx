@@ -9,6 +9,9 @@ import { DataSourceType, DataSourceCreate } from '@/types/api';
 import { Loader2, UploadCloud, FileSpreadsheet, X, CheckCircle, AlertCircle, Radio, WifiOff, Eye, EyeOff } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import type { ManualColumn, ManualParseFileResponse, ManualSheetRef } from '@/lib/api/datasources';
+import { dataSourceApi } from '@/lib/api/datasources';
+import type { DataSourceTestResult } from '@/types/api';
+import { SourceTestResultPanel } from '@/components/datasources/SourceHealth';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 
@@ -303,6 +306,33 @@ export default function DataSourceForm({
       window.location.assign(url.replace('popup=1', 'popup=0'));
     }
   }, []);
+
+  // "Test connection" — the unsaved form config through POST /test-draft.
+  // Editing: data_source_id lets a BLANK secret mean "the stored one"; the
+  // backend refuses that reuse if any destination field changed.
+  const [draftTest, setDraftTest] = useState<DataSourceTestResult | null>(null);
+  const [draftTesting, setDraftTesting] = useState(false);
+  useEffect(() => { setDraftTest(null); }, [config, type]);
+  const handleDraftTest = async () => {
+    setDraftTesting(true);
+    setDraftTest(null);
+    try {
+      setDraftTest(await dataSourceApi.testDraft(type, config, initialData?.id));
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail;
+      setDraftTest({
+        success: false,
+        status: 'error',
+        message: typeof detail === 'string' ? detail : detail?.message || error?.message || 'Test failed',
+        checks: { auth: 'skipped', reachable: 'skipped', queryable: 'skipped', discoverable: 'skipped' },
+        error_code: detail?.code === 'source_not_tabular' ? 'unsupported' : 'invalid_config',
+        warnings: [],
+        duration_ms: 0,
+      });
+    } finally {
+      setDraftTesting(false);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1088,6 +1118,21 @@ export default function DataSourceForm({
               ? 'Connection will be checked automatically when you save configuration changes.'
               : 'Connection will be checked automatically when you create this data source.'}
           </div>
+          {!readOnly && (
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={handleDraftTest}
+                disabled={draftTesting || isLoading}
+                data-testid="datasource-test-connection"
+                className="self-start inline-flex items-center gap-2 px-3 py-1.5 text-sm border border-[rgb(var(--border-strong))] rounded-md text-text-secondary hover:bg-surface-2 disabled:opacity-50"
+              >
+                {draftTesting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radio className="w-4 h-4" />}
+                Test connection
+              </button>
+              {draftTest && <SourceTestResultPanel result={draftTest} />}
+            </div>
+          )}
           {testState === 'fail' && (
             <div className="flex items-start gap-2 p-2.5 bg-danger/10 border border-danger/30 rounded-md">
               <WifiOff className="w-4 h-4 text-danger flex-shrink-0 mt-0.5" />

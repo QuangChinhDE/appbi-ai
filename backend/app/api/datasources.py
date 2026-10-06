@@ -22,7 +22,7 @@ from app.core.dependencies import (
     get_effective_permission,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
-from app.models import DataSource, Dataset
+from app.models import DataSource
 from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.services.source_errors import describe_source_error
@@ -38,10 +38,16 @@ from app.schemas import (
     SqlValidateResponse,
 )
 from app.services import DataSourceCRUDService, DataSourceConnectionService
-from app.services.dashboard_html_import_service import purge_stale_import_drafts
 from app.core.logging import get_logger
 from app.core.config import settings
-from app.services.google_data_access_service import get_google_data_access_status
+from app.services.source_lifecycle import (
+    SourceConfigError,
+    SourceInUseError,
+    claim_google_connection,
+    enforce_platform_gcp_policy,
+    restore_masked_secrets,
+)
+from app.services.source_health import record_health, run_connection_test
 
 logger = get_logger(__name__)
 router = APIRouter(
@@ -60,142 +66,37 @@ def _build_query_error_detail(exc: Exception, config: Any = None) -> dict:
     }
 
 
-def _validate_datasource_connection_or_raise(ds_type: str, config: dict[str, Any]) -> None:
-    """Validate datasource connectivity before persisting non-manual configs."""
-    if ds_type == "manual":
-        return
-
-    success, message = DataSourceConnectionService.test_connection(ds_type, config)
-    if success:
-        return
-
-    # Central redaction: the driver message can echo a secret (an inline DSN
-    # password, a token in a URL). Scrub it the same way the browse endpoints do
-    # before it reaches the create/update API response.
-    from app.services.source_errors import describe_source_error
-
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=describe_source_error(message, config) if message else "Connection failed",
-    )
+def _config_error(exc: Exception, config: Any = None) -> HTTPException:
+    """Map a service-layer SourceConfigError / ValueError to HTTP. The message is
+    redacted; typed domain codes keep a structured body."""
+    status_code = getattr(exc, "status_code", status.HTTP_400_BAD_REQUEST)
+    code = getattr(exc, "code", None)
+    message = describe_source_error(exc, config)
+    if code in ("source_type_immutable", "source_not_tabular"):
+        return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+    return HTTPException(status_code=status_code, detail=message)
 
 
-def _restore_sensitive_config_fields(
-    config: dict[str, Any],
-    existing_config: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """
-    Rehydrate masked/blank secret fields from a stored datasource config.
-
-    This keeps validation and updates working when the frontend intentionally
-    leaves sensitive inputs blank to mean "keep the stored value".
-    """
-    from app.core.crypto import MASKED_PLACEHOLDER, _SENSITIVE_FIELDS
-
-    restored = dict(config or {})
-    stored = dict(existing_config or {})
-
-    # When the auth MODE changes (e.g. BigQuery Service Account -> Google OAuth,
-    # or vice-versa) the previous mode's credential is IRRELEVANT to the new one.
-    # Rehydrating a blanked field would then carry a stale Service-Account JSON
-    # into an OAuth config (or an old OAuth owner into an SA config), leaving an
-    # inconsistent credential the user can't see — so the datasource keeps
-    # connecting with the OLD key. On an auth-mode switch, do NOT restore the
-    # GCP credential fields; the user supplies the new mode's credential fresh.
-    new_auth = str((config or {}).get("auth_mode") or "").strip().lower()
-    old_auth = str((existing_config or {}).get("auth_mode") or "").strip().lower()
-    auth_mode_changed = bool(new_auth) and bool(old_auth) and new_auth != old_auth
-    _GCP_CRED_FIELDS = {
-        "credentials_json", "service_account_json", "google_oauth_user_id",
-        "private_key", "client_secret",
-    }
-
-    for field in _SENSITIVE_FIELDS:
-        if auth_mode_changed and field in _GCP_CRED_FIELDS:
-            continue  # switching auth mode -> require the new credential, don't inherit the old
-        if restored.get(field, None) in ("", None, MASKED_PLACEHOLDER) and stored.get(field):
-            restored[field] = stored[field]
-    return restored
+def _stamp_capabilities(sources) -> None:
+    """Expose the provider capability model on every DataSource response."""
+    from app.services.source_capabilities import capabilities_for
+    for ds in sources:
+        ds.capabilities = capabilities_for(ds.type)
 
 
-def _normalize_google_oauth_config(
-    config: dict[str, Any],
-    *,
-    current_user: User,
-    existing_config: dict[str, Any] | None = None,
-    db: Session | None = None,
-) -> dict[str, Any]:
-    """Resolve the Google credential this DATA SOURCE will use.
+def _require_tabular(ds: Any, capability: str = "tabular") -> None:
+    """F15: refuse a tabular path on a provider without tables (google_docs)."""
+    from app.services.source_capabilities import SourceNotTabularError, require_capability
+    try:
+        require_capability(ds.type, capability)
+    except SourceNotTabularError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail={"code": exc.code, "message": str(exc)})
 
-    A Google connection belongs to the source, not to the AppBI user, so each
-    source carries its own token and two sources can use two different Google
-    accounts. `google_pending_id` is the handle the consent popup handed back;
-    claiming it moves the credential into this source's config.
-    """
-    normalized = dict(config or {})
-    if normalized.get("auth_mode") != "google_oauth":
-        for k in ("google_oauth_user_id", "google_oauth_email", "google_oauth_credentials", "google_oauth_scopes", "google_pending_id"):
-            normalized.pop(k, None)
-        return normalized
 
-    from app.core.crypto import decrypt_config
-    from app.services.google_data_access_service import consume_pending_connection
-
-    existing = decrypt_config(existing_config or {})
-    pending_id = str(normalized.pop("google_pending_id", "") or "").strip()
-
-    if pending_id and db is not None:
-        claimed = consume_pending_connection(db, pending_id, current_user)
-        if claimed is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="That Google connection expired. Press Connect Google again.",
-            )
-        normalized["google_oauth_credentials"] = claimed["credentials"]
-        normalized["google_oauth_email"] = claimed["email"]
-        normalized["google_oauth_scopes"] = claimed["scopes"]
-        normalized["google_oauth_user_id"] = str(current_user.id)  # who attached it
-        return normalized
-
-    # No new consent in this save — keep whatever this source already had.
-    if existing.get("google_oauth_credentials"):
-        normalized["google_oauth_credentials"] = existing["google_oauth_credentials"]
-        normalized["google_oauth_email"] = existing.get("google_oauth_email")
-        normalized["google_oauth_scopes"] = existing.get("google_oauth_scopes") or []
-        normalized["google_oauth_user_id"] = existing.get("google_oauth_user_id") or str(current_user.id)
-        return normalized
-
-    existing_user_id = str(existing.get("google_oauth_user_id") or "").strip()
-    existing_email = str(existing.get("google_oauth_email") or "").strip().lower()
-    desired_email = str(normalized.get("google_oauth_email") or "").strip().lower()
-
-    # Legacy source (credential still lives on the AppBI user) — leave as is.
-    if existing_user_id and existing_email and (not desired_email or desired_email == existing_email):
-        normalized["google_oauth_user_id"] = existing_user_id
-        normalized["google_oauth_email"] = existing_email
-        return normalized
-
-    status_payload = get_google_data_access_status(current_user)
-    if not status_payload["configured"]:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Google data access is not configured yet. Ask an admin to set "
-                "AUTH_GOOGLE_CLIENT_SECRET and AUTH_GOOGLE_DATA_REDIRECT_URI."
-            ),
-        )
-
-    # A source with no connection of its own must get one EXPLICITLY. It used to
-    # fall back to whatever Google account the current user had connected
-    # elsewhere, so a brand-new source showed up already "connected" — and then
-    # used an account nobody chose for it.
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=(
-            "Press \"Connect Google\" on this data source to choose the Google "
-            "account it should use."
-        ),
-    )
+# The ONE secret-restore implementation lives in the service layer; the draft
+# test reuses it under this name (no second copy in the router).
+_restore_sensitive_config_fields = restore_masked_secrets
 
 
 # ── Platform GCP credential info ──────────────────────────────────────────────
@@ -209,55 +110,6 @@ _DESTINATION_FIELDS = (
     "project_id", "spreadsheet_id", "default_dataset", "auth_mode",
     "google_oauth_email", "google_oauth_user_id",
 )
-
-
-def _is_platform_admin(user: User) -> bool:
-    """An administrator in this codebase = `settings: full` (see _normalize_permissions)."""
-    from app.core.dependencies import _normalize_permissions
-    try:
-        return _normalize_permissions(user).get("settings") == "full"
-    except Exception:  # noqa: BLE001 — anything odd is not an admin
-        return False
-
-
-def _enforce_platform_gcp_policy(
-    ds_type: str,
-    config: dict[str, Any],
-    current_user: User,
-    existing_config: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """F5: the platform GCP credential is usable only for an allow-listed project
-    or a target an administrator approved. The approval marker can never be set
-    by the request; it is (re)stamped here for admins and carried over only while
-    the target is unchanged. Raises 400 when a non-admin would fall back to the
-    platform credential for a target outside the allow-list."""
-    from app.services.datasource_service import (
-        PLATFORM_GCP_APPROVAL_FIELD,
-        platform_gcp_target,
-        platform_gcp_target_allowed,
-        uses_platform_gcp_credential,
-    )
-    cfg = dict(config or {})
-    cfg.pop(PLATFORM_GCP_APPROVAL_FIELD, None)
-    if not uses_platform_gcp_credential(ds_type, cfg):
-        return cfg
-    target = platform_gcp_target(cfg)
-    previous = str((existing_config or {}).get(PLATFORM_GCP_APPROVAL_FIELD) or "").strip()
-    if target and previous == target:
-        cfg[PLATFORM_GCP_APPROVAL_FIELD] = previous
-        return cfg
-    if platform_gcp_target_allowed(cfg):
-        return cfg
-    if _is_platform_admin(current_user) and target:
-        cfg[PLATFORM_GCP_APPROVAL_FIELD] = target
-        return cfg
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=(
-            "The platform Google service account is not enabled for this project. "
-            "Provide this source's own credentials, or ask an administrator."
-        ),
-    )
 
 
 def _norm_dest(value: Any) -> str:
@@ -403,6 +255,7 @@ def list_data_sources(
     )
     for s in sources:
         s.user_permission = get_effective_permission(db, current_user, s, "data_sources")
+    _stamp_capabilities(sources)
     stamp_owner_emails(db, sources)
     return sources
 
@@ -421,6 +274,7 @@ def get_data_source(
             detail=f"Data source with ID {data_source_id} not found"
         )
     data_source.user_permission = require_view_access(db, current_user, data_source, "data_sources")
+    _stamp_capabilities([data_source])
     stamp_owner_emails(db, [data_source])
     return data_source
 
@@ -431,24 +285,17 @@ def create_data_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("data_sources", "edit")),
 ):
-    """Create a new data source."""
+    """Create a new data source (pipeline: DataSourceCRUDService.create)."""
     try:
-        data_source.config = _normalize_google_oauth_config(
-            data_source.config,
-            current_user=current_user,
-            db=db,
+        created = DataSourceCRUDService.create(
+            db, data_source, owner_id=current_user.id, actor=current_user, test_connection=True,
         )
-        data_source.config = _enforce_platform_gcp_policy(
-            data_source.type.value, data_source.config, current_user,
-        )
-        _validate_datasource_connection_or_raise(data_source.type.value, data_source.config)
-        created = DataSourceCRUDService.create(db, data_source, owner_id=current_user.id)
-        created.user_permission = get_effective_permission(db, current_user, created, "data_sources")
-        stamp_owner_emails(db, [created])
-        return created
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=describe_source_error(e, data_source.config))
+    except ValueError as e:  # SourceConfigError included
+        raise _config_error(e, data_source.config)
+    created.user_permission = get_effective_permission(db, current_user, created, "data_sources")
+    _stamp_capabilities([created])
+    stamp_owner_emails(db, [created])
+    return created
 
 
 @router.put("/{data_source_id}", response_model=DataSourceResponse)
@@ -458,51 +305,27 @@ def update_data_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Update a data source."""
-    ds = db.query(DataSource).filter(DataSource.id == data_source_id).first()
+    """Update a data source. Object `edit`. All config handling — secret
+    restore, auth-mode rules, validation, Google claim, policy, connection test,
+    persist, invalidation — is the service's single chokepoint."""
+    ds = DataSourceCRUDService.get_by_id(db, data_source_id)
     if not ds:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Data source with ID {data_source_id} not found")
     require_edit_access(db, current_user, ds, "data_sources")
-    # Snapshot the OLD (stored) config before we mutate it — used to evict the
-    # cached BigQuery client for the PREVIOUS credential once the update lands.
-    old_config = dict(ds.config or {})
+    stored_config = dict(ds.config or {})
     try:
-        next_type = data_source_update.type.value if data_source_update.type is not None else ds.type.value
-        config_changed = data_source_update.config is not None
-        if config_changed:
-            restored_config = _restore_sensitive_config_fields(
-                data_source_update.config,
-                ds.config,
-            )
-            data_source_update.config = _normalize_google_oauth_config(
-                restored_config,
-                current_user=current_user,
-                db=db,
-                existing_config=ds.config,
-            )
-            data_source_update.config = _enforce_platform_gcp_policy(
-                next_type, data_source_update.config, current_user, existing_config=ds.config,
-            )
-            _validate_datasource_connection_or_raise(next_type, data_source_update.config)
-        data_source = DataSourceCRUDService.update(db, data_source_id, data_source_update, actor_id=current_user.id)
-        if data_source is not None:
-            data_source.user_permission = get_effective_permission(db, current_user, data_source, "data_sources")
-            stamp_owner_emails(db, [data_source])
-        # Credential/config may have changed -> drop the warm BigQuery client(s)
-        # for BOTH the old and new config so the very next query (Source ->
-        # Dataset -> Explore -> Dashboard all share this cache) rebuilds with the
-        # NEW key instead of reusing the client built from the OLD one (which
-        # would otherwise linger up to the 5-min client-cache TTL).
-        if config_changed:
-            try:
-                from app.services.datasource_service import evict_bigquery_client_cache
-                evict_bigquery_client_cache(old_config, (data_source.config if data_source else {}))
-            except Exception:
-                logger.debug("bq client cache eviction after update failed", exc_info=True)
-        return data_source
+        data_source = DataSourceCRUDService.update(
+            db, data_source_id, data_source_update,
+            actor_id=current_user.id, actor=current_user, test_connection=True,
+        )
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=describe_source_error(e, data_source_update.config or ds.config))
+        raise _config_error(e, data_source_update.config or stored_config)
+    if data_source is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Data source with ID {data_source_id} not found")
+    data_source.user_permission = get_effective_permission(db, current_user, data_source, "data_sources")
+    _stamp_capabilities([data_source])
+    stamp_owner_emails(db, [data_source])
+    return data_source
 
 
 @router.delete("/{data_source_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -511,73 +334,20 @@ def delete_data_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Delete a data source, blocked if any datasets still reference it."""
-    datasource = db.query(DataSource).filter(DataSource.id == data_source_id).first()
+    """Delete a data source. Object `full`. 409 with structured blockers
+    ({code: source_in_use, message, blockers: [{kind, id, name}]}) while a
+    Dataset, a hosted snapshot or a Knowledge Doc depends on it."""
+    datasource = DataSourceCRUDService.get_by_id(db, data_source_id)
     if not datasource:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Data source with ID {data_source_id} not found"
         )
     require_full_access(db, current_user, datasource, "data_sources")
-
-    # Draft datasets (HTML-import wizard) are hidden from EVERY listing, so
-    # counting them here blocks the delete with a constraint the user can never
-    # see or resolve in the UI. Only real datasets may block; abandoned drafts
-    # are purged below instead.
-    blocking_datasets = db.query(Dataset).filter(
-        Dataset.is_draft.is_(False),
-        Dataset.id.in_(
-            db.query(Dataset.id)
-            .join(Dataset.tables)
-            .filter_by(datasource_id=data_source_id)
-            .distinct()
-        )
-    ).all()
-
-    constraints = [
-        {"type": "dataset", "id": ds.id, "name": ds.name}
-        for ds in blocking_datasets
-    ]
-
-    if constraints:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "message": f"Data source \"{datasource.name}\" đang được sử dụng và không thể xóa.",
-                "constraints": constraints,
-            },
-        )
-
-    # Nothing real references the source -> drop any invisible draft that does.
-    # This must happen EXPLICITLY: dataset_tables.datasource_id is ON DELETE
-    # CASCADE, so deleting the source alone would wipe the draft's tables and
-    # leave the Dataset row behind as an empty, unreachable shell.
     try:
-        purged = purge_stale_import_drafts(
-            db, datasource_id=data_source_id, older_than_hours=None
-        )
-        if purged:
-            db.commit()
-            logger.info(
-                "Purged import drafts %s while deleting data source %s", purged, data_source_id
-            )
-    except Exception:
-        db.rollback()
-        logger.warning(
-            "Draft purge before data source %s delete failed", data_source_id, exc_info=True
-        )
-
-    # The purge may already have removed this very source (a wizard-created
-    # "[Dashboard Import]" source exists only for its draft) — that IS success.
-    if db.query(DataSource).filter(DataSource.id == data_source_id).first() is None:
-        return
-
-    success = DataSourceCRUDService.delete(db, data_source_id)
-    if not success:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Data source with ID {data_source_id} not found"
-        )
+        DataSourceCRUDService.delete(db, data_source_id, actor_id=current_user.id)
+    except SourceInUseError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_detail())
 
 
 @router.post("/test-draft", response_model=DataSourceTestResponse)
@@ -635,18 +405,18 @@ def test_draft_data_source_connection(
     else:
         config = _strip_unset_secrets(config)
 
-    config = _normalize_google_oauth_config(
-        config,
-        current_user=current_user,
-        existing_config=existing_config,
-    )
-    config = _enforce_platform_gcp_policy(ds_type, config, current_user, existing_config)
+    try:
+        if ds_type in ("bigquery", "google_sheets", "google_docs"):
+            # A draft test only PEEKS a fresh consent handle; a save consumes it.
+            config = claim_google_connection(
+                db, config, actor=current_user, existing_config=existing_config, consume=False,
+            )
+        config = enforce_platform_gcp_policy(ds_type, config, current_user, existing_config)
+    except SourceConfigError as e:
+        raise _config_error(e, config)
 
-    success, message = DataSourceConnectionService.test_connection(ds_type, config)
-    # Central redaction: never return a raw driver message.
-    if not success and message:
-        message = describe_source_error(message, config)
-    return DataSourceTestResponse(success=success, message=message)
+    # Structured and redacted (F16) — never a raw driver message.
+    return DataSourceTestResponse(**run_connection_test(ds_type, config))
 
 
 @router.post("/{data_source_id}/test", response_model=DataSourceTestResponse)
@@ -656,17 +426,17 @@ def test_saved_data_source_connection(
     current_user: User = Depends(get_current_user),
 ):
     """Retest a SAVED source. Object `edit` required. Type, destination and
-    secret come ONLY from the persisted row — the request carries nothing."""
+    secret come ONLY from the persisted row — the request carries nothing.
+    The result is persisted as the source's last health."""
     db_ds = DataSourceCRUDService.get_by_id(db, data_source_id)
     if db_ds is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Data source not found")
     require_edit_access(db, current_user, db_ds, "data_sources")
     ds_type = db_ds.type.value if hasattr(db_ds.type, "value") else str(db_ds.type)
     config = dict(db_ds.config or {})
-    success, message = DataSourceConnectionService.test_connection(ds_type, config)
-    if not success and message:
-        message = describe_source_error(message, config)
-    return DataSourceTestResponse(success=success, message=message)
+    result = run_connection_test(ds_type, config)
+    record_health(db, db_ds, result, actor_id=current_user.id)
+    return DataSourceTestResponse(**result)
 
 
 @router.post("/query", response_model=QueryExecuteResponse)
@@ -686,6 +456,7 @@ def execute_query(
         )
     # Raw SQL against a source = object edit (spec permission mapping).
     require_edit_access(db, current_user, data_source, "data_sources")
+    _require_tabular(data_source, "query")
 
     try:
         result = DataSourceConnectionService.execute_user_query(
@@ -737,6 +508,7 @@ def validate_sql(
         )
     # Raw SQL against a source = object edit (spec permission mapping).
     require_edit_access(db, current_user, data_source, "data_sources")
+    _require_tabular(data_source, "query")
 
     ds_type = (
         data_source.type if isinstance(data_source.type, str) else data_source.type.value
@@ -773,6 +545,7 @@ def get_schema_browser(
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
     require_view_access(db, current_user, ds, "data_sources")
+    _require_tabular(ds, "discover")
     try:
         schemas = DataSourceConnectionService.get_schema_browser(ds.type.value, ds.config)
         return {"schemas": schemas}
@@ -798,6 +571,7 @@ def get_table_detail(
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
     require_view_access(db, current_user, ds, "data_sources")
+    _require_tabular(ds, "discover")
     try:
         detail = DataSourceConnectionService.get_table_detail(
             ds.type.value, ds.config, schema_name, table_name, preview_rows
@@ -822,6 +596,7 @@ def get_watermark_candidates(
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
     require_view_access(db, current_user, ds, "data_sources")
+    _require_tabular(ds, "discover")
     try:
         candidates = DataSourceConnectionService.get_watermark_candidates(
             ds.type.value, ds.config, schema_name, table_name
