@@ -201,6 +201,15 @@ jobs:
         working-directory: backend
         run: python scripts/ci/seed_e2e_data_state.py
 
+      # AUTHORIZATION RELEASE GATE fixture: isolated principals (owner, viewer,
+      # editor, builder, module admin, unrelated, team member, app user) with
+      # tokens minted by the product's own functions, read by
+      # e2e/tests/security/*.spec.ts (project `security`, retries 0). A missing
+      # fixture FAILS the spec, never skips it.
+      - name: Seed the security fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_security.py
+
       - name: Start the backend
         working-directory: backend
         run: |
