@@ -104,3 +104,44 @@ def test_shared_editor_pat_cannot_mint_an_embed(client, world):  # noqa: F811
     r = client.post("/api/v1/integrations/embed/resolve", headers=pat,
                     json={"dashboard_id": world["dash"].id, "full_report": True})
     assert r.status_code == 403, r.text
+
+
+# ── Gate 3: compute triggers and embed liveness ─────────────────────────────
+
+def test_a_viewer_cannot_force_rebuild_snapshots(client, world):  # noqa: F811
+    url = f"/api/v1/dashboards/{world['dash'].id}/snapshots/refresh"
+    assert client.post(url, headers=world["viewer"].headers).status_code == 403
+    assert client.post(url, headers=world["owner"].headers).status_code != 403
+
+
+def _owner_embed(client, world):  # noqa: F811
+    r = client.post("/api/v1/auth/personal-access-tokens/", headers=world["owner"].headers,
+                    json={"name": "emb", "scopes": {"dashboards": "edit"}, "expires_in_days": 1})
+    assert r.status_code == 201, r.text
+    pat = {"Authorization": f"Bearer {r.json()['token']}"}
+    r = client.post("/api/v1/integrations/embed/resolve", headers=pat,
+                    json={"dashboard_id": world["dash"].id, "full_report": True})
+    assert r.status_code == 200, r.text
+    return r.json()["embed_path"].split("/embed/")[1]
+
+
+def test_embed_dies_when_its_minter_can_no_longer_publish(client, db, world):  # noqa: F811
+    from tests.authz_http import set_permissions
+
+    token = _owner_embed(client, world)
+    url = f"/api/v1/public/dashboards/{token}/snapshots/info"
+    assert client.get(url).status_code == 200
+    set_permissions(db, world["owner"], dashboards="view", explore_charts="edit", datasets="edit")
+    assert client.get(url).status_code == 410
+
+
+def test_embed_dies_when_its_minter_is_deactivated(client, db, world):  # noqa: F811
+    from app.models.user import User, UserStatus
+
+    token = _owner_embed(client, world)
+    url = f"/api/v1/public/dashboards/{token}/snapshots/info"
+    assert client.get(url).status_code == 200
+    u = db.get(User, world["owner"].id)
+    u.status = UserStatus.DEACTIVATED
+    db.commit()
+    assert client.get(url).status_code == 410

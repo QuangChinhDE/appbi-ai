@@ -609,6 +609,30 @@ def _minting_token_is_live(grant: EmbedGrant, db: Session, now: datetime) -> boo
     return exp is None or now < exp
 
 
+def _minter_may_still_publish(grant: EmbedGrant, link: DashboardPublicLink, db: Session) -> bool:
+    from app.core.dependencies import _stamp_auth_context, can_publish
+    from app.models.models import Dashboard
+    from app.models.personal_access_token import PersonalAccessToken
+    from app.models.user import User, UserStatus
+
+    pat = db.query(PersonalAccessToken).filter(
+        PersonalAccessToken.id == getattr(grant, "personal_access_token_id", None)).first()
+    if pat is None:
+        return False
+    owner = db.query(User).filter(User.id == pat.owner_id).first()
+    if owner is None or owner.status != UserStatus.ACTIVE:
+        return False
+    dash = db.query(Dashboard).filter(Dashboard.id == link.dashboard_id).first()
+    if dash is None:
+        return False
+    # Decided with the PAT's own caps, exactly as at mint time.
+    _stamp_auth_context(owner, token_kind="personal_access_token", permission_caps=pat.scopes or {})
+    try:
+        return can_publish(db, owner, dash, "dashboards")
+    finally:
+        db.expunge(owner) if owner in db else None
+
+
 def resolve_embed_grant(token: str, db: Session) -> tuple[DashboardPublicLink, EmbedGrant] | None:
     """Resolve a grant token to its active managed link AND the grant itself,
     enforcing expiry/revocation.
@@ -649,6 +673,12 @@ def resolve_embed_grant(token: str, db: Session) -> tuple[DashboardPublicLink, E
     )
     if not link:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="This embed link is no longer available.")
+
+    # ...and only while the person who minted it may still PUBLISH that
+    # dashboard: deactivated, demoted or no longer the owner means the embeds
+    # they issued stop now, not when each grant's TTL runs out.
+    if not _minter_may_still_publish(grant, link, db):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This embed link has been revoked.")
 
     # Throttle telemetry writes (see _USE_COUNT_WRITE_WINDOW_SECONDS): one embed
     # view resolves the grant on its metadata request AND on every chart-data

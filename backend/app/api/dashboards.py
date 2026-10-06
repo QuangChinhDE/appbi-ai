@@ -325,7 +325,10 @@ def refresh_dashboard_snapshots(
     )
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
+    # Force-rebuilding every dataset's snapshot spends warehouse quota and busts
+    # caches for everyone: a compute trigger (edit), not something a viewer does.
     require_view_access(db, current_user, dash, "dashboards")
+    require_edit_access(db, current_user, dash, "dashboards")
 
     dataset_ids = _dashboard_dataset_ids(db, dash)
     if not dataset_ids:
