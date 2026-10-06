@@ -627,5 +627,6 @@ jobs:
               if n['tests'] == 0 or n['skipped'] or n['failures'] or n['errors']:
                   bad.append(f'{name}: {n}')
           if bad:
-              sys.exit('security suites not fully executed:\n  ' + '\n  '.join(bad))
+              nl = chr(10) + '  '
+              sys.exit('security suites not fully executed:' + nl + nl.join(bad))
           PY
