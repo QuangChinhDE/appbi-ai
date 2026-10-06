@@ -125,7 +125,10 @@ export function resolveTileFrameStyle(input: TileFrameInput): ResolvedTileFrame 
 
 /** Title typography — identical in the builder and the published report. */
 // Titles wrap to two lines on a narrow tile rather than losing their end ("Freight by product categ…").
-export const TILE_TITLE_CLASS = 'dashboard-tile-title min-w-0 flex-1 line-clamp-2 break-normal text-[13px] leading-snug font-semibold text-text-primary';
+// A title keeps at least ~7rem (or the whole row on a narrower tile): a status
+// badge beside it ("As of 08:01") truncates instead of squeezing the title to
+// "RE" on a phone or "Reve b…" on a tablet; the header stays one line high.
+export const TILE_TITLE_CLASS = 'dashboard-tile-title min-w-[min(100%,7rem)] flex-1 line-clamp-2 break-normal text-[13px] leading-snug font-semibold text-text-primary';
 /** A KPI's header label: quieter than a chart title, same in both renderers. */
 // A KPI label wraps to two lines rather than truncating: on a 2-up phone row
 // the header shares ~150px with its actions, and "R…" is not a label.
@@ -134,7 +137,7 @@ export const TILE_TITLE_CLASS = 'dashboard-tile-title min-w-0 flex-1 line-clamp-
 // long each label is — a one-line and a wrapped label used to push their values
 // to different heights ("4 ô đầu căn lệch" in the exported PDF). Longer labels
 // end in an ellipsis; the full text stays in the title tooltip.
-export const TILE_KPI_LABEL_CLASS = 'dashboard-kpi-label min-w-0 flex-1 line-clamp-2 min-h-[2.75em] break-normal hyphens-auto text-[13px] leading-snug font-medium text-text-secondary';
+export const TILE_KPI_LABEL_CLASS = 'dashboard-kpi-label min-w-[min(100%,7rem)] flex-1 line-clamp-2 min-h-[2.75em] break-normal hyphens-auto text-[13px] leading-snug font-medium text-text-secondary';
 
 export function tileKindOf(chartType: string | null | undefined, widgetType?: string | null): 'kpi' | 'table' | 'chart' | 'widget' | 'slicer' {
   // A slicer control is a control, not decoration: it keeps a usable height on

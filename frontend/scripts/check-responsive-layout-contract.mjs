@@ -252,6 +252,47 @@ check('DashboardGrid (Builder + Studio) draws the resolver output', () => {
   assert(!/deriveTabletLayout\(|deriveStackedLayout\(|fitLayoutToContent\(/.test(src), 'builder grid derives a device layout itself');
 });
 
+check('a device resize pushes down only what it covers; a tile beside it never moves; a device drop opens room', () => {
+  const { growInPlace } = load('lib/grid-arrange.ts');
+  // Table (0,0,24,10) beside a slicer (24,0,12,3); a KPI (0,10,12,5) under the
+  // table; a chart (0,15,36,8) under everything.
+  const page = [
+    { id: 1, x: 0, y: 0, w: 24, h: 10 }, { id: 2, x: 24, y: 0, w: 12, h: 3 },
+    { id: 3, x: 0, y: 10, w: 12, h: 5 }, { id: 4, x: 0, y: 15, w: 36, h: 8 },
+  ];
+  const r = growInPlace(page, 1, { x: 0, y: 0, w: 24, h: 13 });
+  assert(r.status === 'ok', JSON.stringify(r));
+  const at = (id) => r.changed.find((b) => b.id === id) ?? page.find((b) => b.id === id);
+  assert(at(2).y === 0, `the slicer beside the table moved: ${JSON.stringify(at(2))}`);
+  assert(at(3).y === 13 && at(4).y === 18, `covered tiles not pushed just below: ${JSON.stringify(r.changed)}`);
+  const all = page.map((b) => at(b.id));
+  for (let i = 0; i < all.length; i += 1) for (let j = i + 1; j < all.length; j += 1) {
+    const p = all[i]; const q = all[j];
+    assert(!(p.x < q.x + q.w && q.x < p.x + p.w && p.y < q.y + q.h && q.y < p.y + p.h), `overlap ${p.id}/${q.id}`);
+  }
+  const locked = growInPlace(page.map((b) => (b.id === 3 ? { ...b, locked: true } : b)), 1, { x: 0, y: 0, w: 24, h: 13 });
+  assert(locked.status === 'refused' && locked.blockedBy === 3, 'a resize pushed a locked tile');
+  const grid = source('components/dashboards/DashboardGrid.tsx');
+  assert(/item\.w !== prev!\.w \|\| item\.h !== prev!\.h\s*\?\s*growInPlace\(/.test(grid), 'a device resize does not use growInPlace');
+});
+
+check('a narrow tile keeps its title readable: a badge truncates beside it, never squeezes it, never adds a line', () => {
+  const frame = source('lib/dashboard-presentation/tile-frame.ts');
+  for (const name of ['TILE_TITLE_CLASS', 'TILE_KPI_LABEL_CLASS']) {
+    const cls = (frame.match(new RegExp(`export const ${name} = '([^']*)'`)) || [])[1] || '';
+    assert(/min-w-\[min\(100%,7rem\)\]/.test(cls) && !/\bmin-w-0\b/.test(cls), `${name} can be squeezed to nothing beside a badge`);
+  }
+  // The badge gives way (truncates) and the header never wraps: its height — and
+  // an AUTO device layout fitted to it — must not depend on the age of the cache.
+  const badge = source('components/dashboards/CachedLiveBadge.tsx');
+  assert(/min-w-0 shrink/.test(badge) && /className="truncate"/.test(badge) && !/flex-shrink-0 inline-flex/.test(badge), 'the cached badge cannot give way to the title');
+  const ro = source('components/dashboards/ReadonlyChartTile.tsx');
+  assert(!/mb-2 flex min-h-\[1\.5rem\] flex-wrap/.test(ro), 'a published tile header wraps (its height then follows the badge)');
+  assert(/flex min-w-0 shrink items-center gap-1/.test(ro), 'the published header pins its badges at full width');
+  const ct = source('components/dashboards/ChartTile.tsx');
+  assert(!/dashboard-tile-title-row flex flex-wrap/.test(ct), 'the Builder tile header wraps');
+});
+
 check('a hidden container (width 0) never unmounts the grid or reads as a phone', () => {
   for (const file of ['components/dashboards/DashboardGrid.tsx', 'components/dashboards/PublicDashboardView.tsx']) {
     const src = source(file);

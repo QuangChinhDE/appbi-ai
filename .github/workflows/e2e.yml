@@ -36,7 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     # ~22 min before the device-layout journeys (public-closure-responsive,
     # ~16 min, 15 serial journeys) were added; 30 cancelled the run mid-suite.
-    timeout-minutes: 50
+    # ~39 min with them; the UI/UX acceptance suite (dashboard-responsive-uiux*,
+    # ~20 min of serial real-browser journeys) brings it to ~60.
+    timeout-minutes: 80
 
     services:
       postgres:

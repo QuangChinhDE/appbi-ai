@@ -2664,12 +2664,13 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
               <div
                 className="relative"
                 ref={fitRootRef}
-                // Observability (tests, audits): what this surface drew, from the ONE width.
+                // Observability (tests, audits): what this surface drew, from the ONE width —
+                // nothing before that width is known (nothing is drawn then either).
                 data-report-width={gridWidth ?? 0}
-                data-report-breakpoint={activeBreakpoint}
-                data-report-cols={resolvedLayout.cols}
-                data-report-layout-source={resolvedLayout.source}
-                data-report-layout={JSON.stringify(resolvedLayout.layout.map(({ i, x, y, w, h }) => ({ i, x, y, w, h })))}
+                data-report-breakpoint={gridWidth ? activeBreakpoint : undefined}
+                data-report-cols={gridWidth ? resolvedLayout.cols : undefined}
+                data-report-layout-source={gridWidth ? resolvedLayout.source : undefined}
+                data-report-layout={gridWidth ? JSON.stringify(resolvedLayout.layout.map(({ i, x, y, w, h }) => ({ i, x, y, w, h }))) : undefined}
               >
               {activeBreakpoint !== 'xs' && gridWidth ? (
                 <SectionBands

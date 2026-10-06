@@ -428,8 +428,14 @@ check('a tile dropped on others opens room where it lands; a vacated filter band
   const closed = arrange.closeVacatedBand([b(50, 0, 0, 8, 3), b(1, 0, 3, 12, 6)], 50);
   assert(closed.length === 1 && closed[0].y === 0, JSON.stringify(closed));
   const src = source('components/dashboards/DashboardGrid.tsx');
-  // Desktop authoring carries a tile over others; a device canvas never does.
-  assert(/allowOverlap=\{!!onLayoutChange && !deviceView\}/.test(src), 'the builder grid cannot carry a tile over others');
+  // Desktop authoring carries a tile over others, and so does a CUSTOM device
+  // layout being edited; an AUTO or read-only view never moves.
+  assert(/allowOverlap=\{editableDevice \|\| \(!!onLayoutChange && !deviceView\)\}/.test(src), 'the builder grid cannot carry a tile over others');
+  assert(/preventCollision=\{!editableDevice && \(!onLayoutChange \|\| deviceView\)\}/.test(src), 'a read-only device view can be dragged over');
+  // A device drop opens room with the SAME rule as a desktop drop (never an overlap).
+  const persist = src.slice(src.indexOf('const persistItem'));
+  const devicePersist = persist.slice(persist.indexOf('if (deviceBreakpoint) {'), persist.indexOf('if (onLayoutChange) onLayoutChange([item]);'));
+  assert(/resolveDrop\(/.test(devicePersist) && /status === 'refused'/.test(devicePersist), 'a device drop does not open room with resolveDrop');
 });
 
 check("each direction puts the page's filter controls where its reading order wants them", () => {

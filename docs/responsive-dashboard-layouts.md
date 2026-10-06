@@ -45,9 +45,10 @@ boundaries.
 One width authority per rendered report: each surface has ONE ResizeObserver on
 its report container (rounded to whole pixels); that value decides the
 breakpoint, feeds the resolver, and sizes the grid. The grid
-(`react-grid-layout` `GridLayout`, `compactType=null`, `preventCollision`)
-renders the resolved geometry at that width — it never picks a breakpoint,
-measures its own width or reflows.
+(`react-grid-layout` `GridLayout`, `compactType=null`; `preventCollision` on
+every read-only view) renders the resolved geometry at that width — it never
+picks a breakpoint, measures its own width or reflows. A hidden container
+(width 0) keeps the last real width: the grid never unmounts for it.
 
 The Builder's **Desktop** authoring canvas draws the authored grid at any width
 `>= 640` (an author may edit desktop in a narrow window); below that it shows
@@ -187,15 +188,25 @@ Deterministic, identical on every surface:
   diagnostics, and the explicit **Fit heights to content** action (measures once,
   writes the grown cells into the draft). Content may adapt inside a tile; it
   never changes the tile's cell.
+- A tile header is one line high whatever its badges: a title keeps at least
+  ~7rem and a status badge ("As of 08:01") truncates beside it. Wrapping the
+  badge under the title was rejected — the header height (and an AUTO layout
+  fitted to it) would then change with the age of the result cache.
 
 ## 9. Builder
 
 - Device switcher **Desktop | Tablet | Phone**; Tablet/Phone render the canvas at
-  820 / 390 px.
+  820 / 390 px of REPORT width. (The Studio preview frames a whole 820 / 390 px
+  device, so its report is that width minus the page gutter — same band, same
+  CUSTOM cells; an AUTO layout may differ by its content fit.)
 - AUTO: badge **Auto from Desktop**, read-only, nothing persisted by viewing;
   **Customize layout** freezes exactly what is shown (content fit included) —
-  no jump — and enables drag/resize (no overlap: a drop on an occupied cell
-  returns the tile).
+  no jump — and enables drag/resize. A device drop follows the desktop rule
+  (`lib/grid-arrange` `resolveDrop`): a tile may be carried over others and the
+  layout opens room where it lands — the tiles that make room move down, as one
+  change; nothing ever overlaps. A drop that cannot be placed (a locked tile in
+  the way) returns the tile. (Until 2026-10 a drop on an occupied cell was
+  refused, so a packed tablet could not be reordered.)
 - CUSTOM: badge **Custom layout**; **Reset to Auto**, **Regenerate from
   Desktop**, **Fit heights to content**, **Add below** (when needed); stale and
   needs-review notes.

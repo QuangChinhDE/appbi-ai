@@ -463,7 +463,7 @@ export function ReadonlyChartTile({
                     sit IN the row: overlaid, they covered the label — in the
                     PDF the "Tính đến …" badge hid the KPI's name. */}
                 {(droppedBadge || cachedBadge) && (
-                  <div className="flex flex-shrink-0 items-center gap-1">
+                  <div className="flex min-w-0 shrink items-center gap-1">
                     {droppedBadge}
                     {cachedBadge}
                   </div>
@@ -485,7 +485,7 @@ export function ReadonlyChartTile({
           if (!showHeader) return null;
           return (
             <div className={`mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
-              <div className="min-w-0 flex-1">
+              <div className="min-w-[min(100%,7rem)] flex-1">
                 {displayTitle && (
                   <p data-pdf-tile-title className={TILE_TITLE_CLASS} style={themeTitleStyle} title={displayTitle}>{displayTitle}</p>
                 )}
@@ -496,7 +496,7 @@ export function ReadonlyChartTile({
                 )}
               </div>
               {hasActions && (
-                <div className="ml-auto flex flex-shrink-0 items-center gap-1">
+                <div className="ml-auto flex min-w-0 shrink items-center gap-1">
                   {droppedBadge}
                     {cachedBadge}
                   {havingToggle}
