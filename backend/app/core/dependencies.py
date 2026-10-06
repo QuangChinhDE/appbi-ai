@@ -50,26 +50,9 @@ TOKEN_PERMISSION_CAPS_ATTR = "_permission_caps"
 #: matrix while staying invisible to the personal-access-token cap below — a token
 #: scoped to `dashboards: view` could still publish an agent flow.
 #: Order is the order the admin matrix renders in.
-MODULE_KEYS = (
-    "data_sources",
-    "datasets",
-    "govern",
-    "agent_flows",
-    # AI Chat: its own key, because it is its own nav item.
-    #
-    # It rode on `agent_flows` and was the ONLY place in the product where two
-    # sidebar entries shared one module key — so the admin matrix showed a row
-    # called "Agent Flows" that silently also opened a second screen, and there
-    # was no way to give somebody the reading side without the authoring side.
-    # That is the common case: most people should be able to ASK an assistant
-    # without being able to build or publish one.
-    "chat",
-    "observability",
-    "explore_charts",
-    "dashboards",
-    "workboards",
-    "settings",
-)
+# The module list lives in the authz registry (core/authz/registry.py); this
+# name is kept for its many importers.
+from app.core.authz.registry import MODULE_KEYS  # noqa: E402
 
 # Nothing inherits any more. The four Intelligence keys existed because one
 # Knowledge Hub was presented as five sidebar modules, and inheritance from the
@@ -235,7 +218,7 @@ async def get_current_user(
 
 
 # Module permission levels — order matters for comparison
-LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
+from app.core.authz.registry import LEVEL_ORDER  # noqa: E402  (single ladder)
 
 
 def _normalize_permissions(user: User) -> dict:
@@ -399,33 +382,13 @@ def module_floor(module: str):
 
 
 # ── Resource-type → Module mapping ──────────────────────────
-_MODEL_TO_RESOURCE_TYPE = {
-    "DataSource": ResourceType.DATASOURCE,
-    "Chart": ResourceType.CHART,
-    "Dashboard": ResourceType.DASHBOARD,
-    "Dataset": ResourceType.DATASET,
-    "Workboard": ResourceType.WORKBOARD,
-    "GovernKnowledgeDoc": ResourceType.KNOWLEDGE_DOC,
-    # Was missing here while present in core.permissions._RESOURCE_TO_MODULE — the
-    # two maps are the same fact written twice, and they had drifted. Without this
-    # entry no share on a brain could ever be found, so object-level checks on a
-    # flow silently fell through to "not shared".
-    "AgentBrainVersion": ResourceType.AGENT_BRAIN,
-    "AgentFlowChatThread": ResourceType.CHAT_THREAD,
-    "AiProviderCredential": ResourceType.AI_CREDENTIAL,
-}
+# Derived from the authz registry - never re-typed (they had drifted twice).
+from app.core.authz import registry as _authz_registry  # noqa: E402
 
-_MODEL_TO_MODULE = {
-    "DataSource": "data_sources",
-    "Chart": "explore_charts",
-    "Dashboard": "dashboards",
-    "Dataset": "datasets",
-    "Workboard": "workboards",
-    "GovernKnowledgeDoc": "govern",
-    "AgentBrainVersion": "agent_flows",
-    "AgentFlowChatThread": "chat",
-    "AiProviderCredential": "agent_flows",
+_MODEL_TO_RESOURCE_TYPE = {
+    r.model: ResourceType(r.resource_type) for r in _authz_registry.RESOURCES
 }
+_MODEL_TO_MODULE = dict(_authz_registry.MODEL_TO_MODULE)
 
 
 def _share_key_for(resource) -> str:
@@ -439,6 +402,25 @@ def _share_key_for(resource) -> str:
     if brain_key:
         return str(brain_key)
     return str(getattr(resource, "id", ""))
+
+
+def _is_owner(user: User, resource) -> bool:
+    """Ownership through the columns the REGISTRY declares for this resource
+    (owner_id, user_id for chat threads, owner_email for agent flows). An
+    unregistered model falls back to owner_id/owner_email only."""
+    spec = _authz_registry.spec_for(resource)
+    attrs = spec.owner_attrs if spec is not None else ("owner_id", "owner_email")
+    user_email = str(getattr(user, "email", "") or "").strip().lower()
+    for attr in attrs:
+        value = getattr(resource, attr, None)
+        if value is None:
+            continue
+        if attr.endswith("_email"):
+            if user_email and str(value).strip().lower() == user_email:
+                return True
+        elif str(value) == str(user.id):
+            return True
+    return False
 
 
 def _relation_level(db: Session, user: User, resource, module_level: str) -> str:
@@ -457,14 +439,7 @@ def _relation_level(db: Session, user: User, resource, module_level: str) -> str
     if _sanitize_permission_level(module_level) == "full":
         return "full"
 
-    owner_id = getattr(resource, "owner_id", None)
-    if owner_id is not None and str(owner_id) == str(user.id):
-        return "full"
-
-    # Some tables key ownership by email rather than by FK (agent_brain_versions).
-    owner_email = getattr(resource, "owner_email", None)
-    user_email = str(getattr(user, "email", "") or "").strip().lower()
-    if owner_email and user_email and str(owner_email).strip().lower() == user_email:
+    if _is_owner(user, resource):
         return "full"
 
     class_name = type(resource).__name__

@@ -12,13 +12,7 @@ from app.core.config import settings
 PAT_TOKEN_PREFIX = "appbi_pat_"
 PAT_SECRET_BYTES = 32
 PAT_MAX_EXPIRES_IN_DAYS = 365
-PAT_MODULES = (
-    "data_sources",
-    "datasets",
-    "explore_charts",
-    "dashboards",
-    "workboards",
-)
+from app.core.authz.registry import PAT_MODULES  # noqa: E402  (registry: pat_eligible)
 PAT_SCOPE_ALLOWED_LEVELS: dict[str, tuple[str, ...]] = {
     "data_sources": ("none", "view", "edit", "full"),
     "datasets": ("none", "view", "edit", "full"),
