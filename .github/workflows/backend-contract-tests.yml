@@ -591,6 +591,7 @@ jobs:
             tests/test_authz_registry.py \
             tests/test_authz_static_rules.py \
             tests/test_authz_token_vector.py \
+            tests/test_authz_route_contract.py \
             --junitxml=/tmp/authz-core.xml 2>&1 | tee /tmp/authz-core.log
 
       - name: GATE — Postgres role + row-level security (app role, not owner)
