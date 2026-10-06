@@ -5212,7 +5212,9 @@ def build_dashboard_from_import(
         else:
             raise ValueError("dataset_id or dataset_table_id is required when building from an existing source.")
     else:
-        dataset_permission = (current_user.permissions or {}).get("datasets", "none")
+        from app.core.permissions import get_user_module_permission
+
+        dataset_permission = get_user_module_permission(current_user, "datasets")  # PAT-capped
         if dataset_permission not in {"edit", "full"}:
             raise ValueError("Creating a temporary dataset from Excel requires datasets edit permission.")
 

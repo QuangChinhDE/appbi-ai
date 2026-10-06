@@ -111,8 +111,10 @@ def _stamp_auth_context(
     token_name: str | None = None,
 ) -> User:
     setattr(user, AUTH_TOKEN_KIND_ATTR, token_kind)
-    if permission_caps:
-        setattr(user, TOKEN_PERMISSION_CAPS_ATTR, permission_caps)
+    if permission_caps is not None:
+        # Stamped even when EMPTY: an empty cap set means "nothing", never "no
+        # cap" (a PAT row with scopes {} used to authenticate as its full owner).
+        setattr(user, TOKEN_PERMISSION_CAPS_ATTR, dict(permission_caps))
     if token_id is not None:
         setattr(user, PERSONAL_ACCESS_TOKEN_ID_ATTR, token_id)
     if token_name:
@@ -150,6 +152,15 @@ def _authenticate_personal_access_token(token: str, db: Session) -> User:
     if pat.last_used_at is None or (now - pat.last_used_at).total_seconds() >= 60:
         pat.last_used_at = now
         db.commit()
+
+    if not pat.scopes:
+        # A token with no scope grants nothing; refuse it outright rather than
+        # let any code path treat "no caps" as "uncapped".
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     user = db.query(User).filter(User.id == pat.owner_id).first()
     if not user or user.status != UserStatus.ACTIVE:
@@ -271,7 +282,7 @@ def _normalize_permissions(user: User) -> dict:
                 normalized[module] = allowed[-1]
 
     caps = _get_permission_caps(user)
-    if caps:
+    if caps or _is_capped(user):
         for module in set(MODULE_KEYS) | set(normalized):
             normalized[module] = _min_permission_level(
                 normalized.get(module, "none"),
@@ -294,6 +305,13 @@ def _min_permission_level(left: str | None, right: str | None) -> str:
     return right_level
 
 
+def _is_capped(user: User) -> bool:
+    """A PAT principal is ALWAYS capped, whatever its stored scopes."""
+    return getattr(user, AUTH_TOKEN_KIND_ATTR, None) == "personal_access_token" or isinstance(
+        getattr(user, TOKEN_PERMISSION_CAPS_ATTR, None), dict
+    )
+
+
 def _get_permission_caps(user: User) -> dict[str, str]:
     caps = getattr(user, TOKEN_PERMISSION_CAPS_ATTR, None)
     if not isinstance(caps, dict):
@@ -307,7 +325,7 @@ def _get_permission_caps(user: User) -> dict[str, str]:
 
 def _cap_effective_permission(user: User, module: str, level: str) -> str:
     caps = _get_permission_caps(user)
-    if not caps:
+    if not caps and not _is_capped(user):
         return _sanitize_permission_level(level)
     return _min_permission_level(level, caps.get(module, "none"))
 

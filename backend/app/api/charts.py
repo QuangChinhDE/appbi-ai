@@ -364,8 +364,11 @@ def ai_chart_preview(
     dataset_obj, _db_table = _get_dataset_for_chart_table(db, payload.dataset_table_id)
     require_view_access(db, current_user, dataset_obj, "datasets")
     if payload.save:
-        perms = current_user.permissions or {}
-        if perms.get("explore_charts", "none") not in ("edit", "full"):
+        # The normalized (PAT-capped) level: a raw read of user.permissions let a
+        # token scoped to explore_charts:view save charts as its edit-level owner.
+        from app.core.permissions import get_user_module_permission
+
+        if get_user_module_permission(current_user, "explore_charts") not in ("edit", "full"):
             raise HTTPException(
                 status_code=403,
                 detail="Requires 'edit' permission on module 'explore_charts'",

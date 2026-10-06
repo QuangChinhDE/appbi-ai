@@ -2113,14 +2113,10 @@ if settings.WORKBOARDS_ENABLED:
             _sanitize_permission_level,
         )
 
+        # _normalize_permissions already back-fills an absent key for a
+        # settings:full administrator; no raw read of user.permissions here.
         perms = _normalize_permissions(user)
         level = _sanitize_permission_level(perms.get("workboards", "none"))
-        if (
-            level == "none"
-            and "workboards" not in (user.permissions or {})
-            and _sanitize_permission_level(perms.get("settings")) == "full"
-        ):
-            return True
         return _LEVELS.get(level, 0) >= _LEVELS["view"]
 
 

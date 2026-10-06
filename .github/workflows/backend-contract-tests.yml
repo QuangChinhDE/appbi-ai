@@ -598,6 +598,7 @@ jobs:
             tests/test_authz_datasource_secret_http_pg.py \
             tests/test_authz_workspace_route_matrix_pg.py \
             tests/test_authz_observability_http_pg.py \
+            tests/test_permission_caps.py \
             --junitxml=/tmp/authz-pg.xml
 
       # EVERY MANDATORY SECURITY SUITE, NOT JUST THE FIRST.
