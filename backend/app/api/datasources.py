@@ -423,8 +423,12 @@ def test_saved_data_source_connection(
     require_edit_access(db, current_user, db_ds, "data_sources")
     ds_type = db_ds.type.value if hasattr(db_ds.type, "value") else str(db_ds.type)
     config = dict(db_ds.config or {})
+    tested_version = int(db_ds.config_version or 1)
+    # End the read txn: nothing is held during the network test, and the
+    # result is stamped only if the config is still the one tested.
+    db.rollback()
     result = run_connection_test(ds_type, config)
-    record_health(db, db_ds, result, actor_id=current_user.id)
+    record_health(db, db_ds, result, actor_id=current_user.id, expected_version=tested_version)
     return DataSourceTestResponse(**result)
 
 
@@ -604,6 +608,8 @@ def get_watermark_candidates(
 
 def _require_gsheets_ds(data_source_id: int, db: Session, current_user: User, level: str = "view"):
     """Load + authorize a google_sheets datasource; raise 404/403/400 on error."""
+    if level not in ("view", "full"):
+        raise ValueError(f"_require_gsheets_ds: unknown access level {level!r}")
     from app.models import DataSource
     from app.core.crypto import decrypt_config
     from app.services.google_sheets_connector import create_google_sheets_connector

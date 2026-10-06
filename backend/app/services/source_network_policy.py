@@ -13,7 +13,9 @@ Rules (spec: docs/features/source-core-hardening/spec.md):
   private address is refused, not "tried until one works").
 * Hard deny, never allowlisted: link-local (incl. the cloud metadata address
   169.254.169.254 and fd00:ec2::254, plus the name metadata.google.internal),
-  unspecified, multicast, reserved.
+  unspecified, multicast, reserved, 0.0.0.0/8, fec0::/10, the NAT64 prefixes,
+  IPv4-compatible ::/96, and the Teredo (2001::/32) / 6to4 (2002::/16) tunnel
+  prefixes (refused, not unwrapped: the relay decides the real destination).
 * Loopback is refused unless an operator lists a loopback range EXPLICITLY in
   ``ALLOWED_PRIVATE_SOURCE_CIDRS`` (local test databases); the blanket
   ``SOURCE_ALLOW_PRIVATE_NETWORK`` switch never opens loopback.
@@ -41,7 +43,20 @@ _METADATA_HOSTNAMES = {"metadata.google.internal", "metadata", "metadata.goog"}
 # Not flagged non-global by every Python version, but never a database host.
 _ALWAYS_PRIVATE = [
     ipaddress.ip_network("100.64.0.0/10"),   # CGNAT
-    ipaddress.ip_network("0.0.0.0/8"),
+]
+
+
+# Hard deny, never allowlisted: not a database host on any network we serve,
+# or a translation/tunnel prefix whose real destination is decided elsewhere
+# (a NAT64 gateway, a Teredo/6to4 relay) and so cannot be checked here.
+_HARD_DENY = [
+    ipaddress.ip_network("0.0.0.0/8"),        # "this network"
+    ipaddress.ip_network("fec0::/10"),        # deprecated site-local
+    ipaddress.ip_network("64:ff9b::/96"),     # NAT64 well-known prefix
+    ipaddress.ip_network("64:ff9b:1::/48"),   # NAT64 local-use prefix
+    ipaddress.ip_network("::/96"),            # IPv4-compatible (deprecated)
+    ipaddress.ip_network("2001::/32"),        # Teredo
+    ipaddress.ip_network("2002::/16"),        # 6to4
 ]
 
 
@@ -71,18 +86,19 @@ def _allowed_networks() -> List[Union[ipaddress.IPv4Network, ipaddress.IPv6Netwo
 
 def _unwrap(ip: IPAddress) -> IPAddress:
     if isinstance(ip, ipaddress.IPv6Address):
+        # Only ::ffff:a.b.c.d is unwrapped (the kernel connects to the IPv4
+        # address itself). Teredo / 6to4 are refused outright by _HARD_DENY.
         if ip.ipv4_mapped is not None:
             return ip.ipv4_mapped
-        if ip.sixtofour is not None:
-            return ip.sixtofour
-        if ip.teredo is not None:
-            return ip.teredo[1]
     return ip
 
 
 def check_ip(ip: IPAddress) -> None:
     """Raise SourceNetworkPolicyError when *ip* is not an allowed destination."""
     ip = _unwrap(ip)
+    # ::1 sits inside ::/96 but is loopback, classified (and allowlistable) below.
+    if not ip.is_loopback and any(ip.version == n.version and ip in n for n in _HARD_DENY):
+        raise SourceNetworkPolicyError("Destination address is not routable for a data source.")
     if ip in _METADATA_IPS:
         raise SourceNetworkPolicyError("Destination is a cloud metadata address and is not allowed.")
     if ip.is_unspecified or ip.is_multicast or ip.is_link_local:

@@ -493,3 +493,50 @@ def test_update_that_retests_records_the_new_health(S, monkeypatch):
                                      test_connection=True)
     row, _cfg = _row(S, ds_id)
     assert row.last_test_status == "ok" and row.last_tested_at is not None
+
+
+def test_saved_retest_does_not_stamp_health_on_a_config_that_changed_meanwhile(S, monkeypatch):
+    """Review R2-4: the saved retest runs outside the read txn and records its
+    health only on the config_version it tested; a concurrent connection change
+    leaves the new config's health untouched."""
+    from app.schemas import DataSourceUpdate
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    from app.services.datasource_service import DataSourceConnectionService
+    import app.services.datasource_crud_service as crud
+    ds_id, _ = _create(S)
+    monkeypatch.setattr(crud, "invalidate_source", lambda *a, **k: {})
+    call = make_http(monkeypatch, S, {OWNER: {"data_sources": "edit"}})
+    fired = []
+
+    def slow_failing_test(ds_type, config):
+        if not fired:
+            fired.append(1)
+            with S() as s2:  # someone repoints the source while the test runs
+                DataSourceCRUDService.update(s2, ds_id, DataSourceUpdate(
+                    config=pg_config(host="db-b.example.com", password="pw-B")))
+        return False, "password authentication failed"
+    monkeypatch.setattr(DataSourceConnectionService, "test_connection", staticmethod(slow_failing_test))
+    r = call(OWNER, "POST", f"/datasources/{ds_id}/test")
+    assert r.status_code == 200 and r.json()["status"] == "error", r.text
+    ds, cfg = _row(S, ds_id)
+    assert cfg["host"] == "db-b.example.com" and ds.config_version == 2
+    assert ds.last_test_status is None and ds.last_error_code is None  # not stamped on v2
+
+
+def test_saved_retest_stamps_health_when_the_config_is_unchanged(S, monkeypatch):
+    from app.services.datasource_service import DataSourceConnectionService
+    ds_id, _ = _create(S)
+    call = make_http(monkeypatch, S, {OWNER: {"data_sources": "edit"}})
+    monkeypatch.setattr(DataSourceConnectionService, "test_connection",
+                        staticmethod(lambda t, c: (False, "password authentication failed")))
+    assert call(OWNER, "POST", f"/datasources/{ds_id}/test").status_code == 200
+    ds, _cfg = _row(S, ds_id)
+    assert ds.last_test_status == "error" and ds.last_error_code == "auth"
+
+
+def test_require_gsheets_ds_refuses_an_unknown_level():
+    """Review R2-6: a typo'd level must not silently mean `view`."""
+    from app.api.datasources import _require_gsheets_ds
+    for bad in ("edit", "ful", "", None):
+        with pytest.raises(ValueError):
+            _require_gsheets_ds(1, None, None, level=bad)

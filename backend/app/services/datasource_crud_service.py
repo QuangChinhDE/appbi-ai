@@ -337,7 +337,9 @@ class DataSourceCRUDService:
                         actor_id=actor_id or db_data_source.owner_id,
                     )
                     changed_fields = connection_fields_changed(old_plain, new_plain)
-                if changed_fields and pending_key is not None:
+                # A consent handle is single-use: spend it even when the
+                # reconnect changed nothing (same account / same token).
+                if pending_key is not None:
                     _consume_google_pending(db, pending_key)
                 old_auth = str(old_plain.get("auth_mode") or "")
                 new_auth = str(new_plain.get("auth_mode") or "")

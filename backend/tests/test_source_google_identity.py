@@ -184,3 +184,25 @@ def test_reconnect_through_the_service_evicts_the_old_client(S, monkeypatch):
     assert new_key != old_key
     assert old_key not in dsm._BQ_CLIENT_CACHE and old_client.closed
     dsm._BQ_CLIENT_CACHE.clear()
+
+
+def test_update_with_an_unchanged_reconnect_still_consumes_the_pending_handle(S, monkeypatch):
+    """Review R2-5: reconnecting the SAME Google account yields no connection
+    change; the consent handle must still be consumed (single use), not left
+    claimable by a later save."""
+    from app.schemas import DataSourceCreate, DataSourceUpdate
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    no_network(monkeypatch)
+    pid = _pending(S)
+    with S() as s:
+        ds = DataSourceCRUDService.create(s, DataSourceCreate(name="bq", type="bigquery", config={
+            "project_id": "p", "auth_mode": "google_oauth", "google_pending_id": pid}),
+            owner_id=OWNER, actor=ACTOR, test_connection=True)
+        ds_id, version = ds.id, ds.config_version
+    assert _pending_count(S) == 0
+    pid2 = _pending(S)  # same account, same token -> nothing changes
+    with S() as s:
+        ds = DataSourceCRUDService.update(s, ds_id, DataSourceUpdate(config={
+            "project_id": "p", "auth_mode": "google_oauth", "google_pending_id": pid2}), actor=ACTOR)
+        assert ds.config_version == version  # no connection change...
+    assert _pending_count(S) == 0  # ...but the handle is spent

@@ -75,6 +75,13 @@ REFUSED_SQL = [
     ("DELETE FROM t", None),
     ("   ", None),
     ("SELECT 1\x00; DROP TABLE x", None),
+    # Harmless second statements: the gate refuses MULTIPLE statements, not
+    # only dangerous ones (a comment/quote opener must not hide the split).
+    ("SELECT '/*', 1; SELECT 2 -- */", None),
+    ("SELECT 1; SELECT 2", None),
+    ("SELECT 1; SELECT 2", "mysql"),
+    ("SELECT 1; SELECT 2", "bigquery"),
+    ("SELECT $$;$$; SELECT 1", "postgresql"),
 ]
 
 
@@ -740,3 +747,99 @@ def test_type_inference_runs_user_sql_read_only(monkeypatch):
     except Exception:
         pass
     assert mcur.executed[0][0] == "START TRANSACTION READ ONLY"
+
+
+# ── Review round 2: IP-literal redaction (every category, every surface) ─────
+
+def _health_message(monkeypatch, message, config):
+    import app.services.datasource_service as dsm
+    from app.services.source_health import run_connection_test
+    monkeypatch.setattr(dsm.DataSourceConnectionService, "test_connection",
+                        staticmethod(lambda t, c: (False, message)))
+    return run_connection_test("postgresql", config)
+
+
+@pytest.mark.parametrize("message", [
+    'password authentication failed for user "u" at 10.2.3.4',          # auth
+    'database "x" does not exist on server 10.2.3.4',                     # missing_resource
+    "could not connect to server at 10.2.3.4.",                           # trailing period
+    "connection to 010.002.003.004 failed: timeout",                      # zero padded
+])
+def test_connection_test_redacts_resolved_ip_for_every_category(monkeypatch, message):
+    out = _health_message(monkeypatch, message, {"host": "db.internal.example", "password": "pw-xyz"})
+    assert "10.2.3.4" not in out["message"] and "002.003" not in out["message"], out
+    assert "<address>" in out["message"]
+
+
+def test_redaction_keeps_the_typed_host_in_canonical_form():
+    from app.services.source_errors import describe_source_error
+    msg = describe_source_error("connection refused by FD00::1 and fd00:0::2", {"host": "fd00::1"})
+    assert "FD00::1" in msg and "fd00:0::2" not in msg
+    msg = describe_source_error("refused by 10.0.0.7.", {"host": "10.0.0.7"})
+    assert "10.0.0.7." in msg
+    msg = describe_source_error("refused by 010.000.000.007", {"host": "10.0.0.7"})
+    assert "010.000.000.007" in msg  # same address, typed differently
+
+
+def test_describe_source_error_used_by_query_paths_redacts_ips():
+    from app.services.source_errors import describe_source_error
+    msg = describe_source_error('relation "t" does not exist (server 192.168.9.9)', {"host": "pg.corp"})
+    assert "192.168.9.9" not in msg and "<address>" in msg
+    assert "1.2.3" in describe_source_error("version 1.2.3 is unsupported", {})  # not an address
+
+
+# ── Review round 2: network policy hard-deny networks ────────────────────────
+
+@pytest.mark.parametrize("host", [
+    "0.1.2.3",                    # 0.0.0.0/8 ("this network")
+    "fec0::1",                    # deprecated site-local
+    "64:ff9b::a00:1",             # NAT64 well-known -> 10.0.0.1
+    "64:ff9b::808:808",           # NAT64 even to a public v4: refused outright
+    "64:ff9b:1::1",               # local-use NAT64
+    "::10.0.0.1", "::8.8.8.8",    # IPv4-compatible (deprecated)
+    "2001:0:4136:e378:8000:63bf:3fff:fdd2",  # Teredo
+    "2002:808:808::1",            # 6to4 wrapping a PUBLIC v4: still refused
+    "2002:7f00:1::1",             # 6to4 wrapping loopback
+])
+def test_network_policy_hard_denies_translation_and_legacy_ranges(strict_network, host):
+    strict_network.setattr(settings, "ALLOWED_PRIVATE_SOURCE_CIDRS", "0.0.0.0/0,::/0", raising=False)
+    strict_network.setattr(settings, "SOURCE_ALLOW_PRIVATE_NETWORK", True, raising=False)
+    with pytest.raises(netpol.SourceNetworkPolicyError):
+        netpol.resolve_and_check(host, 5432)
+
+
+def test_network_policy_refuses_a_name_resolving_to_teredo_or_6to4(strict_network):
+    _fake_dns(strict_network, {"t.example": ["8.8.8.8", "2002:808:808::1"],
+                               "u.example": ["2001:0:4136:e378:8000:63bf:3fff:fdd2"]})
+    for name in ("t.example", "u.example"):
+        with pytest.raises(netpol.SourceNetworkPolicyError):
+            netpol.resolve_and_check(name, 5432)
+
+
+def test_ipv4_mapped_is_still_unwrapped(strict_network):
+    assert netpol.resolve_and_check("::ffff:8.8.8.8", 5432) == "8.8.8.8"
+
+
+# ── Review round 2: the e2e source seed is CI-only ───────────────────────────
+
+def test_source_hardening_seed_refuses_without_ci_opt_in(monkeypatch):
+    import importlib.util
+    import pathlib
+    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "ci" / "seed_e2e_source_hardening.py"
+    spec = importlib.util.spec_from_file_location("seed_e2e_source_hardening_t", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.delenv("CI_FIXTURE_SEED", raising=False)
+    touched = []
+    monkeypatch.setattr(mod, "SessionLocal", lambda: touched.append(1))
+    monkeypatch.setattr(mod, "_role_and_databases", lambda: touched.append(2))
+    assert mod.main() != 0 and touched == []
+    monkeypatch.setenv("CI_FIXTURE_SEED", "yes")
+    assert mod.main() != 0 and touched == []
+
+
+def test_e2e_workflow_opts_the_source_seed_in():
+    import pathlib
+    wf = (pathlib.Path(__file__).resolve().parents[2] / ".github" / "workflows" / "e2e.yml").read_text(encoding="utf-8")
+    step = wf.split("Seed the source-hardening fixture", 1)[1].split("- name:", 1)[0]
+    assert 'CI_FIXTURE_SEED: "1"' in step

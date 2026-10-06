@@ -78,9 +78,6 @@ def run_connection_test(ds_type: str, config: Dict[str, Any]) -> Dict[str, Any]:
     error_code: Optional[str] = None
     if not success:
         error_code = classify_source_error(exc if exc is not None else (message or ""))
-        if error_code in ("network", "timeout", "policy_blocked") and safe_message:
-            from app.services.source_errors import redact_ip_literals
-            safe_message = redact_ip_literals(safe_message, keep=(config or {}).get("host"))
         checks = dict((detail or {}).get("checks") or _failed_checks(error_code))
         status = "error"
     else:
@@ -111,16 +108,35 @@ def apply_health(data_source, result: Dict[str, Any]) -> None:
     data_source.last_error_code = result.get("error_code")
 
 
-def record_health(db: Session, data_source, result: Dict[str, Any], *, actor_id: Any = None) -> None:
+def record_health(db: Session, data_source, result: Dict[str, Any], *, actor_id: Any = None,
+                  expected_version: Optional[int] = None) -> None:
     """Persist the latest health on the source (status, time, category — never
     a message) and audit a failure category. Best-effort: a health write must
-    not turn a test into an error."""
+    not turn a test into an error.
+
+    With *expected_version* the write is a conditional UPDATE (``WHERE id AND
+    config_version = expected``): a test that ran outside any transaction must
+    not stamp its result on a config that changed while it ran."""
+    source_id = getattr(data_source, "id", None)
     try:
-        apply_health(data_source, result)
+        if expected_version is None:
+            apply_health(data_source, result)
+        else:
+            from app.models.models import DataSource
+            updated = db.query(DataSource).filter(
+                DataSource.id == source_id, DataSource.config_version == int(expected_version),
+            ).update({
+                DataSource.last_test_status: result.get("status"),
+                DataSource.last_tested_at: result.get("tested_at"),
+                DataSource.last_error_code: result.get("error_code"),
+            }, synchronize_session=False)
+            if not updated:
+                logger.info("source.health_skipped_stale source_id=%s tested_version=%s",
+                            source_id, expected_version)
         db.commit()
     except Exception:  # noqa: BLE001
         db.rollback()
-        logger.warning("source.health_persist_failed source_id=%s", getattr(data_source, "id", None))
+        logger.warning("source.health_persist_failed source_id=%s", source_id)
         return
     if result.get("status") == "error":
         from app.services.source_lifecycle import audit_source_event

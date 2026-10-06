@@ -210,6 +210,8 @@ jobs:
       # The spec FAILS when these are missing rather than skipping.
       - name: Seed the source-hardening fixture
         working-directory: backend
+        env:
+          CI_FIXTURE_SEED: "1"
         run: python scripts/ci/seed_e2e_source_hardening.py
 
       - name: Start the backend

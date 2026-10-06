@@ -18,6 +18,15 @@ WHAT IT CREATES, in the job's own Postgres service (loopback; the job allows
   E2E user, carrying a FAKE service account (it never reaches Google: the spec
   only checks that a view-only user is refused before anything is loaded).
 
+GUARDED: refuses to run unless ``CI_FIXTURE_SEED=1`` (the e2e workflow sets
+it; same opt-in as seed_snowflake_ci_fixture.py). It creates a LOGIN role with
+a fixed, published password and new databases in whatever server
+DATABASE_URL points at — a disposable CI database only, never dev/prod. The
+role is further confined: read-only by default (``default_transaction_read_only``),
+SELECT on the two fixture tables only, and no grants in the app database
+(PUBLIC's default CONNECT still lets it log in there, which is why the script
+itself is CI-only rather than relying on the role alone).
+
 DETERMINISTIC (fixed names / rows) and IDEMPOTENT (re-running resets the two
 tables, re-sets the role password and reuses the source). Names and the
 password match the spec's defaults (SRC_* env vars override both sides).
@@ -80,8 +89,10 @@ def _role_and_databases() -> None:
         cur = conn.cursor()
         cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (ROLE,))
         verb = "ALTER" if cur.fetchone() else "CREATE"
-        cur.execute(pg_sql.SQL(verb + " ROLE {} WITH LOGIN PASSWORD %s").format(pg_sql.Identifier(ROLE)),
-                    (PASSWORD,))
+        cur.execute(pg_sql.SQL(verb + " ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                               "PASSWORD %s").format(pg_sql.Identifier(ROLE)), (PASSWORD,))
+        cur.execute(pg_sql.SQL("ALTER ROLE {} SET default_transaction_read_only = on").format(
+            pg_sql.Identifier(ROLE)))
         for db in TABLES:
             cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db,))
             if not cur.fetchone():
@@ -117,6 +128,11 @@ def _gsheets_source(db, user) -> int:
 
 
 def main() -> int:
+    if os.environ.get("CI_FIXTURE_SEED") != "1":
+        print("REFUSED: seed_e2e_source_hardening.py creates a LOGIN role with a published "
+              "password and new databases — for a disposable CI database only. Set "
+              "CI_FIXTURE_SEED=1 to proceed (the e2e workflow does).", file=sys.stderr)
+        return 2
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == EMAIL).first()

@@ -76,32 +76,66 @@ def describe_source_error(exc: Any, config: Any = None) -> str:
         text = text.replace(secret, "••••")
     for pat in _PATTERNS:
         text = pat.sub(lambda m: (m.group(1) + "=••••") if (m.groups() and m.group(1)) else "••••", text)
+    # Every surface (connection test, /query, /validate-sql, browse) hides the
+    # addresses the host resolved to; the typed host stays.
+    text = redact_ip_literals(text, keep=_config_host(config))
     text = " ".join(text.split())
     return text[:_MAX]
 
 
-_IPV4_RE = re.compile(r"(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w.])")
+_IPV4_RE = re.compile(r"(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)")
 _IPV6_RE = re.compile(r"(?<![\w:.])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:%\w+)?(?![\w:])")
+
+
+def _canonical_ip(text: Any):
+    """The address *text* names, or None. Zero-padded IPv4 octets (which
+    ``ipaddress`` refuses) are read as decimal, as drivers print them."""
+    import ipaddress
+
+    raw = str(text or "").strip().strip("[]").split("%", 1)[0]
+    if not raw:
+        return None
+    try:
+        return ipaddress.ip_address(raw)
+    except ValueError:
+        pass
+    parts = raw.split(".")
+    if len(parts) == 4 and all(p.isdigit() and len(p) <= 3 for p in parts):
+        octets = [int(p) for p in parts]
+        if all(o <= 255 for o in octets):
+            return ipaddress.IPv4Address(".".join(map(str, octets)))
+    return None
 
 
 def redact_ip_literals(text: str, keep: Any = None) -> str:
     """Replace IP address literals in *text* with ``<address>``, except *keep*
-    (the host the user typed). A network failure names the address the host
-    RESOLVED to, which for an internal name is an internal IP the user never
-    gave us; the host name itself stays, so the message is still actionable."""
-    import ipaddress
-
-    keep_s = str(keep or "").strip().strip("[]").lower()
+    (the host the user typed, compared as an address, not as a spelling). A
+    driver error names the address the host RESOLVED to, which for an internal
+    name is an internal IP the user never gave us; the host name itself stays,
+    so the message is still actionable."""
+    keep_ip = _canonical_ip(keep)
 
     def _sub(m: "re.Match[str]") -> str:
         lit = m.group(0)
-        try:
-            ipaddress.ip_address(lit.split("%", 1)[0])
-        except ValueError:
+        ip = _canonical_ip(lit)
+        if ip is None:
             return lit
-        return lit if lit.lower() == keep_s else "<address>"
+        return lit if (keep_ip is not None and ip == keep_ip) else "<address>"
 
     return _IPV6_RE.sub(_sub, _IPV4_RE.sub(_sub, str(text or "")))
+
+
+def _config_host(config: Any) -> Any:
+    if not isinstance(config, dict):
+        return None
+    host = config.get("host")
+    if isinstance(host, str) and host.startswith("_enc:"):
+        try:
+            from app.core.crypto import decrypt_config
+            host = decrypt_config(config).get("host")
+        except Exception:  # noqa: BLE001
+            return None
+    return host
 
 
 # ── Error classification (F16) ───────────────────────────────────────────────
