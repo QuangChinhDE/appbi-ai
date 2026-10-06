@@ -120,3 +120,36 @@ def test_pat_cannot_exceed_owner_at_creation(client, db):  # noqa: F811
     r = client.post(PAT_URL, headers=viewer.headers,
                     json={"name": "x", "scopes": {"datasets": "edit"}, "expires_in_days": 1})
     assert r.status_code == 400
+
+
+# ── Decision Q4: plaintext only at owner create / rotate ─────────────────────
+
+def test_no_reveal_endpoint_exists(client, db, human):  # noqa: F811
+    _, _, body = _mint(client, human, {"datasets": "view"})
+    tid = body["item"]["id"]
+    admin = make_user(db, "pat-admin", settings="full")
+    assert client.get(f"{PAT_URL}{tid}/reveal", headers=human.headers).status_code in (404, 405)
+    assert client.get(f"{PAT_URL}admin/{tid}/reveal", headers=admin.headers).status_code in (404, 405)
+
+
+def test_no_reversible_copy_is_stored(client, db, human):  # noqa: F811
+    from app.models.personal_access_token import PersonalAccessToken
+
+    _, _, body = _mint(client, human, {"datasets": "view"})
+    assert db.get(PersonalAccessToken, uuid.UUID(body["item"]["id"])).secret_enc is None
+
+
+def test_admin_invalidates_but_never_receives_a_token(client, db, human):  # noqa: F811
+    _, pat, body = _mint(client, human, {"datasets": "view"})
+    tid = body["item"]["id"]
+    admin = make_user(db, "pat-admin2", settings="full")
+    r = client.post(f"{PAT_URL}admin/{tid}/invalidate", headers=admin.headers)
+    assert r.status_code == 200, r.text
+    assert "token" not in r.json()                     # no usable bearer token
+    assert "..." in r.json()["token_hint"]               # only the masked hint
+    assert client.get("/api/v1/datasets/", headers=pat).status_code == 401
+    # the OWNER gets a new secret by rotating it themselves
+    r = client.post(f"{PAT_URL}{tid}/rotate", headers=human.headers)
+    assert r.status_code == 200 and r.json()["token"].startswith("appbi_pat_")
+    assert client.get("/api/v1/datasets/",
+                      headers={"Authorization": f"Bearer {r.json()['token']}"}).status_code == 200
