@@ -85,16 +85,22 @@ def check_ip(ip: IPAddress) -> None:
     ip = _unwrap(ip)
     if ip in _METADATA_IPS:
         raise SourceNetworkPolicyError("Destination is a cloud metadata address and is not allowed.")
-    if ip.is_unspecified or ip.is_multicast or ip.is_link_local or ip.is_reserved:
+    if ip.is_unspecified or ip.is_multicast or ip.is_link_local:
         raise SourceNetworkPolicyError("Destination address is not routable for a data source.")
 
     allowed = _allowed_networks()
     in_allowlist = any(ip.version == net.version and ip in net for net in allowed)
 
+    # Loopback is classified BEFORE "reserved": IPv6 ::1 sits inside ::/8, which
+    # Python flags is_reserved, so checking reserved first refused ::1 even when
+    # ::1/128 was explicitly allowlisted (localhost -> [127.0.0.1, ::1]).
     if ip.is_loopback:
         if in_allowlist:
             return
         raise SourceNetworkPolicyError("Destination is a loopback address and is not allowed.")
+
+    if ip.is_reserved:
+        raise SourceNetworkPolicyError("Destination address is not routable for a data source.")
 
     private = (not ip.is_global) or any(ip.version == n.version and ip in n for n in _ALWAYS_PRIVATE)
     if not private:

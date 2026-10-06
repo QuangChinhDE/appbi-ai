@@ -374,6 +374,12 @@ jobs:
       # Opt-in required by seed_snowflake_ci_fixture.py (it DROPs schema 'bcfix'
       # and force-assigns fixed ids — disposable CI DB only).
       CI_FIXTURE_SEED: "1"
+      # Outbound source policy (spec: docs/features/source-core-hardening). The
+      # fixture data source points at this job's Postgres service on localhost,
+      # which resolves to 127.0.0.1 AND ::1; loopback is refused unless listed
+      # explicitly. Scripts run here (regression_filter_matrix.py, parity) do not
+      # load tests/conftest.py, so the allowance has to be in the job env.
+      ALLOWED_PRIVATE_SOURCE_CIDRS: "127.0.0.0/8,::1/128"
     steps:
       - uses: actions/checkout@v4
 

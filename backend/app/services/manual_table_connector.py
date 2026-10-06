@@ -66,7 +66,10 @@ class ManualTableConnector:
                 return {'columns': data.get('columns', []), 'rows': []}
             return loaded
         logger.info("manual_source.legacy_inline_read sheet=%s", sheet_name)
-        return {'columns': data.get('columns', []), 'rows': data.get('rows', [])}
+        from app.services.manual_assets.parsing import fill_missing_types
+
+        rows = data.get('rows', []) or []
+        return {'columns': fill_missing_types(data.get('columns', []), rows), 'rows': rows}
 
     def get_table_data(self) -> Dict[str, Any]:
         """Legacy helper — returns first sheet's data."""

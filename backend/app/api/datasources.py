@@ -602,7 +602,7 @@ def get_watermark_candidates(
 # that MCP tools (and the workboard builder) can manage sheet tabs and row data
 # without requiring direct Google API access from the client.
 
-def _require_gsheets_ds(data_source_id: int, db: Session, current_user: User):
+def _require_gsheets_ds(data_source_id: int, db: Session, current_user: User, level: str = "view"):
     """Load + authorize a google_sheets datasource; raise 404/403/400 on error."""
     from app.models import DataSource
     from app.core.crypto import decrypt_config
@@ -612,6 +612,11 @@ def _require_gsheets_ds(data_source_id: int, db: Session, current_user: User):
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
     require_view_access(db, current_user, ds, "data_sources")
+    # The required level is checked BEFORE the stored config is decrypted and a
+    # connector built: a viewer calling a write route must get 403, never trigger
+    # credential decryption (or see its parse errors).
+    if level == "full":
+        require_full_access(db, current_user, ds, "data_sources")
 
     ds_type = ds.type.value if hasattr(ds.type, "value") else str(ds.type or "")
     if ds_type != "google_sheets":
@@ -662,9 +667,8 @@ def create_gsheets_tab(
     Optionally writes a header row (column names) as the first row so the
     sheet is immediately ready for workboard form submissions.
     """
-    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user, level="full")
     # Direct upstream Sheets mutation = object full (spec permission mapping).
-    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.create_sheet(spreadsheet_id, body.sheet_name, body.headers)
         return {"spreadsheet_id": spreadsheet_id, **result}
@@ -727,9 +731,8 @@ def append_gsheets_row(
     ``values`` must be a dict mapping column names (header row) to values.
     Columns not present in the payload receive an empty string.
     """
-    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user, level="full")
     # Direct upstream Sheets mutation = object full (spec permission mapping).
-    require_full_access(db, current_user, ds, "data_sources")
     try:
         row = connector.append_row(spreadsheet_id, sheet_name, body.values)
         return {"ok": True, "sheet_name": sheet_name, "row": row}
@@ -752,9 +755,8 @@ def append_gsheets_rows_batch(
     ``rows`` is a list of dicts mapping column names to values.
     All rows are written in one Google Sheets API request.
     """
-    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user, level="full")
     # Direct upstream Sheets mutation = object full (spec permission mapping).
-    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.append_rows(spreadsheet_id, sheet_name, body.rows)
         return {"ok": True, "sheet_name": sheet_name, **result}
@@ -776,9 +778,8 @@ def import_csv_to_gsheet(
 
     The first CSV row is treated as the header. Existing data is overwritten.
     """
-    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user, level="full")
     # Direct upstream Sheets mutation = object full (spec permission mapping).
-    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.import_csv(spreadsheet_id, sheet_name, body.csv_data)
         return {"ok": True, **result}
@@ -806,9 +807,8 @@ def update_gsheets_row(
     ``pk`` identifies the row (e.g. ``{"id": "ROW-001"}``).
     ``values`` provides the columns to overwrite; other columns are unchanged.
     """
-    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user, level="full")
     # Direct upstream Sheets mutation = object full (spec permission mapping).
-    require_full_access(db, current_user, ds, "data_sources")
     try:
         row = connector.update_row_by_pk(spreadsheet_id, sheet_name, body.pk, body.values)
         return {"ok": True, "sheet_name": sheet_name, "row": row}
@@ -840,9 +840,8 @@ def delete_gsheets_row(
     current_user: User = Depends(get_current_user),
 ):
     """Delete a row from a sheet tab identified by a primary-key dict."""
-    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user, level="full")
     # Direct upstream Sheets mutation = object full (spec permission mapping).
-    require_full_access(db, current_user, ds, "data_sources")
     try:
         row_num = connector.delete_row_by_pk(spreadsheet_id, sheet_name, body.pk)
         return {"ok": True, "sheet_name": sheet_name, "deleted_row": row_num}
@@ -861,9 +860,8 @@ def rename_gsheets_column(
     current_user: User = Depends(get_current_user),
 ):
     """Rename a column header (row 1 cell) in a GSheet tab."""
-    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user, level="full")
     # Direct upstream Sheets mutation = object full (spec permission mapping).
-    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.rename_column(spreadsheet_id, sheet_name, body.old_name, body.new_name)
         return {"ok": True, **result}
@@ -882,9 +880,8 @@ def rename_gsheets_tab(
     current_user: User = Depends(get_current_user),
 ):
     """Rename a GSheet tab (changes the tab title in the spreadsheet)."""
-    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user, level="full")
     # Direct upstream Sheets mutation = object full (spec permission mapping).
-    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.rename_tab(spreadsheet_id, sheet_name, body.new_name)
         return {"ok": True, **result}
@@ -902,9 +899,8 @@ def clear_gsheets_rows(
     current_user: User = Depends(get_current_user),
 ):
     """Clear all data rows (row 2+) from a GSheet tab, preserving the header row."""
-    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user, level="full")
     # Direct upstream Sheets mutation = object full (spec permission mapping).
-    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.clear_data_rows(spreadsheet_id, sheet_name)
         return {"ok": True, **result}

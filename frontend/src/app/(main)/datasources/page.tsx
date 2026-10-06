@@ -475,13 +475,16 @@ export default function DataSourcesPage() {
                                   <Edit className="w-3.5 h-3.5" /> Edit
                                 </button>
                               )}
-                              <button
-                                onClick={() => handleTest(ds)}
-                                disabled={testMutation.isPending}
-                                className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 text-tiny text-text-secondary hover:text-success hover:bg-success/10 rounded-md transition-colors disabled:opacity-50"
-                              >
-                                <TestTube className="w-3.5 h-3.5" /> Test
-                              </button>
+                              {/* Saved-source retest is object edit (same gate as the list view). */}
+                              {itemPerms.canEdit && (
+                                <button
+                                  onClick={() => handleTest(ds)}
+                                  disabled={testMutation.isPending}
+                                  className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 text-tiny text-text-secondary hover:text-success hover:bg-success/10 rounded-md transition-colors disabled:opacity-50"
+                                >
+                                  <TestTube className="w-3.5 h-3.5" /> Test
+                                </button>
+                              )}
                               {itemPerms.canShare && (
                                 <button
                                   onClick={() => setShareSource(ds)}

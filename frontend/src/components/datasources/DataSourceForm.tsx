@@ -153,8 +153,16 @@ export default function DataSourceForm({
   const [showPassword, setShowPassword] = useState(false);
   // The server never re-sends a stored password to a different host/port/
   // database/user (400 credential_required) — ask for it up front instead.
+  // Compared against the config the form was LOADED with (the same snapshot the
+  // `config` state started from), not the live `initialData` prop: a parent
+  // refetch (e.g. after saving only the description) hands in a new object
+  // whose values may be normalised differently, which used to raise this
+  // warning although the user never touched a connection field.
+  const loadedConfigRef = useRef<Record<string, any>>(
+    initialData?.config ? sanitizeConfigForForm(initialData.config) : {},
+  );
   const dbDestinationChanged = !!initialData && ['host', 'port', 'database', 'username'].some(
-    (f) => String(config[f] ?? '').trim() !== String(initialData.config?.[f] ?? '').trim(),
+    (f) => String(config[f] ?? '').trim() !== String(loadedConfigRef.current[f] ?? '').trim(),
   );
 
   // Platform-level GCP service account info

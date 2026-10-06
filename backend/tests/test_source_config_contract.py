@@ -460,3 +460,36 @@ def test_connection_test_timeouts_are_bounded_and_named(monkeypatch):
     monkeypatch.setattr(svc, "create_google_sheets_connector", lambda cfg: Conn())
     svc.DataSourceConnectionService._test_google_sheets({"spreadsheet_id": "x"})
     assert seen["sheets_attempts"] == svc.CONNECTION_TEST_SHEETS_ATTEMPTS
+
+
+# ── create-time connection test is the source's first health ─────────────────
+
+def test_create_with_a_connection_test_records_health(S, monkeypatch):
+    from app.schemas import DataSourceCreate
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    no_network(monkeypatch, ok=True)
+    with S() as s:
+        ds = DataSourceCRUDService.create(s, DataSourceCreate(name="H", type="postgresql", config=pg_config()),
+                                          owner_id=OWNER, test_connection=True)
+        ds_id = ds.id
+    row, _cfg = _row(S, ds_id)
+    assert row.last_test_status == "ok"
+    assert row.last_tested_at is not None and row.last_error_code is None
+
+
+def test_create_without_a_connection_test_records_no_health(S):
+    ds_id, _ = _create(S)
+    row, _cfg = _row(S, ds_id)
+    assert row.last_test_status is None and row.last_tested_at is None
+
+
+def test_update_that_retests_records_the_new_health(S, monkeypatch):
+    from app.schemas import DataSourceUpdate
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    ds_id, _ = _create(S)
+    no_network(monkeypatch, ok=True)
+    with S() as s:
+        DataSourceCRUDService.update(s, ds_id, DataSourceUpdate(config=pg_config(host="db-b.example.com")),
+                                     test_connection=True)
+    row, _cfg = _row(S, ds_id)
+    assert row.last_test_status == "ok" and row.last_tested_at is not None

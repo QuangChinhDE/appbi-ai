@@ -352,16 +352,56 @@ def _python_value_type_token(value: Any) -> str:
     return "string"
 
 
-def _build_arrow_table_from_sheet(pa_module, col_defs: List[Dict[str, Any]], rows: List[Dict[str, Any]]):
+_INT_LITERAL_RE = re.compile(r"^\(?[+-]?\d{1,3}(?:,\d{3})+\)?$|^\(?[+-]?\d+\)?$")
+_INT64_MIN, _INT64_MAX = -(2 ** 63), 2 ** 63 - 1
+
+
+def _exact_integers(raw: List[Any], coerced: List[Any]) -> Optional[List[Any]]:
+    """The column as Python ints when EVERY non-empty source value is an integer
+    literal (an int, or text like ``12`` / ``1,000`` / ``(5)``) within int64;
+    otherwise None. ``1.0``, ``2.5``, ``10%`` keep the column float."""
+    out: List[Any] = []
+    for r, c in zip(raw, coerced):
+        if c is None:
+            out.append(None)
+            continue
+        if isinstance(r, bool):
+            return None
+        if isinstance(r, int):
+            ok = True
+        elif isinstance(r, str):
+            ok = bool(_INT_LITERAL_RE.match(r.strip().replace(" ", "").replace("\xa0", "")))
+        else:
+            ok = False
+        if not ok or not float(c).is_integer():
+            return None
+        iv = int(r) if isinstance(r, int) else int(c)
+        if iv < _INT64_MIN or iv > _INT64_MAX:
+            return None
+        out.append(iv)
+    return out
+
+
+def _build_arrow_table_from_sheet(
+    pa_module, col_defs: List[Dict[str, Any]], rows: List[Dict[str, Any]], *, exact_integers: bool = False,
+):
+    """Arrow table for a schema-less sheet. ``number`` columns are float64;
+    with ``exact_integers`` (imported files) a column whose every value is an
+    integer literal is int64 instead, so an id column reads back as 1, not 1.0."""
     col_names = [c["name"] for c in col_defs]
-    col_types = {c["name"]: c.get("type", "string") for c in col_defs}
+    col_types = {c["name"]: (c.get("type") or "string") for c in col_defs}
 
     arrays = []
     for col_name in col_names:
         declared_type = col_types.get(col_name, "string")
-        values = [_coerce_sheet_value(row.get(col_name), declared_type) for row in rows]
+        raw = [row.get(col_name) for row in rows]
+        values = [_coerce_sheet_value(v, declared_type) for v in raw]
         if declared_type == "number":
-            arrays.append(pa_module.array(values, type=pa_module.float64()))
+            ints = _exact_integers(raw, values) if exact_integers else None
+            if ints is not None and any(v is not None for v in ints):
+                arrays.append(pa_module.array(ints, type=pa_module.int64()))
+            else:
+                arrays.append(pa_module.array(values, type=pa_module.float64()))
         else:
             arrays.append(pa_module.array(values, type=pa_module.string()))
 
@@ -3707,7 +3747,7 @@ class DataSourceConnectionService:
                     col_names = [c["name"] for c in col_defs]
 
                     if rows:
-                        table = _build_arrow_table_from_sheet(pa, col_defs, rows)
+                        table = _build_arrow_table_from_sheet(pa, col_defs, rows, exact_integers=True)
                     else:
                         table = pa.table({c: pa.array([], type=pa.string()) for c in col_names})
 

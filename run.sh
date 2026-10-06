@@ -189,5 +189,11 @@ echo "    Frontend : http://localhost:${FRONTEND_PORT}"
 echo "    Backend  : http://localhost:${BACKEND_PORT}/health"
 echo "    Login    : $(grep -m1 -E '^ADMIN_EMAIL=' .env | cut -d= -f2) / $(grep -m1 -E '^ADMIN_PASSWORD=' .env | cut -d= -f2)"
 
+if ! grep -qE '^ALLOWED_PRIVATE_SOURCE_CIDRS=.+' .env 2>/dev/null && ! grep -qE '^SOURCE_ALLOW_PRIVATE_NETWORK=true' .env 2>/dev/null; then
+  echo
+  echo "    Note: PostgreSQL/MySQL sources on private/loopback hosts (incl. this stack's"
+  echo "    own 'db' service) are refused by default. To allow one, set e.g."
+  echo "    ALLOWED_PRIVATE_SOURCE_CIDRS=172.16.0.0/12 in .env and re-run."
+fi
 [ "$FOLLOW_LOGS" = "1" ] && { echo; say "Following logs (Ctrl-C to stop)"; exec "${COMPOSE[@]}" logs -f; }
 exit 0

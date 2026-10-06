@@ -175,6 +175,9 @@ def _write_asset(
     db: Session, *, sheet_name: str, columns: List[Dict[str, Any]], rows: List[Dict[str, Any]],
     owner_id, datasource_id: Optional[int], filename: Optional[str], media_type: Optional[str],
 ) -> ManualSourceAsset:
+    from app.services.manual_assets.parsing import fill_missing_types
+
+    columns = fill_missing_types(columns, rows)
     data = encode_parquet(columns, rows)
     key = new_storage_key()
     db.info.setdefault(_NEW_KEYS, []).append(key)  # removed again if the txn rolls back

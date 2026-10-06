@@ -272,6 +272,35 @@ def test_allow_private_switch_never_opens_loopback(strict_network):
         netpol.resolve_and_check("127.0.0.1", 5432)
 
 
+def test_localhost_dual_stack_allowed_when_both_loopbacks_allowlisted(strict_network):
+    # Regression: ::1 is inside ::/8 (is_reserved) and was refused as
+    # "not routable" before the loopback allowlist was consulted.
+    strict_network.setattr(settings, "ALLOWED_PRIVATE_SOURCE_CIDRS", "127.0.0.0/8,::1/128", raising=False)
+    _fake_dns(strict_network, {"localhost": ["127.0.0.1", "::1"]})
+    assert netpol.resolve_and_check("localhost", 5432) == "127.0.0.1"
+    assert netpol.resolve_and_check("::1", 5432) == "::1"
+
+
+def test_localhost_dual_stack_refused_as_loopback_without_allowlist(strict_network):
+    _fake_dns(strict_network, {"localhost": ["127.0.0.1", "::1"]})
+    with pytest.raises(netpol.SourceNetworkPolicyError, match="loopback"):
+        netpol.resolve_and_check("localhost", 5432)
+    with pytest.raises(netpol.SourceNetworkPolicyError, match="loopback"):
+        netpol.resolve_and_check("::1", 5432)
+
+
+def test_ipv6_special_ranges_keep_their_class(strict_network):
+    strict_network.setattr(settings, "ALLOWED_PRIVATE_SOURCE_CIDRS", "fc00::/7", raising=False)
+    assert netpol.resolve_and_check("fd12::5", 5432) == "fd12::5"  # ULA = private, allowlistable
+    with pytest.raises(netpol.SourceNetworkPolicyError, match="loopback"):
+        netpol.resolve_and_check("::ffff:127.0.0.1", 5432)  # mapped -> IPv4 loopback
+    strict_network.setattr(settings, "ALLOWED_PRIVATE_SOURCE_CIDRS", "0.0.0.0/0,::/0", raising=False)
+    strict_network.setattr(settings, "SOURCE_ALLOW_PRIVATE_NETWORK", True, raising=False)
+    for bad in ("240.0.0.1", "fe80::1", "::"):  # reserved / link-local / unspecified stay refused
+        with pytest.raises(netpol.SourceNetworkPolicyError):
+            netpol.resolve_and_check(bad, 5432)
+
+
 def test_hostname_resolving_to_a_bad_address_is_refused(strict_network):
     _fake_dns(strict_network, {"db.attacker.example": ["169.254.169.254"]})
     with pytest.raises(netpol.SourceNetworkPolicyError):

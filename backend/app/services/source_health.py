@@ -78,6 +78,9 @@ def run_connection_test(ds_type: str, config: Dict[str, Any]) -> Dict[str, Any]:
     error_code: Optional[str] = None
     if not success:
         error_code = classify_source_error(exc if exc is not None else (message or ""))
+        if error_code in ("network", "timeout", "policy_blocked") and safe_message:
+            from app.services.source_errors import redact_ip_literals
+            safe_message = redact_ip_literals(safe_message, keep=(config or {}).get("host"))
         checks = dict((detail or {}).get("checks") or _failed_checks(error_code))
         status = "error"
     else:
@@ -99,14 +102,21 @@ def run_connection_test(ds_type: str, config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def apply_health(data_source, result: Dict[str, Any]) -> None:
+    """Set the health columns from a run_connection_test result (no commit).
+    The one writer of these fields: record_health and the create/update
+    pipeline (whose connection test is the new config's first health)."""
+    data_source.last_test_status = result.get("status")
+    data_source.last_tested_at = result.get("tested_at")
+    data_source.last_error_code = result.get("error_code")
+
+
 def record_health(db: Session, data_source, result: Dict[str, Any], *, actor_id: Any = None) -> None:
     """Persist the latest health on the source (status, time, category — never
     a message) and audit a failure category. Best-effort: a health write must
     not turn a test into an error."""
     try:
-        data_source.last_test_status = result.get("status")
-        data_source.last_tested_at = result.get("tested_at")
-        data_source.last_error_code = result.get("error_code")
+        apply_health(data_source, result)
         db.commit()
     except Exception:  # noqa: BLE001
         db.rollback()

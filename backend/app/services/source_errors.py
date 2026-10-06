@@ -80,6 +80,30 @@ def describe_source_error(exc: Any, config: Any = None) -> str:
     return text[:_MAX]
 
 
+_IPV4_RE = re.compile(r"(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w.])")
+_IPV6_RE = re.compile(r"(?<![\w:.])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:%\w+)?(?![\w:])")
+
+
+def redact_ip_literals(text: str, keep: Any = None) -> str:
+    """Replace IP address literals in *text* with ``<address>``, except *keep*
+    (the host the user typed). A network failure names the address the host
+    RESOLVED to, which for an internal name is an internal IP the user never
+    gave us; the host name itself stays, so the message is still actionable."""
+    import ipaddress
+
+    keep_s = str(keep or "").strip().strip("[]").lower()
+
+    def _sub(m: "re.Match[str]") -> str:
+        lit = m.group(0)
+        try:
+            ipaddress.ip_address(lit.split("%", 1)[0])
+        except ValueError:
+            return lit
+        return lit if lit.lower() == keep_s else "<address>"
+
+    return _IPV6_RE.sub(_sub, _IPV4_RE.sub(_sub, str(text or "")))
+
+
 # ── Error classification (F16) ───────────────────────────────────────────────
 # A connection-test failure is reported as one of these categories. The
 # category decides what the person should do; the (redacted) message only

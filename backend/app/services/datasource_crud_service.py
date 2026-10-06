@@ -57,19 +57,22 @@ def _type_value(ds_type: Any) -> str:
     return str(getattr(ds_type, "value", ds_type) or "")
 
 
-def _run_connection_test(ds_type: str, config: Dict[str, Any]) -> None:
-    """Refuse to persist a config that cannot connect (manual has nothing to test)."""
-    if ds_type == "manual":
-        return
-    from app.services.datasource_service import DataSourceConnectionService
-    from app.services.source_errors import classify_source_error, describe_source_error
+def _run_connection_test(ds_type: str, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Refuse to persist a config that cannot connect (manual has nothing to test).
 
-    success, message = DataSourceConnectionService.test_connection(ds_type, config)
-    if success:
-        return
+    Returns the structured result (source_health.run_connection_test) of a
+    passing test so the caller records it as the source's health; None when
+    nothing was tested."""
+    if ds_type == "manual":
+        return None
+    from app.services.source_health import run_connection_test
+
+    result = run_connection_test(ds_type, config)
+    if result.get("success"):
+        return result
     raise SourceConfigError(
-        describe_source_error(message, config) if message else "Connection failed",
-        code=f"connection_{classify_source_error(message or '')}",
+        result.get("message") or "Connection failed",
+        code=f"connection_{result.get('error_code') or 'unknown'}",
     )
 
 
@@ -182,8 +185,7 @@ class DataSourceCRUDService:
             )
             if ds_type == 'google_sheets':
                 config = _normalize_google_sheets_config(config)
-            if test_connection:
-                _run_connection_test(ds_type, config)
+            health = _run_connection_test(ds_type, config) if test_connection else None
             resolved_name = DataSourceCRUDService._resolve_unique_name(db, data_source.name, owner_id=owner_id)
 
             db_data_source = DataSource(
@@ -194,6 +196,9 @@ class DataSourceCRUDService:
                 owner_id=owner_id,
                 config_version=1,
             )
+            if health is not None:
+                from app.services.source_health import apply_health
+                apply_health(db_data_source, health)
             db.add(db_data_source)
             if ds_type == 'manual':
                 # Rows never live in config: bind staged uploads (or convert
@@ -299,8 +304,9 @@ class DataSourceCRUDService:
             db.rollback()
 
         # -- Phase 2: connection test, outside any transaction --------------
+        health = None
         if changed_fields and test_connection:
-            _run_connection_test(ds_type, new_plain)
+            health = _run_connection_test(ds_type, new_plain)
 
         # -- Phase 3: short write transaction -------------------------------
         auth_change = None
@@ -348,6 +354,10 @@ class DataSourceCRUDService:
                 db_data_source.last_test_status = None
                 db_data_source.last_tested_at = None
                 db_data_source.last_error_code = None
+                if health is not None:
+                    # ...and the test that just passed describes the NEW one.
+                    from app.services.source_health import apply_health
+                    apply_health(db_data_source, health)
             db.commit()
             db.refresh(db_data_source)
         except IntegrityError:

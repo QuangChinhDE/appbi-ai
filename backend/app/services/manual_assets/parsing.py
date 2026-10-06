@@ -92,6 +92,23 @@ def infer_column_type(values: List[Any]) -> str:
     return "string"
 
 
+def fill_missing_types(columns: List[Dict[str, Any]], rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Columns with no declared type get the type an upload would infer for them.
+
+    Inline sheets from legacy configs / internal callers may carry bare
+    ``{"name": ...}`` columns; without this they defaulted to ``string`` and an
+    int column read back as "1" while the same data uploaded as a file is a
+    number. A declared type is never changed."""
+    out = []
+    for col in columns or []:
+        col = dict(col)
+        if not str(col.get("type") or "").strip():
+            name = col.get("name")
+            col["type"] = infer_column_type([r.get(name) for r in rows if isinstance(r, dict)])
+        out.append(col)
+    return out
+
+
 def unique_headers(raw: List[Any], width: int) -> List[str]:
     out: List[str] = []
     taken: set = set()

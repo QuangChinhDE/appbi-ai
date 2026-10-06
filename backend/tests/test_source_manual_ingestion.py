@@ -460,3 +460,35 @@ def test_query_list_tables_and_columns_read_from_assets(db, storage):
     assert [c["name"] for c in C._sheets_list_columns(cfg, "sales")] == ["id", "v"]
     cols, rows, _ms = C.execute_query("manual", cfg, "SELECT SUM(v) AS total FROM sales")
     assert float(rows[0]["total"]) == 60.0
+
+
+# ── value types round-trip through the query engine ──────────────────────────
+
+def test_csv_integer_column_queries_as_int_and_decimal_as_float(db, storage):
+    """A CSV id column inferred `number` must come back as 1, not 1.0."""
+    from app.services.datasource_service import DataSourceConnectionService as C
+
+    aid = _upload(db, b"order_id,amount,label\n1,1.5,a\n2,2,b\n3,,c\n", "orders.csv")["sheets"]["orders"]["asset_id"]
+    cfg = _create_source(db, {"orders": {"asset_id": aid}}).config
+    _cols, rows, _ms = C.execute_query("manual", cfg, "SELECT * FROM orders ORDER BY order_id")
+    assert [r["order_id"] for r in rows] == [1, 2, 3]
+    assert all(type(r["order_id"]) is int for r in rows)
+    assert [r["amount"] for r in rows] == [1.5, 2.0, None]
+    assert type(rows[1]["amount"]) is float
+    _c, agg, _m = C.execute_query("manual", cfg, "SELECT SUM(order_id) AS s FROM orders")
+    assert agg[0]["s"] == 6
+
+
+def test_untyped_inline_columns_get_the_same_type_on_legacy_and_asset_paths(db, storage):
+    """Inline (legacy / internal) sheets without a declared type infer it like an
+    upload does, so int values are ints on BOTH the legacy read and the asset read."""
+    from app.services.datasource_service import DataSourceConnectionService as C
+
+    sheet = {"columns": [{"name": "v"}, {"name": "s"}], "rows": [{"v": 1, "s": "x"}, {"v": 2, "s": "y"}]}
+    legacy_cfg = {"sheets": {"S": dict(sheet)}}
+    _c, legacy_rows, _m = C.execute_query("manual", legacy_cfg, "SELECT * FROM S ORDER BY v")
+    ds = _create_source(db, {"S": dict(sheet)})
+    _c, asset_rows, _m = C.execute_query("manual", ds.config, "SELECT * FROM S ORDER BY v")
+    assert legacy_rows == asset_rows == [{"v": 1, "s": "x"}, {"v": 2, "s": "y"}]
+    assert type(legacy_rows[0]["v"]) is int and type(asset_rows[0]["v"]) is int
+    assert [c["type"] for c in ds.config["sheets"]["S"]["columns"]] == ["number", "string"]

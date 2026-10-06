@@ -236,6 +236,29 @@ def test_sheets_mutations_require_object_full(env, level, allowed, method, path,
         assert r.status_code == 403, r.text
 
 
+@pytest.mark.parametrize("level", ["none", "view", "edit"])
+@pytest.mark.parametrize("method,path,body", [
+    ("POST", "/datasources/{id}/gsheets/sheets", {"sheet_name": "New"}),
+    ("POST", "/datasources/{id}/gsheets/Sheet1/rows", {"values": {"a": 1}}),
+    ("DELETE", "/datasources/{id}/gsheets/Sheet1/rows/all", None),
+])
+def test_sheets_write_level_is_checked_before_credentials_are_loaded(env, monkeypatch, level, method, path, body):
+    """A stored key that cannot be parsed must not turn a 403 into a 400: the
+    caller's level is decided before the config is decrypted / connector built."""
+    import app.services.google_sheets_connector as gsc
+    built = []
+
+    def broken(cfg):
+        built.append(cfg)
+        raise ValueError("Could not deserialize key data: malformed PEM")
+    monkeypatch.setattr(gsc, "create_google_sheets_connector", broken)
+    call, _t, _S = env
+    kw = {"json": body} if body is not None else {}
+    r = call(LEVEL_USER[level], method, path.format(id=SHEET_ID), **kw)
+    assert r.status_code == 403, r.text
+    assert "PEM" not in r.text and built == []
+
+
 @pytest.mark.parametrize("level", ["view", "edit", "full"])
 def test_sheets_read_stays_object_view(env, level):
     call, _t, _S = env

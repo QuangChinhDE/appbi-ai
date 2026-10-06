@@ -255,3 +255,35 @@ def test_config_change_resets_stale_health(S, monkeypatch):
         DataSourceCRUDService.update(s, pg, DataSourceUpdate(config={"password": "new-pw"}))
         row = s.get(DataSource, pg)
         assert row.last_test_status is None and row.last_error_code is None
+
+
+def test_network_failure_message_does_not_echo_the_resolved_internal_ip(monkeypatch):
+    """The user typed a host NAME; the driver's message names the address it
+    resolved to. A network-class message keeps the name and drops the IP."""
+    import psycopg2
+    from app.services.datasource_service import DataSourceConnectionService
+    from app.services import datasource_service as dsm
+    from app.services.source_health import run_connection_test
+
+    def fake(ds_type, config):
+        exc = psycopg2.OperationalError(
+            'connection to server at "pg.internal.example" (172.29.0.2), port 5432 failed: '
+            'Connection refused; also tried fd00:1::5 and ::1')
+        dsm._LAST_TEST_EXC.set(exc)
+        return False, str(exc)
+    monkeypatch.setattr(DataSourceConnectionService, "test_connection", staticmethod(fake))
+    r = run_connection_test("postgresql", pg_config(host="pg.internal.example"))
+    assert r["error_code"] == "network"
+    assert "pg.internal.example" in r["message"] and "5432" in r["message"]
+    for ip in ("172.29.0.2", "fd00:1::5", "::1"):
+        assert ip not in r["message"], r["message"]
+
+
+def test_network_failure_keeps_an_ip_the_user_typed(monkeypatch):
+    from app.services.datasource_service import DataSourceConnectionService
+    from app.services.source_health import run_connection_test
+
+    monkeypatch.setattr(DataSourceConnectionService, "test_connection", staticmethod(
+        lambda t, c: (False, 'could not connect to server at "10.1.2.3", port 5432: Connection refused')))
+    r = run_connection_test("postgresql", pg_config(host="10.1.2.3"))
+    assert r["error_code"] == "network" and "10.1.2.3" in r["message"]
