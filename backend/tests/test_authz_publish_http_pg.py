@@ -165,7 +165,7 @@ def test_workboard_link_password_rotation_and_deactivation(db):  # noqa: F811
     d = Dashboard(name=f"wbl-{uuid.uuid4().hex[:6]}", owner_id=owner.id)
     db.add(d)
     db.flush()
-    link = DashboardPublicLink(dashboard_id=d.id, name="wb", token=_s.token_urlsafe(24), is_active=True,
+    link = DashboardPublicLink(dashboard_id=d.id, name=f"wb-{uuid.uuid4().hex[:8]}", token=_s.token_urlsafe(24), is_active=True,
                                source="workboard", password_hash=ctx.hash("old-pass-1"))
     db.add(link)
     db.commit()
