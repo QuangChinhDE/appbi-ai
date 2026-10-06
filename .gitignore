@@ -449,3 +449,4 @@ backend/_verify_gate.db
 !backend/tests/test_authz_govern_http_pg.py
 !backend/tests/test_authz_agent_flow_delegation_http_pg.py
 !backend/tests/test_authz_static_rules.py
+!backend/tests/test_authz_token_vector.py

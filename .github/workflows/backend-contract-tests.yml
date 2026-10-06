@@ -362,6 +362,10 @@ jobs:
       # schema-inference and the chart-execution paths connect with "appbi".
       DATASOURCE_ENCRYPTION_KEY: ""
       ENVIRONMENT: test
+      # The fixture datasource is the CI Postgres service on localhost; the egress
+      # policy refuses loopback unless explicitly allowed (dev/CI only - production
+      # startup refuses this setting).
+      DATASOURCE_ALLOW_LOOPBACK: "true"
       # Opt-in required by seed_snowflake_ci_fixture.py (it DROPs schema 'bcfix'
       # and force-assigns fixed ids — disposable CI DB only).
       CI_FIXTURE_SEED: "1"
@@ -586,6 +590,7 @@ jobs:
             tests/test_authz_egress.py \
             tests/test_authz_registry.py \
             tests/test_authz_static_rules.py \
+            tests/test_authz_token_vector.py \
             --junitxml=/tmp/authz-core.xml 2>&1 | tee /tmp/authz-core.log
 
       - name: GATE — Postgres role + row-level security (app role, not owner)

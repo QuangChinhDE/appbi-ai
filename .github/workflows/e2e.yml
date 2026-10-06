@@ -63,6 +63,10 @@ jobs:
       DB_PASSWORD: appbi
       # DATASOURCE_ENCRYPTION_KEY is generated per run by a step below (AI Keys).
       ENVIRONMENT: test
+      # The fixture datasource is the CI Postgres service on localhost; the egress
+      # policy refuses loopback unless explicitly allowed (dev/CI only - production
+      # startup refuses this setting).
+      DATASOURCE_ALLOW_LOOPBACK: "true"
 
       # ONE SECRET, OR THE FRONTEND CANNOT READ WHAT THE BACKEND SIGNED.
       #

@@ -33,9 +33,35 @@ const ACCESS_TOKEN_MAX_AGE_SECONDS = 2 * 60 * 60;
 const REFRESH_TOKEN_MAX_AGE_SECONDS = 2 * 60 * 60;
 const LEGACY_REFRESH_COOKIE_PATH = '/api/auth/refresh';
 
-function getSecret(): Uint8Array {
-  const secret = process.env.SECRET_KEY ?? 'change-this-in-production';
-  return new TextEncoder().encode(secret);
+// Access tokens are signed with the ACCESS DOMAIN key, derived from SECRET_KEY
+// exactly as backend app/core/tokens.py does: HKDF-SHA256, no salt (= 32 zero
+// bytes), info "appbi/jwt/access/v1", 32 bytes, base64url WITH padding - that
+// string's bytes are the HS256 key. A token of any other domain (refresh, OAuth
+// state, public/workspace session) does not verify here. Locked by
+// scripts/check-access-token-domain.mjs and backend tests/test_authz_token_vector.py.
+export const ACCESS_AUDIENCE = 'appbi:access';
+export const TOKEN_ISSUER = 'appbi';
+let accessKeyPromise: Promise<Uint8Array> | null = null;
+
+export async function deriveAccessKey(root: string): Promise<Uint8Array> {
+  const enc = new TextEncoder();
+  const base = await crypto.subtle.importKey('raw', enc.encode(root), 'HKDF', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: enc.encode('appbi/jwt/access/v1') },
+    base,
+    256,
+  );
+  let bin = '';
+  for (const b of new Uint8Array(bits)) bin += String.fromCharCode(b);
+  const b64url = btoa(bin).replace(/\+/g, '-').replace(/\//g, '_');
+  return enc.encode(b64url);
+}
+
+function getAccessKey(): Promise<Uint8Array> {
+  if (!accessKeyPromise) {
+    accessKeyPromise = deriveAccessKey(process.env.SECRET_KEY ?? 'change-this-in-production');
+  }
+  return accessKeyPromise;
 }
 
 // ── Embed framing guard ──────────────────────────────────────────────────────
@@ -225,7 +251,11 @@ export async function middleware(request: NextRequest) {
 
   // Verify the JWT
   try {
-    await jwtVerify(token, getSecret(), { algorithms: ['HS256'] });
+    await jwtVerify(token, await getAccessKey(), {
+      algorithms: ['HS256'],
+      audience: ACCESS_AUDIENCE,
+      issuer: TOKEN_ISSUER,
+    });
   } catch {
     // Access token expired — try silent refresh via refresh_token cookie
     const refreshToken = request.cookies.get('refresh_token')?.value;

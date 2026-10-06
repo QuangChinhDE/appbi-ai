@@ -103,7 +103,7 @@ def _resolve(host: str, port: int | None) -> list[str]:
 
 
 def check_destination(host: str | None, port: int | None, *, private_cidrs: Iterable = (),
-                      allowed_hosts: Iterable[str] = ()) -> str:
+                      allowed_hosts: Iterable[str] = (), allow_loopback: bool = False) -> str:
     """Validate ``host`` and return the single pinned IP to connect to."""
     if not host or not str(host).strip():
         raise EgressDenied("no destination host")
@@ -115,6 +115,8 @@ def check_destination(host: str | None, port: int | None, *, private_cidrs: Iter
     addrs = _resolve(host, port)
     for a in addrs:
         kind = classify(a)
+        if kind == "forbidden" and allow_loopback and _unwrap(ipaddress.ip_address(a)).is_loopback:
+            continue
         if kind == "forbidden":
             raise EgressDenied(f"destination {host!r} resolves to a forbidden address")
         if kind == "private" and not allow_named:
@@ -181,11 +183,20 @@ async def http_post_async(client, url: str, **kwargs):
 
 # ── Databases ────────────────────────────────────────────────────────────────
 
+def loopback_allowed_for_datasources() -> bool:
+    """DATASOURCE_ALLOW_LOOPBACK=true lets a DATABASE connection reach loopback
+    (a developer's local Postgres, a CI service container on localhost). Never
+    for HTTP egress, never metadata/link-local, and production startup refuses it
+    (core.config.validate_security_settings)."""
+    return (os.environ.get("DATASOURCE_ALLOW_LOOPBACK", "") or "").strip().lower() in ("1", "true", "yes")
+
+
 def _db_destination(host, port) -> str:
     return check_destination(
         host, int(port) if port else None,
         private_cidrs=_cidrs("DATASOURCE_ALLOW_PRIVATE_CIDRS"),
         allowed_hosts=_hosts("DATASOURCE_ALLOW_HOSTS"),
+        allow_loopback=loopback_allowed_for_datasources(),
     )
 
 

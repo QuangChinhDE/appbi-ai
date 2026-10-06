@@ -542,6 +542,13 @@ def validate_security_settings() -> None:
             "DATASOURCE_ENCRYPTION_KEY is empty — datasource credentials will be stored in plaintext. "
             "Generate a key: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
         )
+    from app.core.egress import loopback_allowed_for_datasources
+
+    if loopback_allowed_for_datasources():
+        errors.append(
+            "DATASOURCE_ALLOW_LOOPBACK is a development/CI setting: in production a "
+            "datasource must never be able to reach the backend's own loopback services."
+        )
     if errors:
         msg = "FATAL — Insecure configuration detected:\n" + "\n".join(f"  • {e}" for e in errors)
         raise RuntimeError(msg)
