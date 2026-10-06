@@ -25,6 +25,7 @@ export default function EditDataSourcePage() {
         data: {
           name: data.name,
           description: data.description,
+          config_version: dataSource?.config_version,
           // Only resend config when the user actually re-imported data.
           // Skipping it for a rename avoids sending potentially large Manual Table payloads.
           ...(meta.configModified ? { config: data.config } : {}),

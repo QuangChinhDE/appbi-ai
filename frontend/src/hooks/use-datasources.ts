@@ -47,6 +47,13 @@ export const useUpdateDataSource = () => {
       queryClient.invalidateQueries({ queryKey: ['datasources'] });
       queryClient.invalidateQueries({ queryKey: ['datasources', variables.id] });
     },
+    onError: (error: any, variables: { id: number; data: DataSourceUpdate }) => {
+      // 409 source_conflict: someone else saved this source since it was
+      // loaded. Reload it so the next save starts from the current version.
+      if (error?.response?.status === 409 && error?.response?.data?.detail?.code === 'source_conflict') {
+        queryClient.invalidateQueries({ queryKey: ['datasources', variables.id] });
+      }
+    },
   });
 };
 

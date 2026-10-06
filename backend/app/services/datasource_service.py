@@ -773,6 +773,15 @@ def _require_source_capability(ds_type: Any, capability: str) -> None:
     require_capability(ds_type, capability)
 
 
+# Connection-test bounds (the Source update runs the test with no DB lock held,
+# but a request still must not hang). PG/MySQL: TCP+auth connect timeout.
+# BigQuery: per-API-call timeout (query submit, result wait, listing).
+# Google Sheets: googleapiclient's 60s socket timeout × CONNECTION_TEST_SHEETS_ATTEMPTS.
+CONNECTION_TEST_CONNECT_TIMEOUT_S = 5
+CONNECTION_TEST_API_TIMEOUT_S = 20
+CONNECTION_TEST_SHEETS_ATTEMPTS = 2
+
+
 class DataSourceConnectionService:
     """Service for managing connections to external data sources."""
     
@@ -861,7 +870,7 @@ class DataSourceConnectionService:
                 database=config.get("database"),
                 user=config.get("username"),
                 password=config.get("password"),
-                connect_timeout=5
+                connect_timeout=CONNECTION_TEST_CONNECT_TIMEOUT_S
             )
             # Apply schema search_path if specified
             schema = config.get("schema_name") or config.get("schema")
@@ -887,7 +896,7 @@ class DataSourceConnectionService:
                 database=config.get("database"),
                 user=config.get("username"),
                 password=config.get("password"),
-                connect_timeout=5
+                connect_timeout=CONNECTION_TEST_CONNECT_TIMEOUT_S
             )
             return True, "Connection successful"
         except Exception as e:
@@ -920,7 +929,8 @@ class DataSourceConnectionService:
             # Test basic API access
             query = "SELECT 1"
             try:
-                client.query(query).result()
+                client.query(query, timeout=CONNECTION_TEST_API_TIMEOUT_S).result(
+                    timeout=CONNECTION_TEST_API_TIMEOUT_S)
             except Exception as qe:
                 from app.services.source_errors import classify_source_error
                 code = classify_source_error(qe)
@@ -942,7 +952,8 @@ class DataSourceConnectionService:
             default_dataset = str(config.get("default_dataset") or "").strip()
             if default_dataset:
                 try:
-                    list(client.list_tables(default_dataset, max_results=1))
+                    list(client.list_tables(default_dataset, max_results=1,
+                                            timeout=CONNECTION_TEST_API_TIMEOUT_S))
                 except Exception as e:
                     from app.services.source_errors import classify_source_error
                     checks["discoverable"] = "failed"
@@ -952,7 +963,7 @@ class DataSourceConnectionService:
                     return True, msg
             else:
                 try:
-                    datasets = list(client.list_datasets(max_results=1))
+                    datasets = list(client.list_datasets(max_results=1, timeout=CONNECTION_TEST_API_TIMEOUT_S))
                     if not datasets:
                         checks["discoverable"] = "warning"
                         msg = (
@@ -988,6 +999,9 @@ class DataSourceConnectionService:
             if not spreadsheet_id:
                 return False, "Spreadsheet ID is required"
             connector = create_google_sheets_connector(config)
+            # Bounded: googleapiclient's per-request socket timeout
+            # (DEFAULT_HTTP_TIMEOUT_SEC=60) × at most this many attempts.
+            connector.max_attempts = CONNECTION_TEST_SHEETS_ATTEMPTS
             if connector.test_connection(spreadsheet_id):
                 # Also verify we can list sheets (confirms read access)
                 sheets = connector.list_sheets(spreadsheet_id)

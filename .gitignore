@@ -434,3 +434,4 @@ backend/_verify_gate.db
 !backend/tests/test_source_delete_dependencies.py
 !backend/tests/test_source_google_identity.py
 !backend/tests/test_source_provider_contracts.py
+!backend/tests/test_source_concurrency_pg.py

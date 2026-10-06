@@ -79,6 +79,7 @@ export default function DataSourceDetailPage() {
         data: {
           name: data.name,
           description: data.description,
+          config_version: dataSource?.config_version,
           ...(meta.configModified ? { config: data.config } : {}),
         },
       });

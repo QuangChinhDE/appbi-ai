@@ -84,7 +84,10 @@ class DataSourceUpdate(BaseModel):
     description: Optional[str] = None
     config: Optional[Dict[str, Any]] = None
     type: Optional[DataSourceTypeSchema] = None
-    
+    # Optimistic concurrency (If-Match style): the config_version the client
+    # loaded. When sent and stale, the update is refused with 409 source_conflict.
+    config_version: Optional[int] = None
+
     # `type` is accepted only to REFUSE a change (immutable after create — the
     # service raises source_type_immutable). `config` may be partial: the
     # service merges it with the stored config and validates the FINAL result

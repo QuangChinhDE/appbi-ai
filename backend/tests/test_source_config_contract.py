@@ -351,3 +351,112 @@ def test_migration_0003_downgrade_restores_from_the_retired_storage():
     src = inspect.getsource(_load_migration_0003().downgrade)
     assert "data_source_sync_config_retired" in src and "sync_jobs_retired" in src
     assert "drop_table(\"sync_jobs" not in src
+
+
+# ── optimistic concurrency (no lock across the connection test) ─────────────
+
+def test_update_interleaved_during_the_test_is_a_conflict_not_an_overwrite(S, monkeypatch):
+    """B's snapshot is taken before A rotates the password; A commits while B's
+    connection test runs → B gets source_conflict, A's password survives."""
+    from app.schemas import DataSourceUpdate
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    from app.services.datasource_service import DataSourceConnectionService
+    from app.services.source_lifecycle import SourceConfigError
+    import app.services.datasource_crud_service as crud
+    ds_id, _ = _create(S)
+    inval = []
+    monkeypatch.setattr(crud, "invalidate_source", lambda *a, **k: inval.append(1) or {})
+    fired = []
+
+    def test_then_a_commits(ds_type, config):
+        if not fired:
+            fired.append(1)
+            with S() as s2:  # A: rotate the password (its own test passes)
+                DataSourceCRUDService.update(s2, ds_id, DataSourceUpdate(config=pg_config(password="pw-ROTATED")),
+                                             test_connection=True)
+        return True, "ok"
+    monkeypatch.setattr(DataSourceConnectionService, "test_connection", staticmethod(test_then_a_commits))
+    with S() as s, pytest.raises(SourceConfigError) as exc:  # B: namespace change + masked secret (a port change with a masked secret is refused by S4)
+        DataSourceCRUDService.update(
+            s, ds_id, DataSourceUpdate(config={**pg_config(), "schema_name": "mart", "password": "__stored__"}),
+            test_connection=True)
+    assert exc.value.code == "source_conflict" and exc.value.status_code == 409
+    ds, cfg = _row(S, ds_id)
+    assert cfg["password"] == "pw-ROTATED" and "schema_name" not in cfg and ds.config_version == 2
+    assert inval == [1]  # A only
+
+
+def test_failed_test_changes_nothing_and_invalidates_nothing(S, monkeypatch):
+    from app.schemas import DataSourceUpdate
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    from app.services.source_lifecycle import SourceConfigError
+    import app.services.datasource_crud_service as crud
+    ds_id, _ = _create(S)
+    inval = []
+    monkeypatch.setattr(crud, "invalidate_source", lambda *a, **k: inval.append(1) or {})
+    no_network(monkeypatch, ok=False)
+    with S() as s, pytest.raises(SourceConfigError):
+        DataSourceCRUDService.update(s, ds_id, DataSourceUpdate(name="Renamed", config=pg_config(host="db-x.example.com")),
+                                     test_connection=True)
+    ds, cfg = _row(S, ds_id)
+    assert (ds.name, cfg["host"], ds.config_version, inval) == ("Sales", "db-a.example.com", 1, [])
+
+
+def test_stale_client_config_version_is_409_over_http(S, monkeypatch):
+    no_network(monkeypatch)
+    ds_id, _ = _create(S)
+    call = make_http(monkeypatch, S, {OWNER: {"data_sources": "edit"}})
+    r = call(OWNER, "PUT", f"/datasources/{ds_id}", json={"config": pg_config(host="db-b.example.com"),
+                                                           "config_version": 1})
+    assert r.status_code == 200 and r.json()["config_version"] == 2, r.text
+    r = call(OWNER, "PUT", f"/datasources/{ds_id}", json={"name": "Stale", "config_version": 1})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "source_conflict"
+    ds, cfg = _row(S, ds_id)
+    assert ds.name == "Sales" and cfg["host"] == "db-b.example.com"
+
+
+def test_connection_test_timeouts_are_bounded_and_named(monkeypatch):
+    import app.services.datasource_service as svc
+    assert 0 < svc.CONNECTION_TEST_CONNECT_TIMEOUT_S <= 10
+    assert 0 < svc.CONNECTION_TEST_API_TIMEOUT_S <= 30
+    assert 1 <= svc.CONNECTION_TEST_SHEETS_ATTEMPTS <= 2
+    seen = {}
+    monkeypatch.setattr(svc, "_pg_connect", lambda **kw: seen.setdefault("pg", kw) and (_ for _ in ()).throw(OSError("x")))
+    monkeypatch.setattr(svc, "_mysql_connect", lambda **kw: seen.setdefault("my", kw) and (_ for _ in ()).throw(OSError("x")))
+    svc.DataSourceConnectionService._test_postgresql({"host": "h"})
+    svc.DataSourceConnectionService._test_mysql({"host": "h"})
+    assert seen["pg"]["connect_timeout"] == svc.CONNECTION_TEST_CONNECT_TIMEOUT_S
+    assert seen["my"]["connect_timeout"] == svc.CONNECTION_TEST_CONNECT_TIMEOUT_S
+
+    calls = []
+
+    class Job:
+        def result(self, timeout=None):
+            calls.append(("result", timeout))
+
+    class Client:
+        def query(self, q, timeout=None):
+            calls.append(("query", timeout))
+            return Job()
+
+        def list_datasets(self, max_results=None, timeout=None):
+            calls.append(("list_datasets", timeout))
+            return [1]
+
+        def close(self):
+            pass
+    monkeypatch.setattr(svc, "_build_bigquery_client", lambda cfg: Client())
+    monkeypatch.setattr(svc, "_bq_client_is_cached", lambda cfg, c: True)
+    assert svc.DataSourceConnectionService._test_bigquery({"project_id": "p"})[0]
+    assert calls and all(t == svc.CONNECTION_TEST_API_TIMEOUT_S for _, t in calls), calls
+
+    class Conn:
+        max_attempts = None
+
+        def test_connection(self, sid):
+            seen["sheets_attempts"] = self.max_attempts
+            return False
+    monkeypatch.setattr(svc, "create_google_sheets_connector", lambda cfg: Conn())
+    svc.DataSourceConnectionService._test_google_sheets({"spreadsheet_id": "x"})
+    assert seen["sheets_attempts"] == svc.CONNECTION_TEST_SHEETS_ATTEMPTS

@@ -596,11 +596,11 @@ def test_bigquery_success_warning_is_scrubbed_before_service_return(monkeypatch)
     }
 
     class _Query:
-        def result(self):
+        def result(self, timeout=None):
             return []
 
     class _Client:
-        def query(self, _sql):
+        def query(self, _sql, timeout=None):
             return _Query()
 
         def list_tables(self, *_args, **_kwargs):

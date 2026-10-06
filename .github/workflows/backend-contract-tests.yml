@@ -520,3 +520,11 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_pair5_data_state_pg.py
+
+      # Source update concurrency (real row locks): the connection test runs
+      # with no transaction / row lock held; an update committed during the
+      # test makes the stale save 409 source_conflict instead of overwriting.
+      - name: "GATE — Source update concurrency (Postgres)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_source_concurrency_pg.py

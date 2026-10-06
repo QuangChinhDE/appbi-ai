@@ -130,7 +130,7 @@ def test_errors_are_classified_by_type_and_attributes():
 # ── structured test results ──────────────────────────────────────────────────
 
 class _Query:
-    def result(self):
+    def result(self, timeout=None):
         return []
 
 
@@ -138,7 +138,7 @@ class _BQ:
     def __init__(self, list_error=None, query_error=None):
         self.list_error, self.query_error = list_error, query_error
 
-    def query(self, _sql):
+    def query(self, _sql, timeout=None):
         if self.query_error:
             raise self.query_error
         return _Query()

@@ -73,7 +73,7 @@ def _config_error(exc: Exception, config: Any = None) -> HTTPException:
     status_code = getattr(exc, "status_code", status.HTTP_400_BAD_REQUEST)
     code = getattr(exc, "code", None)
     message = describe_source_error(exc, config)
-    if code in ("source_type_immutable", "source_not_tabular", "credential_required"):
+    if code in ("source_type_immutable", "source_not_tabular", "credential_required", "source_conflict"):
         return HTTPException(status_code=status_code, detail={"code": code, "message": message})
     return HTTPException(status_code=status_code, detail=message)
 

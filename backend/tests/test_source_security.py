@@ -407,11 +407,11 @@ class _BQClient:
         self.calls = []
         self.closed = False
 
-    def query(self, sql, job_config=None):
+    def query(self, sql, job_config=None, timeout=None):
         self.calls.append((sql, job_config))
         return _BQJob()
 
-    def list_datasets(self, max_results=None):
+    def list_datasets(self, max_results=None, timeout=None):
         return [object()]
 
     def close(self):

@@ -361,6 +361,9 @@ export interface DataSourceUpdate {
   name?: string;
   description?: string;
   config?: Record<string, any>;
+  // Optimistic concurrency: the config_version this edit started from. A stale
+  // value is refused with 409 {code: 'source_conflict'} — reload and retry.
+  config_version?: number;
 }
 
 // ── Schema Browser ─────────────────────────────────────────────────────────

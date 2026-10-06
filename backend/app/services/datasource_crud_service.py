@@ -2,10 +2,12 @@
 CRUD service for data sources — the ONE chokepoint for create / update / delete
 (spec docs/features/source-core-hardening/spec.md, domain invariants):
 
-  update = load → merge → restore masked secrets ONCE → auth-mode rules →
-           validate the FINAL config (provider schema) → Google claim →
-           platform policy → (connection test) → persist atomically
-           (config_version + 1 on a connection change) → invalidate_source()
+  update = snapshot (no lock, version v) → merge → restore masked secrets ONCE
+           → auth-mode rules → validate the FINAL config → Google claim →
+           platform policy → end txn → (connection test, no txn) → short
+           FOR UPDATE txn: still version v? else 409 source_conflict →
+           persist (config_version = v + 1 on a connection change) →
+           invalidate_source()
 
 `type` is immutable after create. Names are unique per owner. Delete refuses
 with SourceInUseError while anything depends on the source.
@@ -69,6 +71,35 @@ def _run_connection_test(ds_type: str, config: Dict[str, Any]) -> None:
         describe_source_error(message, config) if message else "Connection failed",
         code=f"connection_{classify_source_error(message or '')}",
     )
+
+
+def _conflict() -> SourceConfigError:
+    return SourceConfigError(
+        "Data source đã được người khác thay đổi. Hãy tải lại rồi thử lại.",
+        code="source_conflict", status_code=409,
+    )
+
+
+def _pending_key(incoming: Dict[str, Any]):
+    import uuid as _uuid
+    raw = str((incoming or {}).get("google_pending_id") or "").strip()
+    try:
+        return _uuid.UUID(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def _consume_google_pending(db: Session, pending_key) -> None:
+    """Consume the consent handle claimed in phase 1 exactly once; if another
+    save consumed it in between, refuse rather than double-claim."""
+    from app.models.models import GoogleOAuthPending
+    deleted = db.query(GoogleOAuthPending).filter(GoogleOAuthPending.id == pending_key).delete(
+        synchronize_session=False)
+    if not deleted:
+        raise SourceConfigError(
+            "That Google connection expired. Press Connect Google again.",
+            code="google_connection_expired",
+        )
 
 
 class DataSourceCRUDService:
@@ -198,33 +229,89 @@ class DataSourceCRUDService:
         test_connection: bool = False,
         enforce_policy: Optional[bool] = None,
     ) -> Optional[DataSource]:
-        """Update a data source — the single update chokepoint."""
+        """Update a data source — the single update chokepoint.
+
+        Optimistic concurrency on ``config_version`` (no row lock is ever held
+        across network I/O):
+
+          1. snapshot (no lock): read the row, record version v, resolve the
+             final config from THAT snapshot (merge / masked-secret restore /
+             validate / policy), then end the read transaction;
+          2. connection test, outside any transaction;
+          3. short write txn: SELECT ... FOR UPDATE; if config_version != v (or
+             != the client's expected ``config_version``) → SourceConfigError
+             code=source_conflict (409); else persist exactly the tested config
+             with config_version = v + 1, commit, then invalidate_source().
+        A failed test raises before phase 3: nothing written, version unchanged.
+        Every update (also name/description only) passes the same version check.
+        """
         from app.core.crypto import decrypt_config, encrypt_config
 
-        # S5: merge + secret restore read the stored config under a row lock,
-        # so two concurrent edits cannot both merge over the same old config.
-        db_data_source = DataSourceCRUDService.get_for_update(db, data_source_id)
-        if not db_data_source:
+        # -- Phase 1: snapshot, no lock -------------------------------------
+        snap = (
+            db.query(DataSource).filter(DataSource.id == data_source_id)
+            .populate_existing().first()
+        )
+        if not snap:
+            db.rollback()
             return None
         if actor_id is None and actor is not None:
             actor_id = getattr(actor, "id", None)
-        ds_type = _type_value(db_data_source.type)
+        ds_type = _type_value(snap.type)
+        snap_version = int(snap.config_version or 1)
+        expected_version = getattr(data_source_update, "config_version", None)
 
         # F8: type is immutable after create.
         requested_type = getattr(data_source_update, "type", None)
         if requested_type is not None and _type_value(requested_type) != ds_type:
+            db.rollback()
             raise SourceConfigError(
                 "Không thể đổi loại của data source sau khi tạo. Hãy tạo data source mới.",
                 code="source_type_immutable",
             )
+        if expected_version is not None and int(expected_version) != snap_version:
+            db.rollback()
+            raise _conflict()
 
-        previous_config = dict(db_data_source.config or {})
+        previous_config = dict(snap.config or {})
         old_plain = decrypt_config(previous_config)
+        update_data = data_source_update.model_dump(exclude_unset=True)
+        update_data.pop('type', None)
+        update_data.pop('config_version', None)
+        incoming_config = update_data.pop('config', None)
+        new_plain: Optional[Dict[str, Any]] = None
         changed_fields: List[str] = []
+        pending_key = None
+        try:
+            if incoming_config is not None:
+                pending_key = _pending_key(incoming_config)
+                new_plain = resolve_config(
+                    db, ds_type, incoming_config, stored=previous_config, actor=actor,
+                    enforce_policy=(actor is not None) if enforce_policy is None else enforce_policy,
+                )
+                if ds_type == 'google_sheets':
+                    new_plain = _normalize_google_sheets_config(new_plain)
+                if ds_type != 'manual':
+                    changed_fields = connection_fields_changed(old_plain, new_plain)
+        finally:
+            # End the read txn: undoes the in-session Google claim (re-done in
+            # phase 3) and guarantees nothing is held during the test.
+            db.rollback()
+
+        # -- Phase 2: connection test, outside any transaction --------------
+        if changed_fields and test_connection:
+            _run_connection_test(ds_type, new_plain)
+
+        # -- Phase 3: short write transaction -------------------------------
         auth_change = None
         try:
-            update_data = data_source_update.model_dump(exclude_unset=True)
-            update_data.pop('type', None)
+            db_data_source = DataSourceCRUDService.get_for_update(db, data_source_id)
+            if not db_data_source:
+                db.rollback()
+                return None
+            if int(db_data_source.config_version or 1) != snap_version:
+                raise _conflict()
+
             if 'name' in update_data:
                 requested_name = (update_data['name'] or '').strip()
                 if requested_name and requested_name != db_data_source.name:
@@ -234,38 +321,29 @@ class DataSourceCRUDService:
                 elif not requested_name:
                     update_data.pop('name')
 
-            if update_data.get('config') is not None:
-                new_plain = resolve_config(
-                    db, ds_type, update_data['config'], stored=previous_config, actor=actor,
-                    enforce_policy=(actor is not None) if enforce_policy is None else enforce_policy,
-                )
-                if ds_type == 'google_sheets':
-                    new_plain = _normalize_google_sheets_config(new_plain)
-                elif ds_type == 'manual':
-                    # Manual type: bind uploaded assets; config keeps references only.
+            if new_plain is not None:
+                if ds_type == 'manual':
+                    # Manual: binding assets is DB/file work only (nothing to
+                    # test), so it runs under the short lock.
                     from app.services.manual_assets.service import bind_config
                     new_plain = bind_config(
                         db, db_data_source, new_plain,
                         actor_id=actor_id or db_data_source.owner_id,
                     )
-                changed_fields = connection_fields_changed(old_plain, new_plain)
-                if changed_fields and test_connection:
-                    _run_connection_test(ds_type, new_plain)
+                    changed_fields = connection_fields_changed(old_plain, new_plain)
+                if changed_fields and pending_key is not None:
+                    _consume_google_pending(db, pending_key)
                 old_auth = str(old_plain.get("auth_mode") or "")
                 new_auth = str(new_plain.get("auth_mode") or "")
                 if old_auth and new_auth and old_auth != new_auth:
                     auth_change = {"from": old_auth, "to": new_auth}
                 if changed_fields:
                     update_data['config'] = encrypt_config(new_plain)
-                else:
-                    update_data.pop('config')
-            else:
-                update_data.pop('config', None)
 
             for field, value in update_data.items():
                 setattr(db_data_source, field, value)
             if changed_fields:
-                db_data_source.config_version = int(db_data_source.config_version or 1) + 1
+                db_data_source.config_version = snap_version + 1
                 # The last health described the OLD connection.
                 db_data_source.last_test_status = None
                 db_data_source.last_tested_at = None
