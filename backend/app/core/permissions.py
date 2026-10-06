@@ -117,7 +117,11 @@ def _owned_or_shared(
         .where(share_target_filter_for_user(user))
     )
 
-    visible = [owner_predicate, cast(model.id, String).in_(shared_ids_subq)]
+    from app.core.authz.registry import spec_for_model
+
+    spec = spec_for_model(model)
+    key_col = getattr(model, spec.share_key if spec is not None else "id")
+    visible = [owner_predicate, cast(key_col, String).in_(shared_ids_subq)]
     if resource_type == ResourceType.DATASET:
         # The Dataset policy also grants through DatasetGrant (user or team):
         # the list must show exactly what the object check allows.
@@ -142,3 +146,16 @@ def stamp_owner_emails(db: Session, items) -> None:
     lookup = {u.id: u.email for u in users}
     for item in items:
         item.owner_email = lookup.get(item.owner_id)
+
+
+
+def is_module_admin(user: User, module: str) -> bool:
+    """The MODULE ADMINISTRATOR entitlement (stored level "full", decision Q8),
+    PAT-capped. Business code asks this - never `level == "full"` - so the one
+    meaning of that string lives here."""
+    return get_user_module_permission(user, module) == "full"
+
+
+def module_at_least(user: User, module: str, level: str) -> bool:
+    """The (PAT-capped) module entitlement is at least ``level``."""
+    return LEVEL_ORDER.get(get_user_module_permission(user, module), 0) >= LEVEL_ORDER[level]

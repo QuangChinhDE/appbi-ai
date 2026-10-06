@@ -113,10 +113,32 @@ def set_permissions(db, principal: Principal, **levels: str) -> None:
 
 @pytest.fixture(scope="module")
 def client():
+    """The real app. Per-IP rate limits are switched OFF for these suites only
+    (every TestClient request comes from one address, so a module that mints a
+    dozen PATs would hit the 10/min limit and the authorization assertion would
+    read a 429). The limits themselves are product behaviour tested elsewhere;
+    this is the same switch tests/test_embed_integration_security.py uses."""
+    import sys
+
     from app.main import app
 
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
+    limiters = []
+    for mod in list(sys.modules.values()):
+        lim = getattr(mod, "_limiter", None) if mod and getattr(mod, "__name__", "").startswith("app.") else None
+        if lim is not None and hasattr(lim, "enabled") and lim not in limiters:
+            limiters.append(lim)
+    state_lim = getattr(app.state, "limiter", None)
+    if state_lim is not None and state_lim not in limiters:
+        limiters.append(state_lim)
+    saved = [(lim, lim.enabled) for lim in limiters]
+    for lim in limiters:
+        lim.enabled = False
+    try:
+        with TestClient(app, raise_server_exceptions=False) as c:
+            yield c
+    finally:
+        for lim, was in saved:
+            lim.enabled = was
 
 
 @pytest.fixture()

@@ -21,7 +21,7 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_edit_access, require_permission
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models import Chart, Dashboard, Dataset, DatasetTable
-from app.models.resource_share import ResourceShare, ResourceType
+from app.models.resource_share import ResourceType
 from app.models.semantic import SemanticView
 from app.models.user import User
 from app.services.governance_service import GovernanceError, GovernanceService
@@ -125,9 +125,9 @@ from app.core.authz import decision as _authz  # noqa: E402
 def _govern_admin(user: User) -> bool:
     """Global governance objects (managed KPIs, certification, the change log)
     belong to the Govern module administrator."""
-    from app.core.permissions import get_user_module_permission
+    from app.core.permissions import is_module_admin
 
-    return get_user_module_permission(user, "govern") == "full"
+    return is_module_admin(user, "govern")
 
 
 def _require_govern_admin(user: User) -> None:
@@ -1303,14 +1303,11 @@ def _collect_accessible_metrics(db: Session, user: User) -> list[dict[str, Any]]
     if not ds_info:
         return []
 
-    shared_ids = {
-        int(r)
-        for (r,) in db.query(ResourceShare.resource_id)
-        .filter(ResourceShare.resource_type == ResourceType.DATASET)
-        .distinct()
-        .all()
-        if str(r).isdigit()
-    }
+    # "Shared" = the dataset has any grant (dataset access is stored as grants
+    # only since authz migration 20261008_0001; ResourceShare holds none).
+    from app.services.dataset_grants_service import datasets_with_grants
+
+    shared_ids = datasets_with_grants(db, ds_info.keys())
     tables = db.query(DatasetTable).filter(DatasetTable.dataset_id.in_(list(ds_info.keys()))).all()
     table_by_id = {t.id: t for t in tables}
     views = (

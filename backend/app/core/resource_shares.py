@@ -77,3 +77,15 @@ def get_shared_resource_ids_query(db: Session, user: User, resource_type: Resour
         .filter(ResourceShare.resource_type == resource_type)
         .filter(share_target_filter_for_user(user))
     )
+
+
+def shared_resource_ids_subquery(user: User, resource_type: ResourceType):
+    """SELECT resource_id of every ResourceShare reaching ``user`` (directly or
+    through a team) for ``resource_type`` - the one share resolution."""
+    from sqlalchemy import select
+
+    return (
+        select(ResourceShare.resource_id)
+        .where(ResourceShare.resource_type == resource_type)
+        .where(share_target_filter_for_user(user))
+    )

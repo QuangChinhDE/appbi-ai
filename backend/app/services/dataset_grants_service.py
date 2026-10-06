@@ -370,3 +370,16 @@ def revoke_cascade_grants(db: Session, dataset_ids, *, user_id=None, team_id=Non
                                       DatasetGrant.source == source)
     q = q.filter(DatasetGrant.user_id == user_id) if user_id is not None else q.filter(DatasetGrant.team_id == team_id)
     return q.delete(synchronize_session=False)
+
+
+
+def list_grants(db: Session, dataset_id: int) -> list:
+    return db.query(DatasetGrant).filter(DatasetGrant.dataset_id == dataset_id).all()
+
+
+def datasets_with_grants(db: Session, dataset_ids) -> set:
+    """Of ``dataset_ids``, those shared with anyone (any grant)."""
+    ids = [int(i) for i in dataset_ids]
+    if not ids:
+        return set()
+    return {r[0] for r in db.query(DatasetGrant.dataset_id).filter(DatasetGrant.dataset_id.in_(ids)).distinct()}

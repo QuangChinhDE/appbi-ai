@@ -368,9 +368,9 @@ def ai_chart_preview(
     if payload.save:
         # The normalized (PAT-capped) level: a raw read of user.permissions let a
         # token scoped to explore_charts:view save charts as its edit-level owner.
-        from app.core.permissions import get_user_module_permission
+        from app.core.permissions import module_at_least
 
-        if get_user_module_permission(current_user, "explore_charts") not in ("edit", "full"):
+        if not module_at_least(current_user, "explore_charts", "edit"):
             raise HTTPException(
                 status_code=403,
                 detail="Requires 'edit' permission on module 'explore_charts'",

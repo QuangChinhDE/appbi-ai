@@ -47,10 +47,11 @@ def _may_manage(user: User, ws: WorkboardWorkspace) -> bool:
     The workspace is a resource with an owner. Holding `workboards: edit` alone
     used to be enough to rename, re-mode, re-point, rotate or delete anyone's
     workspace; it no longer is."""
-    level = _module_level(user)
-    if level == "full":
+    from app.core.permissions import is_module_admin, module_at_least
+
+    if is_module_admin(user, "workboards"):
         return True
-    return level == "edit" and ws.owner_id is not None and ws.owner_id == user.id
+    return module_at_least(user, "workboards", "edit") and ws.owner_id is not None and ws.owner_id == user.id
 
 
 def _menu_workboards(db: Session, ws: WorkboardWorkspace) -> List[Workboard]:

@@ -105,25 +105,21 @@ def usable_brains(db: Session, user: Any):
 
     Fails closed: `agent_flows: none` sees nothing.
     """
-    from sqlalchemy import func, or_, select
+    from sqlalchemy import func, or_
 
-    from app.core.permissions import get_user_module_permission
-    from app.core.resource_shares import share_target_filter_for_user
-    from app.models.resource_share import ResourceShare
+    from app.core.permissions import get_user_module_permission, is_module_admin
+    from app.core.resource_shares import shared_resource_ids_subquery
 
     q = db.query(AgentBrainVersion)
 
     level = get_user_module_permission(user, "agent_flows")
     if level == "none":
         return q.filter(False)
-    if level == "full":
+    if is_module_admin(user, "agent_flows"):
         return q
 
-    shared_keys = (
-        select(ResourceShare.resource_id)
-        .where(ResourceShare.resource_type == ResourceType.AGENT_BRAIN)
-        .where(share_target_filter_for_user(user))
-    )
+    # The one share engine (user + team), keyed by brain_key per the registry.
+    shared_keys = shared_resource_ids_subquery(user, ResourceType.AGENT_BRAIN)
 
     owner_email = str(getattr(user, "email", "") or "").strip().lower()
     conditions = [AgentBrainVersion.brain_key.in_(shared_keys)]

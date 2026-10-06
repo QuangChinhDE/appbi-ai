@@ -189,7 +189,9 @@ def usage(db: Session = Depends(get_db), user: User = Depends(get_current_user))
 def _is_obs_admin(user: User) -> bool:
     """The Observability module administrator (module level `full`). Global
     concepts - the tenant-wide scan, global alert channels - are theirs."""
-    return get_user_module_permission(user, "observability") == "full"
+    from app.core.permissions import is_module_admin
+
+    return is_module_admin(user, "observability")
 
 
 @router.post("/scan")

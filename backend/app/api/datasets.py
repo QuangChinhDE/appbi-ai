@@ -2808,14 +2808,14 @@ def list_dataset_grants(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    from app.models.dataset import Dataset, DatasetGrant
+    from app.models.dataset import Dataset
     from app.services import dataset_grants_service
 
     ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
     require_view_access(db, current_user, ds, "datasets")
-    rows = db.query(DatasetGrant).filter(DatasetGrant.dataset_id == dataset_id).all()
+    rows = dataset_grants_service.list_grants(db, dataset_id)
     return {
         "my_capabilities": sorted(dataset_grants_service.dataset_capabilities(db, current_user, ds)),
         "grants": [
