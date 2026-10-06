@@ -446,3 +446,4 @@ backend/_verify_gate.db
 !backend/tests/test_authz_registry.py
 !backend/tests/test_authz_chat_thread_owner_http_pg.py
 !backend/tests/test_authz_dataset_migration_pg.py
+!backend/tests/test_authz_govern_http_pg.py
