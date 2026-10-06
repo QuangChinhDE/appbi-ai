@@ -552,3 +552,162 @@ def test_bigquery_failure_logs_no_sql_text(monkeypatch, caplog):
         ds_mod.DataSourceConnectionService._execute_bigquery(
             {"project_id": "p"}, f"SELECT {marker}", skip_cost_check=True)
     assert marker not in caplog.text
+
+
+# ── S1: DuckDB (manual / Sheets) can never read a host file ──────────────────
+
+_MANUAL_CFG = {"sheets": {"Orders": {
+    "columns": [{"name": "amount", "type": "number"}],
+    "rows": [{"amount": 1}, {"amount": 2}],
+}}}
+
+
+def _duckdb_file_payloads(secret):
+    p = str(secret).replace("\\", "/")
+    return [
+        f"SELECT * FROM query('SELECT * FROM read_text(''{p}'')')",
+        f'SELECT * FROM "{p}"',
+        f"SELECT * FROM read_text('{p}')",
+        f"SELECT * FROM read_csv('{p}')",
+        f"SELECT * FROM '{p}'",
+        f"SELECT * FROM glob('{p}')",
+        "SELECT * FROM duckdb_settings()",
+        "SELECT * FROM duckdb_secrets()",
+    ]
+
+
+@pytest.fixture()
+def secret_file(tmp_path):
+    f = tmp_path / "secret.csv"
+    f.write_text("token\nTOPSECRET-S1\n")
+    return f
+
+
+@pytest.mark.parametrize("idx", range(8))
+def test_validator_refuses_duckdb_file_payloads(secret_file, idx):
+    sql = _duckdb_file_payloads(secret_file)[idx]
+    for dialect in ("manual", "google_sheets"):
+        with pytest.raises(ValueError):
+            validate_select_only(sql, dialect)
+
+
+@pytest.mark.parametrize("sql", [
+    'SELECT * FROM "secret.csv"',
+    'SELECT * FROM "a/b"',
+    'SELECT * FROM "..\\x"',
+    "SELECT * FROM t FOR SHARE",
+    "SELECT * FROM t FOR NO KEY UPDATE",
+    "SELECT * FROM t FOR KEY SHARE",
+])
+def test_validator_refuses_file_like_identifiers_and_row_locks(sql):
+    with pytest.raises(ValueError):
+        validate_select_only(sql, "manual")
+
+
+def test_sheets_tab_with_mid_name_slash_is_still_allowed():
+    validate_select_only('SELECT * FROM "Q1/Q2"', "google_sheets")
+
+
+@pytest.mark.parametrize("idx", range(8))
+def test_manual_duckdb_runtime_never_reads_host_files(secret_file, idx):
+    """Bypass the validator: the DuckDB connection itself must refuse."""
+    sql = _duckdb_file_payloads(secret_file)[idx]
+    try:
+        cols, rows = ds_mod.DataSourceConnectionService._execute_manual(_MANUAL_CFG, sql)
+    except Exception as exc:  # noqa: BLE001 — any refusal is a pass
+        assert "TOPSECRET" not in str(exc)
+        return
+    assert "TOPSECRET" not in repr(rows)
+    # duckdb_settings()/duckdb_secrets() may run, but must not expose secrets
+    # nor show external access enabled.
+    for r in rows:
+        if r.get("name") == "enable_external_access":
+            assert str(r.get("value")).lower() == "false"
+
+
+def test_manual_duckdb_runtime_cannot_reenable_external_access():
+    from app.services.sql_validator import open_locked_duckdb
+    con = open_locked_duckdb()
+    with pytest.raises(Exception):
+        con.execute("SET enable_external_access = true")
+    with pytest.raises(Exception):
+        con.execute("SET lock_configuration = false")
+
+
+def test_manual_query_still_works_after_lockdown():
+    cols, rows = ds_mod.DataSourceConnectionService._execute_manual(
+        _MANUAL_CFG, 'SELECT SUM(amount) AS s FROM manual."Orders"')
+    assert rows == [{"s": 3}]
+
+
+def _fake_sheets(monkeypatch):
+    from app.services import google_sheets_cache
+    monkeypatch.setattr(google_sheets_cache, "get_or_load", lambda sid, loader: {
+        "Orders": {"columns": [{"name": "amount", "type": "number"}],
+                   "rows": [{"amount": 1}, {"amount": 2}]}})
+    monkeypatch.setattr(google_sheets_cache, "get_cached_result", lambda *a, **k: None)
+    monkeypatch.setattr(google_sheets_cache, "set_cached_result", lambda *a, **k: None)
+
+
+@pytest.mark.parametrize("idx", range(6))
+def test_sheets_duckdb_runtime_never_reads_host_files(monkeypatch, secret_file, idx):
+    _fake_sheets(monkeypatch)
+    sql = _duckdb_file_payloads(secret_file)[idx]
+    try:
+        cols, rows = ds_mod.DataSourceConnectionService._execute_google_sheets(
+            {"spreadsheet_id": "ss1"}, sql)
+    except Exception as exc:  # noqa: BLE001
+        assert "TOPSECRET" not in str(exc)
+        return
+    assert "TOPSECRET" not in repr(rows)
+
+
+def test_sheets_query_still_works_after_lockdown(monkeypatch):
+    _fake_sheets(monkeypatch)
+    cols, rows = ds_mod.DataSourceConnectionService._execute_google_sheets(
+        {"spreadsheet_id": "ss1"}, 'SELECT SUM(amount) AS s FROM "Orders"')
+    assert rows == [{"s": 3}]
+
+
+def test_every_duckdb_connection_in_the_backend_is_locked():
+    """Structural lock: no raw duckdb.connect() outside the hardened helper."""
+    import pathlib
+    import re as _re
+    root = pathlib.Path(ds_mod.__file__).resolve().parents[1]
+    offenders = []
+    for f in root.rglob("*.py"):
+        if f.name == "sql_validator.py":
+            continue
+        if _re.search(r"duckdb\.connect\(", f.read_text(encoding="utf-8", errors="ignore")):
+            offenders.append(str(f))
+    assert offenders == []
+
+
+# ── S7: read-only executors for user SQL ─────────────────────────────────────
+
+def test_mysql_stream_runs_in_a_read_only_transaction(monkeypatch):
+    monkeypatch.setattr(netpol, "resolve_and_check", lambda host, port=None: "93.184.216.34")
+    cur = _RecCursor(rows=[(1,)])
+    monkeypatch.setattr(ds_mod.pymysql, "connect", lambda **kw: _RecConn(cur))
+    try:
+        ds_mod.DataSourceConnectionService._stream_mysql({"host": "my.example"}, "SELECT a FROM t")
+    except Exception:
+        pass
+    assert cur.executed and cur.executed[0][0] == "START TRANSACTION READ ONLY"
+
+
+def test_type_inference_runs_user_sql_read_only(monkeypatch):
+    conn, cur = _public_pg(monkeypatch, rows=[])
+    try:
+        ds_mod.DataSourceConnectionService._infer_postgresql_types({"host": "pg.example"}, "SELECT a FROM t")
+    except Exception:
+        pass
+    assert conn.readonly is True
+    monkeypatch.setattr(netpol, "resolve_and_check", lambda host, port=None: "93.184.216.34")
+    mcur = _RecCursor(rows=[])
+    monkeypatch.setattr(ds_mod.pymysql, "connect", lambda **kw: _RecConn(mcur))
+    try:
+        ds_mod.DataSourceConnectionService._infer_mysql_types({"host": "my.example"}, "SELECT a FROM t")
+    except Exception:
+        pass
+    assert mcur.executed[0][0] == "START TRANSACTION READ ONLY"

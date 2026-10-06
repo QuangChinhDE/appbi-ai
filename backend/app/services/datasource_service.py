@@ -2591,6 +2591,7 @@ class DataSourceConnectionService:
         )
         try:
             cursor = conn.cursor(pymysql.cursors.SSCursor)
+            cursor.execute("START TRANSACTION READ ONLY")  # S7: user SQL never writes/locks
             cursor.execute(sql_query)
 
             columns = [desc[0] for desc in cursor.description]
@@ -2895,11 +2896,12 @@ class DataSourceConnectionService:
                 user=config.get("username"),
                 password=config.get("password")
             )
+            conn.set_session(readonly=True)  # S7: user SQL never writes/locks
             cursor = conn.cursor()
-            
+
             # Execute with LIMIT 0 to get column info without data
             cursor.execute(f"{sql_query.rstrip(';')} LIMIT 0")
-            
+
             columns = []
             for desc in cursor.description:
                 columns.append({
@@ -2940,10 +2942,11 @@ class DataSourceConnectionService:
                 password=config.get("password")
             )
             cursor = conn.cursor()
-            
+            cursor.execute("START TRANSACTION READ ONLY")  # S7: user SQL never writes/locks
+
             # Execute with LIMIT 0 to get column info without data
             cursor.execute(f"{sql_query.rstrip(';')} LIMIT 0")
-            
+
             columns = []
             for desc in cursor.description:
                 columns.append({
@@ -3537,7 +3540,8 @@ class DataSourceConnectionService:
                 import pyarrow as pa
 
                 _duck_start = time.time()
-                con = duckdb.connect(database=":memory:")
+                from app.services.sql_validator import open_locked_duckdb
+                con = open_locked_duckdb()  # S1: no host files / settings
 
                 # Perf (#4): only register the tabs the SQL actually references.
                 # Loading the WHOLE workbook into DuckDB for every tile is the
@@ -3675,7 +3679,8 @@ class DataSourceConnectionService:
                 import duckdb
                 import pyarrow as pa
 
-                con = duckdb.connect(database=":memory:")
+                from app.services.sql_validator import open_locked_duckdb
+                con = open_locked_duckdb()  # S1: no host files / settings
 
                 # Create a "manual" schema so queries like "manual"."table" work
                 con.execute("CREATE SCHEMA IF NOT EXISTS manual")

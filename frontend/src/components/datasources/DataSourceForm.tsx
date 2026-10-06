@@ -151,6 +151,11 @@ export default function DataSourceForm({
   const [showCredentials, setShowCredentials] = useState(false);
   // Show/hide password field for DB connections
   const [showPassword, setShowPassword] = useState(false);
+  // The server never re-sends a stored password to a different host/port/
+  // database/user (400 credential_required) — ask for it up front instead.
+  const dbDestinationChanged = !!initialData && ['host', 'port', 'database', 'username'].some(
+    (f) => String(config[f] ?? '').trim() !== String(initialData.config?.[f] ?? '').trim(),
+  );
 
   // Platform-level GCP service account info
   const [platformGcp, setPlatformGcp] = useState<{ available: boolean; email: string | null } | null>(null);
@@ -439,9 +444,16 @@ export default function DataSourceForm({
                 value={config.password || ''}
                 onChange={(e) => handleConfigChange('password', e.target.value)}
                 className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
-                placeholder={initialData ? '(stored — leave blank to keep)' : '••••••••'}
-                required={!initialData}
+                placeholder={
+                  initialData && !dbDestinationChanged ? '(stored — leave blank to keep)' : '••••••••'
+                }
+                required={!initialData || dbDestinationChanged}
               />
+              {dbDestinationChanged && !config.password && (
+                <p className="text-xs text-warning mt-1">
+                  The connection details changed, so the stored password cannot be reused. Enter the password for the new connection.
+                </p>
+              )}
             </div>
           </div>
         </>

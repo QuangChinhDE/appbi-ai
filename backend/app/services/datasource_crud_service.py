@@ -104,6 +104,20 @@ class DataSourceCRUDService:
         return db.query(DataSource).filter(DataSource.id == data_source_id).first()
 
     @staticmethod
+    def get_for_update(db: Session, data_source_id: int) -> Optional[DataSource]:
+        """Load the row under a row lock (S5/S6) and refresh any copy already in
+        the session, so a merge/blocker check reads the committed state and a
+        concurrent update/delete/insert-referencing-it waits. SQLite ignores
+        FOR UPDATE (tests); Postgres honours it."""
+        return (
+            db.query(DataSource)
+            .filter(DataSource.id == data_source_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+
+    @staticmethod
     def get_by_name(db: Session, name: str, owner_id: Any = None) -> Optional[DataSource]:
         """Get a data source by name (within one owner when given)."""
         q = db.query(DataSource).filter(DataSource.name == name)
@@ -187,7 +201,9 @@ class DataSourceCRUDService:
         """Update a data source — the single update chokepoint."""
         from app.core.crypto import decrypt_config, encrypt_config
 
-        db_data_source = DataSourceCRUDService.get_by_id(db, data_source_id)
+        # S5: merge + secret restore read the stored config under a row lock,
+        # so two concurrent edits cannot both merge over the same old config.
+        db_data_source = DataSourceCRUDService.get_for_update(db, data_source_id)
         if not db_data_source:
             return None
         if actor_id is None and actor is not None:
@@ -285,12 +301,18 @@ class DataSourceCRUDService:
         are purged; ResourceShare rows and manual assets are removed with it."""
         from app.models.resource_share import ResourceShare, ResourceType
 
-        db_data_source = DataSourceCRUDService.get_by_id(db, data_source_id)
+        # S6: the blocker check, the draft purge and the delete run in ONE
+        # transaction under a row lock on the source. A dataset table inserted
+        # concurrently needs a key-share lock on this row (FK), so it either
+        # committed before we locked (→ seen as a blocker) or waits and then
+        # fails its FK — it can never slip in between check and delete.
+        db_data_source = DataSourceCRUDService.get_for_update(db, data_source_id)
         if not db_data_source:
             return False
 
         blockers = find_delete_blockers(db, data_source_id)
         if blockers:
+            db.rollback()  # release the lock before the audit write
             audit_source_event(db, AuditAction.DATASOURCE_DELETE_BLOCKED, db_data_source, actor_id,
                                {"blockers": [{"kind": b["kind"], "id": b["id"]} for b in blockers]})
             raise SourceInUseError(db_data_source.name, blockers)
@@ -305,13 +327,13 @@ class DataSourceCRUDService:
         # Explicit: dataset_tables.datasource_id is ON DELETE CASCADE, so deleting
         # the source alone would leave the draft Dataset row as an empty shell.
         from app.services.dashboard_html_import_service import purge_stale_import_drafts
+        # A savepoint, not a commit: a commit here would release the row lock.
         try:
-            purged = purge_stale_import_drafts(db, datasource_id=data_source_id, older_than_hours=None)
+            with db.begin_nested():
+                purged = purge_stale_import_drafts(db, datasource_id=data_source_id, older_than_hours=None)
             if purged:
-                db.commit()
                 logger.info("Purged import drafts %s while deleting data source %s", purged, data_source_id)
         except Exception:
-            db.rollback()
             logger.warning("Draft purge before data source %s delete failed", data_source_id, exc_info=True)
 
         # The purge may already have removed this very source (a wizard-created

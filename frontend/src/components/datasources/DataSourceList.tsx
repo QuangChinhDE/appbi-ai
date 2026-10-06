@@ -208,16 +208,19 @@ export default function DataSourceList({
                 </td>
                 <td className="app-list-cell-tight text-right text-caption">
                   <div className="flex items-center justify-end gap-1">
-                    <IconButton
-                      aria-label="Test connection"
-                      variant="ghost"
-                      size="xs"
-                      onClick={() => onTest(ds)}
-                      className="text-success hover:bg-success/10"
-                      title="Test connection"
-                    >
-                      <TestTube className="h-3.5 w-3.5" />
-                    </IconButton>
+                    {/* Retesting uses the stored credential → object edit (BE: POST /{id}/test). */}
+                    {perms.canEdit && (
+                      <IconButton
+                        aria-label="Test connection"
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => onTest(ds)}
+                        className="text-success hover:bg-success/10"
+                        title="Test connection"
+                      >
+                        <TestTube className="h-3.5 w-3.5" />
+                      </IconButton>
+                    )}
                     {onShare && perms.canShare && (
                       <IconButton
                         aria-label="Share data source"

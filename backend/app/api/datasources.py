@@ -43,6 +43,7 @@ from app.core.config import settings
 from app.services.source_lifecycle import (
     SourceConfigError,
     SourceInUseError,
+    changed_destination_fields,
     claim_google_connection,
     enforce_platform_gcp_policy,
     restore_masked_secrets,
@@ -72,7 +73,7 @@ def _config_error(exc: Exception, config: Any = None) -> HTTPException:
     status_code = getattr(exc, "status_code", status.HTTP_400_BAD_REQUEST)
     code = getattr(exc, "code", None)
     message = describe_source_error(exc, config)
-    if code in ("source_type_immutable", "source_not_tabular"):
+    if code in ("source_type_immutable", "source_not_tabular", "credential_required"):
         return HTTPException(status_code=status_code, detail={"code": code, "message": message})
     return HTTPException(status_code=status_code, detail=message)
 
@@ -103,17 +104,8 @@ _restore_sensitive_config_fields = restore_masked_secrets
 
 # ── Source hardening helpers (spec: docs/features/source-core-hardening/spec.md) ──
 
-# Fields that decide WHERE a stored secret is sent. A draft test may reuse a
-# stored secret only when every one of these equals the persisted value.
-_DESTINATION_FIELDS = (
-    "host", "port", "database", "username", "schema_name", "schema",
-    "project_id", "spreadsheet_id", "default_dataset", "auth_mode",
-    "google_oauth_email", "google_oauth_user_id",
-)
-
-
-def _norm_dest(value: Any) -> str:
-    return "" if value is None else str(value).strip()
+# Destination fields (WHERE a stored secret is sent) are defined once in
+# source_lifecycle.DESTINATION_FIELDS — the draft test and update share it.
 
 
 def _reuses_stored_secret(config: dict[str, Any], stored: dict[str, Any]) -> bool:
@@ -384,10 +376,7 @@ def test_draft_data_source_connection(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="A stored credential can only be tested against its own source type.",
                 )
-            changed = [
-                f for f in _DESTINATION_FIELDS
-                if f in config and _norm_dest(config.get(f)) != _norm_dest(stored.get(f))
-            ]
+            changed = changed_destination_fields(config, stored)
             if changed:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,

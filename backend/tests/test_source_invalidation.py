@@ -148,7 +148,9 @@ def test_sheets_change_drops_old_and_new_workbook_caches(S, monkeypatch):
     monkeypatch.setattr(google_sheets_cache, "invalidate", lambda sid: dropped.append(sid))
     a = _source(S, "GS", "google_sheets", {"spreadsheet_id": "sheet-old", "credentials_json": SA_A})
     with S() as s:
-        DataSourceCRUDService.update(s, a, DataSourceUpdate(config={"spreadsheet_id": "sheet-new"}))
+        DataSourceCRUDService.update(s, a, DataSourceUpdate(
+            # S4: a new spreadsheet is a new destination → the credential is re-entered
+            config={"spreadsheet_id": "sheet-new", "credentials_json": SA_A}))
     assert set(dropped) == {"sheet-old", "sheet-new"}
 
 
@@ -170,3 +172,22 @@ def test_invalidate_source_is_the_only_entry_point():
                           "'columns_cache': None", '"columns_cache": None', "google_sheets_cache.invalidate"):
             assert forbidden not in src, f"{mod.__name__} still invalidates directly: {forbidden}"
     assert "invalidate_source(" in inspect.getsource(crud)
+
+
+def test_connection_change_drops_the_cached_bigquery_location(S):
+    """S8: the snapshot colocation cache is per source and must re-resolve."""
+    from app.services import snapshot_service
+    from app.services.source_lifecycle import invalidate_source
+    a = _source(S, "A")
+    b = _source(S, "B")
+    snapshot_service._location_cache[a] = "EU"
+    snapshot_service._location_cache[b] = "US"
+    try:
+        from app.models.models import DataSource
+        with S() as s:
+            invalidate_source(s, s.get(DataSource, a))
+        assert a not in snapshot_service._location_cache
+        assert snapshot_service._location_cache.get(b) == "US"
+    finally:
+        snapshot_service._location_cache.pop(a, None)
+        snapshot_service._location_cache.pop(b, None)

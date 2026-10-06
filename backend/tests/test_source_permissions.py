@@ -231,7 +231,7 @@ def test_sheets_mutations_require_object_full(env, level, allowed, method, path,
     kw = {"json": body} if body is not None else {}
     r = call(LEVEL_USER[level], method, path.format(id=SHEET_ID), **kw)
     if allowed:
-        assert r.status_code != 403, r.text
+        assert r.status_code < 300, r.text
     else:
         assert r.status_code == 403, r.text
 
@@ -397,3 +397,96 @@ def test_admin_approval_is_recorded_for_the_exact_project(env, platform_sa):
     with S() as s:
         cfg = s.get(DataSource, r.json()["id"]).config
     assert cfg["platform_gcp_admin_approved_target"] == "special-proj"
+
+
+# ── S2 / S3: a sql_query dataset table runs arbitrary SQL → object edit ──────
+
+import source_phase_b_support as _pb  # noqa: E402
+
+_SQ_VIEWER = uuid.UUID("cccccccc-0000-0000-0000-00000000000b")
+_SQ_EDITOR = uuid.UUID("cccccccc-0000-0000-0000-00000000000e")
+
+
+@pytest.fixture()
+def sq_env(monkeypatch):
+    import app.api.datasets as datasets_api
+    from app.models.dataset import Dataset, DatasetTable
+    from app.schemas import DataSourceCreate
+    from app.services.datasource_crud_service import DataSourceCRUDService
+
+    S = _pb.make_db(monkeypatch)
+    _pb.no_network(monkeypatch)
+    perms = {"data_sources": "edit", "datasets": "edit"}
+    call = _pb.make_http(monkeypatch, S, {_pb.OWNER: perms, _SQ_VIEWER: perms, _SQ_EDITOR: perms})
+    previews = []
+    monkeypatch.setattr(datasets_api, "_preview_live_table_draft",
+                        lambda ds, draft: previews.append(draft.source_query) or ([], []))
+    with S() as s:
+        src = DataSourceCRUDService.create(
+            s, DataSourceCreate(name="pg", type="postgresql", config=_pb.pg_config()), owner_id=_pb.OWNER).id
+    with S() as s:
+        for uid, level in ((_SQ_VIEWER, "view"), (_SQ_EDITOR, "edit")):
+            s.add(ResourceShare(resource_type="datasource", resource_id=str(src), user_id=uid,
+                                permission=level, shared_by=_pb.OWNER))
+        datasets, tables = {}, {}
+        for uid in (_SQ_VIEWER, _SQ_EDITOR):
+            d = Dataset(name=f"d-{uid}", owner_id=uid)
+            s.add(d)
+            s.flush()
+            t = DatasetTable(dataset_id=d.id, datasource_id=src, source_kind="sql_query",
+                             source_query="SELECT 1 AS a", display_name="q")
+            s.add(t)
+            s.flush()
+            datasets[uid], tables[uid] = d.id, t.id
+        s.commit()
+    return call, src, datasets, tables, previews
+
+
+def test_viewer_cannot_add_a_sql_query_table_on_a_source(sq_env):
+    call, src, datasets, _t, previews = sq_env
+    r = call(_SQ_VIEWER, "POST", f"/datasets/{datasets[_SQ_VIEWER]}/tables",
+             json={"datasource_id": src, "source_kind": "sql_query",
+                   "source_query": "SELECT * FROM pg_shadow", "display_name": "x"})
+    assert r.status_code == 403, r.text
+    assert previews == []
+
+
+def test_viewer_may_still_add_a_physical_table(sq_env):
+    call, src, datasets, _t, _p = sq_env
+    r = call(_SQ_VIEWER, "POST", f"/datasets/{datasets[_SQ_VIEWER]}/tables",
+             json={"datasource_id": src, "source_kind": "physical_table",
+                   "source_table_name": "public.orders", "display_name": "orders"})
+    assert r.status_code < 300, r.text
+
+
+def test_editor_may_add_a_sql_query_table(sq_env):
+    call, src, datasets, _t, previews = sq_env
+    r = call(_SQ_EDITOR, "POST", f"/datasets/{datasets[_SQ_EDITOR]}/tables",
+             json={"datasource_id": src, "source_kind": "sql_query",
+                   "source_query": "SELECT 2 AS a", "display_name": "x2"})
+    assert r.status_code < 300, r.text
+    assert previews and "SELECT 2" in previews[-1]
+
+
+def test_viewer_cannot_change_the_sql_of_an_existing_sql_query_table(sq_env):
+    call, _src, datasets, tables, previews = sq_env
+    r = call(_SQ_VIEWER, "PUT", f"/datasets/{datasets[_SQ_VIEWER]}/tables/{tables[_SQ_VIEWER]}",
+             json={"source_query": "SELECT * FROM pg_shadow"})
+    assert r.status_code == 403, r.text
+    assert previews == []
+
+
+def test_viewer_may_rename_a_sql_query_table_without_touching_its_sql(sq_env):
+    call, _src, datasets, tables, previews = sq_env
+    r = call(_SQ_VIEWER, "PUT", f"/datasets/{datasets[_SQ_VIEWER]}/tables/{tables[_SQ_VIEWER]}",
+             json={"display_name": "renamed"})
+    assert r.status_code < 300, r.text
+    assert previews == []
+
+
+def test_editor_may_change_the_sql_of_a_sql_query_table(sq_env):
+    call, _src, datasets, tables, previews = sq_env
+    r = call(_SQ_EDITOR, "PUT", f"/datasets/{datasets[_SQ_EDITOR]}/tables/{tables[_SQ_EDITOR]}",
+             json={"source_query": "SELECT 3 AS a"})
+    assert r.status_code < 300, r.text
+    assert previews and "SELECT 3" in previews[-1]

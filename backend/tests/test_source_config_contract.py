@@ -74,14 +74,80 @@ def test_masked_secret_is_restored_exactly_once_on_http_update(S, monkeypatch):
         return real(cfg, stored)
     monkeypatch.setattr(lifecycle, "restore_masked_secrets", counting)
     call = make_http(monkeypatch, S, {OWNER: {"data_sources": "edit"}})
+    # Same destination + masked secret (S4: a changed destination would refuse).
     r = call(OWNER, "PUT", f"/datasources/{ds_id}",
-             json={"config": {**pg_config(host="db-b.example.com"), "password": "__stored__"}})
+             json={"config": {**pg_config(), "password": "__stored__"}})
     assert r.status_code == 200, r.text
     assert len(calls) == 1, "masked secrets must be restored exactly once per update"
     ds, cfg = _row(S, ds_id)
-    assert cfg["password"] == "pw-A-secret" and cfg["host"] == "db-b.example.com"
-    assert seen[-1][1]["password"] == "pw-A-secret"  # the tested config is the final one
+    assert cfg["password"] == "pw-A-secret" and cfg["host"] == "db-a.example.com"
+    assert seen == []  # nothing connection-relevant changed → no test
     assert r.json()["config"]["password"] == "__stored__"  # never echoed
+
+
+# ── S4: a stored secret never follows a changed destination ──────────────────
+
+@pytest.mark.parametrize("field,value", [
+    ("host", "evil.example.com"), ("port", 6543), ("database", "other"), ("username", "root"),
+])
+@pytest.mark.parametrize("secret", ["__stored__", "", None])
+def test_changed_destination_with_a_masked_secret_requires_the_credential(S, monkeypatch, field, value, secret):
+    seen = no_network(monkeypatch)
+    ds_id, _ = _create(S)
+    call = make_http(monkeypatch, S, {OWNER: {"data_sources": "edit"}})
+    cfg = {**pg_config(), field: value}
+    if secret is None:
+        cfg.pop("password")
+    else:
+        cfg["password"] = secret
+    r = call(OWNER, "PUT", f"/datasources/{ds_id}", json={"config": cfg})
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "credential_required"
+    assert seen == []  # the stored secret was never sent anywhere
+    ds, stored = _row(S, ds_id)
+    assert stored == {**pg_config()}
+    assert ds.config_version == 1
+
+
+def test_partial_update_changing_only_the_host_requires_the_credential(S):
+    from app.schemas import DataSourceUpdate
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    from app.services.source_lifecycle import SourceConfigError
+    ds_id, _ = _create(S)
+    with S() as s, pytest.raises(SourceConfigError) as exc:
+        DataSourceCRUDService.update(s, ds_id, DataSourceUpdate(config={"host": "evil.example.com"}))
+    assert exc.value.code == "credential_required"
+
+
+def test_changed_destination_with_a_new_secret_is_accepted(S, monkeypatch):
+    seen = no_network(monkeypatch)
+    ds_id, _ = _create(S)
+    call = make_http(monkeypatch, S, {OWNER: {"data_sources": "edit"}})
+    r = call(OWNER, "PUT", f"/datasources/{ds_id}",
+             json={"config": pg_config(host="db-b.example.com", password="pw-B-new")})
+    assert r.status_code == 200, r.text
+    assert seen[-1][1]["password"] == "pw-B-new" and seen[-1][1]["host"] == "db-b.example.com"
+
+
+def test_namespace_change_keeps_the_stored_secret(S):
+    """schema_name/default_dataset pick a namespace on the SAME server/project."""
+    from app.schemas import DataSourceUpdate
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    ds_id, _ = _create(S)
+    with S() as s:
+        DataSourceCRUDService.update(s, ds_id, DataSourceUpdate(config={**pg_config(), "password": "__stored__",
+                                                                        "schema_name": "mart"}))
+    _ds, cfg = _row(S, ds_id)
+    assert cfg["password"] == "pw-A-secret" and cfg["schema_name"] == "mart"
+
+
+def test_destination_fields_have_one_definition():
+    import inspect
+    import app.api.datasources as api
+    from app.services import source_lifecycle
+    assert not hasattr(api, "_DESTINATION_FIELDS")
+    assert "changed_destination_fields" in inspect.getsource(api.test_draft_data_source_connection)
+    assert "host" in source_lifecycle.DESTINATION_FIELDS
 
 
 def test_router_has_no_second_restore_or_invalidation_path():
@@ -98,9 +164,9 @@ def test_partial_config_update_merges_with_stored_values(S):
     from app.services.datasource_crud_service import DataSourceCRUDService
     ds_id, _ = _create(S)
     with S() as s:
-        DataSourceCRUDService.update(s, ds_id, DataSourceUpdate(config={"host": "db-c.example.com"}))
+        DataSourceCRUDService.update(s, ds_id, DataSourceUpdate(config={"schema_name": "sales"}))
     ds, cfg = _row(S, ds_id)
-    assert cfg == {**pg_config(host="db-c.example.com")}
+    assert cfg == {**pg_config(), "schema_name": "sales"}
     assert ds.config_version == 2
 
 
@@ -110,7 +176,7 @@ def test_invalid_final_config_persists_nothing(S):
     from app.services.source_lifecycle import SourceConfigError
     ds_id, _ = _create(S)
     with S() as s, pytest.raises(SourceConfigError) as exc:
-        DataSourceCRUDService.update(s, ds_id, DataSourceUpdate(name="Renamed", config={"port": 99999}))
+        DataSourceCRUDService.update(s, ds_id, DataSourceUpdate(name="Renamed", config={"port": 99999, "password": "new"}))
     assert exc.value.code == "invalid_config"
     ds, cfg = _row(S, ds_id)
     assert ds.name == "Sales" and cfg["port"] == 5432 and ds.config_version == 1
@@ -236,3 +302,52 @@ def test_sync_config_and_sync_jobs_are_retired():
     assert "sync_config" not in DataSource.__table__.c
     assert not hasattr(models, "SyncJob")
     assert "config_version" in DataSource.__table__.c
+
+
+def _load_migration_0003():
+    import importlib.util
+    import pathlib
+    path = (pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
+            / "20261006_0003_source_domain_hardening.py")
+    spec = importlib.util.spec_from_file_location("mig_20261006_0003", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_migration_0003_retires_sync_storage_without_losing_data():
+    """S9: upgrade keeps every sync_jobs row and every non-null sync_config."""
+    import json
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, text
+
+    mig = _load_migration_0003()
+    engine = create_engine("sqlite://")
+    with engine.begin() as c:
+        c.execute(text("CREATE TABLE data_sources (id INTEGER PRIMARY KEY, name VARCHAR(255), "
+                       "owner_id CHAR(36), sync_config JSON)"))
+        c.execute(text("CREATE UNIQUE INDEX ix_data_sources_name ON data_sources (name)"))
+        c.execute(text("CREATE TABLE sync_jobs (id INTEGER PRIMARY KEY, data_source_id INTEGER NOT NULL "
+                       "REFERENCES data_sources(id) ON DELETE CASCADE, status VARCHAR(20))"))
+        c.execute(text("CREATE INDEX ix_sync_jobs_id ON sync_jobs (id)"))
+        c.execute(text("CREATE INDEX ix_sync_jobs_data_source_id ON sync_jobs (data_source_id)"))
+        c.execute(text("INSERT INTO data_sources VALUES (1, 'a', NULL, :cfg), (2, 'b', NULL, NULL)"),
+                  {"cfg": json.dumps({"schedule": "daily"})})
+        c.execute(text("INSERT INTO sync_jobs VALUES (10, 1, 'success'), (11, 2, 'failed')"))
+        with Operations.context(MigrationContext.configure(c)):
+            mig.upgrade()
+        jobs = c.execute(text("SELECT id, data_source_id, status FROM sync_jobs_retired ORDER BY id")).all()
+        cfgs = c.execute(text("SELECT datasource_id, sync_config FROM data_source_sync_config_retired")).all()
+        cols = [r[1] for r in c.execute(text("PRAGMA table_info(data_sources)")).all()]
+    assert [tuple(j) for j in jobs] == [(10, 1, "success"), (11, 2, "failed")]
+    assert len(cfgs) == 1 and cfgs[0][0] == 1 and json.loads(cfgs[0][1]) == {"schedule": "daily"}
+    assert "sync_config" not in cols
+
+
+def test_migration_0003_downgrade_restores_from_the_retired_storage():
+    import inspect
+    src = inspect.getsource(_load_migration_0003().downgrade)
+    assert "data_source_sync_config_retired" in src and "sync_jobs_retired" in src
+    assert "drop_table(\"sync_jobs" not in src

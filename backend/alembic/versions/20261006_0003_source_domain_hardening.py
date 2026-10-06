@@ -13,13 +13,16 @@ Upgrade:
     (rows whose owner was deleted keep the old global rule among themselves).
     No dedupe needed on upgrade: the previous global index already guaranteed
     uniqueness, which implies uniqueness per owner.
-  * DESTRUCTIVE (declared): drops `data_sources.sync_config` and table
-    `sync_jobs`. Both have zero readers/writers in backend, frontend, scripts
-    and MCP (Dataset owns sync). Their content is lost on upgrade.
+  * Retires (NOT drops) the legacy sync storage, which has zero readers/writers
+    in backend, frontend, scripts and MCP (Dataset owns sync). Nothing is lost:
+    table `sync_jobs` is renamed `sync_jobs_retired` (rows kept), and every
+    non-null `data_sources.sync_config` is copied into the new table
+    `data_source_sync_config_retired(datasource_id, sync_config)` before the
+    column is dropped.
   * New audit actions (Postgres enum members, added outside the transaction).
 
-Downgrade recreates `sync_config` and `sync_jobs` EMPTY (data is not
-recoverable), restores the global unique name index — renaming, deterministically,
+Downgrade re-adds `sync_config` filled from `data_source_sync_config_retired`,
+renames `sync_jobs_retired` back to `sync_jobs` (rows intact), restores the global unique name index — renaming, deterministically,
 any name that became duplicated across owners to "<name> (#<id>)" first so the
 index can be built — and drops the new columns. Enum members stay (Postgres
 cannot drop them; unused members are harmless).
@@ -47,6 +50,15 @@ _AUDIT_VALUES = (
 )
 
 
+def _rename_sync_job_indexes(old_prefix: str, new_prefix: str) -> None:
+    """Index names are not renamed with the table; keep them matching so a
+    future `sync_jobs` cannot collide with the retired table's indexes."""
+    if op.get_bind().dialect.name != "postgresql":
+        return
+    for suffix in ("_id", "_data_source_id"):
+        op.execute(f"ALTER INDEX IF EXISTS {old_prefix}{suffix} RENAME TO {new_prefix}{suffix}")
+
+
 def upgrade() -> None:
     op.add_column(
         "data_sources",
@@ -69,9 +81,20 @@ def upgrade() -> None:
         sqlite_where=sa.text("owner_id IS NULL"),
     )
 
-    op.drop_index("ix_sync_jobs_data_source_id", table_name="sync_jobs")
-    op.drop_index("ix_sync_jobs_id", table_name="sync_jobs")
-    op.drop_table("sync_jobs")
+    # Retire, never destroy: keep sync_jobs rows and every non-null sync_config.
+    op.rename_table("sync_jobs", "sync_jobs_retired")
+    _rename_sync_job_indexes("ix_sync_jobs", "ix_sync_jobs_retired")
+    op.create_table(
+        "data_source_sync_config_retired",
+        sa.Column("datasource_id", sa.Integer(), nullable=False),
+        sa.Column("sync_config", sa.JSON(), nullable=False),
+        sa.ForeignKeyConstraint(["datasource_id"], ["data_sources.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("datasource_id"),
+    )
+    op.execute(
+        "INSERT INTO data_source_sync_config_retired (datasource_id, sync_config) "
+        "SELECT id, sync_config FROM data_sources WHERE sync_config IS NOT NULL"
+    )
     op.drop_column("data_sources", "sync_config")
 
     if op.get_bind().dialect.name != "postgresql":
@@ -83,24 +106,15 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.add_column("data_sources", sa.Column("sync_config", sa.JSON(), nullable=True))
-    op.create_table(
-        "sync_jobs",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("data_source_id", sa.Integer(), nullable=False),
-        sa.Column("status", sa.String(length=20), nullable=False),
-        sa.Column("mode", sa.String(length=30), nullable=False),
-        sa.Column("started_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("rows_synced", sa.Integer(), nullable=True),
-        sa.Column("rows_failed", sa.Integer(), nullable=True),
-        sa.Column("error_message", sa.Text(), nullable=True),
-        sa.Column("triggered_by", sa.String(length=50), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.ForeignKeyConstraint(["data_source_id"], ["data_sources.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
+    op.execute(
+        "UPDATE data_sources SET sync_config = ("
+        "SELECT r.sync_config FROM data_source_sync_config_retired r "
+        "WHERE r.datasource_id = data_sources.id) "
+        "WHERE id IN (SELECT datasource_id FROM data_source_sync_config_retired)"
     )
-    op.create_index("ix_sync_jobs_id", "sync_jobs", ["id"])
-    op.create_index("ix_sync_jobs_data_source_id", "sync_jobs", ["data_source_id"])
+    op.drop_table("data_source_sync_config_retired")
+    _rename_sync_job_indexes("ix_sync_jobs_retired", "ix_sync_jobs")
+    op.rename_table("sync_jobs_retired", "sync_jobs")
 
     op.drop_index("uq_data_sources_ownerless_name", table_name="data_sources")
     op.drop_index("uq_data_sources_owner_name", table_name="data_sources")

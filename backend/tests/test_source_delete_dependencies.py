@@ -160,3 +160,59 @@ def test_router_holds_no_dependency_query():
     import app.api.datasources as api
     src = inspect.getsource(api.delete_data_source)
     assert "Dataset" not in src.replace("Dataset, a hosted", "") and "purge_stale_import_drafts" not in src
+
+
+# ── S5 / S6: row lock; blocker check + delete in ONE locked transaction ──────
+
+def _spy_locks(monkeypatch):
+    from sqlalchemy.orm import Query
+    locked = []
+    real = Query.with_for_update
+
+    def spy(self, *a, **k):
+        locked.append([d["name"] for d in self.column_descriptions])
+        return real(self, *a, **k)
+    monkeypatch.setattr(Query, "with_for_update", spy)
+    return locked
+
+
+def test_delete_locks_the_source_row_and_commits_once(S, monkeypatch):
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    a = _source(S)
+    _dataset(S, a, "Draft", draft=True)
+    locked = _spy_locks(monkeypatch)
+    from app.models.models import DataSource
+    with S() as s:
+        events = []
+        real_commit, real_delete = s.commit, s.delete
+        monkeypatch.setattr(s, "commit", lambda: events.append("commit") or real_commit())
+        monkeypatch.setattr(s, "delete", lambda obj: events.append(
+            "delete_source" if isinstance(obj, DataSource) else "delete") or real_delete(obj))
+        assert DataSourceCRUDService.delete(s, a) is True
+    assert locked and locked[0] == ["DataSource"]
+    # check, purge and delete are one transaction: no commit (which would
+    # release the Postgres row lock) happens before the source row is deleted.
+    assert "delete_source" in events
+    assert "commit" not in events[:events.index("delete_source")]
+    assert not _exists(S, a)
+
+
+def test_blocked_delete_still_reports_blockers_under_the_lock(S, monkeypatch):
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    from app.services.source_lifecycle import SourceInUseError
+    a = _source(S)
+    _dataset(S, a, "Revenue")
+    locked = _spy_locks(monkeypatch)
+    with S() as s, pytest.raises(SourceInUseError):
+        DataSourceCRUDService.delete(s, a)
+    assert locked and _exists(S, a)
+
+
+def test_update_merges_over_a_row_loaded_under_lock(S, monkeypatch):
+    from app.schemas import DataSourceUpdate
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    a = _source(S)
+    locked = _spy_locks(monkeypatch)
+    with S() as s:
+        DataSourceCRUDService.update(s, a, DataSourceUpdate(name="Renamed"))
+    assert locked and locked[0] == ["DataSource"]

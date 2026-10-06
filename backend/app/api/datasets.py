@@ -3373,7 +3373,13 @@ def add_table_to_dataset(
             datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
             if not datasource:
                 raise HTTPException(status_code=404, detail="Datasource not found")
-            require_view_access(db, current_user, datasource, "data_sources")
+            # S2: picking a physical table is a read of the source (view); a
+            # sql_query table runs ARBITRARY SQL with the stored credential, so
+            # it needs edit on the datasource object.
+            if table.source_kind == "sql_query":
+                require_edit_access(db, current_user, datasource, "data_sources")
+            else:
+                require_view_access(db, current_user, datasource, "data_sources")
             _require_tabular_source(datasource)
 
         # Validate SQL query if source_kind is datasource-backed 'sql_query'
@@ -3612,11 +3618,15 @@ def update_dataset_table(
                 raise HTTPException(status_code=400, detail=str(exc))
         else:
             from app.services.query_validator import QueryValidator, QueryValidationError
+            # S3: changing the SQL of a sql_query table runs new arbitrary SQL
+            # with the stored credential → edit on the datasource object, checked
+            # before the SQL is validated or previewed.
+            datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+            if not datasource:
+                raise HTTPException(status_code=404, detail="Datasource not found")
+            require_edit_access(db, current_user, datasource, "data_sources")
             try:
                 table_update.source_query = QueryValidator.validate_and_clean(table_update.source_query)
-                datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-                if not datasource:
-                    raise HTTPException(status_code=404, detail="Datasource not found")
 
                 table_draft = _build_table_draft(db_table, table_update)
                 preview_metadata, preview_rows = _preview_live_table_draft(

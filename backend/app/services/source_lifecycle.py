@@ -30,6 +30,38 @@ GCP_CREDENTIAL_FIELDS = frozenset({
     "google_oauth_user_id", "google_oauth_credentials", "google_oauth_email",
     "google_oauth_scopes",
 })
+# Fields that decide WHERE a stored secret is sent (single definition — the
+# draft test and the update chokepoint both use it). A stored secret is reused
+# only when every one of these the caller sends equals the persisted value.
+DESTINATION_FIELDS = (
+    "host", "port", "database", "username", "schema_name", "schema",
+    "project_id", "spreadsheet_id", "default_dataset", "auth_mode",
+    "google_oauth_email", "google_oauth_user_id",
+)
+
+
+def norm_destination(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+# Subset of DESTINATION_FIELDS that only picks a namespace INSIDE the same
+# server/project with the same principal. The draft test (which can be driven by
+# someone without the secret) treats them as destination; a saved update by an
+# object editor does not force re-entering the secret for them.
+NAMESPACE_ONLY_FIELDS = frozenset({"schema_name", "schema", "default_dataset"})
+
+
+def changed_destination_fields(
+    incoming: Dict[str, Any], stored: Dict[str, Any], *, include_namespace: bool = True,
+) -> List[str]:
+    """Destination fields present in `incoming` whose value differs from `stored`."""
+    return [
+        f for f in DESTINATION_FIELDS
+        if f in incoming and norm_destination(incoming.get(f)) != norm_destination(stored.get(f))
+        and (include_namespace or f not in NAMESPACE_ONLY_FIELDS)
+    ]
+
+
 _OAUTH_FIELDS = ("google_oauth_user_id", "google_oauth_email", "google_oauth_credentials",
                  "google_oauth_scopes", "google_pending_id")
 
@@ -273,6 +305,38 @@ def enforce_platform_gcp_policy(
 
 # ── the resolve pipeline ─────────────────────────────────────────────────────
 
+def _refuse_stored_secret_at_new_destination(
+    incoming: Dict[str, Any], stored: Dict[str, Any], auth_mode_changed: bool,
+) -> None:
+    """S4: a stored secret is never re-sent to a destination the caller changed.
+    If any destination field differs from the persisted value and a secret
+    would be inherited (masked, blank or omitted), the caller must re-enter it
+    — at every permission level."""
+    from app.core.crypto import MASKED_PLACEHOLDER, _SENSITIVE_FIELDS
+
+    if incoming.get("google_pending_id"):
+        return  # a fresh Google consent supplies the new credential
+    reused = [
+        f for f in _SENSITIVE_FIELDS
+        if stored.get(f)
+        and incoming.get(f, None) in ("", None, MASKED_PLACEHOLDER)
+        and not (auth_mode_changed and f in GCP_CREDENTIAL_FIELDS)
+    ]
+    if not reused:
+        return
+    # A masked/blank value is "unchanged", not a new destination.
+    changed = [
+        f for f in changed_destination_fields(incoming, stored, include_namespace=False)
+        if incoming.get(f) not in ("", None, MASKED_PLACEHOLDER) or f not in _SENSITIVE_FIELDS
+    ]
+    if changed:
+        raise SourceConfigError(
+            "The connection details changed (" + ", ".join(changed) + "), so the stored "
+            "credential cannot be reused. Enter the password / credential again.",
+            code="credential_required",
+        )
+
+
 def resolve_config(  # noqa: C901
     db: Session,
     ds_type: str,
@@ -298,6 +362,7 @@ def resolve_config(  # noqa: C901
         # inherited (no stale SA JSON / OAuth token under the new mode).
         old_auth = _auth_mode(plain_stored)
         new_auth = _auth_mode(incoming) or old_auth
+        _refuse_stored_secret_at_new_destination(incoming, plain_stored, old_auth != new_auth)
         cfg = dict(plain_stored)
         cfg.pop(PLATFORM_GCP_APPROVAL_FIELD, None)
         if old_auth and new_auth != old_auth:
@@ -383,6 +448,14 @@ def invalidate_source(db: Session, data_source: Any, previous_config: Dict[str, 
                 counts["sheets"] += 1
             except Exception:  # noqa: BLE001
                 logger.warning("source.invalidate.sheets_failed source_id=%s", ds_id)
+
+    # S8: the resolved BigQuery location is per source and depends on its
+    # project/credential — a changed connection must re-resolve it.
+    try:
+        from app.services import snapshot_service
+        snapshot_service._location_cache.pop(ds_id, None)
+    except Exception:  # noqa: BLE001
+        logger.warning("source.invalidate.location_failed source_id=%s", ds_id)
 
     logger.info("source.invalidated source_id=%s version=%s counts=%s",
                 ds_id, getattr(data_source, "config_version", None), counts)

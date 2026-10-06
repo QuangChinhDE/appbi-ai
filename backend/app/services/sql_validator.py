@@ -63,20 +63,45 @@ _DANGEROUS_FUNCTIONS = re.compile(
     r"PG_FILE_\w+|QUERY_TO_XML\w*|TABLE_TO_XML\w*|SETVAL|NEXTVAL|"
     r"SLEEP|BENCHMARK|LOAD_FILE|GET_LOCK|RELEASE_LOCK|SYS_EXEC|SYS_EVAL|"
     r"READ_TEXT|READ_BLOB|READ_CSV\w*|READ_PARQUET|READ_JSON\w*|READ_NDJSON\w*|"
-    r"PARQUET_SCAN|GLOB|EXTERNAL_QUERY"
+    r"PARQUET_SCAN|GLOB|EXTERNAL_QUERY|"
+    # S7: large objects, notify, stats reset, *_to_xml, snapshot export, locks
+    r"LO_\w+|PG_NOTIFY|PG_STAT_RESET\w*|\w+_TO_XML\w*|PG_EXPORT_SNAPSHOT|"
+    r"IS_FREE_LOCK|IS_USED_LOCK|MASTER_POS_WAIT|SOURCE_POS_WAIT|"
+    # S1: DuckDB table functions that reach files, settings or secrets
+    r"QUERY|QUERY_TABLE|SNIFF_CSV|PARQUET_\w+|READ_\w+|DUCKDB_\w+|ICEBERG_\w+|DELTA_SCAN|"
+    r"SQLITE_\w+|POSTGRES_\w+|MYSQL_\w+|LOAD|INSTALL"
     r")$"
+)
+
+# S7: row locks on the source are a write-side effect.
+_ROW_LOCK_RE = re.compile(
+    r"\bFOR\s+(?:UPDATE|SHARE|NO\s+KEY\s+UPDATE|KEY\s+SHARE)\b|\bLOCK\s+IN\s+SHARE\s+MODE\b"
+)
+# S1: in DuckDB a quoted identifier that looks like a path is read as a FILE
+# ("secret.csv", "/etc/x"). Imported-file sheet names never need a slash (Excel
+# forbids it) or a file suffix (the upload strips it). Google Sheets tab names
+# MAY contain a mid-name "/" ("Q1/Q2"), so that dialect only refuses path-shaped
+# names. The real barrier is open_locked_duckdb(); this is defense in depth.
+_DUCKDB_DIALECTS = {"manual", "google_sheets", "duckdb"}
+_SLASH_IN_IDENT_RE = re.compile(r"/")
+_FILE_LIKE_IDENT_RE = re.compile(
+    r"\\|^\s*(?:/|~|\.\.?/)|://|\.(?:csv|tsv|txt|parquet|json|jsonl|ndjson|xlsx|xls|gz|zst|zip|arrow|feather|"
+    r"db|duckdb|sqlite|sqlite3|log|env|conf|cfg|ini|yaml|yml|pem|key|avro|orc)\s*$",
+    re.IGNORECASE,
 )
 
 _FUNC_CALL_RE = re.compile(r"\b([A-Z_][A-Z0-9_$]*)\s*\(")
 
 
 class _Lexed:
-    __slots__ = ("skeleton", "quoted_calls", "error")
+    __slots__ = ("skeleton", "quoted_calls", "error", "quoted_idents")
 
-    def __init__(self, skeleton: str, quoted_calls: List[str], error: Optional[str]):
+    def __init__(self, skeleton: str, quoted_calls: List[str], error: Optional[str],
+                 quoted_idents: Optional[List[str]] = None):
         self.skeleton = skeleton
         self.quoted_calls = quoted_calls
         self.error = error
+        self.quoted_idents = quoted_idents or []
 
 
 def _is_ident_char(ch: str) -> bool:
@@ -96,6 +121,7 @@ def _lex(sql: str, mode: str) -> _Lexed:
     """
     out: List[str] = []
     quoted_calls: List[str] = []
+    quoted_idents: List[str] = []
     i, n = 0, len(sql)
     backslash = mode in ("mysql", "bigquery")
     while i < n:
@@ -183,6 +209,7 @@ def _lex(sql: str, mode: str) -> _Lexed:
                 buf.append(ch)
                 j += 1
             inner = "".join(buf)
+            quoted_idents.append(inner)
             i = j + 1
             # A quoted identifier used as a function name must not hide a
             # dangerous function: "pg_read_file"(...), pg_catalog."lo_import"(...)
@@ -194,7 +221,7 @@ def _lex(sql: str, mode: str) -> _Lexed:
             continue
         out.append(c)
         i += 1
-    return _Lexed("".join(out), quoted_calls, None)
+    return _Lexed("".join(out), quoted_calls, None, quoted_idents)
 
 
 _MODES_BY_DIALECT = {
@@ -241,10 +268,31 @@ def _check_skeleton(lexed: _Lexed) -> None:
     if _LITERAL_TABLE_RE.search(body):
         raise ValueError("Only SELECT queries are allowed. A string literal cannot be used as a table.")
 
+    if _ROW_LOCK_RE.search(body):
+        raise ValueError("Only SELECT queries are allowed. Row-locking clauses are not allowed.")
+
     for name in list(_FUNC_CALL_RE.findall(body)) + list(lexed.quoted_calls):
         bare = name.rsplit(".", 1)[-1]
         if _DANGEROUS_FUNCTIONS.match(bare):
             raise ValueError(f"Only SELECT queries are allowed. Function not allowed: {bare.lower()}")
+
+
+def open_locked_duckdb():
+    """A DuckDB in-memory connection that can never touch the host filesystem,
+    network, extensions or its own settings. Every DuckDB connection that runs
+    user/source SQL must come from here (S1). Registering Arrow tables, CREATE
+    TABLE/VIEW and INSERT inside the connection still work."""
+    import duckdb
+
+    return duckdb.connect(
+        database=":memory:",
+        config={
+            "enable_external_access": False,
+            "autoload_known_extensions": False,
+            "autoinstall_known_extensions": False,
+            "lock_configuration": True,
+        },
+    )
 
 
 def validate_select_only(sql_query: str, dialect: Optional[str] = None) -> None:
@@ -257,6 +305,17 @@ def validate_select_only(sql_query: str, dialect: Optional[str] = None) -> None:
         raise ValueError("SQL query cannot be empty")
     if "\x00" in sql_query:
         raise ValueError("SQL query contains a NUL byte")
+    key = str(getattr(dialect, "value", dialect) or "").strip().lower()
     for mode in _modes(dialect):
-        _check_skeleton(_lex(sql_query, mode))
+        lexed = _lex(sql_query, mode)
+        _check_skeleton(lexed)
+        if key in _DUCKDB_DIALECTS:
+            for ident in lexed.quoted_idents:
+                if _FILE_LIKE_IDENT_RE.search(ident) or (
+                    key != "google_sheets" and _SLASH_IN_IDENT_RE.search(ident)
+                ):
+                    raise ValueError(
+                        "Only SELECT queries are allowed. A quoted name that looks like a "
+                        "file path cannot be used."
+                    )
     logger.debug("SQL validation passed (%d chars)", len(sql_query))
