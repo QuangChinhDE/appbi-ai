@@ -118,6 +118,8 @@ jobs:
             tests/test_filter_layered_merge.py \
             tests/test_non_fanning_reachability.py \
             tests/test_workboard_offline_relation_phase2.py \
+            tests/test_source_workboard_binding.py \
+            tests/test_source_manual_ingestion.py \
             tests/test_semantic_measure_render.py \
             tests/test_dialect_structural.py \
             tests/test_agent_flow_golden.py \
@@ -175,6 +177,8 @@ jobs:
             tests/test_skill_surfaces_found_in_the_browser.py \
             tests/test_claims_mean_what_was_asked.py \
             tests/test_core_product_contracts.py \
+            tests/test_source_security.py \
+            tests/test_source_permissions.py \
             tests/test_publication_boundary.py \
             tests/test_intent_contract.py \
             tests/test_alembic_revision_reconcile.py \

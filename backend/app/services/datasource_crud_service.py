@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models import DataSource, DataSourceType
 from app.schemas import DataSourceCreate, DataSourceUpdate
 from app.core.logging import get_logger
+import app.services.manual_assets.service  # noqa: F401 — installs asset file cleanup hooks
 
 logger = get_logger(__name__)
 
@@ -83,6 +84,14 @@ class DataSourceCRUDService:
                 owner_id=owner_id,
             )
             db.add(db_data_source)
+            if data_source.type.value == 'manual':
+                # Rows never live in config: bind staged uploads (or convert
+                # inline rows from internal callers) to asset references.
+                from app.services.manual_assets.service import bind_config
+                db.flush()
+                db_data_source.config = encrypt_config(
+                    bind_config(db, db_data_source, data_source.config or {}, actor_id=owner_id)
+                )
             db.commit()
             db.refresh(db_data_source)
             logger.info(f"Created data source: {resolved_name}")
@@ -90,12 +99,16 @@ class DataSourceCRUDService:
         except IntegrityError:
             db.rollback()
             raise ValueError(f"Data source with name '{data_source.name}' already exists")
+        except Exception:
+            db.rollback()  # also removes asset files written in this transaction
+            raise
     
     @staticmethod
     def update(
         db: Session,
         data_source_id: int,
-        data_source_update: DataSourceUpdate
+        data_source_update: DataSourceUpdate,
+        actor_id=None,
     ) -> Optional[DataSource]:
         """Update a data source."""
         db_data_source = DataSourceCRUDService.get_by_id(db, data_source_id)
@@ -139,7 +152,12 @@ class DataSourceCRUDService:
                     update_data['config'] = _normalize_google_sheets_config(update_data['config'])
                     config_refreshed = True
                 elif ds_type == 'manual':
-                    # Manual type: config is already the new snapshot (uploaded by user)
+                    # Manual type: bind uploaded assets; config keeps references only.
+                    from app.services.manual_assets.service import bind_config
+                    update_data['config'] = bind_config(
+                        db, db_data_source, update_data['config'],
+                        actor_id=actor_id or db_data_source.owner_id,
+                    )
                     config_refreshed = True
                 update_data['config'] = encrypt_config(update_data['config'])
 
@@ -176,6 +194,9 @@ class DataSourceCRUDService:
         except IntegrityError:
             db.rollback()
             raise ValueError(f"Data source with name '{data_source_update.name}' already exists")
+        except Exception:
+            db.rollback()  # also removes asset files written in this transaction
+            raise
     
     @staticmethod
     def delete(db: Session, data_source_id: int) -> bool:

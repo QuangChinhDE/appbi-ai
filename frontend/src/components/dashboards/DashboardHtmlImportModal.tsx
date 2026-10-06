@@ -1460,7 +1460,7 @@ export function DashboardHtmlImportModal({
                   <input
                     ref={sourceFileInputRef}
                     type="file"
-                    accept=".xlsx,.xls,.csv"
+                    accept=".xlsx,.csv"
                     multiple
                     className="hidden"
                     onChange={(event) => {

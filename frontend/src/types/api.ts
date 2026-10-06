@@ -869,6 +869,9 @@ export interface QueryExecuteResponse {
   data: Record<string, any>[];
   row_count: number;
   execution_time_ms: number;
+  /** True when the server-side row cap (SOURCE_QUERY_MAX_ROWS) cut the result short. */
+  truncated?: boolean;
+  row_limit?: number | null;
 }
 
 export type ChartDataContext = 'default' | 'dashboard';

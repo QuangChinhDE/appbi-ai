@@ -141,6 +141,16 @@ class DataSourceTestRequest(BaseModel):
     data_source_id: int | None = None
 
 
+class DataSourceDraftTestRequest(BaseModel):
+    """POST /datasources/test-draft — test a config that is not saved (yet).
+
+    ``data_source_id`` only lets a blank/masked secret reuse THAT source's stored
+    secret, and only when type and every destination field equal the persisted ones."""
+    type: DataSourceTypeSchema
+    config: Dict[str, Any]
+    data_source_id: int | None = None
+
+
 class DataSourceTestResponse(BaseModel):
     """Schema for data source test result."""
     success: bool
@@ -877,9 +887,9 @@ class QueryExecuteRequest(BaseModel):
     """Schema for executing an ad-hoc query."""
     data_source_id: int
     sql_query: str = Field(..., min_length=1)
-    # Phase-15.83 — ad-hoc query LIMIT cap bumped from 10000 to 10M
-    # sentinel so the Explore custom-SQL path doesn't 422 when sending the
-    # NO_LIMIT_SENTINEL chosen by the FE row-cap-removal change.
+    # Accepted up to the FE NO_LIMIT_SENTINEL (10M) so the request never 422s,
+    # but CLAMPED server-side to settings.SOURCE_QUERY_MAX_ROWS — the response
+    # says `truncated` when more rows existed. The request cannot lift the cap.
     limit: Optional[int] = Field(None, ge=1, le=10_000_000)
     timeout_seconds: Optional[int] = Field(30, ge=1, le=300, description="Query timeout in seconds")
 
@@ -890,6 +900,9 @@ class QueryExecuteResponse(BaseModel):
     data: List[Dict[str, Any]]
     row_count: int
     execution_time_ms: float
+    # True when the server-side row cap cut the result short.
+    truncated: bool = False
+    row_limit: Optional[int] = None
 
 
 class SqlValidateRequest(BaseModel):

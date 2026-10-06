@@ -1,11 +1,18 @@
 """Manual Table Data Source
 
 Allows users to import file data (CSV / Excel) as a data source.
-Config format (new): { "sheets": { "SheetName": { "columns": [...], "rows": [...] } } }
-Config format (legacy): { "columns": [...], "rows": [...] }
+Config format (current): { "sheets": { "SheetName": { "asset_id": "...", "columns": [...], "row_count": N } } }
+  rows live in a Parquet asset (app.services.manual_assets).
+Config format (legacy, still readable): { "sheets": { "SheetName": { "columns": [...], "rows": [...] } } }
+  or { "columns": [...], "rows": [...] }. Legacy configs are converted by
+  ``manual_assets.service.migrate_legacy_manual_source`` (on update, or the
+  ``app.scripts.migrate_manual_sources_to_assets`` CLI).
 """
 from typing import List, Dict, Any
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 
 class ManualTableConnector:
@@ -50,6 +57,15 @@ class ManualTableConnector:
         if data is None:
             # Last resort: return first available sheet
             data = next(iter(self._sheets.values())) if self._sheets else {'columns': [], 'rows': []}
+        if isinstance(data, dict) and 'asset_id' in data:
+            from app.services.manual_assets.service import read_asset
+
+            loaded = read_asset(data.get('asset_id'))
+            if loaded is None:
+                logger.error("manual_source.asset_unreadable sheet=%s", sheet_name)
+                return {'columns': data.get('columns', []), 'rows': []}
+            return loaded
+        logger.info("manual_source.legacy_inline_read sheet=%s", sheet_name)
         return {'columns': data.get('columns', []), 'rows': data.get('rows', [])}
 
     def get_table_data(self) -> Dict[str, Any]:

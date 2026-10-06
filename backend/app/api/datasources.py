@@ -30,7 +30,7 @@ from app.schemas import (
     DataSourceCreate,
     DataSourceUpdate,
     DataSourceResponse,
-    DataSourceTestRequest,
+    DataSourceDraftTestRequest,
     DataSourceTestResponse,
     QueryExecuteRequest,
     QueryExecuteResponse,
@@ -200,6 +200,91 @@ def _normalize_google_oauth_config(
 
 # ── Platform GCP credential info ──────────────────────────────────────────────
 
+# ── Source hardening helpers (spec: docs/features/source-core-hardening/spec.md) ──
+
+# Fields that decide WHERE a stored secret is sent. A draft test may reuse a
+# stored secret only when every one of these equals the persisted value.
+_DESTINATION_FIELDS = (
+    "host", "port", "database", "username", "schema_name", "schema",
+    "project_id", "spreadsheet_id", "default_dataset", "auth_mode",
+    "google_oauth_email", "google_oauth_user_id",
+)
+
+
+def _is_platform_admin(user: User) -> bool:
+    """An administrator in this codebase = `settings: full` (see _normalize_permissions)."""
+    from app.core.dependencies import _normalize_permissions
+    try:
+        return _normalize_permissions(user).get("settings") == "full"
+    except Exception:  # noqa: BLE001 — anything odd is not an admin
+        return False
+
+
+def _enforce_platform_gcp_policy(
+    ds_type: str,
+    config: dict[str, Any],
+    current_user: User,
+    existing_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """F5: the platform GCP credential is usable only for an allow-listed project
+    or a target an administrator approved. The approval marker can never be set
+    by the request; it is (re)stamped here for admins and carried over only while
+    the target is unchanged. Raises 400 when a non-admin would fall back to the
+    platform credential for a target outside the allow-list."""
+    from app.services.datasource_service import (
+        PLATFORM_GCP_APPROVAL_FIELD,
+        platform_gcp_target,
+        platform_gcp_target_allowed,
+        uses_platform_gcp_credential,
+    )
+    cfg = dict(config or {})
+    cfg.pop(PLATFORM_GCP_APPROVAL_FIELD, None)
+    if not uses_platform_gcp_credential(ds_type, cfg):
+        return cfg
+    target = platform_gcp_target(cfg)
+    previous = str((existing_config or {}).get(PLATFORM_GCP_APPROVAL_FIELD) or "").strip()
+    if target and previous == target:
+        cfg[PLATFORM_GCP_APPROVAL_FIELD] = previous
+        return cfg
+    if platform_gcp_target_allowed(cfg):
+        return cfg
+    if _is_platform_admin(current_user) and target:
+        cfg[PLATFORM_GCP_APPROVAL_FIELD] = target
+        return cfg
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            "The platform Google service account is not enabled for this project. "
+            "Provide this source's own credentials, or ask an administrator."
+        ),
+    )
+
+
+def _norm_dest(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _reuses_stored_secret(config: dict[str, Any], stored: dict[str, Any]) -> bool:
+    from app.core.crypto import MASKED_PLACEHOLDER, _SENSITIVE_FIELDS
+    for field in _SENSITIVE_FIELDS:
+        if config.get(field, None) in ("", None, MASKED_PLACEHOLDER) and stored.get(field):
+            return True
+    if str(config.get("auth_mode") or "").strip().lower() == "google_oauth" and not config.get("google_pending_id"):
+        if stored.get("google_oauth_credentials") or stored.get("google_oauth_user_id"):
+            return True
+    return False
+
+
+def _strip_unset_secrets(config: dict[str, Any]) -> dict[str, Any]:
+    """A draft WITHOUT a source id: a blank/masked secret means no secret."""
+    from app.core.crypto import MASKED_PLACEHOLDER, _SENSITIVE_FIELDS
+    cleaned = dict(config or {})
+    for field in _SENSITIVE_FIELDS:
+        if cleaned.get(field, None) in ("", None, MASKED_PLACEHOLDER):
+            cleaned.pop(field, None)
+    return cleaned
+
+
 @router.get("/platform-gcp-info")
 def get_platform_gcp_info(_: User = Depends(get_current_user)):
     """
@@ -214,122 +299,92 @@ def get_platform_gcp_info(_: User = Depends(get_current_user)):
     }
 
 
-# ── Manual datasource: server-side file parsing ───────────────────────────────
+# ── Manual datasource: bounded upload → staged Parquet assets ─────────────────
 
-def _infer_type(values: list) -> str:
-    """Infer column type from a sample of values."""
-    samples = [v for v in values if v is not None and str(v).strip() != ''][:20]
-    if not samples:
-        return 'string'
-    num_count = sum(1 for v in samples if _is_number(v))
-    if num_count == len(samples):
-        return 'number'
-    date_count = sum(1 for v in samples if _is_date_like(str(v)))
-    if date_count >= len(samples) * 0.8:
-        return 'date'
-    return 'string'
-
-def _is_number(v) -> bool:
-    try:
-        float(str(v).replace(',', ''))
-        return True
-    except (ValueError, TypeError):
-        return False
-
-def _is_date_like(s: str) -> bool:
-    import re
-    return bool(re.match(r'^\d{2,4}[-/]\d{1,2}[-/]\d{1,4}', s.strip()))
-
-def _parse_excel_bytes(content: bytes) -> Dict[str, Any]:
-    """Parse all sheets from an Excel file (.xlsx/.xls) using openpyxl."""
-    import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-    sheets: Dict[str, Any] = {}
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        all_rows = list(ws.iter_rows(values_only=True))
-        if not all_rows:
-            sheets[sheet_name] = {'columns': [], 'rows': []}
-            continue
-        # First non-empty row is the header
-        header_row = [str(c).strip() if c is not None else '' for c in all_rows[0]]
-        headers = [h if h else f'col{i+1}' for i, h in enumerate(header_row)]
-        data_rows = all_rows[1:]
-        rows = []
-        for r in data_rows:
-            row_dict = {}
-            has_value = False
-            for i, h in enumerate(headers):
-                val = r[i] if i < len(r) else None
-                # Convert to JSON-serialisable types
-                if val is None:
-                    row_dict[h] = ''
-                elif isinstance(val, (int, float)):
-                    row_dict[h] = val
-                    has_value = True
-                else:
-                    str_val = str(val).strip()
-                    row_dict[h] = str_val
-                    if str_val:
-                        has_value = True
-            if has_value:
-                rows.append(row_dict)
-        # Build column metadata
-        columns = [
-            {'name': h, 'type': _infer_type([r.get(h) for r in rows])}
-            for h in headers
-        ]
-        sheets[sheet_name] = {'columns': columns, 'rows': rows}
-    wb.close()
-    return sheets
-
-def _parse_csv_bytes(content: bytes, filename: str) -> Dict[str, Any]:
-    """Parse a CSV file and return as a single-sheet dict."""
-    try:
-        text = content.decode('utf-8-sig')
-    except UnicodeDecodeError:
-        text = content.decode('latin-1')
-    reader = csv_module.DictReader(io.StringIO(text))
-    rows = [dict(r) for r in reader]
-    fieldnames = list(reader.fieldnames or [])
-    columns = [
-        {'name': h, 'type': _infer_type([r.get(h) for r in rows])}
-        for h in fieldnames
-    ]
-    sheet_name = filename.rsplit('.', 1)[0] or 'Sheet1'
-    return {sheet_name: {'columns': columns, 'rows': rows}}
+_MANUAL_UPLOAD_CHUNK = 1024 * 1024
 
 
 @router.post("/manual/parse-file")
 async def parse_manual_file(
+    request: Request,
     file: UploadFile = File(...),
-    _: User = Depends(require_permission("data_sources", "edit")),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("data_sources", "edit")),
 ):
     """
-    Parse an uploaded Excel (.xlsx/.xls) or CSV file server-side.
-    Returns: { sheets: { sheetName: { columns: [...], rows: [...] } } }
+    Parse an uploaded .xlsx or .csv file into STAGED assets (one per sheet).
+
+    Returns ``{filename, sheets: {name: {asset_id, columns, row_count,
+    preview_rows, preview_truncated}}, limits}`` — never the full rows. Create
+    / update the manual source with ``config.sheets[name].asset_id`` to bind.
+    Limits: settings.MANUAL_UPLOAD_* (see manual_assets/parsing.py).
     """
-    allowed = {'.xlsx', '.xls', '.csv'}
-    ext = '.' + (file.filename or '').rsplit('.', 1)[-1].lower()
-    if ext not in allowed:
-        raise HTTPException(status_code=400, detail=f"Unsupported file type '{ext}'. Allowed: xlsx, xls, csv")
+    import tempfile
+    from app.services.manual_assets.parsing import ManualUploadError, check_extension, parse_file
+    from app.services.manual_assets.service import gc_expired_staged, stage_sheets
 
-    content = await file.read()
-    if len(content) > 250 * 1024 * 1024:  # 250 MB guard
-        raise HTTPException(status_code=400, detail="File too large (max 250 MB)")
-
+    max_bytes = settings.MANUAL_UPLOAD_MAX_BYTES
+    max_mb = max_bytes // (1024 * 1024)
     try:
-        if ext in ('.xlsx', '.xls'):
-            sheets = _parse_excel_bytes(content)
-        else:
-            sheets = _parse_csv_bytes(content, file.filename or 'data')
-    except Exception as e:
-        logger.error(f"File parse error: {e}")
-        raise HTTPException(status_code=422, detail=f"Failed to parse file: {str(e)}")
+        ext = check_extension(file.filename)
+    except ManualUploadError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)})
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > max_bytes + 64 * 1024:
+        raise HTTPException(status_code=413, detail={"code": "file_too_large", "message": f"File is larger than {max_mb} MB."})
 
-    total_rows = sum(len(v['rows']) for v in sheets.values())
-    logger.info(f"Parsed '{file.filename}': {len(sheets)} sheet(s), {total_rows} total rows")
-    return {'filename': file.filename, 'sheets': sheets}
+    spool = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+    try:
+        total = 0
+        while True:
+            chunk = await file.read(_MANUAL_UPLOAD_CHUNK)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise HTTPException(status_code=413, detail={"code": "file_too_large", "message": f"File is larger than {max_mb} MB."})
+            spool.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=422, detail={"code": "empty_file", "message": "The file is empty."})
+        spool.seek(0)
+        try:
+            _, sheets = parse_file(spool, file.filename)
+        except ManualUploadError as exc:
+            raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)})
+        except Exception:
+            logger.warning("manual_upload.parse_failed ext=%s", ext, exc_info=True)
+            raise HTTPException(status_code=422, detail={"code": "invalid_file", "message": "The file could not be read. Check that it is a valid .csv or .xlsx file."})
+    finally:
+        spool.close()
+        await file.close()
+
+    if not sheets:
+        raise HTTPException(status_code=422, detail={"code": "no_sheets", "message": "The file contains no sheets."})
+    media_type = (
+        "text/csv" if ext == ".csv"
+        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    try:
+        gc_expired_staged(db)
+        staged = stage_sheets(db, sheets, owner_id=current_user.id, filename=file.filename, media_type=media_type)
+        db.commit()
+    except Exception:
+        db.rollback()  # removes any file written for this upload
+        logger.error("manual_upload.stage_failed", exc_info=True)
+        raise HTTPException(status_code=500, detail={"code": "storage_failed", "message": "The file could not be stored. Try again."})
+
+    total_rows = sum(v["row_count"] for v in staged.values())
+    logger.info("manual_upload.staged sheets=%s rows=%s bytes=%s", len(staged), total_rows, total)
+    return {
+        "filename": file.filename,
+        "sheets": staged,
+        "limits": {
+            "max_bytes": max_bytes,
+            "max_rows": settings.MANUAL_UPLOAD_MAX_ROWS,
+            "max_columns": settings.MANUAL_UPLOAD_MAX_COLUMNS,
+            "preview_rows": settings.MANUAL_UPLOAD_PREVIEW_ROWS,
+        },
+    }
 
 
 @router.get("/", response_model=List[DataSourceResponse])
@@ -383,6 +438,9 @@ def create_data_source(
             current_user=current_user,
             db=db,
         )
+        data_source.config = _enforce_platform_gcp_policy(
+            data_source.type.value, data_source.config, current_user,
+        )
         _validate_datasource_connection_or_raise(data_source.type.value, data_source.config)
         created = DataSourceCRUDService.create(db, data_source, owner_id=current_user.id)
         created.user_permission = get_effective_permission(db, current_user, created, "data_sources")
@@ -422,8 +480,11 @@ def update_data_source(
                 db=db,
                 existing_config=ds.config,
             )
+            data_source_update.config = _enforce_platform_gcp_policy(
+                next_type, data_source_update.config, current_user, existing_config=ds.config,
+            )
             _validate_datasource_connection_or_raise(next_type, data_source_update.config)
-        data_source = DataSourceCRUDService.update(db, data_source_id, data_source_update)
+        data_source = DataSourceCRUDService.update(db, data_source_id, data_source_update, actor_id=current_user.id)
         if data_source is not None:
             data_source.user_permission = get_effective_permission(db, current_user, data_source, "data_sources")
             stamp_owner_emails(db, [data_source])
@@ -519,46 +580,91 @@ def delete_data_source(
         )
 
 
-@router.post("/test", response_model=DataSourceTestResponse)
-def test_data_source_connection(
-    request: DataSourceTestRequest,
+@router.post("/test-draft", response_model=DataSourceTestResponse)
+def test_draft_data_source_connection(
+    request: DataSourceDraftTestRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("data_sources", "view")),
+    current_user: User = Depends(require_permission("data_sources", "edit")),
 ):
-    """Test a data source connection."""
-    config = dict(request.config)
+    """Test a config that is not (yet) saved — the create/edit form.
 
-    # When editing an existing datasource, sensitive fields are cleared to ''
-    # by the frontend (sanitizeConfigForForm strips the '__stored__' sentinel).
-    # Re-fill them from the DB so the real (encrypted) credentials are used.
-    db_ds = None
+    Module `edit` is required. A blank or masked secret is NOT a secret, unless
+    `data_source_id` is given; then the caller needs object `edit` on that source,
+    the type must equal the persisted type, and every destination field (host,
+    port, database, username, schema, project, spreadsheet, dataset, auth mode,
+    Google identity) must equal the persisted value — a stored secret is never
+    paired with a destination the caller chose (spec: draft test invariant)."""
+    ds_type = request.type.value
+    config = dict(request.config or {})
+    from app.services.datasource_service import PLATFORM_GCP_APPROVAL_FIELD
+    config.pop(PLATFORM_GCP_APPROVAL_FIELD, None)
+
+    existing_config = None
     if request.data_source_id is not None:
         db_ds = DataSourceCRUDService.get_by_id(db, request.data_source_id)
         if db_ds is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Data source not found")
-        # SECURITY: rehydrating THIS datasource's stored secrets requires resource
-        # access to it — module-level "view" is NOT enough. Without this, a user
-        # with no access to datasource A could pass its id + a caller-chosen host
-        # and have A's stored credentials rehydrated into a connection attempt
-        # (IDOR credential reuse). Checked BEFORE any secret is restored.
-        require_view_access(db, current_user, db_ds, "data_sources")
-        if db_ds.config:
-            config = _restore_sensitive_config_fields(config, db_ds.config)
+        # Checked BEFORE any stored secret is looked at.
+        require_edit_access(db, current_user, db_ds, "data_sources")
+        persisted_type = db_ds.type.value if hasattr(db_ds.type, "value") else str(db_ds.type)
+        stored = dict(db_ds.config or {})
+        if _reuses_stored_secret(config, stored):
+            if persisted_type != ds_type:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A stored credential can only be tested against its own source type.",
+                )
+            changed = [
+                f for f in _DESTINATION_FIELDS
+                if f in config and _norm_dest(config.get(f)) != _norm_dest(stored.get(f))
+            ]
+            if changed:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "The connection details changed, so the stored credential cannot be reused. "
+                        "Enter the credential again to test the new destination."
+                    ),
+                )
+            config = _restore_sensitive_config_fields(config, stored)
+            existing_config = stored
+            if stored.get(PLATFORM_GCP_APPROVAL_FIELD):
+                config[PLATFORM_GCP_APPROVAL_FIELD] = stored[PLATFORM_GCP_APPROVAL_FIELD]
+        else:
+            config = _strip_unset_secrets(config)
+    else:
+        config = _strip_unset_secrets(config)
 
     config = _normalize_google_oauth_config(
         config,
         current_user=current_user,
-        existing_config=db_ds.config if request.data_source_id is not None and db_ds else None,
+        existing_config=existing_config,
     )
+    config = _enforce_platform_gcp_policy(ds_type, config, current_user, existing_config)
 
-    success, message = DataSourceConnectionService.test_connection(
-        request.type.value,
-        config
-    )
-    # Central redaction: never return a raw driver message that could carry a
-    # secret value to the client (the config holds this test's secrets).
+    success, message = DataSourceConnectionService.test_connection(ds_type, config)
+    # Central redaction: never return a raw driver message.
     if not success and message:
-        from app.services.source_errors import describe_source_error
+        message = describe_source_error(message, config)
+    return DataSourceTestResponse(success=success, message=message)
+
+
+@router.post("/{data_source_id}/test", response_model=DataSourceTestResponse)
+def test_saved_data_source_connection(
+    data_source_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retest a SAVED source. Object `edit` required. Type, destination and
+    secret come ONLY from the persisted row — the request carries nothing."""
+    db_ds = DataSourceCRUDService.get_by_id(db, data_source_id)
+    if db_ds is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Data source not found")
+    require_edit_access(db, current_user, db_ds, "data_sources")
+    ds_type = db_ds.type.value if hasattr(db_ds.type, "value") else str(db_ds.type)
+    config = dict(db_ds.config or {})
+    success, message = DataSourceConnectionService.test_connection(ds_type, config)
+    if not success and message:
         message = describe_source_error(message, config)
     return DataSourceTestResponse(success=success, message=message)
 
@@ -578,27 +684,31 @@ def execute_query(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Data source with ID {body.data_source_id} not found"
         )
-    require_view_access(db, current_user, data_source, "data_sources")
+    # Raw SQL against a source = object edit (spec permission mapping).
+    require_edit_access(db, current_user, data_source, "data_sources")
 
     try:
-        columns, data, execution_time_ms = DataSourceConnectionService.execute_query(
+        result = DataSourceConnectionService.execute_user_query(
             data_source.type.value,
             data_source.config,
             body.sql_query,
             body.limit,
             timeout_seconds=body.timeout_seconds or 30,
         )
-        
+
         return QueryExecuteResponse(
-            columns=columns,
-            data=data,
-            row_count=len(data),
-            execution_time_ms=execution_time_ms
+            columns=result["columns"],
+            data=result["data"],
+            row_count=len(result["data"]),
+            execution_time_ms=result["execution_time_ms"],
+            truncated=result["truncated"],
+            row_limit=result["row_limit"],
         )
     except Exception as e:
         # No logger.exception: the traceback would carry the raw driver message.
-        logger.error("Query execution failed for datasource %s: %s",
-                     body.data_source_id, describe_source_error(e, data_source.config))
+        logger.error("Query execution failed source_id=%s provider=%s cause=%s",
+                     body.data_source_id, data_source.type.value,
+                     describe_source_error(e, data_source.config))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_build_query_error_detail(e, data_source.config),
@@ -625,7 +735,8 @@ def validate_sql(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Data source with ID {body.data_source_id} not found",
         )
-    require_view_access(db, current_user, data_source, "data_sources")
+    # Raw SQL against a source = object edit (spec permission mapping).
+    require_edit_access(db, current_user, data_source, "data_sources")
 
     ds_type = (
         data_source.type if isinstance(data_source.type, str) else data_source.type.value
@@ -639,15 +750,10 @@ def validate_sql(
     except QueryValidationError as exc:
         return SqlValidateResponse(valid=False, error=str(exc), dialect=ds_type)
 
-    # Dry-run: execute with LIMIT 0 to let the DB parse without returning rows
+    # Parse/plan without running the statement in full: LIMIT 0 wrapper in a
+    # READ ONLY transaction (PG/MySQL) or a BigQuery dry run.
     try:
-        DataSourceConnectionService.execute_query(
-            ds_type,
-            data_source.config,
-            cleaned,
-            limit=1,
-            timeout_seconds=10,
-        )
+        DataSourceConnectionService.validate_user_sql(ds_type, data_source.config, cleaned)
         return SqlValidateResponse(valid=True, error=None, dialect=ds_type)
     except Exception as exc:
         error_msg = describe_source_error(exc, data_source.config)
@@ -793,7 +899,8 @@ def create_gsheets_tab(
     sheet is immediately ready for workboard form submissions.
     """
     connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
-    require_edit_access(db, current_user, ds, "data_sources")
+    # Direct upstream Sheets mutation = object full (spec permission mapping).
+    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.create_sheet(spreadsheet_id, body.sheet_name, body.headers)
         return {"spreadsheet_id": spreadsheet_id, **result}
@@ -857,7 +964,8 @@ def append_gsheets_row(
     Columns not present in the payload receive an empty string.
     """
     connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
-    require_edit_access(db, current_user, ds, "data_sources")
+    # Direct upstream Sheets mutation = object full (spec permission mapping).
+    require_full_access(db, current_user, ds, "data_sources")
     try:
         row = connector.append_row(spreadsheet_id, sheet_name, body.values)
         return {"ok": True, "sheet_name": sheet_name, "row": row}
@@ -881,7 +989,8 @@ def append_gsheets_rows_batch(
     All rows are written in one Google Sheets API request.
     """
     connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
-    require_edit_access(db, current_user, ds, "data_sources")
+    # Direct upstream Sheets mutation = object full (spec permission mapping).
+    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.append_rows(spreadsheet_id, sheet_name, body.rows)
         return {"ok": True, "sheet_name": sheet_name, **result}
@@ -904,7 +1013,8 @@ def import_csv_to_gsheet(
     The first CSV row is treated as the header. Existing data is overwritten.
     """
     connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
-    require_edit_access(db, current_user, ds, "data_sources")
+    # Direct upstream Sheets mutation = object full (spec permission mapping).
+    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.import_csv(spreadsheet_id, sheet_name, body.csv_data)
         return {"ok": True, **result}
@@ -933,7 +1043,8 @@ def update_gsheets_row(
     ``values`` provides the columns to overwrite; other columns are unchanged.
     """
     connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
-    require_edit_access(db, current_user, ds, "data_sources")
+    # Direct upstream Sheets mutation = object full (spec permission mapping).
+    require_full_access(db, current_user, ds, "data_sources")
     try:
         row = connector.update_row_by_pk(spreadsheet_id, sheet_name, body.pk, body.values)
         return {"ok": True, "sheet_name": sheet_name, "row": row}
@@ -966,7 +1077,8 @@ def delete_gsheets_row(
 ):
     """Delete a row from a sheet tab identified by a primary-key dict."""
     connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
-    require_edit_access(db, current_user, ds, "data_sources")
+    # Direct upstream Sheets mutation = object full (spec permission mapping).
+    require_full_access(db, current_user, ds, "data_sources")
     try:
         row_num = connector.delete_row_by_pk(spreadsheet_id, sheet_name, body.pk)
         return {"ok": True, "sheet_name": sheet_name, "deleted_row": row_num}
@@ -986,7 +1098,8 @@ def rename_gsheets_column(
 ):
     """Rename a column header (row 1 cell) in a GSheet tab."""
     connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
-    require_edit_access(db, current_user, ds, "data_sources")
+    # Direct upstream Sheets mutation = object full (spec permission mapping).
+    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.rename_column(spreadsheet_id, sheet_name, body.old_name, body.new_name)
         return {"ok": True, **result}
@@ -1006,7 +1119,8 @@ def rename_gsheets_tab(
 ):
     """Rename a GSheet tab (changes the tab title in the spreadsheet)."""
     connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
-    require_edit_access(db, current_user, ds, "data_sources")
+    # Direct upstream Sheets mutation = object full (spec permission mapping).
+    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.rename_tab(spreadsheet_id, sheet_name, body.new_name)
         return {"ok": True, **result}
@@ -1025,7 +1139,8 @@ def clear_gsheets_rows(
 ):
     """Clear all data rows (row 2+) from a GSheet tab, preserving the header row."""
     connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
-    require_edit_access(db, current_user, ds, "data_sources")
+    # Direct upstream Sheets mutation = object full (spec permission mapping).
+    require_full_access(db, current_user, ds, "data_sources")
     try:
         result = connector.clear_data_rows(spreadsheet_id, sheet_name)
         return {"ok": True, **result}

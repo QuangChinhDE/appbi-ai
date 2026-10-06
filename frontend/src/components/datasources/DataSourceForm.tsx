@@ -8,11 +8,27 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { DataSourceType, DataSourceCreate } from '@/types/api';
 import { Loader2, UploadCloud, FileSpreadsheet, X, CheckCircle, AlertCircle, Radio, WifiOff, Eye, EyeOff } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
+import type { ManualColumn, ManualParseFileResponse, ManualSheetRef } from '@/lib/api/datasources';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 
 // Type shared with backend response
-type SheetData = { columns: { name: string; type: string }[]; rows: Record<string, any>[] };
+// Preview only: full rows stay on the server (Parquet asset); the form keeps
+// metadata + a bounded preview, and config holds asset references.
+type SheetData = { columns: ManualColumn[]; row_count: number; preview_rows: Record<string, any>[] };
+
+function sheetsFromConfig(cfgSheets: Record<string, any>): Record<string, SheetData> {
+  const out: Record<string, SheetData> = {};
+  for (const [name, v] of Object.entries(cfgSheets || {})) {
+    const legacyRows: Record<string, any>[] = Array.isArray(v?.rows) ? v.rows : [];
+    out[name] = {
+      columns: Array.isArray(v?.columns) ? v.columns : [],
+      row_count: typeof v?.row_count === 'number' ? v.row_count : legacyRows.length,
+      preview_rows: legacyRows.slice(0, 5),
+    };
+  }
+  return out;
+}
 type GoogleDataAccessStatus = {
   configured: boolean;
   connected: boolean;
@@ -106,10 +122,10 @@ export default function DataSourceForm({
     const cfg = initialData?.config;
     if (!cfg) return null;
     if (cfg.sheets && Object.keys(cfg.sheets).length > 0) {
-      return { filename: '(imported file)', sheets: cfg.sheets, activeSheet: Object.keys(cfg.sheets)[0] };
+      return { filename: '(imported file)', sheets: sheetsFromConfig(cfg.sheets), activeSheet: Object.keys(cfg.sheets)[0] };
     }
     if (cfg.columns?.length) {
-      return { filename: '(imported file)', sheets: { manual_data: { columns: cfg.columns, rows: cfg.rows || [] } }, activeSheet: 'manual_data' };
+      return { filename: '(imported file)', sheets: sheetsFromConfig({ manual_data: { columns: cfg.columns, rows: cfg.rows || [] } }), activeSheet: 'manual_data' };
     }
     return null;
   });
@@ -208,8 +224,10 @@ export default function DataSourceForm({
 
   const handleFileImport = async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase();
-    if (!['csv', 'xlsx', 'xls'].includes(ext ?? '')) {
-      setUploadError('Unsupported file type. Please upload a .csv, .xlsx, or .xls file.');
+    if (!['csv', 'xlsx'].includes(ext ?? '')) {
+      setUploadError(ext === 'xls'
+        ? 'File .xls (Excel 97-2003) không được hỗ trợ — hãy lưu lại thành .xlsx rồi tải lên.'
+        : 'Định dạng không hỗ trợ. Hãy tải lên file .csv hoặc .xlsx.');
       return;
     }
     setIsUploading(true);
@@ -224,12 +242,22 @@ export default function DataSourceForm({
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail ?? 'Upload failed');
+        const detail = err.detail;
+        const message = typeof detail === 'string' ? detail : detail?.message;
+        throw new Error(
+          message ?? (res.status === 413 ? 'File quá lớn (tối đa 50 MB).' : 'Upload failed'),
+        );
       }
-      const data: { filename: string; sheets: Record<string, SheetData> } = await res.json();
+      const data: ManualParseFileResponse = await res.json();
       const activeSheet = Object.keys(data.sheets)[0] ?? '';
-      setImportPreview({ filename: data.filename, sheets: data.sheets, activeSheet });
-      setConfig({ sheets: data.sheets });
+      const previewSheets: Record<string, SheetData> = {};
+      const refs: Record<string, ManualSheetRef> = {};
+      for (const [name, sh] of Object.entries(data.sheets)) {
+        previewSheets[name] = { columns: sh.columns, row_count: sh.row_count, preview_rows: sh.preview_rows };
+        refs[name] = { asset_id: sh.asset_id, columns: sh.columns, row_count: sh.row_count };
+      }
+      setImportPreview({ filename: data.filename, sheets: previewSheets, activeSheet });
+      setConfig({ sheets: refs });
       setConfigModified(true);
     } catch (e: any) {
       setUploadError(e.message ?? 'Failed to parse file');
@@ -871,13 +899,13 @@ export default function DataSourceForm({
               : <><UploadCloud className={`w-10 h-10 ${isDragOver ? 'text-brand' : 'text-text-quaternary'}`} />
                   <div className="text-center">
                     <p className="text-sm font-medium text-text-secondary">Kéo thả file vào đây, hoặc click để chọn</p>
-                    <p className="text-xs text-text-tertiary mt-1">Hỗ trợ: .csv, .xlsx, .xls · Excel nhiều sheet sẽ được import tất cả</p>
+                    <p className="text-xs text-text-tertiary mt-1">Hỗ trợ: .csv, .xlsx (tối đa 50 MB) · Excel nhiều sheet sẽ được import tất cả</p>
                   </div></>
             }
             <input
               ref={fileInputRef}
               type="file"
-              accept=".csv,.xlsx,.xls"
+              accept=".csv,.xlsx"
               className="hidden"
               onChange={e => {
                 const file = e.target.files?.[0];
@@ -934,7 +962,7 @@ export default function DataSourceForm({
                         }`}
                       >
                         {s}
-                        <span className="ml-1.5 text-text-quaternary">{importPreview.sheets[s].rows.length}</span>
+                        <span className="ml-1.5 text-text-quaternary">{importPreview.sheets[s].row_count}</span>
                       </button>
                     ))}
                   </div>
@@ -944,7 +972,7 @@ export default function DataSourceForm({
                 <div className="p-3 space-y-2">
                   <div className="flex gap-4 text-xs text-success">
                     <span><strong>{active.columns.length}</strong> cột</span>
-                    <span><strong>{active.rows.length}</strong> dòng dữ liệu</span>
+                    <span><strong>{active.row_count}</strong> dòng dữ liệu</span>
                   </div>
                   {/* Column tags */}
                   <div className="flex flex-wrap gap-1.5">
@@ -955,7 +983,7 @@ export default function DataSourceForm({
                     ))}
                   </div>
                   {/* Data preview */}
-                  {active.rows.length > 0 && (
+                  {active.preview_rows.length > 0 && (
                     <div className="overflow-x-auto rounded border border-success/30 bg-surface-1">
                       <table className="text-xs w-full">
                         <thead className="bg-surface-2">
@@ -966,7 +994,7 @@ export default function DataSourceForm({
                           </tr>
                         </thead>
                         <tbody>
-                          {active.rows.slice(0, 5).map((row, i) => (
+                          {active.preview_rows.slice(0, 5).map((row, i) => (
                             <tr key={i} className="border-b last:border-0">
                               {active.columns.map(col => (
                                 <td key={col.name} className="px-3 py-1.5 text-text-secondary whitespace-nowrap max-w-[140px] truncate">
@@ -977,8 +1005,8 @@ export default function DataSourceForm({
                           ))}
                         </tbody>
                       </table>
-                      {active.rows.length > 5 && (
-                        <p className="text-xs text-text-quaternary px-3 py-1.5">... và {active.rows.length - 5} dòng nữa</p>
+                      {active.row_count > 5 && (
+                        <p className="text-xs text-text-quaternary px-3 py-1.5">... và {active.row_count - 5} dòng nữa</p>
                       )}
                     </div>
                   )}

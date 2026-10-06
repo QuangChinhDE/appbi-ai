@@ -185,11 +185,7 @@ export default function DataSourcesPage() {
 
   const handleTest = async (dataSource: DataSource) => {
     try {
-      const result = await testMutation.mutateAsync({
-        type: dataSource.type,
-        config: dataSource.config,
-        data_source_id: dataSource.id,
-      });
+      const result = await testMutation.mutateAsync({ id: dataSource.id });
       if (result.success) {
         toast.success(`Connection successful: ${result.message}`);
       } else {
