@@ -170,6 +170,16 @@ def capabilities(db, user, resource, actions: Optional[Iterable[Action]] = None)
     return {a.value: eff >= LEVEL_ORDER[table[a]] for a in acts if a in table}
 
 
+def capabilities_for_level(level: str | None) -> Dict[str, bool]:
+    """Generic-resource capabilities from an effective level the caller already
+    computed (no query). The level -> action table stays HERE, so no endpoint
+    or page compares levels itself."""
+    from app.core.dependencies import LEVEL_ORDER
+
+    eff = LEVEL_ORDER.get(level or "none", 0)
+    return {a.value: eff >= LEVEL_ORDER[need] for a, need in _GENERIC_NEEDS.items()}
+
+
 def scope(db, user, model):
     """Rows of ``model`` the caller may READ - the same policy as ``can(READ)``."""
     from app.core.authz.registry import spec_for_model

@@ -18,6 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from app.services.audit_service import audit
+from app.models.audit_log import AuditAction
 from app.core.database import get_db
 from app.core.dependencies import (
     require_edit_access,
@@ -274,6 +276,7 @@ def update_workspace(
 @router.post("/{workspace_id}/rotate-token", response_model=WorkspaceAdminResponse)
 def rotate_token(
     workspace_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("workboards", "edit")),
 ):
@@ -281,6 +284,8 @@ def rotate_token(
     ws.token = secrets.token_urlsafe(24)
     db.commit()
     db.refresh(ws)
+    audit(db, AuditAction.WORKSPACE_TOKEN_ROTATED, request=request, user_id=user.id,
+          resource_type="workspace", resource_id=str(ws.id))
     return _serialise(ws)
 
 

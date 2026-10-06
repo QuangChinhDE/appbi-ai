@@ -128,7 +128,7 @@ def check_destination(host: str | None, port: int | None, *, private_cidrs: Iter
 
 # ── HTTP ─────────────────────────────────────────────────────────────────────
 
-def _http_check(url: str):
+def _http_check(url: str, *, public_only: bool = False):
     parts = urlsplit(str(url or "").strip())
     if parts.scheme not in ("http", "https"):
         raise EgressDenied("only http(s) URLs are allowed")
@@ -137,7 +137,8 @@ def _http_check(url: str):
     if not parts.hostname:
         raise EgressDenied("URL has no host")
     port = parts.port or (443 if parts.scheme == "https" else 80)
-    ip = check_destination(parts.hostname, port, private_cidrs=_cidrs("EGRESS_HTTP_ALLOW_CIDRS"))
+    ip = check_destination(parts.hostname, port,
+                           private_cidrs=() if public_only else _cidrs("EGRESS_HTTP_ALLOW_CIDRS"))
     return parts, ip, port
 
 
@@ -167,6 +168,23 @@ def http_post(url: str, *, timeout: float = 10.0, **kwargs):
     headers["Host"] = host_header
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         return client.post(pinned_url, headers=headers, extensions=ext, **kwargs)
+
+
+def http_get(url: str, *, timeout: float = 20.0, public_only: bool = False, **kwargs):
+    """``httpx.get`` through the egress policy, like :func:`http_post`: one
+    resolution, connection pinned to the checked address (no DNS-rebinding
+    window), redirects never followed - a caller that follows them must send
+    every hop back through here. ``public_only`` refuses private ranges even
+    when EGRESS_HTTP_ALLOW_CIDRS admits them: for URLs a user or a model picks."""
+    import httpx
+
+    parts, ip, port = _http_check(url, public_only=public_only)
+    pinned_url, host_header, ext = _pinned(parts, ip, port)
+    headers = dict(kwargs.pop("headers", None) or {})
+    headers["Host"] = host_header
+    kwargs.pop("follow_redirects", None)
+    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+        return client.get(pinned_url, headers=headers, extensions=ext, **kwargs)
 
 
 async def http_post_async(client, url: str, **kwargs):

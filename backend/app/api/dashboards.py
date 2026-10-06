@@ -6,6 +6,8 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
+from app.models.audit_log import AuditAction
+from app.services.audit_service import audit
 from app.services.report_pptx_service import ReportPptxRequest
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
@@ -2670,6 +2672,19 @@ def fork_tile_chart_for_report(
     source = db.query(Chart).filter(Chart.id == row.chart_id).first()
     if source is not None:
         require_view_access(db, current_user, source, "explore_charts")
+    # The copy is bound to the table the BODY names: that is building content
+    # from its dataset, exactly as PUT /charts/{id} judges it - BUILD to bind a
+    # different table, READ to keep the source chart's own table. Custom SQL is
+    # datasource authority on top (services/chart_sql_authority.py).
+    from app.services.chart_sql_authority import require_custom_sql_authority
+
+    target = db.get(DatasetTable, request.dataset_table_id)
+    target_dataset = db.get(Dataset, target.dataset_id) if target is not None else None
+    if target_dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset table not found")
+    rebinding = source is None or request.dataset_table_id != source.dataset_table_id
+    _authz.require(db, current_user, _authz.Action.BUILD if rebinding else _authz.Action.READ, target_dataset)
+    require_custom_sql_authority(db, current_user, request.dataset_table_id, request.config)
     try:
         fork_chart_for_report(db, dash, row, payload=request, user=current_user)
         db.commit()
@@ -3412,6 +3427,7 @@ def _refuse_unappliable_link_filters(filters_config) -> None:
 def create_public_link(
     dashboard_id: int,
     request: PublicLinkCreate,
+    http_request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -3434,6 +3450,9 @@ def create_public_link(
     db.add(link)
     db.commit()
     db.refresh(link)
+    audit(db, AuditAction.PUBLIC_LINK_CREATED, request=http_request, user_id=current_user.id,
+          resource_type="dashboard", resource_id=str(dashboard_id),
+          details={"link_id": link.id, "has_password": bool(link.password_hash)})
     return _sanitize_link_for_admin(link)
 
 
@@ -3523,6 +3542,7 @@ def update_public_link(
     dashboard_id: int,
     link_id: int,
     request: PublicLinkUpdate,
+    http_request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -3590,6 +3610,10 @@ def update_public_link(
     # next view — never the pre-edit structure for the cache TTL.
     from app.services import query_cache as _qc
     _qc.invalidate_all_public_meta()
+    audit(db, AuditAction.PUBLIC_LINK_UPDATED, request=http_request, user_id=current_user.id,
+          resource_type="dashboard", resource_id=str(dashboard_id),
+          details={"link_id": link.id, "changed": sorted(request.model_fields_set),
+                   "is_active": bool(link.is_active)})
     return _sanitize_link_for_admin(link)
 
 
@@ -3597,6 +3621,7 @@ def update_public_link(
 def delete_public_link(
     dashboard_id: int,
     link_id: int,
+    http_request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -3621,6 +3646,8 @@ def delete_public_link(
     db.commit()
     from app.services import query_cache as _qc
     _qc.invalidate_all_public_meta()
+    audit(db, AuditAction.PUBLIC_LINK_DELETED, request=http_request, user_id=current_user.id,
+          resource_type="dashboard", resource_id=str(dashboard_id), details={"link_id": link_id})
     return {"deleted": True}
 
 

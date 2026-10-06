@@ -125,10 +125,15 @@ def main() -> int:
         db.add(app_user)
 
         hook = "https://hooks.example.com/services/sec"
-        g_channel = ObservabilityAlertChannel(kind="webhook", name="global", target=hook, scope="global",
-                                              dataset_id=None, owner_id=admin.id)
-        d_channel = ObservabilityAlertChannel(kind="webhook", name="ds", target=hook, scope="dataset",
-                                              dataset_id=ds.id, owner_id=owner.id)
+        # `scope` only where the column exists, so the same seed also runs on the
+        # pre-remediation base (fail-first evidence).
+        def channel(scope, **kw):
+            if hasattr(ObservabilityAlertChannel, "scope"):
+                kw["scope"] = scope
+            return ObservabilityAlertChannel(kind="webhook", target=hook, **kw)
+
+        g_channel = channel("global", name="global", dataset_id=None, owner_id=admin.id)
+        d_channel = channel("dataset", name="ds", dataset_id=ds.id, owner_id=owner.id)
         db.add_all([g_channel, d_channel])
 
         flow_key = f"sec_flow_{run}"

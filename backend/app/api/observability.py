@@ -21,6 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.services.audit_service import audit
+from app.models.audit_log import AuditAction
 from app.core import get_db
 from app.core.dependencies import (
     get_current_user,
@@ -196,6 +198,7 @@ def _is_obs_admin(user: User) -> bool:
 
 @router.post("/scan")
 def scan(
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
@@ -205,6 +208,8 @@ def scan(
     datasets and push alerts to their channels. Observability admins only."""
     if not _is_obs_admin(user):
         raise HTTPException(status_code=403, detail="A tenant-wide scan is an Observability administrator action.")
+    audit(db, AuditAction.OBSERVABILITY_GLOBAL_SCAN, request=request, user_id=user.id,
+          resource_type="observability", resource_id="global")
     return ObservabilityService.scan_all(db)
 
 
@@ -321,6 +326,7 @@ def list_alert_channels(
 @router.post("/alert-channels", status_code=201)
 def create_alert_channel(
     payload: AlertChannelCreate,
+    request: Request,
     db: Session = Depends(get_db),
     # Router gate already required observability:edit. Alert channels belong to
     # THIS module, so they are granted by its own key rather than by `datasets`;
@@ -348,12 +354,16 @@ def create_alert_channel(
     db.add(ch)
     db.commit()
     db.refresh(ch)
+    audit(db, AuditAction.ALERT_CHANNEL_CREATED, request=request, user_id=user.id,
+          resource_type="alert_channel", resource_id=str(ch.id),
+          details={"kind": ch.kind, "scope": scope, "dataset_id": ch.dataset_id})
     return _channel_dict(ch, reveal_target=True, can_manage=True)
 
 
 @router.patch("/alert-channels/{channel_id}")
 def update_alert_channel(
     channel_id: int, payload: AlertChannelUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
@@ -369,27 +379,38 @@ def update_alert_channel(
         ch.is_active = payload.is_active
     db.commit()
     db.refresh(ch)
+    audit(db, AuditAction.ALERT_CHANNEL_UPDATED, request=request, user_id=user.id,
+          resource_type="alert_channel", resource_id=str(ch.id),
+          details={"changed": sorted(payload.model_dump(exclude_unset=True)),
+                   "target_changed": payload.target is not None})
     return _channel_dict(ch, reveal_target=True, can_manage=True)
 
 
 @router.delete("/alert-channels/{channel_id}", status_code=204)
 def delete_alert_channel(
     channel_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     ch = _load_channel_for_manage(db, user, channel_id)
+    details = {"kind": ch.kind, "scope": getattr(ch, "scope", None), "dataset_id": ch.dataset_id}
     db.delete(ch)
     db.commit()
+    audit(db, AuditAction.ALERT_CHANNEL_DELETED, request=request, user_id=user.id,
+          resource_type="alert_channel", resource_id=str(channel_id), details=details)
 
 
 @router.post("/alert-channels/{channel_id}/test")
 def test_alert_channel(
     channel_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     ch = _load_channel_for_manage(db, user, channel_id)
     from app.services.observability_notifier import test_channel
     ok, err = test_channel(db, ch)
+    audit(db, AuditAction.ALERT_CHANNEL_TESTED, request=request, user_id=user.id,
+          resource_type="alert_channel", resource_id=str(ch.id), details={"ok": bool(ok)})
     return {"ok": ok, "error": err, "channel": _channel_dict(ch, reveal_target=True, can_manage=True)}

@@ -23,7 +23,7 @@ import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { useCharts } from '@/hooks/use-charts';
 import { useDashboards } from '@/hooks/use-dashboards';
 import { useDataSources } from '@/hooks/use-datasources';
-import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { getResourcePermissions, accessTier } from '@/hooks/use-resource-permission';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
@@ -274,7 +274,7 @@ export default function DatasetsPage() {
             )}
             {listFilters.access && (
               <FilterTag tone="info" active onClick={() => toggleListFilter('access', listFilters.access!)}>
-                {listFilters.access === 'full'
+                {listFilters.access === 'manage'
                   ? 'Full access'
                   : listFilters.access === 'edit'
                     ? 'Editable'
@@ -323,7 +323,7 @@ export default function DatasetsPage() {
             return (
               matchesSearch &&
               (!listFilters.docs || docState === listFilters.docs) &&
-              (!listFilters.access || (dataset.user_permission ?? 'none') === listFilters.access) &&
+              (!listFilters.access || accessTier(dataset.user_permission, dataset.capabilities) === listFilters.access) &&
               (!listFilters.owner || dataset.owner_email === listFilters.owner) &&
               matchesRelatedFilters(relations, {
                 dashboard: listFilters.dashboard,
@@ -490,7 +490,7 @@ export default function DatasetsPage() {
                         <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
                           {pageItems.map((dataset: any) => {
                     const docState = dataset.description?.trim() ? 'documented' : 'undocumented';
-                    const accessState = dataset.user_permission ?? 'none';
+                    const accessState = accessTier(dataset.user_permission, dataset.capabilities);
 
                     return (
                       <tr key={dataset.id} className="hover:bg-surface-2">
@@ -531,7 +531,7 @@ export default function DatasetsPage() {
                             >
                               {docState === 'documented' ? 'Documented' : 'Needs notes'}
                             </FilterTag>
-                            {accessState !== 'full' && (
+                            {accessState !== 'manage' && (
                               <FilterTag
                                 tone={accessState === 'edit' ? 'info' : 'neutral'}
                                 active={listFilters.access === accessState}

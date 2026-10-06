@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.services.chart_sql_authority import require_custom_sql_authority
 from app.core import get_db
 from app.core.dependencies import (
     module_floor,
@@ -401,6 +402,7 @@ def ai_chart_preview(
     })
     chart_config = {**{k: v for k, v in config.items() if k not in ("dimensions", "metrics", "limit")},
                     "roleConfig": role_config}
+    require_custom_sql_authority(db, current_user, payload.dataset_table_id, chart_config)
     # The preview runs the config that is saved (its filters, sort, data limit),
     # read as a table of its columns.
     preview_config = {**chart_config, "roleConfig": {"selectedColumns": role_config.get("selectedColumns") or [],
@@ -465,6 +467,7 @@ def preview_chart_data(
     """Preview chart runtime for Explore using the saved-chart execution path."""
     dataset_obj, _ = _get_dataset_for_chart_table(db, payload.dataset_table_id)
     _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    require_custom_sql_authority(db, current_user, payload.dataset_table_id, payload.config)
 
     try:
         result = ChartService.preview_chart_data(
@@ -810,6 +813,7 @@ def dry_run_create_chart(
             validation_errors=[f"dataset_table_id: {exc.detail}"],
         )
     _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    require_custom_sql_authority(db, current_user, payload.dataset_table_id, normalized)
 
     runtime_errors: List[str] = []
     runtime_root_cause: Optional[str] = None
@@ -913,6 +917,7 @@ def create_chart(
     try:
         dataset_obj, _ = _get_dataset_for_chart_table(db, chart.dataset_table_id)
         _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)
+        require_custom_sql_authority(db, current_user, chart.dataset_table_id, chart.config)
         new_chart = ChartService.create(db, chart, owner_id=current_user.id)
         new_chart = ChartService.get_by_id(db, new_chart.id)
         if new_chart:
@@ -950,6 +955,14 @@ def update_chart(
         # the read check: the content was built by whoever held build then.
         rebinding = chart_update.dataset_table_id != getattr(chart_obj, "dataset_table_id", None)
         _authz.require(db, current_user, _authz.Action.BUILD if rebinding else _authz.Action.READ, dataset_obj)
+    if chart_update.config is not None or chart_update.dataset_table_id is not None:
+        # Whoever writes custom SQL needs the datasource right themselves; the
+        # owner's right is checked again at every run.
+        require_custom_sql_authority(
+            db, current_user,
+            chart_update.dataset_table_id if chart_update.dataset_table_id is not None else chart_obj.dataset_table_id,
+            chart_update.config if chart_update.config is not None else chart_obj.config,
+        )
     try:
         chart = ChartService.update(db, chart_id, chart_update)
         if chart:
@@ -1043,6 +1056,34 @@ def _parse_role_overrides(overrides: Optional[str]) -> Optional[dict]:
     return out or None
 
 
+def _authorized_role_overrides(db: Session, user: User, chart, overrides: dict) -> dict:
+    """A what-if swap re-queries the chart on ANOTHER field, so it is not
+    covered by holding view on the chart. Allowed when the caller may EXPLORE
+    the chart's dataset (any field), or when every value is an option a bound
+    switcher offers on a dashboard the caller can view that shows this chart -
+    the same rule the public path applies (dashboard_parameters.validate_role_overrides)."""
+    from app.models.models import Dashboard, DashboardChart
+    from app.services.dashboard_parameters import ParameterRefused, dashboard_parameters, validate_role_overrides
+
+    if chart.dataset_table_id is not None:
+        dataset_obj, _ = _get_dataset_for_chart_table(db, chart.dataset_table_id)
+        if _authz.can(db, user, _authz.Action.EXPLORE, dataset_obj):
+            return overrides
+    tiles = db.query(DashboardChart).filter(DashboardChart.chart_id == chart.id).all()
+    for tile in tiles:
+        dash = db.get(Dashboard, tile.dashboard_id)
+        if dash is None or get_effective_permission(db, user, dash, "dashboards") == "none":
+            continue
+        try:
+            allowed = validate_role_overrides(tile, overrides, dashboard_parameters(dash.dashboard_charts or []))
+        except ParameterRefused:
+            continue
+        if allowed:
+            return allowed
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                        detail="This field swap is not offered to you for this chart.")
+
+
 @router.get("/{chart_id}/data", response_model=ChartDataResponse)
 def get_chart_data(
     chart_id: int,
@@ -1072,6 +1113,9 @@ def get_chart_data(
         _dt = DatasetCRUDService.get_table_by_id(db, chart.dataset_table_id)
         if _dt is not None and getattr(_dt, "dataset_id", None) is not None:
             dataset_grants_service.require_view_lineage(db, current_user, _dt.dataset_id)
+
+    if role_overrides:
+        role_overrides = _authorized_role_overrides(db, current_user, chart, role_overrides)
 
     extra_filters = None
     if filters:

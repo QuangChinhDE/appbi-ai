@@ -71,3 +71,26 @@ export function getResourcePermissions(
     level,
   };
 }
+
+/** A list's "access" bucket for one item, for filtering and badges only. */
+export type AccessTier = 'manage' | 'edit' | 'view' | 'none';
+
+/**
+ * The access bucket of a listed resource, read from the backend's
+ * `capabilities` (manage/delete -> manage, edit -> edit, read -> view). The
+ * legacy level is translated here only, for an older response without
+ * capabilities - no page compares levels itself.
+ */
+export function accessTier(
+  userPermission?: string | null,
+  capabilities?: ResourceCapabilities,
+): AccessTier {
+  if (capabilities) {
+    if (capabilities.manage || capabilities.delete) return 'manage';
+    if (capabilities.edit) return 'edit';
+    if (capabilities.read) return 'view';
+    return 'none';
+  }
+  const p = getResourcePermissions(userPermission, null);
+  return p.canDelete ? 'manage' : p.canEdit ? 'edit' : p.canView ? 'view' : 'none';
+}

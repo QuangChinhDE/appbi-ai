@@ -260,6 +260,18 @@ jobs:
           sleep 3
           kill -0 "$(cat ../.artifacts/e2e-pdf-worker.pid)"
 
+      # The authorization release gate may not skip: a security journey that
+      # skips is reported as "not failed" and reads like coverage. No skip,
+      # fixme or only may be added to tests/security (a missing fixture already
+      # FAILS there instead of skipping).
+      - name: Security journeys cannot skip
+        working-directory: e2e
+        run: |
+          if grep -rnE "\.(skip|fixme|only)\(" tests/security; then
+            echo "::error::tests/security must not skip, fixme or only a journey"
+            exit 1
+          fi
+
       - name: Run the suite
         working-directory: e2e
         run: npx playwright test

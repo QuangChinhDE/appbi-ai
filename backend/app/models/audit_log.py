@@ -61,6 +61,18 @@ class AuditAction(str, enum.Enum):
     # audited; a change to what a tile says is.
     DASHBOARD_CONTENT_PROPOSAL_ACCEPTED = "dashboard_content_proposal_accepted"
     DASHBOARD_CONTENT_PROPOSAL_REJECTED = "dashboard_content_proposal_rejected"
+    # Privileged authorization actions (authz remediation, migration 20261008_0006):
+    # who gave or took access, who can be alerted, who rotated an address.
+    DATASET_GRANT_CREATED = "dataset_grant_created"
+    DATASET_GRANT_REVOKED = "dataset_grant_revoked"
+    ALERT_CHANNEL_CREATED = "alert_channel_created"
+    ALERT_CHANNEL_UPDATED = "alert_channel_updated"
+    ALERT_CHANNEL_DELETED = "alert_channel_deleted"
+    ALERT_CHANNEL_TESTED = "alert_channel_tested"
+    OBSERVABILITY_GLOBAL_SCAN = "observability_global_scan"
+    WORKSPACE_TOKEN_ROTATED = "workspace_token_rotated"
+    PUBLIC_LINK_UPDATED = "public_link_updated"
+    SHARE_UPDATED = "share_updated"
 
 
 class AuditSeverity(str, enum.Enum):

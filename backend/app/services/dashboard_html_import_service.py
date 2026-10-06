@@ -5414,6 +5414,9 @@ def build_dashboard_from_import(
             _build_chart_config(plan, resolved_dataset_id),
             auto_generate=True,
         )
+        # Custom SQL is datasource authority, not dataset authority.
+        from app.services.chart_sql_authority import require_custom_sql_authority
+        require_custom_sql_authority(db, current_user, chart_table_id, chart_config)
         db_chart = Chart(
             name=internal_name,
             description=chart_description or None,
@@ -6341,6 +6344,10 @@ def rebuild_dashboard_from_snapshot(
                 current_user.id,
                 _normalize_text(chart_spec.get("name"), max_len=255) or "Imported Chart",
             )
+            # Custom SQL is datasource authority, not dataset authority.
+            from app.services.chart_sql_authority import require_custom_sql_authority
+            require_custom_sql_authority(db, current_user, chart_spec.get("dataset_table_id"),
+                                         chart_spec.get("config") or {})
             new_chart = Chart(
                 name=chart_name,
                 description=_normalize_text(chart_spec.get("description"), max_len=1024) or None,

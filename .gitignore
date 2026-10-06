@@ -452,5 +452,8 @@ backend/_verify_gate.db
 !backend/tests/test_authz_token_vector.py
 !backend/tests/test_authz_workspace_session_pg.py
 !backend/tests/test_authz_capabilities_http_pg.py
+!backend/tests/test_authz_chart_sql_http_pg.py
+!backend/tests/test_authz_audit_http_pg.py
+!backend/tests/test_authz_workboard_rows_rls_pg.py
 !backend/tests/test_authz_route_contract.py
 backend/ci_security.db

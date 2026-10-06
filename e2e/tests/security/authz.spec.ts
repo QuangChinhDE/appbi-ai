@@ -264,6 +264,83 @@ test('Agent Flow: a viewer of a flow does not inherit the owner authority', asyn
     { data: { grantee_user_id: fx.users.viewer.id, resource_type: 'dataset', resource_id: fx.dataset.id, actions: ['explore'] } })).status());
 });
 
+test('Dataset across modules: charts, reports and custom SQL each need their own right', async ({ browser }) => {
+  const ds = fx.dataset.id;
+  const t = fx.dataset.table_id;
+  const viewer = await as(browser, 'viewer');
+  const builder = await as(browser, 'builder');
+  const owner = await as(browser, 'owner');
+  const plain = { roleConfig: { selectedColumns: ['id'] } };
+  const custom = { queryMode: 'custom', customSql: 'SELECT current_user', customRoleConfig: {} };
+
+  // view on the dataset builds nothing in another module
+  expect([403, 404]).toContain((await viewer.post(`${V1}/charts/`,
+    { data: { name: `v-${fx.run}`, chart_type: 'TABLE', dataset_table_id: t, config: plain } })).status());
+  expect([403, 404]).toContain((await viewer.post(`${V1}/dashboards/report-starter`,
+    { data: { dataset_id: ds, goal: 'x' } })).status());
+  expect([403, 404]).toContain((await viewer.post(`${V1}/workboards/`,
+    { data: { name: `v-${fx.run}`, dataset_id: ds, primary_table_id: t } })).status());
+  // build does
+  expect((await builder.post(`${V1}/charts/`,
+    { data: { name: `b-${fx.run}`, chart_type: 'TABLE', dataset_table_id: t, config: plain } })).status()).toBe(201);
+  // ... but custom SQL is datasource authority, not dataset authority
+  expect((await builder.post(`${V1}/charts/preview-data`,
+    { data: { dataset_table_id: t, chart_type: 'TABLE', config: custom } })).status()).toBe(403);
+  expect((await builder.post(`${V1}/charts/`,
+    { data: { name: `bs-${fx.run}`, chart_type: 'TABLE', dataset_table_id: t, config: custom } })).status()).toBe(403);
+  // the datasource owner passes the authority check (the unreachable host then fails the query itself)
+  expect((await owner.post(`${V1}/charts/preview-data`,
+    { data: { dataset_table_id: t, chart_type: 'TABLE', config: custom } })).status()).not.toBe(403);
+});
+
+test('Govern: catalog notes follow the dataset; global ones are for admins', async ({ browser }) => {
+  const ds = fx.dataset.id;
+  const owner = await as(browser, 'owner');
+  const unrelated = await as(browser, 'unrelated');
+  const admin = await as(browser, 'admin');
+  const body = { title: `sec ${fx.run}`, content: 'c', dataset_id: ds };
+  expect([403, 404]).toContain((await unrelated.put(`${V1}/catalog/govern/caveats`, { data: body })).status());
+  const made = await owner.put(`${V1}/catalog/govern/caveats`, { data: body });
+  expect(made.status()).toBe(200);
+  const cid = (await made.json()).id;
+  expect([403, 404]).toContain((await unrelated.delete(`${V1}/catalog/govern/caveats/${cid}`)).status());
+  const listed = await (await unrelated.get(`${V1}/catalog/govern/caveats`)).json();
+  expect((listed.caveats || []).map((c: { id: number }) => c.id)).not.toContain(cid);
+  // tenant-wide notes: module administrators only
+  const global = { title: `g ${fx.run}`, content: 'c', dataset_id: null };
+  expect((await owner.put(`${V1}/catalog/govern/caveats`, { data: global })).status()).toBe(403);
+  expect((await admin.put(`${V1}/catalog/govern/caveats`, { data: global })).status()).toBe(200);
+});
+
+// LAST: it revokes the editor's grant and demotes the builder.
+test('PAT demotion: a token never outlives its owner\'s authority', async ({ browser }) => {
+  const ds = fx.dataset.id;
+  const editor = await as(browser, 'editor');
+  const builder = await as(browser, 'builder');
+  const owner = await as(browser, 'owner');
+  const admin = await as(browser, 'admin');
+  const mint = async (who: APIRequestContext, scopes: Record<string, string>) => {
+    const r = await who.post(`${V1}/auth/personal-access-tokens/`,
+      { data: { name: `d-${fx.run}-${Math.random().toString(36).slice(2, 7)}`, scopes, expires_in_days: 7 } });
+    expect(r.status()).toBe(201);
+    return as(browser, null, (await r.json()).token);
+  };
+
+  // (1) the owner of the PAT loses the GRANT
+  const ePat = await mint(editor, { datasets: 'edit' });
+  expect((await ePat.put(`${V1}/datasets/${ds}`, { data: { description: `pat ${fx.run}` } })).status()).toBe(200);
+  expect((await owner.delete(`${V1}/datasets/${ds}/grants?user_id=${fx.users.editor.id}`)).status()).toBe(200);
+  expect([403, 404]).toContain((await ePat.put(`${V1}/datasets/${ds}`, { data: { description: 'x' } })).status());
+  expect([403, 404]).toContain((await ePat.get(`${V1}/datasets/${ds}`)).status());
+
+  // (2) the owner of the PAT is demoted in the MODULE by an administrator
+  const bPat = await mint(builder, { datasets: 'view' });
+  expect((await bPat.get(`${V1}/datasets/${ds}`)).status()).toBe(200);
+  expect((await admin.put(`${V1}/permissions/${fx.users.builder.id}`,
+    { data: { permissions: { datasets: 'none' } } })).status()).toBe(200);
+  expect([401, 403, 404]).toContain((await bPat.get(`${V1}/datasets/${ds}`)).status());
+});
+
 /** A fresh browser context, optionally carrying an access_token cookie for the frontend. */
 async function newPage(browser: Browser, accessCookie?: string): Promise<BrowserContext> {
   const base = new URL(process.env.E2E_BASE_URL || 'http://localhost:3000');

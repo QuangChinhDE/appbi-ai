@@ -145,6 +145,10 @@ Owner = manage. Module admin (`datasets: full`) = manage (`via=module_admin`). L
   - no redirects;
   - errors are sanitized.
 - `POST /datasources/query` requires `explore` on the data source (= edit) and stays select-only.
+- **Arbitrary SQL is datasource authority, wherever it is written.** The same `edit` on the data source is required to:
+  - author or preview a chart in custom-SQL mode (`preview-data`, `dry-run-create`, AI preview/save, create, update, dashboard fork, HTML import) — a dataset grant (explore/build/edit) is **not** enough, because the SQL can read any table the connection reaches;
+  - create or rewrite a `sql_query` dataset table.
+  A saved custom-SQL chart runs (authed and public) only while its **owner** still holds that right (`services/chart_sql_authority.py`); a demoted owner's chart stops with a refusal instead of carrying the authority forever.
 
 ### 9. Observability
 
@@ -172,6 +176,12 @@ Owner = manage. Module admin (`datasets: full`) = manage (`via=module_admin`). L
 - Public-link list masks `token` unless `manage_public_surface`.
 - Snapshot refresh requires `trigger_compute` (= edit) and is rate limited.
 - Embed grant liveness additionally checks that the minting user is active and still holds `manage_public_surface`.
+- **Report fork** (`fork-chart`) binds its copy to the table in the body: `build` on that dataset (or `read` when it keeps the source chart's table), plus the custom-SQL rule above.
+- **What-if field swaps** on the authed `GET /charts/{id}/data?overrides=`: allowed when the caller holds `explore` on the chart's dataset, or when every value is an option a bound switcher offers on a dashboard the caller can view that shows the chart — the same rule as the public path (`dashboard_parameters.validate_role_overrides`). Holding view on a chart never re-queries it on an arbitrary field.
+
+### 11b. Audit
+
+Every privileged authorization action is written to `audit_logs` by the request that performed it (migration `20261008_0006` adds the values): dataset grant created/revoked, alert channel created/updated/deleted/tested, global observability scan, workspace token rotated, public link created/updated/deleted, share permission updated (plus the existing share created/revoked, PAT, delegation, workboard publish and user-permission events). Secrets (webhook URLs, passwords, tokens) are never written to `details`.
 
 ### 12. Auth tokens
 
@@ -181,7 +191,7 @@ Owner = manage. Module admin (`datasets: full`) = manage (`via=module_admin`). L
 - **OAuth state** is signed under its own domain, is single-use (jti stored), and is never accepted by `get_current_user`.
 - **`public.py` staff bearer** uses `decode(token, access)`.
 - **PAT:**
-  - expiry required (max 365d) for new tokens; existing non-expiring tokens are reported, not broken;
+  - expiry is capped at 365 days when set; a non-expiring token is still allowed (NOT required by Q4; residual risk, tracked as a follow-up). Its authority is capped by the owner's live authority on every request, so demotion, deactivation or revocation ends it regardless;
   - admin reveal and admin-rotate-returning-plaintext removed; admin force-invalidate added (owner must rotate to get a new token);
   - owner reveal removed; `secret_enc` cleared by migration; plaintext only in create/rotate responses;
   - empty-scope rows are denied.

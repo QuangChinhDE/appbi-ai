@@ -22,7 +22,7 @@ import {
 
 import { toast } from '@/lib/toast';
 import { hasPermission, usePermissions } from '@/hooks/use-permissions';
-import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { getResourcePermissions, accessTier } from '@/hooks/use-resource-permission';
 import {
   useCreateWorkboard,
   useDeleteWorkboard,
@@ -50,7 +50,7 @@ import { useI18n } from '@/providers/LanguageProvider';
 
 type WorkboardListFilters = {
   state?: string;        // 'published' | 'draft'
-  access?: string;       // 'full' | 'edit' | 'view' | 'none'
+  access?: string;       // 'manage' | 'edit' | 'view' | 'none' (accessTier)
   owner?: string;
   dataset?: string;      // dataset_id as string
 };
@@ -281,7 +281,7 @@ export default function WorkboardsPage() {
         value={listFilters.access}
         options={[
           { label: t('workboards.filter.all'), value: '' },
-          { label: t('workboards.filter.fullAccess'), value: 'full' },
+          { label: t('workboards.filter.fullAccess'), value: 'manage' },
           { label: t('workboards.filter.editable'), value: 'edit' },
           { label: t('workboards.filter.viewOnly'), value: 'view' },
         ]}
@@ -368,7 +368,7 @@ export default function WorkboardsPage() {
                   active
                   onClick={() => toggleListFilter('access', listFilters.access!)}
                 >
-                  {listFilters.access === 'full'
+                  {listFilters.access === 'manage'
                     ? t('workboards.filter.fullAccess')
                     : listFilters.access === 'edit'
                       ? t('workboards.filter.editable')
@@ -405,7 +405,7 @@ export default function WorkboardsPage() {
           const needle = filterText.trim().toLowerCase();
           const filtered = items.filter((wb) => {
             const stateValue = wb.is_published ? 'published' : 'draft';
-            const accessValue = wb.user_permission ?? 'none';
+            const accessValue = accessTier(wb.user_permission, wb.capabilities);
             const matchesSearch =
               needle.length === 0 ||
               wb.name.toLowerCase().includes(needle) ||

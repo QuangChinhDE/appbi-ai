@@ -6,10 +6,12 @@ import re
 from types import SimpleNamespace
 from datetime import datetime, date
 from urllib.parse import quote
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
+from app.services.audit_service import audit
+from app.models.audit_log import AuditAction
 from app.services.time_contract import utc_iso
 from app.core.database import get_db
 from app.core.dependencies import (
@@ -2834,6 +2836,7 @@ def list_dataset_grants(
 def set_dataset_grant(
     dataset_id: int,
     body: dict,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -2853,12 +2856,16 @@ def set_dataset_grant(
         )
     except dataset_grants_service.GrantError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    audit(db, AuditAction.DATASET_GRANT_CREATED, request=request, user_id=current_user.id,
+          resource_type="dataset", resource_id=str(ds.id),
+          details={"verb": g.verb, "user_id": body.get("user_id"), "team_id": body.get("team_id")})
     return {"ok": True, "id": g.id, "verb": g.verb}
 
 
 @router.delete("/{dataset_id}/grants")
 def revoke_dataset_grant(
     dataset_id: int,
+    request: Request,
     user_id: str | None = None,
     team_id: str | None = None,
     db: Session = Depends(get_db),
@@ -2875,6 +2882,9 @@ def revoke_dataset_grant(
         n = dataset_grants_service.revoke_as(db, current_user, ds, user_id=user_id, team_id=team_id)
     except dataset_grants_service.GrantError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    audit(db, AuditAction.DATASET_GRANT_REVOKED, request=request, user_id=current_user.id,
+          resource_type="dataset", resource_id=str(ds.id),
+          details={"user_id": user_id, "team_id": team_id, "revoked": n})
     return {"ok": True, "revoked": n}
 
 
@@ -3378,6 +3388,10 @@ def add_table_to_dataset(
             if not datasource:
                 raise HTTPException(status_code=404, detail="Datasource not found")
             require_view_access(db, current_user, datasource, "data_sources")
+            if table.source_kind == "sql_query":
+                # A SQL table is arbitrary SQL on the whole connection - the same
+                # right as POST /datasources/query and chart custom SQL: edit.
+                require_edit_access(db, current_user, datasource, "data_sources")
 
         # Validate SQL query if source_kind is datasource-backed 'sql_query'
         if table.source_kind == "sql_query":
@@ -3620,6 +3634,9 @@ def update_dataset_table(
                 datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
                 if not datasource:
                     raise HTTPException(status_code=404, detail="Datasource not found")
+                # New SQL on the connection = arbitrary SQL: edit on the datasource.
+                require_view_access(db, current_user, datasource, "data_sources")
+                require_edit_access(db, current_user, datasource, "data_sources")
 
                 table_draft = _build_table_draft(db_table, table_update)
                 preview_metadata, preview_rows = _preview_live_table_draft(
@@ -3628,6 +3645,8 @@ def update_dataset_table(
                 )
             except QueryValidationError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid SQL query: {str(e)}")
+            except HTTPException:
+                raise
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except Exception as exc:

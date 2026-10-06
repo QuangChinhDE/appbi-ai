@@ -448,11 +448,15 @@ def update_share_entry(
     resource_id: str,
     share_id: int,
     body: ShareUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Update permission on an existing direct user share or team share."""
     require_share_access(db, current_user, resource_type, resource_id)
+    audit(db, AuditAction.SHARE_UPDATED, request=request, user_id=current_user.id,
+          resource_type=resource_type.value, resource_id=str(resource_id),
+          details={"share_id": share_id, "permission": body.permission.value})
     if resource_type == ResourceType.DATASET:
         from app.services import dataset_grants_service as _dgs
 
@@ -490,6 +494,7 @@ def update_share(
     resource_id: str,
     user_id: uuid.UUID,
     body: ShareUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -502,9 +507,9 @@ def update_share(
                                           DatasetGrant.user_id == user_id).first()
         if g is None:
             raise HTTPException(status_code=404, detail="Share not found")
-        return update_share_entry(resource_type, resource_id, g.id, body, db, current_user)
+        return update_share_entry(resource_type, resource_id, g.id, body, request, db, current_user)
     share = _get_share_for_target(db, resource_type, resource_id, user_id=user_id)
-    return update_share_entry(resource_type, resource_id, share.id, body, db, current_user)
+    return update_share_entry(resource_type, resource_id, share.id, body, request, db, current_user)
 
 
 @router.delete("/{resource_type}/{resource_id}/{user_id}",
