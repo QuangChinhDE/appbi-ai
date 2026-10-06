@@ -20,7 +20,9 @@ from app.core.dependencies import (
     require_edit_access,
     require_full_access,
     get_effective_permission,
+    batch_effective_permissions,
 )
+from app.core.authz import decision as _authz
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models import DataSource, Dataset
 from app.models.resource_share import ResourceType
@@ -388,8 +390,10 @@ def list_data_sources(
         .limit(limit)
         .all()
     )
+    perm_map = batch_effective_permissions(db, current_user, sources, "data_sources")
     for s in sources:
-        s.user_permission = get_effective_permission(db, current_user, s, "data_sources")
+        s.user_permission = perm_map.get(s.id, "none")
+    _authz.attach_capabilities(db, current_user, sources)
     stamp_owner_emails(db, sources)
     return sources
 
@@ -408,6 +412,7 @@ def get_data_source(
             detail=f"Data source with ID {data_source_id} not found"
         )
     data_source.user_permission = require_view_access(db, current_user, data_source, "data_sources")
+    _authz.attach_capabilities(db, current_user, [data_source])
     stamp_owner_emails(db, [data_source])
     return data_source
 

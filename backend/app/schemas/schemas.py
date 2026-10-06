@@ -99,6 +99,9 @@ class DataSourceResponse(DataSourceBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    # Backend-computed {action: bool} for THIS caller (UX only; every
+    # mutation is re-checked). The frontend reads this, not owner/share/level.
+    capabilities: Optional[Dict[str, bool]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -456,6 +459,9 @@ class ChartResponse(ChartBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    # Backend-computed {action: bool} for THIS caller (UX only; every
+    # mutation is re-checked). The frontend reads this, not owner/share/level.
+    capabilities: Optional[Dict[str, bool]] = None
     dataset_id: Optional[int] = None
     dataset_name: Optional[str] = None
     dataset_table_name: Optional[str] = None
@@ -670,6 +676,9 @@ class DashboardResponse(DashboardBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    # Backend-computed {action: bool} for THIS caller (UX only; every
+    # mutation is re-checked). The frontend reads this, not owner/share/level.
+    capabilities: Optional[Dict[str, bool]] = None
     share_token: Optional[str] = None
     created_at: datetime
     updated_at: datetime

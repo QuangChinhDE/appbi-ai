@@ -426,7 +426,7 @@ export default function DataSourcesPage() {
                         const createdAt = new Date(ds.created_at).toLocaleDateString('vi-VN', {
                           day: '2-digit', month: '2-digit', year: 'numeric',
                         });
-                        const itemPerms = getResourcePermissions(ds.user_permission);
+                        const itemPerms = getResourcePermissions(ds.user_permission, ds.capabilities);
                         return (
                           <div
                             key={ds.id}

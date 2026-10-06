@@ -247,7 +247,7 @@ def _normalize_permissions(user: User) -> dict:
     still capped by what it actually asked for; an implicit `full` a token never
     named is capped straight back to `none`.
     """
-    perms: dict = user.permissions or {}
+    perms: dict = getattr(user, "permissions", None) or {}  # absent = nothing (fail closed)
     normalized = dict(perms)
 
     if _sanitize_permission_level(normalized.get("settings")) == "full":

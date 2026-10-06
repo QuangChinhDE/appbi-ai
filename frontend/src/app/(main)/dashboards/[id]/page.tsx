@@ -549,7 +549,7 @@ function DashboardDetailPageInner() {
     });
     return map;
   }, [dashboardDatasetIds, datasetModelQueries]);
-  const resPerms = getResourcePermissions(dashboard?.user_permission);
+  const resPerms = getResourcePermissions(dashboard?.user_permission, dashboard?.capabilities);
   const canShare = resPerms.canShare;
   // The Studio preview iframe is a viewer of this page: no editing, no edit
   // lock, no presence heartbeat (it would otherwise compete with the author's

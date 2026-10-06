@@ -180,3 +180,37 @@ def scope(db, user, model):
     if spec is None:
         return db.query(model).filter(False)
     return _owned_or_shared(db, model, ResourceType(spec.resource_type), user)
+
+
+
+def attach_capabilities(db, user, resources) -> None:
+    """Set ``resource.capabilities`` = {action: bool} on every resource, for the
+    frontend to decide which controls to show WITHOUT knowing owners, shares,
+    teams, grants, PAT caps or module admins. Batched: a constant number of
+    queries for a whole list. Every mutation is still re-checked by the API.
+
+    Generic resources reuse the effective level the endpoint already stamped
+    (``user_permission``); ``publish`` is ownership + capped entitlement (no
+    query). Datasets use the batched Dataset policy."""
+    rs = [r for r in (resources or []) if r is not None]
+    if not rs:
+        return
+    spec = _spec(rs[0])
+    if spec is None:
+        return
+    if spec.policy == "dataset":
+        from app.services.dataset_grants_service import batch_dataset_capabilities
+
+        caps = batch_dataset_capabilities(db, user, rs)
+        for r in rs:
+            have = caps.get(r.id, set())
+            r.capabilities = {a.value: need in have for a, need in _DATASET_NEEDS.items()}
+        return
+    from app.core.dependencies import LEVEL_ORDER, can_publish, get_effective_permission
+
+    for r in rs:
+        level = getattr(r, "user_permission", None) or get_effective_permission(db, user, r, spec.module)
+        n = LEVEL_ORDER.get(level, 0)
+        out = {a.value: n >= LEVEL_ORDER[need] for a, need in _GENERIC_NEEDS.items()}
+        out["publish"] = n > 0 and can_publish(db, user, r, spec.module)
+        r.capabilities = out

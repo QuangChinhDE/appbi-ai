@@ -41,7 +41,7 @@ export default function DataSourceDetailPage() {
 
   const { data: dataSource, isLoading } = useDataSource(datasourceId);
   const updateMutation = useUpdateDataSource();
-  const resPerms = getResourcePermissions(dataSource?.user_permission);
+  const resPerms = getResourcePermissions(dataSource?.user_permission, dataSource?.capabilities);
 
   // Read initial tab from ?tab= query param — fallback to 'connection' for unknown values
   const paramTab = searchParams.get('tab') as Tab;

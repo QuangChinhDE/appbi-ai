@@ -732,7 +732,7 @@ function WorkboardGridCard({
   onToggleSelect?: () => void;
 }) {
   const { t, locale } = useI18n();
-  const perms = getResourcePermissions(workboard.user_permission ?? undefined);
+  const perms = getResourcePermissions(workboard.user_permission ?? undefined, workboard.capabilities);
   const created = new Date(workboard.updated_at).toLocaleDateString(locale);
   return (
     <div className="group flex flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 transition-all hover:border-[rgb(var(--border-strong))] hover:shadow-linear">

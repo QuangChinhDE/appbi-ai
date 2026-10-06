@@ -561,3 +561,30 @@ def update_user_permissions(
     return {"status": "ok", "updated": len(body.permissions), "permissions": _get_user_permissions(target)}
 
 
+
+
+@router.get("/schema")
+def get_permission_schema(_: User = Depends(get_current_user)) -> dict:
+    """The authorization manifest the frontend renders from, GENERATED from the
+    authz registry (core/authz/registry.py): module keys, their levels and
+    labels-free metadata, which are enabled in this deployment and PAT-eligible,
+    and every resource type with its module and the business actions its policy
+    defines. The frontend never hand-maintains these facts; resource-level
+    decisions come per resource as `capabilities`."""
+    from app.core.authz import registry
+    from app.core.authz.decision import _DATASET_NEEDS, _GENERIC_NEEDS
+
+    return {
+        "levels": list(registry.LEVEL_ORDER),
+        "module_admin_level": registry.MODULE_ADMIN_LEVEL,
+        "modules": [
+            {"key": m.key, "levels": list(m.levels), "enabled": registry.module_enabled(m.key),
+             "pat_eligible": m.pat_eligible}
+            for m in registry.MODULES
+        ],
+        "resources": [
+            {"type": r.resource_type, "module": r.module, "shareable": r.shareable,
+             "actions": sorted(a.value for a in (_DATASET_NEEDS if r.policy == "dataset" else _GENERIC_NEEDS))}
+            for r in registry.RESOURCES
+        ],
+    }

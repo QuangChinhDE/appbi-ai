@@ -418,7 +418,7 @@ export default function DatasetsPage() {
                         />
                       ) : <span />}
                       <div className="flex items-center gap-1">
-                      {getResourcePermissions(dataset.user_permission).canShare && (
+                      {getResourcePermissions(dataset.user_permission, dataset.capabilities).canShare && (
                         <IconButton
                           aria-label="Share dataset"
                           variant="ghost"
@@ -432,7 +432,7 @@ export default function DatasetsPage() {
                           <Share2 className="h-4 w-4" />
                         </IconButton>
                       )}
-                      {getResourcePermissions(dataset.user_permission).canDelete && (
+                      {getResourcePermissions(dataset.user_permission, dataset.capabilities).canDelete && (
                         <IconButton
                           aria-label="Delete dataset"
                           variant="ghost"
@@ -565,7 +565,7 @@ export default function DatasetsPage() {
                         </td>
                         <td className="app-list-cell-tight text-right">
                           <div className="flex items-center justify-end gap-1">
-                            {getResourcePermissions(dataset.user_permission).canShare && (
+                            {getResourcePermissions(dataset.user_permission, dataset.capabilities).canShare && (
                               <IconButton
                                 aria-label="Share dataset"
                                 variant="ghost"
@@ -576,7 +576,7 @@ export default function DatasetsPage() {
                                 <Share2 className="h-3.5 w-3.5" />
                               </IconButton>
                             )}
-                            {getResourcePermissions(dataset.user_permission).canDelete && (
+                            {getResourcePermissions(dataset.user_permission, dataset.capabilities).canDelete && (
                               <IconButton
                                 aria-label="Delete dataset"
                                 variant="ghost"

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query
 from app.services.report_pptx_service import ReportPptxRequest
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 from typing import Any, Dict, List, Literal, Optional
 
@@ -29,9 +29,10 @@ from app.core.dependencies import (
     require_publish_access,
     can_publish,
     get_effective_permission,
+    batch_effective_permissions,
 )
-from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.core.authz import decision as _authz
+from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models.models import Chart, DashboardChart, Dashboard, DashboardPublicLink, DataSource, DataSourceType
 from app.models.dataset import Dataset, DatasetTable
 from app.models.resource_share import ResourceType
@@ -222,12 +223,17 @@ def list_dashboards(
     """List dashboards visible to the current user."""
     items = (
         _owned_or_shared(db, Dashboard, ResourceType.DASHBOARD, current_user)
+        # The response serializes each dashboard's tiles: load them for the
+        # whole page in one query, not one lazy load per dashboard.
+        .options(selectinload(Dashboard.dashboard_charts))
         .offset(skip)
         .limit(limit)
         .all()
     )
+    perm_map = batch_effective_permissions(db, current_user, items, "dashboards")
     for item in items:
-        item.user_permission = get_effective_permission(db, current_user, item, "dashboards")
+        item.user_permission = perm_map.get(item.id, "none")
+    _authz.attach_capabilities(db, current_user, items)
     stamp_owner_emails(db, items)
     return items
 
@@ -1743,6 +1749,7 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     raw live fields until Publish merges the draft down.
     """
     dash.user_permission = require_view_access(db, current_user, dash, "dashboards")
+    _authz.attach_capabilities(db, current_user, [dash])
     snapshot = dash.draft_snapshot or {}
     # Phase-B17 — overlay only THIS user's pending layout draft (per-user).
     layouts_map = _draft_user_layouts(snapshot, str(current_user.id))

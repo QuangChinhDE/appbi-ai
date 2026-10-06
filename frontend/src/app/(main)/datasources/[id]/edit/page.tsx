@@ -16,7 +16,7 @@ export default function EditDataSourcePage() {
 
   const { data: dataSource, isLoading } = useDataSource(datasourceId);
   const updateMutation = useUpdateDataSource();
-  const resPerms = getResourcePermissions(dataSource?.user_permission);
+  const resPerms = getResourcePermissions(dataSource?.user_permission, dataSource?.capabilities);
 
   const handleUpdate = async (data: DataSourceCreate, meta: { configModified: boolean }) => {
     try {

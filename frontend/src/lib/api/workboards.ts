@@ -90,6 +90,8 @@ export interface Workboard {
   owner_id?: string | null;
   owner_email?: string | null;
   user_permission?: string | null;
+  /** Backend-computed actions for the caller (see getResourcePermissions). */
+  capabilities?: Record<string, boolean> | null;
   created_at: string;
   updated_at: string;
   default_owner_credentials?: WorkboardDefaultOwnerCredentials | null;

@@ -27,7 +27,9 @@ from app.core.dependencies import (
     require_permission,
     require_view_access,
     _normalize_permissions,
+    batch_effective_permissions,
 )
+from app.core.authz import decision as _authz
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.core.logging import get_logger
 from app.models.audit_log import AuditAction
@@ -115,8 +117,10 @@ def list_workboards(
         .limit(limit)
         .all()
     )
+    perm_map = batch_effective_permissions(db, current_user, items, "workboards")
     for item in items:
-        item.user_permission = get_effective_permission(db, current_user, item, "workboards")
+        item.user_permission = perm_map.get(item.id, "none")
+    _authz.attach_capabilities(db, current_user, items)
     stamp_owner_emails(db, items)
     # Serialize per-row so one workboard with an unexpected stored layout_json
     # can never 500 the whole list. The Screen schema already heals known
@@ -161,6 +165,7 @@ def _degraded_workboard_response(item: Workboard) -> WorkboardResponse:
         owner_id=item.owner_id,
         owner_email=getattr(item, "owner_email", None),
         user_permission=getattr(item, "user_permission", None),
+        capabilities=getattr(item, "capabilities", None),
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -198,7 +203,8 @@ def create_workboard(
         if username and pin:
             response.headers["X-AppBI-Default-Owner-Username"] = username
             response.headers["X-AppBI-Default-Owner-Pin"] = pin
-    wb.user_permission = "full"
+    wb.user_permission = get_effective_permission(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     return wb
 
 
@@ -210,6 +216,7 @@ def get_workboard(
 ):
     wb = _get_or_404(db, workboard_id)
     wb.user_permission = require_view_access(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     # Mask OCR tokens before the layout leaves the server (owner sees only
     # "đã cấu hình", never the raw key). Transient — no commit, not persisted.
     from app.modules.workboards.services.ocr_secrets import mask_layout_ocr_keys
@@ -382,7 +389,8 @@ def update_workboard(
         },
     )
     if updated:
-        updated.user_permission = "full"
+        updated.user_permission = get_effective_permission(db, current_user, updated, "workboards")
+        _authz.attach_capabilities(db, current_user, [updated])
     return updated
 
 
@@ -452,7 +460,8 @@ def update_workboard_screen(
         details={"screen_scoped": True, "screen_id": screen_id},
     )
     if updated:
-        updated.user_permission = "full"
+        updated.user_permission = get_effective_permission(db, current_user, updated, "workboards")
+        _authz.attach_capabilities(db, current_user, [updated])
     return updated
 
 
@@ -678,7 +687,8 @@ def publish_workboard(
         resource_type="workboard",
         resource_id=str(workboard_id),
     )
-    wb.user_permission = "full"
+    wb.user_permission = get_effective_permission(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     return wb
 
 
@@ -706,7 +716,8 @@ def unpublish_workboard(
         resource_type="workboard",
         resource_id=str(workboard_id),
     )
-    wb.user_permission = "full"
+    wb.user_permission = get_effective_permission(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     return wb
 
 

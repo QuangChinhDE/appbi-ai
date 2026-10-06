@@ -38,6 +38,9 @@ IDENTITY_SCOPED = {
     "/api/v1/auth/google/data-access/status",
     "/api/v1/auth/personal-access-tokens/",
     "/api/v1/permissions/me",
+    # The authorization MANIFEST (module keys/levels, resource actions) generated
+    # from the registry: caller-agnostic metadata the UI renders from.
+    "/api/v1/permissions/schema",
     "/api/v1/health",
 }
 

@@ -20,9 +20,10 @@ from app.core.dependencies import (
     require_edit_access,
     require_full_access,
     get_effective_permission,
+    batch_effective_permissions,
 )
-from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.core.authz import decision as _authz
+from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models import DataSource, Chart, Dashboard, DashboardChart, Dataset, DatasetTable
 from app.models.models import DashboardPublicLink
 from app.models.resource_share import ResourceType
@@ -2422,8 +2423,11 @@ def list_datasets(
         .limit(limit)
         .all()
     )
+    # One batched Dataset-policy decision for the whole page (was one per row).
+    perm_map = batch_effective_permissions(db, current_user, items, "datasets")
     for item in items:
-        item.user_permission = get_effective_permission(db, current_user, item, "datasets")
+        item.user_permission = perm_map.get(item.id, "none")
+    _authz.attach_capabilities(db, current_user, items)
     _stamp_dataset_catalog_fields(items)
     stamp_owner_emails(db, items)
     return items
@@ -2988,6 +2992,7 @@ def get_dataset(
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     dataset_obj.user_permission = require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.attach_capabilities(db, current_user, [dataset_obj])
     return dataset_obj
 
 

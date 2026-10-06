@@ -127,7 +127,7 @@ export function WorkboardList({
           </thead>
           <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
             {workboards.map((wb) => {
-              const perms = getResourcePermissions(wb.user_permission ?? undefined);
+              const perms = getResourcePermissions(wb.user_permission ?? undefined, wb.capabilities);
               const stateMeta = getStateMeta(!!wb.is_published, t);
               const accessMeta = getAccessMeta(wb.user_permission, t);
 

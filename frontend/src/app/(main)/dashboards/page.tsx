@@ -412,7 +412,7 @@ export default function DashboardsPage() {
                                 <LayoutDashboard className="h-4 w-4" />
                               </div>
                             </div>
-                            {getResourcePermissions(dashboard.user_permission).canDelete && (
+                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canDelete && (
                               <IconButton
                                 aria-label="Delete"
                                 variant="ghost"
@@ -439,7 +439,7 @@ export default function DashboardsPage() {
                         </div>
                         <div className="flex items-center justify-between border-t border-[rgb(var(--border-line))] bg-surface-2 px-4 py-2.5 rounded-b-xl">
                           <div className="flex items-center gap-3">
-                            {getResourcePermissions(dashboard.user_permission).canShare && (
+                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canShare && (
                               <button
                                 onClick={() => setShareDash(dashboard)}
                                 className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"
@@ -449,7 +449,7 @@ export default function DashboardsPage() {
                                 Share
                               </button>
                             )}
-                            {getResourcePermissions(dashboard.user_permission).canEdit && (
+                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canEdit && (
                               <button
                                 onClick={() => setPublicShareDash(dashboard)}
                                 className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"

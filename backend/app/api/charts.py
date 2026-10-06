@@ -315,6 +315,7 @@ def list_charts(
     perm_map = batch_effective_permissions(db, current_user, items, "explore_charts")
     for item in items:
         item.user_permission = perm_map.get(item.id, "none")
+    _authz.attach_capabilities(db, current_user, items)
     stamp_owner_emails(db, items)
     _stamp_chart_catalog_fields(current_user, items)
     return items
@@ -895,6 +896,7 @@ def get_chart(
             detail=f"Chart with ID {chart_id} not found"
         )
     chart.user_permission = require_view_access(db, current_user, chart, "explore_charts")
+    _authz.attach_capabilities(db, current_user, [chart])
     stamp_owner_emails(db, [chart])
     _stamp_chart_catalog_fields(current_user, [chart])
     return chart
