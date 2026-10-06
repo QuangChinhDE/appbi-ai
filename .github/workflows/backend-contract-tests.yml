@@ -223,6 +223,7 @@ jobs:
             tests/test_embed_link_claim_operator.py \
             tests/test_public_filter_authority.py \
             tests/test_public_token_lifecycle.py \
+            tests/test_dashboard_responsive_layouts.py \
             tests/test_sql_literal_security.py \
             tests/test_trusted_proxy_client_ip.py \
             tests/test_embed_integration_security.py \
@@ -427,6 +428,14 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_relationship_contract_pg.py
+
+      # Authored device layouts on Postgres: the JSONB column, the row-locked
+      # draft write, Publish's revision check and duplication, through the real
+      # application (docs/responsive-dashboard-layouts.md).
+      - name: GATE — authored device layouts (Postgres)
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_dashboard_responsive_layouts_pg.py
 
       # Server-owned public constraints (lock, hidden, page scope, link scope)
       # are applied or the request is refused — on the real public routes.

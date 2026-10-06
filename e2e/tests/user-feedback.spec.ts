@@ -34,6 +34,17 @@ function detailTable(page: Page): Locator {
   return page.locator('[data-grid-item-id]').filter({ hasText: TABLE_TITLE }).locator('table').first();
 }
 
+// Tiles below the fold mount lazily when scrolled to (the grid now renders at its real
+// width from the first paint). Scroll like a phone user until the table has mounted.
+async function revealDetailTable(page: Page): Promise<void> {
+  await page.mouse.move(195, 450);
+  await expect.poll(async () => {
+    if (await detailTable(page).count()) return true;
+    await page.mouse.wheel(0, 500);
+    return false;
+  }, { timeout: 60_000, intervals: [500] }).toBe(true);
+}
+
 const overlap = (a: { x: number; y: number; width: number; height: number } | null,
                  b: { x: number; y: number; width: number; height: number } | null) =>
   !a || !b ? 0
@@ -114,6 +125,7 @@ for (const width of [1440, 1280, 1024, 820, 390]) {
     test.setTimeout(120_000);
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`/d/${TOKEN}`);
+    await revealDetailTable(page);
     await expect(detailTable(page)).toBeVisible({ timeout: 60_000 });
     await assertSeparateHitAreas(page);
     await sortAndFilterLongHeader(page);
@@ -406,6 +418,7 @@ for (const width of [1440, 1280, 1024, 820, 390]) {
     test.setTimeout(90_000);
     await page.setViewportSize({ width, height: 800 });
     await page.goto(`/d/${TOKEN}`);
+    await revealDetailTable(page);
     await expect(detailTable(page)).toBeVisible({ timeout: 60_000 });
     const entry = page.getByTestId('public-export-open').first();
     await expect(entry).toBeVisible();

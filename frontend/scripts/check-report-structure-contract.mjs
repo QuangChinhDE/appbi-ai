@@ -500,7 +500,7 @@ check('phone and tablet heights follow content: stack re-lays, tablet only grows
     'a loading KPI (no number yet) is measured as its first, shrinking measure');
   const pub = source('components/dashboards/PublicDashboardView.tsx');
   // The fit was once attached to a grid block that was never rendered.
-  assert((pub.match(/<ResponsiveReportGrid/g) ?? []).length === 1 && (pub.match(/ref=\{fitRootRef\}/g) ?? []).length === 1,
+  assert((pub.match(/<GridLayout\b/g) ?? []).length === 1 && (pub.match(/ref=\{fitRootRef\}/g) ?? []).length === 1,
     'the public report has a second grid, or the rendered grid is not the one measured');
   assert(!/const gridSectionEl = \(/.test(pub), 'dead grid block is back');
 });
@@ -515,7 +515,11 @@ check('builder, public and bands consume the same structure; emphasis reaches bo
   const pub = source('components/dashboards/PublicDashboardView.tsx');
   const grid = source('components/dashboards/DashboardGrid.tsx');
   const bands = source('components/dashboards/SectionBands.tsx');
-  assert(/readingOrder\(/.test(pub) && /readingOrder\(/.test(grid), 'a narrow projection sorts by coordinates, not structure');
+  // Both draw their device layouts through the resolver, which orders the phone
+  // stack by the report's structure (readingOrder), never by coordinates.
+  const resolverSrc = source('lib/responsive-layout/resolve.ts');
+  assert(/resolveReportLayout\(/.test(pub) && /resolveReportLayout\(/.test(grid) && /readingOrder\(/.test(resolverSrc),
+    'a narrow projection sorts by coordinates, not structure');
   assert(/resolveStructure\(/.test(bands), 'section bands infer their own membership');
   assert(/ReportMetaProvider/.test(pub) && /ReportMetaProvider/.test(source('app/(main)/dashboards/[id]/page.tsx')),
     'the report header would state different context on builder and public');

@@ -95,18 +95,49 @@ const CONTENT_SELECTOR = [
 ].join(', ');
 
 /**
- * Measure the content-decided elements under `root` at the current width, as
- * whole grid rows. Re-measures when `deps` change and shortly after (charts
- * arriving change KPI context lines), and settles: a change of one row or less
- * is ignored, so a measure → relayout → measure cycle cannot oscillate.
+ * The content-decided height of every measurable tile under `el`, in whole grid
+ * rows (a KPI still loading is skipped — it has no natural height yet). One
+ * measurement, used by the AUTO fit below and by the Builder's explicit
+ * "Fit heights to content" on a CUSTOM device layout.
+ */
+export function measureContentRows(
+  el: HTMLElement,
+  rowHeight: number,
+  gapY: number,
+  minRows?: (el: HTMLElement) => number,
+): Record<string, number> {
+  const next: Record<string, number> = {};
+  for (const item of Array.from(el.querySelectorAll<HTMLElement>('[data-grid-item-id]'))) {
+    const tile = item.querySelector<HTMLElement>(CONTENT_SELECTOR);
+    if (!tile) continue;
+    const id = item.getAttribute('data-grid-item-id');
+    if (!id) continue;
+    // A KPI still loading has no natural height yet. Measured as a spinner,
+    // its first (shrinking) measure came from the skeleton on /d — where the
+    // chart is known before its data — and not on the Builder.
+    if (tile.matches('[data-tile-kind="kpi"]') && !tile.querySelector('.dashboard-kpi-value')) continue;
+    const px = measureAtFullContext(tile);
+    if (!(px > 0)) continue;
+    next[id] = Math.max(minRows ? minRows(tile) : 1, rowsForHeight(px, rowHeight, gapY));
+  }
+  return next;
+}
+
+/**
+ * Measure the content-decided elements under `root` at `width` — the report's
+ * ONE measured container width (the same value its layout is resolved for; this
+ * hook never reads a width of its own), as whole grid rows. Re-measures when
+ * `deps` change and shortly after (charts arriving change KPI context lines),
+ * and settles: a change of one row or less is ignored, so a measure → relayout
+ * → measure cycle cannot oscillate. Only an AUTO tablet/phone layout uses it.
  */
 export function useMeasuredContentRows(
   root: React.RefObject<HTMLElement | null>,
-  opts: { enabled: boolean; rowHeight: number; gapY: number; minRows?: (el: HTMLElement) => number },
+  opts: { enabled: boolean; width: number; rowHeight: number; gapY: number; minRows?: (el: HTMLElement) => number },
   deps: React.DependencyList,
 ): Record<string, number> {
   const [rows, setRows] = React.useState<Record<string, number>>({});
-  const { enabled, rowHeight, gapY, minRows } = opts;
+  const { enabled, width, rowHeight, gapY, minRows } = opts;
   // A KPI's number sizes its font to its cell, so its measured height follows
   // the cell: re-measured after every shrink, the cell kept descending, and
   // where it stopped depended on when the timed measures landed (the Builder
@@ -120,7 +151,7 @@ export function useMeasuredContentRows(
     const measure = () => {
       const el = root.current;
       if (!el || cancelled) return;
-      const key = `${Math.round(el.clientWidth)}|${rowHeight}|${gapY}`;
+      const key = `${Math.round(width)}|${rowHeight}|${gapY}`;
       if (baseline.current.key !== key) {
         // New width: back to the derived layout; the next measure is the first.
         baseline.current = { key, seen: new Set() };
@@ -129,20 +160,7 @@ export function useMeasuredContentRows(
         return;
       }
       const seen = baseline.current.seen;
-      const next: Record<string, number> = {};
-      for (const item of Array.from(el.querySelectorAll<HTMLElement>('[data-grid-item-id]'))) {
-        const tile = item.querySelector<HTMLElement>(CONTENT_SELECTOR);
-        if (!tile) continue;
-        const id = item.getAttribute('data-grid-item-id');
-        if (!id) continue;
-        // A KPI still loading has no natural height yet. Measured as a spinner,
-        // its first (shrinking) measure came from the skeleton on /d — where the
-        // chart is known before its data — and not on the Builder.
-        if (tile.matches('[data-tile-kind="kpi"]') && !tile.querySelector('.dashboard-kpi-value')) continue;
-        const px = measureAtFullContext(tile);
-        if (!(px > 0)) continue;
-        next[id] = Math.max(minRows ? minRows(tile) : 1, rowsForHeight(px, rowHeight, gapY));
-      }
+      const next = measureContentRows(el, rowHeight, gapY, minRows);
       const remeasured = new Set(Object.keys(next).filter((k) => seen.has(k)));
       for (const k of Object.keys(next)) seen.add(k);
       setRows((prev) => {
@@ -188,6 +206,6 @@ export function useMeasuredContentRows(
       mo?.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, rowHeight, gapY, ...deps]);
+  }, [enabled, Math.round(width), rowHeight, gapY, ...deps]);
   return rows;
 }

@@ -188,6 +188,16 @@ class Dashboard(Base):
     theme_config = Column(JSON, nullable=True, default=dict)
     # Canvas mode geometry: {width: 1440, height: 900, snap: 8, background: "#0b0f0b"}
     canvas_config = Column(JSON, nullable=True, default=dict)
+    # Authored Tablet (md) / Phone (xs) layouts, PUBLISHED state only. NULL, or
+    # a page/breakpoint absent from it, means AUTO (derived from the desktop
+    # layout at render time). A present entry is a complete CUSTOM page layout:
+    #   {"version": 1, "pages": {pageId: {"md"|"xs": {"mode": "custom",
+    #     "cols": 36, "rev", "generatorVersion", "baseFingerprint", "source",
+    #     "updatedAt", "updatedBy", "items": {tileId: {x, y, w, h}}}}}}
+    # Desktop geometry stays in DashboardChart.layout. Written ONLY by Publish
+    # (authors edit draft_snapshot.user_responsive_layouts) and by duplicate.
+    # docs/responsive-dashboard-layouts.md.
+    responsive_layouts = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
 
     # Ownership
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -200,21 +210,20 @@ class Dashboard(Base):
     share_token = Column(String(64), nullable=True, unique=True, index=True)
     public_filters_config = Column(JSON, nullable=True, default=list)
 
-    # Phase-15.56 — draft snapshot. When set, editors see this overlay
-    # on top of the live columns; public viewers still read the live
-    # columns. Clicking "Lưu / Publish" applies the snapshot onto the
-    # live columns + dashboard_charts rows, then clears this field.
-    # Shape: {
-    #   name?, description?, filters_config?, slicers_config?,
-    #   pages_config?, layout_mode?, theme_config?, canvas_config?,
-    #   public_filters_config?, layouts?,
-    #   dashboard_charts?: [
-    #     {id?, chart_id?, widget_type, widget_config, layout, parameters}
-    #   ]
-    # }
-    # Phase-A (PBI rework): `slicers_config` was added so slicer-block
-    # edits share the same draft / publish lifecycle as filter-pane
-    # edits and layout edits.
+    # Draft snapshot. Editors see it over the live columns; public viewers read
+    # the live columns only. Publish applies the caller's part onto the live
+    # columns + dashboard_charts rows; Discard drops it. Shape:
+    #   per author:  user_layouts[uid][tileId] = layout
+    #                user_widget_configs[uid][tileId], user_parameters[uid][tileId]
+    #                user_responsive_layouts[uid][pageId]["md"|"xs"] = CUSTOM
+    #                  profile | {"mode": "auto"} (reset marker)
+    #                user_responsive_base_rev[uid]["pageId:bp"] = published rev
+    #                  the draft started from (Publish's conflict check)
+    #   shared:      filters_config, slicers_config, slicer_cluster_layout,
+    #                pages_config, theme_config + shared_draft_meta {rev, authors}
+    #   legacy:      layouts (pre-per-author map; read as a fallback)
+    # Draft-only / removed TILES are flagged on the rows themselves
+    # (layout.draftOnly / draftRemoved, see dashboard_service.DRAFT_ROW_KEYS).
     draft_snapshot = Column(JSON, nullable=True)
 
     # Timestamps

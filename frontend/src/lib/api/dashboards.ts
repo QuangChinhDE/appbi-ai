@@ -273,6 +273,23 @@ export const dashboardApi = {
     return response.data;
   },
 
+  // One page/breakpoint of this author's device-layout draft: a complete CUSTOM
+  // layout or {mode:'auto'} (reset). `baseRev` = the published revision the
+  // author started from (0 = AUTO); Publish refuses 409 responsive_conflict if
+  // someone published that page/breakpoint since. Never writes live state.
+  updateDraftResponsive: async (
+    dashboardId: number,
+    body: { pageId: string; breakpoint: 'md' | 'xs'; profile: Record<string, any>; baseRev: number },
+  ): Promise<Dashboard> => {
+    const response = await apiClient.put(`/dashboards/${dashboardId}/draft-responsive`, {
+      page_id: body.pageId,
+      breakpoint: body.breakpoint,
+      profile: body.profile,
+      base_rev: body.baseRev,
+    });
+    return noteSharedDraft(response.data);
+  },
+
   // Phase-15.81 v12 — stage filter slot edits (all-pages + per-page)
   // into draft_snapshot so Publish flushes layout + filter together.
   // Either field may be omitted; pass [] to clear that scope's draft.

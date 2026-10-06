@@ -1710,7 +1710,8 @@ def _other_authors_drafts(snapshot: Optional[Dict[str, Any]], user_key: str) -> 
     """The per-author parts of a draft that belong to OTHER authors — kept when
     this author publishes or discards."""
     out: Dict[str, Any] = {}
-    for key in ("user_layouts", "user_widget_configs", "user_parameters"):
+    for key in ("user_layouts", "user_widget_configs", "user_parameters",
+                "user_responsive_layouts", "user_responsive_base_rev"):
         buckets = (snapshot or {}).get(key) if isinstance(snapshot, dict) else None
         others = {k: v for k, v in (buckets or {}).items() if k != user_key} if isinstance(buckets, dict) else {}
         if others:
@@ -1776,8 +1777,13 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     # it. Another author's draft still has it.
     removed_here = {r.id for r in (dash.dashboard_charts or []) if is_draft_removed_by(r, user_key)}
     rows_in_draft = any(is_draft_only_by(r, user_key) for r in (dash.dashboard_charts or [])) or bool(removed_here)
+    from app.services.responsive_layouts import caller_draft as _responsive_caller_draft
+    my_responsive = _responsive_caller_draft(snapshot, user_key)
     overrides: Dict[str, Any] = {
         "draft_layouts": normalized_layouts,
+        # This author's unpublished device layouts (the published document is
+        # dash.responsive_layouts, already on `base`).
+        "draft_responsive_layouts": my_responsive or None,
     }
     # This author's draft edits of a published widget's content (a text block,
     # a section title): shown to them, applied on Publish, dropped on Discard.
@@ -1813,7 +1819,7 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     # Adding or removing an element is a draft change too: without counting
     # those rows the draft bar (and Discard) disappeared while one was pending.
     overrides["has_draft"] = (bool(normalized_layouts) or has_filter_draft or rows_in_draft
-                              or bool(my_widget_configs) or bool(my_parameters))
+                              or bool(my_widget_configs) or bool(my_parameters) or bool(my_responsive))
     overrides["shared_draft"] = _shared_draft_state(dash, snapshot, user_key)
     # The same server resolution the public surfaces get (over THIS editor's view,
     # draft tiles included), so the Builder filters the column a published link will.
@@ -2092,7 +2098,7 @@ def relayout_dashboard_to_template(
         IMPORT_TEMPLATE_FAMILIES,
         apply_layout_recipe,
     )
-    from app.services.dashboard_service import DEFAULT_DASHBOARD_PAGE_ID
+    from app.services.dashboard_service import DEFAULT_DASHBOARD_PAGE_ID, tile_page_id
 
     # The runtime grid is finer than the 12 columns the recipes are written in,
     # and a tile says which version its coordinates are in via `layout.gv`.
@@ -2102,7 +2108,11 @@ def relayout_dashboard_to_template(
     GRID_FINER = 3
     GRID_VERSION = 2
 
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    # The result is a DRAFT change (the caller's layout bucket), like a drag:
+    # Publish makes it public, Discard reverts it. It used to write the live
+    # rows, so a re-flow reached public/embed — and their device layouts —
+    # before anyone published. Locked like every draft write.
+    dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
@@ -2124,13 +2134,14 @@ def relayout_dashboard_to_template(
     # of surprise this endpoint exists to avoid.
     def _page_of(tile) -> str:
         layout = tile.layout if isinstance(tile.layout, dict) else {}
-        return str(layout.get("pageId") or DEFAULT_DASHBOARD_PAGE_ID)
+        return tile_page_id(layout, dash.pages_config)
 
     target_page = str(page_id or DEFAULT_DASHBOARD_PAGE_ID)
     on_page = [t for t in tiles if _page_of(t) == target_page]
     if not on_page:
-        on_page = tiles
-        target_page = None
+        # Nothing on that page: nothing to re-flow. (It used to fall back to
+        # every tile of every page — the surprise the one-page rule exists to avoid.)
+        return _serialize_dashboard_with_draft(db, dash, current_user)
 
     # The recipe speaks the importer's vocabulary, so each tile is described the
     # way an import plan would describe it.
@@ -2164,21 +2175,29 @@ def relayout_dashboard_to_template(
     # upscale from applying twice.
     scale = GRID_FINER
     by_id = {str(tile.id): tile for tile in on_page}
+    snapshot = dict(dash.draft_snapshot or {})
+    mine = dict(_draft_user_layouts(snapshot, str(current_user.id)))
     for item in items:
         tile = by_id.get(str(item["block_id"]))
         layout = item.get("layout")
         if tile is None or not isinstance(layout, dict):
             continue
-        previous = tile.layout if isinstance(tile.layout, dict) else {}
-        tile.layout = {
-            **previous,
+        # Over the caller's pending draft of the tile, else its live layout.
+        previous = mine.get(str(tile.id)) or strip_draft_row_keys(tile.layout if isinstance(tile.layout, dict) else {})
+        mine[str(tile.id)] = {
+            **strip_draft_row_keys(previous),
             "x": int(layout["x"]) * scale,
             "y": int(layout["y"]) * scale,
             "w": int(layout["w"]) * scale,
             "h": int(layout["h"]) * scale,
             "gv": GRID_VERSION,
         }
-        flag_modified(tile, "layout")
+    user_layouts = dict(snapshot.get("user_layouts") or {})
+    user_layouts[str(current_user.id)] = mine
+    snapshot["user_layouts"] = user_layouts
+    snapshot.pop("layouts", None)
+    dash.draft_snapshot = snapshot
+    flag_modified(dash, "draft_snapshot")
 
     db.commit()
     db.refresh(dash)
@@ -2672,6 +2691,9 @@ def update_dashboard_layout(
         )
         if dashboard is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+        # A live write: public/embed must see it on the next view, as after Publish.
+        from app.services import query_cache as _qc
+        _qc.invalidate_all_public_meta()
         return _serialize_dashboard_with_draft(db, dashboard, current_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -2723,6 +2745,63 @@ def update_dashboard_draft_layout(
     snapshot["user_layouts"] = user_layouts
     snapshot.pop("layouts", None)  # retire the pre-B17 shared map
     dash.draft_snapshot = snapshot
+    flag_modified(dash, "draft_snapshot")
+    db.commit()
+    db.refresh(dash)
+    return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
+class DraftResponsiveRequest(BaseModel):
+    """One page/breakpoint of THIS author's device-layout draft.
+
+    ``profile`` is a complete CUSTOM layout (36 columns) or ``{"mode": "auto"}``
+    (reset to the derived layout). ``base_rev`` is the published revision of that
+    page/breakpoint the author started from (0 = it was AUTO); Publish refuses
+    with 409 responsive_conflict if someone published it since."""
+    page_id: str = Field(..., min_length=1, max_length=200)
+    breakpoint: str = Field(..., description="md (tablet) | xs (phone)")
+    profile: Dict[str, Any]
+    base_rev: int = Field(0, ge=0)
+
+
+@router.put("/{dashboard_id}/draft-responsive", response_model=DashboardResponse)
+def update_dashboard_draft_responsive(
+    dashboard_id: int,
+    request: DraftResponsiveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Stage ONE page/breakpoint device layout into the caller's draft.
+
+    Validated by the server (the authority): supported breakpoint, a complete
+    36-column layout of integer cells inside the grid with no overlap, every
+    tile one of this dashboard's tiles on that page as the caller's draft sees
+    it. Never touches live state: public/embed keep the published layout until
+    POST /publish. Locked like every draft write."""
+    from app.services import responsive_layouts as rl
+
+    dash = _dashboard_for_draft_write(db, dashboard_id)
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    user_key = str(current_user.id)
+    snapshot = dict(dash.draft_snapshot or {})
+    pages_config = snapshot.get("pages_config") if isinstance(snapshot.get("pages_config"), list) else dash.pages_config
+    from app.services.dashboard_service import dashboard_page_ids
+    if request.page_id not in dashboard_page_ids(pages_config):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"page '{request.page_id}' is not a page of this dashboard")
+    all_ids, by_page = rl.page_tiles_for_editor(
+        db.query(DashboardChart).filter(DashboardChart.dashboard_id == dashboard_id).all(),
+        user_key=user_key, draft_layouts=_draft_user_layouts(snapshot, user_key), pages_config=pages_config,
+    )
+    try:
+        entry = rl.validate_profile(
+            request.profile, page_id=request.page_id, breakpoint=request.breakpoint,
+            page_tile_ids=by_page.get(request.page_id, set()), dashboard_tile_ids=all_ids,
+        )
+    except rl.ResponsiveLayoutError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    dash.draft_snapshot = rl.stage_draft(snapshot, user_key, request.page_id, request.breakpoint, entry, request.base_rev)
     flag_modified(dash, "draft_snapshot")
     db.commit()
     db.refresh(dash)
@@ -2943,6 +3022,21 @@ def publish_dashboard_draft(
                 },
             )
 
+    # ── Device layouts: one author's layout never silently replaces another's.
+    #    A page/breakpoint the caller drafted that someone published since the
+    #    caller started → 409 naming it (the force choice publishes anyway). ──
+    from app.services import responsive_layouts as rl
+    responsive_conflicts = rl.conflicts(dash.responsive_layouts, snapshot, user_key)
+    if responsive_conflicts and not (payload is not None and payload.force):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "responsive_conflict",
+                "message": "A device layout you changed was published by someone else since you started.",
+                "responsive": responsive_conflicts,
+            },
+        )
+
     keep_shared = bool(payload and payload.keep_shared)
     if not keep_shared:
         _refuse_others_shared_draft(dash, snapshot, user_key, payload.shared_ack_rev if payload else None, "publish")
@@ -3017,6 +3111,17 @@ def publish_dashboard_draft(
     if isinstance(draft_theme_config, dict):
         dash.theme_config = draft_theme_config
         flag_modified(dash, "theme_config")
+
+    # ── Device layouts: the caller's drafted page/breakpoints go live (revision
+    #    bumped; a reset marker returns that page/breakpoint to AUTO), then what
+    #    no longer exists is pruned — pages deleted, tiles no longer published on
+    #    their page. Same commit as everything above. ──
+    remaining = [r for r in rows if str(r.id) not in removed_ids]
+    dash.responsive_layouts = rl.prune(
+        rl.promote(dash.responsive_layouts, snapshot, user_key),
+        pages_config=dash.pages_config, published_rows=remaining,
+    )
+    flag_modified(dash, "responsive_layouts")
 
     # ── Clear ONLY this user's layout bucket + the applied filter drafts.
     #    Other users' pending layout buckets survive. ──
