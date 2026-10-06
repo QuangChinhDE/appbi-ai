@@ -23,6 +23,7 @@ from app.services import physical_type_map as _ptm
 from app.services.google_sheets_connector import create_google_sheets_connector
 from app.services.manual_table_connector import create_manual_table_connector
 from app.services.google_data_access_service import get_google_credentials_for_user_id
+from app.core import egress as _egress
 
 logger = get_logger(__name__)
 
@@ -699,7 +700,7 @@ class DataSourceConnectionService:
         """Test PostgreSQL connection."""
         conn = None
         try:
-            conn = psycopg2.connect(
+            conn = _egress.pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -724,7 +725,7 @@ class DataSourceConnectionService:
         """Test MySQL connection."""
         conn = None
         try:
-            conn = pymysql.connect(
+            conn = _egress.mysql_connect(
                 host=config.get("host"),
                 port=config.get("port", 3306),
                 database=config.get("database"),
@@ -1030,7 +1031,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _egress.pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -1076,7 +1077,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = pymysql.connect(
+            conn = _egress.mysql_connect(
                 host=config.get("host"),
                 port=config.get("port", 3306),
                 database=config.get("database"),
@@ -1211,7 +1212,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _egress.pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -1261,7 +1262,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = pymysql.connect(
+            conn = _egress.mysql_connect(
                 host=config.get("host"),
                 port=config.get("port", 3306),
                 database=config.get("database"),
@@ -2213,7 +2214,7 @@ class DataSourceConnectionService:
         timeout_seconds: int = 3600,
     ) -> Tuple[List[str], Generator[List[Dict[str, Any]], None, None]]:
         """Stream rows from PostgreSQL using a server-side cursor."""
-        conn = psycopg2.connect(
+        conn = _egress.pg_connect(
             host=config.get("host"),
             port=config.get("port", 5432),
             database=config.get("database"),
@@ -2286,7 +2287,7 @@ class DataSourceConnectionService:
         timeout_seconds: int = 3600,
     ) -> Tuple[List[str], Generator[List[Dict[str, Any]], None, None]]:
         """Stream rows from MySQL using SSDictCursor (server-side streaming)."""
-        conn = pymysql.connect(
+        conn = _egress.mysql_connect(
             host=config.get("host"),
             port=config.get("port", 3306),
             database=config.get("database"),
@@ -2594,7 +2595,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _egress.pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -2638,7 +2639,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = pymysql.connect(
+            conn = _egress.mysql_connect(
                 host=config.get("host"),
                 port=config.get("port", 3306),
                 database=config.get("database"),
@@ -2951,7 +2952,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _egress.pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -3006,7 +3007,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = pymysql.connect(
+            conn = _egress.mysql_connect(
                 host=config.get("host"),
                 port=config.get("port", 3306),
                 user=config.get("username"),
@@ -3469,7 +3470,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _egress.pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -3554,7 +3555,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _egress.pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -3831,7 +3832,7 @@ class DataSourceConnectionService:
             WHERE c.contype = 'f'
         """
         try:
-            conn = psycopg2.connect(
+            conn = _egress.pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -3891,7 +3892,7 @@ class DataSourceConnectionService:
               AND TABLE_NAME IN ({placeholders})
         """
         try:
-            conn = pymysql.connect(
+            conn = _egress.mysql_connect(
                 host=config.get("host"),
                 port=int(config.get("port", 3306)),
                 database=config.get("database"),
@@ -4083,7 +4084,7 @@ class DataSourceConnectionService:
             ORDER BY ns.nspname, tbl.relname, src_attr.ord
         """
         try:
-            conn = psycopg2.connect(
+            conn = _egress.pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -4137,7 +4138,7 @@ class DataSourceConnectionService:
             ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
         """
         try:
-            conn = pymysql.connect(
+            conn = _egress.mysql_connect(
                 host=config.get("host"),
                 port=int(config.get("port", 3306)),
                 database=config.get("database"),
@@ -4236,7 +4237,7 @@ class DataSourceConnectionService:
             FROM information_schema.columns
         """
         try:
-            conn = psycopg2.connect(
+            conn = _egress.pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -4294,7 +4295,7 @@ class DataSourceConnectionService:
               AND TABLE_NAME IN ({placeholders})
         """
         try:
-            conn = pymysql.connect(
+            conn = _egress.mysql_connect(
                 host=config.get("host"),
                 port=int(config.get("port", 3306)),
                 database=config.get("database"),
@@ -4365,7 +4366,7 @@ class DataSourceConnectionService:
     def _pg_list_columns(config: Dict[str, Any], schema: str, table: str) -> List[Dict[str, str]]:
         conn = cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _egress.pg_connect(
                 host=config.get("host"), port=config.get("port", 5432),
                 database=config.get("database"), user=config.get("username"),
                 password=config.get("password"),
@@ -4387,7 +4388,7 @@ class DataSourceConnectionService:
     def _mysql_list_columns(config: Dict[str, Any], database: str, table: str) -> List[Dict[str, str]]:
         conn = cursor = None
         try:
-            conn = pymysql.connect(
+            conn = _egress.mysql_connect(
                 host=config.get("host"), port=config.get("port", 3306),
                 user=config.get("username"), password=config.get("password"),
             )

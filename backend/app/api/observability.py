@@ -22,7 +22,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core import get_db
-from app.core.dependencies import get_current_user, require_permission
+from app.core.dependencies import (
+    get_current_user,
+    get_effective_permission,
+    require_edit_access,
+    require_permission,
+)
 from app.core.permissions import LEVEL_ORDER, _owned_or_shared, get_user_module_permission
 from app.models.resource_share import ResourceType
 from app.models.dataset import Dataset, DatasetTable
@@ -181,11 +186,23 @@ def usage(db: Session = Depends(get_db), user: User = Depends(get_current_user))
 
 # ── manual scan ───────────────────────────────────────────────────────────────
 
+def _is_obs_admin(user: User) -> bool:
+    """The Observability module administrator (module level `full`). Global
+    concepts - the tenant-wide scan, global alert channels - are theirs."""
+    return get_user_module_permission(user, "observability") == "full"
+
+
 @router.post("/scan")
 def scan(
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("datasets", "edit")),
+    user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
+    """Run EVERY monitor on EVERY dataset, fold incidents tenant-wide and notify
+    every channel. That is a global operation: it used to be open to anyone with
+    `datasets: edit`, who could repeatedly spend warehouse quota on other teams'
+    datasets and push alerts to their channels. Observability admins only."""
+    if not _is_obs_admin(user):
+        raise HTTPException(status_code=403, detail="A tenant-wide scan is an Observability administrator action.")
     return ObservabilityService.scan_all(db)
 
 
@@ -226,16 +243,59 @@ def _mask_target(kind: str, target: str | None) -> str:
 
 
 def _channel_dict(
-    c: ObservabilityAlertChannel, *, reveal_target: bool = True
+    c: ObservabilityAlertChannel, *, reveal_target: bool = False, can_manage: bool = False
 ) -> Dict[str, Any]:
     return {
         "id": c.id, "kind": c.kind, "name": c.name,
+        "scope": c.scope or ("global" if c.dataset_id is None else "dataset"),
         "target": c.target if reveal_target else _mask_target(c.kind, c.target),
         "targetMasked": not reveal_target,
         "minSeverity": c.min_severity, "isActive": c.is_active, "datasetId": c.dataset_id,
         "lastSentAt": c.last_sent_at.isoformat() if c.last_sent_at else None,
         "lastError": c.last_error,
+        "capabilities": {"manage": can_manage, "test": can_manage, "reveal_target": reveal_target},
     }
+
+
+def _may_manage_channel(db: Session, user: User, ch: ObservabilityAlertChannel) -> bool:
+    """Global channels: Observability admin. Dataset channels: admin, or the
+    channel's owner while they can still edit its dataset. A view share on the
+    dataset is not enough to repoint, test or delete someone's channel."""
+    if _is_obs_admin(user):
+        return True
+    if (ch.scope or "") == "global" or ch.dataset_id is None:
+        return False
+    if ch.owner_id is None or ch.owner_id != user.id:
+        return False
+    ds = db.query(Dataset).filter(Dataset.id == ch.dataset_id).first()
+    return ds is not None and get_effective_permission(db, user, ds, "datasets") in ("edit", "full")
+
+
+def _load_channel_for_manage(db: Session, user: User, channel_id: int) -> ObservabilityAlertChannel:
+    ch = db.query(ObservabilityAlertChannel).filter(ObservabilityAlertChannel.id == channel_id).first()
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    visible = ch.dataset_id is None or ch.dataset_id in set(_accessible_dataset_ids(db, user))
+    if not visible:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if not _may_manage_channel(db, user, ch):
+        raise HTTPException(status_code=403, detail="You cannot manage this alert channel.")
+    return ch
+
+
+def _validate_target(kind: str, target: str) -> None:
+    """Webhook/Slack targets are outbound destinations: they must pass the
+    central egress policy when SAVED (and again on every send)."""
+    if kind in ("slack", "webhook"):
+        from app.core.egress import EgressDenied, validate_http_url
+
+        try:
+            validate_http_url(target)
+        except EgressDenied as exc:
+            raise HTTPException(status_code=400, detail=f"Target not allowed: {exc}") from exc
+    elif kind == "email":
+        if "@" not in (target or "") or any(ch in target for ch in "\r\n,;"):
+            raise HTTPException(status_code=400, detail="Target must be one email address.")
 
 
 @router.get("/alert-channels")
@@ -245,18 +305,15 @@ def list_alert_channels(
 ) -> List[Dict[str, Any]]:
     ids = set(_accessible_dataset_ids(db, user))
     rows = db.query(ObservabilityAlertChannel).order_by(ObservabilityAlertChannel.id.desc()).all()
-    # Global channels (dataset_id=None) are visible to everyone who may open this
-    # module, which is why their `target` is masked unless the caller could edit
-    # them anyway. It used to be returned in full to any logged-in user — a list of
-    # live webhook and Slack URLs behind a read-only screen.
-    reveal = LEVEL_ORDER.get(
-        get_user_module_permission(user, "observability"), 0
-    ) >= LEVEL_ORDER["edit"]
-    return [
-        _channel_dict(c, reveal_target=reveal)
-        for c in rows
-        if c.dataset_id is None or c.dataset_id in ids
-    ]
+    # A target (webhook / Slack URL) is a credential: shown only to whoever may
+    # manage that channel. Holding `observability: edit` used to reveal every one.
+    out = []
+    for c in rows:
+        if not (c.dataset_id is None or c.dataset_id in ids):
+            continue
+        manage = _may_manage_channel(db, user, c)
+        out.append(_channel_dict(c, reveal_target=manage, can_manage=manage))
+    return out
 
 
 @router.post("/alert-channels", status_code=201)
@@ -270,16 +327,26 @@ def create_alert_channel(
 ) -> Dict[str, Any]:
     if payload.kind not in ALERT_CHANNEL_KINDS:
         raise HTTPException(status_code=422, detail=f"kind must be one of {ALERT_CHANNEL_KINDS}")
-    if payload.dataset_id is not None:
-        _require_dataset_access(db, user, payload.dataset_id)
+    if payload.dataset_id is None:
+        if not _is_obs_admin(user):
+            raise HTTPException(status_code=403, detail="Global alert channels are an Observability administrator action.")
+        scope = "global"
+    else:
+        ds = db.query(Dataset).filter(Dataset.id == payload.dataset_id).first()
+        if ds is None:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        require_edit_access(db, user, ds, "datasets")
+        scope = "dataset"
+    _validate_target(payload.kind, payload.target)
     ch = ObservabilityAlertChannel(
         kind=payload.kind, name=payload.name, target=payload.target,
         min_severity=payload.min_severity, dataset_id=payload.dataset_id, owner_id=user.id,
+        scope=scope,
     )
     db.add(ch)
     db.commit()
     db.refresh(ch)
-    return _channel_dict(ch)
+    return _channel_dict(ch, reveal_target=True, can_manage=True)
 
 
 @router.patch("/alert-channels/{channel_id}")
@@ -288,14 +355,11 @@ def update_alert_channel(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    ch = db.query(ObservabilityAlertChannel).filter(ObservabilityAlertChannel.id == channel_id).first()
-    if not ch:
-        raise HTTPException(status_code=404, detail="Channel not found")
-    if ch.dataset_id is not None:
-        _require_dataset_access(db, user, ch.dataset_id)
+    ch = _load_channel_for_manage(db, user, channel_id)
     if payload.name is not None:
         ch.name = payload.name
     if payload.target is not None:
+        _validate_target(ch.kind, payload.target)
         ch.target = payload.target
     if payload.min_severity is not None:
         ch.min_severity = payload.min_severity
@@ -303,7 +367,7 @@ def update_alert_channel(
         ch.is_active = payload.is_active
     db.commit()
     db.refresh(ch)
-    return _channel_dict(ch)
+    return _channel_dict(ch, reveal_target=True, can_manage=True)
 
 
 @router.delete("/alert-channels/{channel_id}", status_code=204)
@@ -312,11 +376,7 @@ def delete_alert_channel(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ch = db.query(ObservabilityAlertChannel).filter(ObservabilityAlertChannel.id == channel_id).first()
-    if not ch:
-        raise HTTPException(status_code=404, detail="Channel not found")
-    if ch.dataset_id is not None:
-        _require_dataset_access(db, user, ch.dataset_id)
+    ch = _load_channel_for_manage(db, user, channel_id)
     db.delete(ch)
     db.commit()
 
@@ -327,11 +387,7 @@ def test_alert_channel(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    ch = db.query(ObservabilityAlertChannel).filter(ObservabilityAlertChannel.id == channel_id).first()
-    if not ch:
-        raise HTTPException(status_code=404, detail="Channel not found")
-    if ch.dataset_id is not None:
-        _require_dataset_access(db, user, ch.dataset_id)
+    ch = _load_channel_for_manage(db, user, channel_id)
     from app.services.observability_notifier import test_channel
     ok, err = test_channel(db, ch)
-    return {"ok": ok, "error": err, "channel": _channel_dict(ch)}
+    return {"ok": ok, "error": err, "channel": _channel_dict(ch, reveal_target=True, can_manage=True)}

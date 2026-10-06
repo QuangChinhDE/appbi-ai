@@ -583,6 +583,7 @@ jobs:
             tests/test_authz_route_inventory.py \
             tests/test_module_floor.py \
             tests/test_workboard_app_user_roles.py \
+            tests/test_authz_egress.py \
             --junitxml=/tmp/authz-core.xml 2>&1 | tee /tmp/authz-core.log
 
       - name: GATE — Postgres role + row-level security (app role, not owner)
@@ -596,6 +597,7 @@ jobs:
             tests/test_authz_workspace_http_pg.py \
             tests/test_authz_datasource_secret_http_pg.py \
             tests/test_authz_workspace_route_matrix_pg.py \
+            tests/test_authz_observability_http_pg.py \
             --junitxml=/tmp/authz-pg.xml
 
       # EVERY MANDATORY SECURITY SUITE, NOT JUST THE FIRST.

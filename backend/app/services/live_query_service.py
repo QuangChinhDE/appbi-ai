@@ -44,6 +44,7 @@ class LiveBaseQueryPlan:
 
 
 from app.services.sql_pattern import pattern_predicate, regex_predicate
+from app.core import egress as _egress
 # ── SQL dialect helpers ──────────────────────────────────────────────────────
 
 def _quote_identifier(name: str, dialect: str) -> str:
@@ -1979,7 +1980,7 @@ def _get_postgresql_table_size(config: dict, schema_name: str, table_name: str) 
     """Use pg_class.reltuples for fast row estimates."""
     import psycopg2
 
-    conn = psycopg2.connect(
+    conn = _egress.pg_connect(
         host=config.get("host", "localhost"),
         port=config.get("port", 5432),
         user=config.get("username") or config.get("user", ""),
@@ -2015,7 +2016,7 @@ def _get_mysql_table_size(config: dict, schema_name: str, table_name: str) -> Di
     """Use INFORMATION_SCHEMA.TABLES for row/size estimates."""
     import pymysql
 
-    conn = pymysql.connect(
+    conn = _egress.mysql_connect(
         host=config.get("host", "localhost"),
         port=int(config.get("port", 3306)),
         user=config.get("username") or config.get("user", ""),

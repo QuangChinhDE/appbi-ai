@@ -437,3 +437,5 @@ backend/_verify_gate.db
 !backend/tests/test_authz_datasource_secret_http_pg.py
 !backend/tests/test_authz_workspace_route_matrix_pg.py
 !backend/tests/test_authz_bootstrap_admin_pg.py
+!backend/tests/test_authz_egress.py
+!backend/tests/test_authz_observability_http_pg.py

@@ -116,6 +116,17 @@ def list_webhooks(
     return configs
 
 
+
+def _require_allowed_url(url) -> None:
+    """A webhook URL is an outbound destination that receives workboard rows:
+    it must pass the central egress policy when saved (and again on send)."""
+    from app.core.egress import EgressDenied, validate_http_url
+
+    try:
+        validate_http_url(str(url or ""))
+    except EgressDenied as exc:
+        raise HTTPException(status_code=400, detail=f"Webhook URL not allowed: {exc}") from exc
+
 @router.post(
     "/{workboard_id}/webhooks",
     response_model=WorkboardWebhookConfig,
@@ -131,6 +142,7 @@ def create_webhook(
     require_edit_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _validate_doc_screen_id(wb, payload.screen_id)
+    _require_allowed_url(payload.url)
     configs = svc.list_webhook_configs(wb)
     new_id = _slug_id(payload.name, [c.id for c in configs])
     cfg = WorkboardWebhookConfig(id=new_id, **payload.model_dump())
@@ -154,6 +166,8 @@ def update_webhook(
     require_edit_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     updates = payload.model_dump(exclude_unset=True)
+    if updates.get("url"):
+        _require_allowed_url(updates["url"])
     if "screen_id" in updates and updates["screen_id"]:
         _validate_doc_screen_id(wb, updates["screen_id"])
     configs = svc.list_webhook_configs(wb)
