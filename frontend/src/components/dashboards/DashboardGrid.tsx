@@ -17,6 +17,7 @@ import { Loader2, LayoutDashboard } from 'lucide-react';
 import { getDashboardGridMargin } from './DashboardThemeProvider';
 import { DASHBOARD_GRID_COLS, REPORT_STACK_BREAKPOINT, RESPONSIVE_MIN_WIDTH_PX, STACK_MIN_HEIGHT_PX, dashboardRowHeight, reportBreakpointFor, type ResponsiveTileKind } from '@/lib/dashboard-pages';
 import { settleStoredLayout } from '@/lib/grid-settle';
+import { growInPlace, resolveDrop } from '@/lib/grid-arrange';
 import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { useExportMode } from '@/lib/export-mode';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -313,6 +314,8 @@ function DashboardGridInner({
   const gridWrapRef = React.useRef<HTMLDivElement | null>(null);
   const autoScroll = useEdgeAutoScroll(gridWrapRef as React.RefObject<HTMLElement>);
   const [gridWidth, setGridWidth] = React.useState(0);
+  // Bumped when a device drop is refused: the grid re-reads the stored cells.
+  const [deviceRevision, setDeviceRevision] = React.useState(0);
   React.useEffect(() => {
     const el = gridWrapRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
@@ -416,7 +419,7 @@ function DashboardGridInner({
         ...(editableDevice ? deviceMinCells(kind, deviceBreakpoint, deviceRowPitch) : {}),
         static: !editableDevice,
         resizeHandles: RESIZE_HANDLES,
-        rev: layoutRevision,
+        rev: `${layoutRevision}.${deviceRevision}`,
       };
     })
     : authoredLayouts;
@@ -435,9 +438,25 @@ function DashboardGridInner({
     const changed = !prev
       || item.x !== prev.x || item.y !== prev.y || item.w !== prev.w || item.h !== prev.h;
     if (!changed) return;
-    // A device gesture edits the device layout — never desktop.
+    // A device gesture edits the device layout — never desktop. A MOVE follows
+    // the desktop drop rule (lib/grid-arrange resolveDrop): the tile may be
+    // carried over others and the layout opens room where it lands. A RESIZE in
+    // place pushes down only what it now covers (growInPlace) — a tile beside it
+    // never jumps. Everything that had to move is one change; a gesture that
+    // cannot be placed returns the tile.
     if (deviceBreakpoint) {
-      if (editableDevice) onDeviceLayoutChange!(deviceBreakpoint, [{ i: item.i, x: item.x, y: item.y, w: item.w, h: item.h }]);
+      if (!editableDevice) return;
+      const boxes = layouts.map((l) => ({ id: Number(l.i), x: l.x, y: l.y, w: l.w, h: l.h, locked: Boolean(l.static) }));
+      const rect = { x: item.x, y: item.y, w: item.w, h: item.h };
+      // A drag never changes a tile's size; a resize always does (from any handle).
+      const result = item.w !== prev!.w || item.h !== prev!.h
+        ? growInPlace(boxes, Number(item.i), rect)
+        : resolveDrop(boxes, Number(item.i), rect);
+      if (result.status === 'refused') {
+        setDeviceRevision((n) => n + 1);
+        return;
+      }
+      onDeviceLayoutChange!(deviceBreakpoint, result.changed.map((b) => ({ i: String(b.id), x: b.x, y: b.y, w: b.w, h: b.h })));
       return;
     }
     if (onLayoutChange) onLayoutChange([item]);
@@ -475,12 +494,13 @@ function DashboardGridInner({
     <div
       ref={gridWrapRef}
       className="relative"
-      // Observability (tests, audits): what this surface drew, from the ONE width.
+      // Observability (tests, audits): what this surface drew, from the ONE width —
+      // nothing before that width is known (nothing is drawn then either).
       data-report-width={gridWidth}
-      data-report-breakpoint={resolved.breakpoint}
-      data-report-cols={gridCols}
-      data-report-layout-source={resolved.source}
-      data-report-layout={JSON.stringify(layouts.map(({ i, x, y, w, h }) => ({ i, x, y, w, h })))}
+      data-report-breakpoint={gridWidth > 0 ? resolved.breakpoint : undefined}
+      data-report-cols={gridWidth > 0 ? gridCols : undefined}
+      data-report-layout-source={gridWidth > 0 ? resolved.source : undefined}
+      data-report-layout={gridWidth > 0 ? JSON.stringify(layouts.map(({ i, x, y, w, h }) => ({ i, x, y, w, h }))) : undefined}
     >
       <SectionBands
         layouts={layouts}
@@ -556,10 +576,10 @@ function DashboardGridInner({
       // Editing: a tile may be carried over others and dropped there — the page
       // then opens room where it lands (lib/grid-arrange resolveDrop), so the
       // stored layout never overlaps. Viewing: nothing moves at all.
-      // A device layout is edited without overlap: a drop on an occupied cell
-      // returns the tile (the saved layout is always valid as it stands).
-      allowOverlap={!!onLayoutChange && !deviceView}
-      preventCollision={!onLayoutChange || deviceView}
+      // A CUSTOM device layout is edited the same way (persistItem: resolveDrop);
+      // AUTO and every read-only view never move.
+      allowOverlap={editableDevice || (!!onLayoutChange && !deviceView)}
+      preventCollision={!editableDevice && (!onLayoutChange || deviceView)}
     >
       {dashboardCharts.map((dc) => {
         const isWidget = dc.widget_type && dc.widget_type !== 'chart';

@@ -175,6 +175,41 @@ export interface DropResult {
 }
 
 /**
+ * A tile resized IN PLACE on a device layout: only what it now covers moves
+ * down — to just below it — and, in turn, only what those then cover. A tile
+ * beside it (another column) never moves, unlike a band-opening drop. A locked
+ * tile in the way refuses the resize. Never overlaps.
+ */
+export function growInPlace(
+  page: GridBox[],
+  id: number,
+  rect: { x: number; y: number; w: number; h: number },
+): DropResult {
+  const boxes = page.map((b) => ({ ...b }));
+  const self = boxes.find((b) => b.id === id);
+  if (!self) return { status: 'refused', changed: [] };
+  Object.assign(self, rect);
+  const queue: GridBox[] = [self];
+  for (let guard = 0; queue.length > 0 && guard < 10_000; guard += 1) {
+    const pusher = queue.shift()!;
+    for (const b of boxes) {
+      if (b === pusher || b === self || !overlaps(pusher, b)) continue;
+      if (b.locked) return { status: 'refused', changed: [], blockedBy: b.id, reason: 'locked' };
+      b.y = pusher.y + pusher.h;
+      // Pushed into the resized tile itself: below it instead.
+      if (overlaps(self, b)) b.y = self.y + self.h;
+      queue.push(b);
+    }
+  }
+  const before = new Map(page.map((b) => [b.id, b]));
+  const changed = boxes.filter((b) => {
+    const was = before.get(b.id)!;
+    return was.x !== b.x || was.y !== b.y || was.w !== b.w || was.h !== b.h;
+  });
+  return { status: 'ok', changed };
+}
+
+/**
  * Where a moved or resized tile lands, and what makes room for it.
  *
  * The grid never overlaps and never re-packs on its own. What it does:

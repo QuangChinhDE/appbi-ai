@@ -2194,6 +2194,10 @@ function DashboardDetailPageInner() {
   // mounted once but always sees current state.
   const ctrlSRef = React.useRef<() => void>(() => {});
   ctrlSRef.current = () => {
+    // The Studio is a read-only review over the Builder: a shortcut pressed
+    // while it is open must not save the work under it (the key still never
+    // reaches the browser's own Save-page dialog).
+    if (studioOpen) return;
     if (hasUnsavedPresentation) handleSaveDraft();
   };
   React.useEffect(() => {
