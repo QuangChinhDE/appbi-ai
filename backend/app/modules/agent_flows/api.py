@@ -1505,7 +1505,7 @@ async def test_flow_as_chat(
         actor_type="user", actor_ref=_actor(user),
     )
     binding = direct_chat.ephemeral_chat_binding(flow)
-    scope = run_scope(db, row, flow, None)
+    scope = run_scope(db, row, flow, None, caller=user)
     ctx.adopt_scope(chart_scope(db, scope), scope.get("dataset_ids") or [])
 
     _require_keys(db, flow)
@@ -1632,7 +1632,7 @@ def preview_step(
         binding = direct_chat.ephemeral_chat_binding(flow)
         # The same scope a real chat turn gets, derived the same way, so the panel
         # and the run cannot disagree about what the step can reach.
-        scope = run_scope(db, row, flow, None)
+        scope = run_scope(db, row, flow, None, caller=user)
         ctx.knowledge_scope = scope
         ctx.adopt_scope(chart_scope(db, scope), scope.get("dataset_ids") or [])
     else:
@@ -1785,3 +1785,161 @@ def _require_keys(db: Session, flow: Flow) -> None:
         credentials_service.require_usable(db, flow, action="test")
     except credentials_service.CredentialError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+
+# ═══ Explicit delegation of the owner's data authority (decision Q2) ══════════
+# A run uses the CALLER's authority ∩ what the flow attached. The only way a
+# caller gets answers from data they cannot read themselves is a row here,
+# created by the flow's OWNER for a resource the owner can read and the flow
+# attaches. Revocable; audited; consulted on every turn.
+
+class DelegationBody(BaseModel):
+    grantee_user_id: str | None = None
+    grantee_team_id: str | None = None
+    resource_type: str  # dataset | document
+    resource_id: int
+
+
+def _delegation_out(d) -> dict[str, Any]:
+    return {
+        "id": d.id, "brain_key": d.brain_key,
+        "grantee_user_id": str(d.grantee_user_id) if d.grantee_user_id else None,
+        "grantee_team_id": str(d.grantee_team_id) if d.grantee_team_id else None,
+        "resource_type": d.resource_type, "resource_id": d.resource_id, "action": d.action,
+        "created_at": d.created_at.isoformat() if d.created_at else None,
+        "revoked_at": d.revoked_at.isoformat() if d.revoked_at else None,
+    }
+
+
+def _require_flow_owner(db: Session, user: User, brain_key: str):
+    from app.services.agent_flows.permissions import _resolve_owner
+
+    row = _may_read_flow(db, user, brain_key)
+    owner = _resolve_owner(db, row)
+    if owner is None or owner.id != user.id:
+        raise HTTPException(status_code=403, detail="Only the flow's owner can delegate its data.")
+    return row
+
+
+@router.get("/brains/{brain_key}/delegations")
+def list_delegations(brain_key: str, db: Session = Depends(get_db), user: User = Depends(can_view)) -> dict[str, Any]:
+    from app.models.agent_flow_delegation import AgentFlowDelegation
+
+    row = _may_read_flow(db, user, brain_key)
+    require_full_access(db, user, row, "agent_flows")  # owner or module admin
+    rows = db.query(AgentFlowDelegation).filter(AgentFlowDelegation.brain_key == brain_key).all()
+    return {"delegations": [_delegation_out(d) for d in rows]}
+
+
+@router.post("/brains/{brain_key}/delegations", status_code=201)
+def create_delegation(brain_key: str, body: DelegationBody, db: Session = Depends(get_db),
+                      user: User = Depends(can_edit)) -> dict[str, Any]:
+    import uuid as _uuid
+
+    from app.models.agent_flow_delegation import AgentFlowDelegation
+    from app.models.team import Team
+    from app.services.agent_flows.permissions import attachable_documents, readable_datasets
+
+    row = _require_flow_owner(db, user, brain_key)
+    if body.resource_type not in ("dataset", "document"):
+        raise HTTPException(status_code=400, detail="resource_type must be dataset or document")
+    if (body.grantee_user_id is None) == (body.grantee_team_id is None):
+        raise HTTPException(status_code=400, detail="Exactly one grantee (user or team)")
+    try:
+        gu = _uuid.UUID(body.grantee_user_id) if body.grantee_user_id else None
+        gt = _uuid.UUID(body.grantee_team_id) if body.grantee_team_id else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid grantee id") from None
+    if gu is not None and db.get(User, gu) is None:
+        raise HTTPException(status_code=400, detail="Unknown user")
+    if gt is not None and db.get(Team, gt) is None:
+        raise HTTPException(status_code=400, detail="Unknown team")
+    # Only what the owner can read NOW, and only what this flow attaches.
+    owner_can = (readable_datasets(db, user) if body.resource_type == "dataset"
+                 else attachable_documents(db, user))
+    if body.resource_id not in owner_can:
+        raise HTTPException(status_code=403, detail="You cannot delegate a resource you cannot read.")
+    flow = reg.parse_flow(row)
+    if flow is None:
+        raise HTTPException(status_code=409, detail="The flow cannot be parsed; fix it before delegating.")
+    kind = "semantic" if body.resource_type == "dataset" else "document"
+    attached = {int(s.ref) for s in flow.bound_sources() if s.source == kind and str(s.ref).isdigit()}
+    if body.resource_id not in attached:
+        raise HTTPException(status_code=400, detail="The flow does not attach this resource.")
+    d = AgentFlowDelegation(brain_key=brain_key, grantee_user_id=gu, grantee_team_id=gt,
+                            resource_type=body.resource_type, resource_id=body.resource_id,
+                            action="read", created_by=user.id)
+    db.add(d)
+    db.commit()
+    db.refresh(d)
+    reg._audit(db, "AGENT_FLOW_DELEGATED", brain_key, _actor(user), _delegation_out(d))
+    return _delegation_out(d)
+
+
+@router.delete("/brains/{brain_key}/delegations/{delegation_id}")
+def revoke_delegation(brain_key: str, delegation_id: int, db: Session = Depends(get_db),
+                      user: User = Depends(can_edit)) -> dict[str, Any]:
+    from datetime import datetime, timezone
+
+    from app.models.agent_flow_delegation import AgentFlowDelegation
+
+    row = _may_read_flow(db, user, brain_key)
+    require_full_access(db, user, row, "agent_flows")  # owner or module admin may revoke
+    d = db.query(AgentFlowDelegation).filter(AgentFlowDelegation.id == delegation_id,
+                                             AgentFlowDelegation.brain_key == brain_key).first()
+    if d is None:
+        raise HTTPException(status_code=404, detail="Delegation not found")
+    if d.revoked_at is None:
+        d.revoked_at = datetime.now(timezone.utc)
+        d.revoked_by = user.id
+        db.commit()
+        reg._audit(db, "AGENT_FLOW_DELEGATION_REVOKED", brain_key, _actor(user), _delegation_out(d))
+    return _delegation_out(d)
+
+
+@router.get("/admin/delegation-impact")
+def delegation_impact(db: Session = Depends(get_db), user: User = Depends(require_permission("agent_flows", "full"))) -> dict[str, Any]:
+    """Flows shared with people who cannot read some of what the flow attaches.
+    Before decision Q2 those people got answers from that data on the owner's
+    authority; now they do not unless the owner delegates it explicitly. This is
+    the review list - nothing was delegated automatically."""
+    from app.models.resource_share import ResourceShare, ResourceType
+    from app.models.team import TeamMembership
+    from app.services.agent_flows.permissions import active_delegations, attachable_documents, readable_datasets
+
+    keys = sorted({r[0] for r in db.query(ResourceShare.resource_id)
+                   .filter(ResourceShare.resource_type == ResourceType.AGENT_BRAIN)})
+    report = []
+    for key in keys:
+        row = _brain_row(db, key)
+        if row is None:
+            continue
+        try:
+            flow = reg.parse_flow(row)
+        except Exception:  # noqa: BLE001 - an unparsable flow is reported, not skipped silently
+            report.append({"brain_key": key, "error": "flow could not be parsed"})
+            continue
+        ds = {int(x.ref) for x in flow.bound_sources() if x.source == "semantic" and str(x.ref).isdigit()}
+        docs = {int(x.ref) for x in flow.bound_sources() if x.source == "document" and str(x.ref).isdigit()}
+        if not ds and not docs:
+            continue
+        shares = db.query(ResourceShare).filter(ResourceShare.resource_type == ResourceType.AGENT_BRAIN,
+                                                ResourceShare.resource_id == key).all()
+        grantees = set()
+        for sh in shares:
+            if sh.user_id is not None:
+                grantees.add(sh.user_id)
+            elif sh.team_id is not None:
+                grantees |= {m.user_id for m in db.query(TeamMembership).filter(TeamMembership.team_id == sh.team_id)}
+        for uid in sorted(grantees, key=str):
+            person = db.get(User, uid)
+            if person is None:
+                continue
+            delegated = active_delegations(db, key, person)
+            lost_ds = sorted(ds - readable_datasets(db, person) - delegated.get("dataset", set()))
+            lost_docs = sorted(docs - attachable_documents(db, person) - delegated.get("document", set()))
+            if lost_ds or lost_docs:
+                report.append({"brain_key": key, "user_id": str(uid), "email": person.email,
+                               "datasets_no_longer_answered": lost_ds,
+                               "documents_no_longer_answered": lost_docs})
+    return {"flows_needing_review": report}

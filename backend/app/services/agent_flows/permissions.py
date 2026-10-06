@@ -133,11 +133,39 @@ def usable_brains(db: Session, user: Any):
     return q.filter(or_(*conditions))
 
 
+def readable_datasets(db: Session, user: Any) -> set[int]:
+    """Datasets THIS user may read (the Dataset policy's list scope)."""
+    from app.models.dataset import Dataset
+
+    return {int(r.id) for r in _owned_or_shared(db, Dataset, ResourceType.DATASET, user).all()}
+
+
+def active_delegations(db: Session, brain_key: str, user: Any) -> dict[str, set[int]]:
+    """Resources the flow's owner EXPLICITLY delegated to ``user`` (directly or
+    through a team) for this flow, not revoked. Consulted on every turn, so a
+    revocation takes effect on the next question."""
+    from app.models.agent_flow_delegation import AgentFlowDelegation
+    from app.models.team import TeamMembership
+
+    team_ids = [r[0] for r in db.query(TeamMembership.team_id).filter(TeamMembership.user_id == user.id)]
+    rows = (
+        db.query(AgentFlowDelegation)
+        .filter(AgentFlowDelegation.brain_key == brain_key, AgentFlowDelegation.revoked_at.is_(None))
+        .all()
+    )
+    out: dict[str, set[int]] = {"dataset": set(), "document": set()}
+    for r in rows:
+        if r.grantee_user_id == user.id or (r.grantee_team_id is not None and r.grantee_team_id in team_ids):
+            out.setdefault(r.resource_type, set()).add(int(r.resource_id))
+    return out
+
+
 def run_scope(
     db: Session,
     brain_row: AgentBrainVersion,
     brain: Brain,
     binding_scope: dict[str, list] | None = None,
+    caller: Any = None,
 ) -> dict[str, list]:
     """The knowledge scope a RUN of this brain may reach.
 
@@ -153,14 +181,17 @@ def run_scope(
     document the flow never attached — that would let whoever manages a public link
     borrow the author's reading rights for something the author never chose.
 
-    THE READER IS NOT A TERM, ON EITHER SURFACE. A fourth intersection against the
-    signed-in reader's own grants was tried for Direct Chat and removed: it made the
-    same flow answer LESS to a named employee than to an anonymous stranger on a
-    public link, and it made "I shared this assistant with you" mean nothing until
-    somebody also shared every document behind it. Delegation is the model the whole
-    module is built on — sharing a brain lends its owner's reading rights — and
-    `share_disclosure()` exists so that lending is stated out loud at the moment it
-    happens. One rule for both surfaces.
+    THE SIGNED-IN CALLER IS A TERM (decision Q2, authz remediation). When
+    ``caller`` is a person other than the owner, a resource stays in scope only if
+    the caller may read it THEMSELVES, or the owner EXPLICITLY delegated it to them
+    for this flow (``agent_flow_delegations``: per grantee, resource and action,
+    revocable, audited). Sharing, owning or publishing a flow never lends the
+    owner's reading rights by itself - that was the confused deputy: anyone a flow
+    was shared with could query data only its owner could read.
+
+    ``caller=None`` is the anonymous public-link surface. There the authority is
+    what the PUBLISHER chose for that link (binding an assistant to a public link
+    is a publish action on the dashboard) and ``binding_scope`` narrows it.
 
     Fails CLOSED: an owner who cannot be resolved yields an empty scope, so the flow
     runs with no attached knowledge rather than with all of it.
@@ -183,6 +214,13 @@ def run_scope(
             scope["dataset_ids"].append(int(src.ref))
         elif src.source == "metric":
             scope["metric_names"].append(src.ref)
+
+    if caller is not None and getattr(caller, "id", None) != getattr(owner, "id", None):
+        delegated = active_delegations(db, brain_row.brain_key, caller)
+        caller_docs = attachable_documents(db, caller) | delegated.get("document", set())
+        caller_datasets = readable_datasets(db, caller) | delegated.get("dataset", set())
+        scope["doc_ids"] = [d for d in scope["doc_ids"] if d in caller_docs]
+        scope["dataset_ids"] = [d for d in scope["dataset_ids"] if d in caller_datasets]
 
     if binding_scope is not None:
         # Intersection, never union. Written as an explicit loop rather than a set
