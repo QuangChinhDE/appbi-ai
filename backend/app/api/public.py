@@ -1531,24 +1531,23 @@ def _create_public_session(link: DashboardPublicLink) -> str:
     minted before that stops verifying at once — instead of living out its 2h.
     `sub` stays the link token so a session can never be replayed on another link.
     """
-    payload = {
+    from app.core import tokens
+
+    return tokens.encode(tokens.PUBLIC_SESSION, {
         "sub": link.token,
         "lid": link.id,
         "av": int(link.auth_version or 0),
-        "type": "public_link_session",
-        "exp": datetime.now(timezone.utc) + timedelta(seconds=PUBLIC_SESSION_SECONDS),
-    }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+    }, ttl=timedelta(seconds=PUBLIC_SESSION_SECONDS))
 
 
 def _verify_public_session(session_token: str, link: DashboardPublicLink) -> bool:
-    try:
-        data = jwt.decode(session_token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
+    from app.core import tokens
+
+    data = tokens.decode(session_token, tokens.PUBLIC_SESSION)
+    if data is None:
         return False
     return (
-        data.get("type") == "public_link_session"
-        and data.get("sub") == link.token
+        data.get("sub") == link.token
         and data.get("lid") == link.id
         and data.get("av") == int(link.auth_version or 0)
     )
@@ -2077,13 +2076,13 @@ if settings.WORKBOARDS_ENABLED:
         if not token:
             return None
         try:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-            # Only an ACCESS token is a staff bearer. A refresh token (7 days,
-            # not consumed here), an OAuth state, or a token with no type were
-            # all accepted before, because this decoder never asked.
-            from app.core.dependencies import ACCESS_TOKEN_TYPE
+            # Only an ACCESS token is a staff bearer (its own signing domain).
+            # A refresh token, an OAuth state, a session of another kind, or a
+            # token with no type were all accepted before.
+            from app.core import tokens
 
-            if payload.get("type") != ACCESS_TOKEN_TYPE:
+            payload = tokens.decode(token, tokens.ACCESS)
+            if payload is None:
                 return None
             user_id = payload.get("sub")
             if not user_id:
@@ -2094,6 +2093,8 @@ if settings.WORKBOARDS_ENABLED:
             import uuid as _uuid
             user = db.query(User).filter(User.id == _uuid.UUID(str(user_id))).first()
             if not user or getattr(user, "status", None) != UserStatus.ACTIVE:
+                return None
+            if (payload.get("ss") or "") != (getattr(user, "security_stamp", None) or ""):
                 return None
             return user
         except (JWTError, ValueError, TypeError):

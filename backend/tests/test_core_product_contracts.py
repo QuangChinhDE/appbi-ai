@@ -558,6 +558,10 @@ def test_datasource_connection_service_scrubs_returns_and_logs_at_the_real_bound
     def fail(*_args, **_kwargs):
         raise RuntimeError(leaky)
 
+    # The egress policy (app/core/egress.py) resolves the host before the driver
+    # is called; this test is about scrubbing DRIVER errors, so the synthetic
+    # host is let through the policy and the driver stub stays the boundary.
+    monkeypatch.setattr("app.core.egress._db_destination", lambda host, port: "203.0.113.10")
     if provider == "postgresql":
         monkeypatch.setattr(mod.psycopg2, "connect", fail)
     elif provider == "mysql":
@@ -628,6 +632,10 @@ def test_datasource_test_api_receives_the_service_safe_message(monkeypatch, capl
             f"authentication failed at db.closure.invalid; password={secret}"
         )
 
+    # The egress policy (app/core/egress.py) resolves the host before the driver
+    # is called; this test is about scrubbing DRIVER errors, so the synthetic
+    # host is let through the policy and the driver stub stays the boundary.
+    monkeypatch.setattr("app.core.egress._db_destination", lambda host, port: "203.0.113.10")
     monkeypatch.setattr(mod.psycopg2, "connect", fail)
     caplog.set_level(logging.ERROR, logger=mod.__name__)
     response = api.test_data_source_connection(

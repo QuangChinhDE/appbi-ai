@@ -194,17 +194,15 @@ async def get_current_user(
     if token.startswith(PAT_TOKEN_PREFIX):
         return _authenticate_personal_access_token(token, db)
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-        # One signing key mints four different tokens (access, refresh, public-link
-        # session, workspace session) and only the `type` claim tells them apart.
-        # Without this check a REFRESH token worked as an access token: 7 days of
-        # access instead of 2 hours, and it side-stepped the rotate-on-use flow that
-        # makes refresh tokens single-use. Absent claim = a legacy access token
-        # issued before access tokens were stamped; those stay valid until they
-        # expire on their own.
-        token_type = payload.get("type")
-        if token_type is not None and token_type != ACCESS_TOKEN_TYPE:
-            raise ValueError("wrong token type")
+        # ONLY an access token, verified with the access domain's own key,
+        # audience and issuer (app.core.tokens). A refresh token, an OAuth state,
+        # a public-link or workspace session, or a token with no `type` does not
+        # verify here at all.
+        from app.core import tokens as _tokens
+
+        payload = _tokens.decode(token, _tokens.ACCESS)
+        if payload is None:
+            raise ValueError("not an access token")
         user_id: str | None = payload.get("sub")
         if not user_id:
             raise ValueError("missing sub")
@@ -225,6 +223,9 @@ async def get_current_user(
         )
 
     user = db.query(User).filter(User.id == user_uuid).first()
+    if user is not None and (payload.get("ss") or "") != (getattr(user, "security_stamp", None) or ""):
+        # Password changed / account disabled / sessions reset since this token.
+        user = None
     if not user or user.status != UserStatus.ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

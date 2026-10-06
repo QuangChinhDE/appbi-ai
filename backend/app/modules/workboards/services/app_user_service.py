@@ -373,7 +373,11 @@ def create_session_token(
         for key, value in extra_claims.items():
             if key not in payload:
                 payload[key] = value
-    token = jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+    from app.core import tokens
+
+    for k in ("type", "exp", "iat", "iss", "aud"):
+        payload.pop(k, None)
+    token = tokens.encode(tokens.WORKSPACE_SESSION, payload, ttl=timedelta(seconds=ttl))
     return token, ttl
 
 
@@ -416,7 +420,11 @@ def create_internal_session_token(
         for key, value in extra_claims.items():
             if key not in payload:
                 payload[key] = value
-    token = jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+    from app.core import tokens
+
+    for k in ("type", "exp", "iat", "iss", "aud"):
+        payload.pop(k, None)
+    token = tokens.encode(tokens.WORKSPACE_SESSION, payload, ttl=timedelta(seconds=ttl))
     return token, ttl
 
 
@@ -427,10 +435,12 @@ def decode_session_token(
     if not token:
         return None
     try:
-        data = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
+        from app.core import tokens
+
+        data = tokens.decode(token, tokens.WORKSPACE_SESSION)
+    except Exception:  # noqa: BLE001 - a bad token is simply not a session
         return None
-    if data.get("type") != _SESSION_TYPE:
+    if data is None:
         return None
     if data.get("ws") != expected_workspace_token:
         return None
