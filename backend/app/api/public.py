@@ -3086,11 +3086,17 @@ if settings.WORKBOARDS_ENABLED:
         media = media_service.get_media(db, media_id)
         if media is None:
             raise HTTPException(status_code=404, detail="Media not found")
-        return Response(
-            content=bytes(media.data),
-            media_type=media.content_type or "application/octet-stream",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
-        )
+        # Re-derived at SERVE time too, so rows stored before the upload
+        # allowlist (a client-declared text/html) are neutralised as well.
+        media_type = media_service.safe_content_type(media.content_type)
+        headers = {
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        }
+        if media_type == "application/octet-stream":
+            headers["Content-Disposition"] = "attachment"
+        return Response(content=bytes(media.data), media_type=media_type, headers=headers)
 
 
     @router.get("/workspaces/{token}/workboards/{workboard_id}/related-records")

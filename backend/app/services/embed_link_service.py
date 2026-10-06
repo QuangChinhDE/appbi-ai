@@ -439,11 +439,15 @@ def embed_policy_for_token(token: str, db: Session, origin: str | None = None) -
     if not _minting_token_is_live(grant, db, now):
         return invalid
     link_live = (
-        db.query(DashboardPublicLink.id)
+        db.query(DashboardPublicLink)
         .filter(DashboardPublicLink.id == grant.link_id, DashboardPublicLink.is_active == True)  # noqa: E712
         .first()
     )
     if link_live is None:
+        return invalid
+    # The same liveness as data resolution (resolve_embed_grant): a grant whose
+    # minter was deactivated or lost publish is not reported as a live policy.
+    if not _minter_may_still_publish(grant, link_live, db):
         return invalid
     origins = [str(v) for v in grant.allowed_origins] if isinstance(grant.allowed_origins, list) else []
     if not origins:

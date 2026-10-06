@@ -267,3 +267,35 @@ def test_workspace_shares_are_access_and_management_but_never_data(client, db, w
         r = client.get(f"/api/v1/public/workspaces/{world['ws'].token}/workboards/{world['wb'].id}/app",
                        headers=who.headers)
         assert r.status_code == 403, r.text
+
+
+# ── /public/media never renders active content on the app origin (fourth pass, F1)
+# (confirmed over HTTP: an upload declared text/html was served back as
+# text/html, unauthenticated, same origin - stored XSS.)
+
+def test_public_media_is_never_served_as_active_content(client, db, world):  # noqa: F811
+    from app.modules.workboards.models import WorkboardMedia
+    from app.modules.workboards.services import media_service
+
+    wb_id = world["wb"].id
+    html = media_service.store_media(db, workboard_id=wb_id, filename="x.html",
+                                     content_type="text/html", data=b"<script>alert(1)</script>")
+    assert html.content_type == "application/octet-stream"
+    # a row stored BEFORE the allowlist is neutralised at serve time too
+    legacy = WorkboardMedia(id=uuid.uuid4(), workboard_id=wb_id, filename="y.svg",
+                            content_type="image/svg+xml", byte_size=5, data=b"<svg/>")
+    db.add(legacy)
+    db.commit()
+    for mid in (html.id, legacy.id):
+        r = client.get(f"/api/v1/public/media/{mid}")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/octet-stream"), r.headers["content-type"]
+        assert r.headers.get("x-content-type-options") == "nosniff"
+        assert "sandbox" in r.headers.get("content-security-policy", "")
+        assert r.headers.get("content-disposition", "").startswith("attachment")
+    # positive control: an image still renders inline
+    png = media_service.store_media(db, workboard_id=wb_id, filename="p.png", content_type="image/png",
+                                    data=b"\x89PNG\r\n\x1a\n0000")
+    r = client.get(f"/api/v1/public/media/{png.id}")
+    assert r.headers["content-type"] == "image/png"
+    assert "content-disposition" not in r.headers

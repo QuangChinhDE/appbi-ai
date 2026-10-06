@@ -135,3 +135,25 @@ def test_vocabulary_writes_are_govern_admin_only(client, world):  # noqa: F811
     r = client.put("/api/v1/catalog/govern/glossary", headers=world["admin"].headers,
                    json={"name": f"g{tag}", "description": "x"})
     assert r.status_code == 200, r.text
+
+
+# ── Govern search / graph list only what the caller may read (fourth pass, F2) ─
+# (confirmed over HTTP: names + ids of datasets/dashboards the caller got 403 on
+# came back from /search, /graph and /knowledge-map.)
+
+def test_govern_search_and_graph_hide_unreadable_assets(client, world, db):  # noqa: F811
+    from app.models.models import Dashboard
+
+    tag = f"SECRET{uuid.uuid4().hex[:6]}"
+    world["ds"].name = f"{tag}ds"
+    d = Dashboard(name=f"{tag}dash", owner_id=world["owner"].id)
+    db.add(d)
+    db.commit()
+    for path in (f"/api/v1/catalog/govern/search?q={tag}", "/api/v1/catalog/govern/graph",
+                 "/api/v1/catalog/govern/knowledge-map"):
+        r = client.get(path, headers=world["stranger"].headers)
+        assert r.status_code == 200, (path, r.text[:200])
+        assert tag not in r.text, path
+    # positive control: the owner finds both
+    r = client.get(f"/api/v1/catalog/govern/search?q={tag}", headers=world["owner"].headers)
+    assert f"{tag}ds" in r.text and f"{tag}dash" in r.text

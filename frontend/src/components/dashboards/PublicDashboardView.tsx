@@ -2183,7 +2183,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
             isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
             highlightData={null}
             forceVisible={forceVisibleAll || citedTileIds.has(dashboardChart.id)}
-            publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
+            publicDatasetModels={(dashboard as any)?.public_dataset_models ?? {}}
             viewerGrain={chartGrains[dashboardChart.chart_id]}
             onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
             lockDateGrain={(dashboardChart.layout as any)?.lockDateGrain === true}
@@ -2732,7 +2732,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                           isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
                           highlightData={null}
                           forceVisible={forceVisibleAll || citedTileIds.has(dashboardChart.id)}
-                          publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
+                          publicDatasetModels={(dashboard as any)?.public_dataset_models ?? {}}
                           viewerGrain={chartGrains[dashboardChart.chart_id]}
                           onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
                           lockDateGrain={(dashboardChart.layout as any)?.lockDateGrain === true}
