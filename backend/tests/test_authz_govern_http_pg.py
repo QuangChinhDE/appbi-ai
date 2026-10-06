@@ -108,3 +108,30 @@ def test_global_governance_is_admin_only(client, world, method, path, body):  # 
     assert r.status_code == 403, (path, r.status_code, r.text[:200])
     r = client.request(method.upper(), path, headers=world["admin"].headers, **kw)
     assert r.status_code != 403, (path, r.text[:200])
+
+
+# ── Tenant-wide vocabulary is a Govern administrator action (second review, F2) ──
+#
+# Glossaries, terms, classifications and tags feed every AI answer and metric
+# vocabulary; any dataset editor could rewrite or delete them (spec §10).
+
+def test_vocabulary_writes_are_govern_admin_only(client, world):  # noqa: F811
+    tag = uuid.uuid4().hex[:6]
+    writes = [
+        ("put", "/api/v1/catalog/govern/glossary", {"name": f"g{tag}", "description": "x"}),
+        ("put", "/api/v1/catalog/govern/classification", {"name": f"c{tag}", "description": "x"}),
+    ]
+    for method, path, body in writes:
+        r = getattr(client, method)(path, headers=world["owner"].headers, json=body)
+        assert r.status_code == 403, (path, r.status_code, r.text)
+    for path in ("/api/v1/catalog/govern/glossary/anything", "/api/v1/catalog/govern/glossary-term/a.b",
+                 "/api/v1/catalog/govern/classification/anything", "/api/v1/catalog/govern/tag/a.b"):
+        assert client.delete(path, headers=world["owner"].headers).status_code == 403, path
+    assert client.put("/api/v1/catalog/govern/glossary-term", headers=world["owner"].headers,
+                      json={"glossary": "g", "name": "t"}).status_code == 403
+    assert client.put("/api/v1/catalog/govern/tag", headers=world["owner"].headers,
+                      json={"classification": "c", "name": "t"}).status_code == 403
+    # positive control: a Govern administrator may
+    r = client.put("/api/v1/catalog/govern/glossary", headers=world["admin"].headers,
+                   json={"name": f"g{tag}", "description": "x"})
+    assert r.status_code == 200, r.text

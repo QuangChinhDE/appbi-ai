@@ -184,32 +184,46 @@ def _commit_link_changes(
     dashboard_id: int,
     filters_config: List[Dict[str, Any]],
     password_hash: Optional[str],
+    password: Optional[str] = None,
 ) -> bool:
     """Update an existing link only when something the user controls changed.
 
     Returns True iff a field actually changed. Token, access_count, and
     timestamps are never touched here — they belong to the runtime.
+
+    SECURITY GENERATION. A change of password or of the dashboard behind the
+    link bumps ``auth_version`` (as PATCH /public-links does), so a viewer
+    session minted under the old password/report stops working. A link its
+    owner DEACTIVATED stays deactivated: a later workboard save used to turn it
+    back on silently (authz review, third pass).
     """
     changed = False
+    security_changed = False
     if link.dashboard_id != dashboard_id:
         link.dashboard_id = dashboard_id
-        changed = True
+        changed = security_changed = True
     if (link.filters_config or []) != filters_config:
         link.filters_config = filters_config
         changed = True
     if password_hash is None and link.password_hash is not None:
         link.password_hash = None
-        changed = True
-    elif password_hash is not None and link.password_hash is None:
-        # First time the builder sets a password. We hash exactly once here;
-        # later saves with the same plaintext re-use the existing hash so we
-        # don't flap the row on every workboard save (bcrypt is salted →
-        # non-deterministic).
-        link.password_hash = password_hash
-        changed = True
-    if not link.is_active:
-        link.is_active = True
-        changed = True
+        changed = security_changed = True
+    elif password_hash is not None:
+        # Rehash only when the PLAINTEXT differs from what is stored (bcrypt is
+        # salted, so comparing hashes would flap the row on every save). A
+        # changed password used to be ignored once one was set - the old one
+        # kept working.
+        same = False
+        if link.password_hash is not None and password:
+            try:
+                same = _pwd_context.verify(password, link.password_hash)
+            except Exception:  # an unreadable stored hash is replaced
+                same = False
+        if not same:
+            link.password_hash = password_hash
+            changed = security_changed = True
+    if security_changed:
+        link.auth_version = int(getattr(link, "auth_version", 0) or 0) + 1
     return changed
 
 
@@ -343,6 +357,7 @@ def sync_workboard_dashboard_links(
                     dashboard_id=dashboard_id_int,
                     filters_config=filters_config,
                     password_hash=password_hash,
+                    password=password if isinstance(password, str) else None,
                 )
             managed_map[role or "__default__"] = link.token
 

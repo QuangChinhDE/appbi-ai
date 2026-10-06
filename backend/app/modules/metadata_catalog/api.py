@@ -188,12 +188,14 @@ def govern_glossaries(db: Session = Depends(get_db), _: User = Depends(get_curre
 
 
 @router.put("/govern/glossary")
-def upsert_glossary(body: GlossaryWrite, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def upsert_glossary(body: GlossaryWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.upsert_glossary(db, body.name, body.machine_name, body.description))
 
 
 @router.delete("/govern/glossary/{fqn:path}")
-def delete_glossary(fqn: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def delete_glossary(fqn: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.delete_glossary(db, fqn))
 
 
@@ -205,12 +207,14 @@ def govern_glossary(db: Session = Depends(get_db), _: User = Depends(get_current
 
 
 @router.put("/govern/glossary-term")
-def upsert_term(body: TermWrite, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def upsert_term(body: TermWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.upsert_term(db, body.glossary, body.name, body.machine_name, body.description, body.synonyms))
 
 
 @router.delete("/govern/glossary-term/{fqn:path}")
-def delete_term(fqn: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def delete_term(fqn: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.delete_term(db, fqn))
 
 
@@ -239,12 +243,14 @@ def govern_classifications(db: Session = Depends(get_db), _: User = Depends(get_
 
 
 @router.put("/govern/classification")
-def upsert_classification(body: ClassificationWrite, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def upsert_classification(body: ClassificationWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.upsert_classification(db, body.name, body.machine_name, body.description, body.mutuallyExclusive))
 
 
 @router.delete("/govern/classification/{fqn:path}")
-def delete_classification(fqn: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def delete_classification(fqn: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.delete_classification(db, fqn))
 
 
@@ -256,12 +262,14 @@ def govern_tags(classification: str | None = Query(default=None), db: Session = 
 
 
 @router.put("/govern/tag")
-def upsert_tag(body: TagWrite, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def upsert_tag(body: TagWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.upsert_tag(db, body.classification, body.name, body.machine_name, body.description))
 
 
 @router.delete("/govern/tag/{fqn:path}")
-def delete_tag(fqn: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def delete_tag(fqn: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.delete_tag(db, fqn))
 
 

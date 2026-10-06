@@ -1064,6 +1064,24 @@ def _usable_flow(db: Session, user: User, brain_key: str) -> Flow:
     return resolved[1]
 
 
+def _require_assigner_reads_flow(db: Session, user: User, brain_key: str) -> None:
+    """A public link hands the flow's reading rights to anonymous visitors, so the
+    person assigning it must be able to read everything it attaches (or hold an
+    explicit delegation for it) - publish on the dashboard is not enough."""
+    resolved = reg.resolve_published(db, brain_key)
+    if resolved is None:
+        return
+    missing = perms.unreadable_attachments(db, resolved[0], resolved[1], user)
+    if missing["dataset_ids"] or missing["doc_ids"]:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Bạn chưa có quyền đọc {len(missing['dataset_ids'])} dataset và "
+                f"{len(missing['doc_ids'])} tài liệu mà flow này gắn — không thể đưa nó lên link công khai."
+            ),
+        )
+
+
 @router.get("/pilot")
 def reader_pilot_policy(user: User = Depends(can_assign)) -> dict[str, Any]:
     """The reader rollout policy in force (services/agent_flows/pilot.py): mode,
@@ -1148,6 +1166,7 @@ def preflight_binding(
     """
     link, dashboard = _link_and_dashboard(db, body.link_id, user)
     flow = _usable_flow(db, user, body.brain_key)
+    _require_assigner_reads_flow(db, user, body.brain_key)
     contract = binding_service.DataContract.model_validate(body.data_contract or {})
     return binding_service.preflight(
         db, flow=flow, contract=contract, dashboard=dashboard, link=link
@@ -1161,6 +1180,7 @@ def save_binding(
     """Assign. Refused while anything required is unresolved."""
     link, dashboard = _link_and_dashboard(db, body.link_id, user, publish=True)
     flow = _usable_flow(db, user, body.brain_key)
+    _require_assigner_reads_flow(db, user, body.brain_key)
     contract = binding_service.DataContract.model_validate(body.data_contract or {})
 
     def _save():

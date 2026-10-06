@@ -229,6 +229,42 @@ def run_scope(
 
 
 
+
+def unreadable_attachments(db: Session, brain_row: AgentBrainVersion, brain: Brain, assigner: Any) -> dict[str, list]:
+    """What this flow would read for ``assigner`` that the assigner may not read.
+
+    Putting a flow on a public link hands its reading rights to every anonymous
+    visitor of that link. The assigner holds the dashboard's publish right, but
+    that says nothing about the FLOW's data: a flow shared with them at view may
+    attach datasets/documents only its owner can read. So the assigner must be
+    able to read (or hold an explicit delegation for) everything the flow
+    attaches - the same caller term as run_scope. Empty dict values = allowed.
+    """
+    full = run_scope(db, brain_row, brain)
+    mine = run_scope(db, brain_row, brain, caller=assigner)
+    return {k: [x for x in full[k] if x not in set(mine[k])] for k in ("doc_ids", "dataset_ids")}
+
+
+def public_run_scope(
+    db: Session,
+    brain_row: AgentBrainVersion,
+    brain: Brain,
+    binding_scope: dict[str, list] | None,
+    assigner_email: str | None,
+) -> dict[str, list]:
+    """The scope of an ANONYMOUS public-link run: owner's current rights ∩ what the
+    flow attached ∩ what the link declared ∩ what the person who assigned it to
+    the link may read NOW. An assigner who cannot be resolved, or is no longer
+    active, yields no attached knowledge (fails closed)."""
+    from app.models.user import User, UserStatus
+
+    email = (assigner_email or "").strip()
+    assigner = db.query(User).filter(User.email == email).first() if email else None
+    if assigner is None or getattr(assigner, "status", None) not in (UserStatus.ACTIVE, "active"):
+        logger.warning("[brain] public run: assigner %r not active; no attached knowledge", email)
+        return {"doc_ids": [], "dataset_ids": [], "metric_names": []}
+    return run_scope(db, brain_row, brain, binding_scope, caller=assigner)
+
 def chart_scope(db: Session, knowledge_scope: dict[str, Any] | None) -> set[int]:
     """The charts a run may measure because of what the FLOW attached.
 

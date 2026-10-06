@@ -145,3 +145,43 @@ def test_embed_dies_when_its_minter_is_deactivated(client, db, world):  # noqa: 
     u.status = UserStatus.DEACTIVATED
     db.commit()
     assert client.get(url).status_code == 410
+
+
+# ── Workboard-managed links: password rotation and owner deactivation stick ────
+# (third review pass, F2): a changed builder password used to be ignored once one
+# was set, and a link the owner deactivated was silently re-enabled on the next
+# workboard save - neither bumped auth_version, so old viewer sessions survived.
+
+def test_workboard_link_password_rotation_and_deactivation(db):  # noqa: F811
+    import secrets as _s
+
+    from passlib.context import CryptContext
+
+    from app.models.models import Dashboard, DashboardPublicLink
+    from app.modules.workboards.services.dashboard_link_service import _commit_link_changes
+
+    ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    owner = make_user(db, "wbl-owner", dashboards="edit")
+    d = Dashboard(name=f"wbl-{uuid.uuid4().hex[:6]}", owner_id=owner.id)
+    db.add(d)
+    db.flush()
+    link = DashboardPublicLink(dashboard_id=d.id, name="wb", token=_s.token_urlsafe(24), is_active=True,
+                               source="workboard", password_hash=ctx.hash("old-pass-1"))
+    db.add(link)
+    db.commit()
+    v0 = int(link.auth_version or 0)
+
+    # same password again: no change, no bump
+    assert _commit_link_changes(db, link, dashboard_id=d.id, filters_config=link.filters_config or [],
+                                password_hash=ctx.hash("old-pass-1"), password="old-pass-1") is False
+    assert int(link.auth_version or 0) == v0
+    # a NEW password replaces the old one and bumps the generation
+    _commit_link_changes(db, link, dashboard_id=d.id, filters_config=link.filters_config or [],
+                         password_hash=ctx.hash("new-pass-2"), password="new-pass-2")
+    assert ctx.verify("new-pass-2", link.password_hash) and not ctx.verify("old-pass-1", link.password_hash)
+    assert int(link.auth_version or 0) == v0 + 1
+    # the owner deactivates it; a workboard save does not turn it back on
+    link.is_active = False
+    _commit_link_changes(db, link, dashboard_id=d.id, filters_config=link.filters_config or [],
+                         password_hash=ctx.hash("new-pass-2"), password="new-pass-2")
+    assert link.is_active is False

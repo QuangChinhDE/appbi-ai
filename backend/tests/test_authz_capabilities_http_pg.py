@@ -99,8 +99,19 @@ def _count_statements(fn):
     ("datasets", "/api/v1/datasets/", "dataset"),
     ("dashboards", "/api/v1/dashboards/", "dashboard"),
     ("workboards", "/api/v1/workboards/", "workboard"),
+    ("explore_charts", "/api/v1/charts/", "chart"),
+    ("data_sources", "/api/v1/datasources/", "datasource"),
 ])
-def test_list_query_count_does_not_grow_with_rows(client, db, module, url, factory):  # noqa: F811
+def test_list_query_count_does_not_grow_with_rows(client, db, module, url, factory, monkeypatch):  # noqa: F811
+    if factory == "chart":
+        # The chart list also hydrates each chart's semantic binding
+        # (ChartService.hydrate_runtime_config, ~3 statements per chart): a
+        # pre-existing semantic-layer cost, NOT authorization, tracked
+        # separately. This test measures the AUTHORIZATION cost per page
+        # (batched permissions + capabilities), so that loop is taken out.
+        from app.services.chart_service import ChartService
+
+        monkeypatch.setattr(ChartService, "hydrate_runtime_config", staticmethod(lambda *a, **k: None))
     from app.models.dataset import Dataset, DatasetGrant
     from app.models.models import Dashboard
 
@@ -129,6 +140,29 @@ def test_list_query_count_does_not_grow_with_rows(client, db, module, url, facto
                 db.add(d)
                 db.flush()
                 share(db, "workboard", d.id, caller, "view", owner)
+            elif factory == "chart":
+                from app.models.dataset import DatasetTable
+                from app.models.models import Chart, ChartType
+
+                ds = Dataset(name=f"nqc-{uuid.uuid4().hex[:8]}", owner_id=owner.id)
+                db.add(ds)
+                db.flush()
+                t = DatasetTable(dataset_id=ds.id, display_name="t", source_table_name="t")
+                db.add(t)
+                db.flush()
+                d = Chart(name=f"nq-{uuid.uuid4().hex[:8]}", chart_type=ChartType.TABLE, dataset_table_id=t.id,
+                          config={"roleConfig": {"selectedColumns": ["id"]}}, owner_id=owner.id)
+                db.add(d)
+                db.flush()
+                share(db, "chart", d.id, caller, "view", owner)
+            elif factory == "datasource":
+                from app.models.models import DataSource, DataSourceType
+
+                d = DataSource(name=f"nq-{uuid.uuid4().hex[:8]}", type=DataSourceType.POSTGRESQL, owner_id=owner.id,
+                               config={"host": "h.invalid", "port": 5432, "database": "d", "username": "u"})
+                db.add(d)
+                db.flush()
+                share(db, "datasource", d.id, caller, "view", owner)
             else:
                 d = Dashboard(name=f"nq-{uuid.uuid4().hex[:8]}", owner_id=owner.id)
                 db.add(d)
@@ -148,4 +182,5 @@ def test_list_query_count_does_not_grow_with_rows(client, db, module, url, facto
     import collections
 
     top = collections.Counter(_count_statements.last).most_common(3)
+    print(f"[query-count] {module}: 5 rows={small} statements, 25 rows={large} statements")
     assert large - small <= 3, (module, small, large, top)

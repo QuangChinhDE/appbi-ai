@@ -197,3 +197,40 @@ def test_datasource_view_cannot_add_or_rewrite_a_sql_table(client, world):  # no
                     json={"datasource_id": world["src"].id, "source_kind": "sql_query",
                           "source_query": SECRET_SQL, "display_name": "q"})
     assert r.status_code == 403, r.text
+
+
+# ── Snapshot import: a table id sent as a STRING skipped the dataset check ─────
+# (third review pass, F1 - confirmed over HTTP: "1305" bound a chart to a
+# victim's table, while the integer form was refused with 422).
+
+@pytest.mark.parametrize("as_text", [False, True])
+def test_snapshot_import_checks_the_table_however_its_id_is_spelled(world, db, as_text):  # noqa: F811
+    from app.models.models import Chart
+    from app.models.user import User
+    from app.services.dashboard_html_import_service import APPBI_SNAPSHOT_VERSION, rebuild_dashboard_from_snapshot
+
+    victim_table = world["table"].id
+    snapshot = {"version": APPBI_SNAPSHOT_VERSION, "dashboard": {"name": "x"},
+                "charts": [{"chart": {"name": "stolen", "chart_type": "TABLE",
+                                      "dataset_table_id": str(victim_table) if as_text else victim_table,
+                                      "config": {"roleConfig": {"selectedColumns": ["id"]}}},
+                            "layout": {"x": 0, "y": 0, "w": 6, "h": 4}}]}
+    viewer = db.get(User, world["viewer"].id)          # no grant on the victim dataset
+    before = db.query(Chart).filter(Chart.dataset_table_id == victim_table).count()
+    with pytest.raises(ValueError, match="not accessible to you"):
+        rebuild_dashboard_from_snapshot(db, snapshot=snapshot, current_user=viewer)
+    db.rollback()
+    assert db.query(Chart).filter(Chart.dataset_table_id == victim_table).count() == before
+
+
+def test_snapshot_import_refuses_a_non_numeric_table_id(world, db):  # noqa: F811
+    from app.models.user import User
+    from app.services.dashboard_html_import_service import APPBI_SNAPSHOT_VERSION, rebuild_dashboard_from_snapshot
+
+    for bad in ("1 OR 1=1", True, 1.5):
+        snap = {"version": APPBI_SNAPSHOT_VERSION, "dashboard": {"name": "x"},
+                "charts": [{"chart": {"name": "c", "chart_type": "TABLE", "dataset_table_id": bad, "config": {}},
+                            "layout": {}}]}
+        with pytest.raises(ValueError):
+            rebuild_dashboard_from_snapshot(db, snapshot=snap, current_user=db.get(User, world["owner"].id))
+        db.rollback()

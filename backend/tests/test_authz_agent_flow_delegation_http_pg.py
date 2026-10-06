@@ -82,3 +82,66 @@ def test_only_the_owner_delegates_and_only_attached_readable_resources(client, d
                        json={**body, "grantee_user_id": None}).status_code == 400
     assert client.post(url, headers=world["owner"].headers,
                        json={**body, "grantee_user_id": "nope"}).status_code == 400
+
+
+# ── Public links: the ASSIGNER's rights bound the flow (second review, F1) ──────
+#
+# A flow shared with B at view, attaching a dataset only its owner A can read, was
+# assignable by B to B's own public link - and the anonymous run then used A's
+# rights. Now assigning needs read on everything the flow attaches, and a public
+# run is bounded by the current assigner's rights as well (fails closed).
+
+def _public_link(db, who):  # noqa: F811
+    import secrets as _s
+
+    from app.models.models import Dashboard, DashboardPublicLink
+
+    d = Dashboard(name=f"pub-{uuid.uuid4().hex[:6]}", owner_id=who.id)
+    db.add(d)
+    db.flush()
+    link = DashboardPublicLink(dashboard_id=d.id, name="p", token=_s.token_urlsafe(24), is_active=True,
+                               source="user")
+    db.add(link)
+    db.commit()
+    return link
+
+
+def _levels(db, who, **levels):  # noqa: F811
+    from tests.authz_http import set_permissions
+
+    set_permissions(db, who, **levels)
+
+
+def test_shared_flow_cannot_be_put_on_the_viewers_public_link(client, db, world):  # noqa: F811
+    _levels(db, world["reader"], agent_flows="view", datasets="view", chat="view", dashboards="edit")
+    link = _public_link(db, world["reader"])
+    body = {"link_id": link.id, "brain_key": world["key"], "data_contract": {}}
+    for path, method in (("/api/v1/agent-flows/bindings", "put"), ("/api/v1/agent-flows/bindings/preflight", "post")):
+        r = getattr(client, method)(path, headers=world["reader"].headers, json=body)
+        assert r.status_code == 403, (path, r.status_code, r.text)
+        assert "link công khai" in r.text
+
+
+def test_owner_may_put_their_flow_on_their_link_positive_control(client, db, world):  # noqa: F811
+    _levels(db, world["owner"], agent_flows="edit", datasets="edit", chat="edit", dashboards="edit")
+    link = _public_link(db, world["owner"])
+    r = client.post("/api/v1/agent-flows/bindings/preflight", headers=world["owner"].headers,
+                    json={"link_id": link.id, "brain_key": world["key"], "data_contract": {}})
+    assert r.status_code != 403 or "link công khai" not in r.text, r.text
+
+
+def test_public_run_scope_is_bounded_by_the_assigner(db, world):  # noqa: F811
+    from app.models.user import User
+    from app.services.agent_flows import registry as reg
+    from app.services.agent_flows.permissions import public_run_scope
+
+    flow = reg.parse_flow(world["row"])
+
+    def ds(email):
+        db.expire_all()
+        return set(public_run_scope(db, world["row"], flow, None, email)["dataset_ids"])
+
+    assert ds(db.get(User, world["owner"].id).email) == {world["private"].id, world["shared"].id}
+    assert ds(db.get(User, world["reader"].id).email) == {world["shared"].id}
+    assert ds("nobody@nowhere.test") == set()        # unresolvable assigner: fail closed
+    assert ds(None) == set()

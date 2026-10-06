@@ -97,6 +97,7 @@ Owner = manage. Module admin (`datasets: full`) = manage (`via=module_admin`). L
 - **Delegation** is a row in `agent_flow_delegations`, created only by the flow owner who holds the delegated action on that resource; it names grantee, resource and action; revocable; consulted per turn; audited as `Delegated(actor=caller, authority=owner, delegation_id)`. Absent/revoked ⇒ caller authority only.
 - Revoking the share, or the owner losing access, takes effect on the next turn (already re-checked per turn).
 - Metric names are filtered by the effective authority.
+- **Public links:** putting a flow on a public link (`PUT /agent-flows/bindings`, and its preflight) needs, beyond publish on the dashboard, read (or an explicit delegation) on **every** dataset and document the flow attaches. An anonymous run's scope is owner's live rights ∩ flow ∩ link contract ∩ the **current assigner's** live rights (`permissions.public_run_scope`); an assigner who is unresolvable or inactive yields no attached knowledge (fails closed). The binding records the current assigner on every save.
 
 ### 7. Workboard / Workspace
 

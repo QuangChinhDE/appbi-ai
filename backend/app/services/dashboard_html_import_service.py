@@ -6254,8 +6254,18 @@ def rebuild_dashboard_from_snapshot(
     referenced_ids: Set[int] = set()
     for tile in tiles:
         chart = tile.get("chart") if isinstance(tile, dict) else None
-        if isinstance(chart, dict) and isinstance(chart.get("dataset_table_id"), int):
-            referenced_ids.add(int(chart["dataset_table_id"]))
+        if not isinstance(chart, dict) or chart.get("dataset_table_id") is None:
+            continue
+        # ONE representation for the check AND the write. Only ints used to be
+        # collected for the check, while Chart(...) below took the raw value - a
+        # table id sent as "1305" skipped the authorization and Postgres cast it
+        # on insert (authz review, third pass). Normalised in place, refused
+        # when it is not a whole number.
+        raw = chart.get("dataset_table_id")
+        if isinstance(raw, bool) or not (isinstance(raw, int) or (isinstance(raw, str) and raw.strip().isdigit())):
+            raise ValueError(f"Cannot import snapshot — invalid dataset_table_id: {raw!r}.")
+        chart["dataset_table_id"] = int(raw)
+        referenced_ids.add(chart["dataset_table_id"])
 
     missing_ids: List[int] = []
     forbidden_ids: List[int] = []
