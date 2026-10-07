@@ -26,25 +26,10 @@ from app.models.user import User
 
 T = TypeVar("T")
 
-LEVEL_ORDER: Dict[str, int] = {"none": 0, "view": 1, "edit": 2, "full": 3}
+from app.core.authz.registry import LEVEL_ORDER  # noqa: E402  (single ladder)
 
-# Maps ResourceType value → module key
-_RESOURCE_TO_MODULE: Dict[str, str] = {
-    "dashboard": "dashboards",
-    "chart": "explore_charts",
-    "dataset": "datasets",
-    "datasource": "data_sources",
-    "workboard": "workboards",
-    "knowledge_doc": "govern",
-    # Agent brains are gated by their own module key: publishing one changes what a
-    # live report says to viewers, so it must not ride on a knowledge-authoring
-    # grant. Missing from this map, `_owned_or_shared` returns nothing at all — the
-    # brain list came back empty right after a brain was saved and published.
-    "agent_brain": "agent_flows",
-    "chat_thread": "chat",
-    # AI provider keys are managed from the Agent Flow module and gated by it.
-    "ai_credential": "agent_flows",
-}
+# ResourceType value -> module key: derived from the authz registry.
+from app.core.authz.registry import RESOURCE_TO_MODULE as _RESOURCE_TO_MODULE  # noqa: E402
 
 
 def get_user_module_permission(user: User, module: str) -> str:
@@ -70,18 +55,20 @@ def _owner_predicate(model, user: User):
     rather than by FK (``agent_brain_versions``); without it those models fell into
     the no-ownership branch and were never filtered.
     """
-    owner_col = getattr(model, "owner_id", None)
-    if owner_col is None:
-        owner_col = getattr(model, "user_id", None)
-    if owner_col is not None:
-        return owner_col == user.id
+    from app.core.authz.registry import spec_for_model
 
-    email_col = getattr(model, "owner_email", None)
-    if email_col is not None:
-        user_email = str(getattr(user, "email", "") or "").strip().lower()
-        if not user_email:
-            return None
-        return func.lower(email_col) == user_email
+    spec = spec_for_model(model)
+    attrs = spec.owner_attrs if spec is not None else ("owner_id", "user_id", "owner_email")
+    for attr in attrs:
+        col = getattr(model, attr, None)
+        if col is None:
+            continue
+        if attr.endswith("_email"):
+            user_email = str(getattr(user, "email", "") or "").strip().lower()
+            if not user_email:
+                return None
+            return func.lower(col) == user_email
+        return col == user.id
 
     return None
 
@@ -130,12 +117,18 @@ def _owned_or_shared(
         .where(share_target_filter_for_user(user))
     )
 
-    return q.filter(
-        or_(
-            owner_predicate,
-            cast(model.id, String).in_(shared_ids_subq),
-        )
-    )
+    from app.core.authz.registry import spec_for_model
+
+    spec = spec_for_model(model)
+    key_col = getattr(model, spec.share_key if spec is not None else "id")
+    visible = [owner_predicate, cast(key_col, String).in_(shared_ids_subq)]
+    if resource_type == ResourceType.DATASET:
+        # The Dataset policy also grants through DatasetGrant (user or team):
+        # the list must show exactly what the object check allows.
+        from app.services.dataset_grants_service import grants_scope_subquery
+
+        visible.append(model.id.in_(grants_scope_subquery(user, db)))
+    return q.filter(or_(*visible))
 
 
 # Keep old name for backward-compat with any remaining imports
@@ -153,3 +146,16 @@ def stamp_owner_emails(db: Session, items) -> None:
     lookup = {u.id: u.email for u in users}
     for item in items:
         item.owner_email = lookup.get(item.owner_id)
+
+
+
+def is_module_admin(user: User, module: str) -> bool:
+    """The MODULE ADMINISTRATOR entitlement (stored level "full", decision Q8),
+    PAT-capped. Business code asks this - never `level == "full"` - so the one
+    meaning of that string lives here."""
+    return get_user_module_permission(user, module) == "full"
+
+
+def module_at_least(user: User, module: str, level: str) -> bool:
+    """The (PAT-capped) module entitlement is at least ``level``."""
+    return LEVEL_ORDER.get(get_user_module_permission(user, module), 0) >= LEVEL_ORDER[level]

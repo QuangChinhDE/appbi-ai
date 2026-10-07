@@ -659,7 +659,10 @@ def save_binding(
     binding.last_validation = {"errors": [], "warnings": result["warnings"]}
     binding.validated_at = datetime.now(timezone.utc)
     binding.store_question_content = bool(store_question_content)
-    binding.created_by = binding.created_by or actor_email
+    # The CURRENT assigner, on every save: a public run is bounded by what this
+    # person may read (permissions.public_run_scope), so a re-assignment by
+    # someone else must not keep running under the first assigner's name.
+    binding.created_by = actor_email
 
     # NO MIRROR ON THE LINK. This used to also write
     # `appearance_config.ai_bot_flow_key` so callers written before bindings kept

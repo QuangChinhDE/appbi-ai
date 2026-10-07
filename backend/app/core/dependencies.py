@@ -50,26 +50,9 @@ TOKEN_PERMISSION_CAPS_ATTR = "_permission_caps"
 #: matrix while staying invisible to the personal-access-token cap below — a token
 #: scoped to `dashboards: view` could still publish an agent flow.
 #: Order is the order the admin matrix renders in.
-MODULE_KEYS = (
-    "data_sources",
-    "datasets",
-    "govern",
-    "agent_flows",
-    # AI Chat: its own key, because it is its own nav item.
-    #
-    # It rode on `agent_flows` and was the ONLY place in the product where two
-    # sidebar entries shared one module key — so the admin matrix showed a row
-    # called "Agent Flows" that silently also opened a second screen, and there
-    # was no way to give somebody the reading side without the authoring side.
-    # That is the common case: most people should be able to ASK an assistant
-    # without being able to build or publish one.
-    "chat",
-    "observability",
-    "explore_charts",
-    "dashboards",
-    "workboards",
-    "settings",
-)
+# The module list lives in the authz registry (core/authz/registry.py); this
+# name is kept for its many importers.
+from app.core.authz.registry import MODULE_KEYS  # noqa: E402
 
 # Nothing inherits any more. The four Intelligence keys existed because one
 # Knowledge Hub was presented as five sidebar modules, and inheritance from the
@@ -111,8 +94,10 @@ def _stamp_auth_context(
     token_name: str | None = None,
 ) -> User:
     setattr(user, AUTH_TOKEN_KIND_ATTR, token_kind)
-    if permission_caps:
-        setattr(user, TOKEN_PERMISSION_CAPS_ATTR, permission_caps)
+    if permission_caps is not None:
+        # Stamped even when EMPTY: an empty cap set means "nothing", never "no
+        # cap" (a PAT row with scopes {} used to authenticate as its full owner).
+        setattr(user, TOKEN_PERMISSION_CAPS_ATTR, dict(permission_caps))
     if token_id is not None:
         setattr(user, PERSONAL_ACCESS_TOKEN_ID_ATTR, token_id)
     if token_name:
@@ -151,6 +136,15 @@ def _authenticate_personal_access_token(token: str, db: Session) -> User:
         pat.last_used_at = now
         db.commit()
 
+    if not pat.scopes:
+        # A token with no scope grants nothing; refuse it outright rather than
+        # let any code path treat "no caps" as "uncapped".
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     user = db.query(User).filter(User.id == pat.owner_id).first()
     if not user or user.status != UserStatus.ACTIVE:
         raise HTTPException(
@@ -183,17 +177,15 @@ async def get_current_user(
     if token.startswith(PAT_TOKEN_PREFIX):
         return _authenticate_personal_access_token(token, db)
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-        # One signing key mints four different tokens (access, refresh, public-link
-        # session, workspace session) and only the `type` claim tells them apart.
-        # Without this check a REFRESH token worked as an access token: 7 days of
-        # access instead of 2 hours, and it side-stepped the rotate-on-use flow that
-        # makes refresh tokens single-use. Absent claim = a legacy access token
-        # issued before access tokens were stamped; those stay valid until they
-        # expire on their own.
-        token_type = payload.get("type")
-        if token_type is not None and token_type != ACCESS_TOKEN_TYPE:
-            raise ValueError("wrong token type")
+        # ONLY an access token, verified with the access domain's own key,
+        # audience and issuer (app.core.tokens). A refresh token, an OAuth state,
+        # a public-link or workspace session, or a token with no `type` does not
+        # verify here at all.
+        from app.core import tokens as _tokens
+
+        payload = _tokens.decode(token, _tokens.ACCESS)
+        if payload is None:
+            raise ValueError("not an access token")
         user_id: str | None = payload.get("sub")
         if not user_id:
             raise ValueError("missing sub")
@@ -214,6 +206,9 @@ async def get_current_user(
         )
 
     user = db.query(User).filter(User.id == user_uuid).first()
+    if user is not None and (payload.get("ss") or "") != (getattr(user, "security_stamp", None) or ""):
+        # Password changed / account disabled / sessions reset since this token.
+        user = None
     if not user or user.status != UserStatus.ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -223,7 +218,7 @@ async def get_current_user(
 
 
 # Module permission levels — order matters for comparison
-LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
+from app.core.authz.registry import LEVEL_ORDER  # noqa: E402  (single ladder)
 
 
 def _normalize_permissions(user: User) -> dict:
@@ -252,7 +247,7 @@ def _normalize_permissions(user: User) -> dict:
     still capped by what it actually asked for; an implicit `full` a token never
     named is capped straight back to `none`.
     """
-    perms: dict = user.permissions or {}
+    perms: dict = getattr(user, "permissions", None) or {}  # absent = nothing (fail closed)
     normalized = dict(perms)
 
     if _sanitize_permission_level(normalized.get("settings")) == "full":
@@ -271,7 +266,7 @@ def _normalize_permissions(user: User) -> dict:
                 normalized[module] = allowed[-1]
 
     caps = _get_permission_caps(user)
-    if caps:
+    if caps or _is_capped(user):
         for module in set(MODULE_KEYS) | set(normalized):
             normalized[module] = _min_permission_level(
                 normalized.get(module, "none"),
@@ -294,6 +289,13 @@ def _min_permission_level(left: str | None, right: str | None) -> str:
     return right_level
 
 
+def _is_capped(user: User) -> bool:
+    """A PAT principal is ALWAYS capped, whatever its stored scopes."""
+    return getattr(user, AUTH_TOKEN_KIND_ATTR, None) == "personal_access_token" or isinstance(
+        getattr(user, TOKEN_PERMISSION_CAPS_ATTR, None), dict
+    )
+
+
 def _get_permission_caps(user: User) -> dict[str, str]:
     caps = getattr(user, TOKEN_PERMISSION_CAPS_ATTR, None)
     if not isinstance(caps, dict):
@@ -307,7 +309,7 @@ def _get_permission_caps(user: User) -> dict[str, str]:
 
 def _cap_effective_permission(user: User, module: str, level: str) -> str:
     caps = _get_permission_caps(user)
-    if not caps:
+    if not caps and not _is_capped(user):
         return _sanitize_permission_level(level)
     return _min_permission_level(level, caps.get(module, "none"))
 
@@ -380,33 +382,13 @@ def module_floor(module: str):
 
 
 # ── Resource-type → Module mapping ──────────────────────────
-_MODEL_TO_RESOURCE_TYPE = {
-    "DataSource": ResourceType.DATASOURCE,
-    "Chart": ResourceType.CHART,
-    "Dashboard": ResourceType.DASHBOARD,
-    "Dataset": ResourceType.DATASET,
-    "Workboard": ResourceType.WORKBOARD,
-    "GovernKnowledgeDoc": ResourceType.KNOWLEDGE_DOC,
-    # Was missing here while present in core.permissions._RESOURCE_TO_MODULE — the
-    # two maps are the same fact written twice, and they had drifted. Without this
-    # entry no share on a brain could ever be found, so object-level checks on a
-    # flow silently fell through to "not shared".
-    "AgentBrainVersion": ResourceType.AGENT_BRAIN,
-    "AgentFlowChatThread": ResourceType.CHAT_THREAD,
-    "AiProviderCredential": ResourceType.AI_CREDENTIAL,
-}
+# Derived from the authz registry - never re-typed (they had drifted twice).
+from app.core.authz import registry as _authz_registry  # noqa: E402
 
-_MODEL_TO_MODULE = {
-    "DataSource": "data_sources",
-    "Chart": "explore_charts",
-    "Dashboard": "dashboards",
-    "Dataset": "datasets",
-    "Workboard": "workboards",
-    "GovernKnowledgeDoc": "govern",
-    "AgentBrainVersion": "agent_flows",
-    "AgentFlowChatThread": "chat",
-    "AiProviderCredential": "agent_flows",
+_MODEL_TO_RESOURCE_TYPE = {
+    r.model: ResourceType(r.resource_type) for r in _authz_registry.RESOURCES
 }
+_MODEL_TO_MODULE = dict(_authz_registry.MODEL_TO_MODULE)
 
 
 def _share_key_for(resource) -> str:
@@ -420,6 +402,25 @@ def _share_key_for(resource) -> str:
     if brain_key:
         return str(brain_key)
     return str(getattr(resource, "id", ""))
+
+
+def _is_owner(user: User, resource) -> bool:
+    """Ownership through the columns the REGISTRY declares for this resource
+    (owner_id, user_id for chat threads, owner_email for agent flows). An
+    unregistered model falls back to owner_id/owner_email only."""
+    spec = _authz_registry.spec_for(resource)
+    attrs = spec.owner_attrs if spec is not None else ("owner_id", "owner_email")
+    user_email = str(getattr(user, "email", "") or "").strip().lower()
+    for attr in attrs:
+        value = getattr(resource, attr, None)
+        if value is None:
+            continue
+        if attr.endswith("_email"):
+            if user_email and str(value).strip().lower() == user_email:
+                return True
+        elif str(value) == str(user.id):
+            return True
+    return False
 
 
 def _relation_level(db: Session, user: User, resource, module_level: str) -> str:
@@ -438,14 +439,7 @@ def _relation_level(db: Session, user: User, resource, module_level: str) -> str
     if _sanitize_permission_level(module_level) == "full":
         return "full"
 
-    owner_id = getattr(resource, "owner_id", None)
-    if owner_id is not None and str(owner_id) == str(user.id):
-        return "full"
-
-    # Some tables key ownership by email rather than by FK (agent_brain_versions).
-    owner_email = getattr(resource, "owner_email", None)
-    user_email = str(getattr(user, "email", "") or "").strip().lower()
-    if owner_email and user_email and str(owner_email).strip().lower() == user_email:
+    if _is_owner(user, resource):
         return "full"
 
     class_name = type(resource).__name__
@@ -491,6 +485,12 @@ def get_effective_permission(db: Session, user: User, resource, module: str) -> 
     `require_full_access` below must stay in step, or the UI hides a button the API
     would have honoured.
     """
+    if type(resource).__name__ == "Dataset":
+        # ONE Dataset decision: the canonical capability model, read as a level.
+        from app.services import dataset_grants_service as _dgs
+
+        return _dgs.level_from_capabilities(_dgs.dataset_capabilities(db, user, resource))
+
     perms = _normalize_permissions(user)
     module_level = _sanitize_permission_level(perms.get(module, "none"))
 
@@ -523,6 +523,12 @@ def batch_effective_permissions(
     min(module_level, relation) cap on owned rows, which is why the owner branch
     here goes through _min_permission_level rather than returning "full".
     """
+    if resources and type(resources[0]).__name__ == "Dataset":
+        from app.services import dataset_grants_service as _dgs
+
+        caps = _dgs.batch_dataset_capabilities(db, user, resources)
+        return {rid: _dgs.level_from_capabilities(c) for rid, c in caps.items()}
+
     perms = _normalize_permissions(user)
     module_level = _sanitize_permission_level(perms.get(module, "none"))
 
@@ -549,14 +555,8 @@ def batch_effective_permissions(
         resource_ids = [_share_key_for(r) for r in resources]
         share_lookup = get_highest_share_permissions(db, user, rt, resource_ids)
 
-    user_email = str(getattr(user, "email", "") or "").strip().lower()
-
     for r in resources:
-        owner_id = getattr(r, "owner_id", None)
-        owner_email = getattr(r, "owner_email", None)
-        is_owner = (owner_id is not None and str(owner_id) == str(user.id)) or bool(
-            owner_email and user_email and str(owner_email).strip().lower() == user_email
-        )
+        is_owner = _is_owner(user, r)  # registry owner columns, as the single check
 
         relation = "full" if is_owner else share_lookup.get(_share_key_for(r)) or "none"
         if relation == "none":
@@ -611,4 +611,38 @@ def require_full_access(db: Session, user: User, resource, module: str):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Permission denied: owner or full access required",
+        )
+
+
+def can_publish(db: Session, user: User, resource, module: str) -> bool:
+    """PUBLISH is its own action (decision Q3): making a resource visible to
+    others - a dashboard's published version, a public link or embed, a
+    workboard's live runtime, an assistant bound to a public link.
+
+    Held by the resource OWNER (with the module at edit) or the MODULE ADMIN -
+    exactly `effective == "full"` today. A shared `edit` never implies it. An
+    explicit publish grant can be added here later without touching callers.
+
+    Computed from its two real parts, NOT from `effective == "full"`: that value
+    is capped by a PAT's module scope, so a token scoped `dashboards: edit` could
+    never publish even its owner's own dashboard (and embeds are minted only
+    with a PAT). Ownership is a relation; the entitlement is a ceiling (Q8):
+      owner  + capped module level >= edit  -> publish
+      module admin (capped level == full)   -> publish
+    The PAT cap still applies to both, so a token never exceeds its owner."""
+    level = _sanitize_permission_level(_normalize_permissions(user).get(module, "none"))
+    if level == "full":
+        return True
+    if type(resource).__name__ == "Dataset":
+        from app.services.dataset_grants_service import dataset_capabilities
+
+        return "manage" in dataset_capabilities(db, user, resource)
+    return LEVEL_ORDER[level] >= LEVEL_ORDER["edit"] and _is_owner(user, resource)
+
+
+def require_publish_access(db: Session, user: User, resource, module: str):
+    if not can_publish(db, user, resource, module):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Publishing requires the owner or a module administrator.",
         )

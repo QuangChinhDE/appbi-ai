@@ -1531,24 +1531,23 @@ def _create_public_session(link: DashboardPublicLink) -> str:
     minted before that stops verifying at once — instead of living out its 2h.
     `sub` stays the link token so a session can never be replayed on another link.
     """
-    payload = {
+    from app.core import tokens
+
+    return tokens.encode(tokens.PUBLIC_SESSION, {
         "sub": link.token,
         "lid": link.id,
         "av": int(link.auth_version or 0),
-        "type": "public_link_session",
-        "exp": datetime.now(timezone.utc) + timedelta(seconds=PUBLIC_SESSION_SECONDS),
-    }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+    }, ttl=timedelta(seconds=PUBLIC_SESSION_SECONDS))
 
 
 def _verify_public_session(session_token: str, link: DashboardPublicLink) -> bool:
-    try:
-        data = jwt.decode(session_token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
+    from app.core import tokens
+
+    data = tokens.decode(session_token, tokens.PUBLIC_SESSION)
+    if data is None:
         return False
     return (
-        data.get("type") == "public_link_session"
-        and data.get("sub") == link.token
+        data.get("sub") == link.token
         and data.get("lid") == link.id
         and data.get("av") == int(link.auth_version or 0)
     )
@@ -2077,7 +2076,14 @@ if settings.WORKBOARDS_ENABLED:
         if not token:
             return None
         try:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+            # Only an ACCESS token is a staff bearer (its own signing domain).
+            # A refresh token, an OAuth state, a session of another kind, or a
+            # token with no type were all accepted before.
+            from app.core import tokens
+
+            payload = tokens.decode(token, tokens.ACCESS)
+            if payload is None:
+                return None
             user_id = payload.get("sub")
             if not user_id:
                 return None
@@ -2087,6 +2093,8 @@ if settings.WORKBOARDS_ENABLED:
             import uuid as _uuid
             user = db.query(User).filter(User.id == _uuid.UUID(str(user_id))).first()
             if not user or getattr(user, "status", None) != UserStatus.ACTIVE:
+                return None
+            if (payload.get("ss") or "") != (getattr(user, "security_stamp", None) or ""):
                 return None
             return user
         except (JWTError, ValueError, TypeError):
@@ -2106,14 +2114,10 @@ if settings.WORKBOARDS_ENABLED:
             _sanitize_permission_level,
         )
 
+        # _normalize_permissions already back-fills an absent key for a
+        # settings:full administrator; no raw read of user.permissions here.
         perms = _normalize_permissions(user)
         level = _sanitize_permission_level(perms.get("workboards", "none"))
-        if (
-            level == "none"
-            and "workboards" not in (user.permissions or {})
-            and _sanitize_permission_level(perms.get("settings")) == "full"
-        ):
-            return True
         return _LEVELS.get(level, 0) >= _LEVELS["view"]
 
 
@@ -2142,7 +2146,11 @@ if settings.WORKBOARDS_ENABLED:
         """
         data = _read_workspace_session_from_request(request, workspace)
         if data:
-            return data.get("app_user") or {}
+            if db is None:
+                return None  # cannot verify freshness: fail closed
+            # Re-read the identity: deactivation, PIN/role change or logout
+            # (session_epoch) end the session now, not at the token's expiry.
+            return app_user_service.refresh_session_identity(db, data)
         if (workspace.access_mode or "internal") == "internal" and db is not None:
             user = _try_appbi_user_from_request(request, db)
             if user is not None and _staff_may_use_workboards(user):
@@ -2215,9 +2223,22 @@ if settings.WORKBOARDS_ENABLED:
 
 
     @router.post("/workspaces/{token}/logout")
-    def workspace_logout(token: str, response: Response, db: Session = Depends(get_db)):
-        # Don't 404 here â€” let users clear their cookie even if the
+    def workspace_logout(token: str, request: Request, response: Response, db: Session = Depends(get_db)):
+        # Don't 404 here - let users clear their cookie even if the
         # workspace was deleted, otherwise they'd be stuck.
+        # Logout ENDS the session server-side too: a copied cookie stops working.
+        try:
+            raw = request.cookies.get(_workspace_cookie_name(token)) or request.headers.get("X-Workspace-Session")
+            data = app_user_service.decode_session_token(raw, token) if raw else None
+            if data and data.get("auid") is not None:
+                from app.modules.workboards.models import WorkboardAppUser as _AU
+
+                row = db.query(_AU).filter(_AU.id == int(data["auid"])).first()
+                if row is not None:
+                    app_user_service.bump_session_epoch(row)
+                    db.commit()
+        except Exception:  # noqa: BLE001 - clearing the cookie must still happen
+            db.rollback()
         response.delete_cookie(
             key=_workspace_cookie_name(token),
             path="/",
@@ -2331,6 +2352,18 @@ if settings.WORKBOARDS_ENABLED:
                 detail=detail,
             )
         return app_user
+
+    def _require_staff_write(app_user: dict | None) -> None:
+        """A durable write through a workspace by an AppBI staff identity needs
+        EDIT on the workboard (the level was resolved by
+        ``can_app_user_access_workboard``). App users are governed by their
+        screen rules downstream."""
+        if isinstance(app_user, dict) and app_user.get("_internal"):
+            if app_user.get("_staff_level") not in ("edit", "full"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Editing this workboard requires edit access.",
+                )
 
     def _resolve_workboard_for_workspace(
         db: Session,
@@ -2970,6 +3003,38 @@ if settings.WORKBOARDS_ENABLED:
         return {"action": "insert", **result}
 
 
+    def _require_app_user_media_write(db: Session, wb, app_user: dict | None) -> None:
+        """A stored upload is a durable write. A mini-app user may upload only
+        if their role may insert or update on at least one screen of this
+        workboard (the same rules row writes use), and uploads are capped per
+        workboard per hour (WORKBOARD_MEDIA_HOURLY_LIMIT, default 300) so a
+        signed-in account cannot fill the database. Staff are gated by
+        _require_staff_write (edit on the workboard)."""
+        import os as _os
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        from app.modules.workboards.models import WorkboardMedia
+
+        if isinstance(app_user, dict) and not app_user.get("_internal"):
+            identity = identity_from_app_user(app_user)
+            from app.modules.workboards.roles import is_privileged_role
+
+            layout = screen_runtime.parse_layout(wb)
+            can_write = is_privileged_role(identity.role) or any(
+                screen_runtime._can_write_op(sc, identity, op=op)
+                for sc in (layout.screens or []) for op in ("insert", "update")
+            )
+            if not can_write:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail="Your role cannot upload files in this app.")
+        limit = int(_os.environ.get("WORKBOARD_MEDIA_HOURLY_LIMIT", "300") or 300)
+        since = _dt.now(_tz.utc) - _td(hours=1)
+        recent = (db.query(WorkboardMedia)
+                  .filter(WorkboardMedia.workboard_id == wb.id, WorkboardMedia.created_at >= since).count())
+        if recent >= limit:
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                                detail="Upload limit reached for this app; try again later.")
+
     @router.post("/workspaces/{token}/workboards/{workboard_id}/media")
     async def workspace_upload_media(
         token: str,
@@ -2988,6 +3053,8 @@ if settings.WORKBOARDS_ENABLED:
         wb = _resolve_workboard_for_workspace(
             db, ws, workboard_id, request=request, app_user=app_user
         )
+        _require_staff_write(app_user)
+        _require_app_user_media_write(db, wb, app_user)
         data = await file.read()
         try:
             media = media_service.store_media(
@@ -3019,11 +3086,17 @@ if settings.WORKBOARDS_ENABLED:
         media = media_service.get_media(db, media_id)
         if media is None:
             raise HTTPException(status_code=404, detail="Media not found")
-        return Response(
-            content=bytes(media.data),
-            media_type=media.content_type or "application/octet-stream",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
-        )
+        # Re-derived at SERVE time too, so rows stored before the upload
+        # allowlist (a client-declared text/html) are neutralised as well.
+        media_type = media_service.safe_content_type(media.content_type)
+        headers = {
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        }
+        if media_type == "application/octet-stream":
+            headers["Content-Disposition"] = "attachment"
+        return Response(content=bytes(media.data), media_type=media_type, headers=headers)
 
 
     @router.get("/workspaces/{token}/workboards/{workboard_id}/related-records")
@@ -3110,6 +3183,7 @@ if settings.WORKBOARDS_ENABLED:
         wb = _resolve_workboard_for_workspace(
             db, ws, workboard_id, request=request, app_user=app_user
         )
+        _require_staff_write(app_user)
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
@@ -3391,6 +3465,7 @@ if settings.WORKBOARDS_ENABLED:
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws, db=db)
         wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request, app_user=app_user)
+        _require_staff_write(app_user)
         sub = (body or {}).get("subscription") if isinstance(body, dict) else None
         unsub = (body or {}).get("unsubscribe") if isinstance(body, dict) else None
         username = app_user.get("username") if isinstance(app_user, dict) else None
@@ -3418,6 +3493,7 @@ if settings.WORKBOARDS_ENABLED:
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws, db=db)
         wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request, app_user=app_user)
+        _require_staff_write(app_user)
         username = app_user.get("username") if isinstance(app_user, dict) else None
         sent = push_service.send_to_user(
             db, wb.id, username,

@@ -1,6 +1,6 @@
 """Helpers for permanently deleting a user.
 
-A hard-delete of a user row is DB-safe: child rows (module_permissions,
+A hard-delete of a user row is DB-safe: child rows (
 personal_access_tokens, team_memberships, resource_shares — both user_id and
 shared_by — and anomaly subscriptions) cascade away, and every owner_id FK on a
 real resource is SET NULL, so resources survive but become unowned.

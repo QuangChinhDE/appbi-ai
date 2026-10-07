@@ -22,10 +22,14 @@ from app.core.dependencies import (
     get_effective_permission,
     require_edit_access,
     require_full_access,
+    require_publish_access,
+    can_publish,
     require_permission,
     require_view_access,
     _normalize_permissions,
+    batch_effective_permissions,
 )
+from app.core.authz import decision as _authz
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.core.logging import get_logger
 from app.models.audit_log import AuditAction
@@ -113,8 +117,10 @@ def list_workboards(
         .limit(limit)
         .all()
     )
+    perm_map = batch_effective_permissions(db, current_user, items, "workboards")
     for item in items:
-        item.user_permission = get_effective_permission(db, current_user, item, "workboards")
+        item.user_permission = perm_map.get(item.id, "none")
+    _authz.attach_capabilities(db, current_user, items)
     stamp_owner_emails(db, items)
     # Serialize per-row so one workboard with an unexpected stored layout_json
     # can never 500 the whole list. The Screen schema already heals known
@@ -159,6 +165,7 @@ def _degraded_workboard_response(item: Workboard) -> WorkboardResponse:
         owner_id=item.owner_id,
         owner_email=getattr(item, "owner_email", None),
         user_permission=getattr(item, "user_permission", None),
+        capabilities=getattr(item, "capabilities", None),
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -196,7 +203,8 @@ def create_workboard(
         if username and pin:
             response.headers["X-AppBI-Default-Owner-Username"] = username
             response.headers["X-AppBI-Default-Owner-Pin"] = pin
-    wb.user_permission = "full"
+    wb.user_permission = get_effective_permission(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     return wb
 
 
@@ -208,6 +216,7 @@ def get_workboard(
 ):
     wb = _get_or_404(db, workboard_id)
     wb.user_permission = require_view_access(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     # Mask OCR tokens before the layout leaves the server (owner sees only
     # "đã cấu hình", never the raw key). Transient — no commit, not persisted.
     from app.modules.workboards.services.ocr_secrets import mask_layout_ocr_keys
@@ -230,7 +239,8 @@ async def upload_workboard_media(
     from app.modules.workboards.services import media_service
 
     wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
+    # A durable write (stored file): edit, not view.
+    require_edit_access(db, current_user, wb, "workboards")
     data = await file.read()
     try:
         media = media_service.store_media(
@@ -379,7 +389,8 @@ def update_workboard(
         },
     )
     if updated:
-        updated.user_permission = "full"
+        updated.user_permission = get_effective_permission(db, current_user, updated, "workboards")
+        _authz.attach_capabilities(db, current_user, [updated])
     return updated
 
 
@@ -449,7 +460,8 @@ def update_workboard_screen(
         details={"screen_scoped": True, "screen_id": screen_id},
     )
     if updated:
-        updated.user_permission = "full"
+        updated.user_permission = get_effective_permission(db, current_user, updated, "workboards")
+        _authz.attach_capabilities(db, current_user, [updated])
     return updated
 
 
@@ -663,7 +675,7 @@ def publish_workboard(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _assert_owner_pin_rotated(db, wb.id)
     wb = _promote_workboard_to_published(db, wb, creator=current_user)
@@ -675,7 +687,8 @@ def publish_workboard(
         resource_type="workboard",
         resource_id=str(workboard_id),
     )
-    wb.user_permission = "full"
+    wb.user_permission = get_effective_permission(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     return wb
 
 
@@ -691,7 +704,7 @@ def unpublish_workboard(
     public runtime resolver then 404s the app — but keeps the published snapshot
     intact so a later Publish can promote the (possibly edited) draft again."""
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     wb.is_published = False
     db.commit()
     db.refresh(wb)
@@ -703,7 +716,8 @@ def unpublish_workboard(
         resource_type="workboard",
         resource_id=str(workboard_id),
     )
-    wb.user_permission = "full"
+    wb.user_permission = get_effective_permission(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     return wb
 
 
@@ -780,7 +794,7 @@ def audit_workboard(
     """
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    require_dataset_binding_access(db, current_user, wb.dataset_id, capability="view")
     return compute_workboard_audit(db, wb)
 
 
@@ -1352,7 +1366,7 @@ def access_audit_workboard(
 
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    require_dataset_binding_access(db, current_user, wb.dataset_id, capability="view")
 
     return audit_workboard_access(db, workboard=wb)
 
@@ -1375,7 +1389,7 @@ def set_table_miniapp_share(
 
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    require_dataset_binding_access(db, current_user, wb.dataset_id, capability="manage")
 
     table = (
         db.query(_DatasetTable)
@@ -1480,7 +1494,15 @@ def list_public_links(
 ):
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    return WorkboardPublicLinkService.list_links(wb)
+    publisher = can_publish(db, current_user, wb, "workboards")
+    out = []
+    for link in WorkboardPublicLinkService.list_links(wb):
+        item = WorkboardPublicLinkResponse.model_validate(link)
+        out.append(item.model_copy(update={
+            "token": item.token if publisher else None,
+            "capabilities": {"manage": publisher, "reveal_token": publisher},
+        }))
+    return out
 
 
 @router.post(
@@ -1496,7 +1518,7 @@ def create_public_link(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _assert_owner_pin_rotated(db, wb.id)
     if not wb.is_published:
@@ -1533,7 +1555,7 @@ def update_public_link(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     updated = WorkboardPublicLinkService.update_link(
         db,
@@ -1558,7 +1580,7 @@ def delete_public_link(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     deleted = WorkboardPublicLinkService.delete_link(db, wb, link_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Public link not found")
@@ -1601,7 +1623,17 @@ def export_workboard_template(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
+    # Exporting a workboard is copying its definition out: edit. Including
+    # credentials (app users' PIN hashes, crackable offline) is a separate,
+    # owner/admin-only action, and audited.
+    require_edit_access(db, current_user, wb, "workboards")
+    if include_credentials:
+        require_full_access(db, current_user, wb, "workboards")
+        audit(
+            db, AuditAction.DATA_EXPORTED,
+            user_id=current_user.id, resource_type="workboard", resource_id=str(wb.id),
+            details={"export": "workboard_template", "include_credentials": True},
+        )
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     bundle = _template_svc.export_workboard(
         db, wb, include_credentials=include_credentials
@@ -2162,6 +2194,10 @@ def update_app_user(
 
     if "pin" in data and data["pin"]:
         user.pin_hash = app_user_service.hash_pin(data["pin"])
+    # A changed PIN, role, context, name, or deactivation ends this app user's
+    # existing sessions (they carried the old identity for up to the TTL).
+    if any(k in data for k in ("pin", "role", "active", "context", "username")):
+        app_user_service.bump_session_epoch(user)
 
     for field in ("full_name", "role", "active"):
         if field in data:

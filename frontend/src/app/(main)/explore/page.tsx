@@ -475,7 +475,7 @@ export default function ExplorePage() {
                       const activeRoleConfig = getActiveChartRoleConfig(config);
                       const typeLabel = getChartTypeLabel(chart.chart_type, t);
                       const updatedAt = new Date(chart.updated_at).toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
-                      const itemPerms = getResourcePermissions(chart.user_permission);
+                      const itemPerms = getResourcePermissions(chart.user_permission, chart.capabilities);
                       const sourceLabel = buildChartSourceLabel(chart);
                       const scopeValue = chart.is_owned_by_current_user ? 'mine' : 'shared';
                       const ChartIcon = CHART_TYPE_ICONS[chart.chart_type] ?? BarChart3;
@@ -601,7 +601,7 @@ export default function ExplorePage() {
                     const activeRoleConfig = getActiveChartRoleConfig(config);
                     const typeLabel = getChartTypeLabel(chart.chart_type, t);
                     const createdAt = new Date(chart.created_at).toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
-                    const itemPerms = getResourcePermissions(chart.user_permission);
+                    const itemPerms = getResourcePermissions(chart.user_permission, chart.capabilities);
                     const sourceLabel = buildChartSourceLabel(chart);
                     const GridChartIcon = CHART_TYPE_ICONS[chart.chart_type] ?? BarChart3;
 

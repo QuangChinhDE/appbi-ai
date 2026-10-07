@@ -2694,6 +2694,9 @@ class WorkboardResponse(WorkboardBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    # Backend-computed {action: bool} for THIS caller (UX only; every
+    # mutation is re-checked). The frontend reads this, not owner/share/level.
+    capabilities: Optional[Dict[str, bool]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -2734,7 +2737,7 @@ class AppUserCreate(BaseModel):
     """
 
     username: str = Field(..., min_length=1, max_length=255)
-    pin: str = Field(..., min_length=1, max_length=128)
+    pin: str = Field(..., min_length=6, max_length=128)
     full_name: Optional[str] = Field(default=None, max_length=255)
     role: Optional[str] = Field(default=None, max_length=64)
     active: bool = True
@@ -2747,7 +2750,7 @@ class AppUserUpdate(BaseModel):
     """All fields optional; PATCH semantics. Pass ``pin`` to reset PIN."""
 
     username: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    pin: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    pin: Optional[str] = Field(default=None, min_length=6, max_length=128)
     full_name: Optional[str] = Field(default=None, max_length=255)
     role: Optional[str] = Field(default=None, max_length=64)
     active: Optional[bool] = None
@@ -2799,7 +2802,8 @@ class WorkboardPublicLinkUpdate(BaseModel):
 class WorkboardPublicLinkResponse(BaseModel):
     id: str
     name: str
-    token: str
+    # Anonymous bearer capability: null unless the caller may publish the workboard.
+    token: Optional[str] = None
     mode: Literal["form", "view"] = "form"
     view_id: Optional[str] = None
     is_active: bool = True
@@ -2808,6 +2812,7 @@ class WorkboardPublicLinkResponse(BaseModel):
     last_accessed_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    capabilities: Optional[Dict[str, bool]] = None
 
 
 # ---------------------------------------------------------------------------

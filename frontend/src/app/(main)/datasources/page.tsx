@@ -23,7 +23,7 @@ import { toast } from '@/lib/toast';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { useCharts } from '@/hooks/use-charts';
 import { useDashboards } from '@/hooks/use-dashboards';
-import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { getResourcePermissions, accessTier } from '@/hooks/use-resource-permission';
 import {
   useDataSources,
   useDeleteDataSource,
@@ -79,7 +79,6 @@ export default function DataSourcesPage() {
 
   const { data: permData } = usePermissions();
   const canEdit = hasPermission(permData?.permissions, 'data_sources', 'edit');
-  const canShare = hasPermission(permData?.permissions, 'data_sources', 'full');
 
   const { data: dataSources = [], isLoading } = useDataSources();
   const { data: dashboards = [] } = useDashboards();
@@ -329,7 +328,7 @@ export default function DataSourcesPage() {
             )}
             {listFilters.access && (
               <FilterTag tone="info" active onClick={() => toggleListFilter('access', listFilters.access!)}>
-                {listFilters.access === 'full'
+                {listFilters.access === 'manage'
                   ? 'Full access'
                   : listFilters.access === 'edit'
                     ? 'Editable'
@@ -378,7 +377,7 @@ export default function DataSourcesPage() {
             return (
               matchesSearch &&
               (!listFilters.type || source.type === listFilters.type) &&
-              (!listFilters.access || (source.user_permission ?? 'none') === listFilters.access) &&
+              (!listFilters.access || accessTier(source.user_permission, source.access_capabilities) === listFilters.access) &&
               (!listFilters.owner || source.owner_email === listFilters.owner) &&
               matchesRelatedFilters(relations, {
                 dashboard: listFilters.dashboard,
@@ -424,7 +423,7 @@ export default function DataSourcesPage() {
                       onEdit={canEdit ? handleEdit : undefined}
                       onDelete={canEdit ? handleDelete : undefined}
                       onTest={handleTest}
-                      onShare={canShare ? (ds) => setShareSource(ds) : undefined}
+                      onShare={(ds) => setShareSource(ds)}
                       isDeleting={deleteMutation.isPending ? deleteMutation.variables : null}
                       activeFilters={listFilters}
                       onFilterClick={(key, value) => toggleListFilter(key as keyof DataSourceListFilters, value)}
@@ -440,7 +439,7 @@ export default function DataSourcesPage() {
                         const createdAt = new Date(ds.created_at).toLocaleDateString('vi-VN', {
                           day: '2-digit', month: '2-digit', year: 'numeric',
                         });
-                        const itemPerms = getResourcePermissions(ds.user_permission);
+                        const itemPerms = getResourcePermissions(ds.user_permission, ds.access_capabilities);
                         return (
                           <div
                             key={ds.id}

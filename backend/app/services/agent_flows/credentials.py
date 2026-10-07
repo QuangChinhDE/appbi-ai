@@ -247,6 +247,12 @@ def _owners(db: Session, rows: Iterable[AiProviderCredential]) -> dict[str, dict
     return out
 
 
+def _authz_caps(level: str) -> dict[str, bool]:
+    from app.core.authz.decision import capabilities_for_level
+
+    return capabilities_for_level(level)
+
+
 def serialize(
     row: AiProviderCredential, *, user: Any, level: str, usage_count: int | None = None,
     owners: dict[str, dict] | None = None,
@@ -263,6 +269,8 @@ def serialize(
         "mine": bool(row.owner_id is not None and str(row.owner_id) == str(getattr(user, "id", ""))),
         "owner": owner,
         "permission": level,
+        # What the caller may do with this key, decided here (the UI only reads it).
+        "capabilities": _authz_caps(level),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,

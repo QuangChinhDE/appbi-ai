@@ -132,6 +132,8 @@ export interface AiCredential {
   mine: boolean;
   owner: { id: string; email: string; name: string } | null;
   permission: 'view' | 'edit' | 'full';
+  /** Backend-computed actions for the caller; the UI reads these, never `permission`. */
+  capabilities?: Record<string, boolean> | null;
   created_at: string | null;
   updated_at: string | null;
   last_used_at: string | null;

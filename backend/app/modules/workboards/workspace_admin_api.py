@@ -18,6 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from app.services.audit_service import audit
+from app.models.audit_log import AuditAction
 from app.core.database import get_db
 from app.core.dependencies import (
     require_edit_access,
@@ -35,11 +37,78 @@ from app.modules.workboards.workspace_schemas import WorkspaceAccessMode
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 
+def _module_level(user: User) -> str:
+    from app.core.permissions import get_user_module_permission
+
+    return get_user_module_permission(user, "workboards") or "none"
+
+
+def _may_manage(user: User, ws: WorkboardWorkspace, db: Session | None = None) -> bool:
+    """Owner (module >= edit), Workboards module admin, or someone the workspace
+    was shared with at EDIT (decision Q5: a workspace is a resource with owner
+    and shares). A workspace share is never workboard data authority."""
+    from app.core.permissions import is_module_admin, module_at_least
+
+    if is_module_admin(user, "workboards"):
+        return True
+    if module_at_least(user, "workboards", "edit") and ws.owner_id is not None and ws.owner_id == user.id:
+        return True
+    if db is not None:
+        from app.core.dependencies import get_effective_permission
+
+        return get_effective_permission(db, user, ws, "workboards") in ("edit", "full")
+    return False
+
+
+def _menu_workboards(db: Session, ws: WorkboardWorkspace) -> List[Workboard]:
+    slugs = {
+        str(item.get("workboard_slug") or "").strip()
+        for item in (ws.menu_config or [])
+        if isinstance(item, dict)
+    }
+    slugs.discard("")
+    if not slugs:
+        return []
+    return db.query(Workboard).filter(Workboard.slug.in_(slugs)).all()
+
+
+def _may_see(db: Session, user: User, ws: WorkboardWorkspace) -> bool:
+    """Managers, plus anyone who can open at least one workboard it delivers."""
+    from app.core.dependencies import get_effective_permission
+
+    if _may_manage(user, ws, db):
+        return True
+    from app.core.dependencies import get_effective_permission as _gep
+
+    if _gep(db, user, ws, "workboards") != "none":  # shared with them (view)
+        return True
+    return any(
+        get_effective_permission(db, user, wb, "workboards") != "none"
+        for wb in _menu_workboards(db, ws)
+    )
+
+
+def _load_for(db: Session, user: User, workspace_id: int, *, manage: bool) -> WorkboardWorkspace:
+    ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
+    if ws is None or not _may_see(db, user, ws):
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    if manage and not _may_manage(user, ws, db):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the workspace owner or a Workboards admin can do this.",
+        )
+    return ws
+
+
 def _require_menu_dataset_access(
     db: Session,
     user: User,
     menu_config: List[Dict[str, Any]],
 ) -> None:
+    """Every workboard put into a workspace menu must be one the caller may EDIT
+    (delivering an app is publishing it), and its dataset must be reachable.
+    An unknown slug is refused: menus bind by slug, so an unclaimed slug would
+    silently adopt whatever workboard later takes that name."""
     slugs = {
         str(item.get("workboard_slug") or "").strip()
         for item in menu_config
@@ -49,7 +118,11 @@ def _require_menu_dataset_access(
     if not slugs:
         return
     workboards = db.query(Workboard).filter(Workboard.slug.in_(slugs)).all()
+    unknown = slugs - {wb.slug for wb in workboards}
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown workboard slug(s): {sorted(unknown)}")
     for workboard in workboards:
+        require_edit_access(db, user, workboard, "workboards")
         require_dataset_binding_access(db, user, workboard.dataset_id)
 
 
@@ -70,7 +143,10 @@ class WorkspaceAdminResponse(BaseModel):
     name: str
     description: Optional[str]
     icon: Optional[str]
-    token: str
+    # The portal credential. Only managers receive it, except for an internal
+    # workspace, whose token is merely its address: entering it grants nothing
+    # beyond the caller's own workboard access.
+    token: Optional[str] = None
     is_active: bool
     session_ttl_seconds: int
     access_mode: WorkspaceAccessMode = "internal"
@@ -104,14 +180,14 @@ class WorkspaceUpdateRequest(BaseModel):
     session_ttl_seconds: Optional[int] = Field(default=None, ge=60, le=86400)
 
 
-def _serialise(ws: WorkboardWorkspace) -> WorkspaceAdminResponse:
+def _serialise(ws: WorkboardWorkspace, *, reveal_token: bool = True) -> WorkspaceAdminResponse:
     return WorkspaceAdminResponse(
         id=ws.id,
         slug=ws.slug,
         name=ws.name,
         description=ws.description,
         icon=ws.icon,
-        token=ws.token,
+        token=ws.token if reveal_token else None,
         is_active=ws.is_active,
         session_ttl_seconds=ws.session_ttl_seconds or 28800,
         access_mode=(ws.access_mode or "internal"),
@@ -124,14 +200,19 @@ def _serialise(ws: WorkboardWorkspace) -> WorkspaceAdminResponse:
 @router.get("/", response_model=List[WorkspaceAdminResponse])
 def list_workspaces(
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("workboards", "view")),
+    user: User = Depends(require_permission("workboards", "view")),
 ):
     rows = (
         db.query(WorkboardWorkspace)
         .order_by(WorkboardWorkspace.created_at.desc())
         .all()
     )
-    return [_serialise(ws) for ws in rows]
+    return [_serialise_for(user, ws, db) for ws in rows if _may_see(db, user, ws)]
+
+
+def _serialise_for(user: User, ws: WorkboardWorkspace, db: Session | None = None) -> WorkspaceAdminResponse:
+    reveal = _may_manage(user, ws, db) or (ws.access_mode or "internal") == "internal"
+    return _serialise(ws, reveal_token=reveal)
 
 
 @router.post("", response_model=WorkspaceAdminResponse, status_code=status.HTTP_201_CREATED)
@@ -168,12 +249,10 @@ def create_workspace(
 def get_workspace(
     workspace_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("workboards", "view")),
+    user: User = Depends(require_permission("workboards", "view")),
 ):
-    ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
-    if ws is None:
-        raise HTTPException(status_code=404, detail="Workspace not found.")
-    return _serialise(ws)
+    ws = _load_for(db, user, workspace_id, manage=False)
+    return _serialise_for(user, ws, db)
 
 
 @router.patch("/{workspace_id}", response_model=WorkspaceAdminResponse)
@@ -183,9 +262,7 @@ def update_workspace(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("workboards", "edit")),
 ):
-    ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
-    if ws is None:
-        raise HTTPException(status_code=404, detail="Workspace not found.")
+    ws = _load_for(db, user, workspace_id, manage=True)
     patch = body.model_dump(exclude_unset=True)
     if "menu_config" in patch:
         _require_menu_dataset_access(db, user, patch["menu_config"] or [])
@@ -199,15 +276,16 @@ def update_workspace(
 @router.post("/{workspace_id}/rotate-token", response_model=WorkspaceAdminResponse)
 def rotate_token(
     workspace_id: int,
+    request: Request,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("workboards", "edit")),
+    user: User = Depends(require_permission("workboards", "edit")),
 ):
-    ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
-    if ws is None:
-        raise HTTPException(status_code=404, detail="Workspace not found.")
+    ws = _load_for(db, user, workspace_id, manage=True)
     ws.token = secrets.token_urlsafe(24)
     db.commit()
     db.refresh(ws)
+    audit(db, AuditAction.WORKSPACE_TOKEN_ROTATED, request=request, user_id=user.id,
+          resource_type="workspace", resource_id=str(ws.id))
     return _serialise(ws)
 
 
@@ -258,9 +336,7 @@ def preview_session(
     from app.modules.workboards.services import app_user_service
     from app.core.config import settings as app_settings
 
-    ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
-    if ws is None:
-        raise HTTPException(status_code=404, detail="Workspace not found.")
+    ws = _load_for(db, user, workspace_id, manage=True)
 
     access_mode = (ws.access_mode or "internal")
     preview_workboard: Workboard | None = None
@@ -396,11 +472,13 @@ def preview_session(
 def delete_workspace(
     workspace_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("workboards", "edit")),
+    user: User = Depends(require_permission("workboards", "edit")),
 ):
-    ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
-    if ws is None:
-        raise HTTPException(status_code=404, detail="Workspace not found.")
+    ws = _load_for(db, user, workspace_id, manage=True)
+    # Deleting is the owner's (or the module admin's), not an edit sharee's.
+    from app.core.dependencies import require_full_access
+
+    require_full_access(db, user, ws, "workboards")
     db.delete(ws)
     db.commit()
 
@@ -616,3 +694,11 @@ def suggest_relationships(
                 )
             )
     return out
+
+
+
+# A workspace is shareable through the generic /shares endpoints (decision Q5).
+from app.core.share_access import register_share_resource as _register_share  # noqa: E402
+from app.models.resource_share import ResourceType as _RT  # noqa: E402
+
+_register_share(_RT.WORKSPACE, WorkboardWorkspace, "workboards", "id")

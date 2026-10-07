@@ -415,6 +415,16 @@ def _fork_env(db, monkeypatch):
     monkeypatch.setattr(chart_service, "with_chart_semantic_binding", lambda _db, _t, cfg, **_k: cfg)
     monkeypatch.setattr(dataset_crud.DatasetCRUDService, "get_table_by_id", staticmethod(lambda _db, _id: object()))
     _with_published_chart_tile(db)
+    # The fork now resolves the dataset of the table it binds and authorizes it
+    # (BUILD/READ, see fork_tile_chart_for_report). This file tests the draft
+    # LIFECYCLE and stubs every access gate, so that gate is stubbed like the
+    # others; the authorization itself is tested against the real gate in
+    # test_authz_chart_sql_http_pg.py (fork onto a foreign dataset is refused).
+    from app.models.dataset import Dataset, DatasetTable
+    db.add(Dataset(id=7, name="orders"))
+    db.add(DatasetTable(id=71, dataset_id=7, display_name="orders", source_table_name="orders"))
+    db.commit()
+    monkeypatch.setattr(api._authz, "require", lambda *a, **k: None)
 
 
 def _fork(db, tile=60, name="Revenue", user=A, **extra):

@@ -250,29 +250,60 @@ def app_user_to_payload(
     return payload
 
 
+def _staff_workboard_level(db: Session, workboard: Workboard, app_user: Dict[str, Any]) -> str:
+    """The AppBI staff member's OWN object-level authority on ``workboard``.
+
+    A staff identity in a workspace is a person, not a capability: the workspace
+    token and the `workboards` module level say nothing about THIS workboard.
+    The decision is the same one the authenticated Workboard API makes:
+    ``get_effective_permission`` on the workboard. Anything unresolvable is
+    ``none``.
+    """
+    import uuid as _uuid
+
+    from app.core.dependencies import get_effective_permission
+    from app.models.user import User, UserStatus
+
+    raw = app_user.get("_appbi_user_id")
+    if not raw:
+        return "none"
+    try:
+        user = db.query(User).filter(User.id == _uuid.UUID(str(raw))).first()
+    except (ValueError, TypeError):
+        return "none"
+    if user is None or getattr(user, "status", None) != UserStatus.ACTIVE:
+        return "none"
+    # Runtime data access is authorized by the WORKBOARD (see
+    # permissions.require_dataset_binding_access for the delegation contract).
+    return get_effective_permission(db, user, workboard, "workboards")
+
+
 def can_app_user_access_workboard(
     db: Session,
     workboard: Workboard,
     app_user: Dict[str, Any],
 ) -> bool:
-    """True when the JWT identity is allowed to open ``workboard``.
+    """True when the session identity may open ``workboard``.
 
-    AppBI staff (preview/internal-mode sessions) bypass; otherwise the
-    identity must originate from this workboard's own app-user rows -
-    confirmed by the ``workboard_id`` claim baked into the JWT at login.
+    * A workboard app user must come from this workboard's own app-user rows,
+      proven by the ``workboard_id`` claim baked in at login. A session without
+      that claim is refused — it cannot be tied to any workboard.
+    * An AppBI staff identity (``_internal``) needs its own object-level access
+      to the workboard. The level is stamped on the identity (``_staff_level``,
+      ``_staff_workboard_id``) so the runtime can require ``edit`` for writes.
+      Holding the workspace token, or the module, is never enough.
     """
     if not isinstance(app_user, dict):
         return False
     if app_user.get("_internal"):
-        return True
+        level = _staff_workboard_level(db, workboard, app_user)
+        app_user["_staff_level"] = level
+        app_user["_staff_workboard_id"] = int(workboard.id)
+        return level != "none"
     bound = app_user.get("workboard_id")
     if bound is None:
-        # Legacy session minted before this migration — let it through but
-        # log so we can spot lingering stale tokens.
-        logger.info(
-            "app_user session has no workboard_id binding (legacy token)"
-        )
-        return True
+        logger.info("app_user session has no workboard_id binding (legacy token) - refused")
+        return False
     try:
         return int(bound) == int(workboard.id)
     except (TypeError, ValueError):
@@ -337,12 +368,19 @@ def create_session_token(
         "exp": now + timedelta(seconds=ttl),
         "iat": now,
         "app_user": app_user_to_payload(user, scope_context=scope_context),
+        # Identity + revocation generation, re-checked against the DB per request.
+        "auid": int(user.id),
+        "ep": int(user.session_epoch or 0),
     }
     if extra_claims:
         for key, value in extra_claims.items():
             if key not in payload:
                 payload[key] = value
-    token = jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+    from app.core import tokens
+
+    for k in ("type", "exp", "iat", "iss", "aud"):
+        payload.pop(k, None)
+    token = tokens.encode(tokens.WORKSPACE_SESSION, payload, ttl=timedelta(seconds=ttl))
     return token, ttl
 
 
@@ -376,13 +414,23 @@ def create_internal_session_token(
             "role": "appbi_staff",
             "full_name": full_name,
             "_internal": True,
+            # The person behind the session. Every per-workboard decision
+            # re-derives authority from this id; there is no implicit access.
+            "_appbi_user_id": str(getattr(appbi_user, "id", "") or ""),
         },
+        # The AppBI user's security stamp: a password change / deactivation
+        # ends their staff sessions in every workspace too.
+        "ss": getattr(appbi_user, "security_stamp", None) or "",
     }
     if extra_claims:
         for key, value in extra_claims.items():
             if key not in payload:
                 payload[key] = value
-    token = jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+    from app.core import tokens
+
+    for k in ("type", "exp", "iat", "iss", "aud"):
+        payload.pop(k, None)
+    token = tokens.encode(tokens.WORKSPACE_SESSION, payload, ttl=timedelta(seconds=ttl))
     return token, ttl
 
 
@@ -393,10 +441,12 @@ def decode_session_token(
     if not token:
         return None
     try:
-        data = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
+        from app.core import tokens
+
+        data = tokens.decode(token, tokens.WORKSPACE_SESSION)
+    except Exception:  # noqa: BLE001 - a bad token is simply not a session
         return None
-    if data.get("type") != _SESSION_TYPE:
+    if data is None:
         return None
     if data.get("ws") != expected_workspace_token:
         return None
@@ -582,3 +632,45 @@ def _jsonb_text():
     from sqlalchemy import String
 
     return String
+
+
+
+def bump_session_epoch(user: WorkboardAppUser) -> None:
+    """End every session of this app user (caller commits)."""
+    user.session_epoch = int(user.session_epoch or 0) + 1
+
+
+def refresh_session_identity(db: Session, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The CURRENT identity behind a decoded workspace session, or None.
+
+    App-user sessions: the row must still exist, be active, belong to the bound
+    workboard and carry the same session_epoch; role and context are re-read
+    from the row (they used to be frozen in the JWT for the whole TTL).
+    Staff sessions: the AppBI user must be active with the same security stamp.
+    """
+    import uuid as _uuid
+
+    from app.models.user import User, UserStatus
+
+    app_user = data.get("app_user") or {}
+    if app_user.get("_internal"):
+        try:
+            u = db.query(User).filter(User.id == _uuid.UUID(str(app_user.get("_appbi_user_id")))).first()
+        except (ValueError, TypeError):
+            return None
+        if u is None or u.status != UserStatus.ACTIVE:
+            return None
+        if (data.get("ss") or "") != (getattr(u, "security_stamp", None) or ""):
+            return None
+        return app_user
+    auid = data.get("auid")
+    if auid is None:
+        return None  # a session minted before revocation existed: sign in again
+    row = db.query(WorkboardAppUser).filter(WorkboardAppUser.id == int(auid)).first()
+    if row is None or not row.active:
+        return None
+    if int(row.session_epoch or 0) != int(data.get("ep", -1)):
+        return None
+    if app_user.get("workboard_id") is not None and int(app_user["workboard_id"]) != int(row.workboard_id):
+        return None
+    return app_user_to_payload(row, scope_context=compute_scope_context(db, row))

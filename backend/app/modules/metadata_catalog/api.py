@@ -21,7 +21,7 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_edit_access, require_permission
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models import Chart, Dashboard, Dataset, DatasetTable
-from app.models.resource_share import ResourceShare, ResourceType
+from app.models.resource_share import ResourceType
 from app.models.semantic import SemanticView
 from app.models.user import User
 from app.services.governance_service import GovernanceError, GovernanceService
@@ -116,6 +116,31 @@ async def govern_module_gate(request: Request, user: User = Depends(get_current_
     return await _CATALOG_CHECKERS[module][level](user=user)
 
 
+
+# ── Object authorization for Govern (authz remediation, Gate 4) ─────────────
+# The module gate says "may use Govern"; these say "may touch THIS object".
+from app.core.authz import decision as _authz  # noqa: E402
+
+
+def _govern_admin(user: User) -> bool:
+    """Global governance objects (managed KPIs, certification, the change log)
+    belong to the Govern module administrator."""
+    from app.core.permissions import is_module_admin
+
+    return is_module_admin(user, "govern")
+
+
+def _require_govern_admin(user: User) -> None:
+    if not _govern_admin(user):
+        raise HTTPException(status_code=403, detail="This is a Govern administrator action.")
+
+
+def _dataset_for(db: Session, dataset_id) -> Dataset:
+    ds = db.query(Dataset).filter(Dataset.id == int(dataset_id)).first()
+    if ds is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return ds
+
 router = APIRouter(
     prefix="/catalog",
     tags=["catalog"],
@@ -163,12 +188,14 @@ def govern_glossaries(db: Session = Depends(get_db), _: User = Depends(get_curre
 
 
 @router.put("/govern/glossary")
-def upsert_glossary(body: GlossaryWrite, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def upsert_glossary(body: GlossaryWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.upsert_glossary(db, body.name, body.machine_name, body.description))
 
 
 @router.delete("/govern/glossary/{fqn:path}")
-def delete_glossary(fqn: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def delete_glossary(fqn: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.delete_glossary(db, fqn))
 
 
@@ -180,12 +207,14 @@ def govern_glossary(db: Session = Depends(get_db), _: User = Depends(get_current
 
 
 @router.put("/govern/glossary-term")
-def upsert_term(body: TermWrite, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def upsert_term(body: TermWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.upsert_term(db, body.glossary, body.name, body.machine_name, body.description, body.synonyms))
 
 
 @router.delete("/govern/glossary-term/{fqn:path}")
-def delete_term(fqn: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def delete_term(fqn: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.delete_term(db, fqn))
 
 
@@ -214,12 +243,14 @@ def govern_classifications(db: Session = Depends(get_db), _: User = Depends(get_
 
 
 @router.put("/govern/classification")
-def upsert_classification(body: ClassificationWrite, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def upsert_classification(body: ClassificationWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.upsert_classification(db, body.name, body.machine_name, body.description, body.mutuallyExclusive))
 
 
 @router.delete("/govern/classification/{fqn:path}")
-def delete_classification(fqn: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def delete_classification(fqn: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.delete_classification(db, fqn))
 
 
@@ -231,12 +262,14 @@ def govern_tags(classification: str | None = Query(default=None), db: Session = 
 
 
 @router.put("/govern/tag")
-def upsert_tag(body: TagWrite, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def upsert_tag(body: TagWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.upsert_tag(db, body.classification, body.name, body.machine_name, body.description))
 
 
 @router.delete("/govern/tag/{fqn:path}")
-def delete_tag(fqn: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def delete_tag(fqn: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # tenant-wide vocabulary: Govern administrators only
     return _run(lambda: GovernanceService.delete_tag(db, fqn))
 
 
@@ -297,12 +330,14 @@ def upsert_managed_metric(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
+    _require_govern_admin(user)  # a managed KPI is global: every report uses it
     who = getattr(user, "email", None)
     return _run(lambda: GovernanceService.upsert_managed_metric(db, body.model_dump(), changed_by=who))
 
 
 @router.delete("/govern/managed-metric/{name}")
 def delete_managed_metric(name: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)
     who = getattr(user, "email", None)
     return _run(lambda: GovernanceService.delete_managed_metric(db, name, changed_by=who))
 
@@ -313,10 +348,12 @@ def govern_change_log(
     entity_fqn: str | None = Query(default=None),
     limit: int = Query(default=100),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Evolution of the business domain (log theo sự phát triển) — audit trail
-    of every governed-knowledge change."""
+    of every governed-knowledge change. Global (titles of every doc and metric,
+    who changed them): Govern administrators only."""
+    _require_govern_admin(user)
     return {"entries": GovernanceService.list_change_log(db, entity_type, entity_fqn, limit)}
 
 
@@ -465,6 +502,16 @@ def govern_knowledge_ai_draft(
     ids = body.dataset_ids or ([body.dataset_id] if body.dataset_id else [])
     if not ids:
         raise HTTPException(status_code=422, detail="Chọn ít nhất một dataset.")
+    # The draft is written from each dataset's model, SAMPLE ROWS and metrics,
+    # and each dashboard: raw data goes to the LLM and back to the caller, so
+    # every dataset needs EXPLORE and every dashboard READ.
+    for ds_id in ids:
+        _authz.require(db, _, _authz.Action.EXPLORE, _dataset_for(db, ds_id))
+    for dash_id in body.dashboard_ids or []:
+        dash = db.query(Dashboard).filter(Dashboard.id == int(dash_id)).first()
+        if dash is None:
+            raise HTTPException(status_code=404, detail="Dashboard not found")
+        _authz.require(db, _, _authz.Action.READ, dash)
     draft = draft_document(db, ids, body.dashboard_ids, body.focus)
     if draft is None:
         raise HTTPException(
@@ -489,7 +536,12 @@ def govern_asset_docs(
 ) -> dict[str, Any]:
     """Reverse lineage: knowledge docs that reference a given report/dataset/term
     (so an asset's Govern view can show 'documented in …')."""
-    return {"docs": GovernanceService.docs_referencing_asset(db, asset_type, asset_ref)}
+    # Only documents the caller may read: titles of private docs were listed.
+    from app.models.governance import GovernKnowledgeDoc
+
+    readable = {d.id for d in _authz.scope(db, _, GovernKnowledgeDoc).all()}
+    docs = GovernanceService.docs_referencing_asset(db, asset_type, asset_ref)
+    return {"docs": [d for d in docs if (d.get("id") if isinstance(d, dict) else None) in readable]}
 
 
 @router.get("/govern/knowledge/{doc_id}/versions")
@@ -1240,7 +1292,8 @@ def govern_doc_usage(doc_id: int, db: Session = Depends(get_db), user: User = De
     dashboard_ids = [int(l.asset_ref) for l in links if str(l.asset_ref).isdigit()]
     dashboards = []
     if dashboard_ids:
-        rows = db.query(Dashboard).filter(Dashboard.id.in_(dashboard_ids)).all()
+        # only dashboards the caller may read (names are not disclosed otherwise)
+        rows = _authz.scope(db, user, Dashboard).filter(Dashboard.id.in_(dashboard_ids)).all()
         dashboards = [{"id": r.id, "name": r.name} for r in rows]
     return {"dashboards": dashboards, "retrieval_count": d.retrieval_count or 0}
 
@@ -1258,14 +1311,11 @@ def _collect_accessible_metrics(db: Session, user: User) -> list[dict[str, Any]]
     if not ds_info:
         return []
 
-    shared_ids = {
-        int(r)
-        for (r,) in db.query(ResourceShare.resource_id)
-        .filter(ResourceShare.resource_type == ResourceType.DATASET)
-        .distinct()
-        .all()
-        if str(r).isdigit()
-    }
+    # "Shared" = the dataset has any grant (dataset access is stored as grants
+    # only since authz migration 20261008_0001; ResourceShare holds none).
+    from app.services.dataset_grants_service import datasets_with_grants
+
+    shared_ids = datasets_with_grants(db, ds_info.keys())
     tables = db.query(DatasetTable).filter(DatasetTable.dataset_id.in_(list(ds_info.keys()))).all()
     table_by_id = {t.id: t for t in tables}
     views = (
@@ -1442,15 +1492,24 @@ def metric_usage(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Lineage "used in": which charts (and their dashboards) reference this measure."""
+    """Lineage "used in": which charts (and their dashboards) reference this measure.
+
+    Only the charts and dashboards the CALLER may read, on a dataset the caller
+    may read: it used to list every chart and dashboard name in the tenant that
+    mentioned the name, for any table id."""
     import json as _json
 
     table = db.query(DatasetTable).filter(DatasetTable.id == table_id).first()
     if table is None:
         return {"charts": [], "dashboards": [], "chartCount": 0, "dashboardCount": 0}
+    _authz.require(db, _, _authz.Action.READ, _dataset_for(db, table.dataset_id))
 
     sibling_ids = [t.id for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == table.dataset_id).all()]
-    charts = db.query(Chart).filter(Chart.dataset_table_id.in_(sibling_ids)).all() if sibling_ids else []
+    charts = (
+        _authz.scope(db, _, Chart).filter(Chart.dataset_table_id.in_(sibling_ids)).all()
+        if sibling_ids else []
+    )
+    readable_dash = {d.id for d in _authz.scope(db, _, Dashboard).all()}
 
     ref = f"dataset_table_{table_id}.{name}"
     bare = f'"{name}"'
@@ -1460,7 +1519,8 @@ def metric_usage(
         cfg = _json.dumps(c.config or {}, default=str)
         if ref not in cfg and bare not in cfg:
             continue
-        cdash = [dc.dashboard_id for dc in (c.dashboard_charts or []) if getattr(dc, "dashboard_id", None)]
+        cdash = [dc.dashboard_id for dc in (c.dashboard_charts or [])
+                 if getattr(dc, "dashboard_id", None) and dc.dashboard_id in readable_dash]
         dash_ids.update(cdash)
         chart_out.append(
             {
@@ -1771,6 +1831,9 @@ def govern_qa_delete(qa_id: int, db: Session = Depends(get_db), user: User = Dep
 # ── Certify (in-context; ALWAYS writes the single review ledger) ─────────────
 @router.post("/govern/certify/{entity_type}/{entity_id}")
 def govern_certify(entity_type: str, entity_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    # Certifying decides what the AI TRUSTS tenant-wide: an administrator act,
+    # not something any editor can do to their own draft.
+    _require_govern_admin(user)
     who = getattr(user, "email", None)
     return _run(lambda: GovernanceAIService.certify(db, entity_type, entity_id, changed_by=who))
 
@@ -1788,19 +1851,47 @@ def govern_instructions_create(body: InstructionWrite, db: Session = Depends(get
 
 
 # ── Data caveats ─────────────────────────────────────────────────────────────
+def _require_caveat_write(db: Session, user: User, payload: dict) -> None:
+    """A caveat is injected into AI answers about its dataset: writing one needs
+    EDIT on that dataset - on the dataset it moves TO and the one it is on now.
+    A caveat with no dataset is global: Govern administrators only."""
+    from app.models.governance import GovernDataCaveat
+
+    targets = []
+    if payload.get("id"):
+        row = db.query(GovernDataCaveat).filter(GovernDataCaveat.id == int(payload["id"])).first()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Caveat not found")
+        targets.append(row.dataset_id)
+    if "dataset_id" in payload:
+        targets.append(payload.get("dataset_id"))
+    for ds_id in targets:
+        if ds_id is None:
+            _require_govern_admin(user)
+        else:
+            _authz.require(db, user, _authz.Action.EDIT, _dataset_for(db, ds_id))
+
+
 @router.get("/govern/caveats")
-def govern_caveats(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
-    return {"caveats": GovernanceAIService.list_caveats(db)}
+def govern_caveats(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    # Global caveats (no dataset) for everyone in Govern; dataset caveats only
+    # for datasets the caller may read.
+    readable = {d.id for d in _authz.scope(db, user, Dataset).all()}
+    return {"caveats": [c for c in GovernanceAIService.list_caveats(db)
+                        if c.get("datasetId", c.get("dataset_id")) is None
+                        or c.get("datasetId", c.get("dataset_id")) in readable]}
 
 
 @router.put("/govern/caveats")
 def govern_caveats_upsert(body: CaveatWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_caveat_write(db, user, body.model_dump())
     who = getattr(user, "email", None)
     return _run(lambda: GovernanceAIService.upsert_caveat(db, body.model_dump(), changed_by=who))
 
 
 @router.delete("/govern/caveats/{caveat_id}")
 def govern_caveats_delete(caveat_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_caveat_write(db, user, {"id": caveat_id})
     _run(lambda: GovernanceAIService.delete_caveat(db, caveat_id, changed_by=getattr(user, "email", None)))
     return {"ok": True}
 
@@ -1808,6 +1899,7 @@ def govern_caveats_delete(caveat_id: int, db: Session = Depends(get_db), user: U
 # ── AI data scope ────────────────────────────────────────────────────────────
 @router.get("/govern/ai-scope/{dataset_id}")
 def govern_ai_scope_get(dataset_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    _authz.require(db, _, _authz.Action.READ, _dataset_for(db, dataset_id))
     scope = GovernanceAIService.get_scope(db, dataset_id)
     scope["fields"] = GovernanceAIService.scope_fields(db, dataset_id)
     return scope
@@ -1815,6 +1907,8 @@ def govern_ai_scope_get(dataset_id: int, db: Session = Depends(get_db), _: User 
 
 @router.put("/govern/ai-scope/{dataset_id}")
 def govern_ai_scope_put(dataset_id: int, body: ScopeWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    # What the AI may see of a dataset is the dataset's own setting: EDIT on it.
+    _authz.require(db, user, _authz.Action.EDIT, _dataset_for(db, dataset_id))
     who = getattr(user, "email", None)
     return _run(lambda: GovernanceAIService.put_scope(db, dataset_id, body.model_dump(), changed_by=who))
 
@@ -1845,6 +1939,7 @@ def govern_review_create(body: ReviewItemWrite, db: Session = Depends(get_db), u
 
 @router.post("/govern/review-items/{item_id}/approve")
 def govern_review_approve(item_id: int, body: ReviewResolve | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)  # approving creates/approves governed AI knowledge
     who = getattr(user, "email", None)
     note = body.note if body else None
     return _run(lambda: GovernanceAIService.resolve_review_item(db, item_id, approve=True, resolved_by=who, note=note))
@@ -1852,6 +1947,7 @@ def govern_review_approve(item_id: int, body: ReviewResolve | None = None, db: S
 
 @router.post("/govern/review-items/{item_id}/reject")
 def govern_review_reject(item_id: int, body: ReviewResolve | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)
     who = getattr(user, "email", None)
     note = body.note if body else None
     return _run(lambda: GovernanceAIService.resolve_review_item(db, item_id, approve=False, resolved_by=who, note=note))
@@ -1865,6 +1961,7 @@ def govern_intelligence_overview(db: Session = Depends(get_db), _: User = Depend
 
 @router.post("/govern/managed-metric/{name}/certify")
 def govern_metric_certify(name: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _require_govern_admin(user)
     who = getattr(user, "email", None)
     return _run(lambda: GovernanceAIService.certify_metric_by_name(db, name, changed_by=who))
 
@@ -1878,6 +1975,12 @@ class AiDraftReq(BaseModel):
 @router.post("/govern/ai-draft")
 def govern_intel_ai_draft(body: AiDraftReq, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
     """AI-compose an Intelligence entity from a natural-language prompt.
+
+    A dataset in the request has its measures/dimensions read into the prompt:
+    the caller must be able to read that dataset."""
+    if body.dataset_id is not None:
+        _authz.require(db, _, _authz.Action.READ, _dataset_for(db, body.dataset_id))
+    """
     Returns a draft the create modal fills in for the user to review/edit."""
     return _run(lambda: GovernanceAIService.ai_draft(db, body.entity_type, body.prompt, body.dataset_id))
 

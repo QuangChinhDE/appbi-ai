@@ -1192,7 +1192,7 @@ export function ExploreEditor({
     () => pickRecommendedBaseTableId(datasetModel ?? null),
     [datasetModel],
   );
-  const resPerms = getResourcePermissions(isNew ? 'full' : chart?.user_permission);
+  const resPerms = getResourcePermissions(isNew ? 'full' : chart?.user_permission, isNew ? undefined : chart?.capabilities);
 
   /**
    * Phase-4: build a {qualified-or-bare field → display label} map from the

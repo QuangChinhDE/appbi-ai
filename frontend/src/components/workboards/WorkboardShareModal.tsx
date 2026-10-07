@@ -49,7 +49,9 @@ interface Props {
 
 interface ScreenLite { id: string; title: string; kind: string }
 
-function publicLink(token: string): string {
+function publicLink(token: string | null): string {
+  // Null when the caller does not manage this workspace: no link to show.
+  if (!token) return '';
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   return `${origin}/ws/${token}`;
 }
@@ -191,7 +193,7 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
   };
 
   const copyLink = async () => {
-    if (!primary) return;
+    if (!primary?.token) return;
     try {
       await navigator.clipboard.writeText(publicLink(primary.token));
       setCopied(true);

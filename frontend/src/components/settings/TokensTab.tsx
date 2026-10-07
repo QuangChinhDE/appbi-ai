@@ -171,12 +171,6 @@ export function PersonalTokensPanel() {
     onError: (err) => toast.error(extractApiError(err, t('settings.tokens.deleteFailed'))),
   });
 
-  const revealMutation = useMutation({
-    mutationFn: (id: string) => personalAccessTokensApi.reveal(id),
-    onSuccess: (data) => setRevealedFull(data.token),
-    onError: (err) => toast.error(extractApiError(err, t('settings.tokens.revealFailed'))),
-  });
-
   const rotateMutation = useMutation({
     mutationFn: (id: string) => personalAccessTokensApi.rotate(id),
     onSuccess: (data) => { setTokenToRotate(null); setRevealedFull(data.token); qc.invalidateQueries({ queryKey: ['personal-access-tokens'] }); toast.success(t('settings.tokens.rotatedToast')); },
@@ -305,9 +299,6 @@ export function PersonalTokensPanel() {
                       <p className="mt-1 font-mono text-tiny text-text-quaternary">{token.token_hint}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {!isRevoked && token.revealable && (
-                        <Button variant="secondary" size="xs" loading={revealMutation.isPending && revealMutation.variables === token.id} onClick={() => revealMutation.mutate(token.id)}>{t('settings.tokens.reveal')}</Button>
-                      )}
                       {!isRevoked && (
                         <>
                           <Button variant="secondary" size="xs" disabled={updateMutation.isPending || deleteMutation.isPending} onClick={() => startEditing(token)}>{t('settings.tokens.edit')}</Button>
@@ -416,7 +407,6 @@ function AdminTokensPanel() {
   const [search, setSearch] = useState('');
   const [toRevoke, setToRevoke] = useState<AdminPersonalAccessTokenRecord | null>(null);
   const [toRotate, setToRotate] = useState<AdminPersonalAccessTokenRecord | null>(null);
-  const [revealedFull, setRevealedFull] = useState<string | null>(null);
 
   const { data: tokens = [], isLoading } = useQuery<AdminPersonalAccessTokenRecord[]>({
     queryKey: ['personal-access-tokens', 'admin'], queryFn: personalAccessTokensApi.adminList,
@@ -428,15 +418,11 @@ function AdminTokensPanel() {
     onError: (err) => toast.error(extractApiError(err, t('settings.tokens.revokeFailed'))),
   });
 
-  const revealMutation = useMutation({
-    mutationFn: (id: string) => personalAccessTokensApi.adminReveal(id),
-    onSuccess: (data) => setRevealedFull(data.token),
-    onError: (err) => toast.error(extractApiError(err, t('settings.tokens.revealFailed'))),
-  });
-
   const rotateMutation = useMutation({
-    mutationFn: (id: string) => personalAccessTokensApi.adminRotate(id),
-    onSuccess: (data) => { setToRotate(null); setRevealedFull(data.token); qc.invalidateQueries({ queryKey: ['personal-access-tokens', 'admin'] }); toast.success(t('settings.tokens.rotatedToast')); },
+    // Force-invalidate: the admin never receives a usable token (decision Q4);
+    // the owner gets a new secret by rotating it themselves.
+    mutationFn: (id: string) => personalAccessTokensApi.adminInvalidate(id),
+    onSuccess: () => { setToRotate(null); qc.invalidateQueries({ queryKey: ['personal-access-tokens', 'admin'] }); toast.success(t('settings.tokens.invalidatedToast')); },
     onError: (err) => { setToRotate(null); toast.error(extractApiError(err, t('settings.tokens.rotateFailed'))); },
   });
 
@@ -506,11 +492,8 @@ function AdminTokensPanel() {
                     <td className="px-4 py-3 text-text-tertiary">{tk.last_used_at ? fmt(tk.last_used_at) : t('settings.common.never')}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-2">
-                        {tk.revealable && !isRevoked && (
-                          <Button variant="secondary" size="xs" loading={revealMutation.isPending && revealMutation.variables === tk.id} onClick={() => revealMutation.mutate(tk.id)}>{t('settings.tokens.reveal')}</Button>
-                        )}
                         {!isRevoked && (
-                          <Button variant="secondary" size="xs" loading={rotateMutation.isPending && rotateMutation.variables === tk.id} onClick={() => setToRotate(tk)}>{t('settings.tokens.rotate')}</Button>
+                          <Button variant="secondary" size="xs" loading={rotateMutation.isPending && rotateMutation.variables === tk.id} onClick={() => setToRotate(tk)}>{t('settings.tokens.invalidate')}</Button>
                         )}
                         {!isRevoked && (
                           <Button variant="danger" size="xs" onClick={() => setToRevoke(tk)}>{t('settings.tokens.revoke')}</Button>
@@ -545,7 +528,6 @@ function AdminTokensPanel() {
         variant="warning"
       />
 
-      {revealedFull && <RevealTokenModal token={revealedFull} onClose={() => setRevealedFull(null)} />}
     </div>
   );
 }

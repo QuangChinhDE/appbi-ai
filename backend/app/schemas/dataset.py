@@ -140,6 +140,9 @@ class DatasetResponse(DatasetBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    # Backend-computed {action: bool} for THIS caller (UX only; every
+    # mutation is re-checked). The frontend reads this, not owner/share/level.
+    capabilities: Optional[Dict[str, bool]] = None
     datasource_ids: List[int] = Field(default_factory=list)
     dictionary_updated_at: Optional[datetime] = None
     created_at: Optional[datetime] = None

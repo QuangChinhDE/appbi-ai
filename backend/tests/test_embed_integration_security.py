@@ -201,7 +201,14 @@ def test_a_pat_whose_owner_cannot_edit_the_dashboard_cannot_mint(env):
     with S() as s:
         s.query(ResourceShare).one().permission = "edit"
         s.commit()
-    assert _mint(client, pat).status_code == 200  # an edit share is the bar
+    # Decision Q3 (authz remediation): minting an embed PUBLISHES the dashboard,
+    # and publish belongs to the owner or a module admin - a shared EDIT is not
+    # enough any more (it used to be "the bar").
+    assert _mint(client, pat).status_code == 403
+    with S() as s:
+        s.query(Dashboard).filter(Dashboard.id == 1).one().owner_id = STRANGER
+        s.commit()
+    assert _mint(client, pat).status_code == 200  # the owner may publish
 
 
 def test_a_revoked_or_expired_pat_cannot_mint(env):

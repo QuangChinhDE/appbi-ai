@@ -256,11 +256,6 @@ export const personalAccessTokensApi = {
     await apiClient.delete(`/auth/personal-access-tokens/${tokenId}/permanent`);
   },
 
-  // Reveal the full secret again (owner). Only works for revealable tokens.
-  reveal: async (tokenId: string): Promise<{ token: string }> => {
-    const response = await apiClient.get(`/auth/personal-access-tokens/${tokenId}/reveal`);
-    return response.data;
-  },
 
   // Regenerate the secret (owner) — old secret stops working; new one shown once.
   rotate: async (tokenId: string): Promise<PersonalAccessTokenCreateResponse> => {
@@ -268,7 +263,7 @@ export const personalAccessTokensApi = {
     return response.data;
   },
 
-  // Admin oversight (settings=full): every user's tokens + revoke/reveal any.
+  // Admin oversight (settings=full): every user's tokens; revoke or force-invalidate (never reveal).
   adminList: async (): Promise<AdminPersonalAccessTokenRecord[]> => {
     const response = await apiClient.get('/auth/personal-access-tokens/admin');
     return response.data;
@@ -278,14 +273,11 @@ export const personalAccessTokensApi = {
     await apiClient.delete(`/auth/personal-access-tokens/admin/${tokenId}`);
   },
 
-  adminReveal: async (tokenId: string): Promise<{ token: string }> => {
-    const response = await apiClient.get(`/auth/personal-access-tokens/admin/${tokenId}/reveal`);
-    return response.data;
-  },
 
-  adminRotate: async (tokenId: string): Promise<PersonalAccessTokenCreateResponse> => {
-    const response = await apiClient.post(`/auth/personal-access-tokens/admin/${tokenId}/rotate`);
-    return response.data;
+  /** Force-invalidate a user's token. The admin never receives a usable token. */
+  adminInvalidate: async (tokenId: string): Promise<unknown> => {
+    const { data } = await apiClient.post(`/auth/personal-access-tokens/admin/${tokenId}/invalidate`);
+    return data;
   },
 };
 

@@ -289,6 +289,9 @@ def create_thread(db: Session, user: Any, brain_key: str) -> AgentFlowChatThread
 ThreadAccess = str
 
 
+from app.core.permissions import is_module_admin as _is_module_admin  # noqa: E402
+
+
 def _module_level(user: Any) -> str:
     """This person's `chat` level, read the same way every gate reads it."""
     from app.core.dependencies import _normalize_permissions, _sanitize_permission_level
@@ -313,7 +316,7 @@ def thread_access(db: Session, user: Any, thread: AgentFlowChatThread) -> Thread
     """
     if str(getattr(thread, "user_id", "")) == str(getattr(user, "id", "")):
         return "owner"
-    if _module_level(user) == "full":
+    if _is_module_admin(user, "chat"):
         return "full"
 
     from app.core.resource_shares import get_highest_share_for_resource
@@ -362,7 +365,7 @@ def list_threads(
     q = db.query(AgentFlowChatThread).filter(
         AgentFlowChatThread.deleted_at.is_(None)
     )
-    if _module_level(user) != "full":
+    if not _is_module_admin(user, "chat"):
         from app.core.resource_shares import get_shared_resource_ids_query
         from app.models.resource_share import ResourceType
 

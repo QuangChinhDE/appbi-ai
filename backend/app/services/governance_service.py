@@ -908,8 +908,15 @@ class GovernanceService:
         docs = GovernanceService._visible_docs_query(db, current_user).all()
         doc_ids = {d.id for d in docs}
 
-        datasets = db.query(Dataset.id, Dataset.name).all()
-        dashboards = db.query(Dashboard.id, Dashboard.name).all()
+        # Only what the caller may READ (the list endpoints' policy): the map
+        # used to carry every dataset/dashboard/table name and id in the tenant
+        # (authz review, fourth pass).
+        from app.core.authz import decision as _authz
+
+        readable_ds = {r.id for r in _authz.scope(db, current_user, Dataset).with_entities(Dataset.id)}
+        readable_dash = {r.id for r in _authz.scope(db, current_user, Dashboard).with_entities(Dashboard.id)}
+        datasets = [r for r in db.query(Dataset.id, Dataset.name).all() if r.id in readable_ds]
+        dashboards = [r for r in db.query(Dashboard.id, Dashboard.name).all() if r.id in readable_dash]
         metrics = db.query(GovernMetric).filter(GovernMetric.status != "Deprecated").all()
         caveats = db.query(GovernDataCaveat).filter(GovernDataCaveat.status != "Deprecated").all()
         terms = (
@@ -918,7 +925,7 @@ class GovernanceService:
         )
 
         # ── which datasets each dashboard reads, through its charts ───────────
-        table_rows = db.query(DatasetTable).all()
+        table_rows = [t for t in db.query(DatasetTable).all() if t.dataset_id in readable_ds]
         tbl_to_ds = {t.id: t.dataset_id for t in table_rows if t.dataset_id}
         table_by_id = {t.id: t for t in table_rows}
         # A chart belongs to a dashboard through `DashboardChart`, not through a
@@ -931,7 +938,7 @@ class GovernanceService:
             db.query(DashboardChart.dashboard_id, Chart.dataset_table_id)
             .join(Chart, Chart.id == DashboardChart.chart_id).all()
         ):
-            if not dash_id:
+            if not dash_id or dash_id not in readable_dash:
                 continue
             dash_charts[dash_id] = dash_charts.get(dash_id, 0) + 1
             ds = tbl_to_ds.get(tbl_id)
@@ -975,7 +982,9 @@ class GovernanceService:
         terms_for_ds: dict[int, set[str]] = {}
         for view in db.query(SemanticView).all():
             table = table_by_id.get(view.dataset_table_id)
-            dataset_id = table.dataset_id if table else None
+            if table is None:
+                continue  # a model of a dataset the caller cannot read
+            dataset_id = table.dataset_id
             for measure in view.measures or []:
                 if not isinstance(measure, dict) or not measure.get("name"):
                     continue
@@ -1159,6 +1168,10 @@ class GovernanceService:
             for ds_id, ds_name in datasets
         ]
 
+        # An edge may name a dataset/dashboard the caller cannot read (a document's
+        # related ids, a caveat's dataset): keep only edges between emitted nodes.
+        node_ids = {n["id"] for n in nodes}
+        edges = [e for e in edges if e["from"] in node_ids and e["to"] in node_ids]
         linked_terms = {e["to"] for e in edges if e["to"].startswith("term:")}
         return {
             "nodes": nodes,
@@ -2092,13 +2105,15 @@ class GovernanceService:
                 break
         try:
             from app.models.models import Dashboard
-            for dash in db.query(Dashboard).filter(Dashboard.name.ilike(f"%{q}%")).limit(5).all():
+            from app.core.authz import decision as _authz
+
+            for dash in _authz.scope(db, current_user, Dashboard).filter(Dashboard.name.ilike(f"%{q}%")).limit(5).all():
                 out["dashboards"].append({"id": dash.id, "name": dash.name, "subtitle": "", "open_path": f"/dashboards/{dash.id}"})
         except Exception:  # noqa: BLE001
             pass
         try:
             from app.models.dataset import Dataset
-            for ds in db.query(Dataset).filter(Dataset.name.ilike(f"%{q}%")).limit(5).all():
+            for ds in _authz.scope(db, current_user, Dataset).filter(Dataset.name.ilike(f"%{q}%")).limit(5).all():
                 out["datasets"].append({"id": ds.id, "name": ds.name, "subtitle": "", "open_path": f"/datasets/{ds.id}"})
         except Exception:  # noqa: BLE001
             pass

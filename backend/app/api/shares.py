@@ -1,6 +1,7 @@
 """Sharing endpoints + cascade share logic for users and teams."""
 
 import uuid
+from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -38,6 +39,9 @@ def _upsert_share(
     """Insert share; update permission if a share already exists."""
     if (user_id is None) == (team_id is None):
         raise ValueError("Exactly one share target must be provided")
+    if resource_type == ResourceType.DATASET:
+        # Dataset access is stored as DatasetGrant only (migration 20261008_0001).
+        raise ValueError("Dataset access is granted through dataset grants, not resource shares")
 
     target_values = {"user_id": user_id, "team_id": team_id}
     conflict_name = "uq_resource_shares_user" if user_id is not None else "uq_resource_shares_team"
@@ -111,6 +115,51 @@ def _get_share_for_target(
     return share
 
 
+# ── Datasets: the share API is an adapter over DatasetGrant ──────────────────
+# One storage for Dataset access (migration 20261008_0001). The dialog's
+# view/edit map to the grant verbs explore/edit; every write goes through
+# dataset_grants_service.grant_as / revoke_as (anti-escalation included).
+
+def _dataset_share(db: Session, g) -> dict:
+    from app.models.team import Team
+    from app.services.dataset_grants_service import share_level_of
+
+    return {
+        "id": g.id, "resource_type": ResourceType.DATASET, "resource_id": str(g.dataset_id),
+        "target_type": "user" if g.user_id is not None else "team",
+        "user_id": g.user_id, "team_id": g.team_id,
+        "permission": SharePermission(share_level_of(g.verb)),
+        "shared_by": g.granted_by or uuid.UUID(int=0),
+        "created_at": g.created_at or datetime.utcnow(),
+        "user": db.get(User, g.user_id) if g.user_id else None,
+        "team": db.get(Team, g.team_id) if g.team_id else None,
+    }
+
+
+def _dataset_or_404(db: Session, resource_id: str):
+    try:
+        ds = db.query(Dataset).filter(Dataset.id == int(resource_id)).first()
+    except (TypeError, ValueError):
+        ds = None
+    if ds is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return ds
+
+
+def _dataset_grant_or_404(db: Session, resource_id: str, share_id: int):
+    from app.models.dataset import DatasetGrant
+
+    g = db.query(DatasetGrant).filter(DatasetGrant.id == share_id,
+                                      DatasetGrant.dataset_id == int(resource_id)).first()
+    if g is None:
+        raise HTTPException(status_code=404, detail="Share not found")
+    return g
+
+
+def _grant_error(exc):
+    return HTTPException(status_code=exc.status, detail=exc.detail)
+
+
 def cascade_share_dashboard(
     db: Session,
     dashboard_id: int,
@@ -161,16 +210,17 @@ def cascade_share_dashboard(
             if wt:
                 dataset_ids.add(wt.dataset_id)
 
+    # The dashboard's datasets get ONLY what the dashboard needs, as grants:
+    # a viewer -> `view` (its charts render), an editor -> `build` (may add
+    # charts on them). Never explore / edit / manage - sharing a dashboard used
+    # to hand out dataset model EDIT and raw-row access. Tagged with the
+    # dashboard so revoking this share removes only these.
+    from app.services.dataset_grants_service import cascade_grant
+
+    verb = "build" if permission == SharePermission.EDIT else "view"
     for wid in dataset_ids:
-        _upsert_share(
-            db,
-            ResourceType.DATASET,
-            wid,
-            permission,
-            shared_by,
-            user_id=user_id,
-            team_id=team_id,
-        )
+        cascade_grant(db, wid, verb, user_id=user_id, team_id=team_id, granted_by=shared_by,
+                      source=f"dashboard:{dashboard_id}")
 
     db.commit()
 
@@ -233,8 +283,10 @@ def _revoke_cascade(
             if wt:
                 dataset_ids.add(wt.dataset_id)
 
-    for wid in dataset_ids:
-        child_records.append((ResourceType.DATASET, wid))
+    from app.services.dataset_grants_service import revoke_cascade_grants
+
+    revoke_cascade_grants(db, dataset_ids, user_id=user_id, team_id=team_id,
+                          source=f"dashboard:{dashboard_id}")
 
     # Delete cascade shares
     filters = _share_target_filters(user_id=user_id, team_id=team_id)
@@ -290,6 +342,12 @@ def list_shares(
 ):
     """List all shares for a resource. Only owner or admin can list."""
     require_share_access(db, current_user, resource_type, resource_id)
+    if resource_type == ResourceType.DATASET:
+        from app.models.dataset import DatasetGrant
+
+        rows = (db.query(DatasetGrant).filter(DatasetGrant.dataset_id == int(resource_id))
+                .order_by(DatasetGrant.created_at.asc(), DatasetGrant.id.asc()).all())
+        return [_dataset_share(db, g) for g in rows]
     shares = (
         db.query(ResourceShare)
         .options(joinedload(ResourceShare.user), joinedload(ResourceShare.team))
@@ -326,6 +384,16 @@ def add_share(
     else:
         target_user_id = _resolve_share_target_user(db, body).id
 
+    if resource_type == ResourceType.DATASET:
+        from app.services import dataset_grants_service as _dgs
+
+        ds = _dataset_or_404(db, resource_id)
+        try:
+            g = _dgs.grant_as(db, current_user, ds, verb=_dgs.SHARE_TO_VERB[body.permission.value],
+                              user_id=target_user_id, team_id=target_team_id)
+        except _dgs.GrantError as exc:
+            raise _grant_error(exc) from exc
+        return _dataset_share(db, g)
     if resource_type == ResourceType.DASHBOARD:
         _require_dashboard_cascade_access(db, current_user, int(resource_id))
         cascade_share_dashboard(
@@ -380,11 +448,26 @@ def update_share_entry(
     resource_id: str,
     share_id: int,
     body: ShareUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Update permission on an existing direct user share or team share."""
     require_share_access(db, current_user, resource_type, resource_id)
+    audit(db, AuditAction.SHARE_UPDATED, request=request, user_id=current_user.id,
+          resource_type=resource_type.value, resource_id=str(resource_id),
+          details={"share_id": share_id, "permission": body.permission.value})
+    if resource_type == ResourceType.DATASET:
+        from app.services import dataset_grants_service as _dgs
+
+        ds = _dataset_or_404(db, resource_id)
+        g = _dataset_grant_or_404(db, resource_id, share_id)
+        try:
+            g = _dgs.grant_as(db, current_user, ds, verb=_dgs.SHARE_TO_VERB[body.permission.value],
+                              user_id=g.user_id, team_id=g.team_id)
+        except _dgs.GrantError as exc:
+            raise _grant_error(exc) from exc
+        return _dataset_share(db, g)
 
     share = _load_share_or_404(db, resource_type, resource_id, share_id)
     if resource_type == ResourceType.DASHBOARD:
@@ -411,13 +494,22 @@ def update_share(
     resource_id: str,
     user_id: uuid.UUID,
     body: ShareUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Backward-compatible update for direct user shares."""
     require_share_access(db, current_user, resource_type, resource_id)
+    if resource_type == ResourceType.DATASET:
+        from app.models.dataset import DatasetGrant
+
+        g = db.query(DatasetGrant).filter(DatasetGrant.dataset_id == int(resource_id),
+                                          DatasetGrant.user_id == user_id).first()
+        if g is None:
+            raise HTTPException(status_code=404, detail="Share not found")
+        return update_share_entry(resource_type, resource_id, g.id, body, request, db, current_user)
     share = _get_share_for_target(db, resource_type, resource_id, user_id=user_id)
-    return update_share_entry(resource_type, resource_id, share.id, body, db, current_user)
+    return update_share_entry(resource_type, resource_id, share.id, body, request, db, current_user)
 
 
 @router.delete("/{resource_type}/{resource_id}/{user_id}",
@@ -432,6 +524,15 @@ def revoke_share(
 ):
     """Backward-compatible revoke for direct user shares."""
     require_share_access(db, current_user, resource_type, resource_id)
+    if resource_type == ResourceType.DATASET:
+        from app.models.dataset import DatasetGrant
+
+        g = db.query(DatasetGrant).filter(DatasetGrant.dataset_id == int(resource_id),
+                                          DatasetGrant.user_id == user_id).first()
+        if g is None:
+            raise HTTPException(status_code=404, detail="Share not found")
+        revoke_share_entry(resource_type, resource_id, g.id, request, db, current_user)
+        return
     share = _get_share_for_target(db, resource_type, resource_id, user_id=user_id)
     revoke_share_entry(resource_type, resource_id, share.id, request, db, current_user)
 
@@ -447,6 +548,20 @@ def revoke_share_entry(
 ):
     """Revoke direct user shares or team shares by share entry id."""
     require_share_access(db, current_user, resource_type, resource_id)
+    if resource_type == ResourceType.DATASET:
+        from app.services import dataset_grants_service as _dgs
+
+        ds = _dataset_or_404(db, resource_id)
+        g = _dataset_grant_or_404(db, resource_id, share_id)
+        audit(db, AuditAction.SHARE_REVOKED, request=request, user_id=current_user.id,
+              resource_type="dataset", resource_id=str(resource_id),
+              details={"target_user_id": str(g.user_id) if g.user_id else None,
+                       "target_team_id": str(g.team_id) if g.team_id else None})
+        try:
+            _dgs.revoke_as(db, current_user, ds, user_id=g.user_id, team_id=g.team_id)
+        except _dgs.GrantError as exc:
+            raise _grant_error(exc) from exc
+        return
 
     share = _load_share_or_404(db, resource_type, resource_id, share_id)
     audit(

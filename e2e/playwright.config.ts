@@ -63,6 +63,7 @@ export default defineConfig({
     {
       name: 'chromium',
       dependencies: ['setup'],
+      testIgnore: /security\/.*\.spec\.ts/,
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/admin.json',
@@ -80,6 +81,15 @@ export default defineConfig({
         storageState: '.auth/admin.json',
         viewport: { width: 1920, height: 1080 },
       },
+    },
+    {
+      // AUTHORIZATION RELEASE GATE. No retries: a security assertion that passes
+      // on the second try is a race, not a pass. Own principals per context, so it
+      // does not depend on the admin session.
+      name: 'security',
+      testMatch: /security\/.*\.spec\.ts/,
+      retries: 0,
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
   ],
 

@@ -6,10 +6,12 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
+from app.models.audit_log import AuditAction
+from app.services.audit_service import audit
 from app.services.report_pptx_service import ReportPptxRequest
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 from typing import Any, Dict, List, Literal, Optional
 
@@ -26,8 +28,12 @@ from app.core.dependencies import (
     require_view_access,
     require_edit_access,
     require_full_access,
+    require_publish_access,
+    can_publish,
     get_effective_permission,
+    batch_effective_permissions,
 )
+from app.core.authz import decision as _authz
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models.models import Chart, DashboardChart, Dashboard, DashboardPublicLink, DataSource, DataSourceType
 from app.models.dataset import Dataset, DatasetTable
@@ -219,12 +225,17 @@ def list_dashboards(
     """List dashboards visible to the current user."""
     items = (
         _owned_or_shared(db, Dashboard, ResourceType.DASHBOARD, current_user)
+        # The response serializes each dashboard's tiles: load them for the
+        # whole page in one query, not one lazy load per dashboard.
+        .options(selectinload(Dashboard.dashboard_charts))
         .offset(skip)
         .limit(limit)
         .all()
     )
+    perm_map = batch_effective_permissions(db, current_user, items, "dashboards")
     for item in items:
-        item.user_permission = get_effective_permission(db, current_user, item, "dashboards")
+        item.user_permission = perm_map.get(item.id, "none")
+    _authz.attach_capabilities(db, current_user, items)
     stamp_owner_emails(db, items)
     return items
 
@@ -322,7 +333,10 @@ def refresh_dashboard_snapshots(
     )
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
+    # Force-rebuilding every dataset's snapshot spends warehouse quota and busts
+    # caches for everyone: a compute trigger (edit), not something a viewer does.
     require_view_access(db, current_user, dash, "dashboards")
+    require_edit_access(db, current_user, dash, "dashboards")
 
     dataset_ids = _dashboard_dataset_ids(db, dash)
     if not dataset_ids:
@@ -1134,7 +1148,7 @@ async def prepare_html_import_draft(
         dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         if not dataset_obj:
             raise HTTPException(status_code=404, detail="Dataset not found.")
-        require_edit_access(db, current_user, dataset_obj, "datasets")
+        _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
         db_tables = (
             db.query(DatasetTable)
             .filter(
@@ -1151,7 +1165,9 @@ async def prepare_html_import_draft(
         }
 
     # upload_excel → create draft dataset
-    dataset_permission = (current_user.permissions or {}).get("datasets", "none")
+    from app.core.permissions import get_user_module_permission
+
+    dataset_permission = get_user_module_permission(current_user, "datasets")  # PAT-capped
     if dataset_permission not in {"edit", "full"}:
         raise HTTPException(status_code=403, detail="Creating a draft dataset requires datasets edit permission.")
 
@@ -1736,6 +1752,7 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     raw live fields until Publish merges the draft down.
     """
     dash.user_permission = require_view_access(db, current_user, dash, "dashboards")
+    _authz.attach_capabilities(db, current_user, [dash])
     snapshot = dash.draft_snapshot or {}
     # Phase-B17 — overlay only THIS user's pending layout draft (per-user).
     layouts_map = _draft_user_layouts(snapshot, str(current_user.id))
@@ -2290,7 +2307,7 @@ def start_report_from_data(
     dataset = db.query(_Dataset).filter(_Dataset.id == body.dataset_id).first()
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found")
-    require_view_access(db, current_user, dataset, "datasets")
+    _authz.require(db, current_user, _authz.Action.BUILD, dataset)  # a dashboard from this dataset
     try:
         return build_report_starter(db, dataset_id=body.dataset_id, goal=body.goal, name=body.name,
                                     owner_id=current_user.id)
@@ -2656,6 +2673,19 @@ def fork_tile_chart_for_report(
     source = db.query(Chart).filter(Chart.id == row.chart_id).first()
     if source is not None:
         require_view_access(db, current_user, source, "explore_charts")
+    # The copy is bound to the table the BODY names: that is building content
+    # from its dataset, exactly as PUT /charts/{id} judges it - BUILD to bind a
+    # different table, READ to keep the source chart's own table. Custom SQL is
+    # datasource authority on top (services/chart_sql_authority.py).
+    from app.services.chart_sql_authority import require_custom_sql_authority
+
+    target = db.get(DatasetTable, request.dataset_table_id)
+    target_dataset = db.get(Dataset, target.dataset_id) if target is not None else None
+    if target_dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset table not found")
+    rebinding = source is None or request.dataset_table_id != source.dataset_table_id
+    _authz.require(db, current_user, _authz.Action.BUILD if rebinding else _authz.Action.READ, target_dataset)
+    require_custom_sql_authority(db, current_user, request.dataset_table_id, request.config)
     try:
         fork_chart_for_report(db, dash, row, payload=request, user=current_user)
         db.commit()
@@ -2972,6 +3002,9 @@ def publish_dashboard_draft(
     dash = _dashboard_for_draft_write(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    # Draft -> published WITHIN the product is co-authoring (shared editors
+    # publish their own edits); it is not a public surface, so it stays edit.
+    # Public publication (links, embeds, assistants on links) requires publish.
     require_edit_access(db, current_user, dash, "dashboards")
 
     user_key = str(current_user.id)
@@ -3353,6 +3386,7 @@ def list_public_links(
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
     require_view_access(db, current_user, dash, "dashboards")
+    publisher = can_publish(db, current_user, dash, "dashboards")
     # Hide workboard-managed links — they belong to a workboard screen's
     # lifecycle and are surfaced through the Workboard builder UI instead.
     links = (
@@ -3364,7 +3398,14 @@ def list_public_links(
         .order_by(DashboardPublicLink.created_at.desc())
         .all()
     )
-    return [_sanitize_link_for_admin(link) for link in links]
+    out = []
+    for link in links:
+        item = PublicLinkResponse.model_validate(_sanitize_link_for_admin(link))
+        out.append(item.model_copy(update={
+            "token": item.token if publisher else None,
+            "capabilities": {"manage": publisher, "reveal_token": publisher},
+        }))
+    return out
 
 
 def _refuse_unappliable_link_filters(filters_config) -> None:
@@ -3387,6 +3428,7 @@ def _refuse_unappliable_link_filters(filters_config) -> None:
 def create_public_link(
     dashboard_id: int,
     request: PublicLinkCreate,
+    http_request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -3394,7 +3436,7 @@ def create_public_link(
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    require_edit_access(db, current_user, dash, "dashboards")
+    require_publish_access(db, current_user, dash, "dashboards")
     _refuse_unappliable_link_filters(request.filters_config)
     link = DashboardPublicLink(
         dashboard_id=dashboard_id,
@@ -3409,6 +3451,9 @@ def create_public_link(
     db.add(link)
     db.commit()
     db.refresh(link)
+    audit(db, AuditAction.PUBLIC_LINK_CREATED, request=http_request, user_id=current_user.id,
+          resource_type="dashboard", resource_id=str(dashboard_id),
+          details={"link_id": link.id, "has_password": bool(link.password_hash)})
     return _sanitize_link_for_admin(link)
 
 
@@ -3498,6 +3543,7 @@ def update_public_link(
     dashboard_id: int,
     link_id: int,
     request: PublicLinkUpdate,
+    http_request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -3505,7 +3551,7 @@ def update_public_link(
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    require_edit_access(db, current_user, dash, "dashboards")
+    require_publish_access(db, current_user, dash, "dashboards")
     link = (
         db.query(DashboardPublicLink)
         .filter(DashboardPublicLink.id == link_id, DashboardPublicLink.dashboard_id == dashboard_id)
@@ -3565,6 +3611,10 @@ def update_public_link(
     # next view — never the pre-edit structure for the cache TTL.
     from app.services import query_cache as _qc
     _qc.invalidate_all_public_meta()
+    audit(db, AuditAction.PUBLIC_LINK_UPDATED, request=http_request, user_id=current_user.id,
+          resource_type="dashboard", resource_id=str(dashboard_id),
+          details={"link_id": link.id, "changed": sorted(request.model_fields_set),
+                   "is_active": bool(link.is_active)})
     return _sanitize_link_for_admin(link)
 
 
@@ -3572,6 +3622,7 @@ def update_public_link(
 def delete_public_link(
     dashboard_id: int,
     link_id: int,
+    http_request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -3579,7 +3630,7 @@ def delete_public_link(
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    require_edit_access(db, current_user, dash, "dashboards")
+    require_publish_access(db, current_user, dash, "dashboards")
     link = (
         db.query(DashboardPublicLink)
         .filter(DashboardPublicLink.id == link_id, DashboardPublicLink.dashboard_id == dashboard_id)
@@ -3596,6 +3647,8 @@ def delete_public_link(
     db.commit()
     from app.services import query_cache as _qc
     _qc.invalidate_all_public_meta()
+    audit(db, AuditAction.PUBLIC_LINK_DELETED, request=http_request, user_id=current_user.id,
+          resource_type="dashboard", resource_id=str(dashboard_id), details={"link_id": link_id})
     return {"deleted": True}
 
 

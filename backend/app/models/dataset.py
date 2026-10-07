@@ -346,6 +346,10 @@ class DatasetGrant(Base):
     verb = Column(String(16), nullable=False, default="view")  # view|explore|build|reshare|edit|manage
     granted_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
+    #: Where the grant came from: None = granted directly, "legacy_share" =
+    #: converted from a ResourceShare(DATASET) row, "dashboard:<id>" = cascaded
+    #: by sharing that dashboard (and removed only by revoking that share).
+    source = Column(String(64), nullable=True)
 
 
 class DatasetDependency(Base):

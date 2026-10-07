@@ -502,10 +502,12 @@ async def run_for_link(
     # gate by the same route as the two above.
     ctx.read_rows = binding_info.capabilities.read_rows
     ctx.web_search = binding_info.capabilities.web_search
-    from app.services.agent_flows.permissions import chart_scope, run_scope
+    from app.services.agent_flows.permissions import chart_scope, public_run_scope
 
-    ctx.knowledge_scope = run_scope(
-        db, row, flow, binding_info.knowledge.model_dump()
+    # Bounded by the ASSIGNER's current rights too: whoever put this flow on the
+    # link lends no reading right they do not hold themselves.
+    ctx.knowledge_scope = public_run_scope(
+        db, row, flow, binding_info.knowledge.model_dump(), getattr(binding, "created_by", None)
     )
     # AND ALSO THESE. The line above is the report the viewer is on; this one is
     # what its author attached on top of it — the only way a bot flow reaches past
@@ -1084,7 +1086,15 @@ async def run_for_chat_thread(
     # The chat surface declares `read_rows=False`, and until now nothing read it.
     ctx.read_rows = binding_info.capabilities.read_rows
     ctx.web_search = binding_info.capabilities.web_search
-    ctx.knowledge_scope = run_scope(db, row, flow, binding_info.knowledge.model_dump())
+    # The signed-in person asking is a term of the scope (decision Q2): their own
+    # authority plus what the owner explicitly delegated to them for this flow.
+    from app.models.user import User as _User
+
+    _caller = db.query(_User).filter(_User.id == user_id).first()
+    if _caller is None:
+        ctx.knowledge_scope = {"doc_ids": [], "dataset_ids": [], "metric_names": []}
+    else:
+        ctx.knowledge_scope = run_scope(db, row, flow, binding_info.knowledge.model_dump(), caller=_caller)
     # THE CHARTS THIS ASSISTANT WAS GRANTED — derived from the knowledge scope, not
     # from a link. A chat flow that attached no dataset still measures nothing, so
     # attaching remains the gate; what changed is that attaching now opens it.

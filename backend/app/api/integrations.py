@@ -31,6 +31,7 @@ from app.core.dependencies import (
     PERSONAL_ACCESS_TOKEN_ID_ATTR,
     get_current_user,
     require_edit_access,
+    require_publish_access,
 )
 from app.models.personal_access_token import PersonalAccessToken
 from app.models.models import Dashboard
@@ -149,7 +150,7 @@ def resolve_embed_link(
     # effective permission is already capped by the PAT's scopes, so a token
     # scoped `dashboards: view` is refused here even for its owner's dashboards.
     # Applies to full_report=true exactly the same way.
-    require_edit_access(db, current_user, dash, "dashboards")
+    require_publish_access(db, current_user, dash, "dashboards")  # minting an embed grant publishes (Q3)
 
     # Safety gate — see EmbedResolveRequest.full_report.
     if not body.filters and not body.full_report:

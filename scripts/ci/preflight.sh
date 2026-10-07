@@ -63,7 +63,7 @@ if [ -f frontend/package.json ]; then
   section "Frontend QA contracts"
   if command -v node >/dev/null 2>&1; then
     qa_fail=0
-    for s in check-module-routes.mjs check-theme-presets.mjs check-presentation-contract.mjs; do
+    for s in check-module-routes.mjs check-theme-presets.mjs check-presentation-contract.mjs check-access-token-domain.mjs; do
       [ -f "frontend/scripts/$s" ] || continue
       ( cd frontend && node "scripts/$s" >/dev/null ) || { echo "  ✗ $s"; qa_fail=1; }
     done
