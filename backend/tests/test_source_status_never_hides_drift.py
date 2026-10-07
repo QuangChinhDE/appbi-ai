@@ -87,4 +87,4 @@ def test_only_an_editors_explicit_refresh_rewrites_the_schema():
     from app.api import datasets
 
     src = inspect.getsource(datasets.preview_dataset_table)
-    assert 'refresh and perm not in ("edit", "full")' in src
+    assert 'refresh and not dataset_grants_service.can(db, current_user, dataset_obj, "edit")' in src

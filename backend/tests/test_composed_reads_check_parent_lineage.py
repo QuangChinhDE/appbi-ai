@@ -44,8 +44,9 @@ def db(monkeypatch):
 
     monkeypatch.setattr(perms, "get_user_module_permission", lambda _u, _m: "view")
     engine = create_engine("sqlite://", future=True)
+    import app.models  # noqa: F401 — the capability engine reads team memberships
     Base.metadata.create_all(engine, tables=[Dataset.__table__, DatasetTable.__table__, DatasetGrant.__table__,
-                                             DatasetDependency.__table__])
+                                             DatasetDependency.__table__, Base.metadata.tables["team_memberships"]])
     with Session(engine) as s:
         s.add(Dataset(id=1, name="parent"))
         s.add(Dataset(id=2, name="child"))
