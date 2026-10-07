@@ -1812,7 +1812,7 @@ def trigger_async_refresh(dataset_id: int) -> None:
         try:
             if _is_lifecycle_managed(db, dataset_id):
                 return  # readers serve published_generation only — a build here is never read
-            refresh_all_for_dataset(db, dataset_id, force=True)
+            refresh_with_history(db, dataset_id, "ttl")
             logger.info("[snapshot] async TTL rebuild done dataset=%s", dataset_id)
         except Exception:  # noqa: BLE001 — background must never crash a request
             logger.warning("[snapshot] async TTL rebuild failed dataset=%s", dataset_id, exc_info=True)
@@ -1910,7 +1910,7 @@ def schedule_source_change_check(dataset_id: int) -> None:
                 if not _reserve_rebuild_slot(dataset_id):
                     return
             try:
-                refresh_all_for_dataset(db, dataset_id, force=True)
+                refresh_with_history(db, dataset_id, "source_change")
                 logger.info("[snapshot] source-change rebuild done dataset=%s", dataset_id)
             finally:
                 _release_rebuild_slot(dataset_id)
@@ -1920,6 +1920,37 @@ def schedule_source_change_check(dataset_id: int) -> None:
             db.close()
 
     threading.Thread(target=_run, name=f"snap-wmcheck-{dataset_id}", daemon=True).start()
+
+
+def refresh_with_history(db: Session, dataset_id: int, trigger: str, *, force: bool = True) -> dict:
+    """``refresh_all_for_dataset`` recorded in the refresh-run ledger. Every
+    build path that is not Sync & Publish (legacy manual Refresh, TTL warm,
+    source-change rebuild) used to leave no history: a failure there was a log
+    line only. Same ledger, same terminal statuses, the real error."""
+    from app.services import dataset_publish_service as pub
+
+    run_id = pub._refresh_run_start(db, dataset_id, trigger, None, None)
+    try:
+        res = refresh_all_for_dataset(db, dataset_id, force=force)
+    except Exception as exc:  # noqa: BLE001 — recorded, then re-raised to the caller
+        pub._refresh_run_finish(db, run_id, "failed", error=str(exc).strip().splitlines()[0][:500]
+                                if str(exc).strip() else type(exc).__name__)
+        raise
+    errors = res.get("errors") or {}
+    built = res.get("built") or []
+    if res.get("stopped"):
+        status, error = "stopped", None
+    elif errors:
+        status = "failed"
+        error = " | ".join(f"#{tid}: {err}" for tid, err in sorted(errors.items())[:3])
+    elif res.get("operational"):
+        status, error = "success", None
+    else:
+        status, error = ("success", None) if built or not res.get("no_host") else (
+            "failed", "Không có snapshot host (BigQuery) để dựng.")
+    pub._refresh_run_finish(db, run_id, status, error=error, generation=res.get("generation"),
+                            tables_built=len(built), tables=pub._refresh_run_tables(db, dataset_id, built))
+    return res
 
 
 def _is_lifecycle_managed(db: Session, dataset_id: int) -> bool:
@@ -2020,7 +2051,7 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
             for d in claimed:
                 _sc.clear_stop(d)  # fresh run — ignore any stale Stop flag
                 try:
-                    res = refresh_all_for_dataset(db, d, force=True)
+                    res = refresh_with_history(db, d, "manual")
                     if res.get("stopped"):
                         _sp.set_phase(d, "stopped")
                         logger.info("[snapshot] manual refresh STOPPED dataset=%s", d)

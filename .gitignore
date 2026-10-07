@@ -418,6 +418,8 @@ backend/_verify_gate.db
 !backend/tests/test_public_authoritative_bounds.py
 !backend/tests/test_public_authoritative_bounds_pg.py
 !backend/tests/test_publish_candidate_generation.py
+!backend/tests/test_publish_lease_renewal.py
+!backend/tests/test_every_refresh_path_is_recorded.py
 !backend/tests/test_composition_empty_child_enters_lifecycle.py
 !backend/tests/test_source_status_never_hides_drift.py
 !backend/tests/test_dictionary_ai_context_follows_schema.py

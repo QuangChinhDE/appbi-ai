@@ -235,6 +235,8 @@ jobs:
             tests/test_relationship_contract.py \
             tests/test_public_authoritative_bounds.py \
             tests/test_publish_candidate_generation.py \
+            tests/test_publish_lease_renewal.py \
+            tests/test_every_refresh_path_is_recorded.py \
             tests/test_composition_empty_child_enters_lifecycle.py \
             tests/test_source_status_never_hides_drift.py \
             tests/test_dictionary_ai_context_follows_schema.py \

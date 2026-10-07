@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 LIFECYCLE_STATES = {
     "draft", "ready", "syncing", "published", "changes_pending", "sync_failed", "disabled",
 }
-_PUBLISH_LEASE_SECONDS = 3600  # a publish/sync owns the dataset for up to 1h
+_PUBLISH_LEASE_SECONDS = 3600  # a publish/sync owns the dataset for up to 1h…
+_PUBLISH_LEASE_RENEW_SECONDS = 300  # …renewed every 5 min while it is still running
 _REFRESH_RUN_KEEP = 50  # rolling history depth per dataset
 
 
@@ -501,8 +502,20 @@ def start_sync_and_publish(
 
     sync_progress.start(dataset_id, total=0, trigger=trigger)
 
+    stop_heartbeat = threading.Event()
+
+    def _heartbeat() -> None:
+        # A sync can outlive the lease TTL (big extracts). Without renewal a
+        # second Sync & Publish could claim the dataset and write alongside this
+        # one, and the run-history reconcile would read this live run as dead.
+        while not stop_heartbeat.wait(_PUBLISH_LEASE_RENEW_SECONDS):
+            if not _qc.renew_global(_lease_key(dataset_id), _PUBLISH_LEASE_SECONDS):
+                logger.warning("[publish] lease for dataset=%s lapsed mid-sync (not renewed)", dataset_id)
+                return
+
     def _run() -> None:
         db = SessionLocal()
+        threading.Thread(target=_heartbeat, name=f"ds-publish-hb-{dataset_id}", daemon=True).start()
         # Open the history row HERE (before the blocking body) so the crash
         # handler below can finalize it even if the body raises before its own
         # terminal-branch finalize runs.
@@ -526,6 +539,7 @@ def start_sync_and_publish(
             # Idempotent: no-op if a terminal branch already finalized the row.
             _refresh_run_finish(db, run_id, "failed", error="internal error during sync")
         finally:
+            stop_heartbeat.set()
             db.close()
             _qc.release_global(_lease_key(dataset_id))
             from app.services import sync_control
