@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "qa:module-routes": "node scripts/check-module-routes.mjs",
+    "qa:access-token-domain": "node scripts/check-access-token-domain.mjs",
     "qa:snapshot-coherence": "node scripts/check-snapshot-coherence.mjs",
     "qa:filter-scope": "node scripts/check-filter-scope-contract.mjs",
     "qa:theme": "node scripts/check-theme-presets.mjs",

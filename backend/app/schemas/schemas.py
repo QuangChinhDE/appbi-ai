@@ -104,6 +104,10 @@ class DataSourceResponse(DataSourceBase):
     last_test_status: Optional[str] = None
     last_tested_at: Optional[datetime] = None
     last_error_code: Optional[str] = None
+    # What THIS CALLER may do with this source, {action: bool} (authz core; UX
+    # only - every mutation is re-checked). Named `access_capabilities` on a data
+    # source because `capabilities` below is the PROVIDER's (Source module).
+    access_capabilities: Optional[Dict[str, bool]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -493,6 +497,9 @@ class ChartResponse(ChartBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    # Backend-computed {action: bool} for THIS caller (UX only; every
+    # mutation is re-checked). The frontend reads this, not owner/share/level.
+    capabilities: Optional[Dict[str, bool]] = None
     dataset_id: Optional[int] = None
     dataset_name: Optional[str] = None
     dataset_table_name: Optional[str] = None
@@ -669,7 +676,9 @@ class PublicLinkResponse(BaseModel):
     id: int
     dashboard_id: int
     name: str
-    token: str
+    # The anonymous bearer capability. Null unless the caller may PUBLISH the
+    # dashboard (owner / module admin); viewers used to receive every token.
+    token: Optional[str] = None
     filters_config: Optional[List[Dict[str, Any]]] = None
     appearance_config: Optional[Dict[str, Any]] = None
     is_active: bool
@@ -679,6 +688,9 @@ class PublicLinkResponse(BaseModel):
     last_accessed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    # Backend-computed: what THIS caller may do with the link (UX only; every
+    # mutation is re-checked server-side).
+    capabilities: Optional[Dict[str, bool]] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -702,6 +714,9 @@ class DashboardResponse(DashboardBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    # Backend-computed {action: bool} for THIS caller (UX only; every
+    # mutation is re-checked). The frontend reads this, not owner/share/level.
+    capabilities: Optional[Dict[str, bool]] = None
     share_token: Optional[str] = None
     created_at: datetime
     updated_at: datetime

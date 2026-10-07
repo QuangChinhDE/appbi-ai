@@ -526,7 +526,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                               <td className="app-list-cell text-tiny text-text-quaternary"><Clock3 className="mr-1 inline h-3 w-3" />{relTime(d.updated_at, language, t)}</td>
                               <td className="app-list-cell-tight">
                                 <span className="flex items-center justify-end gap-0.5 whitespace-nowrap">
-                                  {getResourcePermissions(d.user_permission ?? undefined).canShare && (
+                                  {getResourcePermissions(d.user_permission ?? undefined, d.capabilities).canShare && (
                                     <button
                                       onClick={(e) => { e.stopPropagation(); onShare(d.id, d.title); }}
                                       className="flex-shrink-0 rounded p-1 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-brand"
@@ -931,7 +931,7 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   const metrics = doc.metrics_on_page ?? [];
   const assets = doc.assets_on_page ?? [];
   const related = doc.related_docs ?? [];
-  const perms = getResourcePermissions(doc.user_permission ?? undefined);
+  const perms = getResourcePermissions(doc.user_permission ?? undefined, doc.capabilities);
   const connectionCount = metrics.length + assets.length + (usage?.dashboards.length ?? 0) + related.length;
 
   // On-this-page outline (## / ### headings) → wayfinding in the left rail.

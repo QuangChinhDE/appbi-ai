@@ -82,6 +82,9 @@ def _dataset_of_explore(db: Session, explore: SemanticExplore):
     return _dataset_of_model(db, model) if model is not None else None
 
 
+from app.core.permissions import is_module_admin as _is_module_admin  # noqa: E402
+
+
 def _module_level(user: User) -> str:
     from app.core.dependencies import _normalize_permissions
 
@@ -90,7 +93,7 @@ def _module_level(user: User) -> str:
 
 def _require_dataset_level(db: Session, user: User, dataset, level: str) -> None:
     if dataset is None:
-        if _module_level(user) != "full":
+        if not _is_module_admin(user, "datasets"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Permission denied: object has no dataset; datasets full access required",
@@ -108,7 +111,7 @@ def _can_view_dataset(db: Session, user: User, dataset, cache: dict) -> bool:
     key = getattr(dataset, "id", None)
     if key not in cache:
         if dataset is None:
-            cache[key] = _module_level(user) == "full"
+            cache[key] = _is_module_admin(user, "datasets")
         else:
             cache[key] = get_effective_permission(db, user, dataset, "datasets") != "none"
     return cache[key]

@@ -185,58 +185,31 @@ fi
 echo "==> Starting FastAPI application..."
 
 # ── Seed admin user on first boot ──────────────────────────────────────────
-# Reads ADMIN_EMAIL / ADMIN_PASSWORD / ADMIN_NAME from env.
-# Only inserts if the users table has 0 rows (idempotent).
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@appbi.io}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-123456}"
-ADMIN_NAME="${ADMIN_NAME:-Admin}"
-
-python - <<'PYEOF'
-import os, sys, json
+# Only while the users table is empty. There is NO default password: in
+# production a missing/placeholder/weak ADMIN_PASSWORD stops startup here
+# (app/core/bootstrap_admin.py); in development a random one-time password is
+# printed once. The legacy "workspaces" -> "datasets" permission key fix runs
+# for existing users as before.
+python - <<'PYEOF' || { echo "==> FATAL: bootstrap administrator refused (see above)."; exit 1; }
+import os, sys
 from sqlalchemy import create_engine, text
-from passlib.context import CryptContext
+from app.core.bootstrap_admin import BootstrapRefused, seed_first_admin
 
-db_url = os.environ["DATABASE_URL"]
-engine = create_engine(db_url)
-pwd = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
-
-email    = os.environ.get("ADMIN_EMAIL", "admin@appbi.io")
-password = os.environ.get("ADMIN_PASSWORD", "123456")
-name     = os.environ.get("ADMIN_NAME", "Admin")
-
-# EVERY key in core.dependencies.MODULE_KEYS. A module missing here is a module
-# the first admin does not hold — survivable only because `_get_user_permissions`
-# back-fills a missing key for settings:full accounts, which is a safety net, not
-# a reason to leave the seed incomplete. `agent_flows` was already missing.
-full_perms = json.dumps({
-    "data_sources": "full", "datasets": "full",
-    "govern": "full", "agent_flows": "full", "chat": "view",
-    "observability": "full",
-    "explore_charts": "full", "dashboards": "full",
-    "workboards": "full", "settings": "full"
-})
-
+engine = create_engine(os.environ["DATABASE_URL"])
+try:
+    print("==> " + seed_first_admin(engine))
+except BootstrapRefused as exc:
+    print("==> " + str(exc), file=sys.stderr)
+    sys.exit(1)
 with engine.connect() as conn:
-    count = conn.execute(text("SELECT COUNT(*) FROM users")).scalar()
-    if count == 0:
-        hashed = pwd.hash(password)
-        conn.execute(text(
-            "INSERT INTO users (email, password_hash, full_name, status, permissions) "
-            "VALUES (:email, :pw, :name, 'active', cast(:perms AS jsonb))"
-        ), {"email": email, "pw": hashed, "name": name, "perms": full_perms})
-        conn.commit()
-        print(f"==> Admin user created: {email}")
-    else:
-        # Fix legacy "workspaces" key → "datasets" in existing users' permissions
-        fixed = conn.execute(text(
-            "UPDATE users SET permissions = permissions - 'workspaces' "
-            "|| jsonb_build_object('datasets', permissions->'workspaces') "
-            "WHERE permissions ? 'workspaces'"
-        )).rowcount
-        conn.commit()
-        if fixed:
-            print(f"==> Fixed permissions key 'workspaces' → 'datasets' for {fixed} user(s).")
-        print(f"==> Users table already has rows — skipping admin seed.")
+    fixed = conn.execute(text(
+        "UPDATE users SET permissions = permissions - 'workspaces' "
+        "|| jsonb_build_object('datasets', permissions->'workspaces') "
+        "WHERE permissions ? 'workspaces'"
+    )).rowcount
+    conn.commit()
+    if fixed:
+        print(f"==> Fixed permissions key 'workspaces' -> 'datasets' for {fixed} user(s).")
 PYEOF
 
 # Client address: uvicorn's own proxy-header handling is OFF. With

@@ -79,8 +79,15 @@ for (const entry of ENTRIES) {
  * is what `public_client_only` checks on the guarded files themselves. It does
  * mean the authed client ships in the public bundle, which is what this guards.
  */
+// The authed client is STILL reachable through ReadonlyChartTile (shared by the
+// authed and public dashboards). It is never CALLED on a public page:
+// PublicDashboardView always passes `publicDatasetModels` (an object, never
+// null), which disables the tile's authed model fetch. The former entry
+// (use-public-filter-distinct-values) is gone: that hook now imports its
+// constant from a dependency-free module. Removing this last chain needs the
+// tile to receive its model from its parent - tracked as follow-up.
 const KNOWN = [
-  'hooks/use-public-filter-distinct-values -> hooks/use-dataset-model -> lib/api-client',
+  'components/dashboards/ReadonlyChartTile -> hooks/use-dataset-model -> lib/api-client',
 ];
 
 const isKnown = (chain) => KNOWN.some((k) => chain.endsWith(k));

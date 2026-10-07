@@ -8,7 +8,7 @@ import { toast } from '@/lib/toast';
 import { useDashboards, useCreateDashboard, useDeleteDashboard, useDuplicateDashboard } from '@/hooks/use-dashboards';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
-import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { getResourcePermissions, accessTier } from '@/hooks/use-resource-permission';
 import { DashboardList } from '@/components/dashboards/DashboardList';
 import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
@@ -304,7 +304,7 @@ export default function DashboardsPage() {
             )}
             {listFilters.access && (
               <FilterTag tone="info" active onClick={() => toggleListFilter('access', listFilters.access!)}>
-                {listFilters.access === 'full'
+                {listFilters.access === 'manage'
                   ? 'Full access'
                   : listFilters.access === 'edit'
                     ? 'Editable'
@@ -343,7 +343,7 @@ export default function DashboardsPage() {
           const needle = filterText.trim().toLowerCase();
           const filtered = (dashboards ?? []).filter((dashboard) => {
             const chartState = (dashboard.dashboard_charts?.length || 0) > 0 ? 'linked' : 'empty';
-            const accessState = dashboard.user_permission ?? 'none';
+            const accessState = accessTier(dashboard.user_permission, dashboard.capabilities);
             const relations = relationIndex.dashboardRelationsById.get(dashboard.id);
             const matchesSearch =
               needle.length === 0 ||
@@ -412,7 +412,7 @@ export default function DashboardsPage() {
                                 <LayoutDashboard className="h-4 w-4" />
                               </div>
                             </div>
-                            {getResourcePermissions(dashboard.user_permission).canDelete && (
+                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canDelete && (
                               <IconButton
                                 aria-label="Delete"
                                 variant="ghost"
@@ -439,7 +439,7 @@ export default function DashboardsPage() {
                         </div>
                         <div className="flex items-center justify-between border-t border-[rgb(var(--border-line))] bg-surface-2 px-4 py-2.5 rounded-b-xl">
                           <div className="flex items-center gap-3">
-                            {getResourcePermissions(dashboard.user_permission).canShare && (
+                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canShare && (
                               <button
                                 onClick={() => setShareDash(dashboard)}
                                 className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"
@@ -449,7 +449,7 @@ export default function DashboardsPage() {
                                 Share
                               </button>
                             )}
-                            {getResourcePermissions(dashboard.user_permission).canEdit && (
+                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canEdit && (
                               <button
                                 onClick={() => setPublicShareDash(dashboard)}
                                 className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"

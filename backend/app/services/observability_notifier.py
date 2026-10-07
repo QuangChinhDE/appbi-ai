@@ -17,6 +17,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from app.models.observability import ObservabilityAlertChannel, ObservabilityIncident
+from app.core import egress as _egress
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,34 @@ def _incident_text(incident: ObservabilityIncident) -> str:
     )
 
 
+class DeliveryFailed(RuntimeError):
+    """A delivery attempt that failed, with a message safe to show a user."""
+
+
+def _raise_for_delivery(r) -> None:
+    # Redirects are never followed (a 3xx could point anywhere), so a 3xx is a
+    # failed delivery just like a 4xx/5xx.
+    if r.status_code >= 300:
+        raise DeliveryFailed(f"target answered HTTP {r.status_code}")
+
+
+def safe_delivery_error(exc: Exception) -> str:
+    """What a user may see about a failed send: never the exception text of the
+    HTTP client (it can carry internal addresses, response bodies or the URL
+    itself, which is the credential)."""
+    if isinstance(exc, _egress.EgressDenied):
+        return "Target not allowed by the outbound network policy."
+    if isinstance(exc, DeliveryFailed):
+        return str(exc)
+    if exc.__class__.__name__ in ("ConnectTimeout", "ReadTimeout", "TimeoutException", "WriteTimeout", "PoolTimeout"):
+        return "Delivery timed out."
+    if exc.__class__.__name__ in ("ConnectError",):
+        return "Could not connect to the target."
+    if isinstance(exc, RuntimeError) and "SMTP" in str(exc):
+        return "Email delivery failed or SMTP is not configured."
+    return "Delivery failed."
+
+
 def _send_one(channel: ObservabilityAlertChannel, incident: ObservabilityIncident) -> None:
     """Raises on failure (caller records last_error)."""
     if channel.kind == "email":
@@ -59,11 +88,9 @@ def _send_one(channel: ObservabilityAlertChannel, incident: ObservabilityInciden
         if not ok:
             raise RuntimeError("SMTP gửi thất bại hoặc chưa cấu hình (SMTP_HOST trống)")
     elif channel.kind == "slack":
-        import httpx
-        r = httpx.post(channel.target, json={"text": f":rotating_light: {_incident_text(incident)}"}, timeout=10)
-        r.raise_for_status()
+        r = _egress.http_post(channel.target, json={"text": f":rotating_light: {_incident_text(incident)}"}, timeout=10)
+        _raise_for_delivery(r)
     elif channel.kind == "webhook":
-        import httpx
         payload = {
             "id": incident.id, "title": incident.title, "severity": incident.severity,
             "pillar": incident.pillar, "source": incident.source,
@@ -71,8 +98,8 @@ def _send_one(channel: ObservabilityAlertChannel, incident: ObservabilityInciden
             "detail": incident.detail,
             "firstSeenAt": incident.first_seen_at.isoformat() if incident.first_seen_at else None,
         }
-        r = httpx.post(channel.target, json=payload, timeout=10)
-        r.raise_for_status()
+        r = _egress.http_post(channel.target, json=payload, timeout=10)
+        _raise_for_delivery(r)
     else:
         raise ValueError(f"unknown channel kind {channel.kind}")
 
@@ -122,7 +149,7 @@ def notify_new_incidents(db: Session, incidents: List[ObservabilityIncident]) ->
                 ch.last_error = None
                 sent += 1
             except Exception as exc:  # best-effort — never break the scan
-                ch.last_error = str(exc)[:500]
+                ch.last_error = safe_delivery_error(exc)
                 logger.warning("[obs_notify] channel %s failed: %s", ch.id, exc)
     try:
         db.commit()
@@ -146,6 +173,7 @@ def test_channel(db: Session, channel: ObservabilityAlertChannel) -> tuple:
         db.commit()
         return True, None
     except Exception as exc:
-        channel.last_error = str(exc)[:500]
+        msg = safe_delivery_error(exc)
+        channel.last_error = msg
         db.commit()
-        return False, str(exc)
+        return False, msg

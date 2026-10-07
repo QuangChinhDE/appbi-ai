@@ -549,7 +549,7 @@ function DashboardDetailPageInner() {
     });
     return map;
   }, [dashboardDatasetIds, datasetModelQueries]);
-  const resPerms = getResourcePermissions(dashboard?.user_permission);
+  const resPerms = getResourcePermissions(dashboard?.user_permission, dashboard?.capabilities);
   const canShare = resPerms.canShare;
   // The Studio preview iframe is a viewer of this page: no editing, no edit
   // lock, no presence heartbeat (it would otherwise compete with the author's
@@ -1850,10 +1850,9 @@ function DashboardDetailPageInner() {
     requestEdit,
     respond: respondEditRequest,
   } = useDashboardPresence(dashboardId, canEditResource, focusedTileId, activePageId);
-  // Owner of the dashboard (raw owner_id — `user_permission` collapses owner→'full'
-  // so it can't distinguish). Prefer the server's resolved flag once presence has
-  // beat; fall back to the local comparison before the first heartbeat.
-  const isOwner = editLock?.i_am_owner ?? (!!me?.id && me.id === dashboard?.owner_id);
+  // The server's presence state decides who owns the co-edit session; the UI
+  // does not compare ids itself (until it answers, nobody is treated as owner).
+  const isOwner = editLock?.i_am_owner ?? false;
   // May the current user edit the CURRENT page? Editing is gated on this so a
   // non-owner viewing a page the owner holds can't drag/resize/theme/add until
   // the owner approves. Defaults to the base resource right until presence beats.

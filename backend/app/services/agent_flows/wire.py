@@ -31,6 +31,12 @@ from app.services.agent_flows.reader_diagnostics import (
 )
 
 
+#: Lifecycle fields a reader may see (node_started / node_completed /
+#: branch_taken / loop_iteration). Never `step` or `path`: those are node and
+#: case KEYS, internal identifiers of the flow.
+_READER_LIFECYCLE_FIELDS = ("name", "label", "status", "ms", "index", "total")
+
+
 def event_to_envelope(ev: Any) -> dict | None:
     """Convert an AgentEvent into the wire envelope.
 
@@ -138,11 +144,17 @@ def event_to_envelope(ev: Any) -> dict | None:
         # actually taking, and the chat shows "đang chạy bước X" instead of a spinner
         # with nothing behind it.
         #
-        # `type` is written AFTER the spread on purpose: the payload carries the
-        # NODE's type, and spreading it last overwrote the EVENT's type — the wire
-        # then announced events called "report_read" and "if", which no client
-        # handles.
-        return {**(ev.extra or {}), "type": et}
+        # AN ALLOWLIST, NOT A SPREAD. The payload carries the flow's INTERNAL
+        # identifiers - `step` (the node key) and, on a branch, `path` (the case
+        # key) - and both surfaces here stream to a reader, one of them an
+        # anonymous visitor of a public link. Only what a reader is shown leaves:
+        # the step's display name/label, its status, its timing, loop counters.
+        # The keys stay on the author's trace (authz review: the public-reader
+        # journey found `step` on the wire although no reader UI uses it).
+        extra = ev.extra or {}
+        out = {k: extra[k] for k in _READER_LIFECYCLE_FIELDS if k in extra}
+        out["type"] = et
+        return out
     if et == "result":
         # THE TERMINATOR: the complete `FlowOutput` envelope.
         #

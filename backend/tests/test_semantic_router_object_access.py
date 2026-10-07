@@ -65,16 +65,24 @@ class _Share:
 
 
 @pytest.fixture()
-def shares(monkeypatch):
-    """{user_id: level} — who the dataset was shared with, and how far."""
-    granted: dict = {}
+def shares(db):
+    """{user_id: level} — who dataset 1 was shared with, and how far.
 
-    def _lookup(_db, user, _rt, _rid):
-        level = granted.get(user.id)
-        return _Share(level) if level else None
+    Dataset access is stored as DatasetGrant only (authz migration
+    20261008_0001): a share of level view/edit is the grant the ShareDialog
+    writes - view -> explore, edit -> edit. Setting a key writes that grant."""
+    from app.models.dataset import DatasetGrant
 
-    monkeypatch.setattr("app.core.dependencies.get_highest_share_for_resource", _lookup)
-    return granted
+    class _Granted(dict):
+        def __setitem__(self, uid, level):
+            super().__setitem__(uid, level)
+            db.query(DatasetGrant).filter(DatasetGrant.dataset_id == 1,
+                                          DatasetGrant.user_id == uid).delete()
+            db.add(DatasetGrant(dataset_id=1, user_id=uid,
+                                verb={"view": "explore", "edit": "edit"}[level]))
+            db.commit()
+
+    return _Granted()
 
 
 def _view(vid, name, table_id, dims):
@@ -88,9 +96,14 @@ def _view(vid, name, table_id, dims):
 @pytest.fixture()
 def db():
     engine = create_engine("sqlite://", future=True)
+    from app.models.dataset import DatasetGrant
     from app.models.models import Chart
+    from app.models.team import TeamMembership
 
+    # The Dataset policy reads grants and team memberships (no rows here: the
+    # shares this file states are what decides).
     Base.metadata.create_all(engine, tables=[
+        TeamMembership.__table__, DatasetGrant.__table__,
         Dataset.__table__, DatasetTable.__table__, Chart.__table__,
         SemanticView.__table__, SemanticModel.__table__, SemanticExplore.__table__,
     ])

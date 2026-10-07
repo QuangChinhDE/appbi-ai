@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.services.chart_sql_authority import require_custom_sql_authority
 from app.core import get_db
 from app.core.dependencies import (
     module_floor,
@@ -21,6 +22,7 @@ from app.core.dependencies import (
     batch_effective_permissions,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
+from app.core.authz import decision as _authz
 from app.models.models import Chart, ChartMetadata, ChartType, DashboardChart, Dashboard
 from app.models.dataset import Dataset, DatasetTable
 from app.models.resource_share import ResourceType
@@ -314,6 +316,7 @@ def list_charts(
     perm_map = batch_effective_permissions(db, current_user, items, "explore_charts")
     for item in items:
         item.user_permission = perm_map.get(item.id, "none")
+    _authz.attach_capabilities(db, current_user, items)
     stamp_owner_emails(db, items)
     _stamp_chart_catalog_fields(current_user, items)
     return items
@@ -362,10 +365,14 @@ def ai_chart_preview(
     Requires explore_charts >= view permission.
     """
     dataset_obj, _db_table = _get_dataset_for_chart_table(db, payload.dataset_table_id)
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    # Saving creates content from the dataset (build); an unsaved preview is a query (explore).
+    _authz.require(db, current_user, _authz.Action.BUILD if payload.save else _authz.Action.EXPLORE, dataset_obj)
     if payload.save:
-        perms = current_user.permissions or {}
-        if perms.get("explore_charts", "none") not in ("edit", "full"):
+        # The normalized (PAT-capped) level: a raw read of user.permissions let a
+        # token scoped to explore_charts:view save charts as its edit-level owner.
+        from app.core.permissions import module_at_least
+
+        if not module_at_least(current_user, "explore_charts", "edit"):
             raise HTTPException(
                 status_code=403,
                 detail="Requires 'edit' permission on module 'explore_charts'",
@@ -395,6 +402,7 @@ def ai_chart_preview(
     })
     chart_config = {**{k: v for k, v in config.items() if k not in ("dimensions", "metrics", "limit")},
                     "roleConfig": role_config}
+    require_custom_sql_authority(db, current_user, payload.dataset_table_id, chart_config)
     # The preview runs the config that is saved (its filters, sort, data limit),
     # read as a table of its columns.
     preview_config = {**chart_config, "roleConfig": {"selectedColumns": role_config.get("selectedColumns") or [],
@@ -458,7 +466,8 @@ def preview_chart_data(
 ):
     """Preview chart runtime for Explore using the saved-chart execution path."""
     dataset_obj, _ = _get_dataset_for_chart_table(db, payload.dataset_table_id)
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    require_custom_sql_authority(db, current_user, payload.dataset_table_id, payload.config)
 
     try:
         result = ChartService.preview_chart_data(
@@ -803,7 +812,8 @@ def dry_run_create_chart(
             changes=changes,
             validation_errors=[f"dataset_table_id: {exc.detail}"],
         )
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    require_custom_sql_authority(db, current_user, payload.dataset_table_id, normalized)
 
     runtime_errors: List[str] = []
     runtime_root_cause: Optional[str] = None
@@ -890,6 +900,7 @@ def get_chart(
             detail=f"Chart with ID {chart_id} not found"
         )
     chart.user_permission = require_view_access(db, current_user, chart, "explore_charts")
+    _authz.attach_capabilities(db, current_user, [chart])
     stamp_owner_emails(db, [chart])
     _stamp_chart_catalog_fields(current_user, [chart])
     return chart
@@ -905,7 +916,8 @@ def create_chart(
     """Create a new chart."""
     try:
         dataset_obj, _ = _get_dataset_for_chart_table(db, chart.dataset_table_id)
-        require_view_access(db, current_user, dataset_obj, "datasets")
+        _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)
+        require_custom_sql_authority(db, current_user, chart.dataset_table_id, chart.config)
         new_chart = ChartService.create(db, chart, owner_id=current_user.id)
         new_chart = ChartService.get_by_id(db, new_chart.id)
         if new_chart:
@@ -938,7 +950,19 @@ def update_chart(
     require_edit_access(db, current_user, chart_obj, "explore_charts")
     if chart_update.dataset_table_id is not None:
         dataset_obj, _ = _get_dataset_for_chart_table(db, chart_update.dataset_table_id)
-        require_view_access(db, current_user, dataset_obj, "datasets")
+        # Re-binding a chart to another table is building new content from that
+        # dataset (build). Saving the chart on the table it already uses keeps
+        # the read check: the content was built by whoever held build then.
+        rebinding = chart_update.dataset_table_id != getattr(chart_obj, "dataset_table_id", None)
+        _authz.require(db, current_user, _authz.Action.BUILD if rebinding else _authz.Action.READ, dataset_obj)
+    if chart_update.config is not None or chart_update.dataset_table_id is not None:
+        # Whoever writes custom SQL needs the datasource right themselves; the
+        # owner's right is checked again at every run.
+        require_custom_sql_authority(
+            db, current_user,
+            chart_update.dataset_table_id if chart_update.dataset_table_id is not None else chart_obj.dataset_table_id,
+            chart_update.config if chart_update.config is not None else chart_obj.config,
+        )
     try:
         chart = ChartService.update(db, chart_id, chart_update)
         if chart:
@@ -1032,6 +1056,34 @@ def _parse_role_overrides(overrides: Optional[str]) -> Optional[dict]:
     return out or None
 
 
+def _authorized_role_overrides(db: Session, user: User, chart, overrides: dict) -> dict:
+    """A what-if swap re-queries the chart on ANOTHER field, so it is not
+    covered by holding view on the chart. Allowed when the caller may EXPLORE
+    the chart's dataset (any field), or when every value is an option a bound
+    switcher offers on a dashboard the caller can view that shows this chart -
+    the same rule the public path applies (dashboard_parameters.validate_role_overrides)."""
+    from app.models.models import Dashboard, DashboardChart
+    from app.services.dashboard_parameters import ParameterRefused, dashboard_parameters, validate_role_overrides
+
+    if chart.dataset_table_id is not None:
+        dataset_obj, _ = _get_dataset_for_chart_table(db, chart.dataset_table_id)
+        if _authz.can(db, user, _authz.Action.EXPLORE, dataset_obj):
+            return overrides
+    tiles = db.query(DashboardChart).filter(DashboardChart.chart_id == chart.id).all()
+    for tile in tiles:
+        dash = db.get(Dashboard, tile.dashboard_id)
+        if dash is None or get_effective_permission(db, user, dash, "dashboards") == "none":
+            continue
+        try:
+            allowed = validate_role_overrides(tile, overrides, dashboard_parameters(dash.dashboard_charts or []))
+        except ParameterRefused:
+            continue
+        if allowed:
+            return allowed
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                        detail="This field swap is not offered to you for this chart.")
+
+
 @router.get("/{chart_id}/data", response_model=ChartDataResponse)
 def get_chart_data(
     chart_id: int,
@@ -1061,6 +1113,9 @@ def get_chart_data(
         _dt = DatasetCRUDService.get_table_by_id(db, chart.dataset_table_id)
         if _dt is not None and getattr(_dt, "dataset_id", None) is not None:
             dataset_grants_service.require_view_lineage(db, current_user, _dt.dataset_id)
+
+    if role_overrides:
+        role_overrides = _authorized_role_overrides(db, current_user, chart, role_overrides)
 
     extra_filters = None
     if filters:

@@ -130,7 +130,7 @@ export default function DataSourceList({
           {dataSources.map((ds) => {
             const typeMeta = getTypeMeta(ds.type);
             const accessMeta = getAccessMeta(ds.user_permission);
-            const perms = getResourcePermissions(ds.user_permission);
+            const perms = getResourcePermissions(ds.user_permission, ds.access_capabilities);
 
             return (
               <tr key={ds.id} className="hover:bg-surface-2">

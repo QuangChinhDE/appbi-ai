@@ -625,7 +625,7 @@ export default function DatasetDetailPage() {
   // Fetch semantic model for measures sidebar list (same cache key as DatasetMeasuresPanel)
   const { data: sidebarModel } = useDatasetModel(datasetId);
 
-  const resPerms = getResourcePermissions(dataset?.user_permission);
+  const resPerms = getResourcePermissions(dataset?.user_permission, dataset?.capabilities);
   const refreshTableSchema = useRefreshTableSchema(datasetId);
 
   // Fetch table preview

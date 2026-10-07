@@ -8,6 +8,7 @@
  * vendor and the last four characters. Sharing a key lets a colleague USE it in
  * their own steps; only the owner renames it into a default, shares or deletes it.
  */
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { CheckCircle2, Eye, EyeOff, KeyRound, Plus, Share2, Star, Trash2, XCircle } from 'lucide-react';
 import React from 'react';
 
@@ -238,8 +239,9 @@ function KeyRow({ row, testing, onTest, onEdit, onDefault, onShare, onDelete }: 
   onDelete: () => void;
 }) {
   const { t } = useI18n();
-  const canChange = row.permission === 'edit' || row.permission === 'full';
-  const canManage = row.permission === 'full';
+  const perms = getResourcePermissions(row.permission, row.capabilities);
+  const canChange = perms.canEdit;
+  const canManage = perms.canDelete;
   return (
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="min-w-0">

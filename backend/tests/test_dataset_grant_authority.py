@@ -52,9 +52,18 @@ def db(monkeypatch):
     # Every principal sits at module level `edit`: the ceiling allows all six
     # verbs, so only the grants decide — exactly the case under test.
     monkeypatch.setattr(perms, "get_user_module_permission", lambda _u, _m: "edit")
+    import app.api.datasets as api
+    monkeypatch.setattr(api, "audit", lambda *a, **k: None)  # the grant routes now audit; not under test
     engine = create_engine("sqlite://", future=True)
-    Base.metadata.create_all(engine, tables=[Dataset.__table__, DatasetGrant.__table__])
+    import app.models  # noqa: F401
+    Base.metadata.create_all(engine, tables=[Dataset.__table__, DatasetGrant.__table__,
+                                             Base.metadata.tables["team_memberships"]])
     with Session(engine) as s:
+        # grant_as checks the target principal exists (db.get(User/Team, id));
+        # existence is not under test here — authority is.
+        real_get = s.get
+        s.get = lambda model, ident, **kw: (object() if model.__name__ in ("User", "Team")
+                                            else real_get(model, ident, **kw))
         s.add(Dataset(id=1, name="Sales", owner_id=None))
         s.add(DatasetGrant(dataset_id=1, user_id=RESHARER, verb="reshare"))
         s.add(DatasetGrant(dataset_id=1, user_id=MANAGER, verb="manage"))
@@ -70,12 +79,12 @@ def _verb(db, uid):
 
 def _grant(db, caller, **body):
     from app.api.datasets import set_dataset_grant
-    return set_dataset_grant(1, body, db=db, current_user=_user(caller))
+    return set_dataset_grant(1, body, request=None, db=db, current_user=_user(caller))
 
 
 def _revoke(db, caller, **kw):
     from app.api.datasets import revoke_dataset_grant
-    return revoke_dataset_grant(1, db=db, current_user=_user(caller), **kw)
+    return revoke_dataset_grant(1, request=None, db=db, current_user=_user(caller), **kw)
 
 
 def test_resharer_cannot_grant_manage_to_someone_else(db):
@@ -107,14 +116,22 @@ def test_resharer_cannot_downgrade_or_revoke_a_manager(db):
     assert _verb(db, MANAGER) == "manage"
 
 
-def test_resharer_can_still_share_what_it_holds(db):
+def test_resharer_can_still_share_view(db):
+    """The resharer's job still works: it hands out view (and revokes it)."""
     assert _grant(db, RESHARER, verb="view", user_id=OTHER)["verb"] == "view"
-    assert _grant(db, RESHARER, verb="reshare", user_id=OTHER)["verb"] == "reshare"
     assert _revoke(db, RESHARER, user_id=VIEWER)["revoked"] == 1
 
 
-def test_a_grantee_may_drop_its_own_grant(db):
-    assert _revoke(db, RESHARER, user_id=RESHARER)["revoked"] == 1
+def test_resharing_the_reshare_right_itself_needs_a_manager(db):
+    """Reconciled with security/authz-remediation: `reshare` is not delegable by
+    a resharer (only view/explore/build are) — re-delegating the right to
+    delegate, or dropping a reshare grant, is a manager's decision."""
+    with pytest.raises(HTTPException) as e:
+        _grant(db, RESHARER, verb="reshare", user_id=OTHER)
+    assert e.value.status_code == 403
+    with pytest.raises(HTTPException):
+        _revoke(db, RESHARER, user_id=RESHARER)
+    assert _verb(db, RESHARER) == "reshare"
 
 
 def test_manager_keeps_full_authority(db):

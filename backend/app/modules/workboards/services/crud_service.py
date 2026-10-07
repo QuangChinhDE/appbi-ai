@@ -14,7 +14,6 @@ from app.models.dataset import DatasetTable
 from app.modules.workboards.models import Workboard, WorkboardAppUser, WorkboardSubmission
 from app.modules.workboards.roles import (
     APP_USER_ROLE_OWNER,
-    DEFAULT_APP_USER_PIN,
     build_default_owner_username,
 )
 from app.modules.workboards.schemas import (
@@ -745,11 +744,18 @@ class WorkboardService:
             db.flush()
 
             default_owner_username = build_default_owner_username(db_obj.id)
+            # A random one-time PIN, returned once to the creator (response
+            # header) and never stored in plaintext. It used to be "123456" for
+            # every workboard: anyone holding a workspace token could log in as
+            # the owner of any app whose PIN was never changed.
+            import secrets as _secrets
+
+            initial_pin = "".join(_secrets.choice("0123456789") for _ in range(8))
             db.add(
                 WorkboardAppUser(
                     workboard_id=db_obj.id,
                     username=default_owner_username,
-                    pin_hash=hash_pin(DEFAULT_APP_USER_PIN),
+                    pin_hash=hash_pin(initial_pin),
                     role=APP_USER_ROLE_OWNER,
                     active=True,
                     context={},
@@ -765,7 +771,7 @@ class WorkboardService:
             "_default_app_user",
             {
                 "username": default_owner_username,
-                "pin": DEFAULT_APP_USER_PIN,
+                "pin": initial_pin,
             },
         )
         logger.info(

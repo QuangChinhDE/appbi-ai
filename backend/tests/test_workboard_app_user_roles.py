@@ -238,7 +238,16 @@ def test_scope_context_expands_admin_branches_and_direct_reports():
 
 
 def test_internal_appbi_preview_identity_is_not_mini_app_user():
-    identity = identity_from_app_user({"username": "staff@appbi.test", "_internal": True})
+    """A staff identity is not a mini-app user, and it carries NO authority of its
+    own: until its object-level access to the workboard has been resolved
+    (app_user_service.can_app_user_access_workboard stamps ``_staff_level``) it
+    is denied. This test used to assert the opposite - that an unresolved staff
+    identity was let through with no row filter - which was the internal-
+    workspace bypass (F-WB1, authz review of demo@11473148)."""
+    import pytest
+
+    from app.modules.workboards.services.rls_service import RlsDenied, enforce_write_access
+
     screen = Screen(
         id="screen-1",
         kind="table",
@@ -247,9 +256,22 @@ def test_internal_appbi_preview_identity_is_not_mini_app_user():
         rls=[],
     )
 
-    filters, allowed = build_rls_filter([], None, identity)
+    unresolved = identity_from_app_user({"username": "staff@appbi.test", "_internal": True})
+    assert unresolved.is_app_user is False
+    assert build_rls_filter([], None, unresolved) == ([], False)
 
-    assert identity.is_app_user is False
+    viewer = identity_from_app_user(
+        {"username": "staff@appbi.test", "_internal": True, "_staff_level": "view"}
+    )
+    filters, allowed = build_rls_filter([], None, viewer)
+    assert viewer.is_app_user is False
     assert filters == []
     assert allowed is True
-    assert is_screen_visible_for(screen, identity) is True
+    assert is_screen_visible_for(screen, viewer) is True
+    with pytest.raises(RlsDenied):
+        enforce_write_access([], None, viewer, op="insert", row_values={"a": 1})
+
+    editor = identity_from_app_user(
+        {"username": "staff@appbi.test", "_internal": True, "_staff_level": "edit"}
+    )
+    assert enforce_write_access([], None, editor, op="insert", row_values={"a": 1}) == {"a": 1}

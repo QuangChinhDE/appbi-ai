@@ -20,6 +20,8 @@ export interface Dataset {
   owner_id?: string;
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
+  /** Backend-computed actions for the caller (see getResourcePermissions). */
+  capabilities?: Record<string, boolean> | null;
   datasource_ids?: number[];
   /** 'reporting' → may materialize to BigQuery for dashboards; 'operational' →
    *  live DB for a Workboard, never materialized. Absent → treat as reporting. */

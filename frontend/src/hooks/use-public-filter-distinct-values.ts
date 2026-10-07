@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { publicDashboardApi } from '@/lib/api/public';
-import { SLICER_DISTINCT_PREFETCH_LIMIT } from '@/hooks/use-dataset-model';
+import { SLICER_DISTINCT_PREFETCH_LIMIT } from '@/lib/slicer-limits';
 import {
   getColumnKey,
   getDistinctValueFilterContext,

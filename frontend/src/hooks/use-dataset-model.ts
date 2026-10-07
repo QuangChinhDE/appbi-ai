@@ -277,7 +277,7 @@ export async function fetchDatasetModel(datasetId: number) {
 // (get_distinct_field_values with `search=`) covers the rest of the dimension
 // from the cache. Must stay ≤ the BE page cap (datasets.py distinct le=1000);
 // raising it above 1000 requires bumping that `le` in lock-step.
-export const SLICER_DISTINCT_PREFETCH_LIMIT = 1000;
+export { SLICER_DISTINCT_PREFETCH_LIMIT } from '@/lib/slicer-limits';
 
 export async function fetchDatasetModelDistinctValues(
   datasetId: number,

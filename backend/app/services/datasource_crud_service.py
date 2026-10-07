@@ -388,8 +388,9 @@ class DataSourceCRUDService:
 
         Raises SourceInUseError (structured blockers) while a non-draft Dataset,
         a hosted snapshot or a Knowledge Doc depends on it. Hidden import drafts
-        are purged; ResourceShare rows and manual assets are removed with it."""
-        from app.models.resource_share import ResourceShare, ResourceType
+        are purged; its share rows and manual assets are removed with it."""
+        from app.core.resource_shares import purge_shares
+        from app.models.resource_share import ResourceType
 
         # S6: the blocker check, the draft purge and the delete run in ONE
         # transaction under a row lock on the source. A dataset table inserted
@@ -429,10 +430,7 @@ class DataSourceCRUDService:
         # The purge may already have removed this very source (a wizard-created
         # "[Dashboard Import]" source exists only for its draft) — that IS success.
         try:
-            db.query(ResourceShare).filter(
-                ResourceShare.resource_type == ResourceType.DATASOURCE,
-                ResourceShare.resource_id == str(data_source_id),
-            ).delete(synchronize_session=False)
+            purge_shares(db, ResourceType.DATASOURCE, data_source_id)
             current = DataSourceCRUDService.get_by_id(db, data_source_id)
             if current is not None:
                 db.delete(current)

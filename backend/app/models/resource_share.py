@@ -18,6 +18,9 @@ class ResourceType(str, enum.Enum):
     DATASOURCE = "datasource"
     CHAT_SESSION = "chat_session"
     WORKBOARD = "workboard"
+    #: A delivery workspace (portal) - a resource with an owner and shares
+    #: (decision Q5). A share on a workspace NEVER grants workboard data.
+    WORKSPACE = "workspace"
     KNOWLEDGE_DOC = "knowledge_doc"
     #: An AI Agent brain. Shared like every other first-class resource, because
     #: sharing one DELEGATES its author's reading rights — and a bespoke mechanism

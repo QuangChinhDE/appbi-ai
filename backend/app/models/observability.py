@@ -137,6 +137,9 @@ class ObservabilityAlertChannel(Base):
     min_severity = Column(String(20), nullable=False, default="warning")
     is_active = Column(Boolean, nullable=False, default=True)
     dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=True, index=True)
+    #: "global" (every dataset's incidents; Observability admins only) or
+    #: "dataset" (dataset_id set). Explicit - NULL dataset_id is not authority.
+    scope = Column(String(16), nullable=False, default="dataset", server_default="dataset")
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     last_sent_at = Column(DateTime, nullable=True)
     last_error = Column(Text, nullable=True)

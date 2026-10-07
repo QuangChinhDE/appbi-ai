@@ -239,7 +239,10 @@ def export_workboard(
     impersonate the workboard's users — admins set fresh PINs after
     import. Demo / disposable templates can opt in.
     """
-    layout = workboard.layout_json or {}
+    # OCR API keys (ciphertext) never leave in an export, credentials or not.
+    from app.modules.workboards.services.ocr_secrets import strip_layout_ocr_keys
+
+    layout = strip_layout_ocr_keys(workboard.layout_json or {})
 
     # Collect table ids that appear in the layout, plus the workboard's own
     # primary_table_id (it doesn't always show up in screens[]).
@@ -1123,6 +1126,10 @@ def import_workboard(
     # display-mode / geocode block built by a newer or divergent build) so the
     # import degrades gracefully with a warning instead of a hard 400.
     raw_layout, report.stripped_features = _sanitize_layout_for_import(raw_layout)
+    # An imported layout never brings OCR key material with it.
+    from app.modules.workboards.services.ocr_secrets import strip_layout_ocr_keys
+
+    raw_layout = strip_layout_ocr_keys(raw_layout)
     old_pk_table = bundle.get("primary_table_id")
     old_pk_table_id = old_pk_table if isinstance(old_pk_table, int) else None
     layout_with_columns = _rewrite_column_references(
@@ -1237,9 +1244,12 @@ def _import_app_users(
 
     # Sentinel hash that no PIN can verify against — bcrypt of a long
     # random string. Hashed once per import so we don't churn cycles.
-    placeholder_hash = app_user_service.hash_pin(
-        "__appbi_placeholder__set_via_admin__"
-    )
+    # A random secret nobody ever sees: no PIN can verify against it until an
+    # admin sets one. It used to be the hash of a FIXED string written in this
+    # file - a known credential for every user imported without a PIN.
+    import secrets as _secrets
+
+    placeholder_hash = app_user_service.hash_pin(_secrets.token_urlsafe(48))
 
     inserted = 0
     needs_pin: List[str] = []

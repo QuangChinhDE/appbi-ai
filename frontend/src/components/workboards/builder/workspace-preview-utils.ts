@@ -12,7 +12,8 @@ export interface WorkspaceLite {
   id: number;
   slug: string;
   name: string;
-  token: string;
+  /** Null unless the caller manages the workspace (or it is internal-mode). */
+  token: string | null;
   /**
    * Server always emits this field now, but older snapshots may omit it.
    * Default to ``public_app_users`` to mirror the backend create-default

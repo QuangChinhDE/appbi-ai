@@ -130,7 +130,7 @@ export function DashboardList({
         </thead>
         <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
           {dashboards.map((dashboard) => {
-            const perms = getResourcePermissions(dashboard.user_permission);
+            const perms = getResourcePermissions(dashboard.user_permission, dashboard.capabilities);
             const chartCount = dashboard.dashboard_charts?.length || 0;
             const stateMeta = getStateMeta(chartCount);
             const accessMeta = getAccessMeta(dashboard.user_permission);

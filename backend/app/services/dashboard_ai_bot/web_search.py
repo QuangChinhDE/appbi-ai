@@ -20,6 +20,7 @@ import os
 import re
 import urllib.parse
 
+from app.core import egress as _egress
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -203,12 +204,18 @@ def fetch_url(url: str, *, max_chars: int = 4000, include_html: bool = False) ->
         resp = None
         target = url
         for _ in range(_MAX_REDIRECTS + 1):
-            resp = httpx.get(
-                target,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-                timeout=20.0,
-                follow_redirects=False,
-            )
+            # Through the egress policy: resolved once and connected to the
+            # checked address (no DNS-rebinding window), metadata / CGNAT /
+            # NAT64-wrapped internal addresses refused, public internet only.
+            try:
+                resp = _egress.http_get(
+                    target,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                    timeout=20.0,
+                    public_only=True,
+                )
+            except _egress.EgressDenied as exc:
+                return {"ok": False, "error": f"refused: {exc}", "url": url, "refused": True}
             if resp.status_code not in (301, 302, 303, 307, 308):
                 break
             nxt = resp.headers.get("location") or ""
@@ -247,7 +254,7 @@ def fetch_url(url: str, *, max_chars: int = 4000, include_html: bool = False) ->
     truncated = len(body) > max_chars
     out = {
         "ok": True,
-        "url": str(resp.url)[:500],
+        "url": str(target)[:500],  # the logical URL, not the pinned address
         "title": title,
         "text": body[:max_chars],
         "truncated": truncated,

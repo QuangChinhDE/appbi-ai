@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.dependencies import require_edit_access, require_view_access
+from app.core.authz import decision as _authz
 from app.core.logging import get_logger
 from app.models import Dashboard
 from app.models.dataset import Dataset, DatasetTable
@@ -737,7 +738,7 @@ def _load_existing_source_profile(
     if not dataset_obj:
         raise ValueError("Dataset not found")
 
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
 
     columns_cache = db_table.columns_cache if isinstance(db_table.columns_cache, dict) else {}
     cached_columns = columns_cache.get("columns") if isinstance(columns_cache, dict) else None
@@ -803,7 +804,7 @@ def _load_existing_dataset_profiles(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise ValueError("Dataset not found")
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
 
     db_tables = (
         db.query(DatasetTable)
@@ -5188,7 +5189,7 @@ def build_dashboard_from_import(
             dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
             if not dataset_obj:
                 raise ValueError("Dataset not found.")
-            require_view_access(db, current_user, dataset_obj, "datasets")
+            _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
             resolved_dataset_id = dataset_obj.id
 
             db_tables = (
@@ -5212,12 +5213,14 @@ def build_dashboard_from_import(
             dataset_obj = db.query(Dataset).filter(Dataset.id == db_table.dataset_id).first()
             if not dataset_obj:
                 raise ValueError("Dataset not found.")
-            require_view_access(db, current_user, dataset_obj, "datasets")
+            _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
             resolved_dataset_id = dataset_obj.id
         else:
             raise ValueError("dataset_id or dataset_table_id is required when building from an existing source.")
     else:
-        dataset_permission = (current_user.permissions or {}).get("datasets", "none")
+        from app.core.permissions import get_user_module_permission
+
+        dataset_permission = get_user_module_permission(current_user, "datasets")  # PAT-capped
         if dataset_permission not in {"edit", "full"}:
             raise ValueError("Creating a temporary dataset from Excel requires datasets edit permission.")
 
@@ -5416,6 +5419,9 @@ def build_dashboard_from_import(
             _build_chart_config(plan, resolved_dataset_id),
             auto_generate=True,
         )
+        # Custom SQL is datasource authority, not dataset authority.
+        from app.services.chart_sql_authority import require_custom_sql_authority
+        require_custom_sql_authority(db, current_user, chart_table_id, chart_config)
         db_chart = Chart(
             name=internal_name,
             description=chart_description or None,
@@ -6253,8 +6259,18 @@ def rebuild_dashboard_from_snapshot(
     referenced_ids: Set[int] = set()
     for tile in tiles:
         chart = tile.get("chart") if isinstance(tile, dict) else None
-        if isinstance(chart, dict) and isinstance(chart.get("dataset_table_id"), int):
-            referenced_ids.add(int(chart["dataset_table_id"]))
+        if not isinstance(chart, dict) or chart.get("dataset_table_id") is None:
+            continue
+        # ONE representation for the check AND the write. Only ints used to be
+        # collected for the check, while Chart(...) below took the raw value - a
+        # table id sent as "1305" skipped the authorization and Postgres cast it
+        # on insert (authz review, third pass). Normalised in place, refused
+        # when it is not a whole number.
+        raw = chart.get("dataset_table_id")
+        if isinstance(raw, bool) or not (isinstance(raw, int) or (isinstance(raw, str) and raw.strip().isdigit())):
+            raise ValueError(f"Cannot import snapshot — invalid dataset_table_id: {raw!r}.")
+        chart["dataset_table_id"] = int(raw)
+        referenced_ids.add(chart["dataset_table_id"])
 
     missing_ids: List[int] = []
     forbidden_ids: List[int] = []
@@ -6268,7 +6284,7 @@ def rebuild_dashboard_from_snapshot(
             missing_ids.append(table_id)
             continue
         try:
-            require_view_access(db, current_user, dataset, "datasets")
+            _authz.require(db, current_user, _authz.Action.BUILD, dataset)  # a dashboard from this dataset
         except Exception:
             forbidden_ids.append(table_id)
 
@@ -6343,6 +6359,10 @@ def rebuild_dashboard_from_snapshot(
                 current_user.id,
                 _normalize_text(chart_spec.get("name"), max_len=255) or "Imported Chart",
             )
+            # Custom SQL is datasource authority, not dataset authority.
+            from app.services.chart_sql_authority import require_custom_sql_authority
+            require_custom_sql_authority(db, current_user, chart_spec.get("dataset_table_id"),
+                                         chart_spec.get("config") or {})
             new_chart = Chart(
                 name=chart_name,
                 description=_normalize_text(chart_spec.get("description"), max_len=1024) or None,

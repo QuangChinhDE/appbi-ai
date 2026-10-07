@@ -98,6 +98,14 @@ jobs:
       # stops firing. Declaring it here keeps the precondition where the decision is
       # actually made. Spending on a vendor to turn a skip into a pass would buy a
       # number, not coverage.
+      #
+      # WHAT THE NO-MODEL SKIPS ARE, AND ARE NOT. The four reader-golden tests
+      # that skip on this flag (agent-flow-v1-reader-golden.spec.ts) are EXTERNAL
+      # MODEL INTEGRATION evidence, not a security gate: the security invariant
+      # they touched ("an anonymous reader never receives internal execution /
+      # tool / system details") is enforced deterministically, without a model,
+      # by tests/security/public-reader.spec.ts (project `security`, retries 0,
+      # cannot skip) plus the backend reader-envelope contract tests.
       E2E_NO_MODEL: "1"
 
       # THE MODULE UNDER TEST HAS TO BE MOUNTED.
@@ -113,6 +121,10 @@ jobs:
       # deployment where Agent Flows was switched off. `.env.example` and
       # docker-compose both turn it on, so CI now matches what ships.
       METADATA_CATALOG_ENABLED: "true"
+      # The authorization gate (project `security`) exercises the public
+      # workspace routes, which are only mounted with Workboards on; without it
+      # every workspace assertion is a 404 before any auth check runs.
+      WORKBOARDS_ENABLED: "true"
       PYTHONPATH: ${{ github.workspace }}/backend
       E2E_BASE_URL: http://localhost:3000
       E2E_API_URL: http://localhost:8000
@@ -203,6 +215,23 @@ jobs:
         working-directory: backend
         run: python scripts/ci/seed_e2e_data_state.py
 
+      # AUTHORIZATION RELEASE GATE fixture: isolated principals (owner, viewer,
+      # editor, builder, module admin, unrelated, team member, app user) with
+      # tokens minted by the product's own functions, read by
+      # e2e/tests/security/*.spec.ts (project `security`, retries 0). A missing
+      # fixture FAILS the spec, never skips it.
+      - name: Seed the security fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_security.py
+
+      # PUBLIC READER BOUNDARY (tests/security/public-reader.spec.ts) runs a real
+      # public AI turn with NO model: the bound flow is model-free. Readers are
+      # served only inside the pilot cohort (default AGENT_FLOW_READER_MODE=pilot,
+      # fail closed), so exactly the seeded reader link is enrolled - every other
+      # link keeps the default. Must run before the backend starts (the policy is
+      # read from settings).
+      - name: Enroll the security reader link in the reader pilot
+        run: echo "AGENT_FLOW_PILOT_LINK_IDS=$(cat e2e/.auth/pilot_link_ids)" >> "$GITHUB_ENV"
       # The source-hardening journeys (source-hardening.spec.ts): a read-only
       # role and two databases whose `public.sales` differ in shape (repointing a
       # source must show B's columns, not A's cache), plus a google_sheets
@@ -268,6 +297,18 @@ jobs:
           echo $! > ../.artifacts/e2e-pdf-worker.pid
           sleep 3
           kill -0 "$(cat ../.artifacts/e2e-pdf-worker.pid)"
+
+      # The authorization release gate may not skip: a security journey that
+      # skips is reported as "not failed" and reads like coverage. No skip,
+      # fixme or only may be added to tests/security (a missing fixture already
+      # FAILS there instead of skipping).
+      - name: Security journeys cannot skip
+        working-directory: e2e
+        run: |
+          if grep -rnE "\.(skip|fixme|only)\(" tests/security; then
+            echo "::error::tests/security must not skip, fixme or only a journey"
+            exit 1
+          fi
 
       - name: Run the suite
         working-directory: e2e

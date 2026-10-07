@@ -306,6 +306,9 @@ export interface DataSource {
   config_version?: number;
   /** What this provider can do — filter pickers by it, not by type names. */
   capabilities?: DataSourceCapabilities;
+  /** What THIS CALLER may do with the source (authz core; see getResourcePermissions).
+   *  Not `capabilities`: on a data source that name is the provider's. */
+  access_capabilities?: Record<string, boolean> | null;
   /** Latest persisted connection test (never a message). */
   last_test_status?: DataSourceHealthStatus | null;
   last_tested_at?: string | null;
@@ -556,6 +559,8 @@ export interface Chart {
   owner_id?: string;
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
+  /** Backend-computed actions for the caller (see getResourcePermissions). */
+  capabilities?: Record<string, boolean> | null;
   is_owned_by_current_user?: boolean;
   is_shared?: boolean;
   created_at: string;
@@ -839,6 +844,8 @@ export interface Dashboard {
   owner_id?: string;
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
+  /** Backend-computed actions for the caller (see getResourcePermissions). */
+  capabilities?: Record<string, boolean> | null;
   share_token?: string | null;
   created_at: string;
   updated_at: string;

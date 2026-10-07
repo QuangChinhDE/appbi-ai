@@ -143,6 +143,24 @@ def chart_config(req: dict, *, binding: dict | None = None) -> dict:
     return cfg
 
 
+def own_with_datasource(world, chart, base: str = "p2_sales") -> None:
+    """Give a saved chart what the API gives it: an owner who owns (= may edit)
+    the table's datasource. A custom-SQL chart runs under its OWNER's datasource
+    authority (authz remediation, services/chart_sql_authority.py) and an
+    ownerless one is refused, so custom-SQL fixtures need this."""
+    from app.models.models import DataSource
+    from app.models.user import User, UserStatus
+
+    owner = User(id=uuid.uuid4(), email=f"p3-{uuid.uuid4().hex[:8]}@test.local", full_name="p3",
+                 status=UserStatus.ACTIVE,
+                 permissions={"data_sources": "edit", "explore_charts": "edit", "datasets": "edit"})
+    world.db.add(owner)
+    world.db.flush()
+    world.db.get(DataSource, world.tables[base].datasource_id).owner_id = owner.id
+    chart.owner_id = owner.id
+    world.db.flush()
+
+
 def save_chart(world, base: str, req: dict, *, chart_type: str = "TABLE", config: dict | None = None):
     from app.models.models import Chart, ChartType
 

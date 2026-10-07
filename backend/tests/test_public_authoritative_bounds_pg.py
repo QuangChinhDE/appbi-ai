@@ -250,6 +250,12 @@ def api_embed(ctx):
     db.flush()
     setattr(owner, AUTH_TOKEN_KIND_ATTR, "personal_access_token")
     setattr(owner, PERSONAL_ACCESS_TOKEN_ID_ATTR, pat.id)
+    # Stamp the token's SCOPES exactly as real PAT authentication does
+    # (core.dependencies._authenticate_personal_access_token): a PAT principal
+    # without them is capped at nothing (authz remediation, fail closed).
+    from app.core.dependencies import TOKEN_PERMISSION_CAPS_ATTR
+
+    setattr(owner, TOKEN_PERMISSION_CAPS_ATTR, dict(pat.scopes))
     previous = app.dependency_overrides.get(get_current_user)
     app.dependency_overrides[get_current_user] = lambda: owner
     try:

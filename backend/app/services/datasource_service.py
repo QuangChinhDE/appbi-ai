@@ -24,6 +24,7 @@ from app.services import physical_type_map as _ptm
 from app.services.google_sheets_connector import create_google_sheets_connector
 from app.services.manual_table_connector import create_manual_table_connector
 from app.services.google_data_access_service import get_google_credentials_for_user_id
+from app.core import egress as _egress
 
 logger = get_logger(__name__)
 
@@ -95,20 +96,16 @@ def _pg_connect(**kwargs):
 
     The host is resolved and every candidate checked; libpq then connects to the
     CHECKED address (``hostaddr``) while ``host`` stays the name, so TLS
-    verification/SNI still see the real hostname and DNS cannot rebind."""
-    from app.services.source_network_policy import resolve_and_check
-    host = kwargs.get("host")
-    ip = resolve_and_check(host, kwargs.get("port") or 5432)
-    if str(host or "").strip() != ip:
-        kwargs["hostaddr"] = ip
-    return psycopg2.connect(**kwargs)
+    verification/SNI still see the real hostname and DNS cannot rebind. ONE path:
+    ``core.egress.pg_connect`` (which also refuses a DSN / caller-chosen
+    ``hostaddr``) asks ``source_network_policy.resolve_and_check`` for the address."""
+    return _egress.pg_connect(**kwargs)
 
 
 def _mysql_connect(**kwargs):
-    """pymysql.connect through the outbound source network policy (connects to the checked IP)."""
-    from app.services.source_network_policy import resolve_and_check
-    kwargs["host"] = resolve_and_check(kwargs.get("host"), kwargs.get("port") or 3306)
-    return pymysql.connect(**kwargs)
+    """pymysql.connect through the outbound source network policy (connects to
+    the checked IP; a unix socket is refused) - via ``core.egress.mysql_connect``."""
+    return _egress.mysql_connect(**kwargs)
 
 
 def _bigquery_dedup_outer_select(client, original_query: str) -> Optional[str]:

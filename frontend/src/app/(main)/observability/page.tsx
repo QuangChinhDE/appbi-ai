@@ -291,7 +291,7 @@ function SetupPickerModal({ candidates, onClose, onPick }: { candidates: UsageRo
 function DatasetDetail({ datasetId, onBack, nav }: { datasetId: number; onBack: () => void; nav: ReturnType<typeof useUrlNav> }) {
   const { t } = useI18n();
   const { data, isLoading } = useDataset(datasetId);
-  const canEdit = getResourcePermissions(data?.user_permission).canEdit;
+  const canEdit = getResourcePermissions(data?.user_permission, data?.capabilities).canEdit;
   const tab = (nav.get('dt') as DetailTab) || 'quality';
   const setTab = (next: string) => nav.set({ dt: next });
 

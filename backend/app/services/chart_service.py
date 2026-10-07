@@ -3851,6 +3851,21 @@ def _rehydrate_binding_for_modeled_table(db: Session, db_table, chart_config) ->
     return None
 
 
+def _require_custom_sql_owner(db: Session, db_chart, effective_config, datasource) -> None:
+    """Custom SQL carries DATASOURCE authority: a saved custom-SQL chart runs
+    only while its owner still holds edit on that datasource (authed and public
+    viewers alike) - see services/chart_sql_authority.py."""
+    if not get_chart_custom_sql(effective_config):
+        return
+    from app.services.chart_sql_authority import owner_may_run_custom_sql
+
+    if not owner_may_run_custom_sql(db, db_chart, datasource):
+        raise ValueError(
+            "This chart's custom SQL is not authorized: its owner does not have "
+            "edit access to the datasource."
+        )
+
+
 def _execute_chart_runtime_for_table(
     db: Session,
     datasource,
@@ -4656,6 +4671,8 @@ class ChartService:
                 if not datasource:
                     raise ValueError("Data source not found")
 
+            _require_custom_sql_owner(db, db_chart, effective_config, datasource)
+
             result = _execute_chart_runtime_for_table(
                 db,
                 datasource,
@@ -4702,6 +4719,8 @@ class ChartService:
                 datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
                 if not datasource:
                     raise ValueError("Data source not found")
+
+            _require_custom_sql_owner(db, db_chart, effective_config, datasource)
 
             result = _execute_chart_runtime_for_table(
                 db,

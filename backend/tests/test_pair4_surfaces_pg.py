@@ -31,7 +31,7 @@ import pytest
 
 from tests import foundation_corpus as F
 from tests import pair2_topology as T
-from tests.pair3_world import chart_config, chart_world, runtime_filters, save_chart
+from tests.pair3_world import chart_config, chart_world, own_with_datasource, runtime_filters, save_chart
 from tests.test_pair2_golden_topology_pg import _norm
 from tests.test_pair3_chartservice_pg import (  # noqa: F401 — fixtures
     _pg_config,
@@ -1017,6 +1017,7 @@ def test_custom_and_generated_charts_keep_their_mode_on_the_public_surface(pg, h
             "queryMode": "custom", "customSql": custom_sql,
             "customRoleConfig": {"dimension": "product", "metrics": [{"field": "amount", "agg": "sum"}]},
             "roleConfig": {"dimension": "p2_regions.name", "metrics": [{"field": "p2_sales.revenue", "agg": "auto"}]}})
+        own_with_datasource(w, custom)  # custom SQL runs under its owner's datasource right
         dash, tokens = _dashboard(w, [(generated, None), (custom, None)])
         chart_expect(ask_public(client, tokens["plain"], generated, req), req, [{"p2_sales.revenue": 198}])
         kind, rows, _ = ask_public(client, tokens["plain"], custom, {})
