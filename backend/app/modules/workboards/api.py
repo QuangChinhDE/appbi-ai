@@ -1845,14 +1845,63 @@ class _ImportFromSourcePayload(__import__("pydantic").BaseModel):
     table_source_overrides: Optional[Dict[str, str]] = None
 
 
-def _validate_datasources_exist(db: Session, datasource_map: Dict[str, int]) -> None:
-    from app.models.models import DataSource
+def _sql_refs_in_bundle(bundle: dict) -> set:
+    """Bundle datasource refs that carry a ``sql_query`` table (template SQL that
+    would be persisted and run against the chosen Source)."""
+    return {
+        str(dt.get("datasource_ref"))
+        for dt in (bundle or {}).get("dataset_tables") or []
+        if (dt.get("source_kind") or "physical_table") == "sql_query"
+        and dt.get("datasource_ref") is not None
+    }
 
+
+def _validate_datasources_exist(
+    db: Session,
+    datasource_map: Dict[str, int],
+    current_user: User,
+    sql_refs: Optional[set] = None,
+) -> None:
+    """Authorize every caller-chosen target Source BEFORE any table listing or
+    binding, with the same object check api/datasources.py uses.
+
+    Contract (matches api/datasets.py S2): binding a physical table is a read of
+    the Source -> ``view``; a ``sql_query`` table persists template SQL that runs
+    with the Source's stored credentials (same as Query Runner / dataset
+    sql_query) -> ``edit`` on the Source. Nonexistent and inaccessible Sources
+    get the SAME 404 so ids cannot be probed. Non-tabular providers refused.
+    """
+    from app.core.dependencies import require_edit_access, require_view_access
+    from app.models.models import DataSource
+    from app.services.source_capabilities import SourceNotTabularError, require_capability
+
+    sql_refs = sql_refs or set()
     for ref, ds_id in (datasource_map or {}).items():
-        if not db.query(DataSource).filter(DataSource.id == ds_id).first():
+        not_found = HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source được chọn (id={ds_id}) cho '{ref}' không tồn tại hoặc bạn không có quyền truy cập.",
+        )
+        ds = db.query(DataSource).filter(DataSource.id == ds_id).first()
+        if not ds:
+            raise not_found
+        try:
+            require_view_access(db, current_user, ds, "data_sources")
+        except HTTPException:
+            raise not_found
+        if str(ref) in sql_refs:
+            try:
+                require_edit_access(db, current_user, ds, "data_sources")
+            except HTTPException:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Template chứa bảng SQL cho '{ref}': cần quyền edit trên Source (id={ds_id}).",
+                )
+        try:
+            require_capability(ds.type, "tabular")
+        except SourceNotTabularError as exc:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Source được chọn (id={ds_id}) cho '{ref}' không tồn tại.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": exc.code, "message": str(exc)},
             )
 
 
@@ -1864,7 +1913,7 @@ def import_inspect_source(
 ):
     """Dry-run table-match preview for the v2 'pick a Source' import. Creates
     nothing — just reports which bundle tables exist on the chosen Source(s)."""
-    _validate_datasources_exist(db, payload.datasource_map)
+    _validate_datasources_exist(db, payload.datasource_map, current_user)
     try:
         return _template_svc.inspect_source_match(db, payload.bundle, payload.datasource_map or {})
     except ValueError as exc:
@@ -1892,7 +1941,9 @@ def import_from_source_endpoint(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cần chọn ít nhất một Source để tự tạo dataset (datasource_map rỗng).",
             )
-        _validate_datasources_exist(db, payload.datasource_map)
+        _validate_datasources_exist(
+            db, payload.datasource_map, current_user, _sql_refs_in_bundle(payload.bundle)
+        )
 
     if payload.target_workspace_id is not None:
         _ensure_can_attach_workspace(current_user)

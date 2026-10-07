@@ -31,6 +31,14 @@ class AuditAction(str, enum.Enum):
     SHARE_CREATED = "share_created"
     SHARE_REVOKED = "share_revoked"
     DATASOURCE_CONNECTED = "datasource_connected"
+    # Source lifecycle (migration 20261006_0003). Details carry ids, provider,
+    # changed field NAMES and error categories — never a config value or secret.
+    DATASOURCE_CREATED = "datasource_created"
+    DATASOURCE_CONFIG_CHANGED = "datasource_config_changed"
+    DATASOURCE_AUTH_MODE_CHANGED = "datasource_auth_mode_changed"
+    DATASOURCE_TEST_FAILED = "datasource_test_failed"
+    DATASOURCE_DELETED = "datasource_deleted"
+    DATASOURCE_DELETE_BLOCKED = "datasource_delete_blocked"
     DATA_EXPORTED = "data_exported"
     WORKBOARD_CREATED = "workboard_created"
     WORKBOARD_UPDATED = "workboard_updated"

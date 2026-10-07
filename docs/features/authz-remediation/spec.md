@@ -140,11 +140,8 @@ Owner = manage. Module admin (`datasets: full`) = manage (`via=module_admin`). L
 | `manage_secret` | owner/admin |
 
 - `test`/`update` with a stored id: if any endpoint field (host, port, database/project, account, url, dsn) differs from the stored value, stored secrets are **not** rehydrated; the caller must supply them.
-- All connector egress goes through `app/core/egress.py`:
-  - resolve once, pin the IP;
-  - deny loopback, link-local, private, metadata and multicast addresses (allow-list via `EGRESS_ALLOW_PRIVATE_CIDRS` for on-prem warehouses, default empty in prod and permissive in dev);
-  - no redirects;
-  - errors are sanitized.
+- Database connector egress goes through `app/core/egress.py` (`pg_connect`/`mysql_connect`: DSN, caller-chosen `hostaddr` and unix sockets refused; the checked address pinned), whose destination decision is the Source module's single policy `services/source_network_policy.py` (every candidate checked; metadata/link-local/tunnel prefixes hard-denied; loopback/private only via the operator knob `ALLOWED_PRIVATE_SOURCE_CIDRS` / `SOURCE_ALLOW_PRIVATE_NETWORK`). Converged with origin/demo's source hardening: one DB policy, one knob (`DATASOURCE_ALLOW_LOOPBACK` removed).
+- HTTP egress (webhooks, alert channels, AI web fetch) uses `egress.check_destination`: resolve once, pin, no redirects, private only via `EGRESS_HTTP_ALLOW_CIDRS`; errors are sanitized.
 - `POST /datasources/query` requires `explore` on the data source (= edit) and stays select-only.
 - **Arbitrary SQL is datasource authority, wherever it is written.** The same `edit` on the data source is required to:
   - author or preview a chart in custom-SQL mode (`preview-data`, `dry-run-create`, AI preview/save, create, update, dashboard fork, HTML import) — a dataset grant (explore/build/edit) is **not** enough, because the SQL can read any table the connection reaches;

@@ -193,6 +193,17 @@ def scope(db, user, model):
 
 
 
+#: Where a resource carries ITS CALLER's capabilities. `capabilities` everywhere,
+#: except on a data source, whose `capabilities` is the PROVIDER's (what the
+#: connector can do - Source module, services/source_capabilities.py).
+_CAPS_ATTR = {"datasource": "access_capabilities"}
+
+
+def caps_attr(resource_or_spec) -> str:
+    spec = resource_or_spec if hasattr(resource_or_spec, "resource_type") else _spec(resource_or_spec)
+    return _CAPS_ATTR.get(getattr(spec, "resource_type", ""), "capabilities")
+
+
 def attach_capabilities(db, user, resources) -> None:
     """Set ``resource.capabilities`` = {action: bool} on every resource, for the
     frontend to decide which controls to show WITHOUT knowing owners, shares,
@@ -214,7 +225,7 @@ def attach_capabilities(db, user, resources) -> None:
         caps = batch_dataset_capabilities(db, user, rs)
         for r in rs:
             have = caps.get(r.id, set())
-            r.capabilities = {a.value: need in have for a, need in _DATASET_NEEDS.items()}
+            setattr(r, caps_attr(spec), {a.value: need in have for a, need in _DATASET_NEEDS.items()})
         return
     from app.core.dependencies import LEVEL_ORDER, can_publish, get_effective_permission
 
@@ -223,4 +234,4 @@ def attach_capabilities(db, user, resources) -> None:
         n = LEVEL_ORDER.get(level, 0)
         out = {a.value: n >= LEVEL_ORDER[need] for a, need in _GENERIC_NEEDS.items()}
         out["publish"] = n > 0 and can_publish(db, user, r, spec.module)
-        r.capabilities = out
+        setattr(r, caps_attr(spec), out)

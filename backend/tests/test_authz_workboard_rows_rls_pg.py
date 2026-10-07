@@ -36,7 +36,9 @@ def world(db, monkeypatch):  # noqa: F811
     from app.modules.workboards.models import Workboard, WorkboardAppUser, WorkboardWorkspace
     from app.modules.workboards.services import app_user_service
 
-    monkeypatch.setenv("DATASOURCE_ALLOW_LOOPBACK", "true")
+    from app.core.config import settings as _settings
+    # the test database is on loopback: the Source policy's operator allowance
+    monkeypatch.setattr(_settings, "ALLOWED_PRIVATE_SOURCE_CIDRS", "127.0.0.0/8,::1/128")
     run = uuid.uuid4().hex[:8]
     tname = f"wb_rls_{run}"
     eng = create_engine(OWNER_URL)

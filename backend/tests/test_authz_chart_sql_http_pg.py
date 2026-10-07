@@ -37,7 +37,9 @@ def world(db, monkeypatch):  # noqa: F811
     from app.models.dataset import Dataset, DatasetGrant, DatasetTable
     from app.models.models import Chart, ChartType, Dashboard, DashboardChart, DataSource, DataSourceType
 
-    monkeypatch.setenv("DATASOURCE_ALLOW_LOOPBACK", "true")
+    from app.core.config import settings as _settings
+    # the test database is on loopback: the Source policy's operator allowance
+    monkeypatch.setattr(_settings, "ALLOWED_PRIVATE_SOURCE_CIDRS", "127.0.0.0/8,::1/128")
     url = make_url(OWNER_URL)
     work = dict(datasets="edit", explore_charts="edit", dashboards="edit")
     owner = make_user(db, "sql-owner", data_sources="edit", **work)

@@ -3387,11 +3387,14 @@ def add_table_to_dataset(
             datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
             if not datasource:
                 raise HTTPException(status_code=404, detail="Datasource not found")
-            require_view_access(db, current_user, datasource, "data_sources")
+            # S2: picking a physical table is a read of the source (view); a
+            # sql_query table runs ARBITRARY SQL with the stored credential, so
+            # it needs edit on the datasource object.
             if table.source_kind == "sql_query":
-                # A SQL table is arbitrary SQL on the whole connection - the same
-                # right as POST /datasources/query and chart custom SQL: edit.
                 require_edit_access(db, current_user, datasource, "data_sources")
+            else:
+                require_view_access(db, current_user, datasource, "data_sources")
+            _require_tabular_source(datasource)
 
         # Validate SQL query if source_kind is datasource-backed 'sql_query'
         if table.source_kind == "sql_query":
@@ -3629,14 +3632,15 @@ def update_dataset_table(
                 raise HTTPException(status_code=400, detail=str(exc))
         else:
             from app.services.query_validator import QueryValidator, QueryValidationError
+            # S3: changing the SQL of a sql_query table runs new arbitrary SQL
+            # with the stored credential → edit on the datasource object, checked
+            # before the SQL is validated or previewed.
+            datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+            if not datasource:
+                raise HTTPException(status_code=404, detail="Datasource not found")
+            require_edit_access(db, current_user, datasource, "data_sources")
             try:
                 table_update.source_query = QueryValidator.validate_and_clean(table_update.source_query)
-                datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-                if not datasource:
-                    raise HTTPException(status_code=404, detail="Datasource not found")
-                # New SQL on the connection = arbitrary SQL: edit on the datasource.
-                require_view_access(db, current_user, datasource, "data_sources")
-                require_edit_access(db, current_user, datasource, "data_sources")
 
                 table_draft = _build_table_draft(db_table, table_update)
                 preview_metadata, preview_rows = _preview_live_table_draft(
@@ -4848,6 +4852,16 @@ def regenerate_table_description(
     return {"status": "queued", "generation_status": "queued"}
 
 
+def _require_tabular_source(datasource) -> None:
+    """F15: a provider without tables (google_docs) is refused by every tabular
+    path with 400 {code: source_not_tabular}."""
+    from app.services.source_capabilities import SourceNotTabularError, require_capability
+    try:
+        require_capability(datasource.type, "tabular")
+    except SourceNotTabularError as exc:
+        raise HTTPException(status_code=400, detail={"code": exc.code, "message": str(exc)})
+
+
 # ===== Datasource Table List Endpoint =====
 
 @router.get(
@@ -4867,6 +4881,7 @@ def list_datasource_tables(
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
     require_view_access(db, current_user, datasource, "data_sources")
+    _require_tabular_source(datasource)
     
     try:
         tables = DataSourceConnectionService.list_tables(
@@ -4920,6 +4935,7 @@ def list_datasource_table_columns(
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
     require_view_access(db, current_user, datasource, "data_sources")
+    _require_tabular_source(datasource)
     try:
         columns = DataSourceConnectionService.list_columns(
             ds_id=datasource.id,

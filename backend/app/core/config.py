@@ -101,6 +101,19 @@ class Settings(BaseSettings):
         """Resolved absolute path for data storage."""
         return _resolve_data_dir(self.DATA_DIR)
 
+    # Manual file sources (CSV / XLSX upload) — hard ingestion limits.
+    # Files are stored as Parquet assets under DATA_DIR/manual_assets.
+    MANUAL_UPLOAD_MAX_BYTES: int = 50 * 1024 * 1024
+    MANUAL_UPLOAD_MAX_ROWS: int = 1_000_000          # data rows per sheet
+    MANUAL_UPLOAD_MAX_COLUMNS: int = 500             # columns per sheet
+    MANUAL_UPLOAD_MAX_CELL_CHARS: int = 32_767       # Excel's own cell limit
+    MANUAL_UPLOAD_MAX_SHEETS: int = 50
+    MANUAL_UPLOAD_MAX_TOTAL_CELLS: int = 10_000_000  # rows x columns, whole file
+    MANUAL_UPLOAD_MAX_UNCOMPRESSED_BYTES: int = 500 * 1024 * 1024  # xlsx zip members, summed
+    MANUAL_UPLOAD_MAX_COMPRESSION_RATIO: int = 200   # per xlsx zip member (zip-bomb guard)
+    MANUAL_UPLOAD_PREVIEW_ROWS: int = 50
+    MANUAL_STAGED_ASSET_TTL_HOURS: int = 24
+
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002"
     
@@ -309,6 +322,21 @@ class Settings(BaseSettings):
     LARGE_TABLE_ROW_THRESHOLD: int = 50_000_000         # 50M rows
     LARGE_TABLE_SIZE_THRESHOLD_GB: float = 5.0          # 5 GB
     BQ_MAX_BYTES_SCANNED: int = 60 * 1024**3            # 60 GB dry-run guard
+    # Hard cap BigQuery enforces on the job itself (QueryJobConfig.maximum_bytes_billed)
+    # for user-submitted Query Runner SQL — bounds cost even when the dry run fails.
+    BQ_MAX_BYTES_BILLED: int = 60 * 1024**3
+
+    # ── Source hardening (docs/features/source-core-hardening/spec.md) ──────────
+    # Outbound policy for PostgreSQL/MySQL sources. Private addresses are refused
+    # unless listed here (comma-separated CIDRs). Loopback opens ONLY via an
+    # explicit loopback CIDR; link-local / metadata / multicast never open.
+    SOURCE_ALLOW_PRIVATE_NETWORK: bool = False
+    ALLOWED_PRIVATE_SOURCE_CIDRS: str = ""
+    # Server-side row cap for the ad-hoc Query Runner (/datasources/query).
+    SOURCE_QUERY_MAX_ROWS: int = 10_000
+    # Platform GCP_SERVICE_ACCOUNT_JSON may only be used for these GCP projects
+    # (comma-separated). Empty = only a source an administrator approved may use it.
+    PLATFORM_GCP_ALLOWED_PROJECTS: str = ""
     BQ_PREVIEW_PARTITION_MAX_LOOKBACK_DAYS: int = 365   # fallback when partition metadata is unavailable
     # Dashboard perf #5 — snapshot materialization. Global default dataset where
     # flat snapshot tables are written; a per-datasource `materialization_dataset`
@@ -542,13 +570,14 @@ def validate_security_settings() -> None:
             "DATASOURCE_ENCRYPTION_KEY is empty — datasource credentials will be stored in plaintext. "
             "Generate a key: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
         )
-    from app.core.egress import loopback_allowed_for_datasources
-
-    if loopback_allowed_for_datasources():
-        errors.append(
-            "DATASOURCE_ALLOW_LOOPBACK is a development/CI setting: in production a "
-            "datasource must never be able to reach the backend's own loopback services."
-        )
+    else:
+        try:
+            from cryptography.fernet import Fernet
+            Fernet(settings.DATASOURCE_ENCRYPTION_KEY.strip().encode())
+        except Exception:
+            errors.append(
+                "DATASOURCE_ENCRYPTION_KEY is not a valid Fernet key (32 url-safe base64-encoded bytes)."
+            )
     if errors:
         msg = "FATAL — Insecure configuration detected:\n" + "\n".join(f"  • {e}" for e in errors)
         raise RuntimeError(msg)

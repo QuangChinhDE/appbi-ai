@@ -9,6 +9,7 @@ import DataSourceForm from '@/components/datasources/DataSourceForm';
 import type { DataSourceCreate } from '@/types/api';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
+import { SourceHealthBadge } from '@/components/datasources/SourceHealth';
 import { toast } from '@/lib/toast';
 
 type Tab = 'connection';
@@ -22,6 +23,7 @@ const TYPE_LABELS: Record<string, string> = {
   mysql: 'MySQL',
   bigquery: 'BigQuery',
   google_sheets: 'Google Sheets',
+  google_docs: 'Google Docs',
   manual: 'Manual',
 };
 
@@ -30,6 +32,7 @@ const TYPE_COLORS: Record<string, string> = {
   mysql: 'bg-warning/15 text-warning',
   bigquery: 'bg-success/15 text-success',
   google_sheets: 'bg-success/15 text-success',
+  google_docs: 'bg-info/15 text-info',
   manual: 'bg-surface-2 text-text-secondary',
 };
 
@@ -41,7 +44,7 @@ export default function DataSourceDetailPage() {
 
   const { data: dataSource, isLoading } = useDataSource(datasourceId);
   const updateMutation = useUpdateDataSource();
-  const resPerms = getResourcePermissions(dataSource?.user_permission, dataSource?.capabilities);
+  const resPerms = getResourcePermissions(dataSource?.user_permission, dataSource?.access_capabilities);
 
   // Read initial tab from ?tab= query param — fallback to 'connection' for unknown values
   const paramTab = searchParams.get('tab') as Tab;
@@ -76,6 +79,7 @@ export default function DataSourceDetailPage() {
         data: {
           name: data.name,
           description: data.description,
+          config_version: dataSource?.config_version,
           ...(meta.configModified ? { config: data.config } : {}),
         },
       });
@@ -83,7 +87,7 @@ export default function DataSourceDetailPage() {
         description: data.name,
       });
     } catch (error: any) {
-      toast.error(`Failed to update: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to update: ${typeof error.response?.data?.detail === 'string' ? error.response.data.detail : error.response?.data?.detail?.message || error.message}`);
     }
   };
 
@@ -147,6 +151,8 @@ export default function DataSourceDetailPage() {
               )}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-text-tertiary">
+              <SourceHealthBadge source={dataSource} />
+              <span className="text-text-quaternary">•</span>
               <span>Created {createdAt}</span>
               {dataSource.owner_email && (
                 <>

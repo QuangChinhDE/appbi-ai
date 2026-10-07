@@ -5,7 +5,12 @@ Every connection whose DESTINATION a user can influence goes through here:
 * HTTP to a user-configured URL (observability webhooks / Slack channels,
   workboard webhook sync) - ``http_post``;
 * database connections to a datasource's configured host - ``pg_connect`` /
-  ``mysql_connect`` (same keyword arguments as psycopg2 / pymysql).
+  ``mysql_connect`` (same keyword arguments as psycopg2 / pymysql). Their
+  DESTINATION decision is the Source module's policy
+  (``services/source_network_policy.py``) - one DB policy, one operator knob
+  (``ALLOWED_PRIVATE_SOURCE_CIDRS`` / ``SOURCE_ALLOW_PRIVATE_NETWORK``); this
+  module only refuses DSN / caller-chosen ``hostaddr`` / unix-socket forms and
+  pins the checked address.
 
 Destinations whose host is fixed in code or set only by the operator's
 environment (AI providers, embeddings, web search, SMTP, geocoding) are not
@@ -19,10 +24,8 @@ THE RULE
   NAT64 / 6to4 forms of any of those. Numeric oddities (``2130706433``,
   ``0x7f.1``, ``017700000001``) are parsed by the resolver and land on the same
   check.
-* Private (RFC 1918 / ULA / CGNAT) addresses are refused unless allow-listed:
-  ``EGRESS_HTTP_ALLOW_CIDRS`` for HTTP, ``DATASOURCE_ALLOW_PRIVATE_CIDRS`` or
-  ``DATASOURCE_ALLOW_HOSTS`` (exact hostnames, e.g. the bundled ``db``) for
-  databases. Production default: nothing private is allowed.
+* HTTP: private (RFC 1918 / ULA / CGNAT) addresses are refused unless listed in
+  ``EGRESS_HTTP_ALLOW_CIDRS``. Production default: nothing private is allowed.
 * HTTP: only http/https, no redirects (a 3xx is returned as-is, never
   followed), no userinfo in the URL.
 """
@@ -201,25 +204,23 @@ async def http_post_async(client, url: str, **kwargs):
 
 # ── Databases ────────────────────────────────────────────────────────────────
 
-def loopback_allowed_for_datasources() -> bool:
-    """DATASOURCE_ALLOW_LOOPBACK=true lets a DATABASE connection reach loopback
-    (a developer's local Postgres, a CI service container on localhost). Never
-    for HTTP egress, never metadata/link-local, and production startup refuses it
-    (core.config.validate_security_settings)."""
-    return (os.environ.get("DATASOURCE_ALLOW_LOOPBACK", "") or "").strip().lower() in ("1", "true", "yes")
-
+#: DATABASE destinations are decided by ONE policy: the Source module's
+#: ``services/source_network_policy.py`` (every A/AAAA candidate checked,
+#: metadata/link-local/tunnel prefixes hard-denied, loopback and private ranges
+#: only through ``ALLOWED_PRIVATE_SOURCE_CIDRS`` / ``SOURCE_ALLOW_PRIVATE_NETWORK``).
+#: This module adds only what a connection call itself must refuse (a DSN, a
+#: caller-chosen ``hostaddr``, a unix socket) and pins the checked address.
+#: HTTP egress (webhooks, alert channels, fetches) stays on ``check_destination``
+#: above. (Converged with origin/demo's source hardening: one DB policy, one knob.)
 
 def _db_destination(host, port) -> str:
-    return check_destination(
-        host, int(port) if port else None,
-        private_cidrs=_cidrs("DATASOURCE_ALLOW_PRIVATE_CIDRS"),
-        allowed_hosts=_hosts("DATASOURCE_ALLOW_HOSTS"),
-        allow_loopback=loopback_allowed_for_datasources(),
-    )
+    from app.services.source_network_policy import resolve_and_check
+
+    return resolve_and_check(host, int(port) if port else None)
 
 
 def pg_connect(**kwargs):
-    """``psycopg2.connect`` through the egress policy. The resolved address is
+    """``psycopg2.connect`` through the source policy. The resolved address is
     pinned with ``hostaddr`` while ``host`` stays for TLS verification."""
     import psycopg2
 

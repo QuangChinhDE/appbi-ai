@@ -123,15 +123,31 @@ def test_http_post_to_loopback_sends_nothing(listener):
     assert listener.connections == 0
 
 
-def test_pg_connect_to_loopback_sends_nothing(listener):
-    with pytest.raises(egress.EgressDenied):
+@pytest.fixture()
+def no_source_allowance(monkeypatch):
+    """The production default for DATABASE destinations (tests/conftest.py opens
+    loopback for local test databases): nothing private, nothing loopback."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ALLOWED_PRIVATE_SOURCE_CIDRS", "")
+    monkeypatch.setattr(settings, "SOURCE_ALLOW_PRIVATE_NETWORK", False)
+
+
+def _refused():
+    from app.services.source_network_policy import SourceNetworkPolicyError
+
+    return (egress.EgressDenied, SourceNetworkPolicyError)
+
+
+def test_pg_connect_to_loopback_sends_nothing(listener, no_source_allowance):
+    with pytest.raises(_refused()):
         egress.pg_connect(host="127.0.0.1", port=listener.port, user="u", password="stored-secret",
                           dbname="d", connect_timeout=2)
     assert listener.connections == 0
 
 
-def test_mysql_connect_to_loopback_sends_nothing(listener):
-    with pytest.raises(egress.EgressDenied):
+def test_mysql_connect_to_loopback_sends_nothing(listener, no_source_allowance):
+    with pytest.raises(_refused()):
         egress.mysql_connect(host="localhost", port=listener.port, user="u", password="stored-secret",
                              database="d", connect_timeout=2)
     assert listener.connections == 0
@@ -190,26 +206,19 @@ def test_redirect_is_never_followed_and_connection_is_pinned(monkeypatch, listen
     assert lookups == ["hook.example"]
 
 
-# ── DATASOURCE_ALLOW_LOOPBACK (development / CI only) ──────────────────────────
+# ── The loopback allowance (one knob: ALLOWED_PRIVATE_SOURCE_CIDRS) ────────────
+# Converged with origin/demo's source hardening: DATABASE destinations follow the
+# Source policy and its operator allowance; HTTP egress never follows it.
 
 def test_loopback_allowance_is_for_database_connections_only(monkeypatch, listener):
-    monkeypatch.setenv("DATASOURCE_ALLOW_LOOPBACK", "true")
-    assert egress.check_destination("127.0.0.1", 5432, allow_loopback=egress.loopback_allowed_for_datasources()) == "127.0.0.1"
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ALLOWED_PRIVATE_SOURCE_CIDRS", "127.0.0.0/8,::1/128")
+    assert egress._db_destination("127.0.0.1", 5432) == "127.0.0.1"
     # still never metadata / link-local, even with the allowance
-    with pytest.raises(egress.EgressDenied):
-        egress.check_destination("169.254.169.254", 80, allow_loopback=True)
+    with pytest.raises(_refused()):
+        egress._db_destination("169.254.169.254", 5432)
     # and never HTTP egress (webhooks)
     with pytest.raises(egress.EgressDenied):
         egress.http_post(f"http://127.0.0.1:{listener.port}/hook", json={})
     assert listener.connections == 0
-
-
-def test_production_refuses_the_loopback_allowance(monkeypatch):
-    from app.core import config
-
-    monkeypatch.setenv("DATASOURCE_ALLOW_LOOPBACK", "true")
-    monkeypatch.setattr(config.settings, "ENVIRONMENT", "production")
-    monkeypatch.setattr(config.settings, "SECRET_KEY", "x" * 64)
-    monkeypatch.setattr(config.settings, "DATASOURCE_ENCRYPTION_KEY", "k")
-    with pytest.raises(RuntimeError, match="DATASOURCE_ALLOW_LOOPBACK"):
-        config.validate_security_settings()

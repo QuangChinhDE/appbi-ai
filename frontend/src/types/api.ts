@@ -302,10 +302,55 @@ export interface DataSource {
   owner_id?: string;
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
-  /** Backend-computed actions for the caller (see getResourcePermissions). */
-  capabilities?: Record<string, boolean> | null;
+  /** Bumped by the backend on every connection-affecting config change. */
+  config_version?: number;
+  /** What this provider can do — filter pickers by it, not by type names. */
+  capabilities?: DataSourceCapabilities;
+  /** What THIS CALLER may do with the source (authz core; see getResourcePermissions).
+   *  Not `capabilities`: on a data source that name is the provider's. */
+  access_capabilities?: Record<string, boolean> | null;
+  /** Latest persisted connection test (never a message). */
+  last_test_status?: DataSourceHealthStatus | null;
+  last_tested_at?: string | null;
+  last_error_code?: DataSourceErrorCode | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface DataSourceCapabilities {
+  tabular: boolean;
+  test: boolean;
+  discover: boolean;
+  query: boolean;
+  stream: boolean;
+  write: boolean;
+  oauth: boolean;
+}
+
+export type DataSourceHealthStatus = 'ok' | 'warning' | 'error';
+export type DataSourceCheckState = 'ok' | 'failed' | 'skipped' | 'warning';
+export type DataSourceErrorCode =
+  | 'auth' | 'network' | 'permission' | 'missing_resource' | 'invalid_config' | 'query'
+  | 'timeout' | 'quota' | 'unsupported' | 'internal' | 'policy_blocked';
+
+/** POST /datasources/{id}/test and /datasources/test-draft. */
+export interface DataSourceTestResult {
+  success: boolean;
+  message: string;
+  status: DataSourceHealthStatus;
+  provider?: string | null;
+  checks: { auth: DataSourceCheckState; reachable: DataSourceCheckState; queryable: DataSourceCheckState; discoverable: DataSourceCheckState };
+  error_code?: DataSourceErrorCode | null;
+  warnings: string[];
+  duration_ms: number;
+  tested_at?: string | null;
+}
+
+/** 409 body of DELETE /datasources/{id}. */
+export interface DataSourceDeleteBlocker {
+  kind: 'dataset' | 'dataset_snapshot' | 'knowledge_doc' | string;
+  id: number;
+  name: string;
 }
 
 export interface DataSourceCreate {
@@ -319,6 +364,9 @@ export interface DataSourceUpdate {
   name?: string;
   description?: string;
   config?: Record<string, any>;
+  // Optimistic concurrency: the config_version this edit started from. A stale
+  // value is refused with 409 {code: 'source_conflict'} — reload and retry.
+  config_version?: number;
 }
 
 // ── Schema Browser ─────────────────────────────────────────────────────────
@@ -875,6 +923,9 @@ export interface QueryExecuteResponse {
   data: Record<string, any>[];
   row_count: number;
   execution_time_ms: number;
+  /** True when the server-side row cap (SOURCE_QUERY_MAX_ROWS) cut the result short. */
+  truncated?: boolean;
+  row_limit?: number | null;
 }
 
 export type ChartDataContext = 'default' | 'dashboard';

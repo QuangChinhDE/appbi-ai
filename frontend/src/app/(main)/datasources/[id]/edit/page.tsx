@@ -16,7 +16,7 @@ export default function EditDataSourcePage() {
 
   const { data: dataSource, isLoading } = useDataSource(datasourceId);
   const updateMutation = useUpdateDataSource();
-  const resPerms = getResourcePermissions(dataSource?.user_permission, dataSource?.capabilities);
+  const resPerms = getResourcePermissions(dataSource?.user_permission, dataSource?.access_capabilities);
 
   const handleUpdate = async (data: DataSourceCreate, meta: { configModified: boolean }) => {
     try {
@@ -25,6 +25,7 @@ export default function EditDataSourcePage() {
         data: {
           name: data.name,
           description: data.description,
+          config_version: dataSource?.config_version,
           // Only resend config when the user actually re-imported data.
           // Skipping it for a rename avoids sending potentially large Manual Table payloads.
           ...(meta.configModified ? { config: data.config } : {}),
@@ -35,7 +36,7 @@ export default function EditDataSourcePage() {
       });
       router.push('/datasources');
     } catch (error: any) {
-      toast.error(`Failed to update data source: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to update data source: ${typeof error.response?.data?.detail === 'string' ? error.response.data.detail : error.response?.data?.detail?.message || error.message}`);
     }
   };
 

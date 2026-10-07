@@ -93,6 +93,13 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       ENVIRONMENT: ${ENVIRONMENT:-production}
+      # Source hardening: outbound policy for PostgreSQL/MySQL sources. A source on a
+      # private network (incl. this stack's own Postgres) needs its CIDR listed here.
+      SOURCE_ALLOW_PRIVATE_NETWORK: ${SOURCE_ALLOW_PRIVATE_NETWORK:-false}
+      ALLOWED_PRIVATE_SOURCE_CIDRS: ${ALLOWED_PRIVATE_SOURCE_CIDRS:-}
+      SOURCE_QUERY_MAX_ROWS: ${SOURCE_QUERY_MAX_ROWS:-10000}
+      BQ_MAX_BYTES_BILLED: ${BQ_MAX_BYTES_BILLED:-64424509440}
+      PLATFORM_GCP_ALLOWED_PROJECTS: ${PLATFORM_GCP_ALLOWED_PROJECTS:-}
       AUTH_PASSWORD_LOGIN_ENABLED: ${AUTH_PASSWORD_LOGIN_ENABLED:-true}
       AUTH_GOOGLE_ENABLED: ${AUTH_GOOGLE_ENABLED:-false}
       AUTH_GOOGLE_CLIENT_ID: ${AUTH_GOOGLE_CLIENT_ID:-}

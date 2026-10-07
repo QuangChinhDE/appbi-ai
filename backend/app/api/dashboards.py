@@ -1392,7 +1392,8 @@ async def preview_html_import_calculated_fields(
         raise HTTPException(status_code=500, detail=f"DuckDB is unavailable: {exc}") from exc
 
     try:
-        conn = duckdb.connect(database=":memory:")
+        from app.services.sql_validator import open_locked_duckdb
+        conn = open_locked_duckdb()  # S1: user expressions never reach host files
         try:
             # Map the frontend-declared column types into DuckDB types so
             # arithmetic expressions like ``a + b`` evaluate correctly.

@@ -89,3 +89,16 @@ def shared_resource_ids_subquery(user: User, resource_type: ResourceType):
         .where(ResourceShare.resource_type == resource_type)
         .where(share_target_filter_for_user(user))
     )
+
+
+def purge_shares(db: Session, resource_type: ResourceType, resource_id) -> int:
+    """Delete every share row of ONE resource (the resource itself is being
+    deleted). The share engine's only bulk-delete entry point, so business
+    modules never query ResourceShare themselves (authz static rule). Does not
+    commit: the caller's transaction owns the delete."""
+    return (
+        db.query(ResourceShare)
+        .filter(ResourceShare.resource_type == resource_type,
+                ResourceShare.resource_id == str(resource_id))
+        .delete(synchronize_session=False)
+    )
