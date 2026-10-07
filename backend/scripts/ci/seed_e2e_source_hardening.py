@@ -59,7 +59,7 @@ TABLES = {
     DB_A: ("CREATE TABLE public.sales (id int, region text, amount numeric)",
            "INSERT INTO public.sales VALUES (1,'North',100.50),(2,'South',200),(3,'East',50.25)"),
     DB_B: ("CREATE TABLE public.sales (id int, customer_name text, total numeric, status text)",
-           "INSERT INTO public.sales VALUES (1,'Alice',300,'paid'),(2,'Bob',75.5,'open')"),
+           "INSERT INTO public.sales VALUES (1,'Acme',300,'paid'),(2,'Globex',75.5,'open')"),
 }
 
 # Structurally a service-account JSON; the key is not a real key and the
