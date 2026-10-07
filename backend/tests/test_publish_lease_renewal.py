@@ -68,3 +68,50 @@ def test_the_running_sync_heartbeats_its_lease(monkeypatch):
     n = len(renewed)
     time.sleep(0.3)
     assert len(renewed) == n, "the heartbeat stops with the sync"
+
+
+def test_a_sync_clicked_as_the_previous_one_finishes_is_not_refused(store, monkeypatch):
+    """The previous sync wrote its terminal run, its thread has not released the
+    lease yet: a new start waits for the hand-off instead of 'already_syncing'."""
+    import threading
+
+    from app.services import dataset_publish_service as pub
+
+    class _NoRunning:
+        def query(self, *_a):
+            return self
+
+        def filter(self, *_a):
+            return self
+
+        def first(self):
+            return None  # history: nothing running any more
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.core.database.SessionLocal", lambda: _NoRunning())
+    assert qc.try_claim_global("datasetpublish::5", 30.0)          # the finishing sync still holds it
+    threading.Timer(0.5, lambda: qc.release_global("datasetpublish::5")).start()
+    assert pub._claim_publish_lease(5) is True
+
+
+def test_a_genuinely_running_sync_still_refuses(store, monkeypatch):
+    from app.services import dataset_publish_service as pub
+
+    class _Running:
+        def query(self, *_a):
+            return self
+
+        def filter(self, *_a):
+            return self
+
+        def first(self):
+            return (1,)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.core.database.SessionLocal", lambda: _Running())
+    assert qc.try_claim_global("datasetpublish::6", 30.0)
+    assert pub._claim_publish_lease(6) is False

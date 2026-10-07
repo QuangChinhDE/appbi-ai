@@ -478,6 +478,38 @@ def _lease_key(dataset_id: int) -> str:
     return f"datasetpublish::{dataset_id}"
 
 
+#: How long a start waits for a FINISHED sync to release its lease.
+_LEASE_HANDOFF_WAIT_SECONDS = 10.0
+
+
+def _claim_publish_lease(dataset_id: int) -> bool:
+    """Claim the dataset's publish lease. A sync records its terminal run (the
+    history already says Success/Failed) a moment BEFORE its thread releases the
+    lease, so a Sync clicked in that gap was refused as "already syncing" for a
+    sync that had finished. When no run is still ``running``, wait briefly for
+    the release instead of refusing; a genuinely running sync still refuses."""
+    import time as _time
+
+    if _qc.try_claim_global(_lease_key(dataset_id), _PUBLISH_LEASE_SECONDS):
+        return True
+    from app.core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        running = db.query(DatasetRefreshRun.id).filter(
+            DatasetRefreshRun.dataset_id == dataset_id, DatasetRefreshRun.status == "running").first()
+    finally:
+        db.close()
+    if running is not None:
+        return False
+    deadline = _time.monotonic() + _LEASE_HANDOFF_WAIT_SECONDS
+    while _time.monotonic() < deadline:
+        _time.sleep(0.25)
+        if _qc.try_claim_global(_lease_key(dataset_id), _PUBLISH_LEASE_SECONDS):
+            return True
+    return False
+
+
 def start_sync_and_publish(
     dataset_id: int,
     trigger: str = "manual",
@@ -492,12 +524,14 @@ def start_sync_and_publish(
     from app.core.database import SessionLocal
     from app.services import sync_progress
 
-    if not _qc.try_claim_global(_lease_key(dataset_id), _PUBLISH_LEASE_SECONDS):
+    if not _claim_publish_lease(dataset_id):
+        logger.info("[publish] start refused dataset=%s trigger=%s: already_syncing", dataset_id, trigger)
         return {"started": False, "reason": "already_syncing"}
     if _qc.is_claimed_global(f"snaprebuild::{dataset_id}"):
         # A background rebuild is building this dataset's tables right now; a
         # publish started on top would race it table by table. One writer.
         _qc.release_global(_lease_key(dataset_id))
+        logger.info("[publish] start refused dataset=%s trigger=%s: rebuilding", dataset_id, trigger)
         return {"started": False, "reason": "rebuilding"}
 
     sync_progress.start(dataset_id, total=0, trigger=trigger)

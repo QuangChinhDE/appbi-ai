@@ -9,6 +9,7 @@ import { DataSource } from '@/types/api';
 import { Database, Loader2, Trash2, TestTube, Share2 } from 'lucide-react';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
+import { SourceHealthBadge } from '@/components/datasources/SourceHealth';
 import { FilterTag, type FilterTagTone } from '@/components/ui/FilterTag';
 import { IconButton } from '@/components/ui/Button';
 
@@ -62,6 +63,8 @@ export default function DataSourceList({
         return { label: 'BigQuery', tone: 'success' };
       case 'google_sheets':
         return { label: 'Google Sheets', tone: 'success' };
+      case 'google_docs':
+        return { label: 'Google Docs', tone: 'info' };
       case 'manual':
         return { label: 'Manual Table', tone: 'info' };
       default:
@@ -171,6 +174,7 @@ export default function DataSourceList({
                     >
                       {typeMeta.label}
                     </FilterTag>
+                    <SourceHealthBadge source={ds} />
                     {accessMeta.value !== 'full' && (
                       <FilterTag
                         tone={accessMeta.tone}
@@ -204,16 +208,19 @@ export default function DataSourceList({
                 </td>
                 <td className="app-list-cell-tight text-right text-caption">
                   <div className="flex items-center justify-end gap-1">
-                    <IconButton
-                      aria-label="Test connection"
-                      variant="ghost"
-                      size="xs"
-                      onClick={() => onTest(ds)}
-                      className="text-success hover:bg-success/10"
-                      title="Test connection"
-                    >
-                      <TestTube className="h-3.5 w-3.5" />
-                    </IconButton>
+                    {/* Retesting uses the stored credential → object edit (BE: POST /{id}/test). */}
+                    {perms.canEdit && (
+                      <IconButton
+                        aria-label="Test connection"
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => onTest(ds)}
+                        className="text-success hover:bg-success/10"
+                        title="Test connection"
+                      >
+                        <TestTube className="h-3.5 w-3.5" />
+                      </IconButton>
+                    )}
                     {onShare && perms.canShare && (
                       <IconButton
                         aria-label="Share data source"

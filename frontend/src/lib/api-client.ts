@@ -161,7 +161,7 @@ export const dataSourcesApi = {
   },
   
   test: async (payload: { type: string; config: Record<string, any> }) => {
-    const response = await apiClient.post('/datasources/test', payload);
+    const response = await apiClient.post('/datasources/test-draft', payload);
     return response.data;
   },
   

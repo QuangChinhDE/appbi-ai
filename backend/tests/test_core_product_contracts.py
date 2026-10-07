@@ -558,6 +558,12 @@ def test_datasource_connection_service_scrubs_returns_and_logs_at_the_real_bound
     def fail(*_args, **_kwargs):
         raise RuntimeError(leaky)
 
+    # The outbound network policy resolves the host before the driver is
+    # reached; give the synthetic host a public address so the DRIVER boundary
+    # (what this test locks) is the one that fails.
+    import app.services.source_network_policy as netpol
+    monkeypatch.setattr(netpol, "resolve_and_check", lambda host, port=None: "203.0.113.10")
+
     if provider == "postgresql":
         monkeypatch.setattr(mod.psycopg2, "connect", fail)
     elif provider == "mysql":
@@ -590,11 +596,11 @@ def test_bigquery_success_warning_is_scrubbed_before_service_return(monkeypatch)
     }
 
     class _Query:
-        def result(self):
+        def result(self, timeout=None):
             return []
 
     class _Client:
-        def query(self, _sql):
+        def query(self, _sql, timeout=None):
             return _Query()
 
         def list_tables(self, *_args, **_kwargs):
@@ -619,9 +625,11 @@ def test_datasource_test_api_receives_the_service_safe_message(monkeypatch, capl
     import logging
     import app.api.datasources as api
     import app.services.datasource_service as mod
-    from app.schemas.schemas import DataSourceTestRequest, DataSourceTypeSchema
+    import app.services.source_network_policy as netpol
+    from app.schemas.schemas import DataSourceDraftTestRequest, DataSourceTypeSchema
 
     secret = "api-boundary-secret-closure-123456"
+    monkeypatch.setattr(netpol, "resolve_and_check", lambda host, port=None: "203.0.113.10")
 
     def fail(*_args, **_kwargs):
         raise RuntimeError(
@@ -630,8 +638,8 @@ def test_datasource_test_api_receives_the_service_safe_message(monkeypatch, capl
 
     monkeypatch.setattr(mod.psycopg2, "connect", fail)
     caplog.set_level(logging.ERROR, logger=mod.__name__)
-    response = api.test_data_source_connection(
-        DataSourceTestRequest(
+    response = api.test_draft_data_source_connection(
+        DataSourceDraftTestRequest(
             type=DataSourceTypeSchema.POSTGRESQL,
             config={
                 "host": "db.closure.invalid",
@@ -651,14 +659,15 @@ def test_datasource_test_api_receives_the_service_safe_message(monkeypatch, capl
 
 
 def test_datasource_test_endpoint_enforces_resource_access_before_rehydration():
-    """APPBI-VERIFY-005: /datasources/test must check resource access to the given
+    """APPBI-VERIFY-005: the draft test (/datasources/test-draft, which replaced the
+    ambiguous /datasources/test) must check resource access to the given
     data_source_id BEFORE it rehydrates that datasource's stored secrets — else a
-    user with only module 'view' could reuse another datasource's credentials
-    (IDOR). Prove the endpoint calls require_view_access on the looked-up source
-    and does NOT restore secrets when access is denied."""
+    user could reuse another datasource's credentials (IDOR). Prove the endpoint
+    checks object access (now `edit`) on the looked-up source and does NOT restore
+    secrets when access is denied."""
     from fastapi import HTTPException
     import app.api.datasources as mod
-    from app.schemas.schemas import DataSourceTestRequest, DataSourceTypeSchema as DataSourceType
+    from app.schemas.schemas import DataSourceDraftTestRequest as DataSourceTestRequest, DataSourceTypeSchema as DataSourceType
 
     calls = {"restored": False, "access_checked_for": None}
 
@@ -674,23 +683,23 @@ def test_datasource_test_endpoint_enforces_resource_access_before_rehydration():
         calls["restored"] = True
         return {**cfg, **stored}
 
-    orig = (mod.DataSourceCRUDService.get_by_id, mod.require_view_access, mod._restore_sensitive_config_fields)
+    orig = (mod.DataSourceCRUDService.get_by_id, mod.require_edit_access, mod._restore_sensitive_config_fields)
     mod.DataSourceCRUDService.get_by_id = staticmethod(fake_get_by_id)
-    mod.require_view_access = fake_require_view
+    mod.require_edit_access = fake_require_view
     mod._restore_sensitive_config_fields = fake_restore
     try:
         req = DataSourceTestRequest(data_source_id=99, type=DataSourceType.POSTGRESQL,
                                     config={"host": "attacker", "username": "x"})
         raised = False
         try:
-            mod.test_data_source_connection(req, db=object(), current_user=object())
+            mod.test_draft_data_source_connection(req, db=object(), current_user=object())
         except HTTPException as e:
             raised = (e.status_code == 403)
         assert raised, "foreign datasource test must be refused with 403"
         assert calls["access_checked_for"] == 99, "resource access must be checked on the looked-up source"
         assert calls["restored"] is False, "secrets must NOT be rehydrated when access is denied"
     finally:
-        (mod.DataSourceCRUDService.get_by_id, mod.require_view_access, mod._restore_sensitive_config_fields) = orig
+        (mod.DataSourceCRUDService.get_by_id, mod.require_edit_access, mod._restore_sensitive_config_fields) = orig
 
 
 # ── Datasource module-wide credential-safe error boundary (final release R1) ──
@@ -736,11 +745,13 @@ def _ds_client(monkeypatch, ds_type: str):
     monkeypatch.setattr(mod.DataSourceCRUDService, "get_by_id", staticmethod(lambda db, i: ds))
     monkeypatch.setattr(mod, "require_view_access", lambda *a, **k: None)
     monkeypatch.setattr(mod, "require_edit_access", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "require_full_access", lambda *a, **k: None)
     monkeypatch.setattr(crypto, "decrypt_config", lambda cfg: dict(cfg or {}))
 
     def boom(*a, **k):
         raise Exception(_DS_LEAK)
     monkeypatch.setattr(mod.DataSourceConnectionService, "execute_query", staticmethod(boom))
+    monkeypatch.setattr(mod.DataSourceConnectionService, "validate_user_sql", staticmethod(boom))
     monkeypatch.setattr(mod.DataSourceConnectionService, "get_table_detail", staticmethod(boom))
     monkeypatch.setattr(mod.DataSourceConnectionService, "get_watermark_candidates", staticmethod(boom))
 

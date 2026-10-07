@@ -65,6 +65,10 @@ jobs:
       DB_PASSWORD: appbi
       # DATASOURCE_ENCRYPTION_KEY is generated per run by a step below (AI Keys).
       ENVIRONMENT: test
+      # The seeded data sources point at the job's own Postgres on localhost. The
+      # outbound source policy refuses loopback/private hosts by default, so the
+      # rig opens loopback explicitly (operator knob), never by weakening the default.
+      ALLOWED_PRIVATE_SOURCE_CIDRS: "127.0.0.0/8,::1/128"
 
       # ONE SECRET, OR THE FRONTEND CANNOT READ WHAT THE BACKEND SIGNED.
       #
@@ -199,6 +203,16 @@ jobs:
         working-directory: backend
         run: python scripts/ci/seed_e2e_data_state.py
 
+      # The source-hardening journeys (source-hardening.spec.ts): a read-only
+      # role and two databases whose `public.sales` differ in shape (repointing a
+      # source must show B's columns, not A's cache), plus a google_sheets
+      # source with a FAKE service account for the view-only refusal checks.
+      # The spec FAILS when these are missing rather than skipping.
+      - name: Seed the source-hardening fixture
+        working-directory: backend
+        env:
+          CI_FIXTURE_SEED: "1"
+        run: python scripts/ci/seed_e2e_source_hardening.py
       # Dataset lifecycle journeys (dataset-lifecycle*.spec.ts): a mutable source
       # schema + a lifecycle dataset. CI has NO BigQuery snapshot host, so the
       # Sync & Publish journeys skip themselves by name here; the authoring /

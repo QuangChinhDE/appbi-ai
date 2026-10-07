@@ -152,13 +152,12 @@ test.describe('Dataset authoring', () => {
     // a calculated-column / hide edit is NOT source drift (no false "schema changed")
     expect(status.tables.filter((t: any) => t.code === 'SOURCE_SCHEMA_CHANGED')).toEqual([]);
     await page.getByPlaceholder(/Monthly Revenue|Doanh thu/).fill('line_totals');
-    const hint = await page.locator('.cm-placeholder').last().innerText();
-    const alias = /FROM\s+([\w.`"]+)/.exec(hint)?.[1];
-    expect(alias, `alias in the editor hint: ${hint}`).toBeTruthy();
-    const products = await tableByName(request, id, 'products');
+    // Write the query like a user: type the projection, then click the products
+    // table's alias in the "Dataset tables" panel (it is appended to the SQL).
     await page.locator('.cm-content').last().click();
-    await page.keyboard.insertText(`SELECT sku, revenue FROM ${alias!.replace(/[^.`"]+$/, '')}${
-      /dataset_table_\d+/.test(alias!) ? `dataset_table_${products.id}` : alias}`);
+    await page.keyboard.insertText('SELECT sku, revenue FROM');
+    await page.getByRole('button', { name: /products/ }).filter({ hasNotText: /category/ }).last().click();
+    await expect(page.locator('.cm-content').last()).toContainText(/FROM\s+\S*products/);
     await page.getByRole('button', { name: /^(Create calculated table|Tạo bảng tính toán)$/ }).click();
     await expect.poll(async () => Boolean(await tableByName(request, id, 'line_totals')), { timeout: 30_000 })
       .toBe(true);

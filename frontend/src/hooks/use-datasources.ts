@@ -47,6 +47,13 @@ export const useUpdateDataSource = () => {
       queryClient.invalidateQueries({ queryKey: ['datasources'] });
       queryClient.invalidateQueries({ queryKey: ['datasources', variables.id] });
     },
+    onError: (error: any, variables: { id: number; data: DataSourceUpdate }) => {
+      // 409 source_conflict: someone else saved this source since it was
+      // loaded. Reload it so the next save starts from the current version.
+      if (error?.response?.status === 409 && error?.response?.data?.detail?.code === 'source_conflict') {
+        queryClient.invalidateQueries({ queryKey: ['datasources', variables.id] });
+      }
+    },
   });
 };
 
@@ -61,16 +68,13 @@ export const useDeleteDataSource = () => {
 };
 
 export const useTestDataSource = () => {
+  const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      type,
-      config,
-      data_source_id,
-    }: {
-      type: string;
-      config: Record<string, any>;
-      data_source_id?: number;
-    }) => dataSourceApi.test(type, config, data_source_id),
+    mutationFn: ({ id }: { id: number }) => dataSourceApi.test(id),
+    // A saved-source test persists last health on the source.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['datasources'] });
+    },
   });
 };
 

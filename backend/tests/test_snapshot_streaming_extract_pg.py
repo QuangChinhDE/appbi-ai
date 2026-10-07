@@ -87,15 +87,18 @@ def source(request, monkeypatch):
         engine.dispose()
 
 
-SQL = "SELECT id, amount, code, note FROM snap_stream_src ORDER BY id"
+#: Quoted + schema-qualified, exactly as the snapshot builder emits it (an
+#: unquoted name hid a validator that lexed Postgres quotes as MySQL strings).
+SQL = {"postgresql": 'SELECT "id", "amount", "code", "note" FROM "public"."snap_stream_src" ORDER BY "id"',
+       "mysql": "SELECT `id`, `amount`, `code`, `note` FROM `appbi`.`snap_stream_src` ORDER BY `id`"}
 
 
 def test_the_spool_types_rows_exactly_like_the_in_memory_extract(source):
     kind, cfg, _e = source
     eff_mem, eff_spool = {}, {}
-    schema_mem, rows_mem = DSC.extract_generic_for_snapshot(kind, cfg, SQL, columns_meta=COLUMNS,
+    schema_mem, rows_mem = DSC.extract_generic_for_snapshot(kind, cfg, SQL[kind], columns_meta=COLUMNS,
                                                             timeout_seconds=120, effective_types_out=eff_mem)
-    spool = DSC.spool_extract_for_snapshot(kind, cfg, SQL, columns_meta=COLUMNS, timeout_seconds=120,
+    spool = DSC.spool_extract_for_snapshot(kind, cfg, SQL[kind], columns_meta=COLUMNS, timeout_seconds=120,
                                            effective_types_out=eff_spool)
     try:
         assert eff_spool == eff_mem and eff_spool["code"] == "STRING"
@@ -109,7 +112,7 @@ def test_the_spool_types_rows_exactly_like_the_in_memory_extract(source):
 def test_progress_is_reported_while_reading(source):
     kind, cfg, _e = source
     seen = []
-    spool = DSC.spool_extract_for_snapshot(kind, cfg, SQL, columns_meta=COLUMNS, timeout_seconds=120,
+    spool = DSC.spool_extract_for_snapshot(kind, cfg, SQL[kind], columns_meta=COLUMNS, timeout_seconds=120,
                                            progress_cb=seen.append)
     spool.close()
     assert seen[0] == BATCH and seen[-1] == ROWS and seen == sorted(seen)
@@ -126,7 +129,7 @@ def test_stop_interrupts_the_extract_and_releases_the_source(source):
             raise sync_control.SyncCancelled()
 
     with pytest.raises(sync_control.SyncCancelled):
-        DSC.spool_extract_for_snapshot(kind, cfg, SQL, columns_meta=COLUMNS, timeout_seconds=120,
+        DSC.spool_extract_for_snapshot(kind, cfg, SQL[kind], columns_meta=COLUMNS, timeout_seconds=120,
                                        progress_cb=stop_after_two_batches)
     assert calls == [BATCH, 2 * BATCH]  # stopped mid-table, not after reading it all
     # The server-side cursor / connection was released: the table can be dropped
@@ -149,9 +152,9 @@ def test_memory_stays_bounded(source):
         finally:
             tracemalloc.stop()
 
-    mem_peak, _ = peak(lambda: DSC.extract_generic_for_snapshot(kind, cfg, SQL, columns_meta=COLUMNS,
+    mem_peak, _ = peak(lambda: DSC.extract_generic_for_snapshot(kind, cfg, SQL[kind], columns_meta=COLUMNS,
                                                                 timeout_seconds=120))
-    spool_peak, spool = peak(lambda: DSC.spool_extract_for_snapshot(kind, cfg, SQL, columns_meta=COLUMNS,
+    spool_peak, spool = peak(lambda: DSC.spool_extract_for_snapshot(kind, cfg, SQL[kind], columns_meta=COLUMNS,
                                                                     timeout_seconds=120))
     spool.close()
     # The spool holds about one fetched batch; the old path held the table 3x.
@@ -189,7 +192,7 @@ def test_the_loader_streams_the_spool_in_chunks(source, monkeypatch):
     monkeypatch.setattr(dsmod, "_materialization_bq_config", lambda c: {"project_id": "p"})
     progress = []
     n, _warn = DSC.stream_extract_load_snapshot(
-        source_ds_type=kind, source_config=cfg, resolved_sql=None, source_select_sql=SQL,
+        source_ds_type=kind, source_config=cfg, resolved_sql=None, source_select_sql=SQL[kind],
         columns_meta=COLUMNS, host_config={}, dataset_name="d", table_name="t", storage={},
         chunk_size=20_000, timeout_seconds=120, progress_cb=progress.append)
     assert n == ROWS == sum(c for c, _ in loads)
@@ -228,14 +231,14 @@ def test_the_loader_never_holds_the_table_in_memory(source, monkeypatch):
 
     tracemalloc.start()
     try:
-        DSC.extract_generic_for_snapshot(kind, cfg, SQL, columns_meta=COLUMNS, timeout_seconds=120)
+        DSC.extract_generic_for_snapshot(kind, cfg, SQL[kind], columns_meta=COLUMNS, timeout_seconds=120)
         table_cost = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
     tracemalloc.start()
     try:
         DSC.stream_extract_load_snapshot(
-            source_ds_type=kind, source_config=cfg, resolved_sql=None, source_select_sql=SQL,
+            source_ds_type=kind, source_config=cfg, resolved_sql=None, source_select_sql=SQL[kind],
             columns_meta=COLUMNS, host_config={}, dataset_name="d", table_name="t", storage={},
             chunk_size=BATCH, timeout_seconds=120)
         loader_peak = tracemalloc.get_traced_memory()[1]
