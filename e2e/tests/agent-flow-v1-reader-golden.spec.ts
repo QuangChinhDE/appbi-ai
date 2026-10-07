@@ -168,6 +168,15 @@ test.describe('V1 reader golden journey @critical', () => {
    *
    * All three were additionally walked by hand on a public link. The skip is
    * recorded so a green CI run is never read as "the reader journey ran here".
+   *
+   * THESE SKIPS ARE MODEL-INTEGRATION EVIDENCE, NOT THE SECURITY GATE. The
+   * security invariant "an anonymous reader never receives internal execution,
+   * tool or system details" no longer depends on a model: it is enforced by the
+   * reader-text guard (services/agent_flows/reader_text.py) and the lifecycle
+   * allowlist (agent_flows/wire.py), and gated in CI WITHOUT a model by
+   * tests/security/public-reader.spec.ts (a real public turn of a model-free
+   * flow; wire + page, every detail open; retries 0; cannot skip). What only
+   * these tests add is a real model's turn end to end - product evidence.
    */
   const NO_MODEL = process.env.E2E_NO_MODEL === '1';
 

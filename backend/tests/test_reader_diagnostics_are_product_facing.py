@@ -175,3 +175,83 @@ def test_the_author_trace_keeps_the_technical_detail():
     assert result["detail"]["chart_id"] == 684
     assert result["detail"]["chart_dimensions"] == ["year_month"]
     assert "customer_state" in result["recovery"]
+
+
+# ── Flow lifecycle events carry no internal keys (public reader journey) ───────
+# node_started / node_completed / branch_taken / loop_iteration used to be the
+# executor payload spread onto the wire, so every reader - including an
+# anonymous public-link visitor - received the flow's NODE keys (`step`) and a
+# branch's CASE key (`path`). Found by e2e/tests/security/public-reader.spec.ts.
+
+@pytest.mark.parametrize("et,extra", [
+    ("node_started", {"step": "ngoai_pham_vi", "name": "Đọc biểu đồ", "type": "tool"}),
+    ("node_completed", {"step": "ngoai_pham_vi", "name": "Đọc biểu đồ", "ms": 12, "status": "reused"}),
+    ("branch_taken", {"step": "re_nhanh", "path": "case_noi_bo", "label": "Doanh thu"}),
+    ("loop_iteration", {"step": "vong_lap", "index": 2, "total": 5}),
+])
+def test_lifecycle_events_carry_only_what_a_reader_is_shown(et, extra):
+    env = event_to_envelope(AgentEvent(type=et, extra=extra))
+    assert env["type"] == et
+    assert "step" not in env and "path" not in env
+    text = str(env)
+    for internal in ("ngoai_pham_vi", "re_nhanh", "case_noi_bo", "vong_lap"):
+        assert internal not in text
+    # what the reader IS shown survives
+    for k in ("name", "label", "ms", "status", "index", "total"):
+        if k in extra:
+            assert env[k] == extra[k]
+
+
+# ── The ANSWER prose carries no internals, whoever wrote it (reader_text) ──────
+# The structured channels were already clean; the prose was protected only by a
+# prompt instruction. A model reads tool results whose technical messages name the
+# tool id, raw ids and the exception, so the answer is scrubbed deterministically
+# before it is stored and published (executor).
+
+_DANGEROUS = (
+    "Doanh thu 10 tỷ. get_chart_data: chart_id 1566 is not part of this dashboard "
+    "(chart_out_of_scope, error_code). failed to load chart 1565: ValueError. "
+    "dataset_table_42 tại http://localhost:8000/api/v1/x và 127.0.0.1:5432, brain_key=k, "
+    "answer_node. Traceback (most recent call last):\n  File \"a.py\", line 3, in f\n\nTiếp tục."
+)
+
+
+def test_answer_prose_loses_every_internal_identifier():
+    from app.services.agent_flows.reader_text import scrub
+
+    out = scrub(_DANGEROUS)
+    for internal in ("get_chart_data", "chart_id", "1566", "is not part of this dashboard",
+                     "chart_out_of_scope", "error_code", "failed to load chart", "ValueError",
+                     "dataset_table_42", "localhost", "127.0.0.1", "brain_key", "answer_node",
+                     "Traceback", 'File "a.py"'):
+        assert internal not in out, (internal, out)
+    assert out.startswith("Doanh thu 10 tỷ.") and out.endswith("Tiếp tục.")
+
+
+@pytest.mark.parametrize("text", [
+    "Doanh thu tháng 3 tăng 12% so với tháng 2.",
+    "Top 5: A (12), B (9).",
+    "Error rate thấp; out-of-stock giảm.",
+    "Xem https://appbi.example.com/report để biết thêm.",
+])
+def test_ordinary_reader_prose_is_untouched(text):
+    from app.services.agent_flows.reader_text import scrub
+
+    assert scrub(text) == text
+
+
+def test_the_published_answer_is_the_scrubbed_one():
+    """Stored, published and rated text stay byte-identical: the Answer itself is
+    scrubbed, so `Answer.text` (computed from blocks) is the clean string."""
+    from app.services.agent_flows.envelope import Answer
+    from app.services.agent_flows.reader_text import scrub_answer
+
+    a = Answer.model_validate({"blocks": [
+        {"type": "text", "markdown": _DANGEROUS},
+        {"type": "metric", "label": "chart_id 7 get_chart_data", "value": 5},
+        {"type": "followups", "items": ["Vì sao chart_out_of_scope?"]},
+    ]})
+    a = scrub_answer(a)
+    for internal in ("get_chart_data", "chart_id", "chart_out_of_scope", "Traceback"):
+        assert internal not in a.text and internal not in a.plain_text()
+    assert a.text == a.plain_text()

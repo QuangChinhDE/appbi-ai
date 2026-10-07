@@ -103,6 +103,29 @@ def main() -> int:
             db.add(ResourceShare(resource_type=ResourceType.DASHBOARD, resource_id=str(dash.id),
                                  user_id=who.id, permission=lvl, shared_by=owner.id))
 
+        # PUBLIC READER fixture: a report with two charts and an AI-enabled public
+        # link. The spec binds a MODEL-FREE flow to it (tool steps + set_var), so a
+        # real public turn runs in CI with no LLM credential. The link id is also
+        # written to `pilot_link_ids` so the workflow enrolls exactly this link in
+        # the reader pilot before the backend starts (every other link stays out).
+        from app.models.models import Chart, ChartType, DashboardChart
+
+        chart_in = Chart(name=f"sec-reader-in-{run}", chart_type=ChartType.TABLE, dataset_table_id=table.id,
+                         config={"roleConfig": {"selectedColumns": ["id"]}}, owner_id=owner.id)
+        chart_out = Chart(name=f"sec-reader-out-{run}", chart_type=ChartType.TABLE, dataset_table_id=table.id,
+                          config={"roleConfig": {"selectedColumns": ["id"]}}, owner_id=owner.id)
+        reader_dash = Dashboard(name=f"sec-reader-{run}", owner_id=owner.id)
+        db.add_all([chart_in, chart_out, reader_dash])
+        db.flush()
+        db.add_all([
+            DashboardChart(dashboard_id=reader_dash.id, chart_id=chart_in.id, layout={"x": 0, "y": 0, "w": 6, "h": 4}),
+            DashboardChart(dashboard_id=reader_dash.id, chart_id=chart_out.id, layout={"x": 6, "y": 0, "w": 6, "h": 4}),
+        ])
+        reader_link = DashboardPublicLink(dashboard_id=reader_dash.id, name="sec-reader",
+                                          token=secrets.token_urlsafe(24), is_active=True, source="user",
+                                          appearance_config={"ai_bot_enabled": True})
+        db.add(reader_link)
+
         slug = f"sec-wb-{run}"
         wb = Workboard(name="sec app", slug=slug, dataset_id=ds.id, primary_table_id=table.id,
                        owner_id=owner.id, layout_json={}, is_published=True, published_layout_json={})
@@ -173,6 +196,8 @@ def main() -> int:
                           "ws_internal_id": ws_internal.id, "app_user": app_user.username, "app_pin": app_pin},
             "observability": {"global_channel": g_channel.id, "dataset_channel": d_channel.id},
             "flow": {"key": flow_key},
+            "reader": {"dashboard_id": reader_dash.id, "link_id": reader_link.id, "token": reader_link.token,
+                       "chart_in": chart_in.id, "chart_out": chart_out.id},
         }
     finally:
         db.close()
@@ -180,6 +205,9 @@ def main() -> int:
                         or (BACKEND.parent / "e2e" / ".auth" / "security.json"))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out, indent=1), encoding="utf-8")
+    # The reader-pilot cohort for THIS fixture's public link only (read by the
+    # workflow before the backend starts: AGENT_FLOW_PILOT_LINK_IDS).
+    (path.parent / "pilot_link_ids").write_text(str(out["reader"]["link_id"]), encoding="utf-8")
     print(f"security fixture written: {path} (run {run})")
     return 0
 

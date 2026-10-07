@@ -35,6 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
 
+from app.services.agent_flows import reader_text as _reader_text
 from app.services.agent_flows.contract import (
     ROUTING_NODE_TYPES,
     CoordinateNode,
@@ -268,6 +269,9 @@ async def run_flow(
         async for ev in _run_body(list(flow.nodes), state, rctx):
             if ev.type == "text" and ev.text:
                 streamed_text = True
+                # Reader prose carries no internal execution details, whoever wrote
+                # it (services/agent_flows/reader_text.py).
+                ev.text = _reader_text.scrub(ev.text)
             yield ev
     except BudgetExhausted as exc:
         status = "partial"
@@ -284,7 +288,10 @@ async def run_flow(
             Notice(code="run_failed", text="Có lỗi khi chạy trợ lý cho câu hỏi này.")
         )
 
-    answer = _final_answer(state, rctx)
+    # Scrubbed BEFORE the envelope: what is stored for the run, what is published
+    # and what a reader rates stay byte-identical (runs.apply_rating), and none of
+    # it carries a tool id, raw id, error code, traceback or internal URL.
+    answer = _reader_text.scrub_answer(_final_answer(state, rctx))
     if _answer_is_fallback(state, rctx):
         # The designated answering node never ran — the budget ran out, or a Stop
         # ended the run early — so what reaches the viewer is an INTERMEDIATE node's

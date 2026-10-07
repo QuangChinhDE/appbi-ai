@@ -973,7 +973,12 @@ def test_a_reading_steps_result_reaches_the_step_that_answers():
     # The rule under test is that the reading step's output reaches the step that
     # answers; that is what these two lines check.
     assert "read" in shown, "kết quả bước đọc không được gắn tên bước nào"
-    assert "charts" in shown and "chart_id" in shown, "tới nơi nhưng rỗng ruột"
+    # `read_status`, not `chart_id`: the reader-facing answer is scrubbed of internal
+    # field keys and raw ids (services/agent_flows/reader_text.py), so the echo of
+    # the reading step's data is asserted on a DATA field of that result instead -
+    # the step's own status record next to its charts list, which is still the
+    # proof that the result arrived and is not hollow.
+    assert "charts" in shown and "read_status" in shown, "tới nơi nhưng rỗng ruột"
 
 
 def test_previous_text_carries_every_shape_a_step_can_return():

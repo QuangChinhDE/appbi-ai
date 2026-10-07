@@ -180,6 +180,15 @@ Owner = manage. Module admin (`datasets: full`) = manage (`via=module_admin`). L
 - **Report fork** (`fork-chart`) binds its copy to the table in the body: `build` on that dataset (or `read` when it keeps the source chart's table), plus the custom-SQL rule above.
 - **What-if field swaps** on the authed `GET /charts/{id}/data?overrides=`: allowed when the caller holds `explore` on the chart's dataset, or when every value is an option a bound switcher offers on a dashboard the caller can view that shows the chart — the same rule as the public path (`dashboard_parameters.validate_role_overrides`). Holding view on a chart never re-queries it on an arbitrary field.
 
+### 11a. Public reader boundary (AI answers)
+
+An anonymous public-link reader never receives internal execution, tool or system details. Enforced deterministically, independent of any model:
+
+- **Lifecycle events** (`node_started`/`node_completed`/`branch_taken`/`loop_iteration`) are an allowlist in `agent_flows/wire.py`: display `name`/`label`, `status`, `ms`, `index`/`total`. Never the node key (`step`) or case key (`path`).
+- **Answer prose** is scrubbed in the executor before it is stored and published (`agent_flows/reader_text.py`), whoever wrote it: registry tool ids (replaced by their product label), error codes and run-internal field names, field-key+id fragments and `dataset_table_<n>`, tracebacks and exception class names, the tool layer's technical sentences, loopback/internal-service URLs. Stored = published = rated text (byte-identical). The author's trace keeps the raw values.
+- **Structured channels** (tool labels, reader errors, notices) were already product-facing (`reader_diagnostics`).
+- **Gate:** `e2e/tests/security/public-reader.spec.ts` runs a real public turn of a model-free flow in CI (no LLM credential), proves the internals exist on the trusted side (owner's run trace), then asserts none reaches the public wire or the page with every detail open. The reader-golden tests that need a real model are model-integration evidence, not this gate.
+
 ### 11b. Audit
 
 Every privileged authorization action is written to `audit_logs` by the request that performed it (migration `20261008_0006` adds the values): dataset grant created/revoked, alert channel created/updated/deleted/tested, global observability scan, workspace token rotated, public link created/updated/deleted, share permission updated (plus the existing share created/revoked, PAT, delegation, workboard publish and user-permission events). Secrets (webhook URLs, passwords, tokens) are never written to `details`.
