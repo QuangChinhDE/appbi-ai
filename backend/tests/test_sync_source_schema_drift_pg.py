@@ -6,7 +6,7 @@ sync "successfully": the declared-type extract loaded it as all-NULL and a
 that used it. The source relation is now compared with the cached columns before
 the build: missing ⇒ explicit SOURCE_SCHEMA_DRIFT, the table is not built, the
 publish is refused and the previous generation keeps serving; added ⇒
-``schema_change_pending`` and the build proceeds.
+``columns_cache["source_added_columns"]`` and the build proceeds.
 
 Real Postgres source (the CI Postgres job's DATABASE_URL); the BigQuery build is
 stubbed — the gate runs before it.
@@ -116,7 +116,9 @@ def test_an_added_source_column_is_flagged_not_failed(env):
     with engine.begin() as c:
         c.execute(sa.text(f"ALTER TABLE {S}.orders ADD COLUMN channel text"))
     assert _drift(db) is None
-    assert db.get(DatasetTable, 11).schema_change_pending is True
+    t = db.get(DatasetTable, 11)
+    assert t.columns_cache["source_added_columns"] == ["channel"]
+    assert not t.schema_change_pending  # that flag means "AI description stale" — not this
 
 
 def test_sync_refuses_to_build_or_publish_a_drifted_table(env, monkeypatch):

@@ -1192,7 +1192,10 @@ def _source_schema_drift(db: Session, table: DatasetTable, datasource: Optional[
     out — and the published generation then broke every chart that used it.
     Missing columns ⇒ an explicit drift error (the table is not built, the
     publish is refused, the previous generation keeps serving). Added columns
-    ⇒ ``schema_change_pending`` (the author decides; the build proceeds).
+    ⇒ recorded as ``columns_cache["source_added_columns"]`` (the author decides;
+    the build proceeds). That key is outside ``columns`` so neither fingerprint
+    moves, and the author's explicit schema refresh rewrites the cache without it.
+    ``schema_change_pending`` is NOT used: it already means "AI description stale".
     Unknown (unreadable source / unsupported engine / no cache) ⇒ None: the
     build itself reports a source that cannot be read."""
     from app.services.dataset_calendar_service import is_generated_calendar_table
@@ -1213,10 +1216,14 @@ def _source_schema_drift(db: Session, table: DatasetTable, datasource: Optional[
     live = {c["name"] for c in live_cols}
     missing = sorted(cached - live)
     added = sorted(live - cached)
-    if added and not getattr(table, "schema_change_pending", False):
-        table.schema_change_pending = True
+    cc = getattr(table, "columns_cache", None)
+    if isinstance(cc, dict) and sorted(cc.get("source_added_columns") or []) != added:
+        fresh = {k: v for k, v in cc.items() if k != "source_added_columns"}
+        if added:
+            fresh["source_added_columns"] = added
+            logger.info("[snapshot] table=%s source gained columns %s", table.id, added)
+        table.columns_cache = fresh  # a NEW dict: the JSON column has no mutation tracking
         db.commit()
-        logger.info("[snapshot] table=%s source gained columns %s (schema_change_pending)", table.id, added)
     if missing:
         name = table.display_name or table.source_table_name or f"#{table.id}"
         return (f"SOURCE_SCHEMA_DRIFT: nguồn của bảng '{name}' không còn cột "

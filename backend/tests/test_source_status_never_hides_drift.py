@@ -3,7 +3,7 @@
 `GET /datasets/{id}/tables/source-status` answered ``status: "ok"`` (code
 SOURCE_STATUS_UNVERIFIED) when the source could not be reached, and the page only
 reacts to ``missing`` — an unreachable source looked healthy. A source that gained
-columns (``schema_change_pending``, set by Sync's schema reconcile) was not
+columns (``columns_cache.source_added_columns``, set by Sync's schema reconcile) was not
 reported at all. Now: unreachable ⇒ ``unknown``; changed ⇒ SOURCE_SCHEMA_CHANGED;
 and an editor's explicit schema refresh is the one preview that rewrites the cache.
 """
@@ -73,9 +73,14 @@ def test_a_source_with_new_columns_is_reported(db, monkeypatch):
     monkeypatch.setattr(datasets.DataSourceConnectionService, "list_tables",
                         staticmethod(lambda *_a, **_k: [{"name": "public.orders"}]))
     assert _status(db)["code"] is None
-    db.get(DatasetTable, 11).schema_change_pending = True
+    t = db.get(DatasetTable, 11)
+    t.schema_change_pending = True  # "AI description stale" — never a source-drift signal
     db.commit()
-    assert _status(db)["code"] == "SOURCE_SCHEMA_CHANGED"
+    assert _status(db)["code"] is None
+    t.columns_cache = {"columns": [{"name": "id"}], "source_added_columns": ["channel"]}
+    db.commit()
+    st = _status(db)
+    assert (st["code"], st["added_columns"]) == ("SOURCE_SCHEMA_CHANGED", ["channel"])
 
 
 def test_only_an_editors_explicit_refresh_rewrites_the_schema():
@@ -83,4 +88,3 @@ def test_only_an_editors_explicit_refresh_rewrites_the_schema():
 
     src = inspect.getsource(datasets.preview_dataset_table)
     assert 'refresh and perm not in ("edit", "full")' in src
-    assert "schema_change_pending = False" in src

@@ -3283,7 +3283,9 @@ def get_dataset_table_source_status(
             _source_table_name_matches(table.source_table_name, live_table.get("name"))
             for live_table in live_tables
         )
-        if exists and getattr(table, "schema_change_pending", False):
+        added = (table.columns_cache or {}).get("source_added_columns") if isinstance(
+            table.columns_cache, dict) else None
+        if exists and added:
             # The table exists but its columns changed since the dataset cached
             # them (a Sync found new source columns): the author must review.
             statuses.append({
@@ -3291,6 +3293,7 @@ def get_dataset_table_source_status(
                 "status": "ok",
                 "code": "SOURCE_SCHEMA_CHANGED",
                 "message": "The source table has columns this dataset does not know yet — refresh its schema.",
+                "added_columns": list(added),
             })
         elif exists:
             statuses.append({**base, "status": "ok", "code": None, "message": None})
@@ -4498,9 +4501,6 @@ def preview_dataset_table(
                 columns_cache=columns_cache_payload,
                 sample_cache=serializable_rows,
             )
-            if refresh and getattr(db_table, "schema_change_pending", False):
-                db_table.schema_change_pending = False  # the author re-read the source
-                db.commit()
             _sync_dataset_model_safely(db, dataset_id)
 
         total = len(rows)
