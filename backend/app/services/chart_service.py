@@ -4602,10 +4602,10 @@ class ChartService:
                 return {"chart_id": cid, "ok": False, "status": 400, "error": str(exc),
                         "category": refusal_category(exc)}
             except Exception as exc:  # noqa: BLE001 — one tile must not sink the page
-                logger.exception("Batch chart-data failed for chart_id=%s", cid)
+                from app.services.chart_error_contract import failure_detail
                 return {
                     "chart_id": cid, "ok": False, "status": 500,
-                    "error": f"Failed to retrieve chart data: {exc}",
+                    "error": failure_detail(exc, f"batch chart data chart_id={cid}"),
                 }
             finally:
                 reset_report_anchor(_anchor_tok)
