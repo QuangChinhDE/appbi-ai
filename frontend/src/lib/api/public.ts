@@ -125,7 +125,7 @@ export const publicDashboardApi = {
       overrides?: Record<string, string>;
     }>,
     pageId?: string,
-  ): Promise<{ results: Array<{ chart_id: number; tile_id?: number; data?: any; error?: string; status?: number }> }> => {
+  ): Promise<{ results: Array<{ chart_id: number; tile_id?: number; data?: any; error?: string; status?: number; category?: string | null }> }> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     const res = await publicClient.post(
       `/public/dashboards/${token}/charts/data`,

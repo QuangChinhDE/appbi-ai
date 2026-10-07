@@ -6,9 +6,13 @@
  * first picked field (which ignores the data model). This makes the chip
  * changeable so a DA can anchor the chart to the right table, and marks the
  * model's CENTRAL FACT (the measure table reaching the most others via N:1) as
- * recommended. The auto-derive default is unchanged upstream — this is an
- * explicit override. Changing the base re-roots the JOIN tree, so the caller's
- * table-change effect clears the (now possibly-invalid) role config.
+ * recommended. The recommendation is only a marker: it never changes the base.
+ * Changing the base re-roots the JOIN tree; the caller keeps every binding the
+ * new base still reaches and drops (with Undo) only the rest.
+ *
+ * The chip also says where the base came from (saved / chosen / derived from
+ * the first field the user picked) and, when the chart's numbers are computed
+ * on another table, which — so "base X" next to a refusal about Y is explained.
  */
 'use client';
 
@@ -38,6 +42,12 @@ interface BaseTablePickerProps {
   hasJoined: boolean;
   /** Tooltip describing the current relationship state. */
   tip: string;
+  /** Where the base came from (null = not decided yet). */
+  originLabel?: string | null;
+  /** "Numbers computed on: …" when measures come from tables other than the base. */
+  measureNote?: string | null;
+  /** Shown in the menu when the model's recommendation differs from the base. */
+  recommendedNote?: string | null;
   disabled?: boolean;
 }
 
@@ -55,6 +65,9 @@ export function BaseTablePicker({
   tone,
   hasJoined,
   tip,
+  originLabel,
+  measureNote,
+  recommendedNote,
   disabled,
 }: BaseTablePickerProps) {
   const { t } = useI18n();
@@ -78,15 +91,20 @@ export function BaseTablePicker({
   }, [open]);
 
   const Icon = hasJoined ? Link2 : Database;
-  const canOpen = !disabled && tables.length > 1;
+  // Choosable whenever there is a choice — including the very first one, made
+  // before any field (a single-table dataset has nothing to choose).
+  const canOpen = !disabled && (tables.length > 1 || (selectedTableId == null && tables.length > 0));
 
   return (
-    <div ref={wrapRef} className="relative inline-flex">
+    <div ref={wrapRef} className="relative inline-flex items-center gap-1.5" data-testid="base-chip">
       <button
         type="button"
         disabled={!canOpen}
         onClick={() => setOpen((v) => !v)}
-        title={canOpen ? t('explore.editor.baseChangeTitle') : tip}
+        title={canOpen ? `${tip}
+${t('explore.editor.baseChangeTitle')}` : tip}
+        data-testid="base-chip-button"
+        data-base-table-id={selectedTableId ?? ''}
         className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${tone} ${canOpen ? 'cursor-pointer hover:brightness-95' : 'cursor-default'}`}
       >
         <Icon className="h-3 w-3 shrink-0" />
@@ -94,6 +112,14 @@ export function BaseTablePicker({
         {hasJoined && joinedCount > 0 && <span className="opacity-70">+{joinedCount}</span>}
         {canOpen && <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />}
       </button>
+      {originLabel && (
+        <span className="shrink-0 text-[10px] text-text-quaternary" data-testid="base-origin">{originLabel}</span>
+      )}
+      {measureNote && (
+        <span className="max-w-[220px] truncate text-[10px] text-text-tertiary" title={measureNote} data-testid="base-measure-note">
+          · {measureNote}
+        </span>
+      )}
 
       {open && (
         <div
@@ -103,6 +129,9 @@ export function BaseTablePicker({
           <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-quaternary">
             {t('explore.editor.baseMenuHeading')}
           </div>
+          {recommendedNote && (
+            <p className="px-2 pb-1 text-[10px] text-text-tertiary" data-testid="base-recommended-note">{recommendedNote}</p>
+          )}
           {tables.map((tbl) => {
             const isCurrent = tbl.id === selectedTableId;
             const isRecommended = recommendedTableId != null && tbl.id === recommendedTableId;
@@ -112,6 +141,7 @@ export function BaseTablePicker({
                 type="button"
                 role="menuitemradio"
                 aria-checked={isCurrent}
+                data-testid={`base-option-${tbl.id}`}
                 onClick={() => {
                   setOpen(false);
                   if (tbl.id !== selectedTableId) onChange(tbl.id);

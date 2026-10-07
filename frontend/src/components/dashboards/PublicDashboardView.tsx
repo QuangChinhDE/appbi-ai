@@ -965,8 +965,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       let entries: BatchEntry[];
       try {
         const resp = await publicDashboardApi.getChartsDataBatch(token, sessionToken, batchItems, pageId);
-        const byTile = new Map<number, { data?: any; error?: string; status?: number }>();
-        const byChart = new Map<number, { data?: any; error?: string; status?: number }>();
+        const byTile = new Map<number, { data?: any; error?: string; status?: number; category?: string | null }>();
+        const byChart = new Map<number, { data?: any; error?: string; status?: number; category?: string | null }>();
         for (const r of resp.results || []) {
           if (r.tile_id != null) byTile.set(r.tile_id, r);
           else byChart.set(r.chart_id, r);
@@ -978,7 +978,11 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
             chartId: dc.chart_id,
             key: dataKeyOf(dc),
             data: null,
-            error: r?.error || 'Could not load this chart.',
+            // A semantic refusal reads as what it is (the chart's meaning is
+            // undetermined), not as the engine's modelling prose.
+            error: r?.category
+              ? t(r.category === 'AMBIGUOUS_ROUTE' ? 'explore.failure.routeTitleNoTarget' : 'explore.failure.semantic_refusalTitle')
+              : (r?.error || 'Could not load this chart.'),
             status: r?.status,
           };
         });

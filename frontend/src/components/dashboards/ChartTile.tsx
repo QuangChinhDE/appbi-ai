@@ -36,6 +36,7 @@ import {
 import type { BaseFilter, FilterOperator } from '@/lib/filters';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { useQueryClient } from '@tanstack/react-query';
+import { describeChartFailure } from '@/lib/chart-failure';
 import { useI18n } from '@/providers/LanguageProvider';
 import { CachedLiveBadge } from '@/components/dashboards/CachedLiveBadge';
 import type { ChartSemanticBinding, DashboardPageConfig } from '@/types/api';
@@ -1555,9 +1556,26 @@ function ChartTileBase({
               <p className="mt-1 text-xs uppercase tracking-[0.14em] text-text-quaternary">
                 {String(chart.chart_type).replace(/_/g, ' ')}
               </p>
-              <p className="mt-2 line-clamp-3 text-xs text-text-tertiary">
-                {getErrorMessage(chartDataError, t('dashboards.tile.couldNotLoadData'))}
-              </p>
+              {(() => {
+                // Same classification as the Builder: a semantic refusal says
+                // the meaning is undetermined; the engine prose is the tooltip.
+                const failure = describeChartFailure(chartDataError);
+                const refused = failure.kind === 'ambiguous_route' || failure.kind === 'semantic_refusal';
+                return (
+                  <p
+                    className="mt-2 line-clamp-3 text-xs text-text-tertiary"
+                    data-testid="tile-failure"
+                    data-failure-kind={failure.kind}
+                    title={refused ? failure.technical : undefined}
+                  >
+                    {refused
+                      ? (failure.kind === 'ambiguous_route' && failure.target
+                        ? t('explore.failure.routeTitle', { target: failure.target })
+                        : t(`explore.failure.${failure.kind}Title`))
+                      : getErrorMessage(chartDataError, t('dashboards.tile.couldNotLoadData'))}
+                  </p>
+                );
+              })()}
               <div className="mt-3 flex flex-wrap justify-center gap-2">
                 <button
                   type="button"
