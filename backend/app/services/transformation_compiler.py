@@ -511,6 +511,12 @@ class TransformationCompiler:
             params = transformation.get("params", {}) or {}
             step_sql: Optional[str] = None
 
+            if t_type == "hide_columns":
+                # Presentation only (Manage Columns "Hide"): the field stays in
+                # the relation so formulas, measures and relationships keep
+                # resolving; the semantic model marks it hidden. No SQL.
+                continue
+
             if t_type == "select_columns":
                 requested_columns = [
                     str(col) for col in (params.get("columns") or []) if str(col).strip()

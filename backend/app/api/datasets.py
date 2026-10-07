@@ -27,6 +27,7 @@ from app.core.dependencies import (
 from app.core.authz import decision as _authz
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models import DataSource, Chart, Dashboard, DashboardChart, Dataset, DatasetTable
+from app.services import dataset_grants_service
 from app.models.models import DashboardPublicLink
 from app.models.resource_share import ResourceType
 from app.models.user import User
@@ -2132,7 +2133,14 @@ def _enqueue_auto_type_detection_if_needed(
     if table_id is None:
         return
     ds_type = None
+    # DatasetTable has no `datasource` relationship — reading it always gave None,
+    # so Sheets/Manual tables were never queued for the full-scan type check.
     datasource = getattr(db_table, "datasource", None)
+    if datasource is None:
+        from sqlalchemy.orm import object_session
+        _sess = object_session(db_table)
+        if _sess is not None:
+            datasource = _sess.query(DataSource).filter(DataSource.id == datasource_id).first()
     if datasource is not None:
         ds_type = datasource.type if isinstance(datasource.type, str) else getattr(datasource.type, "value", None)
 
@@ -2474,6 +2482,22 @@ def refresh_dataset_snapshots(
     # ASYNC: kick a background rebuild and return immediately (see
     # snapshot_service.start_manual_refresh) so a large extract-load never blocks
     # the request past nginx's 120s API timeout. Client polls freshness/building.
+    # A lifecycle-managed dataset refreshes THROUGH Sync & Publish (same gate,
+    # same history, readers move to the new generation) — or says why it can't.
+    routed = snapshot_service.route_lifecycle_refresh([dataset_id], triggered_by_id=str(current_user.id))
+    if dataset_id in routed:
+        verdict = routed[dataset_id]
+        if verdict == "changes_pending":
+            raise HTTPException(status_code=409, detail=(
+                "Dataset có thay đổi thiết kế chưa publish — Làm mới sẽ publish luôn các thay đổi đó. "
+                "Dùng “Sync & Publish” trên Dataset."))
+        if verdict == "never_published":
+            raise HTTPException(status_code=409, detail=(
+                "Dataset chưa được publish lần nào — dùng “Sync & Publish” trên Dataset."))
+        return {"ok": True, "status": "started" if verdict == "started" else verdict,
+                "started": [dataset_id] if verdict == "started" else [],
+                "lifecycle": "sync_and_publish", "building": verdict in ("started", "already_syncing"),
+                "as_of": None}
     started = snapshot_service.start_manual_refresh([dataset_id])
     # Pull the LATEST FROM SOURCE for every source type (not just BQ snapshots):
     # bust the live query-result cache for this dataset's datasources so the next
@@ -2848,7 +2872,6 @@ def set_dataset_grant(
     ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    dataset_grants_service.require_capability(db, current_user, ds, "reshare")
     try:
         g = dataset_grants_service.grant_as(
             db, current_user, ds, verb=body.get("verb"),
@@ -3257,7 +3280,8 @@ def get_dataset_table_source_status(
         if datasource.id in live_table_errors:
             statuses.append({
                 **base,
-                "status": "ok",
+                # NOT "ok": a source that cannot be reached was shown as healthy.
+                "status": "unknown",
                 "code": "SOURCE_STATUS_UNVERIFIED",
                 "message": "Could not verify this table against the connected datasource.",
                 "verified": False,
@@ -3269,7 +3293,19 @@ def get_dataset_table_source_status(
             _source_table_name_matches(table.source_table_name, live_table.get("name"))
             for live_table in live_tables
         )
-        if exists:
+        added = (table.columns_cache or {}).get("source_added_columns") if isinstance(
+            table.columns_cache, dict) else None
+        if exists and added:
+            # The table exists but its columns changed since the dataset cached
+            # them (a Sync found new source columns): the author must review.
+            statuses.append({
+                **base,
+                "status": "ok",
+                "code": "SOURCE_SCHEMA_CHANGED",
+                "message": "The source table has columns this dataset does not know yet — refresh its schema.",
+                "added_columns": list(added),
+            })
+        elif exists:
             statuses.append({**base, "status": "ok", "code": None, "message": None})
         else:
             statuses.append({
@@ -4336,6 +4372,14 @@ def remove_table_from_dataset(
         raise HTTPException(status_code=404, detail="Table not found")
 
 
+def _preview_may_seed_cache(db_table, *, offset: int, filtered: bool) -> bool:
+    """True only when Preview is the FIRST read of a table (no cache yet) and it
+    is looking at the unfiltered first page."""
+    if offset or filtered:
+        return False
+    return not getattr(db_table, "columns_cache", None) or not getattr(db_table, "sample_cache", None)
+
+
 @router.post(
     "/{dataset_id}/tables/{table_id}/preview",
     response_model=TablePreviewResponse
@@ -4352,6 +4396,9 @@ def preview_dataset_table(
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
     _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -4461,12 +4508,21 @@ def preview_dataset_table(
                 source_columns=result.get("source_columns") or [],
             )
         )
-        DatasetCRUDService.update_table_cache(
-            db, table_id,
-            columns_cache=columns_cache_payload,
-            sample_cache=serializable_rows,
-        )
-        _sync_dataset_model_safely(db, dataset_id)
+        # Preview is a READ. It may only SEED an empty cache, from the unfiltered
+        # first page: a filtered or paginated page rewrote the shared columns
+        # cache (20-row type guesses, all-string on an empty page) and the
+        # sample that LOOKUP formulas, Table Stats and AI descriptions read, then
+        # resynced the semantic model from it — for any viewer.
+        refresh = bool(preview_request.refresh_schema) and not offset and not preview_request.filters
+        if refresh and not dataset_grants_service.can(db, current_user, dataset_obj, "edit"):
+            raise HTTPException(status_code=403, detail="Cần quyền chỉnh sửa để cập nhật schema của bảng.")
+        if refresh or _preview_may_seed_cache(db_table, offset=offset, filtered=bool(preview_request.filters)):
+            DatasetCRUDService.update_table_cache(
+                db, table_id,
+                columns_cache=columns_cache_payload,
+                sample_cache=serializable_rows,
+            )
+            _sync_dataset_model_safely(db, dataset_id)
 
         total = len(rows)
         has_more = len(rows) >= limit
@@ -4516,6 +4572,9 @@ def export_dataset_table_excel(
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
     _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -4597,6 +4656,9 @@ def execute_dataset_table_query(
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
     _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -5057,6 +5119,9 @@ def get_dataset_model_distinct_values(
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
     _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)  # raw values
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     filter_context: list[dict] = []
     if filters:
@@ -6725,11 +6790,15 @@ def trigger_quality_run(
     ds = _get_dataset_or_404(db, dataset_id)
     require_edit_access(db, current_user, ds, "datasets")
 
-    run = DatasetQualityService.create_run(
+    # Same overlap guard as the scheduler: a double-click or two users must not
+    # start concurrent full rule scans against the source.
+    run = DatasetQualityService.trigger_run(
         db,
         dataset_id,
         triggered_by_id=str(current_user.id),
     )
+    if run is None:
+        raise HTTPException(status_code=409, detail="Một lượt kiểm tra chất lượng đang chạy cho dataset này.")
     background_tasks.add_task(DatasetQualityService.execute_run, run.id)
     return QualityRunTriggerResponse(run_id=run.id, status=run.status)
 
@@ -6965,6 +7034,9 @@ def get_column_summary_endpoint(
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
     _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     table = db.query(DatasetTable).filter(
         DatasetTable.id == table_id,
@@ -7014,6 +7086,9 @@ def get_table_profile(
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
     _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:

@@ -430,6 +430,7 @@ export interface ColumnMetadata {
 export type TransformationType =
   // Column selection & rename
   | 'select_columns'
+  | 'hide_columns'
   | 'rename_columns'
   | 'remove_columns'
   | 'duplicate_column'

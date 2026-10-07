@@ -275,6 +275,9 @@ class TablePreviewRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     filters: Optional[List[FilterCondition]] = None
     sort: Optional[Dict[str, str]] = None  # {'column': 'asc'|'desc'}
+    # Explicit "re-read this table's schema" (editor action): persist the column
+    # cache + resync the model from the unfiltered first page. Preview alone is a read.
+    refresh_schema: bool = False
 
 
 class TablePreviewResponse(BaseModel):

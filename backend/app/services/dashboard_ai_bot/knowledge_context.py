@@ -126,8 +126,12 @@ def assemble(db: Session, *, dataset_table_ids: list[int], question: str = "") -
             dic = {**legacy, **current}
         col_desc = t.column_descriptions if isinstance(t.column_descriptions, dict) else {}
 
-        # union of columns that have ANY authored meaning
+        # union of columns that have ANY authored meaning — that still EXIST
         names = set(col_desc.keys()) | set(dic.keys() if isinstance(dic, dict) else [])
+        from app.services.dataset_dictionary_service import live_column_names
+        live = live_column_names(t)
+        if live is not None:
+            names &= live
         for name in names:
             key = f"{t.id}:{name}"
             if key in seen_cols:

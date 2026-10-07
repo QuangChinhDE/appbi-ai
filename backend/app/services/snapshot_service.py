@@ -215,18 +215,30 @@ def _in_quota_cooldown(dataset_id: int) -> bool:
     return ts is not None and (time.time() - ts) < _QUOTA_COOLDOWN_SECONDS
 # BQ location per datasource (snapshots must be COLOCATED with the source —
 # BQ cannot CTAS across locations). Resolved once per datasource.
-_location_cache: Dict[int, Optional[str]] = {}
+# Keyed by datasource id, each entry remembers WHICH config it was resolved for:
+# the same id re-pointed at another project/dataset/credential re-resolves on
+# every worker, with no restart and no cross-worker eviction needed.
+_location_cache: Dict[int, tuple] = {}
+
+
+def _location_config_key(config: Optional[dict]) -> str:
+    import hashlib
+    import json
+
+    return hashlib.sha256(json.dumps(config or {}, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def _source_location(datasource: DataSource) -> Optional[str]:
-    if datasource.id not in _location_cache:
-        try:
-            _location_cache[datasource.id] = DataSourceConnectionService.get_bigquery_location(
-                datasource.config
-            )
-        except Exception:  # noqa: BLE001
-            _location_cache[datasource.id] = None
-    return _location_cache[datasource.id]
+    key = _location_config_key(datasource.config)
+    hit = _location_cache.get(datasource.id)
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    try:
+        loc = DataSourceConnectionService.get_bigquery_location(datasource.config)
+    except Exception:  # noqa: BLE001
+        loc = None
+    _location_cache[datasource.id] = (key, loc)
+    return loc
 
 
 # ── datasource helpers ──────────────────────────────────────────────────────
@@ -311,6 +323,17 @@ def resolve_host(db: Session, dataset_id: int) -> Optional[DataSource]:
     tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
     ds_ids = sorted({t.datasource_id for t in tables if t.datasource_id})
     if not ds_ids:
+        # Pure Dataset-on-Dataset composition: no table of its own reads a
+        # source — its rows ARE its parents' pinned snapshots, which live on the
+        # parents' host (composition already requires one shared host). Execute
+        # there; never on a default/fallback host that does not hold them.
+        parent_ids = sorted({t.parent_dataset_id for t in tables
+                             if getattr(t, "source_kind", None) == "dataset" and t.parent_dataset_id})
+        for pid in parent_ids:
+            if pid != dataset_id:
+                h = resolve_host(db, pid)
+                if h is not None:
+                    return h
         return None
     rows = db.query(DataSource).filter(DataSource.id.in_(ds_ids)).all()
     hosts = sorted(
@@ -322,22 +345,32 @@ def resolve_host(db: Session, dataset_id: int) -> Optional[DataSource]:
     # No BigQuery source of its own (Sheets-only / Postgres-only dataset). The
     # serving invariant is "snapshot store = BigQuery", so fall back to the
     # platform default BQ snapshot host — every non-BQ table federates INTO it.
-    return _default_snapshot_host(db)
+    owner = db.query(Dataset.owner_id).filter(Dataset.id == dataset_id).first()
+    return _default_snapshot_host(db, owner_id=owner[0] if owner else None)
 
 
-def _default_snapshot_host(db: Session) -> Optional[DataSource]:
-    """Platform default BigQuery host for datasets with no BQ source of their own.
-    Explicit `MATERIALIZATION_HOST_DATASOURCE_ID` wins; otherwise the lowest-id
-    materialization-enabled BigQuery datasource in the system. None if there is
-    no materialization-enabled BQ datasource anywhere (nothing can host)."""
+def _default_snapshot_host(db: Session, *, owner_id=None) -> Optional[DataSource]:
+    """Host for a dataset with no BigQuery source of its own. The contract:
+
+    * a SHARED platform host exists only when it is declared as infrastructure
+      (``MATERIALIZATION_HOST_DATASOURCE_ID``);
+    * otherwise the dataset may use a materialization-enabled BigQuery
+      datasource owned by the dataset's OWN owner (lowest id among those);
+    * never another user's connection. "The lowest-id enabled BigQuery
+      datasource in the system" wrote one user's Sheets/Postgres data into
+      another user's project with that user's credential.
+
+    None ⇒ no host: Sync & Publish fails with the explicit no-host message."""
     from app.core.config import settings
     explicit = getattr(settings, "MATERIALIZATION_HOST_DATASOURCE_ID", None)
     if explicit:
         d = db.query(DataSource).filter(DataSource.id == int(explicit)).first()
         if d is not None and _ds_type(d) == "bigquery" and settings_for(d)["enabled"]:
             return d
+    if owner_id is None:
+        return None
     candidates = sorted(
-        (d for d in db.query(DataSource).all()
+        (d for d in db.query(DataSource).filter(DataSource.owner_id == owner_id).all()
          if _ds_type(d) == "bigquery" and settings_for(d)["enabled"]),
         key=lambda d: d.id,
     )
@@ -1147,6 +1180,73 @@ def _ready_snapshot_in_generation(
     return row
 
 
+_DRIFT_CHECKED_ENGINES = ("postgresql", "mysql", "bigquery")  # metadata / dry-run probes only
+
+
+def _source_schema_drift(db: Session, table: DatasetTable, datasource: Optional[DataSource]) -> Optional[str]:
+    """Reconcile the source's CURRENT relation with the columns the dataset
+    (and its semantic model) was built on, before materializing it.
+
+    A column dropped or renamed at the source used to sync "successfully":
+    a declared-type extract loaded it as all-NULL, a ``SELECT *`` simply left it
+    out — and the published generation then broke every chart that used it.
+    Missing columns ⇒ an explicit drift error (the table is not built, the
+    publish is refused, the previous generation keeps serving). Added columns
+    ⇒ recorded as ``columns_cache["source_added_columns"]`` (the author decides;
+    the build proceeds). That key is outside ``columns`` so neither fingerprint
+    moves, and the author's explicit schema refresh rewrites the cache without it.
+    ``schema_change_pending`` is NOT used: it already means "AI description stale".
+    Unknown (unreadable source / unsupported engine / no cache) ⇒ None: the
+    build itself reports a source that cannot be read."""
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+    from app.services.dataset_model_service import cache_column_names
+
+    if datasource is None or is_generated_calendar_table(table):
+        return None
+    if _ds_type(datasource) not in _DRIFT_CHECKED_ENGINES:
+        return None
+    cached = set(cache_column_names(getattr(table, "columns_cache", None)) or ())
+    if not cached:
+        return None
+    from app.services.dataset_relation_service import logical_relation_columns
+
+    live_cols = logical_relation_columns(db, table)
+    if live_cols is None:
+        return None
+    live = {c["name"] for c in live_cols}
+    missing = sorted(cached - live)
+    added = sorted(live - cached)
+    cc = getattr(table, "columns_cache", None)
+    if isinstance(cc, dict) and sorted(cc.get("source_added_columns") or []) != added:
+        fresh = {k: v for k, v in cc.items() if k != "source_added_columns"}
+        if added:
+            fresh["source_added_columns"] = added
+            logger.info("[snapshot] table=%s source gained columns %s", table.id, added)
+        table.columns_cache = fresh  # a NEW dict: the JSON column has no mutation tracking
+        db.commit()
+    if missing:
+        name = table.display_name or table.source_table_name or f"#{table.id}"
+        return (f"SOURCE_SCHEMA_DRIFT: nguồn của bảng '{name}' không còn cột "
+                f"{', '.join(missing[:5])}{'…' if len(missing) > 5 else ''} — cập nhật bảng (Refresh schema) "
+                f"rồi Sync & Publish lại. Dashboard vẫn dùng generation đã publish.")
+    return None
+
+
+def _source_changed_since(datasource: Optional[DataSource], built_at) -> bool:
+    """Was the source connection edited after a snapshot was read from it? The
+    fingerprint is SQL + columns only, so re-pointing the SAME datasource id at
+    another host/database/project/sheet leaves it unchanged; ``updated_at``
+    moves on every edit. Unknown either side → False (no new refusal)."""
+    changed = getattr(datasource, "updated_at", None) if datasource is not None else None
+    if changed is None or built_at is None:
+        return False
+    if changed.tzinfo is not None:
+        changed = changed.astimezone(timezone.utc).replace(tzinfo=None)
+    if getattr(built_at, "tzinfo", None) is not None:
+        built_at = built_at.astimezone(timezone.utc).replace(tzinfo=None)
+    return changed > built_at
+
+
 def _resumable_generation(
     db: Session, dataset_id: int, dataset_obj: Dataset,
     tables: List[DatasetTable], datasource_by_id: Dict[int, DataSource],
@@ -1176,6 +1276,18 @@ def _resumable_generation(
     by_gen: Dict[int, List[DatasetTableSnapshot]] = {}
     for r in rows:
         by_gen.setdefault(int(r.generation), []).append(r)
+    # A generation a run already JUDGED is not interrupted work: `failed` means
+    # the publish gate (or the build) refused it — resuming would re-validate
+    # the same rejected snapshots and never re-read the repaired source.
+    # Only an unclaimed (crashed) or `stopped` generation is resumable.
+    from app.models.dataset import DatasetRefreshRun
+    judged = {
+        int(g) for (g,) in db.query(DatasetRefreshRun.generation).filter(
+            DatasetRefreshRun.dataset_id == dataset_id,
+            DatasetRefreshRun.generation.in_(list(by_gen)),
+            DatasetRefreshRun.status.in_(("failed", "success")),
+        ).all() if g is not None
+    }
     now_ms = int(time.time() * 1000)
     table_by_id = {t.id: t for t in tables}
     for gen in sorted(by_gen.keys(), reverse=True):
@@ -1183,11 +1295,16 @@ def _resumable_generation(
             continue  # the published generation is complete, not a resume target
         if now_ms - gen > _RESUME_MAX_AGE_MS:
             continue  # abandoned too long → fresh rebuild is safer than stale reuse
+        if gen in judged:
+            continue
         ok = True
         for s in by_gen[gen]:
             t = table_by_id.get(s.dataset_table_id)
             if t is None:
                 ok = False
+                break
+            if _source_changed_since(datasource_by_id.get(t.datasource_id), s.built_at):
+                ok = False  # the connection was edited after this table was read
                 break
             if _ready_snapshot_in_generation(db, t, gen, dataset_obj, datasource_by_id.get(t.datasource_id)) is None:
                 ok = False
@@ -1195,6 +1312,46 @@ def _resumable_generation(
         if ok:
             return gen
     return None
+
+
+def physical_snapshots_of(db: Session, *, dataset_id: Optional[int] = None,
+                          table_ids: Optional[List[int]] = None) -> List[tuple]:
+    """(host config, physical_ref) of every snapshot a dataset / its tables
+    still own — read BEFORE a delete, because the snapshot rows cascade away
+    with it and nothing else records where the BigQuery tables live."""
+    q = db.query(DatasetTableSnapshot).filter(DatasetTableSnapshot.retired_at.is_(None))
+    if dataset_id is not None:
+        q = q.filter(DatasetTableSnapshot.dataset_id == dataset_id)
+    if table_ids is not None:
+        q = q.filter(DatasetTableSnapshot.dataset_table_id.in_(list(table_ids) or [-1]))
+    rows = q.all()
+    hosts = {h.id: h for h in db.query(DataSource).filter(
+        DataSource.id.in_({r.host_datasource_id for r in rows if r.host_datasource_id} or {-1})).all()}
+    out, seen = [], set()
+    for r in rows:
+        host = hosts.get(r.host_datasource_id)
+        if host is None or not r.physical_ref or r.physical_ref in seen:
+            continue
+        seen.add(r.physical_ref)
+        out.append((dict(host.config or {}), r.physical_ref))
+    return out
+
+
+def drop_physical_snapshots(physical: List[tuple]) -> None:
+    """Best-effort DROP of BigQuery snapshot tables whose metadata is gone (a
+    deleted dataset / table). Runs off the request thread; a failure is logged,
+    never raised — the delete has already happened."""
+    if not physical:
+        return
+
+    def _run() -> None:
+        for config, ref in physical:
+            try:
+                DataSourceConnectionService.drop_bigquery_table(config, ref)
+            except Exception:  # noqa: BLE001
+                logger.warning("[snapshot] orphan drop failed %s", ref, exc_info=True)
+
+    threading.Thread(target=_run, name="snap-orphan-drop", daemon=True).start()
 
 
 def gc_dataset_snapshots(db: Session, dataset_id: int, host: DataSource) -> int:
@@ -1240,27 +1397,23 @@ def gc_dataset_snapshots(db: Session, dataset_id: int, host: DataSource) -> int:
         # it and scheduled refreshes build newer generations WITHOUT publishing,
         # so the published one can be older than the retained window. It must
         # survive until a NEW publish moves the pin.
-        try:
-            pub = (
-                db.query(Dataset.published_generation)
-                .filter(Dataset.id == dataset_id)
-                .scalar()
-            )
-            if pub is not None:
-                keep_gens.add(int(pub))
-        except Exception:  # noqa: BLE001
-            pass
+        # A protection that cannot be READ must abort the pass (the outer handler
+        # rolls back and returns 0) — never run GC without it ("fail open").
+        pub = (
+            db.query(Dataset.published_generation)
+            .filter(Dataset.id == dataset_id)
+            .scalar()
+        )
+        if pub is not None:
+            keep_gens.add(int(pub))
 
         # Composition: NEVER GC a generation of THIS dataset that a downstream
         # child has PINNED (dataset_dependencies.parent_generation). The child
         # reads the parent snapshot by a plain FROM at that exact generation, so
         # retiring it would break the child (principle #2).
-        try:
-            from app.services import dataset_composition_service as _comp
-            for g in _comp.pinned_parent_generations(db, dataset_id):
-                keep_gens.add(int(g))
-        except Exception:  # noqa: BLE001
-            pass
+        from app.services import dataset_composition_service as _comp
+        for g in _comp.pinned_parent_generations(db, dataset_id):
+            keep_gens.add(int(g))
 
         now = datetime.utcnow()
 
@@ -1412,10 +1565,20 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     # concurrent build below. (Resume saves a heavy watermark-less table.)
     _host_id = host.id if host is not None else None
     _to_run: list = []  # (table_id, is_calendar)
+    build_errors: Dict[int, str] = {}
     for t in _to_build:
         if _sc.is_stop_requested(dataset_id):
             stopped = True
             break
+        drift = _source_schema_drift(db, t, datasource_by_id.get(t.datasource_id))
+        if drift:
+            # Never build — and never publish — a snapshot of a relation that no
+            # longer has the columns the model was built on.
+            build_errors[t.id] = drift
+            skipped.append(t.id)
+            _sp.begin_table(dataset_id, t.id)
+            _sp.finish_table(dataset_id, t.id, 0, skipped=True)
+            continue
         _reused = _ready_snapshot_in_generation(
             db, t, generation, dataset_obj, datasource_by_id.get(t.datasource_id)
         )
@@ -1454,6 +1617,10 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
             except Exception as exc:  # noqa: BLE001 — one table's failure must not crash the refresh
                 wdb.rollback()
                 logger.warning("[snapshot] build raised for table=%s: %s", table_id, exc)
+                # Raised before any snapshot row existed (SQL resolve, transform
+                # compile, source/host resolution): keep the real reason for the
+                # publish error + refresh history instead of "build có bảng lỗi".
+                build_errors[table_id] = (str(exc).strip().splitlines() or [type(exc).__name__])[0][:300]
                 row = None
             if row is None and _sc.is_stop_requested(dataset_id):
                 return (table_id, "cancelled")
@@ -1494,7 +1661,8 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     except Exception:  # noqa: BLE001 — GC must never fail a refresh
         logger.warning("[snapshot] delayed GC failed dataset=%s", dataset_id, exc_info=True)
     return {"built": built, "skipped": skipped, "as_of": ts.isoformat() if ts else None,
-            "generation": generation, "stopped": stopped, "no_host": host is None}
+            "generation": generation, "stopped": stopped, "no_host": host is None,
+            "errors": build_errors}
 
 
 def as_of(db: Session, table_ids: List[int]) -> Optional[datetime]:
@@ -1678,7 +1846,9 @@ def trigger_async_refresh(dataset_id: int) -> None:
         from app.core.database import SessionLocal
         db = SessionLocal()
         try:
-            refresh_all_for_dataset(db, dataset_id, force=True)
+            if _is_lifecycle_managed(db, dataset_id):
+                return  # readers serve published_generation only — a build here is never read
+            refresh_with_history(db, dataset_id, "ttl")
             logger.info("[snapshot] async TTL rebuild done dataset=%s", dataset_id)
         except Exception:  # noqa: BLE001 — background must never crash a request
             logger.warning("[snapshot] async TTL rebuild failed dataset=%s", dataset_id, exc_info=True)
@@ -1768,13 +1938,15 @@ def schedule_source_change_check(dataset_id: int) -> None:
         from app.core.database import SessionLocal
         db = SessionLocal()
         try:
+            if _is_lifecycle_managed(db, dataset_id):
+                return  # source changes reach a published dataset via Sync & Publish only
             if not _source_changed(db, dataset_id):
                 return
             with _async_refresh_lock:
                 if not _reserve_rebuild_slot(dataset_id):
                     return
             try:
-                refresh_all_for_dataset(db, dataset_id, force=True)
+                refresh_with_history(db, dataset_id, "source_change")
                 logger.info("[snapshot] source-change rebuild done dataset=%s", dataset_id)
             finally:
                 _release_rebuild_slot(dataset_id)
@@ -1784,6 +1956,83 @@ def schedule_source_change_check(dataset_id: int) -> None:
             db.close()
 
     threading.Thread(target=_run, name=f"snap-wmcheck-{dataset_id}", daemon=True).start()
+
+
+def refresh_with_history(db: Session, dataset_id: int, trigger: str, *, force: bool = True) -> dict:
+    """``refresh_all_for_dataset`` recorded in the refresh-run ledger. Every
+    build path that is not Sync & Publish (legacy manual Refresh, TTL warm,
+    source-change rebuild) used to leave no history: a failure there was a log
+    line only. Same ledger, same terminal statuses, the real error."""
+    from app.services import dataset_publish_service as pub
+
+    run_id = pub._refresh_run_start(db, dataset_id, trigger, None, None)
+    try:
+        res = refresh_all_for_dataset(db, dataset_id, force=force)
+    except Exception as exc:  # noqa: BLE001 — recorded, then re-raised to the caller
+        pub._refresh_run_finish(db, run_id, "failed", error=str(exc).strip().splitlines()[0][:500]
+                                if str(exc).strip() else type(exc).__name__)
+        raise
+    errors = res.get("errors") or {}
+    built = res.get("built") or []
+    if res.get("stopped"):
+        status, error = "stopped", None
+    elif errors:
+        status = "failed"
+        error = " | ".join(f"#{tid}: {err}" for tid, err in sorted(errors.items())[:3])
+    elif res.get("operational"):
+        status, error = "success", None
+    else:
+        status, error = ("success", None) if built or not res.get("no_host") else (
+            "failed", "Không có snapshot host (BigQuery) để dựng.")
+    pub._refresh_run_finish(db, run_id, status, error=error, generation=res.get("generation"),
+                            tables_built=len(built), tables=pub._refresh_run_tables(db, dataset_id, built))
+    return res
+
+
+def _is_lifecycle_managed(db: Session, dataset_id: int) -> bool:
+    """A dataset in the publish lifecycle (publish_state set) is read ONLY from
+    its pinned published generation — a generation built outside Sync & Publish
+    is never served (and was later picked up as a resume target)."""
+    row = db.query(Dataset.publish_state).filter(Dataset.id == dataset_id).first()
+    return row is not None and row[0] is not None
+
+
+def route_lifecycle_refresh(dataset_ids: List[int], triggered_by_id: Optional[str] = None) -> Dict[int, str]:
+    """"Refresh data" on a lifecycle-managed dataset = Sync & Publish of the
+    design that is ALREADY published: same build, same validation gate, same
+    refresh-run ledger, and readers actually move to the new generation. The
+    bare rebuild it used to run reported success while every Dashboard kept
+    serving the old published generation.
+
+    A dataset with unpublished design changes is refused (refreshing would
+    publish edits nobody chose to publish) — the DA uses Sync & Publish.
+
+    Returns {dataset_id: "started" | "already_syncing" | "changes_pending" |
+    "never_published"} for every lifecycle-managed id; other ids are absent and
+    keep the plain rebuild."""
+    from app.core.database import SessionLocal
+    from app.services import dataset_publish_service as pub
+
+    out: Dict[int, str] = {}
+    db = SessionLocal()
+    try:
+        for d in dataset_ids:
+            ds = db.query(Dataset).filter(Dataset.id == d).first()
+            if ds is None or ds.publish_state is None or is_operational_dataset(ds):
+                continue
+            if ds.published_generation is None or not ds.published_design_fingerprint:
+                out[d] = "never_published"
+                continue
+            if pub.design_fingerprint(db, d) != ds.published_design_fingerprint:
+                out[d] = "changes_pending"
+                continue
+            res = pub.start_sync_and_publish(d, trigger="manual_refresh", triggered_by_id=triggered_by_id)
+            out[d] = "started" if res.get("started") else str(res.get("reason") or "already_syncing")
+    except Exception:  # noqa: BLE001 — NEVER raises (start_manual_refresh contract)
+        logger.warning("[snapshot] lifecycle refresh routing failed", exc_info=True)
+    finally:
+        db.close()
+    return out
 
 
 def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
@@ -1811,6 +2060,11 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
             ids.append(di)
     if not ids:
         return []
+    routed = route_lifecycle_refresh(ids)
+    started_publish = [d for d, r in routed.items() if r == "started"]
+    ids = [d for d in ids if d not in routed]
+    if not ids:
+        return started_publish
     with _async_refresh_lock:
         # Phase 7 (#36): claim each dataset's CROSS-WORKER lease too, so a manual
         # refresh and another worker's TTL/watermark rebuild can't double-build.
@@ -1823,7 +2077,7 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
         for d in claimed:
             _async_refresh_inflight[d] = time.time()
     if not claimed:
-        return []
+        return started_publish
 
     def _run() -> None:
         from app.core.database import SessionLocal
@@ -1833,7 +2087,7 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
             for d in claimed:
                 _sc.clear_stop(d)  # fresh run — ignore any stale Stop flag
                 try:
-                    res = refresh_all_for_dataset(db, d, force=True)
+                    res = refresh_with_history(db, d, "manual")
                     if res.get("stopped"):
                         _sp.set_phase(d, "stopped")
                         logger.info("[snapshot] manual refresh STOPPED dataset=%s", d)

@@ -372,24 +372,50 @@ def verified_bq_type(bq_type: str, values: Iterable[Any]) -> str:
     that so the engine's gates SAFE_CAST it — the same, already-proven
     behaviour Google-Sheets columns have always had.
     """
-    if bq_type == "STRING":
-        return "STRING"
-    values = list(values)
+    verifier = TypeVerifier(bq_type)
     for v in values:
-        if not value_fits_bq_type(bq_type, v):
-            return "STRING"
-    if bq_type == "NUMERIC":
-        # NUMERIC holds 29 integer + 9 fractional digits. An exact decimal
-        # wider than that (a Postgres numeric division: 13/7 =
-        # 1.8571428571428571) is not a NUMERIC: the LOAD job failed on it and
-        # took the whole snapshot — every calculated ratio of a Postgres /
-        # MySQL dataset was unpublishable. Same exact value as BIGNUMERIC
-        # (38 + 38); wider still → STRING, as any value the type cannot hold.
-        widest = _decimal_widths(values)
-        if widest is not None and (widest[0] > 29 or widest[1] > 9):
-            return "BIGNUMERIC" if widest[0] <= 38 and widest[1] <= 38 else "STRING"
-    return bq_type
+        verifier.feed(v)
+    return verifier.result()
 
+
+class TypeVerifier:
+    """``verified_bq_type`` one value at a time, so a streamed extract can
+    verify a column without holding it in memory. The ONE implementation —
+    ``verified_bq_type`` is a loop over it."""
+
+    __slots__ = ("bq_type", "ok", "int_w", "frac_w", "seen")
+
+    def __init__(self, bq_type: str):
+        self.bq_type = bq_type
+        self.ok = True
+        self.int_w = self.frac_w = 0
+        self.seen = False
+
+    def feed(self, v: Any) -> None:
+        if self.bq_type == "STRING" or not self.ok:
+            return
+        if not value_fits_bq_type(self.bq_type, v):
+            self.ok = False
+            return
+        if self.bq_type == "NUMERIC":
+            widths = _decimal_widths((v,))
+            if widths is not None:
+                self.seen = True
+                self.int_w = max(self.int_w, widths[0])
+                self.frac_w = max(self.frac_w, widths[1])
+
+    def result(self) -> str:
+        if self.bq_type == "STRING" or not self.ok:
+            return "STRING"
+        if self.bq_type == "NUMERIC" and self.seen and (self.int_w > 29 or self.frac_w > 9):
+            # NUMERIC holds 29 integer + 9 fractional digits. An exact decimal
+            # wider than that (a Postgres numeric division: 13/7 =
+            # 1.8571428571428571) is not a NUMERIC: the LOAD job failed on it and
+            # took the whole snapshot — every calculated ratio of a Postgres /
+            # MySQL dataset was unpublishable. Same exact value as BIGNUMERIC
+            # (38 + 38); wider still → STRING, as any value the type cannot hold.
+            return "BIGNUMERIC" if self.int_w <= 38 and self.frac_w <= 38 else "STRING"
+        return self.bq_type
 
 def _decimal_widths(values: Iterable[Any]) -> Optional[tuple]:
     """(max integer digits, max fractional digits) over the numeric values."""

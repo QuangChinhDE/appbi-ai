@@ -242,6 +242,17 @@ jobs:
         env:
           CI_FIXTURE_SEED: "1"
         run: python scripts/ci/seed_e2e_source_hardening.py
+      # Dataset lifecycle journeys (dataset-lifecycle*.spec.ts): a mutable source
+      # schema + a lifecycle dataset. CI has NO BigQuery snapshot host, so the
+      # Sync & Publish journeys skip themselves by name here; the authoring /
+      # settings / source-status journeys run.
+      - name: Seed the dataset-lifecycle fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_dataset_lifecycle.py
+
+      - name: Seed the dataset permission fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_dataset_authz.py
 
       - name: Start the backend
         working-directory: backend

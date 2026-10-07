@@ -244,6 +244,26 @@ jobs:
             tests/test_relationship_contract.py \
             tests/test_public_authoritative_bounds.py \
             tests/test_publish_candidate_generation.py \
+            tests/test_gc_fails_closed.py \
+            tests/test_calendar_removal_cleans_the_model.py \
+            tests/test_delete_drops_physical_snapshots.py \
+            tests/test_publish_lease_renewal.py \
+            tests/test_every_refresh_path_is_recorded.py \
+            tests/test_composition_empty_child_enters_lifecycle.py \
+            tests/test_source_status_never_hides_drift.py \
+            tests/test_dictionary_ai_context_follows_schema.py \
+            tests/test_composed_reads_check_parent_lineage.py \
+            tests/test_hide_is_not_remove.py \
+            tests/test_operational_destination_bind.py \
+            tests/test_snapshot_host_contract.py \
+            tests/test_dataset_grant_authority.py \
+            tests/test_failed_candidate_not_resumed.py \
+            tests/test_dataset_settings_namespaces.py \
+            tests/test_reaper_spares_live_runs.py \
+            tests/test_dataset_source_boundary_caches.py \
+            tests/test_dataset_preview_is_read_only.py \
+            tests/test_quality_run_overlap.py \
+            tests/test_refresh_follows_publish_lifecycle.py \
             tests/test_semantic_health.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
       # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
       #
@@ -357,6 +377,22 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      # A real MySQL for the snapshot-extract streaming gate (bounded memory,
+      # Stop mid-extract) - the connector path differs from Postgres.
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: appbi
+          MYSQL_DATABASE: appbi
+          MYSQL_USER: appbi
+          MYSQL_PASSWORD: appbi
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -uappbi -pappbi --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
     env:
       # appbi metadata DB (alembic + SessionLocal) AND the bcfix source DB are
       # the same Postgres service — bcfix is just a schema in it (mirrors dev).
@@ -380,6 +416,7 @@ jobs:
       # explicitly. Scripts run here (regression_filter_matrix.py, parity) do not
       # load tests/conftest.py, so the allowance has to be in the job env.
       ALLOWED_PRIVATE_SOURCE_CIDRS: "127.0.0.0/8,::1/128"
+      APPBI_TEST_MYSQL_URL: "mysql://appbi:appbi@127.0.0.1:3306/appbi"
     steps:
       - uses: actions/checkout@v4
 
@@ -665,3 +702,13 @@ jobs:
               nl = chr(10) + '  '
               sys.exit('security suites not fully executed:' + nl + nl.join(bad))
           PY
+
+      - name: "GATE — snapshot extract streams from Postgres + MySQL (bounded memory, Stop)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_snapshot_streaming_extract_pg.py
+
+      - name: "GATE — Sync reconciles the source schema before it builds (Postgres)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_sync_source_schema_drift_pg.py

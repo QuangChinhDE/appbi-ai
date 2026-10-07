@@ -336,6 +336,20 @@ class _SharedSqliteCache:
             except sqlite3.IntegrityError:
                 return False  # another caller holds the slot
 
+    def extend_inflight(self, datasource_id: int, cache_key: str, ttl_seconds: float) -> bool:
+        """Push a HELD claim's expiry to now + ttl. Only a live claim is extended
+        (a lapsed one stays lapsed — renewing never resurrects a lease another
+        worker may already have taken). True = still held and extended."""
+        self._ensure_initialized()
+        now = time.time()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE live_query_inflight SET expires_at = ? "
+                "WHERE datasource_id = ? AND cache_key = ? AND expires_at > ?",
+                (now + float(ttl_seconds), int(datasource_id), cache_key, now),
+            )
+            return int(cursor.rowcount or 0) == 1
+
     def release_inflight(self, datasource_id: int, cache_key: str) -> None:
         self._ensure_initialized()
         with self._connect() as conn:
@@ -640,6 +654,19 @@ def try_claim_global(key: str, ttl_seconds: float) -> bool:
         return store.try_claim_inflight(_GLOBAL_CLAIM_NS, key, ttl_seconds)
     except Exception as exc:  # noqa: BLE001
         _log_shared_cache_failure("global-claim", exc)
+        return True
+
+
+def renew_global(key: str, ttl_seconds: float) -> bool:
+    """Extend a held cross-worker lease (heartbeat of a long job). True = still
+    held. No shared store → True (in-process registries are authoritative)."""
+    store = _get_shared_store()
+    if store is None:
+        return True
+    try:
+        return store.extend_inflight(_GLOBAL_CLAIM_NS, key, ttl_seconds)
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("global-renew", exc)
         return True
 
 

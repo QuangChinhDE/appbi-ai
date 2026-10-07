@@ -120,7 +120,7 @@ export interface DatasetDictionaryResponse {
 
 export interface Transformation {
   id?: string;
-  type: 'select_columns' | 'add_column' | 'rename_columns' | 'js_formula';
+  type: 'select_columns' | 'hide_columns' | 'add_column' | 'rename_columns' | 'js_formula';
   enabled: boolean;
   params: Record<string, any>;
 }
@@ -746,6 +746,7 @@ export function useSaveSnapshotConfig() {
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: [...datasetKeys.detail(variables.datasetId), 'snapshot-config'] });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.publishStatus(variables.datasetId) });
     },
   });
 }
@@ -1070,6 +1071,7 @@ export function useUpdateDataset() {
     },
     onSuccess: (_data: Dataset, variables: { id: number; input: UpdateDatasetInput }) => {
       queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.id) });
+      queryClient.invalidateQueries({ queryKey: ['dataset-model', variables.id] });  // calendar views / joins
       queryClient.invalidateQueries({ queryKey: datasetKeys.lists() });
     },
   });
@@ -1109,6 +1111,7 @@ export function useAddTableToDataset() {
       queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
       queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
       queryClient.invalidateQueries({ queryKey: datasetKeys.tableSourceStatus(variables.datasetId) });
+      queryClient.invalidateQueries({ queryKey: ['dataset-model', variables.datasetId] });
     },
   });
 }
@@ -1160,6 +1163,7 @@ export function useAutoDetectColumnTypes() {
       if (variables.apply !== false && Object.keys(data.applied || {}).length > 0) {
         queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
         queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
+        queryClient.invalidateQueries({ queryKey: ['dataset-model', variables.datasetId] });  // types feed the model
       }
     },
   });
@@ -1238,6 +1242,8 @@ export function useUpdateTable() {
       );
       queryClient.invalidateQueries({ queryKey: datasetKeys.tablePreview(variables.datasetId, variables.tableId) });
       queryClient.invalidateQueries({ queryKey: datasetKeys.tableSourceStatus(variables.datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });  // draft / changes-pending state
+      queryClient.invalidateQueries({ queryKey: ['dataset-model', variables.datasetId] });  // model resynced server-side
     },
   });
 }
@@ -1256,6 +1262,31 @@ export function useRemoveTable() {
       queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
       queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
       queryClient.invalidateQueries({ queryKey: datasetKeys.tableSourceStatus(variables.datasetId) });
+      queryClient.invalidateQueries({ queryKey: ['dataset-model', variables.datasetId] });
+    },
+  });
+}
+
+/**
+ * Explicit "re-read this table's schema from its source" (editor action). Preview
+ * is a read and never rewrites the shared column cache; this does, then refreshes
+ * everything derived from it (preview, tables, source status, semantic model).
+ */
+export function useRefreshTableSchema(datasetId: number | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (tableId: number) => {
+      const response = await api.post<TablePreviewResponse>(
+        `/datasets/${datasetId}/tables/${tableId}/preview`,
+        { limit: 100, offset: 0, refresh_schema: true },
+      );
+      return response.data;
+    },
+    onSuccess: () => {
+      if (datasetId === null) return;
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tableSourceStatus(datasetId) });
+      queryClient.invalidateQueries({ queryKey: ['dataset-model', datasetId] });
     },
   });
 }

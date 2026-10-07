@@ -55,6 +55,14 @@ def add_parent_ref_table(
     child = db.query(Dataset).filter(Dataset.id == child_dataset_id).first()
     if child is None:
         raise ValueError(f"Dataset con (id={child_dataset_id}) không tồn tại.")
+    if getattr(child, "publish_state", None) is None and not db.query(DatasetTable.id).filter(
+            DatasetTable.dataset_id == child_dataset_id).first():
+        # An EMPTY dataset has no live reads to break: the first parent reference
+        # opts it into the lifecycle as a draft (it publishes — and pins the
+        # parent generation — on its first Sync & Publish). A dataset that already
+        # serves live tables still has to be moved into the lifecycle deliberately.
+        child.publish_state = "draft"
+        db.flush()
     if getattr(child, "publish_state", None) is None:
         raise ValueError(
             "Dataset này chưa dùng vòng đời Sync & Publish nên không thể tham chiếu "
