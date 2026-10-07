@@ -1259,6 +1259,30 @@ export function useRemoveTable() {
 }
 
 /**
+ * Explicit "re-read this table's schema from its source" (editor action). Preview
+ * is a read and never rewrites the shared column cache; this does, then refreshes
+ * everything derived from it (preview, tables, source status, semantic model).
+ */
+export function useRefreshTableSchema(datasetId: number | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (tableId: number) => {
+      const response = await api.post<TablePreviewResponse>(
+        `/datasets/${datasetId}/tables/${tableId}/preview`,
+        { limit: 100, offset: 0, refresh_schema: true },
+      );
+      return response.data;
+    },
+    onSuccess: () => {
+      if (datasetId === null) return;
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tableSourceStatus(datasetId) });
+      queryClient.invalidateQueries({ queryKey: ['dataset-model', datasetId] });
+    },
+  });
+}
+
+/**
  * Preview table data
  */
 export function useTablePreview(

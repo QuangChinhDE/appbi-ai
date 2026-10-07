@@ -28,6 +28,7 @@ import {
   useDataset,
   useDatasetTableSourceStatus,
   useTablePreview,
+  useRefreshTableSchema,
   useUpdateDataset,
   useUpdateTable,
   useAutoDetectColumnTypes,
@@ -124,7 +125,11 @@ function getSourceIssueMessage(
     return 'Datasource đang kết nối với bảng này không còn tồn tại hoặc bạn không còn quyền truy cập.';
   }
 
-  if (issue?.code === 'SOURCE_CONNECTION_ERROR') {
+  if (issue?.code === 'SOURCE_SCHEMA_CHANGED') {
+    return `Bảng nguồn "${sourceName}" có cột mới mà dataset chưa biết — hãy cập nhật schema của bảng (Refresh preview) rồi Sync & Publish.`;
+  }
+
+  if (issue?.code === 'SOURCE_CONNECTION_ERROR' || issue?.code === 'SOURCE_STATUS_UNVERIFIED') {
     return 'Không thể kiểm tra bảng này với datasource hiện tại. Hãy kiểm tra lại quyền truy cập hoặc kết nối nguồn.';
   }
 
@@ -146,6 +151,8 @@ function looksLikeDeletedSourceMessage(message: string): boolean {
 function isActionableSourceIssue(issue: Partial<DatasetTableSourceStatus> | null | undefined): boolean {
   return (
     issue?.status === 'missing' ||
+    issue?.code === 'SOURCE_SCHEMA_CHANGED' ||
+    issue?.code === 'SOURCE_STATUS_UNVERIFIED' ||
     issue?.code === 'SOURCE_TABLE_MISSING' ||
     issue?.code === 'DATASOURCE_MISSING'
   );
@@ -619,6 +626,7 @@ export default function DatasetDetailPage() {
   const { data: sidebarModel } = useDatasetModel(datasetId);
 
   const resPerms = getResourcePermissions(dataset?.user_permission);
+  const refreshTableSchema = useRefreshTableSchema(datasetId);
 
   // Fetch table preview
   const previewOffset = (page - 1) * previewLimit;
@@ -1442,8 +1450,19 @@ export default function DatasetDetailPage() {
               </select>
             </label>
             <button
-              onClick={() => refetchPreview()}
-              disabled={loadingPreview}
+              onClick={async () => {
+                // An editor's refresh re-reads the table's schema from the source
+                // (Preview alone never rewrites the shared column cache).
+                if (resPerms.canEdit && selectedTableId) {
+                  try {
+                    await refreshTableSchema.mutateAsync(selectedTableId);
+                  } catch (error) {
+                    toast.error(extractDatasetErrorMessage(error, t('datasets.detail.refreshPreview')));
+                  }
+                }
+                refetchPreview();
+              }}
+              disabled={loadingPreview || refreshTableSchema.isPending}
               className="p-1 text-text-quaternary hover:text-text-secondary hover:bg-surface-2 rounded transition-colors disabled:opacity-40"
               title={t('datasets.detail.refreshPreview')}
             >

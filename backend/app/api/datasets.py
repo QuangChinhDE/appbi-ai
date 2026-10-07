@@ -3270,7 +3270,8 @@ def get_dataset_table_source_status(
         if datasource.id in live_table_errors:
             statuses.append({
                 **base,
-                "status": "ok",
+                # NOT "ok": a source that cannot be reached was shown as healthy.
+                "status": "unknown",
                 "code": "SOURCE_STATUS_UNVERIFIED",
                 "message": "Could not verify this table against the connected datasource.",
                 "verified": False,
@@ -3282,7 +3283,16 @@ def get_dataset_table_source_status(
             _source_table_name_matches(table.source_table_name, live_table.get("name"))
             for live_table in live_tables
         )
-        if exists:
+        if exists and getattr(table, "schema_change_pending", False):
+            # The table exists but its columns changed since the dataset cached
+            # them (a Sync found new source columns): the author must review.
+            statuses.append({
+                **base,
+                "status": "ok",
+                "code": "SOURCE_SCHEMA_CHANGED",
+                "message": "The source table has columns this dataset does not know yet — refresh its schema.",
+            })
+        elif exists:
             statuses.append({**base, "status": "ok", "code": None, "message": None})
         else:
             statuses.append({
@@ -4479,12 +4489,18 @@ def preview_dataset_table(
         # cache (20-row type guesses, all-string on an empty page) and the
         # sample that LOOKUP formulas, Table Stats and AI descriptions read, then
         # resynced the semantic model from it — for any viewer.
-        if _preview_may_seed_cache(db_table, offset=offset, filtered=bool(preview_request.filters)):
+        refresh = bool(preview_request.refresh_schema) and not offset and not preview_request.filters
+        if refresh and perm not in ("edit", "full"):
+            raise HTTPException(status_code=403, detail="Cần quyền chỉnh sửa để cập nhật schema của bảng.")
+        if refresh or _preview_may_seed_cache(db_table, offset=offset, filtered=bool(preview_request.filters)):
             DatasetCRUDService.update_table_cache(
                 db, table_id,
                 columns_cache=columns_cache_payload,
                 sample_cache=serializable_rows,
             )
+            if refresh and getattr(db_table, "schema_change_pending", False):
+                db_table.schema_change_pending = False  # the author re-read the source
+                db.commit()
             _sync_dataset_model_safely(db, dataset_id)
 
         total = len(rows)
