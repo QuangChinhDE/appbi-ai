@@ -235,6 +235,7 @@ jobs:
             tests/test_relationship_contract.py \
             tests/test_public_authoritative_bounds.py \
             tests/test_publish_candidate_generation.py \
+            tests/test_delete_drops_physical_snapshots.py \
             tests/test_publish_lease_renewal.py \
             tests/test_every_refresh_path_is_recorded.py \
             tests/test_composition_empty_child_enters_lifecycle.py \

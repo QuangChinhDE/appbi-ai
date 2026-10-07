@@ -1314,6 +1314,46 @@ def _resumable_generation(
     return None
 
 
+def physical_snapshots_of(db: Session, *, dataset_id: Optional[int] = None,
+                          table_ids: Optional[List[int]] = None) -> List[tuple]:
+    """(host config, physical_ref) of every snapshot a dataset / its tables
+    still own — read BEFORE a delete, because the snapshot rows cascade away
+    with it and nothing else records where the BigQuery tables live."""
+    q = db.query(DatasetTableSnapshot).filter(DatasetTableSnapshot.retired_at.is_(None))
+    if dataset_id is not None:
+        q = q.filter(DatasetTableSnapshot.dataset_id == dataset_id)
+    if table_ids is not None:
+        q = q.filter(DatasetTableSnapshot.dataset_table_id.in_(list(table_ids) or [-1]))
+    rows = q.all()
+    hosts = {h.id: h for h in db.query(DataSource).filter(
+        DataSource.id.in_({r.host_datasource_id for r in rows if r.host_datasource_id} or {-1})).all()}
+    out, seen = [], set()
+    for r in rows:
+        host = hosts.get(r.host_datasource_id)
+        if host is None or not r.physical_ref or r.physical_ref in seen:
+            continue
+        seen.add(r.physical_ref)
+        out.append((dict(host.config or {}), r.physical_ref))
+    return out
+
+
+def drop_physical_snapshots(physical: List[tuple]) -> None:
+    """Best-effort DROP of BigQuery snapshot tables whose metadata is gone (a
+    deleted dataset / table). Runs off the request thread; a failure is logged,
+    never raised — the delete has already happened."""
+    if not physical:
+        return
+
+    def _run() -> None:
+        for config, ref in physical:
+            try:
+                DataSourceConnectionService.drop_bigquery_table(config, ref)
+            except Exception:  # noqa: BLE001
+                logger.warning("[snapshot] orphan drop failed %s", ref, exc_info=True)
+
+    threading.Thread(target=_run, name="snap-orphan-drop", daemon=True).start()
+
+
 def gc_dataset_snapshots(db: Session, dataset_id: int, host: DataSource) -> int:
     """Delayed GC (issue #10): retire snapshot rows + drop their physical tables
     ONLY when they are no longer needed for consistent reads:

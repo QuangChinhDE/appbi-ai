@@ -368,8 +368,13 @@ class DatasetCRUDService:
         if not db_dataset_obj:
             return False
         
+        from app.services import snapshot_service
+        physical = snapshot_service.physical_snapshots_of(db, dataset_id=dataset_id)
         db.delete(db_dataset_obj)
         db.commit()
+        # Only after the delete committed: the snapshot rows went with the
+        # cascade, so this is the last moment their BigQuery tables are known.
+        snapshot_service.drop_physical_snapshots(physical)
         return True
     
     # ===== Table Methods =====
@@ -561,8 +566,11 @@ class DatasetCRUDService:
         if not db_table:
             return False
         
+        from app.services import snapshot_service
+        physical = snapshot_service.physical_snapshots_of(db, table_ids=[table_id])
         db.delete(db_table)
         db.commit()
+        snapshot_service.drop_physical_snapshots(physical)
         return True
     
     @staticmethod
