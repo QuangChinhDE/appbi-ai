@@ -323,6 +323,17 @@ def resolve_host(db: Session, dataset_id: int) -> Optional[DataSource]:
     tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
     ds_ids = sorted({t.datasource_id for t in tables if t.datasource_id})
     if not ds_ids:
+        # Pure Dataset-on-Dataset composition: no table of its own reads a
+        # source — its rows ARE its parents' pinned snapshots, which live on the
+        # parents' host (composition already requires one shared host). Execute
+        # there; never on a default/fallback host that does not hold them.
+        parent_ids = sorted({t.parent_dataset_id for t in tables
+                             if getattr(t, "source_kind", None) == "dataset" and t.parent_dataset_id})
+        for pid in parent_ids:
+            if pid != dataset_id:
+                h = resolve_host(db, pid)
+                if h is not None:
+                    return h
         return None
     rows = db.query(DataSource).filter(DataSource.id.in_(ds_ids)).all()
     hosts = sorted(

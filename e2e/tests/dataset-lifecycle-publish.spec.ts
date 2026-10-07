@@ -160,6 +160,62 @@ test.describe('Dataset lifecycle — Sync & Publish', () => {
     expect(Number(back.published_generation)).toBeGreaterThan(Number(good));
     await resetSource();
   });
+
+  test('J8 a composed child serves its pinned parent generation until it re-publishes', async ({ page, request }) => {
+    const CHILD = 'E2E composed child';
+    const parent = await datasetByName(request, LIFECYCLE);
+    const parentChart = await chartIdByName(request, CHART);
+    const parentGen = (await publishStatusGen(request, parent.id))!;
+    expect(parentGen, 'the parent must be published (J2..J5)').toBeTruthy();
+    const ordersId = (await (await request.get(`${API}/api/v1/datasets/${parent.id}/tables`)).json())
+      .find((t: any) => t.display_name === 'orders').id;
+
+    // the child: one table referencing the parent's orders
+    for (const d of (await (await request.get(`${API}/api/v1/datasets/`)).json()) as any[]) {
+      if (d.name === CHILD) await request.delete(`${API}/api/v1/datasets/${d.id}`);
+    }
+    const child = await (await request.post(`${API}/api/v1/datasets/`, { data: { name: CHILD } })).json();
+    const ref = await request.post(`${API}/api/v1/datasets/${child.id}/tables`, { data: {
+      source_kind: 'dataset', parent_dataset_id: parent.id, parent_dataset_table_id: ordersId, display_name: 'orders' } });
+    expect(ref.status(), await ref.text()).toBeLessThan(300);
+    const refTableId = (await ref.json()).id;
+    expect((await request.post(`${API}/api/v1/datasets/${child.id}/generate-model`)).status()).toBeLessThan(300);
+    const role = { metrics: [{ field: 'amount', agg: 'sum' }], dimension: 'region' };
+    const chartRes = await request.post(`${API}/api/v1/charts/`, { data: {
+      name: 'E2E composed child revenue', chart_type: 'TABLE', dataset_table_id: refTableId,
+      config: { chartType: 'TABLE', queryMode: 'generated', roleConfig: role, generatedRoleConfig: role,
+                customRoleConfig: { metrics: [] }, filters: [], baseFilters: [], styleConfig: {} } } });
+    expect(chartRes.status(), await chartRes.text()).toBeLessThan(300);
+    const childChart = (await chartRes.json()).id;
+
+    try {
+      // child publish through the UI → pinned to the parent's current generation
+      const { status: c1 } = await syncFromTheBanner(page, child.id);
+      expect(c1.publish_state, JSON.stringify(c1)).toBe('published');
+      const before = await revenueByRegion(request, childChart);
+      expect(before).toEqual(await revenueByRegion(request, parentChart));
+
+      // parent source changes and the parent re-publishes
+      await sql(`UPDATE ${SCHEMA}.orders SET amount = 300 WHERE id = 3`);
+      const { status: p2 } = await syncFromTheBanner(page, parent.id);
+      expect(p2.publish_state).toBe('published');
+      expect((await revenueByRegion(request, parentChart)).South).toBe(300);
+
+      // the child is told it is behind, and keeps serving its pinned parent generation
+      const c2 = await (await request.get(`${API}/api/v1/datasets/${child.id}/publish-status`)).json();
+      expect(c2.publish_state).toBe('changes_pending');
+      expect(await revenueByRegion(request, childChart), 'pinned, never "latest"').toEqual(before);
+
+      // child re-publishes → it reads the parent's new generation
+      const { status: c3 } = await syncFromTheBanner(page, child.id);
+      expect(c3.publish_state).toBe('published');
+      expect((await revenueByRegion(request, childChart)).South).toBe(300);
+    } finally {
+      await request.delete(`${API}/api/v1/charts/${childChart}`);
+      await request.delete(`${API}/api/v1/datasets/${child.id}`);
+      await resetSource();
+    }
+  });
 });
 
 async function publishStatusGen(request: any, id: number): Promise<number | null> {

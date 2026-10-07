@@ -83,3 +83,18 @@ def test_a_recorded_host_keeps_serving_what_it_built(db):
                                 built_at=dt.datetime(2026, 10, 1)))
     db.commit()
     assert _host(db) == 1
+
+
+def test_a_pure_composition_child_executes_on_its_parents_host(db):
+    """D6 — a child whose only tables reference a parent dataset has no
+    datasource of its own; resolve_host returned None, so it published but none
+    of its charts could be read ("Chart requires a datasource-backed table")."""
+    from app.services.snapshot_service import resolve_host
+
+    db.add(DataSource(id=7, name="alice-bq", type="bigquery", config=BQ, owner_id=ALICE))
+    db.add(Dataset(id=2, name="child", owner_id=ALICE))
+    db.add(DatasetTable(id=21, dataset_id=2, datasource_id=None, display_name="orders",
+                        source_kind="dataset", parent_dataset_id=1))
+    db.commit()
+    assert resolve_host(db, 1).id == 7          # the parent's own host…
+    assert resolve_host(db, 2).id == 7          # …is where the child executes
