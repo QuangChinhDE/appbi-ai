@@ -1397,27 +1397,23 @@ def gc_dataset_snapshots(db: Session, dataset_id: int, host: DataSource) -> int:
         # it and scheduled refreshes build newer generations WITHOUT publishing,
         # so the published one can be older than the retained window. It must
         # survive until a NEW publish moves the pin.
-        try:
-            pub = (
-                db.query(Dataset.published_generation)
-                .filter(Dataset.id == dataset_id)
-                .scalar()
-            )
-            if pub is not None:
-                keep_gens.add(int(pub))
-        except Exception:  # noqa: BLE001
-            pass
+        # A protection that cannot be READ must abort the pass (the outer handler
+        # rolls back and returns 0) — never run GC without it ("fail open").
+        pub = (
+            db.query(Dataset.published_generation)
+            .filter(Dataset.id == dataset_id)
+            .scalar()
+        )
+        if pub is not None:
+            keep_gens.add(int(pub))
 
         # Composition: NEVER GC a generation of THIS dataset that a downstream
         # child has PINNED (dataset_dependencies.parent_generation). The child
         # reads the parent snapshot by a plain FROM at that exact generation, so
         # retiring it would break the child (principle #2).
-        try:
-            from app.services import dataset_composition_service as _comp
-            for g in _comp.pinned_parent_generations(db, dataset_id):
-                keep_gens.add(int(g))
-        except Exception:  # noqa: BLE001
-            pass
+        from app.services import dataset_composition_service as _comp
+        for g in _comp.pinned_parent_generations(db, dataset_id):
+            keep_gens.add(int(g))
 
         now = datetime.utcnow()
 

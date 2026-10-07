@@ -489,9 +489,39 @@ def ensure_calendar_table(
 
 
 def remove_calendar_table(db: Session, dataset_id: int) -> bool:
+    """Remove the generated calendar AND everything the model built on it.
+
+    Deleting only the table left its SemanticView (FK SET NULL), the per-date
+    role views (``<view>__<column>__date_dim``) and the calendar auto-joins in
+    the model until someone regenerated it — fields of a calendar that no longer
+    exists kept appearing in pickers. User-authored joins are never touched."""
+    from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
+
     table = get_calendar_table(db, dataset_id)
     if table is None:
         return False
+    calendar_views = {v.name for v in db.query(SemanticView).filter(
+        SemanticView.dataset_table_id == table.id).all()}
+    own_prefixes = tuple(
+        f"{v.name}__" for v in db.query(SemanticView).join(
+            DatasetTable, SemanticView.dataset_table_id == DatasetTable.id).filter(
+            DatasetTable.dataset_id == dataset_id, DatasetTable.id != table.id).all())
+    role_views = [v for v in db.query(SemanticView).filter(
+        SemanticView.dataset_table_id.is_(None), SemanticView.name.like(r"%\_\_date\_dim", escape="\\")).all()
+        if own_prefixes and v.name.startswith(own_prefixes)]
+    gone = calendar_views | {v.name for v in role_views}
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if model is not None:
+        for explore in db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all():
+            joins = list(explore.joins or [])
+            kept = [j for j in joins if not (isinstance(j, dict) and (
+                j.get("calendar_role") or j.get("view") in gone or j.get("presentation_view") in gone))]
+            if len(kept) != len(joins):
+                explore.joins = kept  # a NEW list: the JSON column has no mutation tracking
+    for v in role_views:
+        db.delete(v)
+    for v in db.query(SemanticView).filter(SemanticView.dataset_table_id == table.id).all():
+        db.delete(v)
     db.delete(table)
     return True
 
