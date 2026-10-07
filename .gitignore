@@ -413,6 +413,8 @@ backend/_verify_gate.db
 !backend/tests/test_semantic_state_contracts.py
 !backend/tests/test_semantic_golden_matrix.py
 !backend/tests/test_semantic_router_object_access.py
+!backend/tests/test_source_workboard_binding.py
+!backend/tests/test_source_manual_ingestion.py
 !backend/tests/test_relationship_contract.py
 !backend/tests/test_relationship_contract_pg.py
 !backend/tests/test_public_authoritative_bounds.py
@@ -425,3 +427,11 @@ backend/_verify_gate.db
 !backend/tests/test_pair4_surfaces_pg.py
 !backend/tests/test_pair5_data_state_pg.py
 !backend/tests/test_core_product_contracts.py
+!backend/tests/test_source_security.py
+!backend/tests/test_source_permissions.py
+!backend/tests/test_source_config_contract.py
+!backend/tests/test_source_invalidation.py
+!backend/tests/test_source_delete_dependencies.py
+!backend/tests/test_source_google_identity.py
+!backend/tests/test_source_provider_contracts.py
+!backend/tests/test_source_concurrency_pg.py

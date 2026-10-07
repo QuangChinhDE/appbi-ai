@@ -5,6 +5,7 @@ import apiClient from '@/lib/api-client';
 import {
   DataSource,
   DataSourceCreate,
+  DataSourceTestResult,
   DataSourceUpdate,
   QueryExecuteRequest,
   QueryExecuteResponse,
@@ -12,6 +13,26 @@ import {
   TableDetail,
   WatermarkColumn,
 } from '@/types/api';
+
+/** Manual (CSV/XLSX) upload — POST /datasources/manual/parse-file. Rows are
+ *  never returned in full; the source config references the staged asset. */
+export type ManualColumn = { name: string; type: string };
+export type ManualSheetUpload = {
+  asset_id: string;
+  columns: ManualColumn[];
+  row_count: number;
+  preview_rows: Record<string, unknown>[];
+  preview_truncated: boolean;
+};
+export type ManualParseFileResponse = {
+  filename: string;
+  sheets: Record<string, ManualSheetUpload>;
+  limits: { max_bytes: number; max_rows: number; max_columns: number; preview_rows: number };
+};
+/** What a manual source stores in `config.sheets[name]`. */
+export type ManualSheetRef = { asset_id: string; columns?: ManualColumn[]; row_count?: number };
+/** Upload error body: `detail: {code, message}`. */
+export type ManualUploadErrorDetail = { code: string; message: string };
 
 export const dataSourceApi = {
   getAll: async (): Promise<DataSource[]> => {
@@ -38,12 +59,21 @@ export const dataSourceApi = {
     await apiClient.delete(`/datasources/${id}`);
   },
 
-  test: async (
+  // Retest a SAVED source: type, destination and secret come only from the
+  // persisted row (object edit required).
+  test: async (id: number): Promise<DataSourceTestResult> => {
+    const response = await apiClient.post(`/datasources/${id}/test`);
+    return response.data;
+  },
+
+  // Test an unsaved config (create/edit form). A blank secret reuses the stored
+  // one only when data_source_id is given AND nothing about the destination changed.
+  testDraft: async (
     type: string,
     config: Record<string, any>,
     data_source_id?: number,
-  ): Promise<{ success: boolean; message: string }> => {
-    const response = await apiClient.post('/datasources/test', { type, config, data_source_id });
+  ): Promise<DataSourceTestResult> => {
+    const response = await apiClient.post('/datasources/test-draft', { type, config, data_source_id });
     return response.data;
   },
 

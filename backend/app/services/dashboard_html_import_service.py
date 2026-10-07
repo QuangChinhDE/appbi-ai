@@ -418,6 +418,11 @@ def parse_uploaded_source_sheets(
     file_bytes: bytes,
     filename: Optional[str],
 ) -> Dict[str, Dict[str, Any]]:
+    # Same accepted set as the Source upload: legacy .xls cannot be read by
+    # openpyxl, so it is refused with an actionable message instead of a crash.
+    from app.services.manual_assets.parsing import check_extension
+    if "." in str(filename or ""):
+        check_extension(filename)
     lower_name = str(filename or "").lower()
     if lower_name.endswith(".csv"):
         return _parse_csv_source_sheets(file_bytes, filename=filename)

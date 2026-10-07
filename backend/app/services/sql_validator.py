@@ -1,147 +1,321 @@
 """
-SQL query validation utilities.
+SQL query validation utilities — the read-only gate in front of every source.
+
+HOW IT READS SQL
+----------------
+The old validator stripped ``--`` comments with a regex BEFORE it stripped string
+literals, so ``SELECT '--', 1; DROP TABLE x`` lost everything after the quote and
+passed. This one tokenizes left to right with a small lexer, so a quote, a comment
+marker and a dollar tag are each recognised only where the database would
+recognise them. The lexer produces a *skeleton*: the statement with every literal
+and comment blanked and every quoted identifier replaced by a placeholder. All
+checks run on that skeleton.
+
+Lexing differs by dialect (backslash escapes, ``#`` comments, dollar quoting), and
+a lexer that hides MORE than the database does is a bypass. So the skeleton is
+built per dialect; an unknown dialect is checked under every mode and must pass
+all of them. Ambiguity only ever produces a refusal.
+
+WHAT IT REFUSES
+---------------
+* more than one statement (one trailing ``;`` is fine);
+* anything that does not start with SELECT / WITH (or a parenthesised SELECT);
+* DML/DDL/transaction/session keywords anywhere (a data-modifying CTE included);
+* ``INTO`` (SELECT INTO, INTO OUTFILE / DUMPFILE, INTO @var);
+* server-side functions that read files, open connections, change settings or
+  stall the server (dblink, pg_read_file, lo_*, set_config, pg_sleep, DuckDB
+  read_csv, ...), also when spelled as a quoted identifier;
+* a string literal used as a table (DuckDB ``FROM '/etc/passwd'``);
+* MySQL executable comments (``/*! ... */``) and unterminated literals/comments.
 """
+from __future__ import annotations
+
 import re
+from typing import List, Optional, Tuple
+
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def validate_select_only(sql_query: str) -> None:
+_FORBIDDEN_KEYWORDS = (
+    "INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "MERGE",
+    "EXEC", "EXECUTE", "CALL", "GRANT", "REVOKE", "INTO", "COMMIT", "ROLLBACK",
+    "SAVEPOINT", "BEGIN", "COPY", "VACUUM", "PREPARE", "DEALLOCATE", "LISTEN",
+    "NOTIFY", "ATTACH", "PRAGMA",
+)
+# `SET` is a statement (refused) but also part of `CHARACTER SET` in MySQL casts.
+_SET_RE = re.compile(r"(?<!CHARACTER )\bSET\b")
+# `REPLACE` is a string function / BigQuery `SELECT * REPLACE(...)`; only the
+# statement forms are refused.
+_REPLACE_STMT_RE = re.compile(r"\bREPLACE\s+(?:INTO|LOW_PRIORITY|DELAYED|IGNORE)\b")
+# DuckDB (manual / Sheets sources) reads a FILE when a string literal is a table.
+_LITERAL_TABLE_RE = re.compile(r"\b(?:FROM|JOIN)\s*\(?\s*''")
+
+_DANGEROUS_FUNCTIONS = re.compile(
+    r"^(?:"
+    r"DBLINK\w*|SET_CONFIG|PG_READ_FILE|PG_READ_BINARY_FILE|PG_LS_\w+|PG_STAT_FILE|"
+    r"LO_(?:IMPORT|EXPORT|GET|PUT|OPEN|CREAT|CREATE|UNLINK|FROM_BYTEARRAY|TRUNCATE\w*|"
+    r"WRITE|READ|LSEEK\w*|TELL\w*|CLOSE)|"
+    r"PG_SLEEP\w*|PG_TERMINATE_BACKEND|PG_CANCEL_BACKEND|PG_RELOAD_CONF|"
+    r"PG_ROTATE_LOGFILE|PG_ADVISORY\w*|PG_TRY_ADVISORY\w*|PG_LOGICAL\w*|"
+    r"PG_REPLICATION\w*|PG_CREATE_\w+|PG_DROP_\w+|PG_PROMOTE|PG_SWITCH_WAL|"
+    r"PG_FILE_\w+|QUERY_TO_XML\w*|TABLE_TO_XML\w*|SETVAL|NEXTVAL|"
+    r"SLEEP|BENCHMARK|LOAD_FILE|GET_LOCK|RELEASE_LOCK|SYS_EXEC|SYS_EVAL|"
+    r"READ_TEXT|READ_BLOB|READ_CSV\w*|READ_PARQUET|READ_JSON\w*|READ_NDJSON\w*|"
+    r"PARQUET_SCAN|GLOB|EXTERNAL_QUERY|"
+    # S7: large objects, notify, stats reset, *_to_xml, snapshot export, locks
+    r"LO_\w+|PG_NOTIFY|PG_STAT_RESET\w*|\w+_TO_XML\w*|PG_EXPORT_SNAPSHOT|"
+    r"IS_FREE_LOCK|IS_USED_LOCK|MASTER_POS_WAIT|SOURCE_POS_WAIT|"
+    # S1: DuckDB table functions that reach files, settings or secrets
+    r"QUERY|QUERY_TABLE|SNIFF_CSV|PARQUET_\w+|READ_\w+|DUCKDB_\w+|ICEBERG_\w+|DELTA_SCAN|"
+    r"SQLITE_\w+|POSTGRES_\w+|MYSQL_\w+|LOAD|INSTALL"
+    r")$"
+)
+
+# S7: row locks on the source are a write-side effect.
+_ROW_LOCK_RE = re.compile(
+    r"\bFOR\s+(?:UPDATE|SHARE|NO\s+KEY\s+UPDATE|KEY\s+SHARE)\b|\bLOCK\s+IN\s+SHARE\s+MODE\b"
+)
+# S1: in DuckDB a quoted identifier that looks like a path is read as a FILE
+# ("secret.csv", "/etc/x"). Imported-file sheet names never need a slash (Excel
+# forbids it) or a file suffix (the upload strips it). Google Sheets tab names
+# MAY contain a mid-name "/" ("Q1/Q2"), so that dialect only refuses path-shaped
+# names. The real barrier is open_locked_duckdb(); this is defense in depth.
+_DUCKDB_DIALECTS = {"manual", "google_sheets", "duckdb"}
+_SLASH_IN_IDENT_RE = re.compile(r"/")
+_FILE_LIKE_IDENT_RE = re.compile(
+    r"\\|^\s*(?:/|~|\.\.?/)|://|\.(?:csv|tsv|txt|parquet|json|jsonl|ndjson|xlsx|xls|gz|zst|zip|arrow|feather|"
+    r"db|duckdb|sqlite|sqlite3|log|env|conf|cfg|ini|yaml|yml|pem|key|avro|orc)\s*$",
+    re.IGNORECASE,
+)
+
+_FUNC_CALL_RE = re.compile(r"\b([A-Z_][A-Z0-9_$]*)\s*\(")
+
+
+class _Lexed:
+    __slots__ = ("skeleton", "quoted_calls", "error", "quoted_idents")
+
+    def __init__(self, skeleton: str, quoted_calls: List[str], error: Optional[str],
+                 quoted_idents: Optional[List[str]] = None):
+        self.skeleton = skeleton
+        self.quoted_calls = quoted_calls
+        self.error = error
+        self.quoted_idents = quoted_idents or []
+
+
+def _is_ident_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def _lex(sql: str, mode: str) -> _Lexed:
+    """Blank literals/comments; return the skeleton + names of quoted-ident calls.
+
+    mode: 'postgres' — '' with '' escape (standard_conforming_strings), E'' with
+                       backslash escape, $tag$..$tag$, "ident", -- and /* */.
+          'mysql'    — '' and "" strings with backslash escape, `ident`,
+                       -- , # and /* */ comments; /*! */ is refused.
+          'bigquery' — single, double and triple-quoted strings with backslash escape, `ident`,
+                       -- , # and /* */ comments.
+    Comments are never treated as nested: the unnested reading hides LESS.
     """
-    Validate that a SQL query is SELECT-only for safety.
-    
-    Raises ValueError if:
-    - Query contains dangerous keywords (INSERT, UPDATE, DELETE, DROP, etc.)
-    - Query contains multiple statements (semicolon followed by more SQL)
-    - Query is empty or whitespace-only
-    
-    Args:
-        sql_query: The SQL query to validate
-        
-    Raises:
-        ValueError: If query violates safety rules
-        
-    Examples:
-        # Allowed:
-        validate_select_only("SELECT * FROM users")
-        validate_select_only("SELECT id, name FROM products WHERE price > 100")
-        validate_select_only("select * from orders; -- comment")
-        
-        # Blocked:
-        validate_select_only("DELETE FROM users")  # dangerous keyword
-        validate_select_only("SELECT * FROM users; DROP TABLE users")  # multiple statements
-        validate_select_only("")  # empty query
-    """
-    if not sql_query or not sql_query.strip():
-        raise ValueError("SQL query cannot be empty")
-    
-    # Normalize: remove comments and extra whitespace
-    normalized = _normalize_sql(sql_query)
+    out: List[str] = []
+    quoted_calls: List[str] = []
+    quoted_idents: List[str] = []
+    i, n = 0, len(sql)
+    backslash = mode in ("mysql", "bigquery")
+    while i < n:
+        c = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+        # ── comments
+        if (c == "-" and nxt == "-") or (c == "#" and mode in ("mysql", "bigquery")):
+            j = sql.find("\n", i)
+            i = n if j < 0 else j
+            out.append(" ")
+            continue
+        if c == "/" and nxt == "*":
+            if mode == "mysql" and sql[i + 2:i + 3] in ("!", "+"):
+                return _Lexed("", [], "MySQL executable comments are not allowed")
+            j = sql.find("*/", i + 2)
+            if j < 0:
+                return _Lexed("", [], "unterminated comment")
+            i = j + 2
+            out.append(" ")
+            continue
+        # ── postgres dollar quoting
+        if c == "$" and mode == "postgres" and not (i > 0 and (_is_ident_char(sql[i - 1]) or sql[i - 1] == "$")):
+            m = re.match(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$", sql[i:])
+            if m:
+                tag = m.group(0)
+                j = sql.find(tag, i + len(tag))
+                if j < 0:
+                    return _Lexed("", [], "unterminated dollar-quoted string")
+                i = j + len(tag)
+                out.append(" '' ")
+                continue
+        # ── string literals
+        if c == "'" or (c == '"' and mode in ("mysql", "bigquery")):
+            if mode == "bigquery" and sql[i:i + 3] in ("'''", '"""'):
+                q3 = sql[i:i + 3]
+                j = i + 3
+                while True:
+                    if j >= n:
+                        return _Lexed("", [], "unterminated string literal")
+                    if sql[j] == "\\":
+                        j += 2
+                        continue
+                    if sql[j:j + 3] == q3:
+                        i = j + 3
+                        break
+                    j += 1
+                out.append(" '' ")
+                continue
+            esc = backslash or (
+                mode == "postgres" and i > 0 and sql[i - 1] in "eE"
+                and not (i > 1 and _is_ident_char(sql[i - 2]))
+            )
+            j = i + 1
+            while True:
+                if j >= n:
+                    return _Lexed("", [], "unterminated string literal")
+                ch = sql[j]
+                if esc and ch == "\\":
+                    j += 2
+                    continue
+                if ch == c:
+                    if j + 1 < n and sql[j + 1] == c:  # doubled-quote escape
+                        j += 2
+                        continue
+                    break
+                j += 1
+            i = j + 1
+            out.append(" '' ")
+            continue
+        # ── quoted identifiers
+        if (c == '"' and mode == "postgres") or (c == "`" and mode in ("mysql", "bigquery")):
+            start = i
+            j = i + 1
+            buf: List[str] = []
+            while True:
+                if j >= n:
+                    return _Lexed("", [], "unterminated quoted identifier")
+                ch = sql[j]
+                if ch == c:
+                    if j + 1 < n and sql[j + 1] == c:
+                        buf.append(c)
+                        j += 2
+                        continue
+                    break
+                buf.append(ch)
+                j += 1
+            inner = "".join(buf)
+            quoted_idents.append(inner)
+            i = j + 1
+            # A quoted identifier used as a function name must not hide a
+            # dangerous function: "pg_read_file"(...), pg_catalog."lo_import"(...)
+            if sql[i:].lstrip().startswith("("):
+                if sql[max(0, start - 2):start].upper() == "U&":
+                    return _Lexed("", [], "unicode-escaped identifiers are not allowed as function names")
+                quoted_calls.append(inner.strip().upper())
+            out.append(" _qid_ ")
+            continue
+        out.append(c)
+        i += 1
+    return _Lexed("".join(out), quoted_calls, None, quoted_idents)
 
-    # Strip string literals and quoted identifiers before keyword scanning
-    # so that words like CALL / MERGE / REPLACE appearing inside 'text',
-    # "ident" or `ident` don't trigger false positives.
-    # NOTE: REPLACE is intentionally NOT in the blocklist because it is a
-    # legitimate BigQuery string function and SELECT * REPLACE(...) modifier.
-    scannable = _strip_literals_and_quoted_idents(normalized)
 
-    # Check for dangerous keywords (case-insensitive).
-    # Only true DML/DDL/procedural statement keywords belong here.
-    dangerous_keywords = [
-        'INSERT', 'UPDATE', 'DELETE', 'DROP', 'TRUNCATE',
-        'ALTER', 'CREATE', 'MERGE', 'EXEC',
-        'EXECUTE', 'CALL', 'GRANT', 'REVOKE'
-    ]
+_MODES_BY_DIALECT = {
+    "postgresql": ("postgres",),
+    "postgres": ("postgres",),
+    "manual": ("postgres",),          # DuckDB lexes like Postgres
+    "google_sheets": ("postgres",),
+    "duckdb": ("postgres",),
+    "mysql": ("mysql",),
+    "bigquery": ("bigquery",),
+}
 
-    scannable_upper = scannable.upper()
-    for keyword in dangerous_keywords:
-        # Use word boundaries to avoid false positives (e.g., "SELECT_INSERT" column name)
-        pattern = r'\b' + keyword + r'\b'
-        if re.search(pattern, scannable_upper):
+
+def _modes(dialect: Optional[str]) -> Tuple[str, ...]:
+    if dialect:
+        key = str(getattr(dialect, "value", dialect)).strip().lower()
+        if key in _MODES_BY_DIALECT:
+            return _MODES_BY_DIALECT[key]
+    return ("postgres", "mysql", "bigquery")
+
+
+def _check_skeleton(lexed: _Lexed) -> None:
+    if lexed.error:
+        raise ValueError(f"Only single SELECT queries are allowed: {lexed.error}.")
+    body = lexed.skeleton.upper().rstrip()
+    while body.endswith(";"):
+        body = body[:-1].rstrip()
+    if ";" in body:
+        raise ValueError("Only single SELECT queries are allowed. Multiple statements detected.")
+
+    head = body.lstrip().lstrip("(").lstrip()
+    if not (re.match(r"SELECT\b", head) or re.match(r"WITH\b", head)):
+        raise ValueError("Query must start with SELECT. Only SELECT queries are allowed.")
+
+    for keyword in _FORBIDDEN_KEYWORDS:
+        if re.search(r"\b" + keyword + r"\b", body):
             raise ValueError(
                 f"Only SELECT queries are allowed. Query contains forbidden keyword: {keyword}"
             )
-    
-    # Check for multiple statements (semicolon followed by non-whitespace/non-comment)
-    # Allow trailing semicolon and comments after it
-    if _has_multiple_statements(scannable):
-        raise ValueError(
-            "Only single SELECT queries are allowed. Multiple statements detected."
-        )
-    
-    # Verify it starts with SELECT or WITH (CTE).
-    # Compiled transformations produce "WITH base AS (...) SELECT ..." queries.
-    stripped_upper = normalized.upper().strip()
-    if not (stripped_upper.startswith('SELECT') or stripped_upper.startswith('WITH')):
-        raise ValueError(
-            "Query must start with SELECT. Only SELECT queries are allowed."
-        )
-    
-    logger.debug(f"SQL validation passed for query: {sql_query[:100]}...")
+    if _SET_RE.search(body):
+        raise ValueError("Only SELECT queries are allowed. Query contains forbidden keyword: SET")
+    if _REPLACE_STMT_RE.search(body):
+        raise ValueError("Only SELECT queries are allowed. Query contains forbidden keyword: REPLACE")
+    if _LITERAL_TABLE_RE.search(body):
+        raise ValueError("Only SELECT queries are allowed. A string literal cannot be used as a table.")
+
+    if _ROW_LOCK_RE.search(body):
+        raise ValueError("Only SELECT queries are allowed. Row-locking clauses are not allowed.")
+
+    for name in list(_FUNC_CALL_RE.findall(body)) + list(lexed.quoted_calls):
+        bare = name.rsplit(".", 1)[-1]
+        if _DANGEROUS_FUNCTIONS.match(bare):
+            raise ValueError(f"Only SELECT queries are allowed. Function not allowed: {bare.lower()}")
 
 
-def _normalize_sql(sql_query: str) -> str:
+def open_locked_duckdb():
+    """A DuckDB in-memory connection that can never touch the host filesystem,
+    network, extensions or its own settings. Every DuckDB connection that runs
+    user/source SQL must come from here (S1). Registering Arrow tables, CREATE
+    TABLE/VIEW and INSERT inside the connection still work."""
+    import duckdb
+
+    return duckdb.connect(
+        database=":memory:",
+        config={
+            "enable_external_access": False,
+            "autoload_known_extensions": False,
+            "autoinstall_known_extensions": False,
+            "lock_configuration": True,
+        },
+    )
+
+
+def validate_select_only(sql_query: str, dialect: Optional[str] = None) -> None:
+    """Raise ValueError unless *sql_query* is one read-only SELECT statement.
+
+    ``dialect`` is the source type (postgresql / mysql / bigquery / manual /
+    google_sheets). Unknown or None = checked under every lexing mode.
     """
-    Normalize SQL by removing line comments and reducing whitespace.
-    Preserves the structure for validation.
-    """
-    # Remove single-line comments (-- comment)
-    sql_query = re.sub(r'--[^\n]*', '', sql_query)
-    
-    # Remove multi-line comments (/* comment */)
-    sql_query = re.sub(r'/\*.*?\*/', '', sql_query, flags=re.DOTALL)
-    
-    return sql_query
-
-
-def _strip_literals_and_quoted_idents(sql_query: str) -> str:
-    """
-    Remove the contents of string literals and quoted identifiers so that
-    SQL keywords appearing inside them do not trigger the forbidden-keyword
-    check.
-
-    Handles:
-      - Single-quoted strings: 'text' (with '' escape)
-      - Double-quoted strings/identifiers: "text" (with "" escape)
-      - Backtick-quoted identifiers (BigQuery/MySQL): `ident`
-      - Triple-quoted BigQuery strings: '''...''' and \"\"\"...\"\"\"
-      - Raw/byte string prefixes: r'...', b'...', rb'...' (prefix left intact,
-        body stripped)
-
-    The replacement keeps the quote characters but empties the content so the
-    query structure (length, semicolon positions, etc.) is still
-    approximately preserved for downstream checks.
-    """
-    # Order matters: handle triple-quoted before single/double to avoid
-    # partial matches.
-    patterns = [
-        (r"'''.*?'''", "''''''"),
-        (r'""".*?"""', '""""""'),
-        (r"'(?:''|[^'])*'", "''"),
-        (r'"(?:""|[^"])*"', '""'),
-        (r"`[^`]*`", "``"),
-    ]
-    for pat, repl in patterns:
-        sql_query = re.sub(pat, repl, sql_query, flags=re.DOTALL)
-    return sql_query
-
-
-def _has_multiple_statements(sql_query: str) -> bool:
-    """
-    Check if SQL contains multiple statements.
-    Allows trailing semicolon but rejects semicolon followed by more SQL.
-    """
-    # Find all semicolons
-    parts = sql_query.split(';')
-    
-    # If only one part, no semicolon present
-    if len(parts) <= 1:
-        return False
-    
-    # Check if anything after the first semicolon is non-whitespace
-    for part in parts[1:]:
-        if part.strip():  # Non-empty after semicolon
-            return True
-    
-    return False
+    if not sql_query or not sql_query.strip():
+        raise ValueError("SQL query cannot be empty")
+    if "\x00" in sql_query:
+        raise ValueError("SQL query contains a NUL byte")
+    key = str(getattr(dialect, "value", dialect) or "").strip().lower()
+    for mode in _modes(dialect):
+        lexed = _lex(sql_query, mode)
+        _check_skeleton(lexed)
+        if key in _DUCKDB_DIALECTS:
+            for ident in lexed.quoted_idents:
+                if _FILE_LIKE_IDENT_RE.search(ident) or (
+                    key != "google_sheets" and _SLASH_IN_IDENT_RE.search(ident)
+                ):
+                    raise ValueError(
+                        "Only SELECT queries are allowed. A quoted name that looks like a "
+                        "file path cannot be used."
+                    )
+    logger.debug("SQL validation passed (%d chars)", len(sql_query))

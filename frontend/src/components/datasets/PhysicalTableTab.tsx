@@ -23,7 +23,13 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
 
-  const { data: datasources, isLoading: loadingDatasources } = useDataSources();
+  const { data: allDatasources, isLoading: loadingDatasources } = useDataSources();
+  // Only providers that hold tables (backend capability model) can back a
+  // physical table — e.g. a Google Docs source is never offered here.
+  const datasources = useMemo(
+    () => (allDatasources || []).filter((ds) => ds.capabilities ? ds.capabilities.tabular : ds.type !== 'google_docs'),
+    [allDatasources],
+  );
   const { data: tables, isLoading: loadingTables, error: tablesError } = useDatasourceTables(
     selectedDatasourceId,
     searchQuery || undefined

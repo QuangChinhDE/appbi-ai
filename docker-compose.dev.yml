@@ -52,6 +52,9 @@ services:
       LOG_LEVEL: DEBUG
       SECRET_KEY: dev-secret-key
       ENVIRONMENT: dev
+      # Dev sources (the compose Postgres, demo DBs, host.docker.internal) live on
+      # private networks; production keeps the secure default (nothing allowed).
+      ALLOWED_PRIVATE_SOURCE_CIDRS: ${ALLOWED_PRIVATE_SOURCE_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8}
       COOKIE_SECURE: "false"
       AUTH_PASSWORD_LOGIN_ENABLED: ${AUTH_PASSWORD_LOGIN_ENABLED:-true}
       AUTH_GOOGLE_ENABLED: ${AUTH_GOOGLE_ENABLED:-false}

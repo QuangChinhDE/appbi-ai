@@ -420,7 +420,7 @@ def _build_source_select_query(
     """Build the raw source SELECT used before dataset transformations."""
     table_identifier = db_table.source_table_name or db_table.display_name
     if db_table.source_kind == "sql_query" and db_table.source_query:
-        validate_select_only(db_table.source_query)
+        validate_select_only(db_table.source_query, ds_type)
         source_sql = db_table.source_query
         # BigQuery uses backticks for identifiers; double-quotes denote string
         # literals.  Convert any double-quoted identifiers coming from the
@@ -1694,7 +1694,7 @@ class LiveQueryService:
         from app.services.datasource_service import DataSourceConnectionService
 
         config = decrypt_config(datasource.config)
-        validate_select_only(sql_query)
+        validate_select_only(sql_query, ds_type)
         normalized_sql_query = sql_query.strip().rstrip(";").rstrip()
 
         all_filters = list(filters or [])
@@ -1977,9 +1977,9 @@ def _get_bigquery_table_size(config: dict, schema_name: str, table_name: str) ->
 
 def _get_postgresql_table_size(config: dict, schema_name: str, table_name: str) -> Dict[str, Any]:
     """Use pg_class.reltuples for fast row estimates."""
-    import psycopg2
+    from app.services.datasource_service import _pg_connect
 
-    conn = psycopg2.connect(
+    conn = _pg_connect(
         host=config.get("host", "localhost"),
         port=config.get("port", 5432),
         user=config.get("username") or config.get("user", ""),
@@ -2013,9 +2013,9 @@ def _get_postgresql_table_size(config: dict, schema_name: str, table_name: str) 
 
 def _get_mysql_table_size(config: dict, schema_name: str, table_name: str) -> Dict[str, Any]:
     """Use INFORMATION_SCHEMA.TABLES for row/size estimates."""
-    import pymysql
+    from app.services.datasource_service import _mysql_connect
 
-    conn = pymysql.connect(
+    conn = _mysql_connect(
         host=config.get("host", "localhost"),
         port=int(config.get("port", 3306)),
         user=config.get("username") or config.get("user", ""),
