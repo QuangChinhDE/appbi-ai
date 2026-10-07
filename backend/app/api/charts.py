@@ -765,6 +765,23 @@ def dry_run_create_chart(
     )
 
     validation_errors: List[str] = []
+    # Normalize rewrites an unknown aggregation to "auto" (a locked runtime
+    # contract). Dry-run must not turn that into permission: an author who asked
+    # for e.g. "median" would save a chart computing something else. Check the
+    # aggregations AS SENT, against the one vocabulary create/update use.
+    from app.schemas.chart_config import CHART_METRIC_AGGS
+    for _key in ("roleConfig", "generatedRoleConfig", "customRoleConfig"):
+        _rc = (payload.config or {}).get(_key)
+        if not isinstance(_rc, dict):
+            continue
+        _metrics = [(f"{_key}.metrics[{i}]", m) for i, m in enumerate(_rc.get("metrics") or [])]
+        _metrics += [(f"{_key}.{k}", _rc.get(k)) for k in ("lineMetric", "benchmarkMetric", "tablePivotMetric")]
+        for _where, _m in _metrics:
+            _agg = _m.get("agg") if isinstance(_m, dict) else None
+            if _agg is not None and str(_agg).strip().lower() not in CHART_METRIC_AGGS:
+                validation_errors.append(
+                    f"config.{_where}.agg={_agg!r} is not supported — use one of {sorted(CHART_METRIC_AGGS)}."
+                )
     try:
         chart_type_enum = ChartTypeSchema(payload.chart_type.upper())
     except ValueError:

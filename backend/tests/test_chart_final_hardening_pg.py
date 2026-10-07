@@ -305,9 +305,8 @@ def test_one_aggregation_vocabulary(pg, http):
         d = client.post("/api/v1/charts/dry-run-create", json={"name": _n("f4 d"), "chart_type": "BAR",
                                                                 "dataset_table_id": t, "config": _bar(agg="median")})
         # dry-run must not silently rewrite median → auto and call it valid
-        assert d.status_code == 422 or d.json().get("ok") is False, d.text
-        if d.status_code == 200:
-            assert d.json()["normalized_config"]["roleConfig"]["metrics"][0]["agg"] == "median"
+        assert d.status_code == 200 and d.json()["ok"] is False, d.text
+        assert any("median" in e for e in d.json()["validation_errors"]), d.json()
 
 
 def test_generated_mode_with_a_leftover_sql_draft_is_validated_as_generated(pg, http):

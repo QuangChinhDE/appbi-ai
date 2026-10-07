@@ -602,10 +602,9 @@ def normalize_metric_config(metric: Any, default_agg: str = "auto") -> dict[str,
     if not field:
         return None
 
-    # An unknown aggregation (e.g. "median") is KEPT, not rewritten to the
-    # default: the validator then refuses it by name. Rewriting it to "auto"
-    # passed dry-run with a different number than the author asked for.
     agg = str(metric.get("agg") or metric.get("function") or default_agg).strip().lower()
+    if agg not in _VALID_AGGS:
+        agg = default_agg
 
     normalized = dict(metric)
     normalized["field"] = field

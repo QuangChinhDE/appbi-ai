@@ -60,6 +60,6 @@ freshness, `row_count` and `execution_time_ms`.
   `ChartCreate` whenever `config`, `chart_type` or `dataset_table_id` changes.
 - The required-role lookup uses the Enum value.
 - There is one `CHART_METRIC_AGGS` (`percent_of_total` included, case-insensitive).
-- The normalizer keeps an unknown aggregation so that validation refuses it by name.
+- Dry-run checks the aggregations as sent, so an unknown one such as `median` is refused by name. The normalizer's locked fallback (unknown → `auto`, kept at runtime) never turns that into permission to save.
 - The query mode is resolved by the runtime resolver, which now lives in
   `schemas/chart_config.py` and is re-exported by `services/chart_contracts.py`.
