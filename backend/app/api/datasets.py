@@ -23,6 +23,7 @@ from app.core.dependencies import (
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models import DataSource, Chart, Dashboard, DashboardChart, Dataset, DatasetTable
+from app.services import dataset_grants_service
 from app.models.models import DashboardPublicLink
 from app.models.resource_share import ResourceType
 from app.models.user import User
@@ -4361,6 +4362,9 @@ def preview_dataset_table(
     perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
     if perm == "none":
         raise HTTPException(status_code=403, detail="Access denied")
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -4533,6 +4537,9 @@ def export_dataset_table_excel(
     perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
     if perm == "none":
         raise HTTPException(status_code=403, detail="Access denied")
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -4616,6 +4623,9 @@ def execute_dataset_table_query(
     perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
     if perm == "none":
         raise HTTPException(status_code=403, detail="Access denied")
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -5064,6 +5074,9 @@ def get_dataset_model_distinct_values(
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
     require_view_access(db, current_user, dataset_obj, "datasets")
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     filter_context: list[dict] = []
     if filters:
@@ -6978,6 +6991,9 @@ def get_column_summary_endpoint(
     perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
     if perm == "none":
         raise HTTPException(status_code=403, detail="Access denied")
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     table = db.query(DatasetTable).filter(
         DatasetTable.id == table_id,
@@ -7029,6 +7045,9 @@ def get_table_profile(
     perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
     if perm == "none":
         raise HTTPException(status_code=403, detail="Access denied")
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:

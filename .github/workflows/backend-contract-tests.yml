@@ -235,6 +235,8 @@ jobs:
             tests/test_relationship_contract.py \
             tests/test_public_authoritative_bounds.py \
             tests/test_publish_candidate_generation.py \
+            tests/test_dictionary_ai_context_follows_schema.py \
+            tests/test_composed_reads_check_parent_lineage.py \
             tests/test_hide_is_not_remove.py \
             tests/test_operational_destination_bind.py \
             tests/test_snapshot_host_contract.py \
@@ -359,6 +361,22 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      # A real MySQL for the snapshot-extract streaming gate (bounded memory,
+      # Stop mid-extract) - the connector path differs from Postgres.
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: appbi
+          MYSQL_DATABASE: appbi
+          MYSQL_USER: appbi
+          MYSQL_PASSWORD: appbi
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -uappbi -pappbi --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
     env:
       # appbi metadata DB (alembic + SessionLocal) AND the bcfix source DB are
       # the same Postgres service — bcfix is just a schema in it (mirrors dev).
@@ -376,6 +394,7 @@ jobs:
       # Opt-in required by seed_snowflake_ci_fixture.py (it DROPs schema 'bcfix'
       # and force-assigns fixed ids — disposable CI DB only).
       CI_FIXTURE_SEED: "1"
+      APPBI_TEST_MYSQL_URL: "mysql://appbi:appbi@127.0.0.1:3306/appbi"
     steps:
       - uses: actions/checkout@v4
 
@@ -522,3 +541,13 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_pair5_data_state_pg.py
+
+      - name: "GATE — snapshot extract streams from Postgres + MySQL (bounded memory, Stop)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_snapshot_streaming_extract_pg.py
+
+      - name: "GATE — Sync reconciles the source schema before it builds (Postgres)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_sync_source_schema_drift_pg.py

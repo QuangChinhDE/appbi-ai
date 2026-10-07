@@ -1468,6 +1468,62 @@ class DataSourceConnectionService:
                 client.close()
 
     @staticmethod
+    def spool_extract_for_snapshot(
+        ds_type: str, config: Dict[str, Any], sql: str,
+        columns_meta: Optional[List[Dict[str, Any]]] = None, timeout_seconds: int = 280,
+        effective_types_out: Optional[Dict[str, str]] = None, progress_cb=None,
+    ) -> "_SnapshotSpool":
+        """Bounded-memory twin of ``extract_generic_for_snapshot`` for
+        PostgreSQL / MySQL. Reads through the server-side cursor
+        (``stream_query``) batch by batch into an anonymous temp file, verifying
+        each declared type incrementally (``TypeVerifier`` — the same rule as
+        ``verified_bq_type``) and calling ``progress_cb(rows_read)`` per batch,
+        which raises ``SyncCancelled`` on Stop; the cursor and the spool are
+        closed on any exit. The returned spool yields rows typed exactly as the
+        in-memory extract would have typed them."""
+        import json as _json
+        import tempfile
+
+        cols = [c for c in (columns_meta or []) if c.get("name")]
+        declared = {c["name"]: _ptm.bq_extract_load_type(c.get("source_type"), c.get("type")) for c in cols}
+        verifiers = {name: _ptm.TypeVerifier(bt) for name, bt in declared.items()}
+        spool = _SnapshotSpool(tempfile.TemporaryFile(mode="w+", encoding="utf-8"))
+        try:
+            _names, batches = DataSourceConnectionService.stream_query(
+                ds_type, config, sql, timeout_seconds=timeout_seconds,
+            )
+            try:
+                for batch in batches:
+                    for r in batch:
+                        row = {k: _snapshot_json_safe(v) for k, v in dict(r).items()}
+                        for name, ver in verifiers.items():
+                            ver.feed(row.get(name))
+                        spool.file.write(_json.dumps(row, ensure_ascii=False) + "\n")
+                    spool.row_count += len(batch)
+                    if progress_cb:
+                        progress_cb(spool.row_count)
+            finally:
+                close = getattr(batches, "close", None)
+                if close:
+                    close()  # releases the server-side cursor + connection
+        except BaseException:
+            spool.close()
+            raise
+        if cols:
+            type_by_name = {}
+            for name, bt in declared.items():
+                type_by_name[name] = verifiers[name].result()
+                if type_by_name[name] != bt:
+                    logger.info("[snapshot] column %r declared %s but values do not fit → loading as STRING",
+                                name, bt)
+            if effective_types_out is not None:
+                effective_types_out.clear()
+                effective_types_out.update(type_by_name)
+            spool.type_by_name = type_by_name
+            spool.bq_schema = [bigquery.SchemaField(name, bt) for name, bt in type_by_name.items()]
+        return spool
+
+    @staticmethod
     def extract_generic_for_snapshot(
         ds_type: str, config: Dict[str, Any], sql: str,
         columns_meta: Optional[List[Dict[str, Any]]] = None, timeout_seconds: int = 280,
@@ -1738,6 +1794,7 @@ class DataSourceConnectionService:
             return v
 
         # ── schema + a ROW GENERATOR (bounded memory) ──
+        _spools: list = []  # PG/MySQL extract spools; closed (deleted) on every exit
         read_client = None
         if source_ds_type == "bigquery":
             read_client = _build_bigquery_client(source_config)
@@ -1758,10 +1815,28 @@ class DataSourceConnectionService:
             def _rows():
                 for r in it:  # RowIterator pages from BigQuery — bounded memory
                     yield {k: _coerce(val) for k, val in dict(r).items()}
+        elif str(getattr(source_ds_type, "value", source_ds_type)).lower() in ("postgresql", "mysql"):
+            # A warehouse table can be any size: read it through the server-side
+            # cursor into an on-disk spool (ONE consistent read, bounded RAM, Stop
+            # honoured between fetches), verify the declared types while reading,
+            # then load from the spool. execute_query → rows → safe_rows →
+            # typed_rows held the whole table in memory three times over.
+            spool = DataSourceConnectionService.spool_extract_for_snapshot(
+                source_ds_type, source_config, source_select_sql,
+                columns_meta=columns_meta, timeout_seconds=timeout_seconds,
+                effective_types_out=effective_types_out, progress_cb=progress_cb,
+            )
+            _spools.append(spool)
+            bq_schema = spool.bq_schema
+            _rows = spool.rows
+            if progress_cb is not None:
+                # Loading re-counts from 0; the rows were already counted while
+                # read. Keep the Stop check, never report progress going backwards.
+                _read_total, _outer_cb = spool.row_count, progress_cb
+                progress_cb = lambda n: _outer_cb(max(n, _read_total))  # noqa: E731
         else:
-            # Non-BQ (Sheets/manual/other warehouse): reuse the typed extract, which
-            # applies DECLARED types (join-key correctness). Sheets are small; large
-            # Postgres would stream via execute_query's cursor path upstream.
+            # Non-BQ (Sheets/manual): reuse the typed extract, which applies
+            # DECLARED types (join-key correctness). These sources are small.
             bq_schema, safe_rows = DataSourceConnectionService.extract_generic_for_snapshot(
                 source_ds_type, source_config, source_select_sql,
                 columns_meta=columns_meta, timeout_seconds=timeout_seconds,
@@ -4479,3 +4554,79 @@ class DataSourceConnectionService:
             ]
         except Exception:
             return []
+
+
+def _snapshot_json_safe(v):
+    """JSON-safe value for a snapshot LOAD — same rules as the in-memory extract."""
+    import base64
+    import datetime as _dt
+    from decimal import Decimal
+
+    if v is None:
+        return None
+    if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
+        return v.isoformat()
+    if isinstance(v, Decimal):
+        return str(v)
+    if isinstance(v, bytes):
+        return base64.b64encode(v).decode("ascii")
+    if isinstance(v, dict):
+        return {k: _snapshot_json_safe(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_snapshot_json_safe(x) for x in v]
+    return v
+
+
+def _snapshot_coerce_to(bq_t: str, v):
+    """Coerce a JSON-safe value to its verified BigQuery type — same rules as
+    the in-memory extract's ``_coerce_to``. Unparseable → NULL."""
+    import json as _json
+
+    if v is None:
+        return None
+    try:
+        if bq_t == "INT64":
+            return int(float(v)) if not isinstance(v, bool) else int(v)
+        if bq_t == "FLOAT64":
+            return float(v)
+        if bq_t in ("NUMERIC", "BIGNUMERIC"):
+            return v if isinstance(v, str) else str(v)
+        if bq_t == "BOOL":
+            if isinstance(v, str):
+                return v.strip().lower() in ("true", "1", "yes", "t")
+            return bool(v)
+        if bq_t in ("STRING",):
+            return v if isinstance(v, str) else (
+                _json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v))
+        return v
+    except (TypeError, ValueError):
+        return None
+
+
+class _SnapshotSpool:
+    """An extracted table on local disk (anonymous temp file: never named,
+    removed by the OS on close / process exit)."""
+
+    def __init__(self, file):
+        self.file = file
+        self.row_count = 0
+        self.bq_schema = None
+        self.type_by_name: Optional[Dict[str, str]] = None
+
+    def rows(self):
+        import json as _json
+
+        self.file.seek(0)
+        types = self.type_by_name
+        for line in self.file:
+            row = _json.loads(line)
+            if types is None:
+                yield row
+            else:
+                yield {name: _snapshot_coerce_to(bt, row.get(name)) for name, bt in types.items()}
+
+    def close(self) -> None:
+        try:
+            self.file.close()
+        except Exception:  # noqa: BLE001
+            pass

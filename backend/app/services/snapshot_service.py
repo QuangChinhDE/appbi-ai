@@ -1169,6 +1169,51 @@ def _ready_snapshot_in_generation(
     return row
 
 
+_DRIFT_CHECKED_ENGINES = ("postgresql", "mysql", "bigquery")  # metadata / dry-run probes only
+
+
+def _source_schema_drift(db: Session, table: DatasetTable, datasource: Optional[DataSource]) -> Optional[str]:
+    """Reconcile the source's CURRENT relation with the columns the dataset
+    (and its semantic model) was built on, before materializing it.
+
+    A column dropped or renamed at the source used to sync "successfully":
+    a declared-type extract loaded it as all-NULL, a ``SELECT *`` simply left it
+    out — and the published generation then broke every chart that used it.
+    Missing columns ⇒ an explicit drift error (the table is not built, the
+    publish is refused, the previous generation keeps serving). Added columns
+    ⇒ ``schema_change_pending`` (the author decides; the build proceeds).
+    Unknown (unreadable source / unsupported engine / no cache) ⇒ None: the
+    build itself reports a source that cannot be read."""
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+    from app.services.dataset_model_service import cache_column_names
+
+    if datasource is None or is_generated_calendar_table(table):
+        return None
+    if _ds_type(datasource) not in _DRIFT_CHECKED_ENGINES:
+        return None
+    cached = set(cache_column_names(getattr(table, "columns_cache", None)) or ())
+    if not cached:
+        return None
+    from app.services.dataset_relation_service import logical_relation_columns
+
+    live_cols = logical_relation_columns(db, table)
+    if live_cols is None:
+        return None
+    live = {c["name"] for c in live_cols}
+    missing = sorted(cached - live)
+    added = sorted(live - cached)
+    if added and not getattr(table, "schema_change_pending", False):
+        table.schema_change_pending = True
+        db.commit()
+        logger.info("[snapshot] table=%s source gained columns %s (schema_change_pending)", table.id, added)
+    if missing:
+        name = table.display_name or table.source_table_name or f"#{table.id}"
+        return (f"SOURCE_SCHEMA_DRIFT: nguồn của bảng '{name}' không còn cột "
+                f"{', '.join(missing[:5])}{'…' if len(missing) > 5 else ''} — cập nhật bảng (Refresh schema) "
+                f"rồi Sync & Publish lại. Dashboard vẫn dùng generation đã publish.")
+    return None
+
+
 def _source_changed_since(datasource: Optional[DataSource], built_at) -> bool:
     """Was the source connection edited after a snapshot was read from it? The
     fingerprint is SQL + columns only, so re-pointing the SAME datasource id at
@@ -1466,10 +1511,20 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     # concurrent build below. (Resume saves a heavy watermark-less table.)
     _host_id = host.id if host is not None else None
     _to_run: list = []  # (table_id, is_calendar)
+    build_errors: Dict[int, str] = {}
     for t in _to_build:
         if _sc.is_stop_requested(dataset_id):
             stopped = True
             break
+        drift = _source_schema_drift(db, t, datasource_by_id.get(t.datasource_id))
+        if drift:
+            # Never build — and never publish — a snapshot of a relation that no
+            # longer has the columns the model was built on.
+            build_errors[t.id] = drift
+            skipped.append(t.id)
+            _sp.begin_table(dataset_id, t.id)
+            _sp.finish_table(dataset_id, t.id, 0, skipped=True)
+            continue
         _reused = _ready_snapshot_in_generation(
             db, t, generation, dataset_obj, datasource_by_id.get(t.datasource_id)
         )
@@ -1479,8 +1534,6 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
             _sp.finish_table(dataset_id, t.id, _reused.row_count or 0)
         else:
             _to_run.append((t.id, is_generated_calendar_table(t)))
-
-    build_errors: Dict[int, str] = {}
 
     def _build_one(table_id: int, is_cal: bool):
         """Build ONE table in its OWN DB session (safe in parallel: the per-table
