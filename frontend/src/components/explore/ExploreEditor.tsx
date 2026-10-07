@@ -12,6 +12,17 @@ import { useDataset, useTablePreview, type ColumnMetadata } from '@/hooks/use-da
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
 import { BaseTablePicker } from '@/components/explore/BaseTablePicker';
 import { pickRecommendedBaseTableId } from '@/lib/semantic-base';
+import {
+  bindingsOutsideBase,
+  deriveBaseTableId,
+  firstAddedQualifiedField,
+  keepFiltersInBase,
+  listRoleFieldRefs,
+  measureViewsOutsideBase,
+  type BaseOrigin,
+} from '@/lib/chart-base-lifecycle';
+import { describeChartFailure, type ChartFailure } from '@/lib/chart-failure';
+import { ChartFailurePanel } from '@/components/explore/ChartFailurePanel';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
@@ -1128,6 +1139,12 @@ export function ExploreEditor({
 
   const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(initialDatasetId);
   const [selectedTableId, setSelectedTableId] = useState<number | null>(initialTableId);
+  // Where the current base came from (see lib/chart-base-lifecycle.ts). A table
+  // handed in by the caller (initialTableId) is an explicit choice.
+  const [baseOrigin, setBaseOrigin] = useState<BaseOrigin | null>(initialTableId != null ? 'user' : null);
+  // The first qualified field the USER picked — the only thing that may derive
+  // a base. Auto-seeded fields never set it.
+  const intentFieldRef = useRef<string | null>(null);
   const [filters, setFilters] = useState<Filter[]>([]);
   const [chartType, setChartType] = useState<ChartType>('TABLE');
   const [generatedRoleConfig, setGeneratedRoleConfig] = useState<ChartRoleConfig>({ metrics: [] });
@@ -1160,6 +1177,9 @@ export function ExploreEditor({
   const [generatedQueryState, setGeneratedQueryState] = useState<ExploreQueryState | null>(null);
   const [customQueryState, setCustomQueryState] = useState<ExploreQueryState | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
+  // A server-side failure of the last run, classified (semantic refusal vs
+  // invalid config vs source error …). Rendered by ChartFailurePanel.
+  const [queryFailure, setQueryFailure] = useState<ChartFailure | null>(null);
   const [generatedLastRunSignature, setGeneratedLastRunSignature] = useState('');
   const [customLastRunSignature, setCustomLastRunSignature] = useState('');
 
@@ -1258,6 +1278,9 @@ export function ExploreEditor({
     const seedChartType = initialSeed.chartType ?? 'TABLE';
     if (initialSeed.generatedRoleConfig) {
       setGeneratedRoleConfig(normalizeRoleConfig(seedChartType, initialSeed.generatedRoleConfig));
+      // A seeded editor (report copy / import) carries someone's authored
+      // intent: its first qualified field may anchor the base.
+      intentFieldRef.current = listRoleFieldRefs(initialSeed.generatedRoleConfig).find((f) => f.includes('.')) ?? null;
     }
     if (initialSeed.customRoleConfig) {
       setCustomRoleConfig(normalizeRoleConfig(seedChartType, initialSeed.customRoleConfig));
@@ -1313,12 +1336,14 @@ export function ExploreEditor({
     if (chart.dataset_table_id) {
       skipNextSourceResetRef.current = true;
       setSelectedTableId(chart.dataset_table_id);
+      setBaseOrigin('saved');
       const datasetId = config?.dataset_id ?? chart.dataset_id;
       if (datasetId) setSelectedDatasetId(datasetId);
     } else if (config?.source?.kind === 'dataset_table') {
       skipNextSourceResetRef.current = true;
       setSelectedDatasetId(config.source.datasetId);
       setSelectedTableId(config.source.tableId);
+      setBaseOrigin('saved');
     }
     const persistedFilters = Array.isArray(config?.baseFilters) && config.baseFilters.length > 0
       ? config.baseFilters
@@ -1892,6 +1917,17 @@ export function ExploreEditor({
     ? (customConfigColumns ?? [])
     : previewColumns;
   const displayedQueryState = activeQueryState;
+  // Tables whose MEASURES the chart aggregates when they are not the base: the
+  // planner computes those numbers at that fact's grain, so a route problem is
+  // reported from there. Shown next to the base so "base X, refusal names Y"
+  // is explained instead of looking like a bug.
+  const measureTableLabels = useMemo<string[]>(() => {
+    if (!selectedSemanticView || !datasetModel) return [];
+    return measureViewsOutsideBase(normalizedGeneratedRoleConfig, selectedSemanticView.name)
+      .map((name) => datasetModel.views?.find((v) => v.name === name))
+      .filter((v): v is DatasetModelView => Boolean(v))
+      .map((v) => getSemanticViewDisplayName(v));
+  }, [selectedSemanticView, datasetModel, normalizedGeneratedRoleConfig, getSemanticViewDisplayName]);
   const fieldDisplayByName = useMemo(() => {
     const map = new Map<string, string>();
     for (const column of configColumns) {
@@ -2154,64 +2190,89 @@ export function ExploreEditor({
   // Why use generatedRoleConfig (and not customRoleConfig): Hướng A is
   // only meaningful in Builder/Generated mode. Custom SQL mode has its own
   // flow where columns come from SQL output — no semantic views involved.
+  //
+  // ONLY the user's first explicit field derives the base (`intentFieldRef`,
+  // set by `handleGeneratedRoleConfigChange`). Auto-seeded fields (TABLE
+  // default columns, fallback dimension/metric) used to be read here exactly
+  // like user picks, so the base was committed to the model's FIRST view before
+  // the user touched anything — the "nhảy về bảng default" report.
   useEffect(() => {
     if (selectedTableId != null) return; // sticky once set
     if (!datasetModel) return;
-    const collectFirstView = (): string | null => {
-      const rc = generatedRoleConfig;
-      const pickFromField = (f?: string | null): string | null => {
-        if (!f || !f.includes('.')) return null;
-        return f.split('.', 1)[0] || null;
-      };
-      const order = [
-        rc.dimension,
-        rc.timeField,
-        rc.scatterX,
-        rc.scatterY,
-        rc.tableRowDimension,
-        rc.tableColumnDimension,
-        rc.breakdown,
-        ...(rc.metrics ?? []).map((m) => m.field),
-        rc.lineMetric?.field ?? null,
-        rc.benchmarkMetric?.field ?? null,
-        rc.tablePivotMetric?.field ?? null,
-        ...((rc.selectedColumns ?? []) as (string | undefined)[]),
-      ];
-      for (const candidate of order) {
-        const v = pickFromField(candidate ?? null);
-        if (v) return v;
-      }
-      return null;
-    };
-    const firstView = collectFirstView();
-    if (!firstView) return;
-    const views = datasetModel.views ?? [];
-    // Resolve the first field's view to a base TABLE. A date-hierarchy view
-    // (`{parentView}__{col}__date_dim`, view_role 'calendar_role') carries NO
-    // dataset_table_id of its own — it is a virtual expansion of a date column
-    // on a real table view. Anchor the chart to that PARENT table view. Without
-    // this, any chart whose FIRST picked field is a date-hierarchy field never
-    // derives a base table, so Run/Save stay disabled forever — which is the
-    // DEFAULT state, because a fresh Table auto-selects the date-hierarchy
-    // columns. (Repro: /explore/new → RC02_SDR → Run disabled.)
-    let resolvedTableId: number | null = null;
-    const direct = views.find((v) => v.name === firstView);
-    if (direct?.dataset_table_id != null) {
-      resolvedTableId = direct.dataset_table_id;
-    } else if (direct?.view_role === 'calendar_role' || firstView.endsWith('__date_dim')) {
-      // Longest-prefix match so `a__b__date_dim` anchors to `a__b`, not `a`.
-      const parent = views
-        .filter((v) => v.dataset_table_id != null && firstView.startsWith(`${v.name}__`))
-        .sort((a, b) => b.name.length - a.name.length)[0];
-      if (parent?.dataset_table_id != null) resolvedTableId = parent.dataset_table_id;
-    }
+    const resolvedTableId = deriveBaseTableId(datasetModel.views ?? [], intentFieldRef.current);
     if (resolvedTableId == null) return;
-    // Suppress the reset-on-table-change effect below — this is the FIRST
-    // base set, not a user-initiated table swap, so filters / role-config
-    // should NOT be wiped.
+    // The FIRST base set, not a swap: keep the query-state reset quiet.
     skipNextSourceResetRef.current = true;
     setSelectedTableId(resolvedTableId);
+    setBaseOrigin('derived');
   }, [generatedRoleConfig, selectedTableId, datasetModel]);
+
+  /** The role-config setter the field pickers use — the only USER entry point.
+   *  Records the first qualified field the user adds as the base intent. */
+  const handleGeneratedRoleConfigChange = useCallback((next: ChartRoleConfig) => {
+    setGeneratedRoleConfig((prev) => {
+      if (intentFieldRef.current == null) {
+        const added = firstAddedQualifiedField(prev, next);
+        if (added) intentFieldRef.current = added;
+      }
+      return next;
+    });
+  }, []);
+
+  /** A dataset switch starts over: the previous dataset's fields, filters,
+   *  base and intent mean nothing in the new one. */
+  const handleDatasetChange = useCallback((nextDatasetId: number | null) => {
+    if (nextDatasetId !== selectedDatasetId) {
+      intentFieldRef.current = null;
+      setBaseOrigin(null);
+      setFilters([]);
+      setGeneratedRoleConfig({ metrics: [] });
+      setCustomRoleConfig({ metrics: [] });
+      setQueryFailure(null);
+    }
+    setSelectedDatasetId(nextDatasetId);
+  }, [selectedDatasetId]);
+
+  /** Explicit base change from the picker. Keeps every binding the new base
+   *  still reaches; drops (and names) only the ones it cannot, with Undo. It
+   *  never re-roots silently: the user asked for this base. */
+  const handleBaseChange = useCallback((nextTableId: number) => {
+    if (nextTableId === selectedTableId) return;
+    const views = datasetModel?.views ?? [];
+    const nextView = views.find((v) => v.dataset_table_id === nextTableId) ?? null;
+    const reach = nextView && datasetModel
+      ? new Set(getReachableViews(datasetModel, nextView.name).map((v) => v.name))
+      : null;
+    const snapshot = {
+      tableId: selectedTableId, origin: baseOrigin, generated: generatedRoleConfig, filters,
+    };
+    setSelectedTableId(nextTableId);
+    setBaseOrigin('user');
+    setQueryFailure(null);
+    if (!reach) return;
+    const dropped = bindingsOutsideBase(generatedRoleConfig, filters, reach);
+    setFilters((prev) => keepFiltersInBase(prev, reach));
+    const total = dropped.fields.length + dropped.filters.length;
+    if (total > 0) {
+      const label = (ref: string) => semanticLabelMap?.get(ref) ?? ref;
+      toast.warning(t('explore.base.prunedToast', {
+        base: nextView ? getSemanticViewDisplayName(nextView) : String(nextTableId),
+        count: total,
+        fields: [...dropped.fields, ...dropped.filters].map(label).join(', '),
+      }), {
+        duration: 12000,
+        action: {
+          label: t('explore.base.undo'),
+          onClick: () => {
+            setSelectedTableId(snapshot.tableId);
+            setBaseOrigin(snapshot.origin);
+            setGeneratedRoleConfig(snapshot.generated);
+            setFilters(snapshot.filters);
+          },
+        },
+      });
+    }
+  }, [selectedTableId, datasetModel, baseOrigin, generatedRoleConfig, filters, getSemanticViewDisplayName, semanticLabelMap, t]);
 
   /**
    * Phase-15.18 — Auto-default time grain to 'month' when a date field is
@@ -2277,18 +2338,11 @@ export function ExploreEditor({
     semanticColumns,
   ]);
 
-  // Reset config when user manually changes the table (skip during initial chart load)
-  const isInitialTableSet = useRef(false);
-  useEffect(() => {
-    if (!selectedTableId) return;
-    if (!isInitialTableSet.current) {
-      isInitialTableSet.current = true;
-      return;
-    }
-    setFilters([]);
-    setGeneratedRoleConfig({ metrics: [] });
-    setCustomRoleConfig({ metrics: [] });
-  }, [selectedTableId]);
+  // A base change no longer wipes the chart (it used to clear every filter and
+  // both role configs — and also fired on the FIRST derive after a dataset
+  // switch, emptying the field the user had just picked). The picker goes
+  // through `handleBaseChange`, which drops only the bindings the new base
+  // cannot reach and offers Undo; the sync effect below prunes the rest.
 
   /**
    * Phase-12.5 — Seeding pass for generatedRoleConfig.
@@ -2314,10 +2368,15 @@ export function ExploreEditor({
     const availableGeneratedColumns = [...previewColumns, ...semanticColumns];
     if (!availableGeneratedColumns.length) return;
     setGeneratedRoleConfig((prev) => {
-      const synced = syncRoleConfigWithColumns(chartType, prev, availableGeneratedColumns, ambiguousBareNames);
+      // Before a base exists every view is offered; seeding a fallback
+      // dimension/metric then would pick from whichever view comes first.
+      // Only prune until the user's intent (or a saved/chosen base) exists.
+      const synced = selectedTableId == null
+        ? pruneRoleConfigToColumns(chartType, prev, availableGeneratedColumns)
+        : syncRoleConfigWithColumns(chartType, prev, availableGeneratedColumns, ambiguousBareNames);
       return upgradeRoleConfigToQualified(synced, qualifiedByBare);
     });
-  }, [chartType, previewColumns, semanticColumns, semanticReady, qualifiedByBare, ambiguousBareNames]);
+  }, [chartType, previewColumns, semanticColumns, semanticReady, qualifiedByBare, ambiguousBareNames, selectedTableId]);
 
   // UX-2: For NEW TABLE charts, default to the first 10 non-identifier columns
   // instead of showing all available columns. This prevents overwhelming the
@@ -2326,6 +2385,9 @@ export function ExploreEditor({
   const didInitNewTableRef = useRef(false);
   useEffect(() => {
     if (!isNew || chartType !== 'TABLE' || didInitNewTableRef.current) return;
+    // Default columns come from the committed base's graph only — seeded with no
+    // base they came from the model's first view and then committed it.
+    if (selectedTableId == null) return;
     if (configColumns.length === 0) return;
     // normalizeRoleConfig collapses [] to undefined, so undefined means "all cols" here.
     // Only apply the default when no explicit selection has been made yet.
@@ -2347,7 +2409,7 @@ export function ExploreEditor({
     if (defaultCols.length > 0) {
       setGeneratedRoleConfig((prev) => ({ ...prev, selectedColumns: defaultCols }));
     }
-  }, [isNew, chartType, configColumns, normalizedRoleConfig.selectedColumns]);
+  }, [isNew, chartType, configColumns, normalizedRoleConfig.selectedColumns, selectedTableId]);
 
   // Phase-15.83 — useEffect previously clamped queryLimit to the per-mode
   // cap. Caps removed (NO_LIMIT_SENTINEL); effect deleted.
@@ -2381,6 +2443,7 @@ export function ExploreEditor({
     setGeneratedQueryState(null);
     setCustomQueryState(null);
     setQueryError(null);
+    setQueryFailure(null);
     setGeneratedLastRunSignature('');
     setCustomLastRunSignature('');
     setSqlMode('generated');
@@ -2410,6 +2473,7 @@ export function ExploreEditor({
     }
 
     setQueryError(null);
+    setQueryFailure(null);
 
     try {
       if (sqlMode === 'custom') {
@@ -2576,12 +2640,22 @@ export function ExploreEditor({
         setGeneratedLastRunSignature(currentQuerySignature);
       }
     } catch (runError: any) {
-      const detail = runError?.response?.data?.detail;
-      const message = typeof detail === 'string'
-        ? detail
-        : detail?.message || runError?.message || 'Failed to run query';
-      setQueryError(String(message));
-      toast.error(String(message));
+      // Classified, not printed: a semantic refusal is the engine declining to
+      // guess and is explained in business terms by ChartFailurePanel. The
+      // previous result is DROPPED — showing the last run's chart under a
+      // configuration that just failed would present numbers for a question
+      // the user is no longer asking.
+      const failure = describeChartFailure(runError);
+      setQueryFailure(failure);
+      if (sqlMode === 'custom') setCustomQueryState(null);
+      else setGeneratedQueryState(null);
+      if (failure.kind === 'ambiguous_route' || failure.kind === 'semantic_refusal') {
+        toast.warning(failure.kind === 'ambiguous_route' && failure.target
+          ? t('explore.failure.routeTitle', { target: failure.target })
+          : t(`explore.failure.${failure.kind}Title`));
+      } else {
+        toast.error(failure.technical || t(`explore.failure.${failure.kind}Title`));
+      }
     }
   };
 
@@ -2807,6 +2881,18 @@ export function ExploreEditor({
           ...(dryRun.runtime_errors ?? []),
         ];
         const message = failures[0] || 'Chart config did not pass dataset/runtime validation.';
+        if (dryRun.runtime_refusal) {
+          // Same refusal the preview gives — same explanation, not raw prose.
+          const failure = describeChartFailure({
+            response: { status: 400, data: { detail: message, refusal: dryRun.runtime_refusal } },
+          });
+          setQueryFailure(failure);
+          setGeneratedQueryState(null);
+          toast.warning(failure.kind === 'ambiguous_route' && failure.target
+            ? t('explore.failure.routeTitle', { target: failure.target })
+            : t(`explore.failure.${failure.kind}Title`));
+          return;
+        }
         setQueryError(message);
         toast.error(message);
         return;
@@ -3111,7 +3197,7 @@ export function ExploreEditor({
               <ExploreSourceSelector
                 selectedDatasetId={selectedDatasetId}
                 selectedTableId={selectedTableId}
-                onDatasetChange={setSelectedDatasetId}
+                onDatasetChange={handleDatasetChange}
                 onTableChange={setSelectedTableId}
                 disabled={!resPerms.canEdit}
                 lockDataset={lockDatasetSelection}
@@ -3127,46 +3213,59 @@ export function ExploreEditor({
                 Once derived, the chip stays informative even for single-
                 table charts ("Base: Meetings") and grows to show JOIN count
                 or joinable potential when relationships exist. */}
-            {selectedSemanticView && (() => {
-              // Data-source chip (Phase-15.10 redesign): DAs found "Base: X ·
-              // 🔌 +N joinable" confusing — "base view" + the actual/potential
-              // (joined vs joinable) distinction is semantic-layer jargon. Show
-              // only what they recognise: a table icon + the table name. The
-              // "+N" appears ONLY when the chart ACTUALLY combines other tables
-              // (a meaningful, actionable state) — join *potential* moves to the
-              // tooltip so it stops cluttering. Icons replace the emojis to
-              // match the lucide system; the face is language-agnostic.
-              const baseLabel = getSemanticViewDisplayName(selectedSemanticView);
+            {selectedDatasetId != null && datasetModel && (() => {
+              // Base chip. Says WHAT the base is, WHERE it came from (saved /
+              // chosen / derived from the user's first field) and — when the
+              // chart's numbers come from another fact — on which table they
+              // are computed. It is never green just because tables are joined:
+              // joining is not health; a refused last run turns it amber.
+              const baseLabel = selectedSemanticView ? getSemanticViewDisplayName(selectedSemanticView) : null;
               const crossUsed = activeRelationshipSummary.crossTableInUse;
-              const joinedCount = activeRelationshipSummary.crossTableViews?.length ?? 0;
+              const joinedCount = selectedSemanticView ? (activeRelationshipSummary.crossTableViews?.length ?? 0) : 0;
               const joinableCount = Math.max(0, activeRelationshipSummary.activeViewCount - 1);
-              const hasJoined = crossUsed && joinedCount > 0;
+              const hasJoined = Boolean(selectedSemanticView) && crossUsed && joinedCount > 0;
               const hasJoinable = !crossUsed && joinableCount > 0;
-              const tone = hasJoined
-                ? 'border-success/40 bg-success/10 text-success'
-                : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-tertiary';
-              const tip = hasJoined
-                ? t(joinedCount === 1 ? 'explore.editor.relatedTablesJoinedTitleOne' : 'explore.editor.relatedTablesJoinedTitleMany', {
-                    count: joinedCount,
-                    tables: (activeRelationshipSummary.crossTableViews ?? []).join(', '),
-                  })
-                : hasJoinable
-                  ? t(joinableCount === 1 ? 'explore.editor.relatedTablesJoinableTitleOne' : 'explore.editor.relatedTablesJoinableTitleMany', {
-                      base: baseLabel,
-                      count: joinableCount,
+              const refused = queryFailure?.kind === 'ambiguous_route' || queryFailure?.kind === 'semantic_refusal';
+              const tone = refused
+                ? 'border-warning/50 bg-warning/10 text-warning'
+                : selectedSemanticView
+                  ? 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary'
+                  : 'border-dashed border-primary/50 bg-primary/5 text-primary';
+              const recommendedView = recommendedBaseTableId != null
+                ? datasetModel.views?.find((v) => v.dataset_table_id === recommendedBaseTableId) ?? null
+                : null;
+              const baseTip = !baseLabel
+                ? t('explore.base.none')
+                : hasJoined
+                  ? t(joinedCount === 1 ? 'explore.editor.relatedTablesJoinedTitleOne' : 'explore.editor.relatedTablesJoinedTitleMany', {
+                      count: joinedCount,
+                      tables: (activeRelationshipSummary.crossTableViews ?? []).join(', '),
                     })
-                  : t('explore.editor.dataBaseTitle', { base: baseLabel });
+                  : hasJoinable
+                    ? t(joinableCount === 1 ? 'explore.editor.relatedTablesJoinableTitleOne' : 'explore.editor.relatedTablesJoinableTitleMany', {
+                        base: baseLabel,
+                        count: joinableCount,
+                      })
+                    : t('explore.editor.dataBaseTitle', { base: baseLabel });
+              const tip = refused ? `${baseTip} — ${t('explore.base.refusedTip')}` : baseTip;
               return (
                 <BaseTablePicker
                   tables={dataset?.tables ?? []}
                   selectedTableId={selectedTableId}
                   recommendedTableId={recommendedBaseTableId}
-                  onChange={setSelectedTableId}
-                  baseLabel={baseLabel}
+                  onChange={handleBaseChange}
+                  baseLabel={baseLabel ?? t('explore.base.choose')}
                   joinedCount={joinedCount}
                   tone={tone}
                   hasJoined={hasJoined}
                   tip={tip}
+                  originLabel={baseOrigin ? t(`explore.base.origin.${baseOrigin}`) : null}
+                  measureNote={measureTableLabels.length > 0
+                    ? t('explore.base.measuresFrom', { tables: measureTableLabels.join(', ') })
+                    : null}
+                  recommendedNote={recommendedView && selectedTableId != null && recommendedBaseTableId !== selectedTableId
+                    ? t('explore.base.recommendedDiffers', { table: getSemanticViewDisplayName(recommendedView) })
+                    : null}
                   disabled={!resPerms.canEdit}
                 />
               );
@@ -3380,7 +3479,7 @@ export function ExploreEditor({
                     baseViewName={selectedSemanticView?.name ?? null}
                     joinKeyRefs={joinKeyRefs}
                     onChartTypeChange={handleChartTypeChange}
-                    onRoleConfigChange={sqlMode === 'custom' ? setCustomRoleConfig : setGeneratedRoleConfig}
+                    onRoleConfigChange={sqlMode === 'custom' ? setCustomRoleConfig : handleGeneratedRoleConfigChange}
                     onStyleConfigChange={setChartStyleConfig}
                   />
 
@@ -3512,6 +3611,16 @@ export function ExploreEditor({
                         : t('explore.editor.chooseDatasetToStartHelp')}
                     </p>
                   </div>
+                </div>
+              ) : queryFailure && !displayedQueryState ? (
+                <div className="flex h-full items-center justify-center overflow-auto">
+                  <ChartFailurePanel
+                    failure={queryFailure}
+                    baseLabel={selectedSemanticView ? getSemanticViewDisplayName(selectedSemanticView) : null}
+                    measureTables={measureTableLabels}
+                    datasetId={selectedDatasetId}
+                    canEditModel={dataset?.user_permission === 'edit' || dataset?.user_permission === 'full'}
+                  />
                 </div>
               ) : !displayedQueryState ? (
                 <div className="flex h-full items-center justify-center">

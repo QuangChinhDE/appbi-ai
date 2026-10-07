@@ -132,6 +132,9 @@ class ChartDryRunCreateResponse(BaseModel):
     semantic_warnings: List[str] = Field(default_factory=list)
     runtime_errors: List[str] = Field(default_factory=list)
     runtime_root_cause: Optional[str] = None
+    #: The runtime preview's semantic refusal, structured exactly like a 400
+    #: ``refusal`` from preview-data — so Save explains it the same way Run does.
+    runtime_refusal: Optional[Dict[str, Any]] = None
     runtime_preview_sample: Optional[List[Dict[str, Any]]] = None
     # Phase-12.6: config keys the BE would accept + save but the FE
     # Explore renderer does NOT consume — typically misspellings or
@@ -410,14 +413,15 @@ def ai_chart_preview(
     try:
         result = ChartService.preview_chart_data(db, payload.dataset_table_id, "TABLE", preview_config)
     except ValueError as exc:
-        from app.services.chart_service import REFUSAL_HEADER, refusal_category
+        from app.services.chart_error_contract import refusal_response
+        from app.services.dataset_model_service import humanize_view_tokens
 
-        _cat = refusal_category(exc)
-        raise HTTPException(status_code=400, detail=str(exc),
-                            headers={REFUSAL_HEADER: _cat} if _cat else None)
+        _dsid = getattr(_get_dataset_for_chart_table(db, payload.dataset_table_id)[0], "id", 0)
+        return refusal_response(exc, lambda t: humanize_view_tokens(t, db, _dsid))
     except Exception as exc:
-        logger.exception("ai-preview failed for table=%s", payload.dataset_table_id)
-        raise HTTPException(status_code=422, detail=f"Query failed: {exc}")
+        from app.services.chart_error_contract import failure_detail
+
+        raise HTTPException(status_code=422, detail=failure_detail(exc, f"ai-preview table={payload.dataset_table_id}"))
     data = list(result.get("data") or [])
     response: Dict[str, Any] = {
         "chart_type": payload.chart_type,
@@ -483,20 +487,17 @@ def preview_chart_data(
         return ChartPreviewDataResponse(**result)
     except ValueError as exc:
         # Humanise internal dataset_table_<id> tokens → friendly table names so
-        # the DA sees "dim_customer" not "dataset_table_585" in the error.
-        from app.services.chart_service import REFUSAL_HEADER, refusal_category
+        # the DA sees "dim_customer" not "dataset_table_585" in the error; a
+        # semantic refusal also carries its structured `refusal` object.
+        from app.services.chart_error_contract import refusal_response
         from app.services.dataset_model_service import humanize_view_tokens
-        _cat = refusal_category(exc)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=humanize_view_tokens(str(exc), db, getattr(dataset_obj, "id", 0)),
-            headers={REFUSAL_HEADER: _cat} if _cat else None,
-        )
+        _dsid = getattr(dataset_obj, "id", 0)
+        return refusal_response(exc, lambda t: humanize_view_tokens(t, db, _dsid))
     except Exception as exc:
-        logger.exception("Failed to preview chart data")
+        from app.services.chart_error_contract import failure_detail
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to preview chart data: {exc}",
+            detail=failure_detail(exc, "chart preview"),
         )
 
 
@@ -764,6 +765,23 @@ def dry_run_create_chart(
     )
 
     validation_errors: List[str] = []
+    # Normalize rewrites an unknown aggregation to "auto" (a locked runtime
+    # contract). Dry-run must not turn that into permission: an author who asked
+    # for e.g. "median" would save a chart computing something else. Check the
+    # aggregations AS SENT, against the one vocabulary create/update use.
+    from app.schemas.chart_config import CHART_METRIC_AGGS
+    for _key in ("roleConfig", "generatedRoleConfig", "customRoleConfig"):
+        _rc = (payload.config or {}).get(_key)
+        if not isinstance(_rc, dict):
+            continue
+        _metrics = [(f"{_key}.metrics[{i}]", m) for i, m in enumerate(_rc.get("metrics") or [])]
+        _metrics += [(f"{_key}.{k}", _rc.get(k)) for k in ("lineMetric", "benchmarkMetric", "tablePivotMetric")]
+        for _where, _m in _metrics:
+            _agg = _m.get("agg") if isinstance(_m, dict) else None
+            if _agg is not None and str(_agg).strip().lower() not in CHART_METRIC_AGGS:
+                validation_errors.append(
+                    f"config.{_where}.agg={_agg!r} is not supported — use one of {sorted(CHART_METRIC_AGGS)}."
+                )
     try:
         chart_type_enum = ChartTypeSchema(payload.chart_type.upper())
     except ValueError:
@@ -818,6 +836,7 @@ def dry_run_create_chart(
     runtime_errors: List[str] = []
     runtime_root_cause: Optional[str] = None
     runtime_sample: Optional[List[Dict[str, Any]]] = None
+    runtime_refusal: Optional[Dict[str, Any]] = None
     try:
         preview = ChartService.preview_chart_data(
             db,
@@ -827,10 +846,15 @@ def dry_run_create_chart(
         )
         runtime_sample = (preview.get("data") or [])[:5]
     except ValueError as exc:
-        runtime_errors.append(str(exc))
+        from app.services.chart_error_contract import refusal_info
+        from app.services.dataset_model_service import humanize_view_tokens
+        _dsid = getattr(dataset_obj, "id", 0)
+        _human = lambda t: humanize_view_tokens(t, db, _dsid)  # noqa: E731
+        runtime_errors.append(_human(str(exc)))
+        runtime_refusal = refusal_info(exc, _human)
     except Exception as exc:
-        logger.exception("dry-run-create runtime preview failed")
-        runtime_errors.append(f"runtime preview failed: {type(exc).__name__}: {exc}")
+        from app.services.chart_error_contract import failure_detail
+        runtime_errors.append(f"runtime preview failed: {failure_detail(exc, 'dry-run-create runtime preview')}")
         runtime_root_cause = type(exc).__name__
 
     return ChartDryRunCreateResponse(
@@ -840,6 +864,7 @@ def dry_run_create_chart(
         validation_errors=[],
         semantic_warnings=[],
         runtime_errors=runtime_errors,
+        runtime_refusal=runtime_refusal,
         runtime_root_cause=runtime_root_cause,
         runtime_preview_sample=runtime_sample,
         fe_unrecognised_keys=fe_unrecognised,
@@ -935,6 +960,37 @@ def create_chart(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
+def validate_chart_final_state(chart_obj: Chart, chart_update: ChartUpdate) -> None:
+    """CREATE validation == UPDATE final-state validation.
+
+    The runtime runs the MERGED chart (stored type/config/table + this update),
+    so that is what is validated, through the very ChartCreate contract a new
+    chart passes. Validating only the request fragment let a config-only PUT
+    save a BAR without a dimension, or a type-only PUT turn a chart into a
+    SCATTER with no axes. A pure rename/description edit does not change what
+    runs and is not re-validated (legacy charts stay renameable)."""
+    from pydantic import ValidationError
+
+    from app.schemas import ChartCreate
+
+    changes = chart_update.model_dump(exclude_unset=True)
+    if not ({"config", "chart_type", "dataset_table_id"} & set(changes)):
+        return
+    stored_type = getattr(chart_obj.chart_type, "value", chart_obj.chart_type)
+    merged = {
+        "name": changes.get("name") or chart_obj.name,
+        "description": changes.get("description", chart_obj.description),
+        "chart_type": changes.get("chart_type") or stored_type,
+        "dataset_table_id": changes.get("dataset_table_id") or chart_obj.dataset_table_id,
+        "config": changes["config"] if changes.get("config") is not None else (chart_obj.config or {}),
+    }
+    try:
+        ChartCreate.model_validate(merged)
+    except ValidationError as exc:
+        reasons = "; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())
+        raise HTTPException(status_code=422, detail=f"Biểu đồ sau khi cập nhật không hợp lệ: {reasons}")
+
+
 @router.put("/{chart_id}", response_model=ChartResponse)
 def update_chart(
     chart_id: int,
@@ -963,6 +1019,7 @@ def update_chart(
             chart_update.dataset_table_id if chart_update.dataset_table_id is not None else chart_obj.dataset_table_id,
             chart_update.config if chart_update.config is not None else chart_obj.config,
         )
+    validate_chart_final_state(chart_obj, chart_update)
     try:
         chart = ChartService.update(db, chart_id, chart_update)
         if chart:
@@ -1135,7 +1192,10 @@ def get_chart_data(
             granularity_override=granularity_override,
             role_overrides=role_overrides,
         )
-        return ChartDataResponse(**result)
+        # Full diagnostics (emitted SQL with inlined filter values, routing,
+        # dialect) only for people who may edit the chart.
+        from app.services.chart_error_contract import restrict_debug
+        return ChartDataResponse(**restrict_debug(result, perm))
     except ValueError as e:
         # Phase-12.7: ValueError from the semantic engine / chart runtime
         # means the chart's CONFIG is invalid given the current dataset
@@ -1151,22 +1211,13 @@ def get_chart_data(
             from app.services.dataset_crud import DatasetCRUDService
             _dt2 = DatasetCRUDService.get_table_by_id(db, chart.dataset_table_id)
             _dsid = getattr(_dt2, "dataset_id", 0) or 0
-        from app.services.chart_service import REFUSAL_HEADER, refusal_category
-        _cat = refusal_category(e)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=humanize_view_tokens(str(e), db, _dsid),
-            headers={REFUSAL_HEADER: _cat} if _cat else None,
-        )
+        from app.services.chart_error_contract import refusal_response
+        return refusal_response(e, lambda t: humanize_view_tokens(t, db, _dsid))
     except Exception as e:
-        logger.exception(
-            "Failed to get chart data for chart_id=%s context=%s",
-            chart_id,
-            context,
-        )
+        from app.services.chart_error_contract import failure_detail
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve chart data: {e}",
+            detail=failure_detail(e, f"chart data chart_id={chart_id} context={context}"),
         )
 
 

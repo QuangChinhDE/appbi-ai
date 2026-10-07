@@ -241,9 +241,7 @@ class ChartCreate(ChartBase):
                 "customRoleConfig, customSql, semanticBinding"
             )
 
-        allowed_aggs = {
-            "sum", "avg", "count", "min", "max", "count_distinct", "auto",
-        }
+        from app.schemas.chart_config import CHART_METRIC_AGGS as allowed_aggs
 
         def _check_metric(metric, where: str) -> None:
             # Phase-15.41: previously `if not isinstance(metric, dict): return`
@@ -306,19 +304,16 @@ class ChartCreate(ChartBase):
         # actually populated) against the chart_type's contract.
         from app.schemas.chart_config import check_chart_required_role_keys, check_role_config_shape
 
-        # Pick the populated container — generatedRoleConfig and
-        # roleConfig are usually mirrors; customRoleConfig is the
-        # advanced opt-out. Validate against the first non-empty one.
-        role_to_check: Optional[Dict[str, Any]] = None
-        for container_key in ("generatedRoleConfig", "roleConfig", "customRoleConfig"):
-            container = self.config.get(container_key)
-            if isinstance(container, dict) and container:
-                role_to_check = container
-                break
-        # Skip when caller chose customSql or semanticBinding instead of
-        # the role-config path — those are explicit raw-SQL paths and
-        # don't have role-config requirements.
-        if role_to_check is not None and not self.config.get("customSql"):
+        # Validate the role config the RUNTIME will use, decided by the same
+        # resolver (chart_contracts.get_chart_query_mode): custom only when
+        # queryMode is custom AND customSql is set. Deciding on "customSql is
+        # present" let a generated-mode chart carrying a leftover SQL draft
+        # skip every required-role check and save a config that cannot run.
+        from app.schemas.chart_config import (
+            CHART_QUERY_MODE_CUSTOM, get_chart_active_role_config, get_chart_query_mode,
+        )
+        role_to_check = get_chart_active_role_config(self.config) or None
+        if role_to_check is not None and get_chart_query_mode(self.config) != CHART_QUERY_MODE_CUSTOM:
             # Phase-15.82 — structural shape check fires BEFORE required-key
             # check so a malformed `metrics: "foo"` doesn't masquerade as
             # missing role keys (more helpful error).
@@ -327,12 +322,11 @@ class ChartCreate(ChartBase):
                 raise ValueError(
                     f"role_config shape errors: {'; '.join(shape_errors)}"
                 )
-            missing = check_chart_required_role_keys(
-                str(self.chart_type), role_to_check
-            )
+            _type = getattr(self.chart_type, "value", self.chart_type)
+            missing = check_chart_required_role_keys(_type, role_to_check)
             if missing:
                 raise ValueError(
-                    f"chart_type={self.chart_type!r} is missing required "
+                    f"chart_type={_type!r} is missing required "
                     f"role_config: {'; '.join(missing)}"
                 )
         return self
@@ -355,9 +349,7 @@ class ChartUpdate(BaseModel):
             return self
         if not isinstance(self.config, dict):
             raise ValueError("config must be an object")
-        allowed_aggs = {
-            "sum", "avg", "count", "min", "max", "count_distinct", "auto",
-        }
+        from app.schemas.chart_config import CHART_METRIC_AGGS as allowed_aggs
 
         def _check_metric(metric, where: str) -> None:
             # Phase-15.41: same hardening as ChartCreate — reject non-dict
@@ -404,33 +396,11 @@ class ChartUpdate(BaseModel):
                 if metric is not None:
                     _check_metric(metric, f"{container_key}.{solo_key}")
 
-        # Phase-15.39: enforce per-chart-type required role_config keys on
-        # updates too. Only when the caller actually passed a chart_type;
-        # a config-only PATCH can't be checked without knowing the type
-        # (route handler should disallow that anyway).
-        if self.chart_type is not None:
-            from app.schemas.chart_config import check_chart_required_role_keys, check_role_config_shape
-
-            role_to_check: Optional[Dict[str, Any]] = None
-            for container_key in ("generatedRoleConfig", "roleConfig", "customRoleConfig"):
-                container = self.config.get(container_key)
-                if isinstance(container, dict) and container:
-                    role_to_check = container
-                    break
-            if role_to_check is not None and not self.config.get("customSql"):
-                shape_errors = check_role_config_shape(role_to_check)
-                if shape_errors:
-                    raise ValueError(
-                        f"role_config shape errors: {'; '.join(shape_errors)}"
-                    )
-                missing = check_chart_required_role_keys(
-                    str(self.chart_type), role_to_check
-                )
-                if missing:
-                    raise ValueError(
-                        f"chart_type={self.chart_type!r} is missing required "
-                        f"role_config: {'; '.join(missing)}"
-                    )
+        # The per-chart-type required-role check needs the FINAL chart state
+        # (stored chart_type/config merged with this fragment), which only the
+        # route knows: `PUT /charts/{id}` re-validates the merged state through
+        # ChartCreate (see `validate_chart_final_state`). Checking the fragment
+        # here skipped it for every config-only or type-only update.
         return self
 
 

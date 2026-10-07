@@ -624,6 +624,8 @@ export interface ChartDryRunCreateResponse {
   validation_errors?: string[];
   semantic_warnings?: string[];
   runtime_errors?: string[];
+  /** Structured semantic refusal of the runtime preview (same shape as a 400 `refusal`). */
+  runtime_refusal?: { category: string; target?: string; routes?: string[] } | null;
   runtime_root_cause?: string | null;
   runtime_preview_sample?: Record<string, any>[] | null;
   fe_unrecognised_keys?: string[];

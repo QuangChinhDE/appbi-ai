@@ -63,7 +63,7 @@ export default defineConfig({
     {
       name: 'chromium',
       dependencies: ['setup'],
-      testIgnore: /security\/.*\.spec\.ts/,
+      testIgnore: [/security\/.*\.spec\.ts/, /chart-hardening\.spec\.ts/],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/admin.json',
@@ -80,6 +80,19 @@ export default defineConfig({
         ...devices['Desktop Chrome'],
         storageState: '.auth/admin.json',
         viewport: { width: 1920, height: 1080 },
+      },
+    },
+    {
+      // CHART SEMANTIC JOURNEYS (base lifecycle, refusal UX, disclosure). No
+      // retries: a semantic journey that passes on the second try is a race.
+      name: 'chart-hardening',
+      dependencies: ['setup'],
+      testMatch: /chart-hardening\.spec\.ts/,
+      retries: 0,
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: '.auth/admin.json',
+        viewport: { width: 1440, height: 900 },
       },
     },
     {

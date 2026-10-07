@@ -163,13 +163,18 @@ def _record_dropped_filter(
 # a first-class aggregation there, so normalize must preserve it (not strip it
 # to the default) — otherwise an explicit % -of-total override is silently
 # lost. "auto" means "defer to the field's declared measure type".
-_VALID_AGGS = {"sum", "avg", "count", "min", "max", "count_distinct", "percent_of_total", "auto"}
-CHART_QUERY_MODE_GENERATED = "generated"
-CHART_QUERY_MODE_CUSTOM = "custom"
-_VALID_CHART_QUERY_MODES = {
-    CHART_QUERY_MODE_GENERATED,
+from app.schemas.chart_config import CHART_METRIC_AGGS as _VALID_AGGS  # noqa: E402  one vocabulary
+# The query-mode contract lives with the schemas (the validator needs it and must
+# not import services); re-exported here for every existing caller.
+from app.schemas.chart_config import (  # noqa: E402,F401
     CHART_QUERY_MODE_CUSTOM,
-}
+    CHART_QUERY_MODE_GENERATED,
+    _VALID_CHART_QUERY_MODES,
+    get_chart_active_role_config,
+    get_chart_custom_sql,
+    get_chart_query_mode,
+    normalize_chart_query_mode,
+)
 
 # Canonical operator vocabulary. Phase-B of the PBI-parity rework
 # extends this with date-relative and top-N operators (see
@@ -330,43 +335,6 @@ _VALID_CHART_FILTER_CONTEXTS = {
     CHART_FILTER_CONTEXT_DEFAULT,
     CHART_FILTER_CONTEXT_DASHBOARD,
 }
-
-
-def normalize_chart_query_mode(mode: Any) -> str:
-    raw = str(mode or CHART_QUERY_MODE_GENERATED).strip().lower()
-    return raw if raw in _VALID_CHART_QUERY_MODES else CHART_QUERY_MODE_GENERATED
-
-
-def get_chart_query_mode(config: dict[str, Any] | None) -> str:
-    if not isinstance(config, dict):
-        return CHART_QUERY_MODE_GENERATED
-
-    mode = normalize_chart_query_mode(config.get("queryMode"))
-    custom_sql = str(config.get("customSql") or "").strip()
-    if mode == CHART_QUERY_MODE_CUSTOM and custom_sql:
-        return CHART_QUERY_MODE_CUSTOM
-    return CHART_QUERY_MODE_GENERATED
-
-
-def get_chart_custom_sql(config: dict[str, Any] | None) -> str | None:
-    if get_chart_query_mode(config) != CHART_QUERY_MODE_CUSTOM:
-        return None
-    custom_sql = str((config or {}).get("customSql") or "").strip()
-    return custom_sql or None
-
-
-def get_chart_active_role_config(config: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(config, dict):
-        return {}
-
-    mode = get_chart_query_mode(config)
-    if mode == CHART_QUERY_MODE_CUSTOM and isinstance(config.get("customRoleConfig"), dict):
-        return config.get("customRoleConfig") or {}
-    if mode == CHART_QUERY_MODE_GENERATED and isinstance(config.get("generatedRoleConfig"), dict):
-        return config.get("generatedRoleConfig") or {}
-    if isinstance(config.get("roleConfig"), dict):
-        return config.get("roleConfig") or {}
-    return {}
 
 
 def normalize_filter_operator(operator: str | None) -> str:

@@ -94,7 +94,10 @@ def check_chart_required_role_keys(
     Unknown chart_type: returns []. ChartCreate already checks the enum
     upstream, so we don't double-error here.
     """
-    spec = CHART_REQUIRED_ROLE_KEYS.get(str(chart_type).upper())
+    # An Enum member: read its VALUE. On Python >= 3.11 `str()` of a
+    # `(str, Enum)` member is "ChartTypeSchema.BAR", so the lookup missed and
+    # every chart type silently had NO required roles on create/update.
+    spec = CHART_REQUIRED_ROLE_KEYS.get(str(getattr(chart_type, "value", chart_type)).upper())
     if not spec:
         return []
     role_config = role_config if isinstance(role_config, dict) else {}
@@ -111,7 +114,14 @@ def check_chart_required_role_keys(
 # dicts) that the token-based checker above can't see. Returns list of
 # human-readable errors, mirroring `check_chart_required_role_keys` so
 # callers can concat both for a complete validation pass.
-_VALID_AGG = {"sum", "avg", "count", "min", "max", "count_distinct", "auto"}
+#: THE metric aggregation vocabulary — create, update, dry-run normalize and the
+#: shape check all read this one set (the semantic engine's ``_KNOWN_AGGS`` plus
+#: "auto" = defer to the measure's declared type). percent_of_total used to be
+#: accepted by normalize/engine and rejected here, so it could preview but never
+#: save.
+CHART_METRIC_AGGS = frozenset({"sum", "avg", "count", "min", "max", "count_distinct",
+                               "percent_of_total", "auto"})
+_VALID_AGG = CHART_METRIC_AGGS
 
 
 def _check_metric_shape(metric: Any, path: str) -> List[str]:
@@ -134,7 +144,7 @@ def _check_metric_shape(metric: Any, path: str) -> List[str]:
         errors.append(f"{path}.field must be a string when present (got {type(field).__name__})")
     agg = metric.get("agg")
     # agg may be omitted on legacy/draft rows; only fail on outright-wrong types.
-    if agg is not None and (not isinstance(agg, str) or agg not in _VALID_AGG):
+    if agg is not None and (not isinstance(agg, str) or agg.strip().lower() not in _VALID_AGG):
         errors.append(f"{path}.agg must be one of {sorted(_VALID_AGG)} (got {agg!r})")
     return errors
 
@@ -322,3 +332,53 @@ class DashboardLayoutUpdate(BaseModel):
     """Update for a single chart's layout in a dashboard."""
     id: int = Field(..., description="DashboardChart ID")
     layout: DashboardChartLayout = Field(..., description="New layout configuration")
+
+
+# ── Query mode: which role config / SQL the RUNTIME uses ──────────────────────
+# One resolver for runtime, custom-SQL authority and validation (moved here from
+# services/chart_contracts.py, which re-exports it): custom only when queryMode
+# is "custom" AND customSql is non-empty — a leftover SQL draft never makes a
+# generated chart custom.
+CHART_QUERY_MODE_GENERATED = "generated"
+CHART_QUERY_MODE_CUSTOM = "custom"
+_VALID_CHART_QUERY_MODES = {
+    CHART_QUERY_MODE_GENERATED,
+    CHART_QUERY_MODE_CUSTOM,
+}
+
+
+def normalize_chart_query_mode(mode: Any) -> str:
+    raw = str(mode or CHART_QUERY_MODE_GENERATED).strip().lower()
+    return raw if raw in _VALID_CHART_QUERY_MODES else CHART_QUERY_MODE_GENERATED
+
+
+def get_chart_query_mode(config: dict[str, Any] | None) -> str:
+    if not isinstance(config, dict):
+        return CHART_QUERY_MODE_GENERATED
+
+    mode = normalize_chart_query_mode(config.get("queryMode"))
+    custom_sql = str(config.get("customSql") or "").strip()
+    if mode == CHART_QUERY_MODE_CUSTOM and custom_sql:
+        return CHART_QUERY_MODE_CUSTOM
+    return CHART_QUERY_MODE_GENERATED
+
+
+def get_chart_custom_sql(config: dict[str, Any] | None) -> str | None:
+    if get_chart_query_mode(config) != CHART_QUERY_MODE_CUSTOM:
+        return None
+    custom_sql = str((config or {}).get("customSql") or "").strip()
+    return custom_sql or None
+
+
+def get_chart_active_role_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        return {}
+
+    mode = get_chart_query_mode(config)
+    if mode == CHART_QUERY_MODE_CUSTOM and isinstance(config.get("customRoleConfig"), dict):
+        return config.get("customRoleConfig") or {}
+    if mode == CHART_QUERY_MODE_GENERATED and isinstance(config.get("generatedRoleConfig"), dict):
+        return config.get("generatedRoleConfig") or {}
+    if isinstance(config.get("roleConfig"), dict):
+        return config.get("roleConfig") or {}
+    return {}
