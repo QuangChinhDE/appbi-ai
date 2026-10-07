@@ -221,6 +221,10 @@ jobs:
         working-directory: backend
         run: python scripts/ci/seed_e2e_dataset_lifecycle.py
 
+      - name: Seed the dataset permission fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_dataset_authz.py
+
       - name: Start the backend
         working-directory: backend
         run: |
