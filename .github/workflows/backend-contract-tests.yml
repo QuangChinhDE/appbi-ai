@@ -235,6 +235,7 @@ jobs:
             tests/test_relationship_contract.py \
             tests/test_public_authoritative_bounds.py \
             tests/test_publish_candidate_generation.py \
+            tests/test_hide_is_not_remove.py \
             tests/test_operational_destination_bind.py \
             tests/test_snapshot_host_contract.py \
             tests/test_dataset_grant_authority.py \

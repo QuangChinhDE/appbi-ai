@@ -43,27 +43,32 @@ export function ManageColumnsDrawer({
     if (!isOpen) return;
     setDeletedComputed(new Set()); // reset deletions on open
 
-    // Find select_columns transformation
-    const selectTransform = table.transformations?.find(
-      (t) => t.type === 'select_columns' && t.enabled
+    // Hide is VISIBILITY, not projection: a `hide_columns` step keeps every
+    // column in the relation (formulas, measures and relationships may still use
+    // it) and only hides it from field pickers. Legacy drawer saves were a
+    // projecting `select_columns` carrying `all_columns`; read them once so an
+    // old hide is shown as hidden, and the next save replaces them.
+    const hideTransform = table.transformations?.find(
+      (t) => t.type === 'hide_columns' && t.enabled
+    );
+    const legacySelect = table.transformations?.find(
+      (t) => t.type === 'select_columns' && t.enabled && Array.isArray(t.params?.all_columns)
     );
 
-    // Reconstruct the FULL source column list:
-    // prefer the persisted all_columns (saved on last Apply), else use the allColumns prop.
-    const persistedAll = selectTransform?.params?.all_columns as string[] | undefined;
-    const fullList = (persistedAll ?? allColumns).filter((c) => !computedSet.has(c));
+    const persistedAll = legacySelect?.params?.all_columns as string[] | undefined;
+    const fullList = Array.from(new Set([...(persistedAll ?? []), ...allColumns])).filter(
+      (c) => !computedSet.has(c)
+    );
     setFullSourceColumns(fullList);
 
-    if (selectTransform && selectTransform.params.columns) {
-      setSelectedColumns(
-        new Set(
-          (selectTransform.params.columns as string[]).filter((c) => !computedSet.has(c))
-        )
-      );
-    } else {
-      // No filter saved yet — all source columns are visible
-      setSelectedColumns(new Set(fullList));
-    }
+    const hidden = new Set<string>(
+      hideTransform
+        ? ((hideTransform.params?.columns as string[]) ?? [])
+        : legacySelect
+          ? fullList.filter((c) => !((legacySelect.params.columns as string[]) ?? []).includes(c))
+          : []
+    );
+    setSelectedColumns(new Set(fullList.filter((c) => !hidden.has(c))));
   }, [isOpen, table.transformations, allColumns]);
 
   const handleToggle = (column: string) => {
@@ -108,9 +113,12 @@ export function ManageColumnsDrawer({
     try {
       const existingTransforms = table.transformations || [];
 
-      // Remove deleted computed steps (js_formula or add_column) and old select_columns
+      // Remove deleted computed steps, the previous hide step and the legacy
+      // drawer projection (select_columns + all_columns). An explicit Remove
+      // step authored elsewhere (select_columns without all_columns) is kept.
       const filteredTransforms = existingTransforms.filter((t) => {
-        if (t.type === 'select_columns') return false;
+        if (t.type === 'hide_columns') return false;
+        if (t.type === 'select_columns' && Array.isArray(t.params?.all_columns)) return false;
         if (
           (t.type === 'js_formula' || t.type === 'add_column') &&
           t.params?.newField &&
@@ -119,19 +127,10 @@ export function ManageColumnsDrawer({
         return true;
       });
 
-      // Build columns list: only source columns (computed ones are added client-side by js_formula)
-      const visibleColumns = Array.from(selectedColumns).filter(
-        (c) => !deletedComputed.has(c) && !computedSet.has(c)
-      );
-
-      const newTransform: Transformation = {
-        type: 'select_columns',
-        enabled: true,
-        // Persist all_columns so the drawer can restore hidden cols on next open
-        params: { columns: visibleColumns, all_columns: fullSourceColumns },
-      };
-
-      const updatedTransforms = [newTransform, ...filteredTransforms];
+      const hiddenColumns = fullSourceColumns.filter((c) => !selectedColumns.has(c));
+      const updatedTransforms: Transformation[] = hiddenColumns.length
+        ? [...filteredTransforms, { type: 'hide_columns', enabled: true, params: { columns: hiddenColumns } }]
+        : filteredTransforms;
 
       await onSave(updatedTransforms);
       onClose();

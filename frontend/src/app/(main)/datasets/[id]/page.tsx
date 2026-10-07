@@ -961,7 +961,7 @@ export default function DatasetDetailPage() {
     );
     // Also remove from select_columns list if present
     const withSelectFixed = updated.map((t) => {
-      if (t.type === 'select_columns' && Array.isArray(t.params?.columns)) {
+      if ((t.type === 'select_columns' || t.type === 'hide_columns') && Array.isArray(t.params?.columns)) {
         return { ...t, params: { ...t.params, columns: t.params.columns.filter((c: string) => c !== colName) } };
       }
       return t;

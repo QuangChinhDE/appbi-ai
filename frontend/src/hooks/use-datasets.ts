@@ -118,7 +118,7 @@ export interface DatasetDictionaryResponse {
 
 export interface Transformation {
   id?: string;
-  type: 'select_columns' | 'add_column' | 'rename_columns' | 'js_formula';
+  type: 'select_columns' | 'hide_columns' | 'add_column' | 'rename_columns' | 'js_formula';
   enabled: boolean;
   params: Record<string, any>;
 }

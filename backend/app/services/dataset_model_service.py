@@ -954,7 +954,23 @@ def _semantic_fields_for_table(dataset_obj: Dataset, table: DatasetTable) -> tup
         })
         existing_dimension_names.add(new_field)
 
+    hidden = hidden_column_names(table)
+    if hidden:
+        for field in [*dimensions, *measures]:
+            if isinstance(field, dict) and str(field.get("name") or "") in hidden:
+                field["hidden"] = True
     return dimensions, measures
+
+
+def hidden_column_names(table: DatasetTable) -> set[str]:
+    """Columns the author HID (Manage Columns): still in the relation, absent
+    from field pickers. Distinct from a remove/select projection, which takes
+    the column out of the relation."""
+    out: set[str] = set()
+    for step in getattr(table, "transformations", None) or []:
+        if isinstance(step, dict) and step.get("type") == "hide_columns" and step.get("enabled", True):
+            out |= {str(c) for c in ((step.get("params") or {}).get("columns") or []) if str(c).strip()}
+    return out
 
 
 def _field_names_for_view(view: SemanticView) -> set[str]:
