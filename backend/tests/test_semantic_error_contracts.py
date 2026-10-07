@@ -167,14 +167,20 @@ def test_chart_data_endpoint_maps_valueerror_to_400_with_the_message(monkeypatch
 
     monkeypatch.setattr(api.ChartService, "get_chart_data",
                         _raise(AmbiguousJoinPathError("regions", ["a → regions", "b → regions"])))
-    with pytest.raises(HTTPException) as e400:
-        api.get_chart_data(5, None, None, None, None, db=None, current_user=None)
-    assert e400.value.status_code == 400 and "regions" in str(e400.value.detail)
+    # A refusal is answered as a 400 RESPONSE (not raised): the humanised
+    # message plus the structured refusal and its header (chart error contract).
+    import json as _json
+    r400 = api.get_chart_data(5, None, None, None, None, db=None, current_user=None)
+    body = _json.loads(r400.body)
+    assert r400.status_code == 400 and "regions" in body["detail"]
+    assert r400.headers.get("X-AppBI-Refusal") == "AMBIGUOUS_ROUTE"
+    assert body["refusal"] == {"category": "AMBIGUOUS_ROUTE", "target": "regions",
+                               "routes": ["a → regions", "b → regions"]}
 
     monkeypatch.setattr(api.ChartService, "get_chart_data", _raise(RuntimeError("boom")))
     with pytest.raises(HTTPException) as e500:
         api.get_chart_data(5, None, None, None, None, db=None, current_user=None)
-    assert e500.value.status_code == 500
+    assert e500.value.status_code == 500 and "boom" not in str(e500.value.detail)
 
 
 def _anchored_query_world(db):

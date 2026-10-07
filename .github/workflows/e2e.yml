@@ -254,6 +254,14 @@ jobs:
         working-directory: backend
         run: python scripts/ci/seed_e2e_dataset_authz.py
 
+      # Chart final hardening (chart-hardening.spec.ts, project `chart-hardening`,
+      # retries 0): fact → Date AND fact → owner → Date (the user-reported two-
+      # meaning route), a saved chart on a dashboard + public link, and a VIEW-only
+      # password reader. The spec FAILS when the fixture is missing.
+      - name: Seed the chart-hardening fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_chart_hardening.py
+
       - name: Start the backend
         working-directory: backend
         run: |

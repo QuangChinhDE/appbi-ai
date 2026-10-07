@@ -196,7 +196,7 @@ protected:
                      golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity,
                      relationship_contract, relationship_contract_pg, pair1_baseline_parity,
                      public_authoritative_bounds, pair2_golden_topology, pair3_chartservice,
-                     semantic_foundation, pair4_surfaces]
+                     chart_final_hardening, semantic_foundation, pair4_surfaces]
 
   - id: public_link_security
     label: "Public-link filter merge / access (data-exposure surface)"
@@ -623,6 +623,10 @@ tests:
     requires: postgres
     run: "pytest backend/tests/test_pair3_chartservice_pg.py"
     locks: "query engine ↔ ChartService: every Pair 2 golden request through ChartService (saved chart, preview, stale/minimal/empty stored bindings, legacy config.source charts) gives the engine's rows / refusal category; a cached result never outlives a model, measure, filter, snapshot generation, security scope or host change; a live fallback after a missing snapshot is compiled for and executed on the SOURCE engine (a published snapshot never falls back); refusal categories reach the HTTP response (X-AppBI-Refusal) and the batch; a field keeps its values whatever its name's case (Postgres alias folding) and two fields reducing to one result column are refused; a what-if swap renders a declared measure by its own type; the live filter adapter keeps the engine's base rows; generated and custom query modes never stand in for each other; base AND runtime filters, never replaced; an unrelated table's filter is a recorded soft drop"
+  chart_final_hardening:
+    requires: postgres
+    run: "pytest backend/tests/test_chart_final_hardening_pg.py"
+    locks: "chart HTTP contract: a two-meaning relationship route is refused (400, X-AppBI-Refusal AMBIGUOUS_ROUTE, body refusal {category, target, routes}) identically on preview, saved chart data and Save's dry-run (runtime_refusal), deterministically; an Inactive relationship answers the hand-computed rows on preview and saved chart alike; GET /charts/{id}/data returns sql_emitted/routing/dialect only to edit/full, a view-only reader gets the public-safe subset; a non-refusal failure (preview, chart data, dry-run, batch tile) never returns raw exception text (credentials, host, dbname) but a reference id; PUT validates the MERGED chart through ChartCreate (config-only and type-only updates included, rename allowed); per-chart-type required roles are enforced (Enum value, not str(Enum)); percent_of_total saves, case-insensitive aggs, median refused and never rewritten to auto; generated mode with a leftover customSql is validated as generated"
   semantic_foundation:
     requires: postgres
     run: "pytest backend/tests/test_semantic_foundation_pg.py"

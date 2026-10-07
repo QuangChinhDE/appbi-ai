@@ -527,6 +527,19 @@ jobs:
           python -m pytest -q -p no:cacheprovider \
             tests/test_pair3_chartservice_pg.py
 
+      # Chart final hardening: the chart HTTP contract on a real datasource. The
+      # user-reported two-meaning route (fact → dim AND fact → mid → dim) is
+      # REFUSED with a structured `refusal` (category, target, routes) on
+      # preview, saved data and Save's dry-run — the same refusal every run; an
+      # Inactive relationship determines the meaning (hand-computed rows);
+      # SQL/routing debug only for editors; raw driver errors never returned;
+      # PUT validates the merged chart like create; one aggregation vocabulary;
+      # generated mode + leftover SQL is validated as generated.
+      - name: "GATE — Chart final hardening HTTP contract (Postgres)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_chart_final_hardening_pg.py
+
       # Semantic foundation (Pair 1 + 2 + 3 as one kernel contract): numeric
       # meaning (true division, NULL on a zero denominator) on Postgres + DuckDB
       # and through ChartService; a cross-view formula refused; the same request
