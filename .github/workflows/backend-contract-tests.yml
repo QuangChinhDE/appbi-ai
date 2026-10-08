@@ -676,6 +676,8 @@ jobs:
             tests/test_authz_datasource_secret_http_pg.py \
             tests/test_authz_workspace_route_matrix_pg.py \
             tests/test_authz_observability_http_pg.py \
+            tests/test_observability_lifecycle_pg.py \
+            tests/test_observability_monitors_pg.py \
             tests/test_permission_caps.py \
             tests/test_authz_token_domains_http_pg.py \
             tests/test_authz_publish_http_pg.py \

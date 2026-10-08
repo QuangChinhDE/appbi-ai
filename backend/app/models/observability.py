@@ -23,7 +23,7 @@ monitor kinds cover freshness/volume/schema.
 from datetime import datetime
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, Index,
+    Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, Index, UniqueConstraint, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
@@ -117,6 +117,10 @@ class ObservabilityIncident(Base):
     __table_args__ = (
         # Fast "open incident for this detector" upsert lookup.
         Index("ix_observability_incident_dedup_status", "dedup_key", "status"),
+        # At most ONE unresolved incident per check: repeated breaches - in one
+        # scan or in two concurrent ones - refresh it instead of opening twins.
+        Index("ux_observability_incident_open_key", "dedup_key", unique=True,
+              postgresql_where=text("status <> 'resolved'")),
     )
 
 
@@ -145,3 +149,55 @@ class ObservabilityAlertChannel(Base):
     last_error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
+
+
+DELIVERY_STATUSES = ("pending", "sent", "failed", "dead", "cancelled")
+
+
+class ObservabilityAlertDelivery(Base):
+    """The delivery state of ONE incident to ONE channel.
+
+    Guarantee: at-least-once per (incident, channel) while the incident is
+    unresolved - a row is ``sent`` only after the target accepted it, a crash
+    between the send and the commit re-sends that one message, and nothing else
+    is ever re-sent. Receivers can de-duplicate on ``idempotency_key``."""
+    __tablename__ = "observability_alert_deliveries"
+
+    id = Column(Integer, primary_key=True)
+    incident_id = Column(Integer, ForeignKey("observability_incidents.id", ondelete="CASCADE"), nullable=False)
+    channel_id = Column(Integer, ForeignKey("observability_alert_channels.id", ondelete="CASCADE"), nullable=False)
+    status = Column(String(16), nullable=False, default="pending")
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    next_attempt_at = Column(DateTime, nullable=True)
+    sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("incident_id", "channel_id", name="uq_obs_delivery_incident_channel"),
+        Index("ix_obs_delivery_status_due", "status", "next_attempt_at"),
+        Index("ix_obs_delivery_channel", "channel_id"),
+    )
+
+
+SCAN_STATUSES = ("running", "succeeded", "partial", "failed")
+
+
+class ObservabilityScanRun(Base):
+    """One scan - so a scanner that stopped, failed or only partly ran is
+    visible instead of looking like "nothing is wrong"."""
+    __tablename__ = "observability_scan_runs"
+
+    id = Column(Integer, primary_key=True)
+    scope = Column(String(16), nullable=False)               # global | dataset
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True)
+    trigger = Column(String(16), nullable=False)             # schedule | manual
+    triggered_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(16), nullable=False)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+    counts = Column(JSONB, nullable=True)
+    errors = Column(JSONB, nullable=True)
+
+    __table_args__ = (Index("ix_obs_scan_runs_started", "started_at"),)

@@ -16,7 +16,9 @@ import {
 
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import { getSemanticLineage, type SemanticLineage, type SemTable } from '@/lib/observability';
+import Link from 'next/link';
+import { getSemanticLineage, loadErrorOf, type LoadError, type SemanticLineage, type SemTable } from '@/lib/observability';
+import { LoadErrorState } from './ui';
 
 type Sel = { kind: 'column' | 'measure'; tableId: number; name: string } | null;
 const mkey = (tableId: number, name: string) => `${tableId}:${name}`;
@@ -25,12 +27,19 @@ export function SemanticLineageTab({ datasetId }: { datasetId: number }) {
   const { t } = useI18n();
   const [g, setG] = useState<SemanticLineage | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<LoadError | null>(null);
   const [sel, setSel] = useState<Sel>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    setLoading(true);
-    getSemanticLineage(datasetId).then(setG).catch(() => setG(null)).finally(() => setLoading(false));
-  }, [datasetId]);
+    let live = true;
+    setLoading(true); setError(null); setSel(null);
+    getSemanticLineage(datasetId)
+      .then((r) => { if (live) setG(r); })
+      .catch((e) => { if (live) { setG(null); setError(loadErrorOf(e)); } })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [datasetId, attempt]);
 
   const tableById = useMemo(() => new Map((g?.tables ?? []).map((tb) => [tb.tableId, tb])), [g]);
 
@@ -49,7 +58,8 @@ export function SemanticLineageTab({ datasetId }: { datasetId: number }) {
 
   const impact = useMemo(() => computeImpact(g, sel), [g, sel]);
 
-  if (loading) return <p className="py-10 text-center text-caption text-text-tertiary">{t('observability.loading')}</p>;
+  if (loading) return <p className="py-10 text-center text-caption text-text-tertiary" role="status">{t('observability.loading')}</p>;
+  if (error) return <LoadErrorState error={error} onRetry={() => setAttempt((a) => a + 1)} testId="obs-lineage-error" />;
   if (!g || !g.dataset) return <p className="py-10 text-center text-caption text-text-tertiary">{t('observability.lineage.selectPrompt')}</p>;
   if (!g.hasModel || g.tables.length === 0) {
     return (
@@ -70,6 +80,12 @@ export function SemanticLineageTab({ datasetId }: { datasetId: number }) {
         <span>{t('observability.semantic.summary', { tables: g.tables.length, joins: g.joins.length, charts: g.charts.length })}</span>
         <span className={cn(failingCols > 0 && 'text-danger font-emphasis')}>{t('observability.semantic.coverage', { ruleCols, failing: failingCols })}</span>
       </div>
+      {g.impact && (g.impact.hiddenCharts > 0 || g.impact.hiddenDashboards > 0) && (
+        <p className="flex items-start gap-1.5 rounded-lg bg-surface-2 px-3 py-2 text-tiny text-text-tertiary" data-testid="obs-lineage-hidden">
+          <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" aria-hidden />
+          {t('observability.semantic.hidden', { charts: g.impact.hiddenCharts, dashboards: g.impact.hiddenDashboards })}
+        </p>
+      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,400px)]">
         {/* LEFT — tables → columns + measures */}
@@ -197,16 +213,20 @@ function ImpactPanel({ g, sel, impact, tableById }: {
           <ImpactGroup icon={<GitBranch className="h-3.5 w-3.5" />} title={t('observability.semantic.impact.joined')} count={impact.joined.length}
             items={impact.joined.map((j) => `${tableById.get(j.tableId)?.name ?? j.tableId}${j.column ? ` · ${j.column}` : ''}`)} />
           <ImpactGroup icon={<BarChart3 className="h-3.5 w-3.5" />} title={t('observability.semantic.impact.charts')} count={impact.charts.length}
-            items={impact.charts.map((c) => c.name)} />
+            items={impact.charts.map((c) => c.name)} hrefs={impact.charts.map((c) => `/explore/${c.id}`)} />
           <ImpactGroup icon={<LayoutDashboard className="h-3.5 w-3.5" />} title={t('observability.semantic.impact.dashboards')} count={impact.dashboards.length}
-            items={impact.dashboards.map((d) => d.name)} tone="danger" />
+            items={impact.dashboards.map((d) => d.name)} hrefs={impact.dashboards.map((d) => `/dashboards/${d.id}`)} tone="danger" />
         </div>
+      )}
+      {/* Which fields a chart reads is matched by name from its config: say so. */}
+      {(impact.charts.length > 0 || impact.dashboards.length > 0) && (
+        <p className="text-tiny text-text-quaternary">{t('observability.semantic.inferred')}</p>
       )}
     </div>
   );
 }
 
-function ImpactGroup({ icon, title, count, items, tone }: { icon: React.ReactNode; title: string; count: number; items: string[]; tone?: 'danger' }) {
+function ImpactGroup({ icon, title, count, items, hrefs, tone }: { icon: React.ReactNode; title: string; count: number; items: string[]; hrefs?: string[]; tone?: 'danger' }) {
   if (count === 0) return null;
   return (
     <div>
@@ -214,7 +234,11 @@ function ImpactGroup({ icon, title, count, items, tone }: { icon: React.ReactNod
         {icon}{title} <span className="rounded-full bg-surface-2 px-1.5 text-text-tertiary">{count}</span>
       </div>
       <ul className="space-y-0.5 pl-5">
-        {items.slice(0, 12).map((it, i) => <li key={i} className="truncate text-tiny text-text-tertiary" title={it}>{it}</li>)}
+        {items.slice(0, 12).map((it, i) => (
+          <li key={i} className="truncate text-tiny text-text-tertiary" title={it}>
+            {hrefs?.[i] ? <Link href={hrefs[i]} className="hover:text-brand hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-brand">{it}</Link> : it}
+          </li>
+        ))}
         {items.length > 12 && <li className="text-tiny text-text-quaternary">+{items.length - 12}</li>}
       </ul>
     </div>
