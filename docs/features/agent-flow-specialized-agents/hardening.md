@@ -29,3 +29,35 @@ nothing. Each finding below was reproduced against the code and the SaaS fixture
 | Raw rows / PII | Raw-row gate: (3) already protected (`read_rows`). Column-level PII masking: (2) absent platform-wide. | Dataset / semantic owner |
 | Client-supplied history on public links | (2) Forged assistant turns are text only, so they cannot become evidence, scope or rights. They can steer the model only under `context_policy` `last_3`/`full` (the default is `question`). | Public AI bot owner |
 | Knowledge ceiling | (3) Set on every executing entry point. The step-prompt preview (no execution) lacks it: cosmetic. | — |
+
+## Results (all on the isolated rig: own Postgres `appbi-afspec-db`, backend :8137 built from this branch, Next dev :3237)
+
+### Live evaluation round 2: gpt-4o-mini, 144 runs, $0.25 (`evidence/live_eval_round2.json`)
+
+| Architecture | Correct | Golden (S1–S5) | Holdout (H1–H3) | Wrong figure published as verified | LLM calls/q | Median latency | $/q |
+|---|---|---|---|---|---|---|---|
+| A one custom agent | 30/36 | **15/15** | 6/9 | **0** | 2.9 | 6.9 s | 0.0015 |
+| B specialist chain | 29/36 | 10/15 | 7/9 | **0** | 8.9 | 16.9 s | 0.0038 |
+| C coordinator | 27/36 | 11/15 | 4/9 | **0** | 5.1 | 7.0 s | 0.0015 |
+| D Report Read + Knowledge + writer | 6/36 | 3/15 | 0/9 | 1 | 1.1 | 4.5 s | 0.0003 |
+
+- **D's one wrong figure:** the writer quoted the report's own "ARR summed over all periods" KPI tile (5,244) as a total, beside the statement that it could not compare the two months. That figure is a deterministic chart value; D cannot fetch other charts.
+- **Round 3** (`evidence/live_eval_round3_saas.json`, 48 runs): A 21/24, B 18/24, still 0 wrong-as-verified.
+- **H1** (total churn over a range) remains hard for gpt-4o-mini: A 0/3, B 1/3. Every miss was a refusal or a number the claim check withheld ([đã ẩn]); none published a wrong total. The backend gives 60 when called with the range.
+
+### Browser acceptance on 6934de0f, retries 0 (`evidence/browser_acceptance_6934de0f.json`)
+
+- **Result:** 75 passed, 1 failed. The failure is the live range-total journey: an honest "no chart breaks churn down by month" refusal, the H1 limitation above. The test is deliberately left strict.
+- **Coverage:** the specialist spec (security, authoring, builder F08–F10, live J1–J12 and SaaS analytics) plus every existing Agent Flow spec (builder, run inspector, open-in-builder, v1 golden ×2, AI keys, security-forged, canvas a11y, pointer drag).
+
+### Cold start (`evidence/coldstart_j2_*.json`)
+
+- **J2 right after a backend restart:** 33.0 s (Report Reader 21.5 s), ok.
+- **Warm:** 9.7 s and 12.1 s.
+- The earlier one-off J2 failure fits a cold run hitting the run time ceiling. That ends as `budget_exhausted`/`failed`, never as a healthy answer. It did not reproduce.
+
+### Intermittent builder.spec abort: found and fixed
+
+- **Symptom:** `builder.spec` "no failed requests" saw an aborted RSC navigation fetch: 3/6 runs on the branch, 1/6 on clean demo (so it also exists upstream).
+- **Cause:** the branch fetched `/tools` twice (packs, then roles).
+- **Fix and result:** one request for both, then 8/8 clean.
