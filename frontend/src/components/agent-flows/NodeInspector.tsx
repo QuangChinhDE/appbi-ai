@@ -25,7 +25,7 @@ import {
   MAX_LOOP_ITERATIONS, MAX_TOOL_CALLS, slugifyBrainKey,
   type Condition, type ConditionOp, type FlowNode, type FlowPath, type FlowType,
   type Attachable, type NodeSpec, type ProviderGroup, type SwitchCase,
-  type SkillSummary,
+  type SkillSummary, type AgentRole,
   type ToolPack,
   previewStep,
   type StepPreview,
@@ -37,6 +37,7 @@ import {
   RUN_POLICY, CONTEXT_POLICY, specLabel,
 } from './inspector/fields';
 import { NODE_EDITORS } from './inspector/registry';
+import type { EarlierStep } from './inspector/types';
 
 export interface InspectorProps {
   node: FlowNode | null;
@@ -49,6 +50,10 @@ export interface InspectorProps {
   toolPacks: ToolPack[];
   /** Published Skills this author may attach (Agent grants and Skill steps). */
   skills?: SkillSummary[];
+  /** Specialized Agent roles (server-defined). */
+  roles?: AgentRole[];
+  /** Steps that run before this one and produce a result. */
+  earlierSteps?: EarlierStep[];
   providers: ProviderGroup[];
   /** Sources this author may point a step at. Server-supplied, so the picker is
    *  not the thing enforcing the permission rule. Null while it loads. */
@@ -104,7 +109,7 @@ export function NodeInspector(props: InspectorProps) {
 function NodeForm(props: InspectorProps & { node: FlowNode }) {
   const { t, language } = useI18n();
   const { node, spec, toolPacks, providers, isAnswerNode, onChange, onMakeAnswer,
-    brainKey, attachable, flowType, skills = [] } = props;
+    brainKey, attachable, flowType, skills = [], roles = [], earlierSteps = [] } = props;
   const set = (patch: Partial<FlowNode>) => onChange({ ...node, ...patch } as FlowNode);
   const [seeing, setSeeing] = React.useState(false);
   const Editor = NODE_EDITORS[node.type];
@@ -124,6 +129,8 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
           spec={spec}
           toolPacks={toolPacks}
           skills={skills}
+          roles={roles}
+          earlierSteps={earlierSteps}
           providers={providers}
           attachable={attachable}
           brainKey={brainKey}

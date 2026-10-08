@@ -35,6 +35,8 @@ import {
   blankNode, branchCoverage, brainImpact, canDropInto, defaultCredentialFor, findNode, getBrain, insertNode,
   isModelStep,
   isBranching, isContainer,
+  listAgentRoles, applyRole, roleText,
+  type AgentNode, type AgentRole,
   listAttachable, listNodeSpecs, listProviders, listSkills, listToolPacks, moveNode,
   publishBrain, removeNode,
   replaceNode, saveBrain, setFlowType, validateFlow, walkNodes,
@@ -171,6 +173,7 @@ export function BrainBuilder({
   const [attachable, setAttachable] = React.useState<Attachable | null>(null);
   /** Published Skills this author may attach — server-side, like `attachable`. */
   const [skills, setSkills] = React.useState<SkillSummary[]>([]);
+  const [roles, setRoles] = React.useState<AgentRole[]>([]);
   // RUN COUNTS per node, not question coverage. Two different product
   // concepts were both called `coverage`: this one counts how often a branch
   // ran, and the one on the Test tab is which question CLASSES the flow can
@@ -224,6 +227,7 @@ export function BrainBuilder({
       // hold up opening the flow, and a step with nothing attached still works.
       listAttachable().then(setAttachable).catch(() => setAttachable(null));
       listSkills().then(setSkills).catch(() => setSkills([]));
+      listAgentRoles(true).then(setRoles).catch(() => setRoles([]));
       setName(detail.name);
       setDescription(detail.description || '');
       setVersion(detail.version);
@@ -435,6 +439,21 @@ export function BrainBuilder({
     setSelected(node.key);
   };
 
+  /** A Specialized Agent: an ordinary Agent step, started on the role's tools,
+   *  default instructions and name. Everything stays editable afterwards. */
+  const addRoleNode = (role: AgentRole) => {
+    if (!insertAt) return;
+    const base = blankNode('agent', body.nodes, {
+      agentPrompt: t('agentFlows.defaults.agentPrompt'),
+      credentialId: defaultCredentialFor('openai', aiKeys.credentials),
+    }) as AgentNode;
+    const { patch } = applyRole(base, role, roles, language, t('agentFlows.defaults.agentPrompt'));
+    const node = { ...base, ...patch, name: roleText(role, 'label', language) } as FlowNode;
+    mutate(insertNode(body.nodes, insertAt, node));
+    setInsertAt(null);
+    setSelected(node.key);
+  };
+
   const dropGuard = React.useCallback(
     (key: string, containerPath: string) => canDropInto(body.nodes, key, containerPath),
     [body.nodes],
@@ -468,6 +487,18 @@ export function BrainBuilder({
   const answerKey = body.answer_node || body.nodes[body.nodes.length - 1]?.key || '';
 
   // Selection is either a node key or a lane selector `node:group:key`.
+  /** Steps that run before the selected one and hand back a result — what an
+   *  Agent's "reads from" may name. Document order is run order (the server's
+   *  `input_problems` checks the same thing). Routers record a path, not data. */
+  const earlierSteps = React.useMemo(() => {
+    const all = walkNodes(body.nodes);
+    const at = all.findIndex((n) => n.key === selected);
+    const routers = new Set(['coordinate', 'switch', 'if', 'filter']);
+    return (at < 0 ? [] : all.slice(0, at))
+      .filter((n) => !routers.has(n.type))
+      .map((n) => ({ key: n.key, name: n.name || n.key, type: n.type }));
+  }, [body.nodes, selected]);
+
   const sel = React.useMemo(() => {
     if (!selected) return { node: null as FlowNode | null };
     const [ownerKey, group, laneKey] = selected.split(':');
@@ -934,6 +965,8 @@ export function BrainBuilder({
                   specs={specs}
                   toolPacks={toolPacks}
                   skills={skills}
+                  roles={roles}
+                  earlierSteps={earlierSteps}
                   providers={providers}
                   attachable={attachable}
                   isAnswerNode={sel.node?.key === answerKey}
@@ -973,6 +1006,8 @@ export function BrainBuilder({
               ? t('agentFlows.builder.position.inside', { name: insertAt.containerPath.split(':')[0] })
               : t('agentFlows.builder.position.root')}
             onPick={addNode}
+            roles={roles}
+            onPickRole={addRoleNode}
             onClose={() => setInsertAt(null)}
           />
         )}

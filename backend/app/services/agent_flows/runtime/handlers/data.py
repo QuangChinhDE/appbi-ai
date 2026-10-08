@@ -919,6 +919,30 @@ _NOTHING = {"doc_ids": [-1], "dataset_ids": [-1], "metric_names": ["\x00"], "ter
 
 
 def bounded_scope(ctx: Any, scope: dict[str, list]) -> dict[str, list]:
+    """A step's knowledge scope: inside the Skill ceiling, then inside the RUN's.
+
+    The run ceiling (`ctx.run_scope_ceiling`, set by dispatch from
+    `permissions.run_scope`) is owner ∩ attached ∩ link ∩ caller. A step's own
+    document or dataset attachment is kept only if the run scope kept it — so a
+    viewer whose rights `run_scope` removed a document for cannot get it back
+    through the step that attached it (found while hardening Specialized Agents:
+    the Knowledge Reader role reads exactly through these attachments).
+    """
+    out = _bounded_by_skill(ctx, scope)
+    run = getattr(ctx, "run_scope_ceiling", None)
+    if not isinstance(run, dict):
+        return out
+    for key in ("doc_ids", "dataset_ids"):
+        own = list(out.get(key) or [])
+        if not own or own == list(_NOTHING[key]):
+            continue
+        allowed = {str(x) for x in (run.get(key) or [])}
+        kept = [x for x in own if str(x) in allowed]
+        out[key] = kept or list(_NOTHING[key])
+    return out
+
+
+def _bounded_by_skill(ctx: Any, scope: dict[str, list]) -> dict[str, list]:
     """A step's knowledge scope, never wider than the CEILING its run was given.
 
     A step's attachments REPLACE the context's scope — that is how a step narrows.

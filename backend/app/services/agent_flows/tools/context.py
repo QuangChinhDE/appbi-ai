@@ -323,6 +323,12 @@ class ToolContext:
     #: (`handlers/data.bounded_scope`), so a Skill's own attachments cannot widen
     #: what the caller was allowed to read.
     knowledge_ceiling: dict[str, Any] | None = None
+    #: THE RUN'S OWN SCOPE (`permissions.run_scope`: owner's current rights ∩ what
+    #: the flow attached ∩ the link ∩ the caller), recorded by dispatch when it is
+    #: computed. A step's attachments REPLACE `knowledge_scope`; without this, a
+    #: document the caller may not read — removed by `run_scope` — came straight
+    #: back through the step that attached it. `bounded_scope` intersects with it.
+    run_scope_ceiling: dict[str, Any] | None = None
     #: The most rows a single read may return, set per run from the binding's
     #: `capabilities.max_rows_per_call`. None means fall back to `MAX_TOP_N`.
     #:

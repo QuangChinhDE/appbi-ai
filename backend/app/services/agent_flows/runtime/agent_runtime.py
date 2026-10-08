@@ -33,6 +33,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable
+from app.services.agent_flows import roles as _roles
 
 from app.services.agent_flows.contract import AgentNode
 from app.services.agent_flows.runtime.state import (
@@ -305,7 +306,7 @@ def _skill_capabilities(node: AgentNode, rctx: Any) -> tuple[list, dict[str, str
     extras: list = []
     excluded: dict[str, str] = {}
     stack = tuple(getattr(rctx, "skill_stack", ()) or ())
-    for grant in node.tools:
+    for grant in _roles.effective_grants_of(node):
         key = skill_key_of_grant(grant.tool)
         if not key:
             continue
@@ -348,7 +349,7 @@ def build_step_view(node: AgentNode, rctx: Any, *, web_enabled: bool,
     from app.services.agent_flows.runtime.capabilities import build_view
 
     notes: dict[str, str] = {}
-    for grant in node.tools:
+    for grant in _roles.effective_grants_of(node):
         note = (grant.note or "").strip()
         if not note:
             continue
@@ -483,6 +484,7 @@ class AgentRuntime:
         prior = self.state.capability_trace.get(self.node.key) or {}
         self.state.capability_trace[self.node.key] = {
             **({"intent": prior["intent"]} if prior.get("intent") else {}),
+            **({"handoff": prior["handoff"]} if prior.get("handoff") else {}),
             **self.view.to_trace(), "final_rounds": self.final_rounds,
             **({"claim_review": self.claim_review} if self.claim_review else {}),
         }
@@ -736,7 +738,7 @@ class AgentRuntime:
         from app.services.agent_flows import skills
         from app.services.agent_flows.contract import SKILL_GRANT_PREFIX
 
-        grant = next((t for t in self.node.tools
+        grant = next((t for t in _roles.effective_grants_of(self.node)
                       if t.tool == f"{SKILL_GRANT_PREFIX}{skill_key}"), None)
         if grant is None:
             self.last_result = {
