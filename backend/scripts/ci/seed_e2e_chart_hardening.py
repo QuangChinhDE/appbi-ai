@@ -56,6 +56,7 @@ SCHEMA = "e2e_chart"
 DATASOURCE = "E2E chart-hardening Postgres"
 DATASET = "E2E chart hardening"
 SAVED_CHART = "E2E CH revenue by owner"
+SHARE_CHART = "E2E CH revenue share by owner"
 LINK_TOKEN = "e2e-chart-hardening"
 
 # (display name, table, columns) — ADD ORDER IS THE CONTRACT: bc_activity first.
@@ -195,6 +196,18 @@ def main() -> int:
                         "roleConfig": role, "generatedRoleConfig": role, "customRoleConfig": {"metrics": []},
                         "filters": [], "baseFilters": [], "styleConfig": {"chartTitle": SAVED_CHART}},
             ), owner_id=owner.id)
+        # A saved explicit percent_of_total (valid, not offered in the dropdown):
+        # the editor must show it and keep it on Save (aggregation round-trip).
+        share = db.query(Chart).filter(Chart.name == SHARE_CHART).first()
+        if share is None:
+            role = {"dimension": f"{views['bc_owner']}.owner_name",
+                    "metrics": [{"field": f"{views['bc_pfm']}.revenue", "agg": "percent_of_total"}]}
+            share = ChartService.create(db, ChartCreate(
+                name=SHARE_CHART, chart_type="BAR", dataset_table_id=tables["bc_pfm"].id,
+                config={"chartType": "BAR", "queryMode": "generated", "dataset_id": dataset.id,
+                        "roleConfig": role, "generatedRoleConfig": role, "customRoleConfig": {"metrics": []},
+                        "filters": [], "baseFilters": [], "styleConfig": {"chartTitle": SHARE_CHART}},
+            ), owner_id=owner.id)
         link = db.query(DashboardPublicLink).filter(DashboardPublicLink.token == LINK_TOKEN).first()
         if link is None:
             dash = Dashboard(name="E2E chart hardening board", owner_id=owner.id,
@@ -216,7 +229,7 @@ def main() -> int:
         db.commit()
         out = {"dataset_id": int(dataset.id), "dataset_name": DATASET,
                "tables": {k: int(v.id) for k, v in tables.items()}, "views": views,
-               "saved_chart_id": int(chart.id), "dashboard_id": int(link.dashboard_id), "link_token": LINK_TOKEN,
+               "saved_chart_id": int(chart.id), "share_chart_id": int(share.id), "dashboard_id": int(link.dashboard_id), "link_token": LINK_TOKEN,
                "reader_email": READER_EMAIL}
         path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "e2e", ".auth", "chart_hardening.json")
         os.makedirs(os.path.dirname(path), exist_ok=True)

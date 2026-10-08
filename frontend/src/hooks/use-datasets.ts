@@ -274,7 +274,7 @@ export interface AggregationSpec {
    * percent_of_total, formula). The backend resolves 'auto' against the
    * measure's stored type at query time.
    */
-  function: 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct' | 'auto';
+  function: 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct' | 'percent_of_total' | 'auto';
 }
 
 export interface FilterCondition {

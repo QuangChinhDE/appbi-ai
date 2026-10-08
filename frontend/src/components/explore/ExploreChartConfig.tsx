@@ -70,7 +70,11 @@ export type ExploreChartType =
   | 'BULLET' | 'SANKEY' | 'SUNBURST' | 'RIBBON' | 'TIMELINE' | 'WORD_CLOUD'
   | 'KPI' | 'PODIUM' | 'NINE_BOX';
 
-export type AggFn = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct' | 'auto';
+// The backend's one vocabulary (schemas/chart_config.CHART_METRIC_AGGS).
+// `percent_of_total` is valid and saveable but not OFFERED as a choice: a
+// share-of-total is authored as a declared measure and picked with AS-IS.
+// A saved chart that carries it must still show and keep it (round-trip).
+export type AggFn = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct' | 'percent_of_total' | 'auto';
 export type TableLayoutMode = 'standard' | 'pivot';
 
 export type NumberFormat = 'auto' | 'number' | 'compact' | 'percent' | 'currency';
@@ -1287,6 +1291,14 @@ const AGG_OPTIONS: { value: AggFn; label: string }[] = [
   { value: 'max',            label: 'MAX' },
   { value: 'count_distinct', label: 'COUNT DISTINCT' },
 ];
+
+/** Label for an aggregation the dropdown does not offer but a saved config
+ *  carries — shown as-is so the pill never displays another aggregation. */
+const AGG_LABELS: Record<string, string> = { percent_of_total: '% OF TOTAL' };
+function aggOptionsFor(current: string): { value: string; label: string }[] {
+  if (AGG_OPTIONS.some((a) => a.value === current)) return AGG_OPTIONS;
+  return [{ value: current, label: AGG_LABELS[current] ?? current.toUpperCase() }, ...AGG_OPTIONS];
+}
 
 const KPI_TEMPLATE_TOKENS = [
   '{value}',
@@ -3277,6 +3289,7 @@ function MetricSlot({
               >
                 <select
                   value={m.agg}
+                  data-testid={`metric-agg-${m.field}`}
                   onChange={e => changeAgg(m.field, e.target.value as AggFn)}
                   className={`text-xs font-bold bg-transparent border-none outline-none cursor-pointer ${aggClass}`}
                   title={
@@ -3285,8 +3298,8 @@ function MetricSlot({
                       : `${m.agg.toUpperCase()} is not available for type=${col?.type || 'unknown'} columns. Valid aggregations: ${validList || 'none'}.`
                   }
                 >
-                  {AGG_OPTIONS.map(a => {
-                    const compatible = isMetricAggValidForCol(a.value, col);
+                  {aggOptionsFor(m.agg).map(a => {
+                    const compatible = isMetricAggValidForCol(a.value as AggFn, col);
                     return (
                       <option key={a.value} value={a.value}>
                         {compatible ? a.label : `${a.label} ✕`}

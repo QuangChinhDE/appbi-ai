@@ -18,7 +18,7 @@ import path from 'node:path';
  */
 type Fixture = {
   dataset_id: number; dataset_name: string; tables: Record<string, number>; views: Record<string, string>;
-  saved_chart_id: number; dashboard_id: number; link_token: string; reader_email: string;
+  saved_chart_id: number; share_chart_id: number; dashboard_id: number; link_token: string; reader_email: string;
 };
 const FIX: Fixture = (() => {
   const file = path.join(__dirname, '..', '.auth', 'chart_hardening.json');
@@ -250,6 +250,31 @@ test('J9: TABLE → KPI → BAR never keeps a hidden grouping', async ({ page })
   await chooseType(page, 'Compare categories and rankings', 'Bar');
   await pickX(page, 'bc_owner.owner_name');
   expect(rowsOf(await (await run(page)).json())).toEqual(['Ann=100', 'Bob=57']);
+});
+
+test('J11: a saved percent_of_total is shown as such and survives Save unchanged', async ({ page }) => {
+  // percent_of_total is valid and saveable but not offered as a choice; a chart
+  // that carries it must not DISPLAY another aggregation (the dropdown used to
+  // show SUM for it) nor lose it on Save.
+  const cid = FIX.share_chart_id;
+  const field = `${FIX.views.bc_pfm}.revenue`;
+  const [auto] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes('/charts/preview-data')),
+    page.goto(`/explore/${cid}`),
+  ]);
+  expect(auto.status()).toBe(200);
+  expect(auto.request().postDataJSON().config.generatedRoleConfig.metrics[0].agg).toBe('percent_of_total');
+  const agg = page.getByTestId(`metric-agg-${field}`);
+  await expect(agg).toHaveValue('percent_of_total');
+  await expect(agg.locator('option:checked')).toHaveText('% OF TOTAL');
+
+  const [put] = await Promise.all([
+    page.waitForResponse((r) => r.url().endsWith(`/charts/${cid}`) && r.request().method() === 'PUT'),
+    page.getByRole('button', { name: 'Update', exact: true }).click(),
+  ]);
+  expect(put.status(), await put.text()).toBe(200);
+  expect(put.request().postDataJSON().config.generatedRoleConfig.metrics[0].agg).toBe('percent_of_total');
+  expect((await put.json()).config.generatedRoleConfig.metrics[0].agg).toBe('percent_of_total');
 });
 
 test('J10: a reader and the public link never receive SQL or planner internals', async ({ page, browser }) => {
