@@ -316,7 +316,13 @@ function HealthLabel({ row }: { row: UsageRow }) {
     <span className="flex flex-col gap-0.5" data-testid={`obs-health-label-${row.datasetId}`}>
       <span className={cn('inline-flex w-fit items-center rounded-full px-2 py-0.5 text-tiny font-emphasis', HEALTH_TONE[h])}>{t(`observability.health.state.${h}`)}</span>
       {row.openIncidents > 0 && <span className="text-tiny text-danger">{t('observability.health.openIncidents', { count: row.openIncidents })}</span>}
-      {h === 'semantic_invalid' && <span className="text-tiny text-danger">{t('observability.health.semanticInvalid', { count: row.semantic?.failed ?? 1 })}</span>}
+      {h === 'semantic_invalid' && (
+        // The reasons travel in the title: which definition broke (data-state contract).
+        <span data-testid={`obs-semantic-${row.datasetId}`} title={(row.semantic?.reasons ?? []).join('\n')}
+          className="inline-flex items-center gap-1 text-tiny text-danger">
+          <Unlink className="h-3 w-3" aria-hidden />{t('observability.health.semanticInvalid', { count: row.semantic?.failed ?? 1 })}
+        </span>
+      )}
     </span>
   );
 }
