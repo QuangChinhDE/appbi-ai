@@ -1012,6 +1012,11 @@ class ObservabilityService:
                                                  [f"{type(exc).__name__}: {str(exc)[:500]}"])
                 raise ObservabilityService.ScanFailed(
                     "The scan failed and its results were not saved.", run_id) from exc
+            # A monitor that could not run is a check that did not happen: the
+            # scan is partial, never a clean success (1,200 unreadable monitors
+            # used to read "succeeded").
+            if result["counts"].get("monitor_errors"):
+                result["errors"].insert(0, f"{result['counts']['monitor_errors']} monitor(s) could not run")
             status = "partial" if result["errors"] else "succeeded"
             ObservabilityService._finish_run(db, run_id, status, result["counts"], result["errors"])
 

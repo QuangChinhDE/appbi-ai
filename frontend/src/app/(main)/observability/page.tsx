@@ -340,7 +340,7 @@ function ScannerBanner({ status }: { status: ScannerStatus | null }) {
   const last = status.lastScan;
   const problems: { tone: 'danger' | 'warning'; text: string }[] = [];
   if (last?.status === 'failed') problems.push({ tone: 'danger', text: t('observability.scanner.failed', { time: relativeTime(last.startedAt, t, locale) }) });
-  else if (last?.status === 'partial') problems.push({ tone: 'warning', text: t('observability.scanner.partial', { time: relativeTime(last.startedAt, t, locale), errors: last.errors.length }) });
+  else if (last?.status === 'partial') problems.push({ tone: 'warning', text: t('observability.scanner.partial', { time: relativeTime(last.startedAt, t, locale), errors: (last.counts?.monitor_errors ?? 0) || last.errors.length }) });
   if (status.stale) {
     problems.push({ tone: 'warning', text: status.lastSuccessfulScan
       ? t('observability.scanner.stale', { time: relativeTime(status.lastSuccessfulScan.finishedAt ?? status.lastSuccessfulScan.startedAt, t, locale), hours: status.staleAfterHours })
