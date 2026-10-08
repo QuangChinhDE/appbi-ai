@@ -152,7 +152,7 @@ def test_engine_meaning_survives_the_preview_path(pg, case):
 
 
 # A stored binding is never the source of semantic truth: whatever the saved
-# config carries (nothing, the minimal MCP shape, or a stale copy pointing at a
+# config carries (nothing, the minimal API-authored shape, or a stale copy pointing at a
 # model / explore / reachability that no longer exist), the chart is answered
 # from the CURRENT model.
 _BINDINGS = {

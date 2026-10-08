@@ -18,7 +18,7 @@ from app.services.chart_value_normalization import default_time_axis_sort, norma
 # log lines emitted from deep inside the semantic engine (SQL emission,
 # measure-filter wrap) can be tied back to a specific dashboard tile by
 # DA. Set by ``get_chart_data`` / ``preview_chart_data``; defaults to
-# None for non-chart callers (CSV export, MCP previews, etc.).
+# None for non-chart callers (CSV export, previews, etc.).
 _pbi_chart_id_var: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "pbi_chart_id", default=None,
 )
@@ -254,7 +254,7 @@ def _role_config_needs_semantic_runtime(
 
     Phase-15.25 — previously this returned False early when
     `base_view_name` was empty. That silently wiped out the dotted-ref
-    detection below, so an MCP-created chart whose `semanticBinding`
+    detection below, so an API-created chart whose `semanticBinding`
     hadn't been hydrated (binding={}, baseViewName="") routed every
     qualified-ref query to the legacy live builder — which can't JOIN.
     DA's symptom: chart with a joined-view dim (e.g. calendar
@@ -2569,7 +2569,7 @@ def _execute_semantic_chart_runtime(
     semantic_measure_fields = _binding_semantic_measure_fields(binding)
     semantic_fields_all = _binding_semantic_fields(binding)
     # Bare-name view of declared measures → lets the shared classifier reclassify
-    # a BARE measure ref (e.g. an old / MCP / API chart that stored
+    # a BARE measure ref (e.g. an old / API-authored chart that stored
     # `scatterX: "total_revenue"` without a view prefix) into the measure tier
     # WITHOUT guessing the view (the engine resolves it). Passed to
     # `classify_semantic_roles` below — the role classification + the
@@ -4599,7 +4599,9 @@ class ChartService:
             except ValueError as exc:
                 # Invalid chart config for the current dataset state — the same
                 # case the single endpoint maps to 400 (Vietnamese-friendly msg).
-                return {"chart_id": cid, "ok": False, "status": 400, "error": str(exc),
+                from app.services.chart_error_contract import user_safe_message
+                return {"chart_id": cid, "ok": False, "status": 400,
+                        "error": user_safe_message(exc, f"batch chart data chart_id={cid}"),
                         "category": refusal_category(exc)}
             except Exception as exc:  # noqa: BLE001 — one tile must not sink the page
                 from app.services.chart_error_contract import failure_detail
@@ -4805,7 +4807,7 @@ class ChartService:
 
         # Hydrate semanticBinding so preview takes the same routing path as
         # `GET /charts/{id}/data` (which goes through `hydrate_runtime_config`).
-        # Without this, an MCP-saved or freshly-typed config carrying only the
+        # Without this, an API-saved or freshly-typed config carrying only the
         # minimal binding (baseViewName, exploreName, modelId, exploreId)
         # would skip the semantic engine for non-aggregating charts
         # (SCATTER / MAP_POINT) and the row keys come back bare instead of

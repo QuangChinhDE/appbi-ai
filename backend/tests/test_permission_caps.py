@@ -6,7 +6,8 @@ with a session, then calls the API with ``Authorization: Bearer appbi_pat_...``.
 
 Regressions locked (authz review of demo@11473148):
 * N-PAT1 - three paths read ``current_user.permissions`` raw: a PAT scoped to
-  ``explore_charts: view`` could SAVE charts through ``/charts/ai-preview``
+  ``explore_charts: view`` could SAVE charts (then through ``/charts/ai-preview``,
+  since removed — the canonical save path ``POST /charts/`` is asserted now)
   because its owner held edit.
 * a PAT row with empty scopes ``{}`` (the column default) was stamped with no
   cap at all and authenticated as its full owner.
@@ -107,11 +108,12 @@ def test_pat_cannot_mint_or_reveal_tokens(client, human):  # noqa: F811
                                                    "expires_in_days": 1}).status_code in (401, 403)
 
 
-def test_pat_scope_cannot_be_regained_through_ai_chart_save(client, human, own_dataset):  # noqa: F811
+def test_pat_scope_cannot_be_regained_through_chart_save(client, human, own_dataset):  # noqa: F811
     _, t = own_dataset
     _, pat, _ = _mint(client, human, {"datasets": "view", "explore_charts": "view"})
-    r = client.post("/api/v1/charts/ai-preview", headers=pat,
-                    json={"dataset_table_id": t.id, "chart_type": "TABLE", "config": {}, "save": True})
+    r = client.post("/api/v1/charts/", headers=pat,
+                    json={"name": f"pat-save-{uuid.uuid4().hex[:6]}", "dataset_table_id": t.id,
+                          "chart_type": "TABLE", "config": {"roleConfig": {"metrics": []}}})
     assert r.status_code == 403, r.text
 
 

@@ -28,7 +28,7 @@
 
 ## Refusal contract (backend, `services/chart_error_contract.py`)
 
-`POST /charts/preview-data`, `GET /charts/{id}/data` and `POST /charts/ai-preview`
+`POST /charts/preview-data` and `GET /charts/{id}/data`
 answer a `ValueError` with:
 
 ```
@@ -41,7 +41,7 @@ answer a `ValueError` with:
 - `dry-run-create` returns the same object as `runtime_refusal`.
 - Any other exception: the error is logged in full under a reference id. The response is
   "Không tải được dữ liệu biểu đồ … mã tham chiếu <ref>", which applies to preview,
-  chart data, ai-preview, dry-run and batch tiles.
+  chart data, dry-run and batch tiles.
 - The frontend classifies errors with `describeChartFailure`:
   ambiguous_route, semantic_refusal, invalid_config, permission, source_error, unknown.
   `ChartFailurePanel` renders the business message and actions, and puts the routes and

@@ -14,7 +14,6 @@ dashboard + public link:
   public slicer options      GET  /public/dashboards/{t}/filters/distinct-values
   AI chart read              agent_flows.tools.context._fetch_chart_data
                                   (every dashboard / public AI tool)
-  AI chart preview           POST /charts/ai-preview
 
 and proves: same rows or the same refusal category; a soft drop observable
 without leaking topology; authoritative constraints fail closed everywhere;
@@ -1023,47 +1022,3 @@ def test_custom_and_generated_charts_keep_their_mode_on_the_public_surface(pg, h
         kind, rows, _ = ask_public(client, tokens["plain"], custom, {})
         assert kind == "rows" and {r.get("product"): _norm(r.get("sum__amount")) for r in rows} == {
             "Pen": 141, "Ink": 57}, rows
-
-
-# ── /charts/ai-preview — the AI chart tool runs the chart's own execution ─────
-
-
-def test_the_ai_chart_preview_is_the_semantic_answer_and_saves_what_it_previewed(pg, http):
-    """By product: Pen 141 / Ink 57 (the engine's answer, not a physical
-    aggregate); the saved chart renders the same rows; an ambiguous request is
-    refused with its category."""
-    client, holder = http
-    with chart_world(pg, "G1_star", ds_config=_pg_config()) as w:
-        holder["db"] = w.db
-        from app.models.user import User
-
-        if w.db.get(User, uuid.UUID(int=7)) is None:   # the fixture's admin owns the saved chart
-            w.db.add(User(id=uuid.UUID(int=7), email=f"p4-{uuid.uuid4().hex[:6]}@x", full_name="p4"))
-            w.db.flush()
-        body = {"dataset_table_id": w.tables["p2_sales"].id, "chart_type": "TABLE", "save": True,
-                "name": f"p4 ai chart {uuid.uuid4().hex[:6]}",
-                "config": {"dimensions": ["p2_products.name"],
-                           "metrics": [{"column": "p2_sales.revenue", "aggregation": "sum"}]}}
-        r = client.post("/api/v1/charts/ai-preview", json=body)
-        assert r.status_code == 200, r.text
-        got = {x["p2_products.name"]: _norm(x["p2_sales.revenue"]) for x in r.json()["data"]}
-        assert got == {"Pen": 141, "Ink": 57}, r.json()
-        saved = client.get(f"/api/v1/charts/{r.json()['chart_id']}/data")
-        assert saved.status_code == 200, saved.text
-        assert {x["p2_products.name"]: _norm(x["p2_sales.revenue"]) for x in saved.json()["data"]} == got
-        # the rest of the saved config (a Top-1 data limit) is previewed too — never saved unseen
-        top1 = {**body, "name": f"p4 ai top1 {uuid.uuid4().hex[:6]}",
-                "config": {**body["config"], "styleConfig": {"dataLimit": 1, "dataLimitDirection": "top"}}}
-        r = client.post("/api/v1/charts/ai-preview", json=top1)
-        assert r.status_code == 200, r.text
-        got = {x["p2_products.name"]: _norm(x["p2_sales.revenue"]) for x in r.json()["data"]}
-        assert got == {"Pen": 141}, r.json()
-        saved = client.get(f"/api/v1/charts/{r.json()['chart_id']}/data")
-        assert {x["p2_products.name"]: _norm(x["p2_sales.revenue"]) for x in saved.json()["data"]} == got
-    with chart_world(pg, "G3_diamond", ds_config=_pg_config()) as w:
-        holder["db"] = w.db
-        body = {"dataset_table_id": w.tables["p2_sales"].id, "chart_type": "TABLE",
-                "config": {"dimensions": ["p2_regions.name"],
-                           "metrics": [{"column": "p2_sales.revenue", "aggregation": "sum"}]}}
-        r = client.post("/api/v1/charts/ai-preview", json=body)
-        assert r.status_code == 400 and r.headers.get("X-AppBI-Refusal") == "AMBIGUOUS_ROUTE", (r.status_code, r.text)
