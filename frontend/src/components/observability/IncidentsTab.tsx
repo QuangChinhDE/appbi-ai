@@ -54,9 +54,11 @@ export function IncidentsTab({ datasetId, showChannels = true, focusIncidentId, 
   const focusRef = useRef<HTMLLIElement | null>(null);
 
   // debounce the search box
-  useEffect(() => { const h = setTimeout(() => { setQ(query.trim()); setOffset(0); }, 300); return () => clearTimeout(h); }, [query]);
-  // a different dataset / filter starts at page 1
-  useEffect(() => { setOffset(0); }, [datasetId, showResolved, pillar, severity]);
+  useEffect(() => { const h = setTimeout(() => setQ(query.trim()), 300); return () => clearTimeout(h); }, [query]);
+  // A different dataset / filter / search starts at page 1. Only on a real
+  // change: the debounce firing with an unchanged '' on mount used to reset a
+  // page the user had just moved to.
+  useEffect(() => { setOffset(0); }, [datasetId, showResolved, pillar, severity, q]);
 
   const reload = useCallback(() => {
     const mine = ++seq.current;
