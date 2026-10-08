@@ -983,7 +983,10 @@ TOTAL_MEASURE_DEF = {
         "pass `period` for the value at one period — e.g. ARR in August is "
         "period='2026-08', never the sum of all months; without `period` a measure "
         "whose aggregation is not declared is refused (it may be a balance such as ARR "
-        "or active customers). The result names the periods it covered."
+        "or active customers). A question over a RANGE ('from January to August', "
+        "'Q1', 'this year so far') of a counted measure is ONE call: period_from="
+        "'2026-01', period_to='2026-08', across_periods=true — not two single months. "
+        "The result names the periods it covered."
     ),
     "input_schema": {
         "type": "object",

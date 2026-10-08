@@ -384,7 +384,8 @@ test.describe('analytics meaning (live model, SaaS fixture)', () => {
     expect(nums(one.answer.text)).not.toContain(864);
     const cmp = await ask(request, key, 'So sánh ARR tháng 8/2026 với tháng 7/2026.');
     expect(nums(cmp.answer.text)).toEqual(expect.arrayContaining([72, 864]));
-    expect(cmp.answer.text.toLowerCase()).toMatch(/giảm|sụt/);
+    // A decline, said in any of the ways a reader would accept (live: "-91.67%", "xấu đi").
+    expect(cmp.answer.text.toLowerCase()).toMatch(/giảm|sụt|xấu đi|thấp hơn|-91|−91/);
   });
 
   test('a range total of a flow measure is the range, not one month', async ({ request }) => {

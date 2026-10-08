@@ -1,0 +1,3540 @@
+{
+ "spent_usd": 0.11661705,
+ "results": [
+  {
+   "flow": "A_single",
+   "q": "S1_arr_aug",
+   "rep": 0,
+   "wall_s": 5.8,
+   "status": "ok",
+   "answer": "ARR tháng 8 năm 2026 là 72.\n\n[FOLLOWUP] Bạn có muốn biết ARR của các tháng khác không?  \n[FOLLOWUP] Bạn cần thông tin gì thêm về các chỉ số khác trong báo cáo?  \n[FOLLOWUP] Có cái gì khác tôi có thể trợ giúp cho bạn không?",
+   "llm_calls": 3,
+   "tool_calls": 2,
+   "prompt_tokens": 8934,
+   "completion_tokens": 112,
+   "ms": 6256,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure(period_not_in_chart)",
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00141
+  },
+  {
+   "flow": "A_single",
+   "q": "S2_arr_aug_vs_jul",
+   "rep": 0,
+   "wall_s": 10.6,
+   "status": "ok",
+   "answer": "So sánh ARR tháng 8/2026 với tháng 7/2026 cho thấy những điểm đáng chú ý như sau:\n\n- **ARR (Active Revenue Runrate)** trong tháng 8/2026 là **72.0**, so với **864.0** trong tháng 7/2026. \n- Sự thay đổi là **giảm 792.0** với tỷ lệ phần trăm giảm là **91.67%**. Đây là một dấu hiệu xấu (verdict: worsening).\n\nNgoài ra, cần lưu ý rằng dữ liệu cho tháng 8 có thể chưa đầy đủ do có hiện tượng bất thường (low outlier vs median). Do đó, khi so sánh, cần thận trọng về tính chính xác của dữ liệu.\n\n[FOLLOWUP] Bạn có muốn xem lý do tại sao có sự giảm mạnh này không?  \n[FOLLOWUP] Có cần phân tích sâu hơn về các yếu tố có thể ảnh hưởng đến ARR không?  \n[FOLLOWUP] Bạn có muốn kiểm tra MRR cho các tháng tương ứng không?",
+   "llm_calls": 3,
+   "tool_calls": 4,
+   "prompt_tokens": 9659,
+   "completion_tokens": 414,
+   "ms": 11532,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "compare_periods(period_not_in_chart)",
+      "compare_periods(period_not_in_chart)",
+      "compare_periods",
+      "compare_periods(bad_argument)"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "aug": true,
+    "jul": true,
+    "direction": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.0017
+  },
+  {
+   "flow": "A_single",
+   "q": "S3_mrr_jun",
+   "rep": 0,
+   "wall_s": 4.8,
+   "status": "ok",
+   "answer": "MRR tháng 6/2026 là 70. \n\n[FOLLOWUP] Bạn có cần thêm thông tin về MRR trong các tháng khác không?  \n[FOLLOWUP] Bạn muốn tìm hiểu về các chỉ số tài chính khác không?  \n[FOLLOWUP] Có điều gì cụ thể khác mà bạn muốn biết không?",
+   "llm_calls": 2,
+   "tool_calls": 1,
+   "prompt_tokens": 5429,
+   "completion_tokens": 98,
+   "ms": 4918,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00087
+  },
+  {
+   "flow": "A_single",
+   "q": "S4_churn_aug",
+   "rep": 0,
+   "wall_s": 5.8,
+   "status": "ok",
+   "answer": "Trong tháng 8/2026, số lượng khách hàng rời bỏ là 40.\n\n[FOLLOWUP] Bạn có cần thông tin chi tiết hơn về số liệu khách hàng không?  \n[FOLLOWUP] Bạn muốn so sánh số khách hàng rời bỏ giữa các tháng không?  \n[FOLLOWUP] Bạn có cần phân tích nguyên nhân khách hàng rời bỏ không?",
+   "llm_calls": 2,
+   "tool_calls": 2,
+   "prompt_tokens": 5766,
+   "completion_tokens": 143,
+   "ms": 6299,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure",
+      "describe_time_coverage"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00095
+  },
+  {
+   "flow": "A_single",
+   "q": "S5_arr_enterprise",
+   "rep": 0,
+   "wall_s": 8.3,
+   "status": "partial",
+   "answer": "ARR của phân khúc enterprise là 5,000. Tổng ARR của toàn bộ báo cáo là [đã ẩn: chưa kiểm chứng], trong đó phân khúc enterprise chiếm 76.92% tổng số.\n\n⚠️ Đã ẩn số chưa kiểm chứng: dữ liệu mà câu trả lời đã đọc không cho ra các con số này cho đúng điều được hỏi, nên chúng không được hiển thị.\n\n[FOLLOWUP] Bạn có muốn tìm hiểu về các phân khúc khác không?  \n[FOLLOWUP] Có thông tin nào khác bạn đang cần không?  \n[FOLLOWUP] Bạn có muốn biết thêm về tỷ trọng của các phân khúc không?",
+   "llm_calls": 4,
+   "tool_calls": 2,
+   "prompt_tokens": 11859,
+   "completion_tokens": 201,
+   "ms": 9046,
+   "notices": [
+    "claims_unverified"
+   ],
+   "unsupported_claims": true,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure",
+      "share_of"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.0019
+  },
+  {
+   "flow": "A_single",
+   "q": "H1_churn_total",
+   "rep": 0,
+   "wall_s": 12.3,
+   "status": "partial",
+   "answer": "Tổng số khách hàng rời bỏ từ tháng 1 đến tháng 8 năm 2026 là [đã ẩn: chưa kiểm chứng].\n\n⚠️ Đã ẩn số chưa kiểm chứng: dữ liệu mà câu trả lời đã đọc không cho ra các con số này cho đúng điều được hỏi, nên chúng không được hiển thị.\n\n[FOLLOWUP] Bạn có cần thêm thông tin về tỷ lệ rời bỏ khách hàng theo từng tháng không?  \n[FOLLOWUP] Muốn tôi tìm hiểu thêm về nguyên nhân khách hàng rời bỏ không?  \n[FOLLOWUP] Có lĩnh vực nào khác bạn muốn tìm hiểu không?",
+   "llm_calls": 5,
+   "tool_calls": 3,
+   "prompt_tokens": 17005,
+   "completion_tokens": 283,
+   "ms": 12821,
+   "notices": [
+    "claims_unverified"
+   ],
+   "unsupported_claims": true,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure",
+      "resolve_chart_candidates",
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": false
+   },
+   "correct": false,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00272
+  },
+  {
+   "flow": "A_single",
+   "q": "H2_latest_arr",
+   "rep": 0,
+   "wall_s": 5.8,
+   "status": "ok",
+   "answer": "ARR ở tháng gần nhất (tháng 8 năm 2026) là 72. \n\n[FOLLOWUP] Bạn có muốn biết thêm về xu hướng ARR trong các tháng trước không?  \n[FOLLOWUP] Bạn có muốn so sánh ARR giữa các tháng không?  \n[FOLLOWUP] Bạn cần thông tin gì khác về báo cáo này không?",
+   "llm_calls": 2,
+   "tool_calls": 2,
+   "prompt_tokens": 6895,
+   "completion_tokens": 125,
+   "ms": 6295,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "get_chart_summary",
+      "describe_time_coverage"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true,
+    "month": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00111
+  },
+  {
+   "flow": "A_single",
+   "q": "H3_second_category",
+   "rep": 0,
+   "wall_s": 5.9,
+   "status": "ok",
+   "answer": "Danh mục có doanh thu cao thứ hai là \"watches_gifts\" với doanh thu là 1,205,005.68. \n\n[FOLLOWUP] Bạn có muốn biết thêm về doanh thu của các danh mục khác không?  \n[FOLLOWUP] Bạn có cần thông tin chi tiết hơn về doanh thu trong một khoảng thời gian cụ thể không?  \n[FOLLOWUP] Bạn có muốn so sánh doanh thu giữa các danh mục không?",
+   "llm_calls": 2,
+   "tool_calls": 1,
+   "prompt_tokens": 5451,
+   "completion_tokens": 129,
+   "ms": 6247,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "rank_values"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "category": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.0009
+  },
+  {
+   "flow": "A_single",
+   "q": "S1_arr_aug",
+   "rep": 1,
+   "wall_s": 5.7,
+   "status": "ok",
+   "answer": "ARR tháng 8 năm 2026 là 72.\n\n[FOLLOWUP] Bạn có muốn xem xu hướng ARR cho các tháng tiếp theo không?  \n[FOLLOWUP] Bạn có cần thông tin về các chỉ số khác không?  \n[FOLLOWUP] Bạn muốn biết cách tính ARR không?",
+   "llm_calls": 3,
+   "tool_calls": 2,
+   "prompt_tokens": 8939,
+   "completion_tokens": 108,
+   "ms": 6186,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure(period_not_in_chart)",
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00141
+  },
+  {
+   "flow": "A_single",
+   "q": "S2_arr_aug_vs_jul",
+   "rep": 1,
+   "wall_s": 10.3,
+   "status": "ok",
+   "answer": "So sánh ARR tháng 8/2026 với tháng 7/2026 như sau:\n\n- **ARR tháng 8/2026**: 72.0\n- **ARR tháng 7/2026**: 864.0\n- **Biến động**: Giảm 792.0, tương đương với **giảm 91.67%**.\n\nKết luận là tình hình đang **xấu đi**. Tuy nhiên, cần lưu ý rằng dữ liệu tháng 8 có thể chưa đầy đủ và thấp bất thường so với các kỳ khác.\n\n[FOLLOWUP] Bạn có muốn biết thêm về lý do sụt giảm này không?  \n[FOLLOWUP] Bạn có muốn so sánh với những tháng khác không?  \n[FOLLOWUP] Bạn có cần thông tin chi tiết hơn về ARR không?",
+   "llm_calls": 3,
+   "tool_calls": 4,
+   "prompt_tokens": 9541,
+   "completion_tokens": 374,
+   "ms": 11258,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "compare_periods(period_not_in_chart)",
+      "compare_periods(period_not_in_chart)",
+      "compare_periods(bad_argument)",
+      "compare_periods"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "aug": true,
+    "jul": true,
+    "direction": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00166
+  },
+  {
+   "flow": "A_single",
+   "q": "S3_mrr_jun",
+   "rep": 1,
+   "wall_s": 4.7,
+   "status": "ok",
+   "answer": "MRR tháng 6/2026 là 70.\n\n[FOLLOWUP] Bạn có muốn biết thêm về xu hướng MRR trong các tháng khác không?  \n[FOLLOWUP] Có cần tôi so sánh MRR tháng 6/2026 với các tháng trước đó không?  \n[FOLLOWUP] Bạn có muốn thông tin thêm về các khía cạnh khác của doanh thu không?",
+   "llm_calls": 2,
+   "tool_calls": 1,
+   "prompt_tokens": 5434,
+   "completion_tokens": 110,
+   "ms": 5024,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00088
+  },
+  {
+   "flow": "A_single",
+   "q": "S4_churn_aug",
+   "rep": 1,
+   "wall_s": 7.7,
+   "status": "ok",
+   "answer": "Trong tháng 8/2026, có 40 khách hàng rời bỏ.\n\n[FOLLOWUP] Bạn có muốn biết thêm thông tin về xu hướng khách hàng trong các tháng khác không?  \n[FOLLOWUP] Bạn có cần phân tích thêm về nguyên nhân gây ra sự rời bỏ của khách hàng không?  \n[FOLLOWUP] Bạn có muốn so sánh tỷ lệ rời bỏ giữa các tháng không?",
+   "llm_calls": 2,
+   "tool_calls": 2,
+   "prompt_tokens": 5766,
+   "completion_tokens": 150,
+   "ms": 8350,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure",
+      "describe_time_coverage"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00095
+  },
+  {
+   "flow": "A_single",
+   "q": "S5_arr_enterprise",
+   "rep": 1,
+   "wall_s": 10.4,
+   "status": "ok",
+   "answer": "ARR của phân khúc enterprise là 5,000, chiếm 76.92% tổng ARR.\n\n[FOLLOWUP] Bạn có cần thông tin về các phân khúc khác không?  \n[FOLLOWUP] Có muốn tôi phân tích sự thay đổi ARR của phân khúc này qua các kỳ không?  \n[FOLLOWUP] Bạn có muốn biết thêm về những yếu tố nào đã ảnh hưởng đến ARR không?",
+   "llm_calls": 5,
+   "tool_calls": 3,
+   "prompt_tokens": 14953,
+   "completion_tokens": 223,
+   "ms": 11331,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure(bad_argument)",
+      "total_measure",
+      "share_of"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00238
+  },
+  {
+   "flow": "A_single",
+   "q": "H1_churn_total",
+   "rep": 1,
+   "wall_s": 13.9,
+   "status": "ok",
+   "answer": "Xin lỗi, nhưng báo cáo không có biểu đồ nào cho số liệu khách hàng rời bỏ (cus_churned) được phân loại theo tháng. Do đó, tôi không thể cung cấp tổng số khách hàng rời bỏ từ tháng 1 đến tháng 8 năm 2026.\n\n[FOLLOWUP] Bạn có muốn tìm hiểu về số liệu khác trong báo cáo không?  \n[FOLLOWUP] Có điều gì khác bạn muốn thảo luận về khách hàng hoặc doanh thu không?  \n[FOLLOWUP] Bạn có cần thông tin gì thêm về các kỳ khác không?",
+   "llm_calls": 5,
+   "tool_calls": 3,
+   "prompt_tokens": 17750,
+   "completion_tokens": 293,
+   "ms": 15147,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "find_capability",
+      "total_measure",
+      "resolve_chart_candidates"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": false
+   },
+   "correct": false,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00284
+  },
+  {
+   "flow": "A_single",
+   "q": "H2_latest_arr",
+   "rep": 1,
+   "wall_s": 5.8,
+   "status": "ok",
+   "answer": "ARR ở tháng gần nhất có dữ liệu là 72.0, và đó là tháng 2026-08.\n\n[FOLLOWUP] Bạn có muốn biết thêm về xu hướng ARR trong vài tháng gần đây không?  \n[FOLLOWUP] Bạn có cần thông tin về các tháng khác trong năm 2026 không?  \n[FOLLOWUP] Bạn có muốn tìm hiểu về các chỉ số khác liên quan đến ARR không?",
+   "llm_calls": 2,
+   "tool_calls": 2,
+   "prompt_tokens": 6900,
+   "completion_tokens": 139,
+   "ms": 6308,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "describe_time_coverage",
+      "get_chart_summary"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true,
+    "month": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00112
+  },
+  {
+   "flow": "A_single",
+   "q": "H3_second_category",
+   "rep": 1,
+   "wall_s": 4.8,
+   "status": "ok",
+   "answer": "Danh mục có doanh thu cao thứ hai là \"watches_gifts\" với doanh thu là 1,205,005.68.\n\n[FOLLOWUP] Bạn có muốn biết thêm về danh mục có doanh thu cao nhất không?  \n[FOLLOWUP] Hay bạn muốn xem tổng doanh thu của tất cả các danh mục?  \n[FOLLOWUP] Bạn có cần thông tin chi tiết về các danh mục khác không?",
+   "llm_calls": 2,
+   "tool_calls": 1,
+   "prompt_tokens": 5451,
+   "completion_tokens": 122,
+   "ms": 5102,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "rank_values"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "category": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00089
+  },
+  {
+   "flow": "A_single",
+   "q": "S1_arr_aug",
+   "rep": 2,
+   "wall_s": 6.0,
+   "status": "ok",
+   "answer": "ARR tháng 8 năm 2026 là 72.\n\n[FOLLOWUP] Bạn có cần thông tin thêm về ARR trong các tháng khác không?  \n[FOLLOWUP] Bạn có muốn so sánh ARR tháng 8 với tháng trước đó không?  \n[FOLLOWUP] Có thông tin nào khác bạn muốn tìm hiểu liên quan đến ARR không?",
+   "llm_calls": 3,
+   "tool_calls": 2,
+   "prompt_tokens": 8939,
+   "completion_tokens": 118,
+   "ms": 6475,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure(period_not_in_chart)",
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00141
+  },
+  {
+   "flow": "A_single",
+   "q": "S2_arr_aug_vs_jul",
+   "rep": 2,
+   "wall_s": 10.1,
+   "status": "ok",
+   "answer": "So sánh ARR tháng 8/2026 với tháng 7/2026 cho thấy các chỉ số như sau:\n\n- **ARR tháng 7/2026**: 864.0\n- **ARR tháng 8/2026**: 72.0\n- **Thay đổi**: Giảm 792.0\n- **Tỷ lệ thay đổi**: -91.67%\n- **Kết luận**: Tình hình đang xấu đi.\n\nLưu ý rằng dữ liệu tháng 8/2026 có thể không đầy đủ và thấp hơn so với các kỳ khác, vì vậy cần cẩn trọng khi đưa ra kết luận.\n\n[FOLLOWUP] Biểu đồ nào phù hợp để xem thêm thông tin chi tiết về ARR?  \n[FOLLOWUP] Có cần so sánh với các tháng khác không?  \n[FOLLOWUP] Bạn có muốn xem thêm phân tích về lý do thay đổi này không?",
+   "llm_calls": 3,
+   "tool_calls": 4,
+   "prompt_tokens": 9545,
+   "completion_tokens": 397,
+   "ms": 10959,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "compare_periods(period_not_in_chart)",
+      "compare_periods(period_not_in_chart)",
+      "compare_periods(bad_argument)",
+      "compare_periods"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "aug": true,
+    "jul": true,
+    "direction": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00167
+  },
+  {
+   "flow": "A_single",
+   "q": "S3_mrr_jun",
+   "rep": 2,
+   "wall_s": 5.1,
+   "status": "ok",
+   "answer": "MRR tháng 6/2026 là 70. \n\n[FOLLOWUP] Bạn có muốn biết MRR trong các tháng khác không?  \n[FOLLOWUP] Bạn có cần thêm thông tin về các chỉ số khác không?  \n[FOLLOWUP] Bạn có muốn hỏi về xu hướng MRR qua các tháng không?",
+   "llm_calls": 2,
+   "tool_calls": 1,
+   "prompt_tokens": 5434,
+   "completion_tokens": 97,
+   "ms": 5529,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00087
+  },
+  {
+   "flow": "A_single",
+   "q": "S4_churn_aug",
+   "rep": 2,
+   "wall_s": 5.9,
+   "status": "ok",
+   "answer": "Trong tháng 8/2026, có 40 khách hàng rời bỏ.\n\n[FOLLOWUP] Bạn cần thêm thông tin về số liệu nào khác không?  \n[FOLLOWUP] Có cần tôi phân tích thêm về xu hướng khách hàng không?  \n[FOLLOWUP] Bạn có muốn so sánh số liệu này với các tháng khác không?",
+   "llm_calls": 2,
+   "tool_calls": 2,
+   "prompt_tokens": 5771,
+   "completion_tokens": 136,
+   "ms": 6435,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure",
+      "describe_time_coverage"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00095
+  },
+  {
+   "flow": "A_single",
+   "q": "S5_arr_enterprise",
+   "rep": 2,
+   "wall_s": 10.4,
+   "status": "partial",
+   "answer": "ARR của phân khúc enterprise là 5,000, chiếm 76.92% trong tổng ARR của toàn bộ báo cáo, là [đã ẩn: chưa kiểm chứng].\n\n⚠️ Đã ẩn số chưa kiểm chứng: dữ liệu mà câu trả lời đã đọc không cho ra các con số này cho đúng điều được hỏi, nên chúng không được hiển thị.\n\n[FOLLOWUP] Bạn có muốn phân tích thêm về các phân khúc khác không?  \n[FOLLOWUP] Có cần thông tin chi tiết hơn về tỷ trọng giữa các phân khúc không?  \n[FOLLOWUP] Bạn có muốn so sánh ARR của enterprise với một phân khúc cụ thể nào khác không?",
+   "llm_calls": 5,
+   "tool_calls": 3,
+   "prompt_tokens": 14946,
+   "completion_tokens": 231,
+   "ms": 11335,
+   "notices": [
+    "claims_unverified"
+   ],
+   "unsupported_claims": true,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure(bad_argument)",
+      "total_measure",
+      "share_of"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00238
+  },
+  {
+   "flow": "A_single",
+   "q": "H1_churn_total",
+   "rep": 2,
+   "wall_s": 12.3,
+   "status": "partial",
+   "answer": "Tổng số khách hàng rời bỏ từ tháng 1 đến tháng 8 năm 2026 là [đã ẩn: chưa kiểm chứng].\n\n⚠️ Đã ẩn số chưa kiểm chứng: dữ liệu mà câu trả lời đã đọc không cho ra các con số này cho đúng điều được hỏi, nên chúng không được hiển thị.\n\n[FOLLOWUP] Bạn cần thêm thông tin gì về khách hàng rời bỏ không?  \n[FOLLOWUP] Bạn có muốn xem phân tích theo từng tháng không?  \n[FOLLOWUP] Cần trợ giúp về bất kỳ số liệu nào khác không?",
+   "llm_calls": 6,
+   "tool_calls": 4,
+   "prompt_tokens": 22340,
+   "completion_tokens": 293,
+   "ms": 13407,
+   "notices": [
+    "claims_unverified"
+   ],
+   "unsupported_claims": true,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "find_capability",
+      "total_measure",
+      "resolve_chart_candidates",
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": false
+   },
+   "correct": false,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00353
+  },
+  {
+   "flow": "A_single",
+   "q": "H2_latest_arr",
+   "rep": 2,
+   "wall_s": 5.2,
+   "status": "ok",
+   "answer": "ARR ở tháng gần nhất, tức là tháng 8 năm 2026, là 72. \n\n[FOLLOWUP] Bạn muốn biết thêm thông tin nào về dữ liệu ARR không?  \n[FOLLOWUP] Bạn có cần so sánh ARR với các tháng trước đó không?  \n[FOLLOWUP] Bạn muốn phân tích xu hướng của ARR trong thời gian tới không?",
+   "llm_calls": 2,
+   "tool_calls": 2,
+   "prompt_tokens": 6895,
+   "completion_tokens": 128,
+   "ms": 5601,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "describe_time_coverage",
+      "get_chart_summary"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true,
+    "month": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00111
+  },
+  {
+   "flow": "A_single",
+   "q": "H3_second_category",
+   "rep": 2,
+   "wall_s": 16.3,
+   "status": "ok",
+   "answer": "Danh mục có doanh thu cao thứ hai là \"watches_gifts\" với doanh thu đạt 1,205,005.68.\n\n[FOLLOWUP] Bạn có muốn biết thêm về doanh thu của danh mục khác không?  \n[FOLLOWUP] Bạn có cần thông tin chi tiết hơn về số liệu doanh thu không?  \n[FOLLOWUP] Bạn muốn so sánh doanh thu giữa các danh mục khác không?",
+   "llm_calls": 2,
+   "tool_calls": 1,
+   "prompt_tokens": 5435,
+   "completion_tokens": 106,
+   "ms": 17754,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "mot_agent",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "rank_values"
+     ],
+     "handoff": {
+      "mode": "all_steps"
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "category": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00088
+  },
+  {
+   "flow": "B_chain",
+   "q": "S1_arr_aug",
+   "rep": 0,
+   "wall_s": 14.6,
+   "status": "ok",
+   "answer": "ARR tháng 8 năm 2026 là 72. \n\n[FOLLOWUP] Bạn có muốn biết thông tin chi tiết về sự thay đổi ARR theo thời gian không?  \n[FOLLOWUP] Có điều gì khác liên quan đến ARR mà bạn cần tìm hiểu không?  \n[FOLLOWUP] Bạn có muốn so sánh ARR với các tháng khác không?",
+   "llm_calls": 8,
+   "tool_calls": 6,
+   "prompt_tokens": 13861,
+   "completion_tokens": 468,
+   "ms": 15877,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "inspect_filters",
+      "resolve_chart_candidates",
+      "describe_time_coverage"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "read_document",
+      "read_document"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00236
+  },
+  {
+   "flow": "B_chain",
+   "q": "S2_arr_aug_vs_jul",
+   "rep": 0,
+   "wall_s": 24.4,
+   "status": "ok",
+   "answer": "ARR tháng 8/2026 là 72, giảm so với tháng 7/2026 là 864, cụ thể giảm 792. Tuy nhiên, tỷ lệ thay đổi 91.67% không thể xác nhận do tháng 8/2026 được ghi nhận là kỳ thấp bất thường và không đầy đủ.\n\n[FOLLOWUP] Bạn có muốn xem thêm thông tin về các tháng trước đó để có sự so sánh rõ ràng hơn không?  \n[FOLLOWUP] Bạn có cần hỗ trợ để phân tích thêm về xu hướng ARR không?  \n[FOLLOWUP] Bạn có muốn tìm hiểu về ảnh hưởng của sự giảm này đến tình hình tài chính của công ty không?",
+   "llm_calls": 11,
+   "tool_calls": 6,
+   "prompt_tokens": 23222,
+   "completion_tokens": 1087,
+   "ms": 26807,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "get_chart_summary",
+      "get_chart_summary"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "compare_periods(period_not_in_chart)",
+      "compare_periods"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "compare_periods(period_not_in_chart)",
+      "compare_periods"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "aug": true,
+    "jul": true,
+    "direction": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00414
+  },
+  {
+   "flow": "B_chain",
+   "q": "S3_mrr_jun",
+   "rep": 0,
+   "wall_s": 19.6,
+   "status": "ok",
+   "answer": "MRR tháng 6/2026 là 70. \n\n[FOLLOWUP] Bạn có muốn biết thêm thông tin về cách tính MRR không?  \n[FOLLOWUP] Bạn có cần so sánh MRR này với các tháng khác không?  \n[FOLLOWUP] Bạn có muốn biết thêm về tình hình tài chính của công ty không?",
+   "llm_calls": 9,
+   "tool_calls": 6,
+   "prompt_tokens": 25386,
+   "completion_tokens": 395,
+   "ms": 21508,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "resolve_chart_candidates",
+      "describe_time_coverage"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "search_knowledge",
+      "search_knowledge"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "get_chart_summary"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00404
+  },
+  {
+   "flow": "B_chain",
+   "q": "S4_churn_aug",
+   "rep": 0,
+   "wall_s": 19.1,
+   "status": "ok",
+   "answer": "Trong tháng 8/2026, có 40 khách hàng rời bỏ.\n\n[FOLLOWUP] Bạn có muốn biết lý do khách hàng rời bỏ không?  \n[FOLLOWUP] Bạn có cần thêm thông tin về xu hướng khách hàng trong thời gian tới không?  \n[FOLLOWUP] Bạn có cần phân tích thêm về các biện pháp giảm thiểu tình trạng rời bỏ không?",
+   "llm_calls": 8,
+   "tool_calls": 4,
+   "prompt_tokens": 22594,
+   "completion_tokens": 392,
+   "ms": 20864,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "describe_time_coverage",
+      "list_charts"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "search_knowledge"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00362
+  },
+  {
+   "flow": "B_chain",
+   "q": "S5_arr_enterprise",
+   "rep": 0,
+   "wall_s": 16.4,
+   "status": "ok",
+   "answer": "Không có số liệu cụ thể về ARR của phân khúc enterprise trong báo cáo. \n\n[FOLLOWUP] Bạn có muốn tìm hiểu thêm về các phân khúc khác không?  \n[FOLLOWUP] Có thông tin nào khác mà bạn cần từ báo cáo không?  \n[FOLLOWUP] Bạn có muốn biết cách tính ARR cho các phân khúc khác không?",
+   "llm_calls": 11,
+   "tool_calls": 7,
+   "prompt_tokens": 21676,
+   "completion_tokens": 446,
+   "ms": 17955,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "describe_time_coverage",
+      "resolve_chart_candidates",
+      "inspect_filters"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "search_knowledge",
+      "read_document"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure(no_time_dimension)",
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": false
+   },
+   "correct": false,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00352
+  },
+  {
+   "flow": "B_chain",
+   "q": "H1_churn_total",
+   "rep": 0,
+   "wall_s": 21.7,
+   "status": "ok",
+   "answer": "Không tìm thấy số liệu cụ thể về tổng số khách hàng rời bỏ từ tháng 1 đến tháng 8 năm 2026 trong các biểu đồ hiện có. \n\n[FOLLOWUP] Bạn có muốn tìm kiếm thêm thông tin về khách hàng rời bỏ trong những khoảng thời gian khác không?  \n[FOLLOWUP] Bạn có muốn tham khảo về tỷ lệ rời bỏ khách hàng theo tháng không?  \n[FOLLOWUP] Bạn có cần dữ liệu khác liên quan đến khách hàng không?",
+   "llm_calls": 9,
+   "tool_calls": 4,
+   "prompt_tokens": 14951,
+   "completion_tokens": 506,
+   "ms": 23814,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "describe_time_coverage",
+      "list_charts"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "search_knowledge"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": false
+   },
+   "correct": false,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00255
+  },
+  {
+   "flow": "B_chain",
+   "q": "H2_latest_arr",
+   "rep": 0,
+   "wall_s": 11.1,
+   "status": "ok",
+   "answer": "ARR ở tháng gần nhất có dữ liệu là 72, và tháng đó là 2026-08. \n\n[FOLLOWUP] Bạn muốn biết thêm thông tin về ARR ở các tháng trước không?  \n[FOLLOWUP] Bạn có cần phân tích thêm về xu hướng ARR theo thời gian không?  \n[FOLLOWUP] Bạn có muốn so sánh ARR với các chỉ số khác không?",
+   "llm_calls": 6,
+   "tool_calls": 2,
+   "prompt_tokens": 9906,
+   "completion_tokens": 346,
+   "ms": 11976,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "get_chart_summary",
+      "describe_time_coverage"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true,
+    "month": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00169
+  },
+  {
+   "flow": "B_chain",
+   "q": "H3_second_category",
+   "rep": 0,
+   "wall_s": 39.5,
+   "status": "ok",
+   "answer": "Danh mục có doanh thu cao thứ hai là **watches_gifts** với doanh thu là **1,205,005.68**.\n\n[FOLLOWUP] Bạn có muốn biết thêm về doanh thu của danh mục khác không?  \n[FOLLOWUP] Có cần phân tích thêm về các danh mục có doanh thu thấp hơn không?  \n[FOLLOWUP] Bạn có muốn so sánh doanh thu giữa các danh mục không?",
+   "llm_calls": 11,
+   "tool_calls": 7,
+   "prompt_tokens": 22055,
+   "completion_tokens": 441,
+   "ms": 43104,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "describe_time_coverage",
+      "inspect_filters",
+      "resolve_chart_candidates"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "read_document",
+      "read_document",
+      "read_document(not_granted)"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "rank_values"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "category": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00357
+  },
+  {
+   "flow": "B_chain",
+   "q": "S1_arr_aug",
+   "rep": 1,
+   "wall_s": 18.3,
+   "status": "ok",
+   "answer": "ARR tháng 8 năm 2026 là 72. \n\n[FOLLOWUP] Bạn có muốn biết ARR của các tháng khác trong năm 2026 không?  \n[FOLLOWUP] Có cần thông tin chi tiết hơn về các yếu tố ảnh hưởng đến ARR không?  \n[FOLLOWUP] Bạn có muốn xem biểu đồ ARR theo tháng không?",
+   "llm_calls": 8,
+   "tool_calls": 9,
+   "prompt_tokens": 17130,
+   "completion_tokens": 637,
+   "ms": 19952,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "describe_time_coverage",
+      "describe_time_coverage",
+      "describe_time_coverage",
+      "resolve_chart_candidates"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "search_knowledge",
+      "search_knowledge",
+      "search_knowledge"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure(measure_ambiguous)",
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00295
+  },
+  {
+   "flow": "B_chain",
+   "q": "S2_arr_aug_vs_jul",
+   "rep": 1,
+   "wall_s": 25.9,
+   "status": "ok",
+   "answer": "So sánh ARR tháng 8/2026 với tháng 7/2026 cho thấy ARR tháng 8/2026 là 72, trong khi tháng 7/2026 là 864, giảm 792, tương đương với tỷ lệ phần trăm thay đổi là -91.67%. Kết quả này cho thấy tình hình đang xấu đi. Cần lưu ý rằng dữ liệu tháng 8/2026 có thể chưa đầy đủ so với các kỳ khác.\n\n[FOLLOWUP] Bạn có muốn biết thêm các yếu tố có thể ảnh hưởng đến ARR không?  \n[FOLLOWUP] Bạn có muốn so sánh ARR tháng 8/2026 với các tháng trước đó không?  \n[FOLLOWUP] Bạn có cần tìm hiểu các giải pháp để cải thiện kết quả không?",
+   "llm_calls": 10,
+   "tool_calls": 10,
+   "prompt_tokens": 21511,
+   "completion_tokens": 1096,
+   "ms": 28463,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "get_chart_summary",
+      "get_chart_summary"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "read_document",
+      "read_document"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "compare_periods",
+      "compare_periods"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "compare_periods(period_not_in_chart)",
+      "compare_periods(period_not_in_chart)",
+      "compare_periods",
+      "compare_periods"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "aug": true,
+    "jul": true,
+    "direction": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00388
+  },
+  {
+   "flow": "B_chain",
+   "q": "S3_mrr_jun",
+   "rep": 1,
+   "wall_s": 28.7,
+   "status": "ok",
+   "answer": "MRR tháng 6/2026 là 70. \n\n[FOLLOWUP] Bạn có muốn tìm hiểu thêm về cách tính MRR không?  \n[FOLLOWUP] Bạn có cần thông tin về MRR trong các tháng khác không?  \n[FOLLOWUP] Bạn có muốn biết thêm về ý nghĩa của MRR trong kinh doanh không?",
+   "llm_calls": 9,
+   "tool_calls": 5,
+   "prompt_tokens": 24603,
+   "completion_tokens": 465,
+   "ms": 31374,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "resolve_chart_candidates",
+      "describe_time_coverage"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "search_knowledge"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "get_chart_summary"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00397
+  },
+  {
+   "flow": "B_chain",
+   "q": "S4_churn_aug",
+   "rep": 1,
+   "wall_s": 12.4,
+   "status": "ok",
+   "answer": "Trong tháng 8/2026, có tổng cộng 40 khách hàng đã rời bỏ.\n\n[FOLLOWUP] Bạn có muốn biết tỷ lệ rời bỏ khách hàng này so với các tháng khác không?  \n[FOLLOWUP] Bạn có muốn tìm hiểu nguyên nhân khách hàng rời bỏ không?  \n[FOLLOWUP] Bạn có muốn xem xu hướng rời bỏ khách hàng qua các tháng không?",
+   "llm_calls": 7,
+   "tool_calls": 3,
+   "prompt_tokens": 12175,
+   "completion_tokens": 289,
+   "ms": 13581,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "get_chart_summary",
+      "describe_time_coverage"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.002
+  },
+  {
+   "flow": "B_chain",
+   "q": "S5_arr_enterprise",
+   "rep": 1,
+   "wall_s": 21.2,
+   "status": "ok",
+   "answer": "Không có thông tin cụ thể về ARR của phân khúc enterprise. Bản báo cáo không cung cấp số liệu phù hợp theo chiều được hỏi.\n\n[FOLLOWUP] Bạn có muốn xem tổng ARR của toàn bộ báo cáo không?  \n[FOLLOWUP] Bạn có cần thông tin về các phân khúc khác không?  \n[FOLLOWUP] Cần thêm dữ liệu nào khác không?",
+   "llm_calls": 10,
+   "tool_calls": 6,
+   "prompt_tokens": 29680,
+   "completion_tokens": 414,
+   "ms": 23240,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "describe_time_coverage",
+      "resolve_chart_candidates",
+      "inspect_filters"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "search_knowledge",
+      "read_document"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": false
+   },
+   "correct": false,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.0047
+  },
+  {
+   "flow": "B_chain",
+   "q": "H1_churn_total",
+   "rep": 1,
+   "wall_s": 21.7,
+   "status": "ok",
+   "answer": "Tổng số khách hàng rời bỏ từ tháng 1 đến tháng 8 năm 2026 là 60 khách hàng. \n\n[FOLLOWUP] Bạn có muốn biết nguyên nhân nào khiến khách hàng rời bỏ không?  \n[FOLLOWUP] Bạn có quan tâm đến các biện pháp giữ chân khách hàng không?  \n[FOLLOWUP] Bạn có muốn xem thêm số liệu về tình hình khách hàng trong các tháng khác không?",
+   "llm_calls": 8,
+   "tool_calls": 4,
+   "prompt_tokens": 14284,
+   "completion_tokens": 490,
+   "ms": 23793,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "inspect_filters",
+      "describe_time_coverage",
+      "get_chart_summary"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00244
+  },
+  {
+   "flow": "B_chain",
+   "q": "H2_latest_arr",
+   "rep": 1,
+   "wall_s": 13.1,
+   "status": "ok",
+   "answer": "ARR ở tháng gần nhất có dữ liệu là 72.0 và tháng đó là 2026-08. \n\n[FOLLOWUP] Bạn có muốn biết ARR của các tháng trước đó không?  \n[FOLLOWUP] Có thông tin gì khác về ARR mà bạn muốn tìm hiểu không?  \n[FOLLOWUP] Bạn có quan tâm đến các yếu tố ảnh hưởng đến ARR không?",
+   "llm_calls": 7,
+   "tool_calls": 4,
+   "prompt_tokens": 20886,
+   "completion_tokens": 353,
+   "ms": 14328,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "describe_time_coverage",
+      "get_chart_summary"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "search_knowledge",
+      "search_knowledge"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true,
+    "month": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00334
+  },
+  {
+   "flow": "B_chain",
+   "q": "H3_second_category",
+   "rep": 1,
+   "wall_s": 36.5,
+   "status": "ok",
+   "answer": "Danh mục có doanh thu cao thứ hai là **watches_gifts** với tổng doanh thu **1,205,005.68**.\n\n[FOLLOWUP] Bạn có muốn biết danh mục có doanh thu cao nhất không?  \n[FOLLOWUP] Bạn có cần thông tin về doanh thu của các danh mục khác không?  \n[FOLLOWUP] Bạn muốn tìm hiểu thêm về các sản phẩm trong danh mục này không?",
+   "llm_calls": 8,
+   "tool_calls": 4,
+   "prompt_tokens": 12674,
+   "completion_tokens": 410,
+   "ms": 39979,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "resolve_chart_candidates",
+      "describe_time_coverage"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "read_document(not_granted)"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "rank_values"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "category": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00215
+  },
+  {
+   "flow": "B_chain",
+   "q": "S1_arr_aug",
+   "rep": 2,
+   "wall_s": 15.4,
+   "status": "partial",
+   "answer": "ARR tháng 8 năm 2026 là [đã ẩn: chưa kiểm chứng]. (Đơn vị chưa được khai báo trong dữ liệu.)\n\n⚠️ Đã ẩn số chưa kiểm chứng: dữ liệu mà câu trả lời đã đọc không cho ra các con số này cho đúng điều được hỏi, nên chúng không được hiển thị.\n\n[FOLLOWUP] Bạn có muốn biết thêm về các chỉ số tài chính khác không?  \n[FOLLOWUP] Bạn có muốn phân tích xu hướng ARR qua các tháng khác không?  \n[FOLLOWUP] Bạn có cần thông tin chi tiết về cách tính ARR không?",
+   "llm_calls": 8,
+   "tool_calls": 3,
+   "prompt_tokens": 11148,
+   "completion_tokens": 430,
+   "ms": 16826,
+   "notices": [
+    "claims_unverified"
+   ],
+   "unsupported_claims": true,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "get_chart_summary",
+      "get_chart_summary",
+      "get_chart_summary(period_not_in_chart)"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": false
+   },
+   "correct": false,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00193
+  },
+  {
+   "flow": "B_chain",
+   "q": "S2_arr_aug_vs_jul",
+   "rep": 2,
+   "wall_s": 20.6,
+   "status": "ok",
+   "answer": "ARR tháng 8/2026 là 72, thấp hơn đáng kể so với tháng 7/2026 với ARR là 864. Sự thay đổi này ghi nhận delta là -792 và tỷ lệ giảm là -91.67%, cho thấy tình hình xấu hơn.\n\n[Ghi chú: Kỳ tháng 8 có thể chưa đầy đủ dữ liệu, bạn có muốn xem thêm chi tiết về các tháng trước không?]  \n[Bạn có muốn biết thêm về nguyên nhân của sự giảm này không?]  \n[Có cần phân tích thêm dữ liệu ARR từ những tháng trước không?]",
+   "llm_calls": 9,
+   "tool_calls": 5,
+   "prompt_tokens": 19433,
+   "completion_tokens": 910,
+   "ms": 22601,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "get_chart_summary",
+      "get_chart_summary"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "compare_periods"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "compare_periods(period_not_in_chart)",
+      "compare_periods"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "aug": true,
+    "jul": true,
+    "direction": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00346
+  },
+  {
+   "flow": "B_chain",
+   "q": "S3_mrr_jun",
+   "rep": 2,
+   "wall_s": 14.4,
+   "status": "ok",
+   "answer": "MRR tháng 6/2026 là 70.\n\n[FOLLOWUP] Bạn có muốn biết MRR cho các tháng khác không?  \n[FOLLOWUP] Bạn có quan tâm đến các yếu tố ảnh hưởng đến MRR không?  \n[FOLLOWUP] Bạn cần giải thích thêm về cách tính MRR không?",
+   "llm_calls": 8,
+   "tool_calls": 4,
+   "prompt_tokens": 22079,
+   "completion_tokens": 351,
+   "ms": 15674,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "resolve_chart_candidates",
+      "describe_time_coverage"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "search_knowledge"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00352
+  },
+  {
+   "flow": "B_chain",
+   "q": "S4_churn_aug",
+   "rep": 2,
+   "wall_s": 12.6,
+   "status": "ok",
+   "answer": "Trong tháng 8/2026, có 40 khách hàng rời bỏ.\n\n[FOLLOWUP] Bạn có muốn biết thêm về xu hướng khách hàng rời bỏ trong các tháng khác không?  \n[FOLLOWUP] Có cần tôi tìm hiểu thêm về nguyên nhân khách hàng rời bỏ không?  \n[FOLLOWUP] Bạn có cần thêm thông tin chi tiết về các chỉ số liên quan không?",
+   "llm_calls": 8,
+   "tool_calls": 4,
+   "prompt_tokens": 14779,
+   "completion_tokens": 373,
+   "ms": 13710,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "describe_time_coverage",
+      "list_charts"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "get_chart_summary"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00244
+  },
+  {
+   "flow": "B_chain",
+   "q": "S5_arr_enterprise",
+   "rep": 2,
+   "wall_s": 16.2,
+   "status": "ok",
+   "answer": "Dữ liệu hiện tại không đủ để xác định ARR của phân khúc enterprise. Các số liệu có trong báo cáo không có nguồn phù hợp cho câu hỏi này.\n\n[FOLLOWUP] Bạn có muốn tôi tìm kiếm thông tin khác về ARR không?  \n[FOLLOWUP] Có điều gì khác bạn đang quan tâm trong báo cáo này không?  \n[FOLLOWUP] Bạn có cần giải thích về các phân khúc khác không?",
+   "llm_calls": 10,
+   "tool_calls": 6,
+   "prompt_tokens": 33281,
+   "completion_tokens": 428,
+   "ms": 17767,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "resolve_chart_candidates",
+      "inspect_filters",
+      "describe_time_coverage"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "search_knowledge",
+      "read_document"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": false
+   },
+   "correct": false,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": true,
+   "cost_usd": 0.00525
+  },
+  {
+   "flow": "B_chain",
+   "q": "H1_churn_total",
+   "rep": 2,
+   "wall_s": 20.7,
+   "status": "ok",
+   "answer": "Tôi không tìm thấy thông tin nào về tổng số khách hàng rời bỏ từ tháng 1 đến tháng 8 năm 2026 trong các biểu đồ đã được chỉ định để kiểm tra số liệu. Do đó, không có số liệu xác thực để trả lời câu hỏi này.\n\n[FOLLOWUP] Bạn có muốn tìm hiểu thêm về các số liệu khác không?  \n[FOLLOWUP] Bạn cần hỗ trợ xác định dữ liệu nào cần xem xét không?  \n[FOLLOWUP] Bạn có muốn biết thêm về các công cụ sử dụng để phân tích dữ liệu không?",
+   "llm_calls": 9,
+   "tool_calls": 4,
+   "prompt_tokens": 23018,
+   "completion_tokens": 512,
+   "ms": 22651,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "list_charts",
+      "describe_time_coverage"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "search_knowledge"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": false
+   },
+   "correct": false,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00376
+  },
+  {
+   "flow": "B_chain",
+   "q": "H2_latest_arr",
+   "rep": 2,
+   "wall_s": 11.9,
+   "status": "ok",
+   "answer": "ARR ở tháng gần nhất có dữ liệu là 72, thuộc tháng 8 năm 2026. \n\n[FOLLOWUP] Bạn có muốn biết thông tin chi tiết hơn về ARR trong các tháng trước không?  \n[FOLLOWUP] Có cần phân tích thêm về mức tăng trưởng của ARR không?  \n[FOLLOWUP] Bạn có muốn so sánh ARR với các chỉ số khác không?",
+   "llm_calls": 7,
+   "tool_calls": 3,
+   "prompt_tokens": 12883,
+   "completion_tokens": 345,
+   "ms": 12948,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "describe_time_coverage",
+      "get_chart_summary"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "total_measure"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "value": true,
+    "month": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00214
+  },
+  {
+   "flow": "B_chain",
+   "q": "H3_second_category",
+   "rep": 2,
+   "wall_s": 17.6,
+   "status": "ok",
+   "answer": "Danh mục có doanh thu cao thứ hai là \"watches_gifts\" với doanh thu là 1,205,005.68. \n\n[FOLLOWUP] Bạn có muốn biết danh mục có doanh thu cao nhất không?  \n[FOLLOWUP] Bạn có muốn tìm hiểu thêm về doanh thu của các danh mục khác không?  \n[FOLLOWUP] Bạn có muốn xem biểu đồ doanh thu không?",
+   "llm_calls": 11,
+   "tool_calls": 6,
+   "prompt_tokens": 43135,
+   "completion_tokens": 401,
+   "ms": 19251,
+   "notices": [],
+   "unsupported_claims": false,
+   "steps": [
+    {
+     "key": "doc_bao_cao",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "resolve_chart_candidates",
+      "describe_time_coverage"
+     ],
+     "handoff": null,
+     "error": ""
+    },
+    {
+     "key": "tra_cuu",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "read_document",
+      "read_document",
+      "search_knowledge"
+     ],
+     "handoff": {
+      "mode": "previous",
+      "included": [
+       "previous"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "do_luong",
+     "type": "agent",
+     "status": "ok",
+     "tools": [
+      "rank_values"
+     ],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "chan_doan",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "doc_bao_cao",
+       "do_luong"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    },
+    {
+     "key": "tra_loi",
+     "type": "agent",
+     "status": "ok",
+     "tools": [],
+     "handoff": {
+      "mode": "inputs",
+      "included": [
+       "tra_cuu",
+       "do_luong",
+       "chan_doan"
+      ],
+      "reduced": [],
+      "omitted": [],
+      "budget_chars": 8000
+     },
+     "error": ""
+    }
+   ],
+   "checks": {
+    "category": true
+   },
+   "correct": true,
+   "wrong_figure": false,
+   "wrong_as_verified": false,
+   "golden": false,
+   "cost_usd": 0.00671
+  }
+ ]
+}

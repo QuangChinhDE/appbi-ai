@@ -71,7 +71,7 @@ SAAS_DASHBOARD = 136
 
 def _says_drop(a: str) -> bool:
     low = a.lower()
-    return any(w in low for w in ("giảm", "sụt", "decrease", "drop", "-91", "−91"))
+    return any(w in low for w in ("giảm", "sụt", "xấu đi", "thấp hơn", "decrease", "drop", "-91", "−91"))
 
 
 SAAS_QUESTIONS = [
