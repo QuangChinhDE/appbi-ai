@@ -35,9 +35,9 @@ import {
   blankNode, branchCoverage, brainImpact, canDropInto, defaultCredentialFor, findNode, getBrain, insertNode,
   isModelStep,
   isBranching, isContainer,
-  listAgentRoles, applyRole, roleText,
+  listToolCatalogue, applyRole, roleText,
   type AgentNode, type AgentRole,
-  listAttachable, listNodeSpecs, listProviders, listSkills, listToolPacks, moveNode,
+  listAttachable, listNodeSpecs, listProviders, listSkills, moveNode,
   publishBrain, removeNode,
   replaceNode, saveBrain, setFlowType, validateFlow, walkNodes,
   type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type FlowType,
@@ -221,13 +221,12 @@ export function BrainBuilder({
     setLoading(true);
     try {
       const [detail, nodeSpecs, packs, provs] = await Promise.all([
-        getBrain(brainKey), listNodeSpecs(), listToolPacks(true), listProviders(),
+        getBrain(brainKey), listNodeSpecs(), listToolCatalogue(true), listProviders(),
       ]);
       // Fetched separately and non-blocking: a slow governance query must not
       // hold up opening the flow, and a step with nothing attached still works.
       listAttachable().then(setAttachable).catch(() => setAttachable(null));
       listSkills().then(setSkills).catch(() => setSkills([]));
-      listAgentRoles(true).then(setRoles).catch(() => setRoles([]));
       setName(detail.name);
       setDescription(detail.description || '');
       setVersion(detail.version);
@@ -237,7 +236,8 @@ export function BrainBuilder({
       setBody(detail.body || { nodes: [] });
       setSpecList(nodeSpecs);
       setSpecs(Object.fromEntries(nodeSpecs.map((s) => [s.type, s])));
-      setToolPacks(packs);
+      setToolPacks(packs.packs);
+      setRoles(packs.roles);
       setProviders(provs);
       setDirty(false);
       brainImpact(brainKey).then((i) => setLinks(i.links)).catch(() => undefined);

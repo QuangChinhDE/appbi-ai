@@ -950,9 +950,17 @@ export interface AgentRole {
 }
 
 export async function listAgentRoles(webEnabled = false): Promise<AgentRole[]> {
-  const { data } = await apiClient.get<{ roles?: AgentRole[] }>(
+  return (await listToolCatalogue(webEnabled)).roles;
+}
+
+/** Packs AND roles from ONE request — the builder needs both, and the roles
+ *  bound exactly the tools in the packs, so they must come from the same answer. */
+export async function listToolCatalogue(
+  webEnabled = false,
+): Promise<{ packs: ToolPack[]; roles: AgentRole[] }> {
+  const { data } = await apiClient.get<{ packs: ToolPack[]; roles?: AgentRole[] }>(
     `${BASE}/tools`, { params: { web_enabled: webEnabled } });
-  return data.roles || [];
+  return { packs: data.packs || [], roles: data.roles || [] };
 }
 
 export function roleText(

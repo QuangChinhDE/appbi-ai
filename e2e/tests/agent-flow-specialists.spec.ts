@@ -372,7 +372,21 @@ test.describe('analytics meaning (live model, SaaS fixture)', () => {
     const j = await res.json();
     return j.envelope ?? j;
   }
-  const nums = (t: string) => (t.match(/\d[\d.,]*/g) || []).map((x) => Number(x.replace(/[.,](?=\d{3}\b)/g, '').replace(',', '.')));
+  // Same reading as backend/eval `_num`: "864.0", "864,0", "1.258.681,34" and
+  // "1,258,681.34" are all numbers; a trailing period is punctuation.
+  const nums = (t: string) => (t.match(/\d[\d.,]*\d|\d/g) || []).map((raw) => {
+    let x = raw;
+    if (x.includes(',') && x.includes('.')) {
+      x = x.lastIndexOf('.') > x.lastIndexOf(',') ? x.replace(/,/g, '') : x.replace(/\./g, '').replace(',', '.');
+    } else if ((x.match(/,/g) || []).length > 1 || /^\d{1,3},\d{3}$/.test(x)) {
+      x = x.replace(/,/g, '');
+    } else if ((x.match(/\./g) || []).length > 1 || /^\d{1,3}\.\d{3}$/.test(x)) {
+      x = x.replace(/\./g, '');
+    } else {
+      x = x.replace(',', '.');
+    }
+    return Number(x);
+  });
 
   test('the Metric Analyst answers August ARR with August, not July or a sum', async ({ request }) => {
     const key = `e2e_sp_arr_${STAMP}`;
@@ -380,10 +394,10 @@ test.describe('analytics meaning (live model, SaaS fixture)', () => {
       tools: tools('resolve_chart_candidates', 'list_charts', 'total_measure', 'compare_periods'),
       prompt: 'Trả lời bằng số liệu của đúng kỳ được hỏi.' })] })).status()).toBeLessThan(400);
     const one = await ask(request, key, 'ARR tháng 8 năm 2026 là bao nhiêu?');
-    expect(nums(one.answer.text)).toContain(72);
+    expect(nums(one.answer.text), one.answer.text).toContain(72);
     expect(nums(one.answer.text)).not.toContain(864);
     const cmp = await ask(request, key, 'So sánh ARR tháng 8/2026 với tháng 7/2026.');
-    expect(nums(cmp.answer.text)).toEqual(expect.arrayContaining([72, 864]));
+    expect(nums(cmp.answer.text), cmp.answer.text).toEqual(expect.arrayContaining([72, 864]));
     // A decline, said in any of the ways a reader would accept (live: "-91.67%", "xấu đi").
     expect(cmp.answer.text.toLowerCase()).toMatch(/giảm|sụt|xấu đi|thấp hơn|-91|−91/);
   });
