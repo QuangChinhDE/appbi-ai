@@ -226,7 +226,7 @@ class ChartCreate(ChartBase):
            names, OR ``"auto"`` for measures whose aggregation is part of
            the semantic definition (Phase-3). The Explore renderer crashes
            on unknown ``agg`` strings (``m.agg.toUpperCase()`` etc.), so
-           we reject them here instead of letting MCP-authored configs
+           we reject them here instead of letting API-authored configs
            slip past validation and brick the chart at view time.
         """
         if not isinstance(self.config, dict):
@@ -342,7 +342,7 @@ class ChartUpdate(BaseModel):
 
     @model_validator(mode='after')
     def validate_config_shape(self):
-        """Mirror ChartCreate's metric.agg guard on updates so an MCP-
+        """Mirror ChartCreate's metric.agg guard on updates so an API-
         authored PATCH cannot put the chart into the same un-renderable
         state Phase-12 audit caught for fresh creates."""
         if self.config is None:

@@ -319,3 +319,159 @@ def test_generated_mode_with_a_leftover_sql_draft_is_validated_as_generated(pg, 
         r = client.post("/api/v1/charts/", json={"name": _n("f5"), "chart_type": "BAR",
                                                   "dataset_table_id": w.tables[base].id, "config": cfg})
         assert r.status_code == 422, r.text  # runtime runs GENERATED: a BAR without dimension
+
+
+# ── Chart final closure ───────────────────────────────────────────────────────
+
+
+def test_a_value_error_is_shown_only_when_it_carries_nothing_internal(pg, http, monkeypatch):
+    """"It is a ValueError" does not make a message safe. A config message is
+    shown; a ValueError that echoes a DSN / host / SQL / driver is answered with
+    the reference id; a semantic refusal keeps its structured body."""
+    client, holder = http
+    _id, model, base, req, _ = _case("G12.direct_inactive.fact_by_region")
+    leaky = [
+        "could not connect: host=10.9.8.7 user=svc password=hunter2 dbname=prod_finance",
+        "postgresql+psycopg2://svc:hunter2@10.9.8.7:5432/prod_finance unreachable",
+        "bad value near SELECT secret_col FROM prod_finance.payroll",
+        "google.api_core.exceptions.BadRequest: projects/acme-prod-9 dataset not found",
+    ]
+    with chart_world(pg, model, ds_config=_pg_config()) as w:
+        holder["db"] = w.db
+        chart = save_chart(w, base, req)
+        body = {"dataset_table_id": w.tables[base].id, "chart_type": "TABLE", "config": chart_config(req)}
+        for text in leaky:
+            def boom(*_a, _t=text, **_k):
+                raise ValueError(_t)
+            monkeypatch.setattr("app.services.chart_service.ChartService.get_chart_data", staticmethod(boom))
+            monkeypatch.setattr("app.services.chart_service.ChartService.preview_chart_data", staticmethod(boom))
+            for r in (client.get(f"/api/v1/charts/{chart.id}/data"),
+                      client.post("/api/v1/charts/preview-data", json=body),
+                      client.post("/api/v1/charts/dry-run-create", json={"name": "x", **body})):
+                for secret in ("hunter2", "10.9.8.7", "prod_finance", "payroll", "acme-prod-9", "psycopg2"):
+                    assert secret not in r.text, (text, r.status_code, r.text)
+            assert client.get(f"/api/v1/charts/{chart.id}/data").status_code == 400
+        # an ordinary config message is still actionable, verbatim
+        msg = "Field 'region' xuất hiện ở nhiều bảng đã JOIN — đổi reference sang 'p2_regions.region'"
+
+        def config_error(*_a, **_k):
+            raise ValueError(msg)
+        monkeypatch.setattr("app.services.chart_service.ChartService.preview_chart_data", staticmethod(config_error))
+        r = client.post("/api/v1/charts/preview-data", json=body)
+        assert r.status_code == 400 and r.json()["detail"] == msg and "refusal" not in r.json()
+
+
+def test_a_batch_tile_value_error_is_sanitised_too(pg, monkeypatch):
+    from app.services.chart_service import ChartService
+
+    _id, model, base, req, _ = _case("G12.direct_inactive.fact_by_region")
+    with chart_world(pg, model, ds_config=_pg_config()) as w:
+        chart = save_chart(w, base, req)
+
+        class _NoClose:
+            def __init__(self, db):
+                self._db = db
+
+            def __getattr__(self, n):
+                return getattr(self._db, n)
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("app.core.database.SessionLocal", lambda: _NoClose(w.db))
+
+        def boom(*_a, **_k):
+            raise ValueError("host=10.9.8.7 password=hunter2")
+
+        monkeypatch.setattr(ChartService, "get_chart_data", staticmethod(boom))
+        [item] = ChartService.get_charts_data_batch([{"chart_id": chart.id}])
+        assert item["ok"] is False and item["status"] == 400
+        assert "hunter2" not in item["error"] and "10.9.8.7" not in item["error"]
+
+
+def test_percent_of_total_round_trips_create_reopen_update_and_runtime(pg, http):
+    """A saved explicit percent_of_total keeps its meaning everywhere: create,
+    GET (what the editor reopens), dry-run normalisation, an update, and the
+    runtime answer (shares of the hand-computed total 198)."""
+    client, holder = http
+    _id, model, base, req, _ = _case("G12.direct_inactive.fact_by_region")
+    with chart_world(pg, model, ds_config=_pg_config()) as w:
+        holder["db"] = w.db
+        _with_user(w)
+        t = w.tables[base].id
+        cfg = _bar(agg="percent_of_total")
+        d = client.post("/api/v1/charts/dry-run-create", json={"name": _n("pct d"), "chart_type": "BAR",
+                                                                "dataset_table_id": t, "config": cfg})
+        assert d.status_code == 200 and d.json()["ok"] is True, d.text
+        assert d.json()["normalized_config"]["roleConfig"]["metrics"][0]["agg"] == "percent_of_total"
+        c = client.post("/api/v1/charts/", json={"name": _n("pct"), "chart_type": "BAR", "dataset_table_id": t,
+                                                  "config": d.json()["normalized_config"]})
+        assert c.status_code in (200, 201), c.text
+        cid = c.json()["id"]
+        reopened = client.get(f"/api/v1/charts/{cid}").json()
+        assert reopened["config"]["roleConfig"]["metrics"][0]["agg"] == "percent_of_total"
+        u = client.put(f"/api/v1/charts/{cid}", json={"config": reopened["config"], "chart_type": "BAR"})
+        assert u.status_code == 200, u.text
+        assert u.json()["config"]["roleConfig"]["metrics"][0]["agg"] == "percent_of_total"
+        data = client.get(f"/api/v1/charts/{cid}/data")
+        assert data.status_code == 200, data.text
+        shares = {}
+        for row in data.json()["data"]:
+            region = row.get("p2_regions.name")
+            value = next(v for k, v in row.items() if k != "p2_regions.name")
+            shares[region] = float(value)
+        scale = 100.0 if max(shares.values()) > 1.0 else 1.0
+        expected = {"North": 130 / 198, "South": 61 / 198, None: 7 / 198}
+        for k, v in expected.items():
+            assert abs(shares[k] / scale - v) < 1e-6, shares
+
+
+def test_a_legacy_chart_is_viewable_renameable_and_refused_only_on_semantic_edits(pg, http):
+    """A stored chart missing a required role (written before the required-role
+    check worked): still served, renameable and re-describable; a config / type /
+    table edit is refused with a message naming the missing role; nothing is
+    coerced or corrupted."""
+    from app.models.models import Chart
+
+    client, holder = http
+    _id, model, base, req, _ = _case("G12.direct_inactive.fact_by_region")
+    with chart_world(pg, model, ds_config=_pg_config()) as w:
+        holder["db"] = w.db
+        _with_user(w)
+        import uuid as _uuid
+        legacy_cfg = _bar(dimension=None)
+        legacy = Chart(name=_n("legacy bar"), dataset_table_id=w.tables[base].id, chart_type="BAR",
+                       config=legacy_cfg, owner_id=_uuid.UUID(int=7))
+        w.db.add(legacy)
+        w.db.flush()
+        stored = dict(legacy.config)
+        assert client.get(f"/api/v1/charts/{legacy.id}/data").status_code != 422  # viewing is not validation
+        assert client.put(f"/api/v1/charts/{legacy.id}", json={"name": _n("legacy renamed")}).status_code == 200
+        assert client.put(f"/api/v1/charts/{legacy.id}", json={"description": "kept"}).status_code == 200
+        for edit in ({"config": legacy_cfg}, {"chart_type": "LINE"}):
+            r = client.put(f"/api/v1/charts/{legacy.id}", json=edit)
+            assert r.status_code == 422, r.text
+            assert "dimension" in r.json()["detail"] and "không hợp lệ" in r.json()["detail"], r.text
+        w.db.expire_all()
+        again = w.db.get(Chart, legacy.id)
+        assert getattr(again.chart_type, "value", again.chart_type) == "BAR"
+        assert again.config.get("roleConfig") == stored.get("roleConfig")
+
+
+def test_there_is_one_chart_creation_path(pg, http):
+    """The parallel agent/SDK paths are gone from the Chart application; the
+    canonical contract (preview, dry-run, create, update, data) is the only one."""
+    client, holder = http
+    _id, model, base, req, _ = _case("G12.direct_inactive.fact_by_region")
+    with chart_world(pg, model, ds_config=_pg_config()) as w:
+        holder["db"] = w.db
+        t = w.tables[base].id
+        for path in ("/api/v1/charts/ai-preview", "/api/v1/charts/normalize-config"):
+            r = client.post(path, json={"dataset_table_id": t, "chart_type": "TABLE", "config": {}})
+            assert r.status_code in (404, 405), (path, r.status_code)
+        from app.main import app
+        routes = {getattr(r, "path", "") for r in app.routes}
+        assert not {p for p in routes if "ai-preview" in p or "normalize-config" in p}
+        r = client.post("/api/v1/charts/preview-data", json={
+            "dataset_table_id": t, "chart_type": "TABLE", "config": chart_config(req)})
+        assert r.status_code == 200, r.text

@@ -56,16 +56,6 @@ from app.services.description_pipeline_service import (
 from app.core.logging import get_logger
 
 
-class AIChartPreviewRequest(BaseModel):
-    """Request body for AI chart preview/create."""
-    dataset_table_id: int
-    chart_type: str
-    config: Dict[str, Any] = {}
-    name: str = "AI Chart"
-    description: Optional[str] = None
-    save: bool = False
-
-
 class ChartPreviewDataRequest(BaseModel):
     """Request body for Explore chart preview."""
     dataset_table_id: int
@@ -81,30 +71,12 @@ class ChartPreviewDataRequest(BaseModel):
     source_sample_limit: int = Field(default=100, ge=1, le=10_000_000)
 
 
-class ChartNormalizeConfigRequest(BaseModel):
-    """Request body for the canonical normalize endpoint.
-
-    Phase-12 single-source-of-truth contract: MCP / SDK / FE callers POST
-    their proposed (chart_type, config) here and trust the response —
-    never re-implement role-config / metric / agg normalization locally.
-    """
-    chart_type: str
-    config: Dict[str, Any] = Field(default_factory=dict)
-
-
 class ChartConfigChange(BaseModel):
-    """One field the normalize endpoint mutated, surfaced to the caller."""
+    """One field the dry-run normalization rewrote, surfaced to the caller."""
     path: str
     before: Any
     after: Any
     reason: str
-
-
-class ChartNormalizeConfigResponse(BaseModel):
-    """Response shape — the normalized config the BE will actually save."""
-    normalized_config: Dict[str, Any]
-    changes: List[ChartConfigChange] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
 
 
 class ChartDryRunCreateRequest(BaseModel):
@@ -117,13 +89,11 @@ class ChartDryRunCreateRequest(BaseModel):
 
 
 class ChartDryRunCreateResponse(BaseModel):
-    """Single endpoint MCP / SDK call before creating a chart.
+    """The Chart Builder's pre-save check (canonical Chart API).
 
-    On ``ok=True`` the caller can confidently call ``POST /charts/`` with
-    ``normalized_config`` and the chart will land cleanly. On ``ok=False``
-    the caller MUST not write — show ``validation_errors`` /
-    ``runtime_errors`` to the user (or AI) and ask for a corrected
-    payload.
+    On ``ok=True`` ``POST /charts/`` with ``normalized_config`` lands cleanly.
+    On ``ok=False`` nothing may be written — ``validation_errors`` /
+    ``runtime_errors`` / ``runtime_refusal`` say why.
     """
     ok: bool
     normalized_config: Dict[str, Any]
@@ -136,11 +106,10 @@ class ChartDryRunCreateResponse(BaseModel):
     #: ``refusal`` from preview-data — so Save explains it the same way Run does.
     runtime_refusal: Optional[Dict[str, Any]] = None
     runtime_preview_sample: Optional[List[Dict[str, Any]]] = None
-    # Phase-12.6: config keys the BE would accept + save but the FE
-    # Explore renderer does NOT consume — typically misspellings or
-    # legacy fields the AI emitted. These don't block the create (BE is
-    # tolerant) but are surfaced so the caller can warn the user
-    # "the chart will save but the field X won't visibly affect rendering".
+    # Phase-12.6: config keys the BE would accept + save but the Explore
+    # renderer does NOT consume (misspellings, legacy fields). They don't
+    # block the create but are surfaced so the Builder can warn "the chart
+    # will save but field X won't visibly affect rendering".
     fe_unrecognised_keys: List[str] = Field(default_factory=list)
 
 
@@ -355,113 +324,6 @@ def search_charts_vector(
     return results
 
 
-@router.post("/ai-preview")
-def ai_chart_preview(
-    payload: AIChartPreviewRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("explore_charts", "view")),
-):
-    """
-    Execute a chart from AI config and optionally save it permanently.
-    Used by the AI agent's create_chart tool.
-    Requires explore_charts >= view permission.
-    """
-    dataset_obj, _db_table = _get_dataset_for_chart_table(db, payload.dataset_table_id)
-    # Saving creates content from the dataset (build); an unsaved preview is a query (explore).
-    _authz.require(db, current_user, _authz.Action.BUILD if payload.save else _authz.Action.EXPLORE, dataset_obj)
-    if payload.save:
-        # The normalized (PAT-capped) level: a raw read of user.permissions let a
-        # token scoped to explore_charts:view save charts as its edit-level owner.
-        from app.core.permissions import module_at_least
-
-        if not module_at_least(current_user, "explore_charts", "edit"):
-            raise HTTPException(
-                status_code=403,
-                detail="Requires 'edit' permission on module 'explore_charts'",
-            )
-    config = payload.config or {}
-
-    # The SAME execution as every chart (Semantic Kernel Contract v1): the AI's
-    # `{dimensions, metrics: [{column, aggregation}]}` becomes a canonical role
-    # config and runs through ChartService's preview path — a modelled table's
-    # semantic engine (measures, relationships, refusals), never a raw physical
-    # aggregate of the table (which ignored the model and differed from the
-    # chart this endpoint saves).
-    dimensions = [str(d) for d in (config.get("dimensions") or []) if str(d or "").strip()]
-    metric_cfg = [
-        {"field": str(item.get("column") or "").strip(), "agg": str(item.get("aggregation") or "sum").lower()}
-        for item in (config.get("metrics") or [])
-        if isinstance(item, dict) and str(item.get("column") or "").strip()
-    ]
-    limit = min(int(config.get("limit", 500) or 500), 2000)
-    from app.services.chart_contracts import normalize_chart_role_config
-
-    role_config = normalize_chart_role_config(payload.chart_type, {
-        "selectedColumns": dimensions + [m["field"] for m in metric_cfg],
-        "metrics": metric_cfg,
-        "dimension": dimensions[0] if dimensions else None,
-        "breakdown": dimensions[1] if len(dimensions) > 1 else None,
-    })
-    chart_config = {**{k: v for k, v in config.items() if k not in ("dimensions", "metrics", "limit")},
-                    "roleConfig": role_config}
-    require_custom_sql_authority(db, current_user, payload.dataset_table_id, chart_config)
-    # The preview runs the config that is saved (its filters, sort, data limit),
-    # read as a table of its columns.
-    preview_config = {**chart_config, "roleConfig": {"selectedColumns": role_config.get("selectedColumns") or [],
-                                                     "metrics": role_config.get("metrics") or []}}
-    try:
-        result = ChartService.preview_chart_data(db, payload.dataset_table_id, "TABLE", preview_config)
-    except ValueError as exc:
-        from app.services.chart_error_contract import refusal_response
-        from app.services.dataset_model_service import humanize_view_tokens
-
-        _dsid = getattr(_get_dataset_for_chart_table(db, payload.dataset_table_id)[0], "id", 0)
-        return refusal_response(exc, lambda t: humanize_view_tokens(t, db, _dsid))
-    except Exception as exc:
-        from app.services.chart_error_contract import failure_detail
-
-        raise HTTPException(status_code=422, detail=failure_detail(exc, f"ai-preview table={payload.dataset_table_id}"))
-    data = list(result.get("data") or [])
-    response: Dict[str, Any] = {
-        "chart_type": payload.chart_type,
-        "config": chart_config,
-        "data": data[:limit],
-        "row_count": min(len(data), limit),
-        "truncated": len(data) > limit,
-        "saved": False,
-        "chart_id": None,
-    }
-
-    if payload.save:
-        from app.schemas import ChartCreate
-        from app.schemas.schemas import ChartTypeSchema
-        chart_type_val = payload.chart_type.upper()
-        try:
-            ct = ChartTypeSchema(chart_type_val)
-        except ValueError:
-            ct = ChartTypeSchema.BAR
-        chart_create = ChartCreate(
-            name=payload.name,
-            description=payload.description,
-            dataset_table_id=payload.dataset_table_id,
-            chart_type=ct,
-            config=chart_config,   # what was previewed
-        )
-        new_chart = ChartService.create(db, chart_create, owner_id=current_user.id)
-        DescriptionPipelineService.enqueue_chart_pipeline(
-            background_tasks,
-            db,
-            new_chart.id,
-            trigger="chart_created",
-        )
-        response["saved"] = True
-        response["chart_id"] = new_chart.id
-        response["chart_name"] = new_chart.name
-
-    return response
-
-
 @router.post("/preview-data", response_model=ChartPreviewDataResponse)
 def preview_chart_data(
     payload: ChartPreviewDataRequest,
@@ -502,27 +364,21 @@ def preview_chart_data(
 
 
 # ---------------------------------------------------------------------------
-# Phase-12: BE-as-single-source-of-truth contract.
+# Canonical Chart API — ONE application contract.
 #
-# `/normalize-config` is a pure function — caller (MCP / FE / SDK) sends a
-# raw config, gets back the canonical form the BE will actually save +
-# the list of fields that were rewritten so the caller can surface the diff.
-#
-# `/dry-run-create` runs the full ChartCreate validation + semantic
-# preflight + runtime preview pipeline WITHOUT touching the DB. Callers
-# use this as their single pre-flight check before POST /charts/.
-#
-# Why these exist: every previous attempt to embed normalization logic in
-# MCP (or any external SDK) eventually drifted from the canonical BE
-# rules — Phase-3 `agg='auto'`, Phase-9 validator, Phase-10 binding
-# hydration. With these endpoints the BE is the single gatekeeper; MCP
-# tools call here instead of re-implementing the contract.
+# The Chart Builder (Explore) and any future integration go through the same
+# endpoints: `/preview-data` (run), `/dry-run-create` (the pre-save check:
+# normalize + ChartCreate validation + runtime preview, nothing written),
+# `POST /` and `PUT /{id}` (both validated by ChartCreate on the final state)
+# and `GET /{id}/data`. There is no second creation/validation path in this
+# application: an external integration is a client of these routes, under the
+# caller's own authorization.
 
 
 # Phase-12.6 FE-key registry. These are the keys the Explore renderer
-# actually consumes. Maintained by hand here so the BE can warn callers
-# (MCP, AI agents) when they emit configs with keys the FE will silently
-# drop — the recurring "chart saves but doesn't look like I asked" defect.
+# actually consumes. Maintained by hand here so dry-run can warn when a
+# config carries keys the renderer will silently drop — the recurring
+# "chart saves but doesn't look like I asked" defect.
 #
 # Source of truth: keep these sets in sync with the TS interfaces in
 # `frontend/src/components/explore/ExploreChartConfig.tsx`:
@@ -615,7 +471,7 @@ _FE_STYLE_CONFIG_KEYS: set[str] = {
     "scatterLabelField",
     # Phase-15.82 — render-pipeline extensions. All read by ExploreChart
     # / chartDataAdapter; declared here so /charts/dry-run-create doesn't
-    # report them as `fe_unrecognised_keys` to MCP and AI agents.
+    # report them as `fe_unrecognised_keys`.
     "showAllPoints",
     "seriesFormats", "seriesDecimalPlaces",
     "tooltipExtraFields",
@@ -634,8 +490,8 @@ _FE_STYLE_CONFIG_KEYS: set[str] = {
 
 def _collect_fe_unrecognised_keys(config: Dict[str, Any]) -> List[str]:
     """Walk a chart config and list any keys the Explore renderer doesn't
-    know about. Used by ``/charts/dry-run-create`` so MCP / AI agents
-    learn which fields they emitted will silently no-op at view time.
+    know about. Used by ``/charts/dry-run-create`` to report which fields
+    will silently no-op at view time.
 
     The walk only checks the well-known buckets — role containers, style
     config, metric entries. It does NOT recurse into arbitrary user
@@ -716,27 +572,6 @@ def _normalize_chart_config_with_diff(
     return out, changes
 
 
-@router.post("/normalize-config", response_model=ChartNormalizeConfigResponse)
-def normalize_chart_config(
-    payload: ChartNormalizeConfigRequest,
-    current_user: User = Depends(get_current_user),
-):
-    """Canonicalise a chart config without saving.
-
-    Used by external SDKs (MCP, scripts) so they never have to mirror the
-    normalization rules locally. Pass any role-config shape the AI emitted
-    and you get back the exact form the BE would persist.
-    """
-    normalized, changes = _normalize_chart_config_with_diff(
-        payload.chart_type, payload.config or {}
-    )
-    return ChartNormalizeConfigResponse(
-        normalized_config=normalized,
-        changes=changes,
-        warnings=[],
-    )
-
-
 @router.post("/dry-run-create", response_model=ChartDryRunCreateResponse)
 def dry_run_create_chart(
     payload: ChartDryRunCreateRequest,
@@ -753,8 +588,8 @@ def dry_run_create_chart(
       3. ``ChartService.preview_chart_data`` so we know the chart's query
          would actually execute against the bound table.
 
-    Returns ``ok=True`` only when all three pass. Callers (MCP) treat that
-    as permission to POST ``/charts/`` with ``normalized_config``.
+    Returns ``ok=True`` only when all three pass; only then may the caller
+    POST ``/charts/`` with ``normalized_config``.
     """
     from pydantic import ValidationError
     from app.schemas import ChartCreate as ChartCreateSchema
@@ -850,7 +685,8 @@ def dry_run_create_chart(
         from app.services.dataset_model_service import humanize_view_tokens
         _dsid = getattr(dataset_obj, "id", 0)
         _human = lambda t: humanize_view_tokens(t, db, _dsid)  # noqa: E731
-        runtime_errors.append(_human(str(exc)))
+        from app.services.chart_error_contract import user_safe_message
+        runtime_errors.append(user_safe_message(exc, 'dry-run-create runtime preview', _human))
         runtime_refusal = refusal_info(exc, _human)
     except Exception as exc:
         from app.services.chart_error_contract import failure_detail
@@ -957,7 +793,9 @@ def create_chart(
         )
         return new_chart
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        from app.services.chart_error_contract import user_safe_message
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=user_safe_message(e, 'chart save'))
 
 
 def validate_chart_final_state(chart_obj: Chart, chart_update: ChartUpdate) -> None:
@@ -1034,7 +872,9 @@ def update_chart(
         )
         return chart
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        from app.services.chart_error_contract import user_safe_message
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=user_safe_message(e, 'chart save'))
 
 
 @router.delete("/{chart_id}", status_code=status.HTTP_204_NO_CONTENT)

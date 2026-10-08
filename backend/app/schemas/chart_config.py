@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 
 
 # Canonical per-chart-type required + optional role_config keys.
-# Mirrors the FE chart-role registry and the MCP CHART_ROLE_REQUIREMENTS so
+# Mirrors the FE chart-role registry (the one canonical Chart contract) so
 # ChartCreate / ChartUpdate validators can reject configs that miss required
 # roles BEFORE they hit the DB. Without this, e.g. a BAR chart with no
 # `dimension` slips past Pydantic and only fails at render time.
@@ -17,7 +17,7 @@ from typing import Optional, List, Dict, Any
 #   "key=value"    → role_config[key] must equal exactly `value`
 #
 # Optional keys are advisory only — not enforced, listed for downstream
-# tooling (MCP / FE) that wants to surface "what else can I set here".
+# tooling (e.g. the Builder) that wants to surface "what else can I set here".
 CHART_REQUIRED_ROLE_KEYS: Dict[str, Dict[str, List[str]]] = {
     "TABLE":          {"required": [],                                                                                                         "optional": ["selectedColumns"]},
     "MATRIX":         {"required": ["tableMode=pivot", "tableRowDimension", "tableColumnDimension", "tablePivotMetric"],                       "optional": []},

@@ -22,6 +22,7 @@ ONE place for the three things every chart surface used to decide on its own:
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any, Optional
 
@@ -86,6 +87,44 @@ def refusal_info(exc: BaseException, humanize) -> Optional[dict]:
     return info
 
 
+# Marks of text that is NOT a user-facing config message: connection strings,
+# credentials, hosts/IPs, file paths, tracebacks, SQL, driver / client library
+# names and their exception classes. "It is a ValueError" does not make a
+# message safe — a driver or client library can raise ValueError with its DSN,
+# SQL or project id in it.
+_INTERNAL_TEXT = re.compile(
+    r"(?i)"
+    r"(?:postgres(?:ql)?|mysql|mssql|oracle|bigquery|snowflake|redshift|duckdb|sqlite)(?:\+\w+)?://"
+    r"|\b(?:password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key)\s*[=:]"
+    r"|\b(?:user(?:name)?|host|hostname|dbname|database|port)\s*=\s*\S"
+    r"|\b(?:\d{1,3}\.){3}\d{1,3}\b"
+    r"|traceback\s+\(most\s+recent|\bfile\s+\"[^\"]+\.py\""
+    r"|\b[a-z]:\\|(?:^|\s)/(?:usr|home|var|app|tmp|etc|opt|srv)/"
+    # SQL as a driver echoes it (upper-case keywords) — not English prose.
+    r"|(?-i:\bSELECT\b[\s\S]{0,400}?\bFROM\b|\bINSERT\s+INTO\b|\bUPDATE\s+\w+\s+SET\b)"
+    r"|\b(?:psycopg2?|sqlalchemy|pymysql|asyncpg|pyodbc|duckdb|google\.(?:api_core|cloud)|botocore)\b"
+    r"|\b(?:Operational|Programming|Integrity|Interface|Database|Internal)Error\b"
+    r"|\bservice[_ ]account\b|\bprojects/[\w.-]+"
+)
+
+
+def user_safe_message(exc: BaseException, what: str, humanize=None) -> str:
+    """The text a chart caller may read for a ``ValueError``.
+
+    A semantic refusal's prose is composed by the engine (business terms,
+    humanised view names) and is passed through. Any other ValueError is passed
+    through ONLY when it carries none of the internal marks above; otherwise it
+    is logged in full and answered with the generic message + reference id."""
+    from app.services.semantic_join_resolver import SemanticRefusal
+
+    text = str(exc)
+    if humanize is not None:
+        text = humanize(text)
+    if isinstance(exc, SemanticRefusal) or not _INTERNAL_TEXT.search(text):
+        return text
+    return failure_detail(exc, what)
+
+
 def refusal_response(exc: BaseException, humanize) -> JSONResponse:
     """400 for a ValueError from the chart runtime: the humanised ``detail``
     (unchanged), the category header (unchanged) and, for a refusal, the
@@ -93,7 +132,7 @@ def refusal_response(exc: BaseException, humanize) -> JSONResponse:
     from app.services.chart_service import REFUSAL_HEADER
 
     info = refusal_info(exc, humanize)
-    body: dict[str, Any] = {"detail": humanize(str(exc))}
+    body: dict[str, Any] = {"detail": user_safe_message(exc, "chart request", humanize)}
     headers = None
     if info is not None:
         body["refusal"] = info
