@@ -125,7 +125,24 @@ def test_anomaly_incident_resolves_once_the_metric_has_no_recent_alert(db, world
 # ── H03 delivery ────────────────────────────────────────────────────────────
 
 @pytest.fixture()
-def sends(monkeypatch):
+def quiet_ledger(db, world):  # noqa: F811
+    """This database is shared by every PG suite: pending deliveries left by
+    earlier runs and other suites' global channels would fill the dispatcher's
+    batch (it sends the OLDEST due rows first, DISPATCH_BATCH per call) and the
+    rows a test asserts on would wait for a later call. Each delivery test owns
+    the ledger: leftovers are cancelled, foreign channels paused."""
+    from app.models.observability import ObservabilityAlertChannel, ObservabilityAlertDelivery as D
+
+    db.query(D).filter(D.status.in_(("pending", "failed"))).update({"status": "cancelled"}, synchronize_session=False)
+    db.query(ObservabilityAlertChannel).filter(
+        (ObservabilityAlertChannel.dataset_id.is_(None))
+        | (ObservabilityAlertChannel.dataset_id != world["ds"].id)
+    ).update({"is_active": False}, synchronize_session=False)
+    db.commit()
+
+
+@pytest.fixture()
+def sends(monkeypatch, quiet_ledger):
     sent: list = []
     fail: set = set()
 
@@ -225,6 +242,46 @@ def test_a_delivery_for_a_resolved_incident_or_paused_channel_is_cancelled(db, w
     dispatch_due(db)
     assert (ch.id, inc.id) not in sent
     assert db.query(D).filter(D.incident_id == inc.id, D.channel_id == ch.id).one().status == "cancelled"
+
+
+def test_two_dispatchers_at_once_send_each_delivery_once(db, world, monkeypatch, quiet_ledger):  # noqa: F811
+    """The 10-minute dispatch job and the dispatch after a scan can overlap
+    (another worker / instance): a row is claimed before it is sent."""
+    import threading
+    import time
+
+    from app.core.database import SessionLocal
+    from app.services.observability_notifier import dispatch_due, enqueue_deliveries
+
+    sent: list = []
+    lock = threading.Lock()
+
+    def slow_send(ch, inc):
+        time.sleep(0.3)
+        with lock:
+            sent.append((ch.id, inc.id))
+
+    monkeypatch.setattr("app.services.observability_notifier._send_one", slow_send)
+    ch = _channel(db, world["ds"].id, "race")
+    incs = [_incident(db, world) for _ in range(4)]
+    enqueue_deliveries(db, incs)
+    db.commit()
+    mine = {(ch.id, i.id) for i in incs}
+
+    def run():
+        s = SessionLocal()
+        try:
+            dispatch_due(s)
+        finally:
+            s.close()
+
+    ts = [threading.Thread(target=run) for _ in range(3)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(60)
+    got = [p for p in sent if p in mine]
+    assert sorted(got) == sorted(mine), f"each delivery exactly once, got {got}"
 
 
 def test_enqueue_is_idempotent(db, world, sends):  # noqa: F811

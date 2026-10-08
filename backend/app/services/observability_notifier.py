@@ -168,17 +168,30 @@ def _backoff(attempts: int) -> timedelta:
 def dispatch_due(db: Session, *, now: datetime | None = None) -> int:
     """Send every delivery that is due. Returns the number sent."""
     now = now or datetime.utcnow()
-    due = (
-        db.query(ObservabilityAlertDelivery)
+    due_ids = [i for (i,) in (
+        db.query(ObservabilityAlertDelivery.id)
         .filter(ObservabilityAlertDelivery.status.in_(("pending", "failed")))
         .filter((ObservabilityAlertDelivery.next_attempt_at.is_(None))
                 | (ObservabilityAlertDelivery.next_attempt_at <= now))
         .order_by(ObservabilityAlertDelivery.id)
         .limit(DISPATCH_BATCH)
         .all()
-    )
+    )]
     sent = 0
-    for d in due:
+    for did in due_ids:
+        # CLAIM the row before sending: the 10-minute dispatch job and the
+        # dispatch after a scan can run at once (other worker, other instance).
+        # The row lock is held until this row's commit, so a concurrent
+        # dispatcher skips it instead of sending the same message twice.
+        q = (db.query(ObservabilityAlertDelivery)
+             .filter(ObservabilityAlertDelivery.id == did)
+             .filter(ObservabilityAlertDelivery.status.in_(("pending", "failed"))))
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            q = q.with_for_update(skip_locked=True)
+        d = q.first()
+        if d is None:
+            db.rollback()
+            continue
         inc = db.get(ObservabilityIncident, d.incident_id)
         ch = db.get(ObservabilityAlertChannel, d.channel_id)
         if inc is None or ch is None or inc.status == "resolved" or not _passes_gate(ch, inc):
