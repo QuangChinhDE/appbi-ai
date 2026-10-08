@@ -185,7 +185,11 @@ def dispatch_due(db: Session, *, now: datetime | None = None) -> int:
         # dispatcher skips it instead of sending the same message twice.
         q = (db.query(ObservabilityAlertDelivery)
              .filter(ObservabilityAlertDelivery.id == did)
-             .filter(ObservabilityAlertDelivery.status.in_(("pending", "failed"))))
+             .filter(ObservabilityAlertDelivery.status.in_(("pending", "failed")))
+             # re-checked under the lock: another dispatcher may have just failed
+             # it and pushed it into backoff
+             .filter((ObservabilityAlertDelivery.next_attempt_at.is_(None))
+                     | (ObservabilityAlertDelivery.next_attempt_at <= now)))
         if db.bind is not None and db.bind.dialect.name == "postgresql":
             q = q.with_for_update(skip_locked=True)
         d = q.first()

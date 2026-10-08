@@ -44,8 +44,19 @@ def _run_anomaly_scan():
     db2 = SessionLocal()
     try:
         from app.services.observability_service import ObservabilityService
-        obs_result = ObservabilityService.scan_all(db2, trigger="schedule")
-        logger.info("Observability scan completed: %s", obs_result)
+        try:
+            obs_result = ObservabilityService.scan_all(db2, trigger="schedule")
+            logger.info("Observability scan completed: %s", obs_result)
+        except ObservabilityService.ScanBusy:
+            # A manual scan holds the lock: record that the scheduled one did not
+            # run, so the status page does not read it as "done".
+            from datetime import datetime as _dt
+            from app.models.observability import ObservabilityScanRun
+            db2.add(ObservabilityScanRun(scope="global", trigger="schedule", status="failed",
+                                         started_at=_dt.utcnow(), finished_at=_dt.utcnow(),
+                                         errors=["Skipped: another scan was running."]))
+            db2.commit()
+            logger.warning("Scheduled observability scan skipped: another scan was running")
     except Exception as exc:
         logger.error("Observability scan failed: %s", exc)
     finally:

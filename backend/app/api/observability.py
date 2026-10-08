@@ -278,6 +278,10 @@ def update_incident(
         raise HTTPException(status_code=422, detail=f"action must be one of {INCIDENT_ACTIONS}")
     inc = _load_incident(db, user, incident_id)
     _require_dataset_edit(db, user, inc.dataset_id)
+    # Lock the row: a scan refreshing the same incident must not overwrite (or
+    # be overwritten by) this action.
+    inc = (db.query(ObservabilityIncident).filter(ObservabilityIncident.id == incident_id)
+           .with_for_update().one())
     now = datetime.utcnow()
     action = payload.action
     if action == "acknowledge":
@@ -307,7 +311,13 @@ def update_incident(
             raise HTTPException(status_code=409, detail=f"A newer incident #{other[0]} is already open for this check.")
         inc.status, inc.resolved_at = "open", None
     ObservabilityService.record_action(inc, action, user.id)
-    db.commit()
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        db.commit()
+    except IntegrityError as exc:       # a scan opened a new incident for this check meanwhile
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A newer incident is already open for this check.") from exc
     db.refresh(inc)
     audit(db, AuditAction.OBSERVABILITY_BASELINE_ACCEPTED if action == "accept_baseline"
           else AuditAction.OBSERVABILITY_INCIDENT_ACTION,
@@ -481,6 +491,8 @@ def _may_manage_channel(db: Session, user: User, ch: ObservabilityAlertChannel) 
     channel's owner while they can still edit its dataset."""
     if _is_obs_admin(user):
         return True
+    if not module_at_least(user, "observability", "edit"):
+        return False
     if (ch.scope or "") == "global" or ch.dataset_id is None:
         return False
     if ch.owner_id is None or ch.owner_id != user.id:

@@ -92,7 +92,7 @@ def upgrade() -> None:
         UPDATE observability_incidents i
            SET status = 'resolved',
                resolved_at = now() AT TIME ZONE 'utc',
-               detail = COALESCE(i.detail, '{}'::jsonb)
+               detail = (CASE WHEN jsonb_typeof(i.detail) = 'object' THEN i.detail ELSE '{}'::jsonb END)
                         || jsonb_build_object('merged_into', r.keep_id,
                                               'merged_at', to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
                                               'merged_reason', 'duplicate open incident for the same check')

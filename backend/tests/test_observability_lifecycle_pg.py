@@ -571,3 +571,50 @@ def test_lineage_does_not_name_charts_or_dashboards_the_caller_cannot_open(clien
                    params={"dataset_id": world["ds"].id})
     assert r.status_code == 200
     assert ch.name not in r.text and secret not in r.text, "lineage disclosed private chart/dashboard names"
+
+
+# ── review follow-ups ───────────────────────────────────────────────────────
+
+def test_a_delivery_in_backoff_is_not_claimed_again(db, world, sends):  # noqa: F811
+    """A dispatcher holding a stale id list must not re-send a row another
+    dispatcher just failed and pushed into backoff."""
+    from app.models.observability import ObservabilityAlertDelivery as D
+    from app.services.observability_notifier import dispatch_due, enqueue_deliveries
+
+    sent, fail = sends
+    ch = _channel(db, world["ds"].id, "backoff")
+    inc = _incident(db, world)
+    enqueue_deliveries(db, [inc])
+    db.commit()
+    row = db.query(D).filter(D.incident_id == inc.id, D.channel_id == ch.id).one()
+    row.status, row.attempts, row.next_attempt_at = "failed", 1, datetime.utcnow() + timedelta(minutes=5)
+    db.commit()
+    dispatch_due(db)
+    assert (ch.id, inc.id) not in sent
+
+
+def test_a_view_level_module_user_never_sees_a_channel_target(client, db, world):  # noqa: F811
+    from app.models.observability import ObservabilityAlertChannel
+
+    u = make_user(db, "obs-viewlevel", observability="view", datasets="edit")
+    share(db, "dataset", world["ds"].id, u, "edit", world["owner"])
+    ch = ObservabilityAlertChannel(kind="webhook", name="mine", target="https://hooks.example.com/very-secret",
+                                   scope="dataset", dataset_id=world["ds"].id, owner_id=u.id)
+    db.add(ch)
+    db.commit()
+    rows = client.get("/api/v1/observability/alert-channels", headers=u.headers).json()
+    row = next(r for r in rows if r["id"] == ch.id)
+    assert "very-secret" not in row["target"] and row["capabilities"]["manage"] is False
+
+
+def test_a_scan_left_running_by_a_killed_process_is_reaped(db, world):  # noqa: F811
+    from app.models.observability import ObservabilityScanRun
+    from app.services.observability_service import ObservabilityService as S
+
+    r = ObservabilityScanRun(scope="dataset", dataset_id=world["ds"].id, trigger="manual", status="running",
+                             started_at=datetime.utcnow() - timedelta(hours=9))
+    db.add(r)
+    db.commit()
+    S.run_scan(db, dataset_id=world["ds"].id)
+    db.expire_all()
+    assert db.get(ObservabilityScanRun, r.id).status == "failed"

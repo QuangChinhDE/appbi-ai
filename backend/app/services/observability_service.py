@@ -997,6 +997,7 @@ class ObservabilityService:
         with job_lock(ObservabilityService.SCAN_LOCK) as owned:
             if not owned:
                 raise ObservabilityService.ScanBusy("A scan is already running.")
+            ObservabilityService.reap_stale_runs(db)
             run = ObservabilityScanRun(scope="dataset" if dataset_id else "global", dataset_id=dataset_id,
                                        trigger=trigger, triggered_by=user_id, status="running",
                                        started_at=datetime.utcnow())
@@ -1037,6 +1038,23 @@ class ObservabilityService:
                "errors": result["errors"][:20]}
         logger.info("[obs] scan %s", out)
         return out
+
+    STALE_RUN_HOURS = 6
+
+    @staticmethod
+    def reap_stale_runs(db: Session) -> int:
+        """A run still 'running' long after any scan could take (the process was
+        killed mid-scan) is failed, so the status never shows a phantom scan."""
+        from app.models.observability import ObservabilityScanRun
+
+        cutoff = datetime.utcnow() - timedelta(hours=ObservabilityService.STALE_RUN_HOURS)
+        n = (db.query(ObservabilityScanRun)
+             .filter(ObservabilityScanRun.status == "running", ObservabilityScanRun.started_at < cutoff)
+             .update({"status": "failed", "finished_at": datetime.utcnow(),
+                      "errors": ["The scan stopped without finishing (process restarted?)."]},
+                     synchronize_session=False))
+        db.commit()
+        return n
 
     @staticmethod
     def _finish_run(db: Session, run_id: int, status: str, counts: dict, errors: list) -> None:
@@ -1093,7 +1111,10 @@ class ObservabilityService:
         if not dataset_id:
             step("retention", lambda: ObservabilityService.prune_history(db))
         from app.services.observability_notifier import enqueue_deliveries
-        step("enqueue deliveries", lambda: enqueue_deliveries(db, new_incidents))
+        # NOT a step: an incident committed without its delivery rows would never
+        # be alerted (later scans only refresh it). If this fails the whole scan
+        # fails and nothing is committed.
+        enqueue_deliveries(db, new_incidents)
         db.commit()
         counts = {"monitors": len(monitors), "breached": breached, "monitor_errors": errored,
                   "quality_folded": len(q_new), "anomaly_folded": len(a_new), "semantic_folded": len(s_new),

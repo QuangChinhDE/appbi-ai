@@ -14,7 +14,7 @@
  * Health is the server's `health` - never derived here from incident counts -
  * and a load that FAILED is shown as an error, never as "nothing wrong".
  */
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ShieldCheck, Unlink, AlertTriangle, ChevronRight, ChevronLeft, Search, RefreshCw, Bell, Loader2,
   GitBranch, Clock, BarChart3, LayoutDashboard, CheckCircle2, Database, Plus, CircleSlash, HelpCircle, Activity,
@@ -108,6 +108,7 @@ function HealthList({ onOpen, onOpenIncident }: { onOpen: (datasetId: number) =>
   const [overview, setOverview] = useState<ObservabilityOverview | null>(null);
   const [usage, setUsage] = useState<UsageRow[] | null>(null);
   const [status, setStatus] = useState<ScannerStatus | null>(null);
+  const [statusFailed, setStatusFailed] = useState(false);
   const [me, setMe] = useState<ObservabilityMe | null>(null);
   const [error, setError] = useState<LoadError | null>(null);
   const [loading, setLoading] = useState(true);
@@ -116,17 +117,20 @@ function HealthList({ onOpen, onOpenIncident }: { onOpen: (datasetId: number) =>
   const [channelsOpen, setChannelsOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
 
+  const seq = useRef(0);
   const reload = useCallback(() => {
+    const mine = ++seq.current;
     setLoading(true);
     setError(null);
     // Overview + usage are the page: if either fails the page is an error.
     // Scanner status / capabilities are secondary and degrade on their own.
-    getScannerStatus().then(setStatus).catch(() => setStatus(null));
+    getScannerStatus().then((s) => { if (mine === seq.current) { setStatus(s); setStatusFailed(false); } })
+      .catch(() => { if (mine === seq.current) { setStatus(null); setStatusFailed(true); } });
     getObservabilityMe().then(setMe).catch(() => setMe(null));
     return Promise.all([getOverview(), getUsage()])
-      .then(([o, u]) => { setOverview(o); setUsage(u); })
-      .catch((e) => { setOverview(null); setUsage(null); setError(loadErrorOf(e)); })
-      .finally(() => setLoading(false));
+      .then(([o, u]) => { if (mine === seq.current) { setOverview(o); setUsage(u); } })
+      .catch((e) => { if (mine === seq.current) { setOverview(null); setUsage(null); setError(loadErrorOf(e)); } })
+      .finally(() => { if (mine === seq.current) setLoading(false); });
   }, []);
   useEffect(() => { reload(); }, [reload]);
 
@@ -154,7 +158,7 @@ function HealthList({ onOpen, onOpenIncident }: { onOpen: (datasetId: number) =>
         description={t('observability.page.description')}
         overview={error ? undefined : (
           <div className="space-y-3">
-            <ScannerBanner status={status} />
+            <ScannerBanner status={status} failed={statusFailed} />
             <ModuleOverview
               stats={[
                 { label: t('observability.page.stats.datasetsMonitored.label'), value: observed.length, helper: t('observability.page.stats.datasetsMonitored.helper') },
@@ -334,9 +338,15 @@ function CheckSummary({ row }: { row: UsageRow }) {
 }
 
 /** Is the monitoring itself working? Silent when it is. */
-function ScannerBanner({ status }: { status: ScannerStatus | null }) {
+function ScannerBanner({ status, failed }: { status: ScannerStatus | null; failed?: boolean }) {
   const { t, locale } = useI18n();
-  if (!status) return null;
+  if (!status) {
+    return failed ? (
+      <p role="status" data-testid="obs-scanner-unknown" className="flex items-center gap-1.5 rounded-lg bg-warning/10 px-3 py-2 text-caption text-warning">
+        <AlertTriangle className="h-3.5 w-3.5" aria-hidden />{t('observability.scanner.unknown')}
+      </p>
+    ) : null;
+  }
   const last = status.lastScan;
   const problems: { tone: 'danger' | 'warning'; text: string }[] = [];
   if (last?.status === 'failed') problems.push({ tone: 'danger', text: t('observability.scanner.failed', { time: relativeTime(last.startedAt, t, locale) }) });
