@@ -459,7 +459,8 @@ def publish(
     ]
     # NOR A STEP THAT BREAKS ITS ROLE, misses what its role needs, or reads an
     # input that cannot exist — each fails or misleads on every question.
-    hard += flow.role_grant_errors() + flow.role_dependency_problems() + flow.input_problems()
+    hard += (flow.role_grant_errors() + flow.role_dependency_problems()
+             + flow.input_problems() + flow.incomplete_config_problems())
     if hard:
         # EVERYTHING AT ONCE. Refusing on the first class of problem and the next
         # class on the next attempt makes the author publish three times to learn

@@ -248,6 +248,7 @@ backend/scripts/regression_*.py
 !backend/tests/test_flow_coordinate.py
 !backend/tests/test_flow_synthesis_sees_all_steps.py
 !backend/tests/test_agent_roles.py
+!backend/tests/test_analytics_meaning.py
 !backend/tests/test_flow_type.py
 !backend/tests/test_followup_and_freshness.py
 !backend/tests/test_govern_doc_citation.py

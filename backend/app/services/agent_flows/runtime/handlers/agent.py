@@ -264,6 +264,8 @@ async def run(
     system, messages, collected = strategy.system, strategy.messages, strategy.collected
 
     text = _plain_formulas(collected.strip())
+    if node.key == rctx.answer_key and getattr(node, "followups", True) is False:
+        text = _strip_followups(text)
     if provider_error and not text:
         # Raised, so the executor records `error`, honours `retry` and `on_error`,
         # and the Runs table shows which node actually failed.
@@ -394,12 +396,16 @@ async def run(
             tool_results: list[Any] = [
                 m.get("result") for m in messages if m.get("role") == "tool"
             ]
-            # EARLIER STEPS COUNT AS EVIDENCE. A range established by
-            # `describe_time_coverage` in a previous node is a real source, and
-            # treating it as absent would flag a correct answer.
-            prior = _all_step_results(state, rctx, skip=node.key)
-            if prior:
-                tool_results.append(prior)
+            # EARLIER STEPS' DATA COUNTS AS EVIDENCE; THEIR PROSE DOES NOT.
+            #
+            # A range established by `describe_time_coverage` in a previous node is
+            # a real source, and treating it as absent would flag a correct answer.
+            # But this used to hand over every earlier step's OUTPUT, including what
+            # an earlier Agent WROTE — so "1.258.681,34 VNĐ" typed by a specialist
+            # made "VNĐ" in the answer "found in the evidence". A qualifier is
+            # verified by what tools returned and deterministic steps read, never by
+            # what a model said about them.
+            tool_results.extend(_trusted_prior_results(state, skip=node.key))
             tools_called = sorted({
                 *(str(m.get("name") or "") for m in messages if m.get("role") == "tool"),
                 *(t for step in state.trace for t in (step.tool_calls or [])),
@@ -626,6 +632,14 @@ _LATEX_FIXES = (
     (re.compile(r"\\times"), "×"),
     (re.compile(r"\\(?=[_%&#${}])"), ""),
 )
+
+
+_FOLLOWUP_LINE_RE = re.compile(r"^[\s>*•.)\-\d]*\[FOLLOWUP\].*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _strip_followups(text: str) -> str:
+    """Remove `[FOLLOWUP]` lines — the same shape the chat UI turns into chips."""
+    return re.sub(r"\n{3,}", "\n\n", _FOLLOWUP_LINE_RE.sub("", text or "")).strip()
 
 
 def _plain_formulas(text: str) -> str:
@@ -1022,6 +1036,27 @@ from app.services.agent_flows.contract import ROUTING_NODE_TYPES as _ROUTING_TYP
 from app.services.agent_flows.runtime.context import HANDOFF_CHARS as _HANDOFF_CHARS
 
 
+#: Step types whose output is DATA the engine fetched, not text a model wrote.
+_DETERMINISTIC_STEP_TYPES = frozenset({"report_read", "knowledge", "tool"})
+
+
+def _trusted_prior_results(state: RunState, *, skip: str = "") -> list[Any]:
+    """Evidence a qualifier may be checked against: every recorded tool result
+    (`evidence_store`, any step) and the outputs of deterministic steps. Agent,
+    Skill and Coordinator outputs are prose and are left out on purpose."""
+    out: list[Any] = []
+    for entry in (getattr(state, "evidence_store", None) or {}).values():
+        if isinstance(entry, dict) and entry.get("result") is not None:
+            out.append(entry["result"])
+    for step in getattr(state, "trace", None) or []:
+        if step.key == skip or getattr(step, "type", "") not in _DETERMINISTIC_STEP_TYPES:
+            continue
+        value = (getattr(state, "outputs", None) or {}).get(step.key)
+        if value not in (None, "", [], {}):
+            out.append(value)
+    return out
+
+
 def _all_step_results(state: RunState, rctx: Any, *, skip: str = "") -> str:
     """Every step's result, projected into what this model can actually read.
 
@@ -1189,16 +1224,21 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
         # terse answer style and a working suggestion strip can coexist. Kept to
         # two lines because a long reminder here would itself start competing with
         # the author's prompt for the model's attention.
-        parts.append(
-            "Dù hướng dẫn ở trên yêu cầu ngắn gọn thế nào, LUÔN kết thúc câu trả "
-            "lời bằng 2-3 dòng gợi ý, mỗi dòng bắt đầu bằng [FOLLOWUP] và kết "
-            "thúc bằng dấu ?. Chúng không tính vào độ dài câu trả lời. "
-            # The chips are the one part of the reply the reader is invited to
-            # CLICK, and they were coming back in English under a Vietnamese
-            # answer — the language rule was read as being about the prose. Said
-            # here because this is the sentence that asks for them.
-            "Các dòng gợi ý phải CÙNG ngôn ngữ với câu trả lời."
-        )
+        if getattr(node, "followups", True) is False:
+            # THE AUTHOR TURNED THEM OFF. Said last, like the rule it replaces,
+            # because the base prompt above still asks for them.
+            parts.append("KHÔNG thêm dòng gợi ý [FOLLOWUP] nào vào câu trả lời.")
+        else:
+            parts.append(
+                "Dù hướng dẫn ở trên yêu cầu ngắn gọn thế nào, LUÔN kết thúc câu trả "
+                "lời bằng 2-3 dòng gợi ý, mỗi dòng bắt đầu bằng [FOLLOWUP] và kết "
+                "thúc bằng dấu ?. Chúng không tính vào độ dài câu trả lời. "
+                # The chips are the one part of the reply the reader is invited to
+                # CLICK, and they were coming back in English under a Vietnamese
+                # answer — the language rule was read as being about the prose. Said
+                # here because this is the sentence that asks for them.
+                "Các dòng gợi ý phải CÙNG ngôn ngữ với câu trả lời."
+            )
         # WHICH LANGUAGE TO ANSWER IN, SAID RATHER THAN INFERRED.
         #
         # The base prompt already asks for "the language of the question", and the

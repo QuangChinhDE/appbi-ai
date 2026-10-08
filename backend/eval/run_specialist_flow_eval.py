@@ -64,6 +64,48 @@ def _has(text: str, target: float, rel: float = 0.01) -> bool:
         target >= 1e6 and any(abs(v * 1e6 - target) <= target * rel for v in _num(text)))
 
 
+#: The SaaS fixture report (`seed_saas_fixture.py` + `build_saas_report.py`).
+#: Ground truth is the fixture's own rows — independent of any tool.
+SAAS_DASHBOARD = 136
+
+
+def _says_drop(a: str) -> bool:
+    low = a.lower()
+    return any(w in low for w in ("giảm", "sụt", "decrease", "drop", "-91", "−91"))
+
+
+SAAS_QUESTIONS = [
+    # GOLDEN — zero tolerance for the known wrong figures in `wrong`.
+    {"id": "S1_arr_aug", "dash": SAAS_DASHBOARD, "golden": True,
+     "q": "ARR tháng 8 năm 2026 là bao nhiêu?",
+     "checks": lambda a: {"value": _has(a, 72, 0.001)}, "wrong": [864, 5244]},
+    {"id": "S2_arr_aug_vs_jul", "dash": SAAS_DASHBOARD, "golden": True,
+     "q": "So sánh ARR tháng 8/2026 với tháng 7/2026.",
+     "checks": lambda a: {"aug": _has(a, 72, 0.001), "jul": _has(a, 864, 0.001), "direction": _says_drop(a)},
+     "wrong": [5244]},
+    {"id": "S3_mrr_jun", "dash": SAAS_DASHBOARD, "golden": True,
+     "q": "MRR tháng 6/2026 là bao nhiêu?",
+     "checks": lambda a: {"value": _has(a, 70, 0.001)}, "wrong": [60, 72, 431]},
+    {"id": "S4_churn_aug", "dash": SAAS_DASHBOARD, "golden": True,
+     "q": "Có bao nhiêu khách hàng rời bỏ trong tháng 8/2026?",
+     "checks": lambda a: {"value": _has(a, 40, 0.001)}, "wrong": [60, 3]},
+    {"id": "S5_arr_enterprise", "dash": SAAS_DASHBOARD, "golden": True,
+     "q": "ARR của phân khúc enterprise là bao nhiêu?",
+     "checks": lambda a: {"value": _has(a, 5000, 0.001)}, "wrong": [72, 5244]},
+    # HOLDOUT — not used while fixing.
+    {"id": "H1_churn_total", "dash": SAAS_DASHBOARD, "golden": False,
+     "q": "Tổng số khách hàng rời bỏ từ tháng 1 đến tháng 8 năm 2026 là bao nhiêu?",
+     "checks": lambda a: {"value": _has(a, 60, 0.001)}, "wrong": [40]},
+    {"id": "H2_latest_arr", "dash": SAAS_DASHBOARD, "golden": False,
+     "q": "ARR ở tháng gần nhất có dữ liệu là bao nhiêu và đó là tháng nào?",
+     "checks": lambda a: {"value": _has(a, 72, 0.001),
+                          "month": ("2026-08" in a or "8/2026" in a or "tháng 8" in a.lower())},
+     "wrong": [864, 5244]},
+    {"id": "H3_second_category", "dash": 67, "golden": False,
+     "q": "Danh mục có doanh thu cao thứ hai là gì?",
+     "checks": lambda a: {"category": "watches" in a.lower()}, "wrong": []},
+]
+
 QUESTIONS = [
     {"id": "Q1_lookup", "q": "Tổng doanh thu sản phẩm toàn kỳ là bao nhiêu?",
      "checks": lambda a: {"value": _has(a, 13591643.70)}},
@@ -93,9 +135,10 @@ def _agent(key, name, prompt, *, cred, role="", tools=(), reads=None, knowledge=
 
 
 def flows(cred: int) -> dict[str, dict]:
+    """See module docstring. Tool lists include `period`-aware measuring tools."""
     rr_tools = ["search_business_assets", "resolve_chart_candidates", "list_charts", "inspect_filters",
                 "describe_time_coverage", "get_chart_summary"]
-    ma_tools = ["resolve_chart_candidates", "list_charts", "total_measure", "rank_values", "share_of",
+    ma_tools = ["resolve_chart_candidates", "list_charts", "total_measure", "rank_values", "share_of", "aggregate_chart_data",
                 "compare_periods", "get_chart_summary", "compute"]
     da_tools = ["resolve_chart_candidates", "list_charts", "explain_change", "detect_anomaly",
                 "compare_periods", "get_chart_summary"]
@@ -187,6 +230,7 @@ def main() -> None:
     ap.add_argument("--budget-usd", type=float, default=4.0)
     ap.add_argument("--repeats", type=int, default=1)
     ap.add_argument("--only", default="")
+    ap.add_argument("--suite", default="all", choices=["all", "olist", "saas"])
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -203,13 +247,14 @@ def main() -> None:
             results.append({"flow": name, "save_error": saved})
             continue
         for rep in range(args.repeats):
-            for q in QUESTIONS:
+            for q in [*QUESTIONS, *SAAS_QUESTIONS] if args.suite == "all" else (
+                    SAAS_QUESTIONS if args.suite == "saas" else QUESTIONS):
                 if spent >= args.budget_usd:
                     print(f"BUDGET STOP at ${spent:.4f}")
                     break
                 t0 = time.time()
                 env = api.call("POST", f"/brains/{key}/test-on-report",
-                               {"question": q["q"], "dashboard_id": args.dashboard})
+                               {"question": q["q"], "dashboard_id": q.get("dash", args.dashboard)})
                 env = env.get("envelope") or env
                 row = {"flow": name, "q": q["id"], "rep": rep, "wall_s": round(time.time() - t0, 1),
                        **summarise(env)}
@@ -217,6 +262,13 @@ def main() -> None:
                     row["http_error"] = env
                 row["checks"] = q["checks"](row.get("answer") or "")
                 row["correct"] = all(row["checks"].values())
+                # A KNOWN WRONG FIGURE PUBLISHED AS IF VERIFIED: present in the answer
+                # with no warning notice beside it. The zero-tolerance gate.
+                warned = bool({"claims_unverified", "qualifier_unverified", "figures_unverified",
+                               "answer_incomplete"} & set(row.get("notices") or []))
+                row["wrong_figure"] = any(_has(row.get("answer") or "", w, 0.001) for w in q.get("wrong", []))
+                row["wrong_as_verified"] = row["wrong_figure"] and not warned and not row["correct"]
+                row["golden"] = bool(q.get("golden"))
                 cost = (row["prompt_tokens"] * PRICE["in"] + row["completion_tokens"] * PRICE["out"]) / 1e6
                 row["cost_usd"] = round(cost, 5)
                 spent += cost

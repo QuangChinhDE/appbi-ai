@@ -142,8 +142,10 @@ def test_role_problems_block_publish_and_cannot_be_acknowledged():
     from app.services.agent_flows import registry as reg
 
     src = inspect.getsource(reg.publish)
-    hard_at = src.index("hard += flow.role_grant_errors()")
-    assert hard_at < src.index("if hard:"), "role problems must be in the hard list"
+    gate = src.index("if hard:")
+    for check in ("role_grant_errors()", "role_dependency_problems()", "input_problems()",
+                  "incomplete_config_problems()"):
+        assert -1 < src.index(check) < gate, f"{check} must be in the hard (non-acknowledgeable) list"
     assert "role_grant_errors()" in inspect.getsource(reg.save_draft)
 
 

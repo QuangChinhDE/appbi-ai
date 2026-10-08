@@ -394,6 +394,12 @@ class AgentNode(BaseNode):
     #: through the same `compile_context` the answering step uses, its failure or
     #: absence is said out loud, and what was reduced is recorded on the trace.
     reads_from: list[str] = Field(default_factory=list)
+    #: Whether the ANSWERING step ends with 2-3 `[FOLLOWUP]` suggestion lines (the
+    #: chips a reader can click). On by default — every flow written before this
+    #: field existed asked for them. Off: the prompt says not to, and any line the
+    #: model writes anyway is removed, so the setting and the answer cannot disagree.
+    #: Ignored on any other step, which never gets the follow-up contract.
+    followups: bool = True
 
     @field_validator("reads_from")
     @classmethod
@@ -1705,6 +1711,7 @@ class Flow(_Model):
         out.extend(self.role_grant_errors())
         out.extend(self.role_dependency_problems())
         out.extend(self.input_problems())
+        out.extend(self.incomplete_config_problems())
         dead = self.unreachable_nodes()
         if dead:
             out.append(
@@ -1873,6 +1880,29 @@ class Flow(_Model):
                     )
         return out
 
+    def incomplete_config_problems(self) -> list[str]:
+        """Required expressions left blank — what a freshly added step looks like.
+
+        The builder used to seed Switch, Loop and Filter with `{{}}`. That is not a
+        template (the variable pattern needs a name), so no check saw it: it
+        resolved to the literal text "{{}}", a Switch matched nothing and ran its
+        fallback, a Loop ran ONCE over the string "{{}}", and a Filter's
+        `is_not_empty` was always true — while validation said the flow was fine.
+        A draft may be incomplete; a flow that runs or publishes may not.
+        """
+        out: list[str] = []
+        for n in self.all_nodes():
+            who = f"Bước “{n.name or n.key}”"
+            if any(_EMPTY_TEMPLATE_RE.search(t or "") for t in _templated_strings(n)):
+                out.append(f"{who} có biểu thức trống {{{{}}}} — chọn biến hoặc nhập giá trị.")
+            if isinstance(n, SwitchNode) and not (n.value or "").strip():
+                out.append(f"{who} (Switch) chưa có giá trị để rẽ nhánh.")
+            if isinstance(n, LoopNode) and not (n.over or "").strip():
+                out.append(f"{who} (Loop) chưa chọn danh sách để lặp.")
+            if isinstance(n, FilterNode) and not (n.conditions or []):
+                out.append(f"{who} (Filter) chưa có điều kiện nào.")
+        return list(dict.fromkeys(out))
+
     def blocking_problems(self) -> list[str]:
         """The subset of `warnings()` that is a DEFECT rather than a trade-off.
 
@@ -1908,6 +1938,7 @@ class Flow(_Model):
         out.extend(self.role_grant_errors())
         out.extend(self.role_dependency_problems())
         out.extend(self.input_problems())
+        out.extend(self.incomplete_config_problems())
         dead = self.unreachable_nodes()
         answer_key = self.answer_node or (self.nodes[-1].key if self.nodes else "")
         # A ROUTER IS NOT AN ANSWER. Found by the acceptance journeys: an If at the
@@ -2082,6 +2113,11 @@ def node_referenced_vars(node: Any) -> set[str]:
         if getattr(binding, "source", "") == "variable" and getattr(binding, "ref", ""):
             found.add(re.split(r"[.\[]", binding.ref, maxsplit=1)[0].strip())
     return found
+
+
+#: `{{}}` / `{{ }}` — a placeholder nobody filled in. Not a template: the variable
+#: pattern needs a name, which is exactly why nothing else catches it.
+_EMPTY_TEMPLATE_RE = re.compile(r"\{\{\s*\}\}")
 
 
 def _templated_strings(node: Any) -> list[str]:
