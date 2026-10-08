@@ -6,7 +6,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { Input, Textarea } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { HintText, SectionTitle } from '../../shared';
-import { Advanced, Field, NumberField, Select } from '../fields';
+import { Advanced, Field, NumberField, Select, Toggle } from '../fields';
 import { ModelPicker } from '../ModelPicker';
 import { ToolPicker, toolLabel } from '../ToolPicker';
 import { ReadsFromSection, RoleSection } from '../RoleSection';
@@ -155,6 +155,19 @@ export function AgentEditor(props: NodeEditorProps) {
                 <HintText>{t('agentFlows.inspector.choicesTooFew')}</HintText>
               )}
             </Field>
+          )}
+          {/* F10 — the follow-up chips are the author's choice, on the step that
+              answers (no other step is ever asked for them). */}
+          {isAnswerNode && node.output_format !== 'json' && (
+            <div className="mt-3 rounded-lg border border-[rgb(var(--border-line))] px-2.5"
+              data-testid="agent-followups">
+              <Toggle
+                on={node.followups !== false}
+                title={t('agentFlows.inspector.followups')}
+                hint={t('agentFlows.inspector.followupsHint')}
+                onChange={(v) => set({ followups: v } as Partial<FlowNode>)}
+              />
+            </div>
           )}
           <Advanced
             name="limits"

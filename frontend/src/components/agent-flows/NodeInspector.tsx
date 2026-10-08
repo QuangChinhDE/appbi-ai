@@ -67,6 +67,9 @@ export interface InspectorProps {
   onChange: (next: FlowNode) => void;
   onChangePath: (next: FlowPath) => void;
   onChangeCase: (next: SwitchCase) => void;
+  /** Remove the selected path / case; absent at the server's minimum. */
+  onRemovePath?: () => void;
+  onRemoveCase?: () => void;
   onDelete: () => void;
   onMakeAnswer: () => void;
 }
@@ -75,8 +78,8 @@ export function NodeInspector(props: InspectorProps) {
   const { t } = useI18n();
   const { node, path, switchCase, isFallback, attachable } = props;
 
-  if (path) return <PathForm path={path} onChange={props.onChangePath} />;
-  if (switchCase) return <CaseForm item={switchCase} onChange={props.onChangeCase} />;
+  if (path) return <PathForm path={path} onChange={props.onChangePath} onRemove={props.onRemovePath} />;
+  if (switchCase) return <CaseForm item={switchCase} onChange={props.onChangeCase} onRemove={props.onRemoveCase} />;
   if (isFallback) {
     return (
       <div className="p-3">

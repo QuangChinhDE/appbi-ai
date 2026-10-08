@@ -294,3 +294,108 @@ test.describe('specialist journeys (live model)', () => {
     expect(pubBody.body.nodes[0].tools.map((t: any) => t.tool)).toEqual(['list_charts']);
   });
 });
+
+// ── builder hardening (F08 / F09 / F10) ─────────────────────────────────────
+test.describe('builder: branches, blanks, follow-ups', () => {
+  test.setTimeout(180_000);
+
+  test('F09 a case can be removed, a new case key is unique, IF keeps its minimum', async ({ page, request }) => {
+    const key = `e2e_sp_branch_${STAMP}`;
+    made.push(key);
+    await saveDraft(request, key, `E2E branches ${STAMP}`, { answer_node: 'w', nodes: [
+      { key: 'sw', type: 'switch', name: 'Rẽ nhánh', value: '{{question}}', cases: [
+        { key: 'case_1', label: 'Ca A', value: 'a', body: [] },
+        { key: 'case_3', label: 'Ca B', value: 'b', body: [] },
+        { key: 'case_5', label: 'Ca C', value: 'c', body: [] }] },
+      { key: 'chon', type: 'if', name: 'Chọn', paths: [
+        { key: 'yes', name: 'Nhánh có', kind: 'rules', conditions: [{ left: '{{question}}', op: 'contains', right: 'x' }], body: [] },
+        { key: 'no', name: 'Nhánh không', kind: 'fallback', body: [] }] },
+      agent('w', { name: 'Trả lời' }),
+    ] });
+    await page.goto(`/agent-flows?flow=${key}`);
+    await page.getByText('Trả lời').first().waitFor({ timeout: 120_000 });
+
+    await page.getByText('Ca B').first().click();
+    await page.getByTestId('remove-case').click();
+    await page.getByText('Nhánh có').first().click();
+    await expect(page.getByTestId('remove-path-blocked')).toBeVisible();   // 2 paths = minimum
+    await page.getByText('Rẽ nhánh').first().click();
+    await page.getByRole('button', { name: /add case|thêm case/i }).first().click();
+    await page.getByText('Chọn').first().click();
+    await page.getByTestId('add-path').click();
+    await page.getByTestId('builder-save').click();
+
+    await expect.poll(async () => {
+      const b = (await (await request.get(`${BRAINS}/${key}`)).json()).body;
+      const sw = b.nodes.find((n: any) => n.key === 'sw');
+      const iff = b.nodes.find((n: any) => n.key === 'chon');
+      return { cases: sw.cases.map((c: any) => c.key), paths: iff.paths.map((p: any) => p.kind) };
+    }, { timeout: 30_000 }).toEqual({ cases: ['case_1', 'case_5', 'case_3'], paths: ['rules', 'rules', 'fallback'] });
+  });
+
+  test('F08 a blank Switch saves as a draft but cannot publish, and says why', async ({ request }) => {
+    const key = `e2e_sp_blank_${STAMP}`;
+    const saved = await put(request, key, { answer_node: 'w', nodes: [
+      { key: 'sw', type: 'switch', name: 'Rẽ nhánh', value: '', cases: [{ key: 'case_1', value: 'a', body: [] }] },
+      agent('w')] });
+    expect(saved.status(), await saved.text()).toBeLessThan(400);
+    const pub = await request.post(`${BRAINS}/${key}/${(await saved.json()).version}/publish`,
+      { data: { acknowledge_problems: true } });
+    expect(pub.status()).toBe(409);
+    expect(await pub.text()).toContain('chưa có giá trị để rẽ nhánh');
+  });
+
+  test('F10 the answering step offers a follow-up switch that is saved', async ({ page, request }) => {
+    const key = `e2e_sp_fu_${STAMP}`;
+    made.push(key);
+    await saveDraft(request, key, `E2E followups ${STAMP}`, { answer_node: 'w', nodes: [agent('w', { name: 'Trả lời' })] });
+    await page.goto(`/agent-flows?flow=${key}`);
+    await page.getByText('Trả lời').first().click({ timeout: 120_000 });
+    const toggle = page.getByTestId('agent-followups');
+    await expect(toggle).toBeVisible();
+    await toggle.getByRole('switch').or(toggle.locator('button')).first().click();
+    await page.getByTestId('builder-save').click();
+    await expect.poll(async () => (await (await request.get(`${BRAINS}/${key}`)).json()).body.nodes[0].followups,
+      { timeout: 30_000 }).toBe(false);
+  });
+});
+
+// ── live analytics: the asked metric, the asked period ──────────────────────
+const SAAS = Number(process.env.E2E_SAAS_DASHBOARD || 0);
+test.describe('analytics meaning (live model, SaaS fixture)', () => {
+  test.skip(!LIVE_CRED || !SAAS, 'needs E2E_LIVE_CREDENTIAL and E2E_SAAS_DASHBOARD (backend/eval fixture)');
+  test.setTimeout(600_000);
+
+  async function ask(request: APIRequestContext, key: string, q: string) {
+    const res = await request.post(`${BRAINS}/${key}/test-on-report`, { data: { question: q, dashboard_id: SAAS }, timeout: 300_000 });
+    expect(res.status(), await res.text()).toBe(200);
+    const j = await res.json();
+    return j.envelope ?? j;
+  }
+  const nums = (t: string) => (t.match(/\d[\d.,]*/g) || []).map((x) => Number(x.replace(/[.,](?=\d{3}\b)/g, '').replace(',', '.')));
+
+  test('the Metric Analyst answers August ARR with August, not July or a sum', async ({ request }) => {
+    const key = `e2e_sp_arr_${STAMP}`;
+    expect((await put(request, key, { nodes: [agent('ma', { role: 'metric_analyst',
+      tools: tools('resolve_chart_candidates', 'list_charts', 'total_measure', 'compare_periods'),
+      prompt: 'Trả lời bằng số liệu của đúng kỳ được hỏi.' })] })).status()).toBeLessThan(400);
+    const one = await ask(request, key, 'ARR tháng 8 năm 2026 là bao nhiêu?');
+    expect(nums(one.answer.text)).toContain(72);
+    expect(nums(one.answer.text)).not.toContain(864);
+    const cmp = await ask(request, key, 'So sánh ARR tháng 8/2026 với tháng 7/2026.');
+    expect(nums(cmp.answer.text)).toEqual(expect.arrayContaining([72, 864]));
+    expect(cmp.answer.text.toLowerCase()).toMatch(/giảm|sụt/);
+  });
+
+  test('a range total of a flow measure is the range, not one month', async ({ request }) => {
+    const key = `e2e_sp_churn_${STAMP}`;
+    expect((await put(request, key, { nodes: [agent('ma', { role: 'metric_analyst',
+      tools: tools('resolve_chart_candidates', 'list_charts', 'total_measure', 'aggregate_chart_data') })] })).status())
+      .toBeLessThan(400);
+    const env = await ask(request, key, 'Tổng số khách hàng rời bỏ từ tháng 1 đến tháng 8 năm 2026 là bao nhiêu?');
+    const n = nums(env.answer.text);
+    // 60 is right; 40 (August alone) must not be presented as the range.
+    expect(n.includes(60) || (env.notices || []).length > 0, env.answer.text).toBe(true);
+    if (!n.includes(60)) expect(n).not.toContain(40);
+  });
+});

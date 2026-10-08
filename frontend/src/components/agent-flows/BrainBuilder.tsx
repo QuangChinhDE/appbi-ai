@@ -544,10 +544,47 @@ export function BrainBuilder({
     updateNode({ ...owner, cases: owner.cases.map((c) => (c.key === next.key ? next : c)) });
   };
 
+  /** Keys of a node and everything inside it. */
+  const subtreeKeys = (n: FlowNode): Set<string> =>
+    new Set(walkNodes([n]).map((x) => x.key));
+
+  // A DELETED ANSWERING STEP IS NOT STILL THE ANSWER. `answer_node` used to keep
+  // naming it, the save then failed validation, and with no answer node the last
+  // top-level step silently became the answer instead.
+  // Through `mutate` so undo still restores the step (and, with it, the answer).
+  const dropAnswerIfGone = (removed: Set<string>) => {
+    if (body.answer_node && removed.has(body.answer_node)) {
+      setBody((b) => ({ ...b, answer_node: undefined }));
+    }
+  };
+
   const deleteSelected = () => {
     if (!sel.node) return;
+    const gone = subtreeKeys(sel.node);
     mutate(removeNode(body.nodes, sel.node.key));
+    dropAnswerIfGone(gone);
     setSelected(null);
+  };
+
+  // F09 — branches can be removed, down to the minimum the server enforces
+  // (IF: two paths; Switch: one case). Their contents go with them.
+  const removePath = () => {
+    const owner = sel.owner;
+    if (!owner || owner.type !== 'if' || !sel.path || owner.paths.length <= 2) return;
+    const gone = new Set(walkNodes(sel.path.body || []).map((x) => x.key));
+    const next = { ...owner, paths: owner.paths.filter((p) => p.key !== sel.path!.key) };
+    mutate(replaceNode(body.nodes, owner.key, next));
+    dropAnswerIfGone(gone);
+    setSelected(owner.key);
+  };
+  const removeCase = () => {
+    const owner = sel.owner;
+    if (!owner || owner.type !== 'switch' || !sel.switchCase || owner.cases.length <= 1) return;
+    const gone = new Set(walkNodes(sel.switchCase.body || []).map((x) => x.key));
+    const next = { ...owner, cases: owner.cases.filter((c) => c.key !== sel.switchCase!.key) };
+    mutate(replaceNode(body.nodes, owner.key, next));
+    dropAnswerIfGone(gone);
+    setSelected(owner.key);
   };
 
   // ── save / publish ────────────────────────────────────────────────────────
@@ -975,6 +1012,8 @@ export function BrainBuilder({
                   onChange={updateNode}
                   onChangePath={updatePath}
                   onChangeCase={updateCase}
+                  onRemovePath={sel.owner?.type === 'if' && sel.owner.paths.length > 2 ? removePath : undefined}
+                  onRemoveCase={sel.owner?.type === 'switch' && sel.owner.cases.length > 1 ? removeCase : undefined}
                   onDelete={deleteSelected}
                   onMakeAnswer={() => {
                     if (sel.node) { setBody((b) => ({ ...b, answer_node: sel.node!.key })); setDirty(true); }

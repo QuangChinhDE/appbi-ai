@@ -52,13 +52,18 @@ export function SwitchEditor(props: NodeEditorProps) {
           </div>
           <Button
             variant="secondary" size="xs" className="mt-2"
-            onClick={() => set({
+            onClick={() => {
+              const taken = new Set(node.cases.map((c) => c.key));
+              let n = node.cases.length + 1;
+              while (taken.has(`case_${n}`)) n += 1;
+              set({
               cases: [...node.cases, {
-                key: `case_${node.cases.length + 1}`,
-                label: `CASE ${node.cases.length + 1}`,
+                key: `case_${n}`,
+                label: `CASE ${n}`,
                 op: 'equals', value: '', body: [],
               }],
-            } as Partial<FlowNode>)}
+            } as Partial<FlowNode>);
+            }}
           >
             <Plus className="h-3 w-3" /> {t('agentFlows.inspector.addCase')}
           </Button>

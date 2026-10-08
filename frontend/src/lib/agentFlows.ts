@@ -237,6 +237,8 @@ export interface AgentNode extends BaseNode {
   /** Earlier steps whose results this step is handed, by key. Empty = the step
    *  before it, as always. */
   reads_from?: string[];
+  /** Answering step only: end with [FOLLOWUP] suggestion lines. Default true. */
+  followups?: boolean;
   provider?: Provider;
   model?: string;
   tools?: ToolGrant[];
@@ -1791,7 +1793,7 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
         { key: 'no', name: labels.pathB || 'Branch B', kind: 'fallback', body: [] },
       ] };
     case 'switch':
-      return { ...base, type, value: '{{}}', mode: 'first_match', has_fallback: true,
+      return { ...base, type, value: '', mode: 'first_match', has_fallback: true,
         cases: [{ key: 'case_1', label: 'CASE 1', op: 'equals', value: '', body: [] }], fallback: [] };
     case 'coordinate':
       // Two lanes, because one specialist is not a coordination problem and the
@@ -1804,10 +1806,10 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
           { key: 'chuyen_gia_2', name: '', when: '', body: [] },
         ], fallback: [] };
     case 'loop':
-      return { ...base, type, over: '{{}}', item_var: 'item', max_iterations: 10, body: [],
+      return { ...base, type, over: '', item_var: 'item', max_iterations: 10, body: [],
         collect_into: uniqueKey(nodes, 'all_findings') };
     case 'filter':
-      return { ...base, type, match: 'all', conditions: [{ left: '{{}}', op: 'is_not_empty' }] };
+      return { ...base, type, match: 'all', conditions: [] };
     case 'set_var':
       return { ...base, type, var: uniqueKey(nodes, 'my_var'), value: '', value_type: 'text' };
     case 'transform':
