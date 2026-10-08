@@ -402,6 +402,26 @@ features:
     invariants: []
     required_tests: [import_smoke]
 
+  # Registered 2026-10-08 (Observability readiness). The module's own files had
+  # no owner feature: the notifier, scheduler, models and the whole UI changed
+  # with only `import_smoke` / `pair5_data_state` required, neither of which
+  # exercises an incident's lifecycle, a delivery, a scan or the UI's authority.
+  - id: observability
+    label: "Observability — monitors, incidents, alert delivery, scans, health UI"
+    files:
+      - backend/app/api/observability.py
+      - backend/app/services/observability_service.py
+      - backend/app/services/observability_notifier.py
+      - backend/app/services/anomaly_scheduler.py
+      - backend/app/models/observability.py
+      - frontend/src/app/(main)/observability/**
+      - frontend/src/components/observability/**
+      - frontend/src/lib/observability.ts
+    keywords: [observability, incident, incidents, "alert channel", delivery, freshness, volume,
+               "schema drift", monitor, scan, "needs attention"]
+    invariants: []
+    required_tests: [observability_lifecycle, observability_monitors, observability_authz, pair5_data_state]
+
 
   - id: agent_flows
     label: "Agent Flow Studio (authoring + runtime + node model)"
@@ -654,6 +674,31 @@ tests:
       publish and rebuild exclude each other, the scheduler never deploys an unpublished design, a fresh publish
       is not changes-pending, no snapshot host is named as the failure; a composed child pins the parent
       generation it validated; a column summary is keyed by the table's shaping"
+  observability_lifecycle:
+    requires: postgres
+    run: "pytest backend/tests/test_observability_lifecycle_pg.py"
+    locks: "one unresolved incident per check (flush + partial unique index, concurrent twin refused); a resolved
+      anomaly is not reopened by the alert it covered, a newer alert reopens, a quiet / deleted / paused metric
+      resolves; a delivered alert is never re-sent, a failed one is retried on that channel only with backoff,
+      gives up as `dead`, is cancelled when the incident resolves, enqueue is idempotent; a sustained volume drop
+      stays breached; resolve never accepts a schema change, accept_baseline is explicit, dataset-edit-only and
+      audited; a dataset view share can read but not act; scans are recorded, refused (409) while another runs,
+      partial when one step fails (the other steps kept), failed when results cannot be saved; every incident is
+      reachable by paging; a deep link is 404 without access; lineage never names a chart / dashboard the caller
+      cannot open"
+  observability_monitors:
+    requires: postgres
+    run: "pytest backend/tests/test_observability_monitors_pg.py"
+    locks: "freshness / volume / schema monitors configured through the API run against a REAL Postgres source:
+      invalid config refused (422) and nothing saved, a view share cannot configure; stale rows breach and
+      recover with one incident across repeated scans; volume is unknown while learning then breaches on a drop
+      and stays breached; a dropped column breaches; an unreadable table is `error` and the dataset is never
+      healthy; pausing / deleting a monitor resolves its incident and stops counting it as coverage"
+  observability_authz:
+    requires: postgres
+    run: "pytest backend/tests/test_authz_observability_http_pg.py"
+    locks: "global channels and the tenant-wide scan are Observability-admin only; channel targets are masked
+      unless the caller manages the channel; a dataset view share cannot repoint / test / delete a channel"
   pair1_baseline_parity:
     requires: postgres-fixture
     run: "pytest backend/tests/test_pair1_baseline_parity.py"
