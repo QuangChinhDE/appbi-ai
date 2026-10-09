@@ -63,7 +63,7 @@ export default defineConfig({
     {
       name: 'chromium',
       dependencies: ['setup'],
-      testIgnore: [/security\/.*\.spec\.ts/, /chart-hardening\.spec\.ts/],
+      testIgnore: [/security\/.*\.spec\.ts/, /chart-hardening\.spec\.ts/, /observability\.spec\.ts/],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/admin.json',
@@ -89,6 +89,21 @@ export default defineConfig({
       dependencies: ['setup'],
       testMatch: /chart-hardening\.spec\.ts/,
       retries: 0,
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: '.auth/admin.json',
+        viewport: { width: 1440, height: 900 },
+      },
+    },
+    {
+      // OBSERVABILITY JOURNEYS O01–O24. No retries: a monitoring journey that
+      // passes on the second try is a race, not a pass. A dedicated project so
+      // the chromium retry policy can never cover for it.
+      name: 'observability',
+      dependencies: ['setup'],
+      testMatch: /observability\.spec\.ts/,
+      retries: 0,
+      timeout: 180_000,
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/admin.json',
