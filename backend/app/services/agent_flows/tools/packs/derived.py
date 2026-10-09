@@ -47,6 +47,8 @@ reports nobody anticipated.
 """
 from __future__ import annotations
 
+import re
+
 from typing import Any
 
 from app.services.agent_flows.tools import result as R
@@ -199,23 +201,51 @@ def _resolve(
     lower = {c.lower(): i for i, c in enumerate(columns)}
     fields = (ctx.chart_meta.get(chart_id) or {}).get("fields") or {}
 
+    ambiguous: list[str] = []
+
     def pick(explicit: str | None, declared: list[dict], want_numeric: bool) -> int | None:
         if explicit:
             return _named_column(ctx, chart_id, columns, explicit, declared, want_numeric)
+        present: list[int] = []
         for entry in declared:
             for candidate in (entry.get("field"), entry.get("label")):
                 if candidate and candidate.lower() in lower:
-                    return lower[candidate.lower()]
-        # Nothing declared matched a column name. Fall back to shape: the
-        # right-most numeric column is the figure by convention in every chart
-        # the query engine builds; the left-most non-numeric is the label.
-        order = range(len(columns) - 1, -1, -1) if want_numeric else range(len(columns))
-        for i in order:
-            if _column_is_numeric(rows, i) is want_numeric:
+                    if lower[candidate.lower()] not in present:
+                        present.append(lower[candidate.lower()])
+                    break
+        # A MEASURE IS NEVER CHOSEN BY POSITION WHEN THERE IS A CHOICE. The first
+        # declared measure, or the right-most numeric column, was a guess: asked
+        # for ARR on a table of mrr/arr/churn, it answered with `cus_churned`.
+        # One candidate is not a guess; two or more is a question for the caller.
+        if want_numeric:
+            if len(present) == 1:
+                return present[0]
+            if len(present) > 1:
+                ambiguous.extend(columns[i] for i in present)
+                return None
+            numeric = [i for i in range(len(columns)) if _column_is_numeric(rows, i)]
+            if len(numeric) == 1:
+                return numeric[0]
+            if len(numeric) > 1:
+                ambiguous.extend(columns[i] for i in numeric)
+            return None
+        if present:
+            return present[0]
+        # A label column may still be found by shape: the left-most non-numeric
+        # column is the label in every chart the query engine builds.
+        for i in range(len(columns)):
+            if not _column_is_numeric(rows, i):
                 return i
         return None
 
     m_idx = pick(measure, fields.get("measures") or [], True)
+    if m_idx is None and ambiguous and not measure:
+        return R.err(
+            f"chart {chart_id} has more than one measure — say which one",
+            code="measure_ambiguous",
+            detail={"candidates": ambiguous, "columns": columns},
+            recovery="Call again with `measure` set to one of: " + ", ".join(ambiguous),
+        )
     if m_idx is None:
         return R.err(
             f"no numeric column to compute on for chart {chart_id}"
@@ -443,6 +473,116 @@ def tool_rank_values(ctx: ToolContext, args: dict) -> dict:
     )
 
 
+def _choose_measure(ctx: ToolContext, chart_id: int, columns: list[str],
+                    rows: list[list]) -> int | None | dict:
+    """The measure when the caller named none: the ONE declared or numeric column,
+    or a `measure_ambiguous` error listing the choices. Never chosen by position."""
+    lower = {c.lower(): i for i, c in enumerate(columns)}
+    fields = (ctx.chart_meta.get(chart_id) or {}).get("fields") or {}
+    present: list[int] = []
+    for entry in fields.get("measures") or []:
+        for candidate in (entry.get("field"), entry.get("label")):
+            if candidate and candidate.lower() in lower:
+                if lower[candidate.lower()] not in present:
+                    present.append(lower[candidate.lower()])
+                break
+    candidates = present or [i for i in range(len(columns)) if _column_is_numeric(rows, i)]
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        names = [columns[i] for i in candidates]
+        return R.err(
+            f"chart {chart_id} has more than one measure — say which one",
+            code="measure_ambiguous", detail={"candidates": names, "columns": columns},
+            recovery="Call again with `measure` set to one of: " + ", ".join(names),
+        )
+    return None
+
+
+_PERIOD_RE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?")
+
+
+def _period_key(value: Any) -> str:
+    """A period's canonical text: `2026-08-01T00:00` -> `2026-08-01`; `2026-08` stays."""
+    text = str(value or "").strip()
+    m = _PERIOD_RE.match(text)
+    return m.group(0) if m else text
+
+
+def _time_column(ctx: ToolContext, chart_id: int, columns: list[str], rows: list[list],
+                 m_idx: int) -> int | None:
+    """The chart's time axis: a dimension declared `time`, else a column whose
+    values all read as year-months or dates."""
+    from app.services.agent_flows.tools.packs.discover import field_key
+
+    fields = (ctx.chart_meta.get(chart_id) or {}).get("fields") or {}
+    declared = {field_key(str(d.get("field") or "")) for d in fields.get("dimensions") or []
+                if isinstance(d, dict) and d.get("time")}
+    for i, c in enumerate(columns):
+        if i != m_idx and field_key(c) in declared:
+            return i
+    for i in range(len(columns)):
+        if i == m_idx:
+            continue
+        sample = [r[i] for r in rows[:200] if i < len(r) and r[i] not in (None, "")]
+        if sample and all(re.match(r"^\d{4}-\d{2}", str(v).strip()) for v in sample):
+            return i
+    return None
+
+
+def _time_slice(ctx: ToolContext, chart_id: int, columns: list[str], rows: list[list],
+                m_idx: int, period: Any, period_from: Any = None, period_to: Any = None):
+    """Rows for the asked period, plus what periods the rows cover.
+
+    The asked period is the one answered. It is NEVER replaced by another: a
+    period that is not in the data is an error naming the ones that are; a value
+    that looks low is still that period's value (an unusual figure is not
+    evidence that the data is incomplete)."""
+    t_idx = _time_column(ctx, chart_id, columns, rows, m_idx)
+    if t_idx is None:
+        if period or period_from or period_to:
+            return R.err(
+                f"chart {chart_id} has no time dimension, so it cannot give the value for "
+                f"'{period}' — its figure covers the whole range it was built on",
+                code="no_time_dimension", detail={"columns": columns},
+                recovery=("Find a chart of this measure BY month/period "
+                          "(search_business_assets or list_charts with the measure name) "
+                          "and pass `period` there."),
+            )
+        return rows, None
+    keys = sorted({_period_key(r[t_idx]) for r in rows
+                   if t_idx < len(r) and r[t_idx] not in (None, "")})
+    info = {"column": columns[t_idx], "first": keys[0] if keys else None,
+            "last": keys[-1] if keys else None, "count": len(keys)}
+    if (period_from or period_to) and not period:
+        lo = _period_key(period_from) if period_from else ""
+        hi = _period_key(period_to) if period_to else ""
+        kept = [r for r in rows if t_idx < len(r) and r[t_idx] not in (None, "")
+                and (not lo or _period_key(r[t_idx]) >= lo)
+                and (not hi or _period_key(r[t_idx])[:len(hi)] <= hi)]
+        if not kept:
+            return R.err(
+                f"no period of chart {chart_id} falls in {period_from or '…'} – {period_to or '…'} "
+                f"(it covers {info['first']} … {info['last']})",
+                code="period_not_found", detail={"periods": info, "available": keys[-24:]},
+                recovery="Use a range inside the listed periods. Do not answer with a different one.",
+            )
+        sel = sorted({_period_key(r[t_idx]) for r in kept})
+        return kept, {**info, "selected": sel, "selected_count": len(sel)}
+    if not period:
+        return rows, info
+    want = _period_key(period)
+    kept = [r for r in rows if t_idx < len(r) and _period_key(r[t_idx]).startswith(want)]
+    if not kept:
+        return R.err(
+            f"period '{period}' is not in chart {chart_id} "
+            f"(it covers {info['first']} … {info['last']})",
+            code="period_not_found", detail={"periods": info, "available": keys[-24:]},
+            recovery="Use one of the listed periods. Do not answer with a different period.",
+        )
+    return kept, {**info, "selected": sorted({_period_key(r[t_idx]) for r in kept})}
+
+
 def tool_total_measure(ctx: ToolContext, args: dict) -> dict:
     """The sum of a measure across every row — the figure a row cap cannot give."""
     loaded = _load(ctx, args)
@@ -465,25 +605,22 @@ def tool_total_measure(ctx: ToolContext, args: dict) -> dict:
                           + ", ".join(columns)),
             )
     else:
-        fields = (ctx.chart_meta.get(chart_id) or {}).get("fields") or {}
-        for entry in fields.get("measures") or []:
-            for candidate in (entry.get("field"), entry.get("label")):
-                if candidate and candidate.lower() in lower:
-                    m_idx = lower[candidate.lower()]
-                    break
-            if m_idx is not None:
-                break
-        if m_idx is None:
-            for i in range(len(columns) - 1, -1, -1):
-                if _column_is_numeric(rows, i):
-                    m_idx = i
-                    break
+        chosen = _choose_measure(ctx, chart_id, columns, rows)
+        if isinstance(chosen, dict):
+            return chosen
+        m_idx = chosen
     if m_idx is None:
         return R.err(
             f"chart {chart_id} has no numeric column to total",
             code="not_applicable", detail={"columns": columns},
         )
 
+    # WHICH PERIOD — said, never assumed. See `_time_slice`.
+    sliced = _time_slice(ctx, chart_id, columns, rows, m_idx, args.get("period"),
+                         args.get("period_from"), args.get("period_to"))
+    if isinstance(sliced, dict):
+        return sliced
+    rows, periods = sliced
     values = [
         n for row in rows
         if m_idx < len(row) and (n := _numeric(row[m_idx])) is not None
@@ -514,6 +651,31 @@ def tool_total_measure(ctx: ToolContext, args: dict) -> dict:
     #
     # The rule the guard actually encodes is "do not combine these ACROSS rows".
     # With nothing to combine, there is nothing to get wrong.
+    # SUMMED ACROSS TIME ONLY WHEN THE MEASURE IS DECLARED TO ADD UP.
+    #
+    # A stock — ARR, active customers, a balance — observed each month does not
+    # add across months: Jan..Aug ARR "totals" 5,244 for a business whose ARR was
+    # 72 in August. Nothing here knows which undeclared column is a stock, so an
+    # undeclared aggregation over several periods is refused, with `period` as
+    # the way in. A declared sum/count (revenue, orders) still totals.
+    spanned = (periods or {}).get("selected_count") if (args.get("period_from") or args.get("period_to")) \
+        else (periods or {}).get("count")
+    if periods and (spanned or 0) > 1 and not args.get("period") and not args.get("across_periods") \
+            and (not info.get("declared") or not info.get("agg")):
+        return R.err(
+            f"'{columns[m_idx]}' on chart {chart_id} is a series over {periods['count']} periods "
+            f"({periods['first']} … {periods['last']}) and its aggregation across time is not "
+            "declared — summing it could add up a balance (ARR, active customers)",
+            code="time_aggregation_ambiguous",
+            detail={"measure": columns[m_idx], "time_dimension": periods["column"],
+                    "periods": periods},
+            recovery=("Pick what the question asks: the value AT one period → `period` (e.g. "
+                      f"'{periods['last']}'); a TOTAL over a range of a measure that is counted "
+                      "per period (churned customers, new orders, revenue) → `period_from`/"
+                      "`period_to` with `across_periods: true`. A balance (ARR, MRR, active "
+                      "customers) is never summed across periods. Do not answer a range "
+                      "question with one period's value."),
+        )
     if not info["additive"] and len(values) > 1:
         # WHERE TO GO INSTEAD. Refused without a route, the model gave up ("order_count
         # cannot be aggregated") or quoted average_across_rows as the answer (live
@@ -557,6 +719,13 @@ def tool_total_measure(ctx: ToolContext, args: dict) -> dict:
         {
             "chart_id": chart_id,
             "measure": columns[m_idx],
+            # WHAT TIME THIS NUMBER IS ABOUT: `period` when one was asked, and
+            # `periods_covered` always, so a total over 24 months cannot be read
+            # as the value of one.
+            **({"period": str(args.get("period"))} if args.get("period") else {}),
+            **({"summed_across_periods": (periods or {}).get("selected_count") or (periods or {}).get("count")}
+               if args.get("across_periods") else {}),
+            **({"periods_covered": periods} if periods else {}),
             "value": round(total, 4),
             "formatted": _fmt(total),
             "average": round(average, 4),
@@ -767,7 +936,10 @@ _CHART_ARG = {
 }
 _MEASURE_ARG = {
     "type": "string",
-    "description": "Column to total. Omit to use the chart's own measure.",
+    "description": (
+        "The measure column, by name. Omit only when the chart has ONE measure; a chart "
+        "with several returns measure_ambiguous listing them — it never picks one for you."
+    ),
 }
 _DIMENSION_ARG = {
     "type": "string",
@@ -806,13 +978,35 @@ RANK_VALUES_DEF = {
 TOTAL_MEASURE_DEF = {
     "name": "total_measure",
     "description": (
-        "Sum a chart's measure across ALL rows, with average/min/max and the row "
-        "count. Use for 'what is the total' — a capped row read cannot produce a "
-        "true total when the chart has more rows than the cap."
+        "Sum a chart's measure across its rows, with average/min/max and the row "
+        "count. Use for 'what is the total'. On a chart BY PERIOD (month, quarter…) "
+        "pass `period` for the value at one period — e.g. ARR in August is "
+        "period='2026-08', never the sum of all months; without `period` a measure "
+        "whose aggregation is not declared is refused (it may be a balance such as ARR "
+        "or active customers). A question over a RANGE ('from January to August', "
+        "'Q1', 'this year so far') of a counted measure is ONE call: period_from="
+        "'2026-01', period_to='2026-08', across_periods=true — not two single months. "
+        "The result names the periods it covered."
     ),
     "input_schema": {
         "type": "object",
-        "properties": {"chart_id": _CHART_ARG, "measure": _MEASURE_ARG},
+        "properties": {
+            "chart_id": _CHART_ARG, "measure": _MEASURE_ARG,
+            "period": {
+                "type": "string",
+                "description": ("The one period to report, as the chart labels it: '2026-08' "
+                                "(month), '2026' (year) or '2026-08-15' (day). The asked period "
+                                "is answered or refused — never replaced by another."),
+            },
+            "period_from": {"type": "string", "description": "Start of a range (inclusive), e.g. '2026-01'."},
+            "period_to": {"type": "string", "description": "End of a range (inclusive), e.g. '2026-08'."},
+            "across_periods": {
+                "type": "boolean",
+                "description": ("Set true ONLY to total a measure that is counted per period "
+                                "(churned customers, orders, revenue) over several periods. "
+                                "Never for a balance (ARR, MRR, active customers)."),
+            },
+        },
         "required": ["chart_id"],
     },
 }

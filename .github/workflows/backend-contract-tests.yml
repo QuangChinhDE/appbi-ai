@@ -146,6 +146,8 @@ jobs:
             tests/test_flow_attached_but_unreadable.py \
             tests/test_flow_coordinate.py \
             tests/test_flow_synthesis_sees_all_steps.py \
+            tests/test_agent_roles.py \
+            tests/test_analytics_meaning.py \
             tests/test_flow_type.py \
             tests/test_followup_and_freshness.py \
             tests/test_govern_doc_citation.py \

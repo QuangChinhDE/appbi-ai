@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import re
+from app.services.agent_flows import roles as _roles_mod
 from typing import Any, AsyncGenerator
 
 from app.services.agent_flows.contract import AgentNode
@@ -263,6 +264,8 @@ async def run(
     system, messages, collected = strategy.system, strategy.messages, strategy.collected
 
     text = _plain_formulas(collected.strip())
+    if node.key == rctx.answer_key and getattr(node, "followups", True) is False:
+        text = _strip_followups(text)
     if provider_error and not text:
         # Raised, so the executor records `error`, honours `retry` and `on_error`,
         # and the Runs table shows which node actually failed.
@@ -393,12 +396,16 @@ async def run(
             tool_results: list[Any] = [
                 m.get("result") for m in messages if m.get("role") == "tool"
             ]
-            # EARLIER STEPS COUNT AS EVIDENCE. A range established by
-            # `describe_time_coverage` in a previous node is a real source, and
-            # treating it as absent would flag a correct answer.
-            prior = _all_step_results(state, rctx, skip=node.key)
-            if prior:
-                tool_results.append(prior)
+            # EARLIER STEPS' DATA COUNTS AS EVIDENCE; THEIR PROSE DOES NOT.
+            #
+            # A range established by `describe_time_coverage` in a previous node is
+            # a real source, and treating it as absent would flag a correct answer.
+            # But this used to hand over every earlier step's OUTPUT, including what
+            # an earlier Agent WROTE — so "1.258.681,34 VNĐ" typed by a specialist
+            # made "VNĐ" in the answer "found in the evidence". A qualifier is
+            # verified by what tools returned and deterministic steps read, never by
+            # what a model said about them.
+            tool_results.extend(_trusted_prior_results(state, skip=node.key))
             tools_called = sorted({
                 *(str(m.get("name") or "") for m in messages if m.get("role") == "tool"),
                 *(t for step in state.trace for t in (step.tool_calls or [])),
@@ -625,6 +632,14 @@ _LATEX_FIXES = (
     (re.compile(r"\\times"), "×"),
     (re.compile(r"\\(?=[_%&#${}])"), ""),
 )
+
+
+_FOLLOWUP_LINE_RE = re.compile(r"^[\s>*•.)\-\d]*\[FOLLOWUP\].*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _strip_followups(text: str) -> str:
+    """Remove `[FOLLOWUP]` lines — the same shape the chat UI turns into chips."""
+    return re.sub(r"\n{3,}", "\n\n", _FOLLOWUP_LINE_RE.sub("", text or "")).strip()
 
 
 def _plain_formulas(text: str) -> str:
@@ -898,19 +913,120 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
     # Only the answering node gets the full set. That is where combining is the
     # job; giving it to every node would restore the "full transcript to every
     # step" cost this function exists to avoid.
+    # THE AUTHOR SAID WHICH STEPS THIS ONE WORKS FROM. Honoured for every step,
+    # the answering one included: a writer told to combine the reader and the
+    # analyst should not be handed the classifier's one-word verdict as a finding.
+    if getattr(node, "reads_from", None):
+        declared = _declared_inputs(node, state, rctx)
+        if declared:
+            out.append({"role": "user", "content": declared})
+        return out
+
     if node.key and node.key == getattr(rctx, "answer_key", ""):
         gathered = _all_step_results(state, rctx, skip=node.key)
+        _note_handoff(state, node.key, "all_steps", getattr(state, "context_coverage", None))
         if gathered:
             out.append({"role": "user", "content": gathered})
             return out
 
+    # THE STEP BEFORE, PROJECTED — NOT HEAD-SLICED. `carried[:8000]` cut a JSON
+    # result mid-array with nothing telling the model (or the trace) that the rest
+    # existed. `_reduce` shrinks by structure and says so.
+    from app.services.agent_flows.runtime.context import _reduce
+
     carried = _previous_text(state.vars.get("previous"))
     if carried:
+        body, reduced = _reduce(carried, _HANDOFF_CHARS)
+        _note_handoff(state, node.key, "previous", {
+            "included": [] if reduced else ["previous"],
+            "reduced": ["previous"] if reduced else [], "omitted": [],
+            "budget_chars": _HANDOFF_CHARS,
+        })
         out.append({
             "role": "user",
-            "content": f"Result of the previous step:\n\n{carried[:8000]}",
+            "content": f"Result of the previous step:\n\n{body}",
         })
     return out
+
+
+def _note_handoff(state: RunState, key: str, mode: str, coverage: dict | None,
+                  missing: list[dict] | None = None) -> None:
+    """What this step was handed, kept on its trace row (`capabilities.handoff`).
+
+    Without it a step that answered badly and a step that was given half its
+    input look the same in the Runs inspector."""
+    if not key:
+        return
+    entry = {"mode": mode, **(coverage or {})}
+    if missing:
+        entry["missing"] = missing
+    trace = getattr(state, "capability_trace", None)
+    if isinstance(trace, dict):
+        trace.setdefault(key, {})["handoff"] = entry
+
+
+def _declared_inputs(node: AgentNode, state: RunState, rctx: Any) -> str:
+    """The results of the steps named in `node.reads_from`, projected, with every
+    input that did not deliver SAID — failed, skipped, or never reached.
+
+    A missing input also raises `handoff_input_missing`, which downgrades the run
+    to `partial`: a step that worked from half of what it was built on did not run
+    as designed, however fluent its output.
+    """
+    from app.services.agent_flows.envelope import Notice
+    from app.services.agent_flows.runtime.context import StepView, compile_context
+
+    last: dict[str, Any] = {}
+    for step in state.trace:
+        last[step.key] = step  # the latest run of a key (a loop records many)
+    names = {s.key: (s.name or s.key) for s in state.trace}
+
+    views: list[StepView] = []
+    missing: list[dict] = []
+    for k in node.reads_from:
+        step = last.get(k)
+        if step is None:
+            missing.append({"key": k, "status": "not_run"})
+            continue
+        status = getattr(step, "status", "ok")
+        text = _previous_text(state.outputs.get(k)) or ""
+        if status in ("error", "blocked"):
+            missing.append({"key": k, "status": status,
+                            "error": str(getattr(step, "error", "") or "")[:200]})
+            continue
+        if status == "skipped" or not text:
+            missing.append({"key": k, "status": status if status == "skipped" else "empty"})
+            continue
+        views.append(StepView(key=k, name=names.get(k, k), text=text))
+
+    projection = compile_context(views, _HANDOFF_CHARS)
+    _note_handoff(state, node.key, "inputs", projection.coverage or {
+        "included": [], "reduced": [], "omitted": [], "budget_chars": _HANDOFF_CHARS,
+    }, missing)
+    if missing and not any(n.code == "handoff_input_missing" and n.node_key == node.key
+                           for n in state.notices):
+        state.notices.append(Notice(
+            code="handoff_input_missing", severity="warning", node_key=node.key,
+            text=(f"Bước “{node.name or node.key}” thiếu đầu vào từ: "
+                  + ", ".join(f"{m['key']} ({m['status']})" for m in missing)),
+        ))
+
+    parts: list[str] = []
+    if projection.text:
+        parts.append("Kết quả của các bước được chỉ định làm đầu vào cho bước này:\n\n"
+                     + projection.text)
+    if missing:
+        parts.append(
+            "ĐẦU VÀO KHÔNG CÓ (nói rõ điều này trong kết quả, không suy ra phần "
+            "thiếu):\n" + "\n".join(
+                f"- {names.get(m['key'], m['key'])}: "
+                + {"not_run": "chưa chạy (nhánh không đi qua hoặc bị bỏ qua)",
+                   "error": "bị lỗi", "blocked": "bị chặn", "skipped": "bị bỏ qua",
+                   "empty": "không trả về gì"}.get(m["status"], m["status"])
+                + (f" — {m['error']}" if m.get("error") else "")
+                for m in missing)
+        )
+    return "\n\n".join(parts)
 
 
 from app.services.agent_flows.contract import ROUTING_NODE_TYPES as _ROUTING_TYPES
@@ -918,6 +1034,27 @@ from app.services.agent_flows.contract import ROUTING_NODE_TYPES as _ROUTING_TYP
 #: What the synthesiser is handed, in characters. Defined by the module that owns
 #: the handoff so the read node can warn against the same number this spends.
 from app.services.agent_flows.runtime.context import HANDOFF_CHARS as _HANDOFF_CHARS
+
+
+#: Step types whose output is DATA the engine fetched, not text a model wrote.
+_DETERMINISTIC_STEP_TYPES = frozenset({"report_read", "knowledge", "tool"})
+
+
+def _trusted_prior_results(state: RunState, *, skip: str = "") -> list[Any]:
+    """Evidence a qualifier may be checked against: every recorded tool result
+    (`evidence_store`, any step) and the outputs of deterministic steps. Agent,
+    Skill and Coordinator outputs are prose and are left out on purpose."""
+    out: list[Any] = []
+    for entry in (getattr(state, "evidence_store", None) or {}).values():
+        if isinstance(entry, dict) and entry.get("result") is not None:
+            out.append(entry["result"])
+    for step in getattr(state, "trace", None) or []:
+        if step.key == skip or getattr(step, "type", "") not in _DETERMINISTIC_STEP_TYPES:
+            continue
+        value = (getattr(state, "outputs", None) or {}).get(step.key)
+        if value not in (None, "", [], {}):
+            out.append(value)
+    return out
 
 
 def _all_step_results(state: RunState, rctx: Any, *, skip: str = "") -> str:
@@ -984,7 +1121,7 @@ def _knowledge_readers(node: AgentNode) -> list[str]:
     """
     from app.services.agent_flows.coverage import READERS_BY_SOURCE
 
-    granted = {str(getattr(g, "tool", "") or "") for g in (node.tools or [])}
+    granted = {str(getattr(g, "tool", "") or "") for g in _roles_mod.effective_grants_of(node)}
     needed: set[str] = set()
     for k in node.knowledge or []:
         needed |= set(READERS_BY_SOURCE.get(str(getattr(k, "source", "") or ""), ()))
@@ -1027,7 +1164,15 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
         )
     parts.append(state.resolve_text(node.prompt).strip())
 
-    notes = [f"- {g.tool}: {g.note.strip()}" for g in node.tools if g.note.strip()]
+    # THE ROLE'S CHARTER, when the step has one: what it is for and what it must
+    # not do, from `roles.py` — the same contract the tool boundary comes from.
+    from app.services.agent_flows import roles as _roles
+
+    _role = _roles.get(node.role)
+    if _role is not None and node.output_format != "choice":
+        parts.append(_role.charter)
+
+    notes = [f"- {g.tool}: {g.note.strip()}" for g in _roles_mod.effective_grants_of(node) if g.note.strip()]
     if notes:
         parts.append("KHI NÀO DÙNG CÔNG CỤ NÀO\n" + "\n".join(notes))
 
@@ -1079,16 +1224,21 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
         # terse answer style and a working suggestion strip can coexist. Kept to
         # two lines because a long reminder here would itself start competing with
         # the author's prompt for the model's attention.
-        parts.append(
-            "Dù hướng dẫn ở trên yêu cầu ngắn gọn thế nào, LUÔN kết thúc câu trả "
-            "lời bằng 2-3 dòng gợi ý, mỗi dòng bắt đầu bằng [FOLLOWUP] và kết "
-            "thúc bằng dấu ?. Chúng không tính vào độ dài câu trả lời. "
-            # The chips are the one part of the reply the reader is invited to
-            # CLICK, and they were coming back in English under a Vietnamese
-            # answer — the language rule was read as being about the prose. Said
-            # here because this is the sentence that asks for them.
-            "Các dòng gợi ý phải CÙNG ngôn ngữ với câu trả lời."
-        )
+        if getattr(node, "followups", True) is False:
+            # THE AUTHOR TURNED THEM OFF. Said last, like the rule it replaces,
+            # because the base prompt above still asks for them.
+            parts.append("KHÔNG thêm dòng gợi ý [FOLLOWUP] nào vào câu trả lời.")
+        else:
+            parts.append(
+                "Dù hướng dẫn ở trên yêu cầu ngắn gọn thế nào, LUÔN kết thúc câu trả "
+                "lời bằng 2-3 dòng gợi ý, mỗi dòng bắt đầu bằng [FOLLOWUP] và kết "
+                "thúc bằng dấu ?. Chúng không tính vào độ dài câu trả lời. "
+                # The chips are the one part of the reply the reader is invited to
+                # CLICK, and they were coming back in English under a Vietnamese
+                # answer — the language rule was read as being about the prose. Said
+                # here because this is the sentence that asks for them.
+                "Các dòng gợi ý phải CÙNG ngôn ngữ với câu trả lời."
+            )
         # WHICH LANGUAGE TO ANSWER IN, SAID RATHER THAN INFERRED.
         #
         # The base prompt already asks for "the language of the question", and the

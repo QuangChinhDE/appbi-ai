@@ -35,7 +35,9 @@ import {
   blankNode, branchCoverage, brainImpact, canDropInto, defaultCredentialFor, findNode, getBrain, insertNode,
   isModelStep,
   isBranching, isContainer,
-  listAttachable, listNodeSpecs, listProviders, listSkills, listToolPacks, moveNode,
+  listToolCatalogue, applyRole, roleText,
+  type AgentNode, type AgentRole,
+  listAttachable, listNodeSpecs, listProviders, listSkills, moveNode,
   publishBrain, removeNode,
   replaceNode, saveBrain, setFlowType, validateFlow, walkNodes,
   type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type FlowType,
@@ -171,6 +173,7 @@ export function BrainBuilder({
   const [attachable, setAttachable] = React.useState<Attachable | null>(null);
   /** Published Skills this author may attach — server-side, like `attachable`. */
   const [skills, setSkills] = React.useState<SkillSummary[]>([]);
+  const [roles, setRoles] = React.useState<AgentRole[]>([]);
   // RUN COUNTS per node, not question coverage. Two different product
   // concepts were both called `coverage`: this one counts how often a branch
   // ran, and the one on the Test tab is which question CLASSES the flow can
@@ -218,7 +221,7 @@ export function BrainBuilder({
     setLoading(true);
     try {
       const [detail, nodeSpecs, packs, provs] = await Promise.all([
-        getBrain(brainKey), listNodeSpecs(), listToolPacks(true), listProviders(),
+        getBrain(brainKey), listNodeSpecs(), listToolCatalogue(true), listProviders(),
       ]);
       // Fetched separately and non-blocking: a slow governance query must not
       // hold up opening the flow, and a step with nothing attached still works.
@@ -233,7 +236,8 @@ export function BrainBuilder({
       setBody(detail.body || { nodes: [] });
       setSpecList(nodeSpecs);
       setSpecs(Object.fromEntries(nodeSpecs.map((s) => [s.type, s])));
-      setToolPacks(packs);
+      setToolPacks(packs.packs);
+      setRoles(packs.roles);
       setProviders(provs);
       setDirty(false);
       brainImpact(brainKey).then((i) => setLinks(i.links)).catch(() => undefined);
@@ -435,6 +439,21 @@ export function BrainBuilder({
     setSelected(node.key);
   };
 
+  /** A Specialized Agent: an ordinary Agent step, started on the role's tools,
+   *  default instructions and name. Everything stays editable afterwards. */
+  const addRoleNode = (role: AgentRole) => {
+    if (!insertAt) return;
+    const base = blankNode('agent', body.nodes, {
+      agentPrompt: t('agentFlows.defaults.agentPrompt'),
+      credentialId: defaultCredentialFor('openai', aiKeys.credentials),
+    }) as AgentNode;
+    const { patch } = applyRole(base, role, roles, language, t('agentFlows.defaults.agentPrompt'));
+    const node = { ...base, ...patch, name: roleText(role, 'label', language) } as FlowNode;
+    mutate(insertNode(body.nodes, insertAt, node));
+    setInsertAt(null);
+    setSelected(node.key);
+  };
+
   const dropGuard = React.useCallback(
     (key: string, containerPath: string) => canDropInto(body.nodes, key, containerPath),
     [body.nodes],
@@ -468,6 +487,18 @@ export function BrainBuilder({
   const answerKey = body.answer_node || body.nodes[body.nodes.length - 1]?.key || '';
 
   // Selection is either a node key or a lane selector `node:group:key`.
+  /** Steps that run before the selected one and hand back a result — what an
+   *  Agent's "reads from" may name. Document order is run order (the server's
+   *  `input_problems` checks the same thing). Routers record a path, not data. */
+  const earlierSteps = React.useMemo(() => {
+    const all = walkNodes(body.nodes);
+    const at = all.findIndex((n) => n.key === selected);
+    const routers = new Set(['coordinate', 'switch', 'if', 'filter']);
+    return (at < 0 ? [] : all.slice(0, at))
+      .filter((n) => !routers.has(n.type))
+      .map((n) => ({ key: n.key, name: n.name || n.key, type: n.type }));
+  }, [body.nodes, selected]);
+
   const sel = React.useMemo(() => {
     if (!selected) return { node: null as FlowNode | null };
     const [ownerKey, group, laneKey] = selected.split(':');
@@ -513,10 +544,47 @@ export function BrainBuilder({
     updateNode({ ...owner, cases: owner.cases.map((c) => (c.key === next.key ? next : c)) });
   };
 
+  /** Keys of a node and everything inside it. */
+  const subtreeKeys = (n: FlowNode): Set<string> =>
+    new Set(walkNodes([n]).map((x) => x.key));
+
+  // A DELETED ANSWERING STEP IS NOT STILL THE ANSWER. `answer_node` used to keep
+  // naming it, the save then failed validation, and with no answer node the last
+  // top-level step silently became the answer instead.
+  // Through `mutate` so undo still restores the step (and, with it, the answer).
+  const dropAnswerIfGone = (removed: Set<string>) => {
+    if (body.answer_node && removed.has(body.answer_node)) {
+      setBody((b) => ({ ...b, answer_node: undefined }));
+    }
+  };
+
   const deleteSelected = () => {
     if (!sel.node) return;
+    const gone = subtreeKeys(sel.node);
     mutate(removeNode(body.nodes, sel.node.key));
+    dropAnswerIfGone(gone);
     setSelected(null);
+  };
+
+  // F09 — branches can be removed, down to the minimum the server enforces
+  // (IF: two paths; Switch: one case). Their contents go with them.
+  const removePath = () => {
+    const owner = sel.owner;
+    if (!owner || owner.type !== 'if' || !sel.path || owner.paths.length <= 2) return;
+    const gone = new Set(walkNodes(sel.path.body || []).map((x) => x.key));
+    const next = { ...owner, paths: owner.paths.filter((p) => p.key !== sel.path!.key) };
+    mutate(replaceNode(body.nodes, owner.key, next));
+    dropAnswerIfGone(gone);
+    setSelected(owner.key);
+  };
+  const removeCase = () => {
+    const owner = sel.owner;
+    if (!owner || owner.type !== 'switch' || !sel.switchCase || owner.cases.length <= 1) return;
+    const gone = new Set(walkNodes(sel.switchCase.body || []).map((x) => x.key));
+    const next = { ...owner, cases: owner.cases.filter((c) => c.key !== sel.switchCase!.key) };
+    mutate(replaceNode(body.nodes, owner.key, next));
+    dropAnswerIfGone(gone);
+    setSelected(owner.key);
   };
 
   // ── save / publish ────────────────────────────────────────────────────────
@@ -934,6 +1002,8 @@ export function BrainBuilder({
                   specs={specs}
                   toolPacks={toolPacks}
                   skills={skills}
+                  roles={roles}
+                  earlierSteps={earlierSteps}
                   providers={providers}
                   attachable={attachable}
                   isAnswerNode={sel.node?.key === answerKey}
@@ -942,6 +1012,8 @@ export function BrainBuilder({
                   onChange={updateNode}
                   onChangePath={updatePath}
                   onChangeCase={updateCase}
+                  onRemovePath={sel.owner?.type === 'if' && sel.owner.paths.length > 2 ? removePath : undefined}
+                  onRemoveCase={sel.owner?.type === 'switch' && sel.owner.cases.length > 1 ? removeCase : undefined}
                   onDelete={deleteSelected}
                   onMakeAnswer={() => {
                     if (sel.node) { setBody((b) => ({ ...b, answer_node: sel.node!.key })); setDirty(true); }
@@ -973,6 +1045,8 @@ export function BrainBuilder({
               ? t('agentFlows.builder.position.inside', { name: insertAt.containerPath.split(':')[0] })
               : t('agentFlows.builder.position.root')}
             onPick={addNode}
+            roles={roles}
+            onPickRole={addRoleNode}
             onClose={() => setInsertAt(null)}
           />
         )}

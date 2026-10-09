@@ -108,6 +108,11 @@ ErrorCode = Literal[
     "evidence_path_missing",   # the reference exists; nothing sits at that path
     "evidence_not_numeric",    # the value there is not one finite number
     "compute_invalid",         # the formula itself: syntax, operator, ÷0, overflow
+    # ── analytical meaning (specialist hardening) ──
+    "measure_ambiguous",           # several measures fit; the caller must name one
+    "time_aggregation_ambiguous",  # a series whose sum across periods is not declared sound
+    "period_not_found",            # the asked period is not in the data — never substituted
+    "no_time_dimension",           # a period was asked of a chart with no time axis
 ]
 
 

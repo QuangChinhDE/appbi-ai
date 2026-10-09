@@ -296,15 +296,37 @@ def _measure_idx(ctx: Any, args: dict, columns: Sequence[str], rows: Sequence[Se
     the caller's `measure` argument; the ONE numeric column naming a measure the
     turn resolved (`ctx.asked_measures`); the last numeric column, as before.
     """
-    fallback = _detect_measure_idx(columns, rows)
-    numeric = [i for i in range(len(columns))
-               if [n for n in (_to_number(r[i]) for r in rows if i < len(r)) if n is not None]]
-    wanted = resolve_column((args or {}).get("measure"), list(columns))
-    if wanted is not None and columns.index(wanted) in numeric:
+    measured = []
+    for i in range(len(columns)):
+        nums = [n for n in (_to_number(r[i]) for r in rows if i < len(r)) if n is not None]
+        if nums and len(nums) >= max(1, int(0.6 * len(rows))):
+            measured.append(i)
+    named = (args or {}).get("measure")
+    wanted = resolve_column(named, list(columns))
+    if wanted is not None and columns.index(wanted) in measured:
         return columns.index(wanted)
+    # A NAMED MEASURE THAT DOES NOT RESOLVE IS AN ERROR, NOT A HINT. It used to
+    # fall through to "the last numeric column": asked for arr_active, the tool
+    # measured cus_churned and the answer quoted it as ARR.
+    if named:
+        return _err(
+            f"measure '{named}' is not a numeric column of this chart. Pass one of: "
+            + ", ".join(str(columns[i]) for i in measured),
+            code="bad_argument",
+        )
     asked = {str(m).lower() for m in (getattr(ctx, "asked_measures", None) or [])}
-    hits = [i for i in numeric if str(columns[i]).rsplit(".", 1)[-1].lower() in asked]
-    return hits[0] if len(hits) == 1 else fallback
+    hits = [i for i in measured if str(columns[i]).rsplit(".", 1)[-1].lower() in asked]
+    if len(hits) == 1:
+        return hits[0]
+    if len(measured) == 1:
+        return measured[0]
+    if len(measured) > 1:
+        return _err(
+            "this chart has more than one measure — call again with `measure` set to one of: "
+            + ", ".join(str(columns[i]) for i in measured),
+            code="measure_ambiguous",
+        )
+    return None
 
 
 def _detect_dim_idx(
@@ -384,6 +406,8 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
         return _err("chart has no data to compare")
 
     measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need at least one dimension and one numeric column", code="not_applicable")
@@ -504,6 +528,53 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                   "hai kỳ trước đó (mode=mom).")
         return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], pair))
 
+    # A NAMED PERIOD IS THE PERIOD ANSWERED.
+    #
+    # Asked about ARR in August 2026 (72, after 864 in July), the automatic mode
+    # treated the low last month as a probable stub and compared July instead —
+    # consistent, disclosed in the payload, and the wrong question. Without a named
+    # period that choice is defensible (comparing a stub to a full month invents a
+    # -99%, see below). WITH one it is substitution: the asked period is the
+    # headline `current`, whatever its value, and a period the data does not hold
+    # is an error, never a neighbour.
+    asked = str((args or {}).get("period") or "").strip()
+    if asked and mode != "custom":
+        hits = [i for i, (label, _) in enumerate(points) if str(label).startswith(asked[:10])]
+        if not hits:
+            return _err(
+                f"period '{asked}' is not in this chart (it covers {points[0][0]} … "
+                f"{points[-1][0]}). Use one of its periods; do not answer with a different one.",
+                code="period_not_found",
+            )
+        upto = points[: hits[-1] + 1]
+        offset_for = {"auto": 1, "mom": 1, "qoq": 3, "yoy": 12}.get(mode, 1)
+        if len(upto) <= offset_for:
+            return _err(
+                f"period '{asked}' has no period {offset_for} step(s) before it in this chart — "
+                "there is nothing to compare it with in this mode",
+                code="not_applicable",
+            )
+        a, b = upto[-1], upto[-1 - offset_for]
+        pair = _compare_pair(a[1], b[1], a[0], b[0], columns[measure_idx])
+        pair.update({"mode": mode, "chart_id": chart_id, "requested_period": asked,
+                     "narrative_label": f"{b[0]} → {a[0]} ({mode.upper()}, kỳ được hỏi)",
+                     "observed_latest": observed_latest})
+        is_edge = hits[-1] == len(points) - 1
+        if is_edge and proven_last:
+            pair["edge_completeness"] = "proven_incomplete"
+            pair["note_partial"] = (
+                f"Kỳ {a[0]} được hỏi nhưng bị cắt bởi bộ lọc đang áp (dữ liệu dừng trước khi "
+                "kỳ kết thúc) — giá trị này KHÔNG phải kết quả cả kỳ; nói rõ điều đó.")
+        elif is_edge and low_edge_last:
+            pair["edge_completeness"] = "suspected_incomplete"
+            pair["note_partial"] = (
+                f"Kỳ {a[0]} thấp bất thường so với các kỳ trước. Không có bằng chứng kỳ này "
+                "thiếu dữ liệu — có thể là sụt giảm thật. Báo đúng giá trị của kỳ được hỏi và "
+                "nói rõ chưa xác định được kỳ này đã đầy đủ hay chưa.")
+        else:
+            pair["edge_completeness"] = "not_suspected"
+        return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], pair))
+
     # COMPLETE PERIODS from here on. The partial edge is not hidden — it is
     # named in the payload below — but it is not the headline `current` either.
     if len(core) >= 2:
@@ -580,7 +651,8 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                 "một kỳ chưa kết thúc và một kỳ sụt giảm thật cho ra cùng con số. "
                 "So sánh dưới đây dùng các kỳ trước đó để tránh khẳng định sai; "
                 "hãy nêu cả giá trị quan sát được của kỳ cuối và nói rõ là chưa "
-                "xác định được nguyên nhân. Muốn chắc chắn, gọi "
+                "xác định được nguyên nhân. NẾU NGƯỜI DÙNG HỎI ĐÚNG KỲ NÀY, gọi lại "
+                "với `period` là kỳ đó — không trả lời bằng kỳ khác. Muốn chắc chắn, gọi "
                 "describe_time_coverage để biết dữ liệu thực sự dừng ở đâu."
             )
     return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], base_payload))
@@ -657,6 +729,8 @@ def tool_describe_distribution(ctx: ToolContext, args: dict) -> dict:
         return _err("chart has no data")
 
     measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     if measure_idx is None:
         return _err("no numeric measure column found")
 
@@ -844,8 +918,11 @@ def tool_correlate_charts(ctx: ToolContext, args: dict) -> dict:
         )
     dim_a = cols_a.index(on)
     dim_b = cols_b.index(on)
-    measure_a = _detect_measure_idx(cols_a, data_a["rows"])
-    measure_b = _detect_measure_idx(cols_b, data_b["rows"])
+    measure_a = _measure_idx(ctx, {"measure": args.get("measure_a")}, cols_a, data_a["rows"])
+    measure_b = _measure_idx(ctx, {"measure": args.get("measure_b")}, cols_b, data_b["rows"])
+    for got in (measure_a, measure_b):
+        if isinstance(got, dict):
+            return got
     if measure_a is None or measure_b is None:
         return _err("could not detect a numeric measure in one of the charts")
 
@@ -1016,6 +1093,8 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
         return _err("chart has no data")
 
     measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     if measure_idx is None:
         return _err("no numeric measure detected")
 
@@ -1329,6 +1408,10 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
         })
 
     measure_idx = _measure_idx(ctx, args, columns, filtered)
+    if isinstance(measure_idx, dict):
+        # Drilldown's rows are the answer; a total of an unchosen measure is
+        # not, so it is left out rather than guessed.
+        measure_idx = None
     totals: dict[str, Any] | None = None
     if measure_idx is not None:
         nums = [_to_number(r[measure_idx]) for r in filtered if measure_idx < len(r)]
@@ -1818,6 +1901,8 @@ def tool_explain_change(ctx: ToolContext, args: dict) -> dict:
     if split_column not in columns:
         return _err(f"split_column '{split_column}' is not a column. Available: {columns}", code="bad_argument")
     measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     if measure_idx is None:
         return _err("no numeric measure column detected in this chart")
     b_idx = columns.index(breakdown)
@@ -1931,6 +2016,8 @@ def tool_forecast_measure(ctx: ToolContext, args: dict) -> dict:
     columns: list[str] = data["columns"]
     rows: list[list] = data["rows"]
     measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need at least one dimension and one numeric column")
@@ -2043,6 +2130,8 @@ def tool_analyze_trend(ctx: ToolContext, args: dict) -> dict:
 
     columns, rows = data["columns"], data["rows"]
     measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need a numeric measure and a dimension")
@@ -2138,6 +2227,8 @@ def tool_segment_compare(ctx: ToolContext, args: dict) -> dict:
 
     columns, rows = data["columns"], data["rows"]
     measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     if measure_idx is None:
         return _err("no numeric measure detected in this chart")
     dimension = resolve_column(dimension, columns) or dimension

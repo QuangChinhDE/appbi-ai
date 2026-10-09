@@ -681,9 +681,19 @@ def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
         # "matched the measure". Asked for a measure alone, matching it IS the
         # complete answer; asked for both, matching one half is not.
         complete = (m_hit or not m_needle) and (d_hit or not d_needle)
+        matched_field = None
+        if m_hit:
+            for e in fields.get("measures") or []:
+                if any(_field_matches(a, [e]) for a in (measure_aliases or [m_needle])):
+                    matched_field = str((e.get("field") if isinstance(e, dict) else e) or "")
+                    break
         row = {
             "chart_id": c.id,
             "chart_name": c.name or f"Chart {c.id}",
+            # WHERE THE NUMBER COMES FROM. Two tables can each have an `arr_active`;
+            # they are different data, and only the table says which one this is.
+            "dataset_table_id": getattr(c, "dataset_table_id", None),
+            **({"measure_field": matched_field} if matched_field else {}),
             "match": match,
             "measure_match": m_hit,
             "dimension_match": d_hit,
@@ -801,6 +811,32 @@ def tool_resolve_chart_candidates(ctx: Any, args: dict) -> dict:
     # declared budget of 500 — the registry caught it, which is the check this
     # tool's own pack docstring complains was missing elsewhere. Exact matches
     # sort first, so the cap drops the weakest rows.
+    # ONE NAME, TWO SOURCES IS A QUESTION, NOT A TIE TO BREAK BY ID.
+    #
+    # A bare measure name (`arr_active`) is matched on the column name alone, so a
+    # chart on the monthly table and a chart on the segment table both came back
+    # `complete, high` — and the caller took whichever sorted first. A governed
+    # metric binding or a table-qualified name says which table it means; a bare
+    # name across two tables does not, and the candidates say so.
+    # The SOURCE is the matched field's own table qualifier when it has one: a
+    # chart homed on table 437 that measures `dataset_table_438.total_revenue`
+    # reads the same column as a chart on 438, and is not a second source.
+    sources: dict[str, list[int]] = {}
+    qualified = "." in measure and not measure.startswith(".")
+    if measure and not metric_name and not qualified:
+        for r in ranked:
+            if not r.get("measure_match"):
+                continue
+            mf = str(r.get("measure_field") or "")
+            src = mf.rsplit(".", 1)[0] if "." in mf else (
+                f"dataset_table_{r['dataset_table_id']}" if r.get("dataset_table_id") is not None else "")
+            if src:
+                sources.setdefault(src, []).append(r["chart_id"])
+    ambiguous_sources = len(sources) > 1
+    if ambiguous_sources:
+        for r in ranked:
+            if r.get("measure_match"):
+                r["confidence"] = "ambiguous"
     candidates = ranked[:_MAX_CANDIDATES]
     # EXACT MEANS "SATISFIES EVERYTHING THAT WAS ASKED", not "matched the
     # measure". With a dimension in play those are different sets, and calling
@@ -824,6 +860,17 @@ def tool_resolve_chart_candidates(ctx: Any, args: dict) -> dict:
             "exact": len(exact),
         },
     }
+    if ambiguous_sources:
+        out["coverage"]["ambiguous_sources"] = [
+            {"source": src, "measure_field": f"{src}.{measure}" if src else measure, "chart_ids": ids}
+            for src, ids in sorted(sources.items())
+        ]
+        out["coverage"]["ambiguity_note"] = (
+            f"'{measure}' exists in {len(sources)} different tables — these are different "
+            "data, not one measure. Pick the source the question means (its table/grain), or "
+            "call again with the qualified measure_field; if the question does not say, ask "
+            "or state which source the answer uses."
+        )
     if len(ranked) > len(candidates):
         out["coverage"]["note"] = (
             f"Showing the {len(candidates)} best of {len(ranked)} charts built on "

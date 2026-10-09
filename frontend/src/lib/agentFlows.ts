@@ -231,6 +231,14 @@ export interface BaseNode {
 export interface AgentNode extends BaseNode {
   type: 'agent';
   prompt: string;
+  /** A Specialized Agent role key (`AgentRole.key`), or empty for a custom
+   *  agent. The server BOUNDS the grants by it on save, publish and run. */
+  role?: string;
+  /** Earlier steps whose results this step is handed, by key. Empty = the step
+   *  before it, as always. */
+  reads_from?: string[];
+  /** Answering step only: end with [FOLLOWUP] suggestion lines. Default true. */
+  followups?: boolean;
   provider?: Provider;
   model?: string;
   tools?: ToolGrant[];
@@ -714,7 +722,19 @@ export interface StepBudget {
   tools_reserved_for_later: number;
 }
 
+/** What a step was HANDED (`capabilities.handoff`): which earlier results it read,
+ *  which were reduced to fit, which never arrived. */
+export interface HandoffTrace {
+  mode: 'inputs' | 'previous' | 'all_steps';
+  included?: string[];
+  reduced?: string[];
+  omitted?: string[];
+  budget_chars?: number;
+  missing?: { key: string; status: string; error?: string }[];
+}
+
 export interface CapabilityTrace {
+  handoff?: HandoffTrace;
   granted: string[];
   eligible: string[];
   excluded: Record<string, string>;
@@ -910,6 +930,71 @@ export async function listToolPacks(webEnabled = false): Promise<ToolPack[]> {
   const { data } = await apiClient.get<{ packs: ToolPack[] }>(
     `${BASE}/tools`, { params: { web_enabled: webEnabled } });
   return data.packs || [];
+}
+
+/** A Specialized Agent role, as the server defines it (`roles.py`). The builder
+ *  only displays these; the boundary is enforced server-side. */
+export interface AgentRole {
+  key: string;
+  label_vi: string; label_en: string;
+  purpose_vi: string; purpose_en: string;
+  instead_vi: string; instead_en: string;
+  consumes_vi: string; consumes_en: string;
+  produces_vi: string; produces_en: string;
+  default_tools: string[];
+  allowed_tools: string[];
+  prompt_vi: string; prompt_en: string;
+  needs_knowledge: boolean;
+  allows_skills: boolean;
+  allows_external: boolean;
+}
+
+export async function listAgentRoles(webEnabled = false): Promise<AgentRole[]> {
+  return (await listToolCatalogue(webEnabled)).roles;
+}
+
+/** Packs AND roles from ONE request — the builder needs both, and the roles
+ *  bound exactly the tools in the packs, so they must come from the same answer. */
+export async function listToolCatalogue(
+  webEnabled = false,
+): Promise<{ packs: ToolPack[]; roles: AgentRole[] }> {
+  const { data } = await apiClient.get<{ packs: ToolPack[]; roles?: AgentRole[] }>(
+    `${BASE}/tools`, { params: { web_enabled: webEnabled } });
+  return { packs: data.packs || [], roles: data.roles || [] };
+}
+
+export function roleText(
+  role: AgentRole, field: 'label' | 'purpose' | 'instead' | 'consumes' | 'produces' | 'prompt',
+  language: 'en' | 'vi',
+): string {
+  const r = role as unknown as Record<string, string>;
+  return (language === 'vi' ? r[`${field}_vi`] : r[`${field}_en`]) || r[`${field}_vi`] || '';
+}
+
+/** Switch an agent step to `role` (or to custom with `null`).
+ *
+ *  Grants outside the new role are REMOVED and returned, so the inspector can say
+ *  what was dropped — the server would refuse to save them anyway. Switching to a
+ *  role on a step with no grants starts it on the role's defaults; the prompt is
+ *  replaced only while it is still a default (empty, the generic placeholder, or
+ *  another role's default), never once the author has written their own. */
+export function applyRole(
+  node: AgentNode, role: AgentRole | null, all: AgentRole[], language: 'en' | 'vi',
+  genericPrompt: string,
+): { patch: Partial<AgentNode>; removed: string[] } {
+  const current = node.tools || [];
+  if (!role) return { patch: { role: '' }, removed: [] };
+  const allowed = new Set(role.allowed_tools);
+  const kept = current.filter((g) => allowed.has(g.tool));
+  const removed = current.filter((g) => !allowed.has(g.tool)).map((g) => g.tool);
+  const tools = kept.length ? kept : role.default_tools.map((tool) => ({ tool }));
+  const defaults = new Set<string>([
+    '', genericPrompt.trim(),
+    ...all.flatMap((r) => [r.prompt_vi.trim(), r.prompt_en.trim()]),
+  ]);
+  const patch: Partial<AgentNode> = { role: role.key, tools };
+  if (defaults.has((node.prompt || '').trim())) patch.prompt = roleText(role, 'prompt', language);
+  return { patch, removed };
 }
 
 /** Published Skills this user may attach. Server-side, like `/attachable`. */
@@ -1716,7 +1801,7 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
         { key: 'no', name: labels.pathB || 'Branch B', kind: 'fallback', body: [] },
       ] };
     case 'switch':
-      return { ...base, type, value: '{{}}', mode: 'first_match', has_fallback: true,
+      return { ...base, type, value: '', mode: 'first_match', has_fallback: true,
         cases: [{ key: 'case_1', label: 'CASE 1', op: 'equals', value: '', body: [] }], fallback: [] };
     case 'coordinate':
       // Two lanes, because one specialist is not a coordination problem and the
@@ -1729,10 +1814,10 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
           { key: 'chuyen_gia_2', name: '', when: '', body: [] },
         ], fallback: [] };
     case 'loop':
-      return { ...base, type, over: '{{}}', item_var: 'item', max_iterations: 10, body: [],
+      return { ...base, type, over: '', item_var: 'item', max_iterations: 10, body: [],
         collect_into: uniqueKey(nodes, 'all_findings') };
     case 'filter':
-      return { ...base, type, match: 'all', conditions: [{ left: '{{}}', op: 'is_not_empty' }] };
+      return { ...base, type, match: 'all', conditions: [] };
     case 'set_var':
       return { ...base, type, var: uniqueKey(nodes, 'my_var'), value: '', value_type: 'text' };
     case 'transform':

@@ -77,7 +77,8 @@ logger = logging.getLogger(__name__)
 #: that ran, ran without error. They downgrade `ok` to `partial`, because a run
 #: whose branches all missed is not a success — it is a question the flow was not
 #: shaped to answer, and the operator has to be able to see that in the numbers.
-DEGRADING_NOTICES = frozenset({"branch_unmatched", "steps_skipped_for_budget"})
+DEGRADING_NOTICES = frozenset({"branch_unmatched", "steps_skipped_for_budget",
+                               "handoff_input_missing"})
 
 
 
@@ -1222,6 +1223,7 @@ async def _run_coordinate(
 async def _run_switch(
     node: SwitchNode, state: RunState, rctx: RunContext
 ) -> AsyncGenerator[AgentEvent, None]:
+    _require_expression(node, node.value, "giá trị để rẽ nhánh")
     value = state.resolve(node.value)
     matched: list[Any] = []
     for case in node.cases:
@@ -1305,6 +1307,7 @@ async def _run_loop(
     comma-separated line, and a loop that iterates the CHARACTERS of a string is
     both wrong and, at one model call per character, expensive.
     """
+    _require_expression(node, node.over, "danh sách để lặp")
     items = as_list(state.resolve(node.over), limit=node.max_iterations)
     collected: list[Any] = []
     outer_item = state.vars.get(node.item_var)
@@ -1374,7 +1377,22 @@ async def _run_loop(
         state.set_var(node.collect_into, collected)
 
 
+def _require_expression(node: Any, text: Any, what: str) -> None:
+    """A routing step with no expression fails as a CONFIGURATION error, by name —
+    never runs a fallback or a single bogus iteration as if it had decided."""
+    from app.services.agent_flows.contract import _EMPTY_TEMPLATE_RE
+
+    raw = str(text or "")
+    if not raw.strip() or _EMPTY_TEMPLATE_RE.search(raw):
+        raise ValueError(
+            f"Bước “{getattr(node, 'name', '') or node.key}” chưa được cấu hình: thiếu {what}.")
+
+
 def _run_filter(node: FilterNode, state: RunState) -> None:
+    if not node.conditions:
+        _require_expression(node, "", "điều kiện lọc")
+    for cond in node.conditions:
+        _require_expression(node, cond.left, "vế trái của điều kiện lọc")
     if not evaluate_all(state, node.conditions, node.match):
         state.outputs[node.key] = {"passed": False}
         raise BranchStopped(node.key)

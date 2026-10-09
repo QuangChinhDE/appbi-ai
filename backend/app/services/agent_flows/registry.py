@@ -334,6 +334,12 @@ def save_draft(
     except Exception as exc:  # noqa: BLE001
         raise BrainError(422, _first_message(exc))
 
+    # A ROLE'S TOOL BOUNDARY IS NOT A WARNING. A payload granting a Report Reader
+    # `research_web` is refused here, where it arrives, not quietly stored.
+    outside = flow.role_grant_errors()
+    if outside:
+        raise BrainError(422, " · ".join(outside[:5]))
+
     problems = check_attachments(db, user, flow)
     if problems:
         raise BrainError(403, " ".join(problems))
@@ -451,6 +457,10 @@ def publish(
     hard += [
         p["message"] for p in credentials_service.StoredCredentials(db).problems(flow)
     ]
+    # NOR A STEP THAT BREAKS ITS ROLE, misses what its role needs, or reads an
+    # input that cannot exist — each fails or misleads on every question.
+    hard += (flow.role_grant_errors() + flow.role_dependency_problems()
+             + flow.input_problems() + flow.incomplete_config_problems())
     if hard:
         # EVERYTHING AT ONCE. Refusing on the first class of problem and the next
         # class on the next attempt makes the author publish three times to learn
@@ -458,7 +468,7 @@ def publish(
         raise BrainError(
             409,
             "Chưa phát hành được:" + "".join(
-                chr(10) + "• " + p for p in hard + flow.blocking_problems()),
+                chr(10) + "• " + p for p in dict.fromkeys(hard + flow.blocking_problems())),
         )
     # PIN EVERY SKILL REFERENCE to the exact version live now, in the body that
     # becomes this immutable published row — so publishing Skill v2 later never

@@ -42,6 +42,7 @@ model-specific constant scattered through node handlers is what this replaces.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -125,7 +126,7 @@ def _shrink_json(obj: Any, budget: int) -> tuple[Any, bool]:
     evidence an answer cites; they are reduced only when nothing else is left.
     """
     reduced = False
-    for _ in range(80):
+    for _ in range(200):
         if len(json.dumps(obj, ensure_ascii=False)) <= budget:
             return obj, reduced
         bulk: list[Any] = []
@@ -136,7 +137,11 @@ def _shrink_json(obj: Any, budget: int) -> tuple[Any, bool]:
             if isinstance(node, dict):
                 stack.extend(node.values())
             elif isinstance(node, list):
-                if len(node) > 1:
+                # A list already down to one item plus its "… N more" marker
+                # cannot be halved again; counting it made this loop spin its
+                # 80 passes on `[chart, marker]` and return still over budget.
+                real = len(node) - (1 if node and _is_marker(node[-1]) else 0)
+                if real > 1:
                     (entities if _carries_identity(node) else bulk).append(node)
                 stack.extend(node)
 
@@ -148,15 +153,95 @@ def _shrink_json(obj: Any, budget: int) -> tuple[Any, bool]:
                     best, size = c, n
             return best
 
-        target = biggest(bulk) or biggest(entities)
+        # ORDER OF SACRIFICE: bulk lists, then long prose, then raw payload
+        # subtrees (`data`, `rows`), and only then the list of things an answer
+        # cites. Halving `charts` while a 600-character note survived dropped the
+        # very figure the next step was handed the read to quote.
+        target = biggest(bulk)
+        if target is None and (_trim_strings(obj) or _prune_subtree(obj, bulky_only=True)):
+            reduced = True
+            continue
+        target = target or biggest(entities)
         if target is None:
+            # NO LIST LEFT TO HALVE IS NOT "NOTHING LEFT TO KEEP". A Report Read
+            # result of four one-row KPI charts has no list longer than one, so
+            # this used to give up and `_reduce` fell back to the top-level
+            # scalars: `{"read_ok": true}` reached the writer, every figure gone,
+            # with thousands of characters of budget unspent. Measured live: the
+            # writer answered "no revenue data" beside a read holding 13,591,643.7.
+            if _trim_strings(obj) or _prune_subtree(obj):
+                reduced = True
+                continue
             return obj, True
-        keep = max(1, len(target) // 2)
-        dropped = len(target) - keep
+        had = _is_marker(target[-1])
+        prior = int(re.search(r"\d+", target[-1]).group()) if had and re.search(r"\d+", target[-1]) else 0
+        items = target[:-1] if had else target[:]
+        keep = max(1, len(items) // 2)
+        dropped = len(items) - keep + prior
         del target[keep:]
         target.append("… (%d mục nữa đã lược)" % dropped)
         reduced = True
     return obj, True
+
+
+#: Raw payload keys pruned before anything else: rows are the bulk, a summary is
+#: what an answer quotes. Passage text is NOT here — it is the evidence a
+#: knowledge step hands on, so it is trimmed (`_trim_strings`), never dropped first.
+_BULK_KEYS = ("rows", "data", "sample", "sample_rows", "top_values", "bottom_5")
+
+
+def _is_marker(v: Any) -> bool:
+    return isinstance(v, str) and v.startswith("… (") and "đã lược" in v
+
+
+def _trim_strings(obj: Any, floor: int = 160) -> bool:
+    """Halve the longest string leaf (prose notes, passages). True if one shrank."""
+    best: tuple[Any, Any, int] | None = None
+    stack: list[Any] = [obj]
+    while stack:
+        node = stack.pop()
+        items = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()
+        for k, v in items:
+            # `> floor * 1.25`, not `> floor`: a 161-char string cut to 160 + "…" is
+            # 161 again, and the caller's loop would spend every pass on it.
+            if isinstance(v, str) and len(v) > floor * 1.25 and (best is None or len(v) > best[2]):
+                best = (node, k, len(v))
+            elif isinstance(v, (dict, list)):
+                stack.append(v)
+    if best is None:
+        return False
+    node, k, n = best
+    node[k] = node[k][: max(floor, n // 2)].rstrip() + "…"
+    return True
+
+
+def _prune_subtree(obj: Any, bulky_only: bool = False) -> bool:
+    """Replace the largest nested container (bulk keys first) with a marker.
+
+    Never the root and never a scalar, so ids, titles and summary figures that sit
+    beside the bulk survive it. True if something was pruned."""
+    # Rank: bulk payload first, then anything that is not a list of cited
+    # entities, then deepest, then largest — so a chart's raw rows go before its
+    # summary, and the list of charts itself goes last.
+    best: tuple[Any, Any, tuple] | None = None
+    stack: list[tuple[Any, int]] = [(obj, 0)]
+    while stack:
+        node, depth = stack.pop()
+        items = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()
+        for k, v in items:
+            if not isinstance(v, (dict, list)) or not v:
+                continue
+            size = len(json.dumps(v, ensure_ascii=False))
+            bulky = isinstance(k, str) and k in _BULK_KEYS
+            rank = (bulky, not _carries_identity(v), depth, size)
+            if size > 60 and (bulky or not bulky_only) and (best is None or rank > best[2]):
+                best = (node, k, rank)
+            stack.append((v, depth + 1))
+    if best is None:
+        return False
+    node, k, _ = best
+    node[k] = "… (đã lược để vừa ngữ cảnh)"
+    return True
 
 
 def _reduce(text: str, budget: int) -> tuple[str, bool]:
