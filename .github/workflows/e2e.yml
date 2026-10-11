@@ -262,6 +262,15 @@ jobs:
         working-directory: backend
         run: python scripts/ci/seed_e2e_chart_hardening.py
 
+      # Observability journeys O01-O24 (observability.spec.ts, project
+      # `observability`, retries 0): a live Postgres source with fresh / stale /
+      # missing tables, anomaly alerts, a 260-incident backlog, a channel with
+      # failed deliveries and editor / viewer / outsider principals. Every check
+      # is RUN by the spec through the product. A missing fixture FAILS the spec.
+      - name: Seed the observability fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_observability.py
+
       - name: Start the backend
         working-directory: backend
         run: |

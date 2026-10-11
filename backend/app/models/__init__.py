@@ -35,6 +35,8 @@ from app.models.observability import (
     ObservabilityCheck,
     ObservabilityIncident,
     ObservabilityAlertChannel,
+    ObservabilityAlertDelivery,
+    ObservabilityScanRun,
 )
 from app.models.user_notification import UserNotification, NOTIFICATION_LEVELS
 from app.models.ai_feedback import AIFeedback
@@ -94,6 +96,8 @@ __all__ = [
     "ObservabilityCheck",
     "ObservabilityIncident",
     "ObservabilityAlertChannel",
+    "ObservabilityAlertDelivery",
+    "ObservabilityScanRun",
     "AIFeedback",
     "PersonalAccessToken",
     "RevokedToken",
