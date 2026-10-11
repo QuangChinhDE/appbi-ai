@@ -1172,7 +1172,11 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         # When the figure's own clause names one of the report's measures and no
         # reading of the figure is that measure (or shares its root), the figure
         # is another measure's, whatever the question asked.
-        named_here = _measures_named(ctx, _clause_of(text, value) or sentence, report_measures)
+        # THE CLAUSE, OR ITS SENTENCE WHEN THE CLAUSE NAMES NOTHING: in "Về giá trị
+        # GMV toàn kỳ, theo báo cáo, nó là 13,591,643.70" the clause around the number
+        # is "nó là …" — the measure is named earlier in the sentence (live round 5).
+        named_here = _measures_named(ctx, _clause_of(text, value), report_measures) \
+            or _measures_named(ctx, sentence, report_measures)
         if named_here and all(
                 e.get("measure") and e["measure"] not in named_here
                 and not _same_root(e.get("measure"), named_here) for e in support):
@@ -1217,6 +1221,21 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         # 13,591,643.7" — the report total as the top state's value. Whether or not
         # the breakdown was read, a whole-report figure cannot be the answer to
         # "which member is highest" in the sentence that says so.
+        # A WHOLE GIVEN TO A MEMBER BY NAME. Live round 5 (deterministic hybrid):
+        # "ARR của phân khúc enterprise là 6500" — the segments' total, while the
+        # same read holds enterprise's own 5000. When the evidence knows the named
+        # member of this measure, a whole figure in its sentence is not that member's.
+        if whole_only:
+            measures = {e.get("measure") for e in support if e.get("measure")}
+            members = {str(e["member"]) for e in ledger
+                       if e.get("member") and e.get("measure") in measures and not _is_time(e.get("dimension"))}
+            named_member = next((m for m in sorted(members, key=len, reverse=True)
+                                 if len(m) > 2 and _names(sentence, m)), None)
+            if named_member and not _framed_as_population(sentence, value):
+                flagged.append({"value": value, "pct": pct, "why": "whole_as_member",
+                                "of": {"measure": support[0].get("measure"), "dimension": None,
+                                       "member": named_member}})
+                continue
         if whole_only and _has_words(question, _RANK_WORDS) and _has_words(sentence, _RANK_WORDS) \
                 and not _framed_as_population(sentence, value) \
                 and not _given_to_other_than_asked(_clause_of(text, value), None):

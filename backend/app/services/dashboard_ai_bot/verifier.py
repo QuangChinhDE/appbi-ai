@@ -72,7 +72,11 @@ _STRIP_SPANS = [
     # A PERIOD IS A LABEL: "2018-08", "08/2018", "2018/08/31" name a time, not a
     # figure. Found in the browser: a correct month-on-month answer read "2018-08"
     # as a claim of 8 (and "-07" as 7) and was flagged "4 figures do not match".
-    re.compile(r"(?<![\d.,])\d{4}[-/.]\d{1,2}(?:[-/.]\d{1,2})?(?![\d])"),
+    # ...but only a PERIOD: a year 1900-2099 and a month 01-12. Unbounded, it also
+    # matched every figure with a 4-digit integer part and 1-2 decimals - "6500.0",
+    # "5244.0", "1234.56" - and those were never verified at all (closure: the
+    # whole ARR 6500 published as one segment's value went unchecked).
+    re.compile(r"(?<![\d.,])(?:19|20)\d{2}[-/.](?:0?[1-9]|1[0-2])(?:[-/.]\d{1,2})?(?![\d])"),
     re.compile(r"(?<![\d.,])\d{1,2}/\d{4}(?![\d])"),
     # "tháng 7", "quý 4", "month 8" name a period too (browser, run 3775: "so với
     # tháng 7, GMV tháng 8 …" was read as figures 7 and 8 beside a correct −5.23%).

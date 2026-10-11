@@ -276,3 +276,54 @@ def test_one_month_as_a_total_is_caught_even_when_the_read_is_described_twice():
     support = [{"value": 72.0, "measure": "arr_active", "dimension": "__time__", "member": "2026-08", "ref": "e1"},
                {"value": 72.0, "measure": "arr_active", "dimension": "year_month", "member": None, "ref": "e1"}]
     assert CC._wrong_period(support, CC._periods(q), "tong arr cong don la 72", q) is True
+
+
+# ── found in live round 5 ───────────────────────────────────────────────────
+def test_the_measure_named_earlier_in_the_sentence_owns_the_figure(world):
+    """"Về giá trị GMV toàn kỳ, theo báo cáo, nó là 13,591,643.70" — the clause
+    around the number is "nó là …"; GMV is named earlier in the sentence."""
+    ctx, state = world(Q3, asked=("total_revenue", "gmv"))
+    _rec(state, "total_measure", DER.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
+    text = "Về giá trị GMV toàn kỳ, theo báo cáo, nó là 13,591,643.70."
+    assert (13591643.7, "other_measure") in _why(state, ctx, text)
+
+
+def test_a_whole_given_to_a_named_member_is_flagged():
+    """"ARR của phân khúc enterprise là 6500" — the segments' total, while the same
+    read holds enterprise's own 5000 (deterministic hybrid, round 5)."""
+    from types import SimpleNamespace
+    from app.services.agent_flows.runtime import claim_check as CC
+    from app.services.agent_flows.runtime.state import RunState
+
+    state = RunState()
+    state.claim_ledger = [
+        {"value": 6500.0, "measure": "arr_active", "dimension": None, "member": None, "ref": "e1", "chart_id": 1221},
+        {"value": 5000.0, "measure": "arr_active", "dimension": "segment", "member": "enterprise", "ref": "e1"},
+        {"value": 1200.0, "measure": "arr_active", "dimension": "segment", "member": "smb", "ref": "e1"},
+    ]
+    state.evidence = [6500.0, 5000.0, 1200.0]
+    ctx = SimpleNamespace(question="ARR của phân khúc enterprise là bao nhiêu?", chart_meta={},
+                          allowed_chart_ids=set(), db=None)
+    got = CC.check(state, ctx, "ARR của phân khúc enterprise là 6500.0.")
+    assert any(f["why"] == "whole_as_member" and f["value"] == 6500.0 for f in got["flagged"]), got
+    ok = CC.check(state, ctx, "ARR của phân khúc enterprise là 5000.")
+    assert not ok.get("flagged"), ok
+    framed = CC.check(state, ctx, "Không có số riêng của enterprise; tổng ARR mọi phân khúc là 6500.")
+    assert not any(f["value"] == 6500.0 for f in framed.get("flagged") or []), framed
+
+
+@pytest.mark.parametrize("text, value", [("ARR là 6500.0.", 6500.0), ("Tổng là 5244.0 (đơn vị)", 5244.0),
+                                         ("giá 1234.56", 1234.56)])
+def test_a_four_digit_figure_with_decimals_is_a_figure_not_a_period(text, value):
+    """The period-label strip read every `dddd.d` as year.month: "6500.0" was never
+    extracted, so the whole-as-member ARR answer went unchecked (live round 5)."""
+    from app.services.dashboard_ai_bot.verifier import extract_answer_claims
+
+    assert (value, False) in extract_answer_claims(text)
+
+
+@pytest.mark.parametrize("text", ["so với 2026-07 và 2026/08", "tháng 2018-08", "năm 2017"])
+def test_a_real_period_label_is_still_not_a_figure(text):
+    from app.services.dashboard_ai_bot.verifier import extract_answer_claims
+
+    assert extract_answer_claims(text) == []
