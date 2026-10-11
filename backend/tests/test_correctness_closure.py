@@ -227,3 +227,52 @@ def test_a_range_read_carries_its_span_into_the_claim_ledger():
                                 "periods_covered": {"selected": [f"2026-0{m}-01" for m in range(1, 9)]}}}
     out = claim_scope.describe("total_measure", res)
     assert out and out[0]["period_range"] == ["2026-01-01", "2026-08-01"] and out[0]["chart_id"] == 1218
+
+
+# ── P0 (found in the live re-run): one period is not a total, and "latest" means the data's last
+def _timed(value, member, last="2026-08-01"):
+    return [{"value": value, "measure": "arr_active", "dimension": "__time__", "member": member,
+             "series_last": last}]
+
+
+def test_one_month_is_not_the_total_the_question_asks_for():
+    """Live (specialist chain): the tool refused the cross-month ARR sum, and the
+    writer published August's 72 as "Tổng ARR cộng dồn của 8 tháng đầu năm 2026"."""
+    from app.services.agent_flows.runtime import claim_check as CC
+
+    q = "Tổng ARR cộng dồn của 8 tháng đầu năm 2026 là bao nhiêu?"
+    assert CC._wrong_period(_timed(72.0, "2026-08"), CC._periods(q), "tong arr cong don la 72", q) is True
+    # Without a total word, a month inside the year stays allowed (the lowest month of 2017).
+    q2 = "ARR thấp nhất trong năm 2026 là tháng nào?"
+    assert CC._wrong_period(_timed(72.0, "2026-08"), CC._periods(q2), "thap nhat la 72", q2) is False
+
+
+def test_the_latest_month_must_be_the_series_last(world):
+    """Live H2: "ARR ở tháng gần nhất ... là 864 (2026-07)" while the data runs to 2026-08."""
+    from app.services.agent_flows.runtime import claim_check as CC
+
+    assert CC._asks_latest("ARR ở tháng gần nhất có dữ liệu là bao nhiêu?")
+    assert CC._not_the_latest(_timed(864.0, "2026-07")[0]) is True
+    assert CC._not_the_latest(_timed(72.0, "2026-08")[0]) is False
+
+
+def test_a_one_period_read_carries_the_series_last_into_the_ledger():
+    from app.services.agent_flows.runtime import claim_scope
+
+    res = {"ok": True, "data": {"chart_id": 1218, "measure": "arr_active", "value": 864.0, "period": "2026-07",
+                                "periods_covered": {"first": "2026-01-01", "last": "2026-08-01", "count": 8,
+                                                    "selected": ["2026-07-01"]}}}
+    out = claim_scope.describe("total_measure", res)
+    assert out[0]["member"] == "2026-07" and out[0]["series_last"] == "2026-08-01"
+
+
+def test_one_month_as_a_total_is_caught_even_when_the_read_is_described_twice():
+    """Live: the same total_measure(period=2026-08) result was ALSO described as a
+    `year_month` figure with no member; that mixed reading took the early exit
+    and the 72-as-8-month-total was published."""
+    from app.services.agent_flows.runtime import claim_check as CC
+
+    q = "Tổng ARR cộng dồn của 8 tháng đầu năm 2026 là bao nhiêu?"
+    support = [{"value": 72.0, "measure": "arr_active", "dimension": "__time__", "member": "2026-08", "ref": "e1"},
+               {"value": 72.0, "measure": "arr_active", "dimension": "year_month", "member": None, "ref": "e1"}]
+    assert CC._wrong_period(support, CC._periods(q), "tong arr cong don la 72", q) is True

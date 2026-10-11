@@ -216,6 +216,11 @@ def describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None 
     if label:
         out = [{**e, "dimension": "__time__", "member": label}
                if not e.get("dimension") and not e.get("member") else e for e in out]
+    # THE SERIES' LAST PERIOD travels with a one-period figure, so "the latest
+    # month" can be checked against the data rather than against the model's word
+    # (live H2: July's 864 published as the latest month while the data ran to August).
+    if cov.get("last"):
+        out = [{**e, "series_last": str(cov["last"])} if e.get("member") else e for e in out]
     return out
 
 

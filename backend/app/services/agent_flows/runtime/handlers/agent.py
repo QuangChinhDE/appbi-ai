@@ -478,7 +478,18 @@ async def run(
             try:
                 final = claim_check.check(state, getattr(rctx, "ctx", None), text)
             except Exception:                                   # noqa: BLE001
+                # THE CHECK THAT DID NOT RUN IS NOT A CHECK THAT PASSED. This used to
+                # publish the answer as verified, silently: a run said `ok` while no
+                # figure in it had been checked (closure review). Logged, said to the
+                # reader, and the run is `partial`.
+                logger.exception("[flow] %s: claim check failed; answer published UNCHECKED", node.key)
                 final = {}
+                if not any(n.code == "claims_unchecked" for n in state.notices):
+                    state.notices.append(Notice(
+                        code="claims_unchecked", audience="reader", severity="warning", node_key=node.key,
+                        text=("Không kiểm chứng được các con số trong câu trả lời này — hãy đối chiếu "
+                              "với báo cáo trước khi dùng."),
+                    ))
             if final.get("flagged"):
                 # Extended, not replaced: a Skill child's withheld figures are
                 # already here (`skills.invoke_skill`).

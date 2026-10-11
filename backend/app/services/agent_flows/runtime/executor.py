@@ -78,7 +78,7 @@ logger = logging.getLogger(__name__)
 #: whose branches all missed is not a success — it is a question the flow was not
 #: shaped to answer, and the operator has to be able to see that in the numbers.
 DEGRADING_NOTICES = frozenset({"branch_unmatched", "steps_skipped_for_budget",
-                               "handoff_input_missing"})
+                               "handoff_input_missing", "claims_unchecked"})
 
 
 

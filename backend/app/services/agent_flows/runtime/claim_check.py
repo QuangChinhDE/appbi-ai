@@ -328,6 +328,16 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
         # figure pass as a quarter's (adversarial review).
         return not any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", sentence) for w in _WHOLE_WORDS)
     timed = [e for e in support if _is_time(e.get("dimension")) and e.get("member")]
+    # ONE PERIOD IS NOT A TOTAL OVER SEVERAL. Asked for ARR "cộng dồn của 8 tháng
+    # đầu năm 2026", the tool refused the cross-month sum and the writer published
+    # August's 72 as the total (live, specialist chain). A finer row inside a
+    # coarser asked period answers "which month was lowest in 2017", never
+    # "what was the total". Checked before the mixed-reading exit below: the same
+    # one-period read is also described as a `year_month` figure with no member,
+    # and that second reading of the SAME result let the total through.
+    refs = {e.get("ref") for e in timed}
+    if _asks_total(question) and timed and all(_finer_than_all(e, asked) for e in timed)             and all(e.get("ref") in refs for e in support):
+        return True
     if len(timed) != len(support):
         return False
     labels = [_periods(str(e["member"]).replace("Q", " q")) or _periods("nam " + str(e["member"]))
@@ -343,6 +353,38 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
 
 
 _GRAIN_RANK = {"m": 0, "q": 1, "y": 2}
+
+
+_TOTAL_WORDS = ("tong", "cong don", "tich luy", "luy ke", "total", "cumulative", "in total", "sum of")
+_LATEST_WORDS = ("gan nhat", "moi nhat", "cuoi cung", "latest", "most recent", "last month", "thang truoc")
+
+
+def _asks_total(question: str) -> bool:
+    import re
+
+    q = _fold(question or "")
+    return any(re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", q) for w in _TOTAL_WORDS)
+
+
+def _asks_latest(question: str) -> bool:
+    import re
+
+    q = _fold(question or "")
+    return any(re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", q) for w in _LATEST_WORDS[:5])
+
+
+def _finer_than_all(e: dict, asked: set[tuple]) -> bool:
+    lab = _periods(str(e.get("member") or "").replace("Q", " q")) or _periods("nam " + str(e.get("member") or ""))
+    return bool(lab) and all(_nests(p, a) for p in lab for a in asked)
+
+
+def _not_the_latest(e: dict) -> bool:
+    """A one-period figure whose period is not the last of its series."""
+    import re
+
+    last, member = str(e.get("series_last") or ""), str(e.get("member") or "")
+    m1, m2 = re.match(r"^(\d{4}-\d{2})", last), re.match(r"^(\d{4}-\d{2})", member)
+    return bool(m1 and m2) and m1.group(1) != m2.group(1)
 
 
 def _range_covers(span: Any, asked: set[tuple]) -> bool:
@@ -1075,6 +1117,14 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                 e.get("measure") and not e.get("count") for e in support):
             flagged.append({"value": value, "pct": pct, "why": "period_absent",
                             "of": {"measure": support[0].get("measure"), "dimension": None, "member": None}})
+            continue
+        # "THE LATEST PERIOD" is checked against the data's own last period.
+        if _asks_latest(question) and support and all(
+                _is_time(e.get("dimension")) and e.get("member") and e.get("series_last") for e in support) \
+                and all(_not_the_latest(e) for e in support):
+            flagged.append({"value": value, "pct": pct, "why": "wrong_period",
+                            "of": {"measure": support[0].get("measure"), "dimension": None,
+                                   "member": support[0].get("member")}})
             continue
         asked_periods = _periods(question) or intent_periods
         if not asked_periods and support and all(
