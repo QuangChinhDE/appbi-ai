@@ -327,3 +327,23 @@ def test_a_real_period_label_is_still_not_a_figure(text):
     from app.services.dashboard_ai_bot.verifier import extract_answer_claims
 
     assert extract_answer_claims(text) == []
+
+
+# ── found in live round 6: a share of a balance summed over months ──────────
+def test_no_share_of_a_balance_summed_across_months(saas):
+    """"MRR tháng 6/2026 là 70 và chiếm 16.02% tổng MRR" — 70 / (MRR summed over
+    eight months). Grouped by period, a non-time-additive measure has no total and
+    no share; the value and rank still stand."""
+    got = DER.tool_share_of(saas, {"chart_id": 1, "measure": "arr_active", "dimension": "year_month",
+                                   "item": "2026-08-01"})
+    assert got["ok"] is True and got["data"]["value"] == 72
+    assert got["data"]["share_pct"] is None and "periods" in got["data"]["share_note"]
+    ranked = DER.tool_rank_values(saas, {"chart_id": 1, "measure": "arr_active", "dimension": "year_month"})
+    assert ranked["data"]["total"] is None and all("share_pct" not in i for i in ranked["data"]["items"])
+
+
+def test_a_semantic_sum_keeps_its_share_across_months(saas, monkeypatch):
+    _declare(monkeypatch, cus_churned={"type": "sum"})
+    got = DER.tool_share_of(saas, {"chart_id": 1, "measure": "cus_churned", "dimension": "year_month",
+                                   "item": "2026-08-01"})
+    assert got["data"]["share_pct"] == round(40 / 60 * 100, 2)

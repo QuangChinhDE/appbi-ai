@@ -421,7 +421,8 @@ def tool_rank_values(ctx: ToolContext, args: dict) -> dict:
     # question the tool can legitimately answer.
     info = measure_meta.describe_measure(ctx, chart_id, measure_name)
     # One group is not an aggregation either — see `total_measure`.
-    additive = info["additive"] or len(sums) <= 1
+    over_time = len(sums) > 1 and _grouped_by_time_unsafely(ctx, chart_id, columns, rows, m_idx, d_idx, info)
+    additive = (info["additive"] or len(sums) <= 1) and not over_time
     total = sum(sums.values())
     ranked = sorted(sums.items(), key=lambda kv: kv[1], reverse=(order == "desc"))
     items = [
@@ -456,8 +457,10 @@ def tool_rank_values(ctx: ToolContext, args: dict) -> dict:
     else:
         payload["total"] = None
         payload["total_note"] = (
-            f"No total and no share-of-total: {measure_meta.additivity_error(info)} "
-            "The ranking itself is valid — compare the values, do not add them."
+            ("No total and no share-of-total: the groups are periods and this measure is not "
+             "declared additive over time (it may be a balance such as MRR/ARR). "
+             if over_time else f"No total and no share-of-total: {measure_meta.additivity_error(info)} ")
+            + "The ranking itself is valid — compare the values, do not add them."
         )
     return R.ok(
         payload,
@@ -475,6 +478,20 @@ def tool_rank_values(ctx: ToolContext, args: dict) -> dict:
 
 #: Aggregations that may be added across periods once DECLARED.
 _ADDITIVE_AGGS = frozenset({"sum", "count"})
+
+
+def _grouped_by_time_unsafely(ctx: ToolContext, chart_id: int, columns: list[str], rows: list[list],
+                              m_idx: int, d_idx: int, info: dict) -> bool:
+    """The groups are PERIODS and the measure is not declared additive over time:
+    a total of the groups, or one group's share of it, adds a balance across
+    periods. Live round 6: "MRR tháng 6/2026 là 70 và chiếm 16.02% tổng MRR" —
+    70 out of MRR summed over eight months."""
+    if _time_column(ctx, chart_id, columns, rows, m_idx) != d_idx:
+        return False
+    declared = (bool(info.get("semantic_measure"))
+                and str(info.get("agg") or "").lower() in _ADDITIVE_AGGS
+                and info.get("time_aggregation") in (None, "sum", "count"))
+    return not declared
 
 
 def _choose_measure(ctx: ToolContext, chart_id: int, columns: list[str],
@@ -891,7 +908,8 @@ def tool_share_of(ctx: ToolContext, args: dict) -> dict:
     partition = None
     if not info["additive"] and len(sums) > 1 and str(info.get("agg") or "") in ("count_distinct", "count"):
         partition = _partition_whole(ctx, chart_id, measure_name, total)
-    shareable = info["additive"] or len(sums) <= 1 or partition is not None
+    over_time = len(sums) > 1 and _grouped_by_time_unsafely(ctx, chart_id, columns, rows, m_idx, d_idx, info)
+    shareable = (info["additive"] or len(sums) <= 1 or partition is not None) and not over_time
     whole = partition["value"] if partition else total
     return R.ok(
         {
@@ -927,7 +945,9 @@ def tool_share_of(ctx: ToolContext, args: dict) -> dict:
                     "share_pct": None,
                     "share_note": (
                         "No share-of-total for this measure: "
-                        + measure_meta.additivity_error(info)
+                        + ("its groups are periods and it is not declared additive over time "
+                           "(it may be a balance such as MRR/ARR)."
+                           if over_time else measure_meta.additivity_error(info))
                         + f" Its value is {_fmt(value)} and it ranks {rank} of "
                           f"{len(sums)} — report those, not a percentage."
                     ),

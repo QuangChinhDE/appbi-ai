@@ -316,6 +316,10 @@ def main() -> None:
                 env = env.get("envelope") or env
                 row = {"flow": name, "q": q["id"], "rep": rep, "wall_s": round(time.time() - t0, 1),
                        **summarise(env)}
+                # A RUN THAT RETURNED NO ENVELOPE (HTTP error, timeout) is a failed
+                # execution, recorded as one — it used to crash the whole harness.
+                if not row.get("status"):
+                    row["status"] = "failed"
                 if env.get("_err"):
                     row["http_error"] = env
                 row["checks"] = q["checks"](row.get("answer") or "")
