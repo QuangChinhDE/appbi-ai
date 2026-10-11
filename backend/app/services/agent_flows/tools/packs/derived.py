@@ -473,6 +473,10 @@ def tool_rank_values(ctx: ToolContext, args: dict) -> dict:
     )
 
 
+#: Aggregations that may be added across periods once DECLARED.
+_ADDITIVE_AGGS = frozenset({"sum", "count"})
+
+
 def _choose_measure(ctx: ToolContext, chart_id: int, columns: list[str],
                     rows: list[list]) -> int | None | dict:
     """The measure when the caller named none: the ONE declared or numeric column,
@@ -658,23 +662,37 @@ def tool_total_measure(ctx: ToolContext, args: dict) -> dict:
     # 72 in August. Nothing here knows which undeclared column is a stock, so an
     # undeclared aggregation over several periods is refused, with `period` as
     # the way in. A declared sum/count (revenue, orders) still totals.
-    spanned = (periods or {}).get("selected_count") if (args.get("period_from") or args.get("period_to")) \
-        else (periods or {}).get("count")
-    if periods and (spanned or 0) > 1 and not args.get("period") and not args.get("across_periods") \
-            and (not info.get("declared") or not info.get("agg")):
+    # THE CALLER CANNOT VOUCH FOR ADDITIVITY. An `across_periods: true` argument
+    # used to switch this guard off, so any model could sum an undeclared ARR
+    # series over a range by asking. Only a DECLARED additive aggregation (the
+    # chart's or the semantic model's sum/count) may be summed across periods.
+    # And a CHART's own `agg` is not that declaration: "sum" on a monthly ARR line
+    # is how each MONTH's rows add up, not a statement that ARR adds across
+    # months. Only the semantic model's measure type speaks for the measure.
+    declared_additive = (
+        bool(info.get("semantic_measure"))
+        and str(info.get("agg") or "").lower() in _ADDITIVE_AGGS
+        and (info.get("time_aggregation") in (None, "sum", "count"))
+    )
+    # Counted by DISTINCT PERIODS SELECTED, however they were selected: `period`
+    # = "2026" on a monthly chart is eight months, and used to skip this guard.
+    selected = (periods or {}).get("selected_count") or len((periods or {}).get("selected") or []) \
+        if (args.get("period") or args.get("period_from") or args.get("period_to")) else (periods or {}).get("count")
+    if periods and (selected or 0) > 1 and not declared_additive:
         return R.err(
-            f"'{columns[m_idx]}' on chart {chart_id} is a series over {periods['count']} periods "
-            f"({periods['first']} … {periods['last']}) and its aggregation across time is not "
-            "declared — summing it could add up a balance (ARR, active customers)",
+            f"'{columns[m_idx]}' on chart {chart_id}: the asked span covers {selected} periods "
+            f"({periods['first']} … {periods['last']} in the chart) and the semantic model does not "
+            "declare this measure additive over time — summing it could add up a balance "
+            "(ARR, active customers)",
             code="time_aggregation_ambiguous",
             detail={"measure": columns[m_idx], "time_dimension": periods["column"],
                     "periods": periods},
-            recovery=("Pick what the question asks: the value AT one period → `period` (e.g. "
-                      f"'{periods['last']}'); a TOTAL over a range of a measure that is counted "
-                      "per period (churned customers, new orders, revenue) → `period_from`/"
-                      "`period_to` with `across_periods: true`. A balance (ARR, MRR, active "
-                      "customers) is never summed across periods. Do not answer a range "
-                      "question with one period's value."),
+            recovery=("The value AT one period → `period` (e.g. "
+                      f"'{periods['last']}'). A TOTAL over several periods is only available for a "
+                      "measure whose aggregation the report declares as a sum or count — this one "
+                      "is not declared, so say the range total cannot be verified from this "
+                      "chart; you may list the per-period values with `period`. Never add them up "
+                      "yourself, and never answer a range question with one period's value."),
         )
     if not info["additive"] and len(values) > 1:
         # WHERE TO GO INSTEAD. Refused without a route, the model gave up ("order_count
@@ -724,7 +742,7 @@ def tool_total_measure(ctx: ToolContext, args: dict) -> dict:
             # as the value of one.
             **({"period": str(args.get("period"))} if args.get("period") else {}),
             **({"summed_across_periods": (periods or {}).get("selected_count") or (periods or {}).get("count")}
-               if args.get("across_periods") else {}),
+               if (selected or 0) > 1 else {}),
             **({"periods_covered": periods} if periods else {}),
             "value": round(total, 4),
             "formatted": _fmt(total),
@@ -984,9 +1002,9 @@ TOTAL_MEASURE_DEF = {
         "period='2026-08', never the sum of all months; without `period` a measure "
         "whose aggregation is not declared is refused (it may be a balance such as ARR "
         "or active customers). A question over a RANGE ('from January to August', "
-        "'Q1', 'this year so far') of a counted measure is ONE call: period_from="
-        "'2026-01', period_to='2026-08', across_periods=true — not two single months. "
-        "The result names the periods it covered."
+        "'Q1', 'this year so far') is ONE call: period_from='2026-01', period_to='2026-08' "
+        "— not two single months. It is summed only when the measure's aggregation is "
+        "declared a sum/count; otherwise it is refused. The result names the periods it covered."
     ),
     "input_schema": {
         "type": "object",
@@ -1000,12 +1018,7 @@ TOTAL_MEASURE_DEF = {
             },
             "period_from": {"type": "string", "description": "Start of a range (inclusive), e.g. '2026-01'."},
             "period_to": {"type": "string", "description": "End of a range (inclusive), e.g. '2026-08'."},
-            "across_periods": {
-                "type": "boolean",
-                "description": ("Set true ONLY to total a measure that is counted per period "
-                                "(churned customers, orders, revenue) over several periods. "
-                                "Never for a balance (ARR, MRR, active customers)."),
-            },
+
         },
         "required": ["chart_id"],
     },

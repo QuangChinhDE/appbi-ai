@@ -402,6 +402,25 @@ test.describe('analytics meaning (live model, SaaS fixture)', () => {
     expect(cmp.answer.text.toLowerCase()).toMatch(/giảm|sụt|xấu đi|thấp hơn|-91|−91/);
   });
 
+  test("GMV is never published with product revenue's figure (Olist)", async ({ request }) => {
+    // Closure P0-1: "GMV toàn kỳ là 13,591,643.70" (product revenue) passed as ok in
+    // every architecture. Either the right GMV, or that figure is not given to GMV
+    // unflagged.
+    const key = `e2e_sp_gmv_${STAMP}`;
+    expect((await put(request, key, { nodes: [agent('ma', { role: 'metric_analyst',
+      tools: tools('resolve_chart_candidates', 'list_charts', 'total_measure'),
+      prompt: 'Trả lời bằng số liệu của đúng chỉ số được hỏi.' })] })).status()).toBeLessThan(400);
+    const res = await request.post(`${BRAINS}/${key}/test-on-report`, {
+      data: { question: 'GMV toàn kỳ trên báo cáo là bao nhiêu?', dashboard_id: DASH }, timeout: 300_000 });
+    expect(res.status()).toBe(200);
+    const env = (await res.json()).envelope;
+    const text: string = env.answer.text;
+    const clauses = text.split(/[.;\n]/).filter((c) => /gmv/i.test(c));
+    const misattributed = clauses.some((c) => nums(c).some((n) => Math.abs(n - 13591643.7) < 1));
+    expect(misattributed && !text.includes('[đã ẩn'), text).toBe(false);
+    expect(nums(text).some((n) => Math.abs(n - 15843553.24) < 1) || text.includes('[đã ẩn'), text).toBe(true);
+  });
+
   test('a range total of a flow measure is the range, not one month', async ({ request }) => {
     const key = `e2e_sp_churn_${STAMP}`;
     expect((await put(request, key, { nodes: [agent('ma', { role: 'metric_analyst',

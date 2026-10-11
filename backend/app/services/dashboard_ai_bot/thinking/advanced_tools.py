@@ -1728,6 +1728,45 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
         buckets.setdefault(key, []).append(r)
 
     # Compute aggregations per group
+    # A SUM ACROSS PERIODS OF A MEASURE NOT DECLARED ADDITIVE OVER TIME.
+    #
+    # `aggregate_chart_data(sum arr_active, group_by plan_code)` on a monthly
+    # table added ARR across months inside each group — the same unsupported sum
+    # total_measure refuses, reached through another tool. Grouping by something
+    # other than the time axis is refused for such a measure; grouping BY the
+    # time axis keeps the per-period values and withholds only the cross-period
+    # total (see `time_unsafe` below).
+    time_unsafe: set[str] = set()
+    try:
+        from app.services.agent_flows.tools.packs import derived as _D
+        from app.services.agent_flows.tools.packs import measure_meta as _MM
+
+        t_idx = _D._time_column(ctx, chart_id, columns, rows, -1)
+        n_periods = len({_D._period_key(r[t_idx]) for r in rows
+                         if t_idx is not None and t_idx < len(r) and r[t_idx] not in (None, "")}) \
+            if t_idx is not None else 0
+        if n_periods > 1:
+            for a in parsed_aggs:
+                if a["op"] != "sum" or a["col_idx"] is None or a["col_idx"] == t_idx:
+                    continue
+                info = _MM.describe_measure(ctx, chart_id, columns[a["col_idx"]])
+                safe = (bool(info.get("semantic_measure"))
+                        and str(info.get("agg") or "").lower() in ("sum", "count")
+                        and info.get("time_aggregation") in (None, "sum", "count"))
+                if safe:
+                    continue
+                if t_idx not in group_indices:
+                    return _err(
+                        f"sum of '{columns[a['col_idx']]}' would add it across {n_periods} periods, and "
+                        "the semantic model does not declare it additive over time (it may be a "
+                        f"balance such as ARR). Group by '{columns[t_idx]}' to see each period, or "
+                        "use total_measure with `period` for one period.",
+                        code="time_aggregation_ambiguous",
+                    )
+                time_unsafe.add(a["out"])
+    except Exception:                                           # noqa: BLE001
+        pass
+
     out_rows: list[dict] = []
     for key, group_rows in buckets.items():
         out: dict[str, Any] = {}
@@ -1771,6 +1810,10 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
     totals: dict[str, Any] = {"n_rows": len(rows)}
     # Per agg, compute the total over ALL filtered rows (single bucket = all)
     for agg in parsed_aggs:
+        if agg["out"] in time_unsafe:
+            totals[agg["out"]] = None    # a cross-period sum of a possible balance
+            totals.setdefault("withheld", []).append(agg["out"])
+            continue
         v = _apply_agg(agg["op"], agg["col_idx"], rows)
         if isinstance(v, float):
             v = _round(v)

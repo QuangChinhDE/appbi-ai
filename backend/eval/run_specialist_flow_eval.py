@@ -31,6 +31,11 @@ import time
 import urllib.error
 import urllib.request
 
+try:
+    from grading import Expect, Fact, grade
+except ImportError:                                            # run from the repo root
+    from backend.eval.grading import Expect, Fact, grade
+
 PRICE = {"in": 0.15, "out": 0.60}
 MODEL = "gpt-4o-mini"
 
@@ -101,10 +106,63 @@ SAAS_QUESTIONS = [
      "checks": lambda a: {"value": _has(a, 72, 0.001),
                           "month": ("2026-08" in a or "8/2026" in a or "tháng 8" in a.lower())},
      "wrong": [864, 5244]},
+    {"id": "R1_arr_sep_absent", "dash": SAAS_DASHBOARD, "golden": True,
+     "q": "ARR tháng 9 năm 2026 là bao nhiêu?",
+     "checks": lambda a: {"refused": not any(_has(a, v, 0.001) for v in (72, 864, 5244))},
+     "wrong": [72, 864, 5244]},
+    {"id": "R2_arr_sum_unsafe", "dash": SAAS_DASHBOARD, "golden": True,
+     "q": "Tổng ARR cộng dồn của 8 tháng đầu năm 2026 là bao nhiêu?",
+     "checks": lambda a: {"refused": not _has(a, 5244, 0.001)},
+     "wrong": [5244]},
     {"id": "H3_second_category", "dash": 67, "golden": False,
      "q": "Danh mục có doanh thu cao thứ hai là gì?",
      "checks": lambda a: {"category": "watches" in a.lower()}, "wrong": []},
 ]
+
+#: What each question MEANS, for the meaning-based grader (`grading.py`). SaaS
+#: questions are closed-world (every true value is known), Olist open-world.
+EXPECT = {
+    "Q1_lookup": (Expect([Fact("total_revenue", 13591643.70, report="olist")], report="olist"), False),
+    "Q2_rank_share": (Expect([], derived=[9.26, 1258681.34, 13591643.70], words=["health"], report="olist"), False),
+    "Q3_definition_plus_number": (Expect([Fact("gmv", 15843553.24, report="olist")], derived=[2251909.54],
+                                         words=["vận chuyển"], report="olist"), False),
+    "Q4_diagnose": (Expect([], derived=[1179143.77], report="olist"), False),
+    "S1_arr_aug": (Expect([Fact("arr_active", 72, "2026-08")]), True),
+    "S2_arr_aug_vs_jul": (Expect([Fact("arr_active", 72, "2026-08"), Fact("arr_active", 864, "2026-07")],
+                                 derived=[-792, 792, -91.67, 91.67, -91.7, 91.7, -92, 92, 91.6667, -91.6667]), True),
+    "S3_mrr_jun": (Expect([Fact("mrr_active", 70, "2026-06")]), True),
+    "S4_churn_aug": (Expect([Fact("cus_churned", 40, "2026-08")]), True),
+    "S5_arr_enterprise": (Expect([Fact("arr_active", 5000, member="enterprise")],
+                              derived=[76.92, 76.9, 77]), True),
+    "R1_arr_sep_absent": (Expect([], refusal_expected=True), True),
+    "R2_arr_sum_unsafe": (Expect([], refusal_expected=True,
+                                 derived=[600, 660, 696, 720, 792, 840, 864, 72]), True),
+    "H1_churn_total": (Expect([Fact("cus_churned", 60, "2026-01..2026-08")],
+                              derived=[3, 2, 4, 1, 5, 2, 3, 40]), True),
+    "H2_latest_arr": (Expect([Fact("arr_active", 72, "2026-08")]), True),
+    "H3_second_category": (Expect([], derived=[1205005.68, 1258681.34], words=["watches"], report="olist"), False),
+}
+
+
+def meaning_verdict(qid: str, row: dict) -> tuple[str, bool, list[str]]:
+    """The answer's verdict by MEANING. Open-world reports only judge numbers the
+    grader knows (attribution, wrong period, invalid sums); closed-world ones also
+    flag any unknown number. A refusal question is correct when it refuses."""
+    exp, closed = EXPECT[qid]
+    g = grade(row.get("answer") or "", exp, status=row.get("status") or "ok",
+              notices=row.get("notices") or [])
+    verdict = g.verdict
+    if verdict == "unsupported_number" and not closed:
+        verdict = "correct" if all(row["checks"].values()) else "incomplete"
+    elif verdict in ("incomplete", "correct") and not exp.facts and not exp.refusal_expected:
+        verdict = "correct" if all(row["checks"].values()) else "incomplete"
+    elif verdict == "legitimate_refusal" and not all(row["checks"].values()):
+        verdict = "incomplete"
+    wrong = verdict in ("wrong_metric", "wrong_period", "wrong_scope", "wrong_aggregation",
+                        "unsupported_number")
+    return verdict, g.confident_wrong and wrong, g.details
+
+
 
 QUESTIONS = [
     {"id": "Q1_lookup", "q": "Tổng doanh thu sản phẩm toàn kỳ là bao nhiêu?",
@@ -269,6 +327,16 @@ def main() -> None:
                 row["wrong_figure"] = any(_has(row.get("answer") or "", w, 0.001) for w in q.get("wrong", []))
                 row["wrong_as_verified"] = row["wrong_figure"] and not warned and not row["correct"]
                 row["golden"] = bool(q.get("golden"))
+                # BY MEANING (grading.py): replaces the wrong-list counter, which
+                # missed revenue published as GMV.
+                verdict, confident_wrong, why = meaning_verdict(q["id"], row)
+                row["verdict"] = verdict
+                row["confident_wrong"] = confident_wrong
+                row["verdict_details"] = why
+                if q["id"].startswith("R"):
+                    row["correct"] = verdict == "legitimate_refusal"
+                else:
+                    row["correct"] = verdict == "correct"
                 cost = (row["prompt_tokens"] * PRICE["in"] + row["completion_tokens"] * PRICE["out"]) / 1e6
                 row["cost_usd"] = round(cost, 5)
                 spent += cost

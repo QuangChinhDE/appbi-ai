@@ -196,6 +196,20 @@ def describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None 
              ledger: list[dict] | None = None) -> list[dict]:
     """Every figure this result carries, with what it means (see module doc)."""
     out = _describe(tool, result, chart_dims=chart_dims, ledger=ledger)
+    # WHICH CHART the figure was read from, so a later check can ask what the
+    # measure IS (its declared aggregation over time), not only what it is called.
+    data = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), dict) else {}
+    if isinstance(data.get("chart_id"), int):
+        out = [{**e, "chart_id": e.get("chart_id", data["chart_id"])} for e in out]
+    # A TOTAL OVER A RANGE says which range. Without it, churn summed over
+    # 2026-01..2026-08 read as an all-time figure and the period check withheld a
+    # correct 60 for a question about January to August (live H1).
+    cov = data.get("periods_covered") if isinstance(data.get("periods_covered"), dict) else {}
+    sel = cov.get("selected") if isinstance(cov.get("selected"), list) else None
+    if sel and len(sel) > 1:
+        span = [str(sel[0]), str(sel[-1])]
+        out = [{**e, "period_range": span} if not e.get("dimension") and not e.get("member") else e
+               for e in out]
     # A READ FILTERED TO ONE PERIOD IS THAT PERIOD'S FIGURE (review: a correct
     # total_measure(filters=[month=2018-03]) was withheld as an all-time number).
     label = _filtered_period(result)
@@ -209,6 +223,13 @@ def _filtered_period(result: Any) -> str | None:
     from app.services.time_semantics import named_periods
 
     data = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), dict) else {}
+    # A READ ASKED FOR ONE PERIOD (`total_measure(period=…)`) is that period's
+    # figure, exactly like one filtered to it: ARR for 2026-08 is not an all-time
+    # number. Only when the period selected a single bucket.
+    asked = data.get("period")
+    selected = (data.get("periods_covered") or {}).get("selected") if isinstance(data.get("periods_covered"), dict) else None
+    if isinstance(asked, str) and asked and isinstance(selected, list) and len(selected) == 1:
+        return asked
     filters = data.get("filters_applied") or (result.get("filters_applied") if isinstance(result, dict) else None)
     labels = set()
     for f in filters or []:

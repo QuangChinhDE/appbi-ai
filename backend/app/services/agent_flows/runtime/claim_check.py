@@ -318,6 +318,11 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
                 return False
         return True
     whole = [e for e in support if not e.get("dimension") and not e.get("member")]
+    # A RANGE TOTAL THAT COVERS THE ASKED PERIODS answers them (claim_scope
+    # `period_range`): "Jan–Aug" is the range 2026-01..2026-08, not a whole.
+    if whole and len(whole) == len(support) and all(_range_covers(e.get("period_range"), asked)
+                                                    for e in whole):
+        return False
     if len(whole) == len(support):
         # WORD-BOUNDED: "chung" inside "nhìn chung"/"kiểm chứng" let an all-time
         # figure pass as a quarter's (adversarial review).
@@ -338,6 +343,35 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
 
 
 _GRAIN_RANK = {"m": 0, "q": 1, "y": 2}
+
+
+def _range_covers(span: Any, asked: set[tuple]) -> bool:
+    """`span` = [first, last] period labels of a summed range; True when it is
+    exactly the span the question asks for (first asked month … last asked month)."""
+    import re
+
+    if not (isinstance(span, (list, tuple)) and len(span) == 2) or not asked:
+        return False
+    ends = []
+    for label in span:
+        m = re.match(r"^(\d{4})-(\d{2})", str(label))
+        if not m:
+            return False
+        ends.append((int(m.group(1)), int(m.group(2))))
+    lo, hi = ends
+    months: list[tuple[int, int]] = []
+    for p in asked:
+        if p[0] == "m":
+            months.append((p[1], p[2]))
+        elif p[0] == "q":
+            months += [(p[1], 3 * p[2] - 2), (p[1], 3 * p[2])]
+        elif p[0] == "y":
+            months += [(p[1], 1), (p[1], 12)]
+    if not months:
+        return False
+    # EXACTLY the asked span: a narrower range (Jul–Aug for "Jan–Aug") or a wider
+    # one is a different total, and is left to the period rule to flag.
+    return lo == min(months) and hi == max(months)
 
 
 def _nests(p: tuple, a: tuple) -> bool:
@@ -877,6 +911,23 @@ def _derived_plain(value: float, operands: list) -> bool:
     return False
 
 
+def _sums_a_balance(ctx: Any, e: dict) -> bool:
+    """This whole figure SUMS a measure the semantic model declares not additive
+    over time (`time_aggregation` other than sum/count). Unknown → False: no
+    declaration, no claim about it."""
+    chart_id, measure = e.get("chart_id"), e.get("measure")
+    if not isinstance(chart_id, int) or not measure:
+        return False
+    try:
+        from app.services.agent_flows.tools.packs import measure_meta
+
+        info = measure_meta.describe_measure(ctx, chart_id, str(measure))
+    except Exception:                                           # noqa: BLE001
+        return False
+    ta = info.get("time_aggregation")
+    return bool(ta) and ta not in ("sum", "count") and str(info.get("agg") or "sum").lower() == "sum"
+
+
 def _names_measure(ctx: Any, measure: str) -> bool:
     from app.services.agent_flows.tools.packs.discover import _score, _terms_of
 
@@ -970,6 +1021,14 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         e.get("member") and (e.get("dimension") == asked_breakdown
                              or (_is_time(asked_breakdown) and _is_time(e.get("dimension"))))
         for e in ledger)
+    # Every measure the report can speak of — the vocabulary a clause is read in.
+    try:
+        from app.services.agent_flows.runtime import intent as _I
+
+        report_measures = set((_I.vocabulary(ctx).get("measure_names") or {}).keys())
+    except Exception:                                           # noqa: BLE001
+        report_measures = set()
+    report_measures |= set(t["measures"]) | {e["measure"] for e in ledger if e.get("measure")}
     for value, pct in claims:
         if not pct and value in labels:
             continue                     # the "5" of "5 sao" is a label, not a figure
@@ -1026,6 +1085,18 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                             "of": {"measure": support[0].get("measure"), "dimension": None,
                                    "member": support[0].get("member")}})
             continue
+        # A WHOLE-RANGE SUM OF A BALANCE IS NOT A FIGURE, HOWEVER IT IS FRAMED.
+        # Live (deterministic hybrid): asked to compare ARR in July and August, the
+        # writer published "tổng ARR từ tất cả các tháng là 5244" — a KPI tile that
+        # sums a monthly balance across every month. The chart value is real; its
+        # meaning is not. Decided by the semantic model's own declaration
+        # (`time_aggregation`), never by the measure's name.
+        if support and all(not e.get("dimension") and not e.get("member") for e in support) \
+                and all(_sums_a_balance(ctx, e) for e in support):
+            flagged.append({"value": value, "pct": pct, "why": "aggregation_unsafe",
+                            "of": {"measure": support[0].get("measure"), "dimension": None,
+                                   "member": None}})
+            continue
         # A list item inherits the line that introduces it: "São Paulo có … đơn,
         # bao gồm:" then "- Đã giao: 96,478" gives the item to São Paulo (live 5072).
         sentence = _with_header(text, value, _sentence_of(text, value))
@@ -1043,6 +1114,22 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             e = support[0]
             flagged.append({"value": value, "pct": pct, "why": reasons[0],
                             "of": {k: e.get(k) for k in ("measure", "dimension", "member")}})
+            continue
+        # THE CLAUSE NAMES WHOSE FIGURE THIS IS. The check above compares the
+        # evidence with the measures the QUESTION asks for, so a question naming
+        # both GMV and product revenue let revenue's 13,591,643.70 be published
+        # as "GMV toàn kỳ" (live eval, every architecture): revenue WAS asked for.
+        # When the figure's own clause names one of the report's measures and no
+        # reading of the figure is that measure (or shares its root), the figure
+        # is another measure's, whatever the question asked.
+        named_here = _measures_named(ctx, _clause_of(text, value) or sentence, report_measures)
+        if named_here and all(
+                e.get("measure") and e["measure"] not in named_here
+                and not _same_root(e.get("measure"), named_here) for e in support):
+            e = support[0]
+            flagged.append({"value": value, "pct": pct, "why": "other_measure",
+                            "of": {"measure": e.get("measure"), "dimension": e.get("dimension"),
+                                   "member": e.get("member"), "named": sorted(named_here)}})
             continue
         if absent_words and _words_in_clause(text, value, absent_words):
             # Asked for a quantity the report does not measure; this figure's

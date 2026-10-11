@@ -454,6 +454,16 @@ def field_key(ref: str) -> str:
     return _fold(text.rsplit(".", 1)[-1])
 
 
+#: Folded time-grain words → the field-name tokens that carry that grain.
+_TIME_GRAIN_WORDS: dict[str, set[str]] = {
+    **{w: {"month", "year_month", "yearmonth", "ym"} for w in ("month", "months", "thang", "monthly")},
+    **{w: {"quarter", "q"} for w in ("quarter", "quarters", "quy", "quarterly")},
+    **{w: {"year", "yr"} for w in ("year", "years", "nam", "yearly", "annual")},
+    **{w: {"week", "wk"} for w in ("week", "weeks", "tuan", "weekly")},
+    **{w: {"day", "date"} for w in ("day", "days", "ngay", "date", "daily")},
+}
+
+
 def _field_matches(needle: str, entries: Any) -> bool:
     """Does one of these chart fields refer to the field the caller named?
 
@@ -471,6 +481,18 @@ def _field_matches(needle: str, entries: Any) -> bool:
         full = _fold(str(needle))
         return any(_fold(str((e.get("field") if isinstance(e, dict) else e) or "")) == full
                    for e in entries or [])
+    # A TIME GRAIN NAMES THE TIME AXIS. Asked for churn "by month", the resolver
+    # compared "month" with the field `year_month`, matched nothing, and told the
+    # caller "No chart on this report shows cus_churned broken down by month" —
+    # after the same agent had read the monthly total from that very chart (live
+    # H1). A grain word matches a dimension that IS time, or whose name carries it.
+    if want in _TIME_GRAIN_WORDS:
+        grain = _TIME_GRAIN_WORDS[want]
+        for entry in entries or []:
+            field = entry.get("field") if isinstance(entry, dict) else entry
+            tokens = set(field_key(str(field or "")).replace("__", "_").split("_"))
+            if (isinstance(entry, dict) and entry.get("time")) or (grain & tokens):
+                return True
     for entry in entries or []:
         if not isinstance(entry, dict):
             if field_key(entry) == want:

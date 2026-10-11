@@ -84,6 +84,30 @@ def main() -> None:
             tables[tbl] = dt.id
         gen = generate_dataset_model(db, dataset.id, force=True)
         db.commit()
+        # THE SEMANTIC DECLARATIONS a modelled dataset carries: churn and customers
+        # are counted per period (sum); ARR and MRR are balances observed per
+        # period (`time_aggregation: last`) — never added across months. No
+        # labels: discovery must work from the column names, as before.
+        from sqlalchemy.orm.attributes import flag_modified
+        from app.models.semantic import SemanticView
+
+        def measure(name, time_agg=None):
+            m = {"name": name, "type": "sum", "sql": name, "expression": None, "filters": [],
+                 "where_sql": None, "depends_on": [], "format": None, "folder": None,
+                 "label": name, "description": None, "hidden": False}
+            if time_agg:
+                m["time_aggregation"] = time_agg
+            return m
+        declared = {
+            "saas_monthly": [measure("mrr_active", "last"), measure("arr_active", "last"),
+                             measure("cus_churned")],
+            "saas_segment": [measure("arr_active", "last"), measure("customers")],
+        }
+        for tbl, ms in declared.items():
+            for v in db.query(SemanticView).filter(SemanticView.dataset_table_id == tables[tbl]).all():
+                v.measures = ms
+                flag_modified(v, "measures")
+        db.commit()
         print(json.dumps({"datasource_id": ds.id, "dataset_id": dataset.id, "tables": tables,
                           "views": len(gen.get("views", []))}))
     finally:

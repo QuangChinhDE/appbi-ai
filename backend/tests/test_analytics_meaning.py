@@ -150,9 +150,11 @@ def test_a_period_not_in_the_data_is_refused_not_substituted(table):
 
 def test_a_declared_sum_still_totals_and_names_the_periods(table, monkeypatch):
     from app.services.agent_flows.tools.packs import measure_meta
+    # DECLARED BY THE SEMANTIC MODEL (closure P0-2: a chart's own agg or a caller's
+    # argument no longer counts as a declaration of additivity over time).
     monkeypatch.setattr(measure_meta, "describe_measure", lambda ctx, cid, m: {
         "measure": m, "agg": "sum", "format_kind": None, "unit": None, "unit_known": False,
-        "additive": True, "declared": True})
+        "additive": True, "declared": True, "semantic_measure": True, "time_aggregation": None})
     got = DER.tool_total_measure(table, {"chart_id": 1, "measure": "cus_churned"})
     assert got["data"]["value"] == sum(CHURN)
     assert got["data"]["periods_covered"]["count"] == 8
@@ -284,18 +286,24 @@ def test_followups_off_strips_the_lines_and_on_is_the_default():
     assert _strip_followups(text) == "ARR tháng 8 là 72."
 
 
-def test_a_range_total_of_a_flow_measure_needs_the_explicit_claim_and_covers_the_range(table):
+def test_a_range_total_needs_the_semantic_declaration_not_a_caller_argument(table, monkeypatch):
     """Live (A_single, H1): asked for churn Jan-Aug, the agent fetched AUGUST (40)
-    and published it as the range total. The range is a first-class argument; an
-    undeclared measure is summed over it only when the caller says it is a flow."""
-    refused = DER.tool_total_measure(table, {"chart_id": 1, "measure": "cus_churned",
-                                             "period_from": "2026-01", "period_to": "2026-08"})
-    assert refused["ok"] is False and refused["error_code"] == "time_aggregation_ambiguous"
-    assert "period_from" in refused["recovery"] and "never summed" in refused["recovery"]
-    got = DER.tool_total_measure(table, {"chart_id": 1, "measure": "cus_churned", "across_periods": True,
+    and published it as the range total. The range is a first-class argument, and
+    it is summed only when the SEMANTIC MODEL declares the measure a sum — a
+    caller's `across_periods` used to switch the guard off (closure P0-2)."""
+    for extra in ({}, {"across_periods": True}):
+        refused = DER.tool_total_measure(table, {"chart_id": 1, "measure": "cus_churned", **extra,
+                                                 "period_from": "2026-01", "period_to": "2026-08"})
+        assert refused["ok"] is False and refused["error_code"] == "time_aggregation_ambiguous"
+        assert "Never add them up" in refused["recovery"]
+    from app.services.agent_flows.tools.packs import measure_meta
+    monkeypatch.setattr(measure_meta, "describe_measure", lambda ctx, cid, m: {
+        "measure": m, "agg": "sum", "format_kind": None, "unit": None, "unit_known": False,
+        "additive": True, "declared": True, "semantic_measure": True, "time_aggregation": None})
+    got = DER.tool_total_measure(table, {"chart_id": 1, "measure": "cus_churned",
                                          "period_from": "2026-01", "period_to": "2026-08"})
     assert got["data"]["value"] == sum(CHURN) == 60
     assert got["data"]["summed_across_periods"] == 8
-    part = DER.tool_total_measure(table, {"chart_id": 1, "measure": "cus_churned", "across_periods": True,
+    part = DER.tool_total_measure(table, {"chart_id": 1, "measure": "cus_churned",
                                           "period_from": "2026-07", "period_to": "2026-08"})
     assert part["data"]["value"] == 43 and part["data"]["periods_covered"]["selected_count"] == 2
