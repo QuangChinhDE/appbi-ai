@@ -107,7 +107,9 @@ def test_a_new_anomaly_alert_after_resolution_opens_a_new_incident(db, world):  
     assert len(_open_for(db, key)) == 1, "a fresh anomaly after resolution must open again"
 
 
-def test_anomaly_incident_resolves_once_the_metric_has_no_recent_alert(db, world):  # noqa: F811
+def test_anomaly_incident_resolves_on_a_clean_check_after_the_alert(db, world):  # noqa: F811
+    """Recovery needs evidence: a check that ran and found the metric normal
+    AFTER the newest alert (was: "no alert for N days", see the R1 tests)."""
     from app.services.observability_service import ObservabilityService as S
 
     m, a = _metric_with_alert(db, world)
@@ -115,11 +117,99 @@ def test_anomaly_incident_resolves_once_the_metric_has_no_recent_alert(db, world
     S.fold_anomaly(db)
     db.commit()
     assert len(_open_for(db, key)) == 1
-    a.detected_at = datetime.utcnow() - timedelta(days=30)   # the metric has been normal since
+    a.detected_at = datetime.utcnow() - timedelta(days=30)
+    m.last_checked_at = m.last_ok_at = datetime.utcnow()
+    m.last_check_status = "ok"
     db.commit()
     S.fold_anomaly(db)
     db.commit()
-    assert _open_for(db, key) == [], "an anomaly whose metric recovered stayed open forever"
+    assert _open_for(db, key) == [], "an anomaly whose metric was checked normal stayed open"
+
+
+# ── R1: "no new alert" is not "recovered" ───────────────────────────────────
+
+@pytest.mark.parametrize("status,error", [("error", "history query failed: OperationalError"),
+                                          ("insufficient", "fewer than 8 days of data"),
+                                          (None, None)])
+def test_an_anomaly_is_not_recovered_when_the_detector_could_not_judge(db, world, status, error):  # noqa: F811
+    """The source was unreachable for days (error), the data too thin
+    (insufficient) or the metric never checked (None): no new alert, but no
+    evidence either - the incident stays open and says why."""
+    from app.services.observability_service import ObservabilityService as S
+
+    m, a = _metric_with_alert(db, world)
+    key = f"anomaly:metric_{m.id}"
+    S.fold_anomaly(db)
+    db.commit()
+    a.detected_at = datetime.utcnow() - timedelta(days=30)        # far past every window
+    m.last_checked_at = datetime.utcnow() if status else None
+    m.last_check_status, m.last_check_error = status, error
+    db.commit()
+    for _ in range(3):
+        S.fold_anomaly(db)
+        db.commit()
+    [inc] = _open_for(db, key)
+    assert inc.detail["detector"]["status"] == (status or "never")
+    assert inc.detail["detector"]["error"] == error
+
+
+def test_a_clean_check_older_than_the_alert_is_not_recovery(db, world):  # noqa: F811
+    from app.services.observability_service import ObservabilityService as S
+
+    m, a = _metric_with_alert(db, world)
+    m.last_ok_at = a.detected_at - timedelta(hours=1)
+    m.last_check_status = "error"
+    db.commit()
+    S.fold_anomaly(db)
+    db.commit()
+    assert len(_open_for(db, f"anomaly:metric_{m.id}")) == 1
+
+
+def test_a_stale_alert_cleared_by_a_clean_check_never_opens(db, world):  # noqa: F811
+    from app.services.observability_service import ObservabilityService as S
+
+    m, a = _metric_with_alert(db, world)
+    m.last_ok_at = datetime.utcnow()
+    m.last_check_status = "ok"
+    db.commit()
+    S.fold_anomaly(db)
+    db.commit()
+    assert _open_for(db, f"anomaly:metric_{m.id}") == []
+
+
+def test_run_all_checks_records_an_unreachable_source_as_error_not_normal(db, world):  # noqa: F811
+    """The real detector against a source that refuses connections."""
+    from app.models.anomaly import MonitoredMetric
+    from app.models.dataset import DatasetTable
+    from app.models.models import DataSource, DataSourceType
+    from app.services.anomaly_detection import AnomalyDetectionService
+
+    src = DataSource(name=f"down-{uuid.uuid4().hex[:6]}", type=DataSourceType.POSTGRESQL,
+                     owner_id=world["owner"].id,
+                     config={"host": "127.0.0.1", "port": 1, "database": "x", "username": "x", "password": "x"})
+    db.add(src)
+    db.flush()
+    t = DatasetTable(dataset_id=world["ds"].id, display_name="down", source_kind="physical_table",
+                     source_table_name="public.nope", datasource_id=src.id)
+    db.add(t)
+    db.flush()
+    m = MonitoredMetric(dataset_table_id=t.id, metric_column="amount", time_column="day", owner_id=world["owner"].id)
+    db.add(m)
+    db.commit()
+    others = db.query(MonitoredMetric).filter(MonitoredMetric.id != m.id, MonitoredMetric.is_active == True).all()  # noqa: E712
+    for o in others:                     # this run checks only the metric under test
+        o.is_active = False
+    db.commit()
+    try:
+        out = AnomalyDetectionService.run_all_checks(db)
+    finally:
+        for o in others:
+            o.is_active = True
+        db.commit()
+    db.refresh(m)
+    assert out["errored"] == 1
+    assert m.last_check_status == "error" and m.last_checked_at and m.last_ok_at is None
+    assert m.last_check_error
 
 
 # ── H03 delivery ────────────────────────────────────────────────────────────

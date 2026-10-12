@@ -137,6 +137,11 @@ def main() -> int:
 
         now = datetime.utcnow()
         new_m, rec_m = metric("amount"), metric("id")
+        # R: the recovering metric's detector ran CLEAN after its old alert -
+        # the evidence a recovery needs ('no new alert' alone is not).
+        rec_m.last_checked_at = rec_m.last_ok_at = now
+        rec_m.last_check_status = "ok"
+        new_m.last_checked_at, new_m.last_check_status = now, "anomaly"
         if not db.query(AnomalyAlert).filter(AnomalyAlert.monitored_metric_id == new_m.id).first():
             db.add(AnomalyAlert(monitored_metric_id=new_m.id, detected_at=now - timedelta(hours=1),
                                 current_value=100.0, expected_value=2000.0, z_score=-4.2, change_pct=-95.0,

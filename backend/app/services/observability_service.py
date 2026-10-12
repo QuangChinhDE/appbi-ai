@@ -845,14 +845,20 @@ class ObservabilityService:
     @staticmethod
     def fold_anomaly(db: Session, lookback_days: int = 14,
                      dataset_ids: Optional[List[int]] = None) -> List[ObservabilityIncident]:
-        """One incident per monitored metric, driven by the metric's NEWEST alert.
+        """One incident per monitored metric, driven by the metric's NEWEST alert
+        and by the outcome of its checks.
 
-        - opens only for an alert newer than the metric's last resolution (a
-          person resolving it is final for the alerts it already covered) and
-          still inside the recovery window (an old alert says nothing about now);
-        - refreshes the open incident with the newest alert;
-        - auto-resolves once the metric has been alert-free for its recovery
-          window, or when the metric was deleted / switched off.
+        Opening: only for an alert newer than the metric's last resolution (a
+        person resolving it is final for the alerts it covered), inside the
+        recovery window (an old alert says nothing about now), and not already
+        cleared by a clean check after it.
+
+        Recovering needs EVIDENCE: a check that ran and found the metric normal
+        AFTER the newest alert (``last_ok_at``). "No new alert" is not evidence -
+        the detector may not have run (source unreachable, too little data,
+        metric never checked). Such an incident stays open and says why.
+
+        A deleted / paused metric resolves (a person's decision).
         Returns NEW incidents."""
         now = datetime.utcnow()
         since = now - timedelta(days=lookback_days)
@@ -873,21 +879,26 @@ class ObservabilityService:
             key = f"anomaly:metric_{metric.id}"
             handled.add(key)
             if not metric.is_active:
-                continue                                  # resolved below as removed/paused
-            window = ObservabilityService._anomaly_recovery_window(metric)
-            if a.detected_at < now - window:
-                ObservabilityService.resolve_incidents(db, key, reason="metric_recovered")
-                continue
-            open_inc = (db.query(ObservabilityIncident.id)
+                continue                                  # resolved below as paused
+            cleared = metric.last_ok_at is not None and metric.last_ok_at > a.detected_at
+            open_inc = (db.query(ObservabilityIncident)
                         .filter(ObservabilityIncident.dedup_key == key)
                         .filter(ObservabilityIncident.status != "resolved").first())
-            if open_inc is None:
-                last_resolved = (db.query(ObservabilityIncident.resolved_at)
-                                 .filter(ObservabilityIncident.dedup_key == key)
-                                 .filter(ObservabilityIncident.status == "resolved")
-                                 .order_by(ObservabilityIncident.resolved_at.desc()).first())
-                if last_resolved and last_resolved[0] and a.detected_at <= last_resolved[0]:
-                    continue                              # already handled by a person / recovery
+            if open_inc is not None:
+                if cleared:
+                    ObservabilityService.resolve_incidents(db, key, reason="metric_recovered")
+                else:
+                    ObservabilityService._annotate_detector(open_inc, metric)
+                continue
+            window = ObservabilityService._anomaly_recovery_window(metric)
+            if cleared or a.detected_at < now - window:
+                continue                                  # nothing current to report
+            last_resolved = (db.query(ObservabilityIncident.resolved_at)
+                             .filter(ObservabilityIncident.dedup_key == key)
+                             .filter(ObservabilityIncident.status == "resolved")
+                             .order_by(ObservabilityIncident.resolved_at.desc()).first())
+            if last_resolved and last_resolved[0] and a.detected_at <= last_resolved[0]:
+                continue                                  # already handled by a person / recovery
             inc, was_created = ObservabilityService.upsert_incident(
                 db, dataset_id=table.dataset_id, dataset_table_id=table.id,
                 source="anomaly", dedup_key=key,
@@ -900,29 +911,50 @@ class ObservabilityService:
                 severity="critical" if a.severity in ("critical", "error") else (
                     a.severity if a.severity in ("warning", "info") else "warning"),
             )
+            ObservabilityService._annotate_detector(inc, metric)
             if was_created:
                 created.append(inc)
 
-        # Open anomaly incidents with no recent alert at all: recovered, or their
-        # metric was deleted / paused.
+        # Open anomaly incidents whose newest alert is older than the lookback.
         oq = (db.query(ObservabilityIncident)
               .filter(ObservabilityIncident.source == "anomaly")
               .filter(ObservabilityIncident.status != "resolved"))
         if dataset_ids is not None:
             oq = oq.filter(ObservabilityIncident.dataset_id.in_(dataset_ids))
+        from sqlalchemy import func
+
         for inc in oq.all():
-            if inc.dedup_key in handled:
-                metric_id = ObservabilityService._key_id(inc.dedup_key)
-                m = db.query(MonitoredMetric).filter(MonitoredMetric.id == metric_id).first() if metric_id else None
-                if m is not None and not m.is_active:
-                    ObservabilityService.resolve_incidents(db, inc.dedup_key, reason="metric_paused")
-                continue
             metric_id = ObservabilityService._key_id(inc.dedup_key)
             m = db.query(MonitoredMetric).filter(MonitoredMetric.id == metric_id).first() if metric_id else None
-            reason = ("metric_removed" if m is None else "metric_paused" if not m.is_active
-                      else "metric_recovered")
-            ObservabilityService.resolve_incidents(db, inc.dedup_key, reason=reason)
+            if m is None:
+                ObservabilityService.resolve_incidents(db, inc.dedup_key, reason="metric_removed")
+                continue
+            if not m.is_active:
+                ObservabilityService.resolve_incidents(db, inc.dedup_key, reason="metric_paused")
+                continue
+            if inc.dedup_key in handled:
+                continue
+            last_alert = (db.query(func.max(AnomalyAlert.detected_at))
+                          .filter(AnomalyAlert.monitored_metric_id == m.id).scalar())
+            if m.last_ok_at is not None and (last_alert is None or m.last_ok_at > last_alert):
+                ObservabilityService.resolve_incidents(db, inc.dedup_key, reason="metric_recovered")
+            else:
+                ObservabilityService._annotate_detector(inc, m)
         return created
+
+    @staticmethod
+    def _annotate_detector(inc: ObservabilityIncident, metric: MonitoredMetric) -> None:
+        """Say on the incident why it is still open when the detector could not
+        confirm either way (so "still open" is not read as "still abnormal")."""
+        status = metric.last_check_status or "never"
+        d = dict(inc.detail or {}) if isinstance(inc.detail, dict) else {}
+        d["detector"] = {
+            "status": status,
+            "checked_at": ObservabilityService._utc_iso(metric.last_checked_at),
+            "error": metric.last_check_error,
+            "last_ok_at": ObservabilityService._utc_iso(metric.last_ok_at),
+        }
+        inc.detail = d
 
     @staticmethod
     def _key_id(key: str) -> Optional[int]:

@@ -32,6 +32,14 @@ class MonitoredMetric(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Outcome of the last check: ok (ran, nothing abnormal) | anomaly | error
+    # (could not run) | insufficient (ran, too little data to judge). Only an
+    # "ok" check is evidence that an open anomaly is over (last_ok_at).
+    last_checked_at = Column(DateTime, nullable=True)
+    last_check_status = Column(String(16), nullable=True)
+    last_check_error = Column(Text, nullable=True)
+    last_ok_at = Column(DateTime, nullable=True)
+
     # Relationships
     alerts = relationship("AnomalyAlert", back_populates="metric", cascade="all, delete-orphan")
     dataset_table = relationship("DatasetTable", foreign_keys=[dataset_table_id])
