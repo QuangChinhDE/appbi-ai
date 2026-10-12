@@ -257,6 +257,11 @@ function IncidentDetail({ incident }: { incident: Incident }) {
   if (incident.pillar === 'freshness') { push(t('observability.incidents.detail.lagHours'), d.lag_hours); push(t('observability.incidents.detail.maxLagHours'), d.max_lag_hours); push(t('observability.incidents.detail.lastLoadedAt'), d.last_loaded_at); push(t('observability.incidents.detail.reason'), d.reason); }
   if (incident.pillar === 'volume') { push(t('observability.incidents.detail.rowCount'), d.row_count); push(t('observability.incidents.detail.expected'), d.expected); push(t('observability.incidents.detail.zScore'), d.z_score); push(t('observability.incidents.detail.changePct'), d.change_pct); push(t('observability.incidents.detail.reason'), d.reason); }
   if (incident.pillar === 'schema') { push(t('observability.incidents.detail.columnsAdded'), (d.added || []).join(', ')); push(t('observability.incidents.detail.columnsRemoved'), (d.removed || []).join(', ')); push(t('observability.incidents.detail.typeChanges'), (d.retyped || []).map((r: any) => `${r.column}: ${r.from}→${r.to}`).join(', ')); }
+  if (d.detector?.status && d.detector.status !== 'ok' && d.detector.status !== 'anomaly') {
+    // Why an anomaly is still open when no new alert came: the detector could not confirm recovery.
+    push(t('observability.incidents.detail.detector'), t(`observability.incidents.detector.${d.detector.status}`)
+      + (d.detector.error ? ` — ${d.detector.error}` : ''));
+  }
   if (incident.pillar === 'distribution') { push(t('observability.incidents.detail.current'), d.current); push(t('observability.incidents.detail.expected'), d.expected); push(t('observability.incidents.detail.zScore'), d.z_score); push(t('observability.incidents.detail.changePct'), d.change_pct); push(t('observability.incidents.detail.explanation'), d.explanation); }
   if (incident.pillar === 'quality') { push(t('observability.incidents.detail.dimension'), d.dimension); push(t('observability.incidents.detail.ruleType'), d.rule_type); push(t('observability.incidents.detail.column'), d.column); push(t('observability.incidents.detail.failedRows'), d.rows_failed); }
   if (incident.pillar === 'semantic') { (d.reasons || []).forEach((r: string, i: number) => push(`${t('observability.incidents.detail.reason')} ${i + 1}`, r)); }

@@ -63,6 +63,13 @@ _OBS_EDIT = require_permission("observability", "edit")
 async def observability_module_gate(
     request: Request, user: User = Depends(get_current_user)
 ) -> User:
+    # A DISABLED module does not exist (same answer as a module whose router is
+    # not mounted): the permission matrix and the UI already hide it, and a
+    # stored `observability` level must not keep its API alive behind them.
+    from app.core.authz.registry import module_enabled
+
+    if not module_enabled("observability"):
+        raise HTTPException(status_code=404, detail="Not Found")
     checker = _OBS_VIEW if request.method in _READ_METHODS else _OBS_EDIT
     return await checker(user=user)
 
@@ -171,6 +178,11 @@ def scanner_status(db: Session = Depends(get_db), user: User = Depends(get_curre
                 "counts": r.counts or {}, "errors": (r.errors or [])[:10] if _is_obs_admin(user) else
                 (["Some checks could not run."] if r.errors else [])}
 
+    # A run left 'running' by a dead scanner reads as failed, not as running.
+    try:
+        ObservabilityService.reap_orphan_runs(db)
+    except Exception:  # noqa: BLE001 — the read below still answers
+        db.rollback()
     last = (db.query(ObservabilityScanRun).filter(ObservabilityScanRun.scope == "global")
             .order_by(ObservabilityScanRun.id.desc()).first())
     last_ok = (db.query(ObservabilityScanRun).filter(ObservabilityScanRun.scope == "global")
@@ -626,6 +638,29 @@ def delete_alert_channel(
     db.commit()
     audit(db, AuditAction.ALERT_CHANNEL_DELETED, request=request, user_id=user.id,
           resource_type="alert_channel", resource_id=str(channel_id), details=details)
+
+
+@router.post("/alert-channels/{channel_id}/retry-deliveries")
+def retry_channel_deliveries(
+    channel_id: int, request: Request,
+    db: Session = Depends(get_db), user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Send again what never reached this channel (failed / given up), for
+    incidents still unresolved. Manage permission; audited."""
+    ch = _load_channel_for_manage(db, user, channel_id)
+    if not ch.is_active:
+        raise HTTPException(status_code=409, detail="Enable the channel before retrying its deliveries.")
+    from app.services.observability_notifier import channel_delivery_counts, dispatch_due, requeue_undelivered
+
+    out = requeue_undelivered(db, ch)
+    sent = dispatch_due(db) if out["requeued"] else 0
+    audit(db, AuditAction.ALERT_CHANNEL_UPDATED, request=request, user_id=user.id,
+          resource_type="alert_channel", resource_id=str(ch.id),
+          details={"action": "retry_deliveries", **out, "sent": sent})
+    db.refresh(ch)
+    return {**out, "sent": sent,
+            "channel": _channel_dict(ch, reveal_target=True, can_manage=True,
+                                     deliveries=channel_delivery_counts(db).get(ch.id))}
 
 
 @router.post("/alert-channels/{channel_id}/test")

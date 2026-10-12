@@ -226,6 +226,31 @@ def dispatch_due(db: Session, *, now: datetime | None = None) -> int:
     return sent
 
 
+def requeue_undelivered(db: Session, channel: ObservabilityAlertChannel) -> dict:
+    """A person fixed a channel (target, credentials, receiver) and asks to send
+    what never arrived. Only rows that were NEVER delivered (failed / dead) are
+    touched: an incident still unresolved goes back to pending with a fresh
+    attempt budget; one resolved since is cancelled. Delivered rows are never
+    re-sent. Nothing happens on its own - a dead row stays dead until asked."""
+    now = datetime.utcnow()
+    requeued = cancelled = 0
+    rows = (db.query(ObservabilityAlertDelivery)
+            .filter(ObservabilityAlertDelivery.channel_id == channel.id)
+            .filter(ObservabilityAlertDelivery.status.in_(("failed", "dead")))
+            .with_for_update(skip_locked=True)
+            .all())
+    for d in rows:
+        inc = db.get(ObservabilityIncident, d.incident_id)
+        if inc is None or inc.status == "resolved":
+            d.status, d.next_attempt_at = "cancelled", None
+            cancelled += 1
+        else:
+            d.status, d.attempts, d.next_attempt_at = "pending", 0, now
+            requeued += 1
+    db.commit()
+    return {"requeued": requeued, "cancelled": cancelled}
+
+
 def notify_new_incidents(db: Session, incidents: List[ObservabilityIncident]) -> int:
     """Enqueue (idempotently) and dispatch what is due."""
     enqueue_deliveries(db, incidents)

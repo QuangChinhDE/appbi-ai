@@ -264,6 +264,10 @@ export async function updateAlertChannel(id: number, patch: Partial<Pick<AlertCh
 export async function deleteAlertChannel(id: number): Promise<void> {
   await apiClient.delete(`/observability/alert-channels/${id}`);
 }
+export async function retryChannelDeliveries(id: number): Promise<{ requeued: number; cancelled: number; sent: number }> {
+  const { data } = await apiClient.post(`/observability/alert-channels/${id}/retry-deliveries`);
+  return { requeued: data.requeued, cancelled: data.cancelled, sent: data.sent };
+}
 export async function testAlertChannel(id: number): Promise<{ ok: boolean; error: string | null }> {
   const { data } = await apiClient.post(`/observability/alert-channels/${id}/test`);
   return { ok: data.ok, error: data.error };

@@ -41,6 +41,11 @@ def _run_anomaly_scan():
     finally:
         db.close()
 
+    from app.core.authz.registry import module_enabled
+
+    if not module_enabled("observability"):
+        logger.info("Observability is disabled: scheduled scan skipped")
+        return
     db2 = SessionLocal()
     try:
         from app.services.observability_service import ObservabilityService
@@ -65,6 +70,10 @@ def _run_anomaly_scan():
 
 @single_run("observability_alert_dispatch")
 def _dispatch_alerts():
+    from app.core.authz.registry import module_enabled
+
+    if not module_enabled("observability"):
+        return                                   # a disabled module sends nothing
     db = SessionLocal()
     try:
         from app.services.observability_notifier import dispatch_due
