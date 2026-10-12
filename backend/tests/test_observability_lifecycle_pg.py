@@ -826,3 +826,34 @@ def test_retry_needs_an_active_channel(client, db, world, sends):  # noqa: F811
     db.commit()
     r = client.post(f"/api/v1/observability/alert-channels/{ch.id}/retry-deliveries", headers=world["owner"].headers)
     assert r.status_code == 409
+
+
+# ── R4: a disabled module is off everywhere ─────────────────────────────────
+
+def test_a_disabled_module_answers_nothing_and_sends_nothing(client, db, world, monkeypatch):  # noqa: F811
+    from app.core.config import settings
+    from app.services import anomaly_scheduler as sched
+
+    admin = make_user(db, "obs-admin-r4", observability="full", datasets="full")
+    assert client.get("/api/v1/observability/overview", headers=admin.headers).status_code == 200
+    calls = []
+    monkeypatch.setattr("app.services.anomaly_detection.AnomalyDetectionService.run_all_checks",
+                        staticmethod(lambda db_: calls.append("anomaly") or {}))
+    monkeypatch.setattr("app.services.observability_service.ObservabilityService.scan_all",
+                        staticmethod(lambda db_, **k: calls.append("scan") or {}))
+    monkeypatch.setattr("app.services.observability_notifier.dispatch_due",
+                        lambda db_, **k: calls.append("dispatch") or 0)
+
+    monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", False)
+    for method, path in (("get", "/api/v1/observability/overview"), ("get", "/api/v1/observability/incidents"),
+                         ("post", "/api/v1/observability/scan"), ("get", "/api/v1/observability/alert-channels")):
+        assert getattr(client, method)(path, headers=admin.headers).status_code == 404, path
+    sched._run_anomaly_scan.__wrapped__()
+    sched._dispatch_alerts.__wrapped__()
+    assert "scan" not in calls and "dispatch" not in calls
+
+    monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", True)          # positive control
+    assert client.get("/api/v1/observability/overview", headers=admin.headers).status_code == 200
+    sched._run_anomaly_scan.__wrapped__()
+    sched._dispatch_alerts.__wrapped__()
+    assert "scan" in calls and "dispatch" in calls

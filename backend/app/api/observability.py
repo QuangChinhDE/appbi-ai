@@ -63,6 +63,13 @@ _OBS_EDIT = require_permission("observability", "edit")
 async def observability_module_gate(
     request: Request, user: User = Depends(get_current_user)
 ) -> User:
+    # A DISABLED module does not exist (same answer as a module whose router is
+    # not mounted): the permission matrix and the UI already hide it, and a
+    # stored `observability` level must not keep its API alive behind them.
+    from app.core.authz.registry import module_enabled
+
+    if not module_enabled("observability"):
+        raise HTTPException(status_code=404, detail="Not Found")
     checker = _OBS_VIEW if request.method in _READ_METHODS else _OBS_EDIT
     return await checker(user=user)
 
