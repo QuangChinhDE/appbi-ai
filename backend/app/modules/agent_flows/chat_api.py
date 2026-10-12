@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -82,18 +82,101 @@ class RenameThread(BaseModel):
     title: str = Field(default="", max_length=255)
 
 
+Lang = Literal["vi", "en"]
+
+
 class Ask(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
+    #: The reader's UI language. It was hardcoded `"vi"` on this route, so an
+    #: English reader got Vietnamese refusals and notices from the server while
+    #: the screen around them was English.
+    lang: Lang = "vi"
 
 
-def _thread_dict(t: Any) -> dict:
-    return {
+class Rate(BaseModel):
+    rating: Literal["up", "down"] | None = None
+
+
+#: Sentences this layer writes for a reader, in both UI languages. The client
+#: translates by `readonly_reason` code first; these are what an older client, or
+#: one that does not know the code, shows instead.
+_TEXT: dict[str, dict[str, str]] = {
+    "assistant_not_shared": {
+        "vi": "Bạn đọc được cuộc trò chuyện này, nhưng trợ lý đứng sau nó chưa được "
+              "chia sẻ cho bạn — nên bạn chưa hỏi tiếp được.",
+        "en": "You can read this conversation, but its assistant has not been shared "
+              "with you, so you cannot continue it.",
+    },
+    "shared_read_only": {
+        "vi": "Bạn đang xem một cuộc trò chuyện được chia sẻ ở mức chỉ đọc.",
+        "en": "This conversation was shared with you to read only.",
+    },
+    "oversight_read_only": {
+        "vi": "Bạn đang xem cuộc trò chuyện của người khác với quyền giám sát.",
+        "en": "You are viewing someone else's conversation with oversight access.",
+    },
+    "read_only_write": {
+        "vi": "Bạn chỉ có quyền xem cuộc trò chuyện này, không thể hỏi tiếp hay đánh giá.",
+        "en": "You can only read this conversation; you cannot continue or rate it.",
+    },
+    "stream_too_long": {
+        "vi": "Câu hỏi chạy quá lâu và đã bị dừng.",
+        "en": "The question ran too long and was stopped.",
+    },
+    "stream_idle": {
+        "vi": "Trợ lý không phản hồi và đã bị dừng.",
+        "en": "The assistant stopped responding, so the turn was ended.",
+    },
+    "stream_failed": {
+        "vi": "Có lỗi khi chạy trợ lý.",
+        "en": "Something went wrong while running the assistant.",
+    },
+    "missing_credential": {
+        "vi": "Trợ lý này chưa được cấu hình AI key nên chưa chat được. "
+              "Vui lòng liên hệ tác giả của trợ lý.",
+        "en": "This assistant has no AI key configured yet, so it cannot chat. "
+              "Please contact its author.",
+    },
+}
+
+
+def _text(key: str, lang: str) -> str:
+    entry = _TEXT.get(key) or {}
+    return entry.get(lang) or entry.get("vi") or ""
+
+
+def _thread_dict(t: Any, user: Any = None) -> dict:
+    out = {
         "id": t.id,
         "brain_key": t.brain_key,
         "title": t.title or "",
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "last_active_at": t.last_active_at.isoformat() if t.last_active_at else None,
     }
+    if user is not None:
+        # Rename and delete are the owner's (`_require_owner`). The list says
+        # which rows those are, so the sidebar stops offering a pencil and a bin
+        # on a colleague's shared conversation that would only answer 403.
+        out["is_owner"] = str(t.user_id) == str(getattr(user, "id", ""))
+    return out
+
+
+def _availability(db: Session, user: Any, flow: Any) -> str:
+    """Why this reader cannot get an answer right now, or "" when they can.
+
+    The SAME two gates the turn applies — rollout policy, then a usable key per
+    step — asked up front, so the catalogue and the input box say it before a
+    question is spent finding out. Policy is reported here, never changed.
+    """
+    gate = dispatch._reader_gate(user_email=getattr(user, "email", None))
+    if gate:
+        return gate
+    if flow is not None:
+        from app.services.agent_flows.credentials import StoredCredentials
+
+        if StoredCredentials(db).problems(flow):
+            return "missing_credential"
+    return ""
 
 
 # ═══ Which assistants may I open ══════════════════════════════════════════════
@@ -125,7 +208,9 @@ def list_chat_brains(
     every document and dataset the flow reads, none of which is the reader's business.
     """
     out = []
+    lang = "en" if lang == "en" else "vi"
     for row, flow in direct_chat.published_chat_brains(db, user):
+        unavailable = _availability(db, user, flow)
         out.append({
             "brain_key": row.brain_key,
             "name": row.name,
@@ -139,6 +224,11 @@ def list_chat_brains(
             # none of it the reader's business — and Chat refuses tools the flow
             # was granted, so the author's answer would also be the wrong answer.
             "capability": reader_capability.capability(flow, surface="chat", lang=lang),
+            # Listed even when it cannot answer for this reader (pilot not open to
+            # them, no key yet): hiding it would make "where did my assistant go"
+            # unanswerable. The code says why; the client words it.
+            "available": not unavailable,
+            "unavailable_reason": unavailable,
         })
     return {"brains": out}
 
@@ -158,7 +248,7 @@ def create_thread(
         # Studio already makes for reading one.
         raise HTTPException(status_code=404, detail="Không tìm thấy trợ lý này")
     thread = direct_chat.create_thread(db, user, body.brain_key)
-    return _thread_dict(thread)
+    return _thread_dict(thread, user)
 
 
 @router.get("/threads")
@@ -170,7 +260,7 @@ def list_threads(
 ):
     return {
         "threads": [
-            _thread_dict(t) for t in direct_chat.list_threads(db, user, brain_key)
+            _thread_dict(t, user) for t in direct_chat.list_threads(db, user, brain_key)
         ]
     }
 
@@ -178,6 +268,7 @@ def list_threads(
 @router.get("/threads/{thread_id}")
 def read_thread(
     thread_id: int,
+    lang: Lang = "vi",
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     _: Any = Depends(can_chat),
@@ -213,19 +304,19 @@ def read_thread(
         # assistant exists — its name is two fields above — so the vagueness
         # protects nothing here and only sends them to ask the wrong question.
         reason = "assistant_not_shared"
-        message = (
-            "Bạn đọc được cuộc trò chuyện này, nhưng trợ lý đứng sau nó chưa được "
-            "chia sẻ cho bạn — nên bạn chưa hỏi tiếp được."
-        )
-    if not reason and access in ("view", "full"):
+        message = _text(reason, lang)
+    if not reason and not direct_chat.may_write(access):
         reason = "shared_read_only" if access == "view" else "oversight_read_only"
-        message = (
-            "Bạn đang xem một cuộc trò chuyện được chia sẻ ở mức chỉ đọc."
-            if access == "view" else
-            "Bạn đang xem cuộc trò chuyện của người khác với quyền giám sát."
-        )
+        message = _text(reason, lang)
+    if not reason:
+        # The flow runs and this person may write — but the rollout policy or a
+        # missing key would still refuse every question. Said before they type.
+        gate = _availability(db, user, _flow)
+        if gate:
+            reason = gate
+            message = _text(gate, lang) or dispatch._block_message(gate)
     return {
-        **_thread_dict(thread),
+        **_thread_dict(thread, user),
         "brain_name": (row.name if row is not None else thread.brain_key),
         #: `owner` · `edit` · `view` · `full` — what the client may offer. It drives
         #: the input box, the rename field and the Share button in one value rather
@@ -294,6 +385,13 @@ async def send_message(
     if thread is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy cuộc trò chuyện")
 
+    # READING IS NOT WRITING. A `view` share and `chat: full` oversight both open
+    # the transcript, and neither may add to it. Refused as HTTP before the stream
+    # — and before quota is spent — so the client gets a status, not a 200 that
+    # merely says no. The engine re-checks on the way in (`run_for_chat_thread`).
+    if not direct_chat.may_write(direct_chat.thread_access(db, user, thread)):
+        raise HTTPException(status_code=403, detail=_text("read_only_write", body.lang))
+
     verdict = chat_quota.check_chat_quota(db, user)
     if not verdict.allowed:
         raise HTTPException(status_code=429, detail=verdict.message)
@@ -307,9 +405,7 @@ async def send_message(
 
         if StoredCredentials(db).problems(flow):
             raise HTTPException(
-                status_code=409,
-                detail="Trợ lý này chưa được cấu hình AI key nên chưa chat được. "
-                       "Vui lòng liên hệ tác giả của trợ lý.",
+                status_code=409, detail=_text("missing_credential", body.lang),
             )
 
     history = direct_chat.history_turns(db, thread)
@@ -337,8 +433,10 @@ async def send_message(
         ctx=ctx,
         question=body.question,
         history=history,
-        locale="vi",
+        locale=body.lang,
     )
+
+    lang = body.lang
 
     async def sse_stream():
         loop = asyncio.get_event_loop()
@@ -351,7 +449,7 @@ async def send_message(
                 if loop.time() - started > HARD_TIMEOUT:
                     yield _frame({
                         "type": "error",
-                        "text": "Câu hỏi chạy quá lâu và đã bị dừng.",
+                        "text": _text("stream_too_long", lang),
                     })
                     break
                 # `asyncio.wait`, never `wait_for`: the latter CANCELS what it waits
@@ -372,7 +470,7 @@ async def send_message(
                     if loop.time() - last_event > IDLE_TIMEOUT:
                         yield _frame({
                             "type": "error",
-                            "text": "Trợ lý không phản hồi và đã bị dừng.",
+                            "text": _text("stream_idle", lang),
                         })
                         break
                     # A comment frame: SSE ignores it, every proxy counts it as
@@ -388,11 +486,25 @@ async def send_message(
                     yield _frame(envelope)
         except Exception:  # noqa: BLE001
             logger.exception("[chat] stream failed for thread %s", thread_id)
-            yield _frame({"type": "error", "text": "Có lỗi khi chạy trợ lý."})
+            yield _frame({"type": "error", "text": _text("stream_failed", lang)})
         finally:
+            # CANCEL, THEN LET IT FINISH, THEN CLOSE. `pending` is a task still
+            # INSIDE the generator; `aclose()` on a generator that is running
+            # raises RuntimeError, which killed the stream before the `done` below
+            # on every timeout. The cancelled task runs the turn's own `finally` —
+            # the one that records an abandoned turn — so it is waited for, briefly.
             if pending is not None:
                 pending.cancel()
-            await agen.aclose()
+                try:
+                    await asyncio.wait({pending}, timeout=5.0)
+                except BaseException:  # noqa: BLE001 — a disconnect cancels us too
+                    pass
+            try:
+                await agen.aclose()
+            except RuntimeError:
+                # Still running only if the cancelled step ignored cancellation for
+                # 5s; its task finishes on its own and records the turn there.
+                logger.warning("[chat] turn generator still running at close (thread %s)", thread_id)
             # The engine ends every run with `done`; this is for the paths that never
             # reached it — a timeout, or an exception — so the client always has a
             # terminator to stop on rather than waiting out its own idle timer.
@@ -407,6 +519,45 @@ async def send_message(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ═══ Judging an answer ════════════════════════════════════════════════════════
+@router.post("/threads/{thread_id}/runs/{run_id}/rating")
+def rate_answer(
+    thread_id: int,
+    run_id: int,
+    body: Rate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    _: Any = Depends(can_chat),
+):
+    """Thumbs up or down on ONE answer, by the person it was given to.
+
+    The Studio's rating route demands authoring rights on the flow — right for an
+    author grading runs, wrong for the reader who actually received the answer.
+    This one is scoped by the CONVERSATION instead: the run must belong to this
+    thread, and the caller must be able to add to the thread (owner or `edit`).
+    A read-only sharee and an oversight reader may look, not judge. The rating
+    lands on the same `agent_flow_runs.rating` the author's Runs tab filters by.
+    """
+    thread = direct_chat.get_thread(db, user, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy cuộc trò chuyện")
+    if not direct_chat.may_write(direct_chat.thread_access(db, user, thread)):
+        raise HTTPException(status_code=403, detail=_text("read_only_write", "vi"))
+
+    from app.models.agent_flow_run import AgentFlowRun
+
+    run = (
+        db.query(AgentFlowRun)
+        .filter(AgentFlowRun.id == run_id, AgentFlowRun.chat_thread_id == thread.id)
+        .first()
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy câu trả lời")
+    run.rating = body.rating
+    db.commit()
+    return {"ok": True, "run_id": run.id, "rating": run.rating}
 
 
 def _frame(payload: dict) -> str:
