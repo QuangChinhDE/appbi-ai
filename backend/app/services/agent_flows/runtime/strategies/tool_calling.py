@@ -211,6 +211,10 @@ class ToolCallingStrategy:
                     {"id": c.tool_call_id, "name": c.tool_name, "args": c.tool_args}
                     for c in pending
                 ],
+                # The vendor's own record of this round (reasoning items, thinking
+                # blocks, thought signatures), carried unchanged for the adapter
+                # to replay — the next round is a continuation of this one.
+                **({"provider_state": dict(reply.provider_state)} if reply.provider_state else {}),
             })
             # THE PROTOCOL OWES A RESULT TO EVERY CALL IT ANNOUNCED.
             #

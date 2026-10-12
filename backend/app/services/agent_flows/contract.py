@@ -2068,6 +2068,15 @@ def _check_model_choice(node: Any) -> None:
             f"Chọn một trong: {allowed}"
         )
     object.__setattr__(node, "model", model)
+    # A STEP THAT CALLS TOOLS NEEDS A MODEL THAT CAN. A text-only model would
+    # ignore the grants and answer from nothing — refused, not run.
+    from app.services.agent_flows.models_catalogue import spec as _model_spec
+
+    if (getattr(node, "tools", None) and (_model_spec(provider, model) or {}).get("tools") is False):
+        raise ValueError(
+            f"model '{model}' không hỗ trợ gọi công cụ, nhưng bước này được cấp công cụ. "
+            "Chọn model có hỗ trợ công cụ, hoặc bỏ công cụ khỏi bước."
+        )
 
 
 def _tool_specs(names: set[str]) -> list[Any]:

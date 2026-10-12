@@ -1462,11 +1462,13 @@ async def _stream(
     system_prompt: str, messages: list[dict], tools: list[dict],
 ) -> AsyncGenerator[AgentEvent, None]:
     """Dispatch to the vendor adapter. The one place a provider name is interpreted."""
+    from app.services.agent_flows.models_catalogue import spec as model_spec
     from app.services.dashboard_ai_bot.providers import (
         stream_anthropic,
         stream_gemini,
         stream_openai,
     )
+    from app.services.dashboard_ai_bot.providers.openai_responses import stream_openai_responses
 
     # Gemini runs through its OpenAI-compatible endpoint (`stream_gemini`), which
     # keeps tool calling. The native single-shot adapter ignores `tools`, so an
@@ -1487,6 +1489,20 @@ async def _stream(
     }
     if model:
         kwargs["model"] = model
+    # THE MODEL'S OWN PROTOCOL AND BUDGET, from the catalogue. A step runs the
+    # model it names through the endpoint that model needs (GPT-6: Responses),
+    # with an output budget its reasoning fits in — the adapters' 2048 default was
+    # spent on thinking before a word of the answer. Strict mode everywhere: no
+    # silent model switch, truncation is an error, provider state is replayed.
+    s = model_spec(prov := (provider or "").strip().lower(), model) or {}
+    if s.get("max_output_tokens"):
+        kwargs["max_tokens"] = int(s["max_output_tokens"])
+    if prov == "openai" and s.get("endpoint") == "responses":
+        fn = stream_openai_responses
+        if s.get("reasoning_effort"):
+            kwargs["reasoning_effort"] = s["reasoning_effort"]
+    else:
+        kwargs["strict"] = True
     async for ev in fn(**kwargs):
         yield ev
 

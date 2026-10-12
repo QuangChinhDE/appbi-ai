@@ -101,6 +101,25 @@ def delete_credential(
     return _run(lambda: creds.delete(db, user, credential_id))
 
 
+class ModelCheckIn(BaseModel):
+    model: str = Field(min_length=1, max_length=120)
+    #: Run one real two-round tool call (spends a few hundred tokens on the key).
+    smoke: bool = False
+
+
+@router.post("/{credential_id}/check-model")
+async def check_model(
+    credential_id: int,
+    body: ModelCheckIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(can_view),
+) -> dict[str, Any]:
+    try:
+        return await creds.check_model(db, user, credential_id, body.model, smoke=body.smoke)
+    except creds.CredentialError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+
 @router.post("/{credential_id}/test")
 async def test_credential(
     credential_id: int,
