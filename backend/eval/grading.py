@@ -116,6 +116,11 @@ def numbers_at(text: str) -> list[tuple[float, int, int]]:
         if re.search(r"(tháng|thang|month|quý|quy|ngày|ngay)\s*$", (text[max(0, m.start() - 8):m.start()]).lower()) \
                 and v == int(v) and v <= 31:
             continue                            # "tháng 8": a month
+        # "biểu đồ 1219", "chart 684", "ID 684": an identifier, not a figure. Round 7
+        # graded a correct refusal citing chart 1219 as a confident wrong answer.
+        if v == int(v) and re.search(r"(biểu đồ|bieu do|chart|chart_id|\bid|#)\s*(số\s*)?:?\s*$",
+                                     (text[max(0, m.start() - 16):m.start()]).lower()):
+            continue
         out.append((v, m.start(), m.end()))
     return out
 
@@ -249,6 +254,9 @@ def self_check() -> None:
     assert grade("Theo tài liệu [1], doanh thu sản phẩm [e2] là 13,591,643.70.",
                  Expect([Fact("total_revenue", 13591643.70, report="olist")], report="olist")
                  ).verdict == "correct"                                   # citations ignored
+    # A chart identifier is not a figure; a figure beside it still is.
+    assert numbers("biểu đồ 1219 không cho phép; chart 684; ID 684") == []
+    assert numbers("biểu đồ ARR là 5244") == [5244.0]
     # The answer that escaped `wrong_as_verified` in every architecture:
     g = grade("GMV gồm phí vận chuyển. Theo báo cáo, GMV toàn kỳ là 13,591,643.70.", q3)
     assert g.verdict == "wrong_metric" and g.confident_wrong, g

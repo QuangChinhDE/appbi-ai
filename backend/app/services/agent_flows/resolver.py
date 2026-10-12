@@ -46,7 +46,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Literal
 
-from app.services.agent_flows.tools.packs.discover import _score, _terms_of
+from app.services.agent_flows.tools.packs.discover import _TIME_GRAIN_WORDS, _score, _terms_of
 
 Status = Literal["exact", "semantic", "ambiguous", "none", "lookup_failed"]
 
@@ -70,26 +70,56 @@ Call = Callable[[str, dict], Any]
 #: charts arriving from two unrelated metrics is a question we did not understand.
 _AMBIGUOUS_AT = 2
 
+#: Words that say WHEN or ASK, never WHAT. Live round 7: "ARR tháng 8 năm 2026 là
+#: bao nhiêu?" has seven terms and one of them names the figure, so `arr_active`
+#: — matched on that one — failed "every term of a short question" and was
+#: dropped; the hybrid writer got no chart and said the data did not exist. The
+#: period is resolved by the measuring tools, not by picking an asset.
+_FILLER = {"la", "bao", "nhieu", "gi", "what", "is", "was", "the", "of", "how", "much", "many"}
+#: Finest first: the grain a question names, when it names several.
+_GRAIN_ORDER = ("ngay", "day", "daily", "date", "tuan", "week", "weekly", "thang", "month",
+                "monthly", "quy", "quarter", "quarterly", "nam", "year", "yearly", "annual")
 
-def _lexical(call: Call, question: str) -> tuple[str, list[int]]:
-    """`list_charts`' own verdict. Its fallback listing is never a match."""
+
+def _content_terms(question: str) -> set[str]:
+    return {t for t in _terms_of(question)
+            if t not in _FILLER and t not in _TIME_GRAIN_WORDS and not t.isdigit()}
+
+
+def _grain_named(question: str) -> str:
+    terms = _terms_of(question)
+    return next((g for g in _GRAIN_ORDER if g in terms), "")
+
+
+def _lexical(call: Call, question: str) -> tuple:
+    """`list_charts`' own verdict. Its fallback listing is never a match.
+
+    A third element carries each listed chart's on-screen measure labels and a
+    fourth its name, both already read by this call — see `_by_measure_label`
+    and `_by_name_winner`."""
     res = call("list_charts", {"query": question})
     if not isinstance(res, dict) or not res.get("ok"):
         return "lookup_failed", []
     data = res.get("data") if isinstance(res.get("data"), dict) else res
+    labels = {c["chart_id"]: [str(m) for m in (c.get("measures") or []) if m]
+              for c in (data.get("charts") or [])
+              if isinstance(c, dict) and isinstance(c.get("chart_id"), int)}
+    names = {c["chart_id"]: str(c.get("chart_name") or "")
+             for c in (data.get("charts") or [])
+             if isinstance(c, dict) and isinstance(c.get("chart_id"), int)}
     selection = data.get("selection") if isinstance(data.get("selection"), dict) else {}
     status = str(selection.get("status") or "")
     ids = [c for c in (selection.get("selected_ids") or []) if isinstance(c, int)]
     if not status:
         coverage = data.get("coverage") if isinstance(data.get("coverage"), dict) else {}
         if "query_matched_nothing" in coverage:
-            return "none", []
+            return "none", [], labels, names
         ids = ids or [
             c.get("chart_id") for c in (data.get("charts") or [])
             if isinstance(c, dict) and isinstance(c.get("chart_id"), int)
         ]
-        return ("matched" if ids else "none"), ids
-    return status, ids
+        return ("matched" if ids else "none"), ids, labels, names
+    return status, ids, labels, names
 
 
 def _semantic(call: Call, question: str) -> list[dict]:
@@ -149,8 +179,10 @@ def _semantic(call: Call, question: str) -> list[dict]:
         # governed vocabulary: "số đơn hàng" scores 3, "tỷ lệ giao đúng hạn" 4,
         # "doanh thu theo tháng" 2, both weather questions 0.
         hay = " ".join(str(asset.get(k) or "") for k in ("id", "name", "detail"))
-        strength = _score(hay, _terms_of(question))
-        terms = _terms_of(question)
+        # On the words that name WHAT is asked — see `_FILLER`. A period word
+        # shared with an unrelated asset is still not a match ("thời tiết tháng 8").
+        terms = _content_terms(question)
+        strength = _score(hay, terms)
         strong = strength >= 2 or (strength and strength == len(terms))
         is_dimension = str(asset.get("field_kind") or "").lower() == "dimension"
 
@@ -236,6 +268,21 @@ def _semantic(call: Call, question: str) -> list[dict]:
                 )
                 paired = True
 
+    # A NAMED PERIOD GRAIN IS A BREAKDOWN TOO. "ARR tháng 8" is answered by the
+    # chart that plots ARR by month, not by the all-period KPI or the by-segment
+    # bar that plot the same measure. Matched through the time axis (see
+    # `_field_matches`); when no chart has one, the measure alone still answers.
+    grain = _grain_named(question)
+    if not paired and grain and (measures or metrics):
+        before = len(out)
+        for m_asset, m_ident, m_strength in (measures or metrics):
+            _collect(
+                {"metric" if not measures else "measure": m_ident, "dimension": grain},
+                accept={"both"}, via="measure+time", concept=str(m_ident), strength=m_strength,
+                why=f"this chart plots “{m_asset.get('name') or m_ident}” over time",
+            )
+        paired = len(out) > before
+
     # A question that named only one of the two is answered by the one it named.
     if not paired:
         for asset, ident, strength in metrics:
@@ -262,6 +309,73 @@ def _semantic(call: Call, question: str) -> list[dict]:
     return out
 
 
+def _by_measure_label(call: Call, question: str, lex_ids: list[int],
+                      labels: dict[int, list[str]]) -> dict | None:
+    """Narrow an ambiguous name match by the ONE measure the question names.
+
+    Only when exactly one distinct on-screen measure label shares a content word
+    with the question: two named measures, or none, stay ambiguous. A period grain
+    in the question then prefers the charts that plot it over time — the same
+    `both` test as a named breakdown — and falls back to every chart plotting the
+    measure. No translation: "khách hàng rời bỏ" does not reach "Cus churned"
+    without governed vocabulary, by design.
+    """
+    content = _content_terms(question)
+    named: dict[str, str] = {}
+    for cid in lex_ids:
+        for label in labels.get(cid, []):
+            if _terms_of(label) & content:
+                named.setdefault(" ".join(sorted(_terms_of(label))), label)
+    if len(named) != 1:
+        return None
+    label = next(iter(named.values()))
+    attempts = []
+    grain = _grain_named(question)
+    if grain:
+        attempts.append(({"measure": label, "dimension": grain}, {"both"}, "measure+time"))
+    attempts.append(({"measure": label}, {"measure", "both"}, "measure_label"))
+    for args, accept, via in attempts:
+        res = call("resolve_chart_candidates", args)
+        if not isinstance(res, dict) or not res.get("ok"):
+            continue
+        payload = res.get("data") if isinstance(res.get("data"), dict) else res
+        ids: list[int] = []
+        for cand in (payload.get("candidates") or []):
+            if (isinstance(cand, dict) and cand.get("chart_id") in lex_ids
+                    and cand.get("match") in accept and cand["chart_id"] not in ids):
+                ids.append(cand["chart_id"])
+        if ids:
+            return {"status": "semantic", "chart_ids": ids, "concepts": [label],
+                    "candidates": [{"chart_id": c, "via": via, "concept": label,
+                                    "why": f"plots the measure “{label}” the question names"
+                                           + (" over time" if via == "measure+time" else "")}
+                                   for c in ids]}
+    return None
+
+
+def _by_name_winner(question: str, lex_ids: list[int], names: dict[int, str]) -> dict | None:
+    """A CLEAR WINNER BY NAME IS NOT AMBIGUITY — the rule `resolve_charts` already
+    applies to concepts, applied to chart names on the question's CONTENT words.
+
+    `list_charts` judges a match against every word of the question, so a long
+    question is "ambiguous" however well one chart fits it. Live round 7: "Danh mục
+    nào có doanh thu cao nhất và chiếm bao nhiêu % tổng doanh thu?" against
+    "Doanh thu theo danh mục" (four content words) and "Doanh thu sản phẩm" (two)
+    was ambiguous, the hybrid read nothing, and it answered that the report had no
+    category revenue. Two shared content words at least, and strictly more than
+    every other chart; a tie stays ambiguous.
+    """
+    content = _content_terms(question)
+    scored = sorted(((len(_terms_of(names.get(c, "")) & content), c) for c in lex_ids), reverse=True)
+    if not scored or scored[0][0] < 2 or (len(scored) > 1 and scored[1][0] == scored[0][0]):
+        return None
+    best, cid = scored[0]
+    return {"status": "semantic", "chart_ids": [cid], "concepts": [],
+            "candidates": [{"chart_id": cid, "via": "name_winner",
+                            "why": f"its name shares {best} of the question's content words, "
+                                   "more than any other chart"}]}
+
+
 def resolve_charts(question: str, allowed: list[int], *, call: Call) -> dict:
     """Which charts this question is about, with the evidence for saying so.
 
@@ -275,7 +389,10 @@ def resolve_charts(question: str, allowed: list[int], *, call: Call) -> dict:
     if not question.strip() or not keep:
         return empty
 
-    lex_status, lex_ids = _lexical(call, question)
+    lex = _lexical(call, question)
+    lex_status, lex_ids = lex[0], lex[1]
+    lex_labels = lex[2] if len(lex) > 2 else {}
+    lex_names = lex[3] if len(lex) > 3 else {}
     lex_ids = [c for c in lex_ids if c in keep]
     if lex_status == "matched" and lex_ids:
         return {"status": "exact", "chart_ids": lex_ids, "concepts": [],
@@ -286,6 +403,15 @@ def resolve_charts(question: str, allowed: list[int], *, call: Call) -> dict:
     # up — this is the step that was missing, not a second opinion on the first.
     cands = [c for c in _semantic(call, question) if c["chart_id"] in keep]
     if not cands:
+        # ONE MEASURE NAMED BY ITS ON-SCREEN LABEL. Live round 7: on a report
+        # with no declared vocabulary, every chart shares the word "ARR", so the
+        # name match was ambiguous and the vocabulary pass had nothing to pair —
+        # the hybrid read nothing and answered "no data" for a figure on screen.
+        if lex_status == "ambiguous" and lex_ids:
+            narrowed = (_by_measure_label(call, question, lex_ids, lex_labels)
+                        or _by_name_winner(question, lex_ids, lex_names))
+            if narrowed:
+                return narrowed
         # An `ambiguous` lexical verdict is still ambiguity, not absence: the
         # caller may want to offer those candidates rather than say "no chart".
         if lex_status == "ambiguous" and lex_ids:

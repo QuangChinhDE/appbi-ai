@@ -17,6 +17,7 @@ Each case is the shape that was published, run through the real check/tool code.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import sys
 
@@ -347,3 +348,324 @@ def test_a_semantic_sum_keeps_its_share_across_months(saas, monkeypatch):
     got = DER.tool_share_of(saas, {"chart_id": 1, "measure": "cus_churned", "dimension": "year_month",
                                    "item": "2026-08-01"})
     assert got["data"]["share_pct"] == round(40 / 60 * 100, 2)
+
+
+# ── found in live round 7: the hybrid read nothing for "ARR tháng 8 năm 2026" ──
+from app.services.agent_flows import resolver as RS
+
+
+def _resolver_call(assets, candidates_by_args):
+    seen: list[dict] = []
+
+    def call(name, args):
+        seen.append({"name": name, "args": dict(args or {})})
+        if name == "list_charts":
+            return {"ok": True, "data": {"selection": {"status": "ambiguous",
+                                                       "selected_ids": [1218, 1219, 1220, 1221]}}}
+        if name == "search_business_assets":
+            return {"ok": True, "data": {"results": assets}}
+        if name == "resolve_chart_candidates":
+            key = (args.get("measure") or args.get("metric") or "", args.get("dimension") or "")
+            return {"ok": True, "data": {"candidates": candidates_by_args.get(key, [])}}
+        return {"ok": False}
+
+    call.seen = seen                                          # type: ignore[attr-defined]
+    return call
+
+
+ARR_ASSETS = [{"type": "field", "field_kind": "measure", "id": "arr_active", "name": "ARR",
+               "detail": "arr"}]
+ARR_BY_MEASURE = [{"chart_id": c, "match": "measure"} for c in (1219, 1220, 1221)]
+
+
+def test_a_measure_named_in_one_word_beside_a_period_is_not_dropped():
+    """Live round 7: every SaaS chart shares the word ARR, so the name match is
+    ambiguous, and the vocabulary pass dropped `arr_active` as weak — one of seven
+    terms, six of them "tháng 8 năm 2026 là bao nhiêu". The hybrid writer then got
+    no chart and said the data did not exist."""
+    call = _resolver_call(ARR_ASSETS, {("arr_active", "thang"): [{"chart_id": 1219, "match": "both"}],
+                                       ("arr_active", ""): ARR_BY_MEASURE})
+    got = RS.resolve_charts("ARR tháng 8 năm 2026 là bao nhiêu?", [1218, 1219, 1220, 1221], call=call)
+    assert got["status"] == "semantic" and got["chart_ids"] == [1219], got
+
+
+def test_a_named_grain_without_a_time_chart_falls_back_to_the_measure():
+    call = _resolver_call(ARR_ASSETS, {("arr_active", ""): ARR_BY_MEASURE})
+    got = RS.resolve_charts("ARR tháng 8 năm 2026 là bao nhiêu?", [1219, 1220, 1221], call=call)
+    assert got["status"] == "semantic" and got["chart_ids"] == [1219, 1220, 1221], got
+
+
+def test_a_period_word_alone_is_not_a_match():
+    """The weather guard holds: an asset sharing only a period word ("tháng") with
+    an unrelated question is still not a match."""
+    assets = [{"type": "field", "field_kind": "measure", "id": "revenue_month",
+               "name": "Doanh thu tháng", "detail": "doanh thu thang"}]
+    call = _resolver_call(assets, {("revenue_month", ""): [{"chart_id": 1219, "match": "measure"}],
+                                   ("revenue_month", "thang"): [{"chart_id": 1219, "match": "both"}]})
+    got = RS.resolve_charts("thời tiết tháng 8", [1219], call=call)
+    assert got["chart_ids"] == [], got
+
+
+SAAS_LABELS = {1218: ["Mrr active", "Arr active", "Cus churned"], 1219: ["Arr active"],
+               1220: ["Arr active"], 1221: ["Arr active"]}
+
+
+def _unvocabularied_call(candidates_by_args, ids=(1218, 1219, 1220, 1221)):
+    """A report with NO declared vocabulary — the live SaaS fixture: search finds
+    only charts, and `list_charts` is ambiguous on a shared word."""
+    seen: list[dict] = []
+
+    def call(name, args):
+        seen.append({"name": name, "args": dict(args or {})})
+        if name == "list_charts":
+            return {"ok": True, "data": {
+                "charts": [{"chart_id": c, "measures": SAAS_LABELS[c]} for c in ids],
+                "selection": {"status": "ambiguous", "selected_ids": list(ids)}}}
+        if name == "search_business_assets":
+            return {"ok": True, "data": {"results": [{"type": "chart", "id": c} for c in ids]}}
+        if name == "resolve_chart_candidates":
+            key = (args.get("measure") or "", args.get("dimension") or "")
+            return {"ok": True, "data": {"candidates": candidates_by_args.get(key, [])}}
+        return {"ok": False}
+
+    call.seen = seen                                          # type: ignore[attr-defined]
+    return call
+
+
+ARR_LABEL_CANDS = {("Arr active", "thang"): [{"chart_id": 1218, "match": "both"},
+                                             {"chart_id": 1219, "match": "both"},
+                                             {"chart_id": 1220, "match": "measure"}],
+                   ("Arr active", ""): [{"chart_id": c, "match": "measure"} for c in (1218, 1219, 1220, 1221)]}
+
+
+def test_without_vocabulary_the_on_screen_measure_label_narrows_the_read():
+    got = RS.resolve_charts("ARR tháng 8 năm 2026 là bao nhiêu?", [1218, 1219, 1220, 1221],
+                            call=_unvocabularied_call(ARR_LABEL_CANDS))
+    assert got["status"] == "semantic" and got["chart_ids"] == [1218, 1219], got
+
+
+def test_two_named_measures_stay_ambiguous():
+    got = RS.resolve_charts("ARR và MRR tháng 8", [1218, 1219, 1220, 1221],
+                            call=_unvocabularied_call(ARR_LABEL_CANDS))
+    assert got["status"] == "ambiguous" and got["chart_ids"] == [], got
+
+
+def test_no_translation_without_vocabulary():
+    """"khách hàng rời bỏ" never reaches "Cus churned" without governed
+    vocabulary — the resolver does not guess across languages."""
+    got = RS.resolve_charts("Có bao nhiêu khách hàng rời bỏ trong tháng 8/2026?", [1218, 1219],
+                            call=_unvocabularied_call({}, ids=(1218, 1219)))
+    assert got["status"] == "ambiguous" and got["chart_ids"] == [], got
+
+
+# ── found in live round 7: the writer's handoff kept the 5244 total, not the rows ──
+def _read_entry(cid, rows, columns, measure):
+    from app.services.agent_flows.runtime.handlers import data as D
+
+    stats = [{"name": "arr_active", "kind": "number", "total": 5244.0, "min": 72.0, "max": 864.0,
+              "avg": 655.5, "distinct": 8, "top_values": [[864, 1]] * 8},
+             {"name": "year_month", "kind": "datetime", "distinct": 8, "top_values": [["2026-01-01", 1]] * 8}]
+    e = {"chart_id": cid, "title": f"chart {cid}",
+         "summary": {"ok": True, "data": {"chart_name": f"chart {cid}", "chart_type": "LINE",
+                                          "total_rows": len(rows), "columns": stats}},
+         "data": {"ok": True, "data": {"chart_id": cid, "columns": columns, "rows": rows,
+                                       "row_count": len(rows),
+                                       "coverage": {"returned": len(rows), "total": len(rows),
+                                                    "truncated": False}}},
+         "rows_ordered_by": measure}
+    D._compact(e)
+    return e
+
+
+ARR_ROWS = [["2026-07-01", 864], ["2026-06-01", 840], ["2026-05-01", 792], ["2026-04-01", 720],
+            ["2026-03-01", 696], ["2026-02-01", 660], ["2026-01-01", 600], ["2026-08-01", 72]]
+
+
+def test_a_complete_read_hands_over_its_rows_not_a_cross_period_total():
+    e = _read_entry(1219, ARR_ROWS, ["year_month", "arr_active"], "arr_active")
+    assert "summary" not in e and e["data"]["data"]["rows"] == ARR_ROWS
+    assert e["read_status"] == "ok"
+    assert "5244" not in json.dumps(e)
+
+
+def test_a_partial_read_keeps_the_stats_the_rows_cannot_give():
+    e = _read_entry(686, ARR_ROWS[:5], ["year_month", "arr_active"], "arr_active")
+    e2 = _read_entry(686, ARR_ROWS, ["year_month", "arr_active"], "arr_active")
+    from app.services.agent_flows.runtime.handlers import data as D
+    raw = {"chart_id": 686, "summary": {"ok": True, "data": {"chart_name": "c", "total_rows": 72,
+           "columns": [{"name": "revenue", "kind": "number", "total": 13591643.7}]}},
+           "data": {"ok": True, "data": {"rows": [["a", 1]] * 50, "coverage": {"returned": 50, "total": 72,
+                                                                              "truncated": True}}}}
+    D._compact(raw)
+    assert raw["summary"]["columns"][0]["total"] == 13591643.7
+    assert e and e2
+
+
+def test_a_refused_chart_states_its_reason_once():
+    from app.services.agent_flows.runtime.handlers import data as D
+
+    for err in ({"ok": False, "error": "biểu đồ 1220 cho số của TOÀN BỘ thời gian", "error_code": "period_not_in_chart"},
+                {"ok": False, "error": "failed to load chart 1220: DataError"}):
+        before = {"chart_id": 1220, "summary": dict(err), "data": dict(err)}
+        e = copy.deepcopy(before)
+        D._compact(e)
+        assert "summary" not in e and e["data"] == err
+        # The verdict and its reason are unchanged by saying it once.
+        assert D._failure_reasons([e]) == D._failure_reasons([before])
+        assert not D._entry_has_data(e)
+
+
+def test_the_s2_handoff_carries_july_and_august():
+    """The live shape: two readable monthly charts, two refused all-period charts,
+    and a long knowledge step sharing the 8,000-character handoff."""
+    from app.services.agent_flows.runtime.context import StepView, compile_context
+    from app.services.agent_flows.runtime.handlers import data as D
+    from app.services.agent_flows.runtime.state import render_value
+
+    err = {"ok": False, "error": "biểu đồ cho số của TOÀN BỘ thời gian, còn câu hỏi hỏi về một kỳ cụ thể — "
+                                 "con số này không phải số của kỳ được hỏi.",
+           "error_code": "period_not_in_chart", "retryable": False,
+           "recovery": "Các biểu đồ trong phạm vi cho cùng số đo theo từng kỳ: 1218; 1219. Gọi lại với một trong các biểu đồ đó."}
+    refused = []
+    for cid in (1220, 1221):
+        r = {"chart_id": cid, "summary": dict(err), "data": dict(err)}
+        D._compact(r)
+        refused.append(r)
+    doc = {"scope": {"read": 4, "available": 4},
+           "charts": [_read_entry(1218, [[r[1], r[0], 104] for r in ARR_ROWS], ["arr_active", "year_month", "plan_code"], "arr_active"),
+                      _read_entry(1219, ARR_ROWS, ["year_month", "arr_active"], "arr_active"), *refused],
+           "read_ok": True}
+    knowledge = json.dumps({"results": [{"content": "x " * 2500}]})
+    p = compile_context([StepView("doc", "doc", render_value(doc)), StepView("k", "k", knowledge)], 8000)
+    assert "doc" in p.included, p.coverage
+    assert '"2026-08-01", 72' in p.text and '"2026-07-01", 864' in p.text
+    assert "5244" not in p.text
+
+
+def test_the_reducer_drops_whole_rows_never_cells_or_header_names():
+    """Live round 7 handed the writer `[864, "… (4 mục nữa đã lược)"]` under a
+    header cut to `["arr_active", "…"]`: values that no longer say which column
+    they are. At every budget, a row and a header stay whole; whole rows go."""
+    from app.services.agent_flows.runtime.context import _reduce
+
+    header = ["arr_active", "cus_churned", "mrr_active", "plan_code", "year_month"]
+    rows = [[800 + i, i, 60 + i, 101, f"2026-{i + 1:02d}-01"] for i in range(40)]
+    doc = {"charts": [
+        {"chart_id": 1218, "title": "SaaS theo thang",
+         "summary": {"columns": [{"name": h, "kind": "number"} for h in header]},
+         "data": {"ok": True, "data": {"columns": header, "rows": rows}}},
+        {"chart_id": 1219, "data": {"ok": True, "data": {"columns": header[:2], "rows": [r[:2] for r in rows]}}}]}
+    for budget in range(300, 2600, 50):
+        text, _ = _reduce(json.dumps(doc), budget)
+        for chart in json.loads(text).get("charts", []):
+            inner = (chart.get("data") or {}).get("data") if isinstance(chart, dict) and isinstance(chart.get("data"), dict) else None
+            if not isinstance(inner, dict):
+                continue
+            cols = inner.get("columns")
+            assert not (isinstance(cols, list) and any(str(c).startswith("…") for c in cols)), (budget, cols)
+            for row in inner.get("rows") if isinstance(inner.get("rows"), list) else []:
+                assert not (isinstance(row, list) and any(str(c).startswith("… (") for c in row)), (budget, row)
+
+
+def test_read_bookkeeping_goes_figures_and_coverage_stay():
+    from app.services.agent_flows.runtime.handlers import data as D
+
+    cov = {"returned": 3, "total": 3, "truncated": False, "capped_by_policy": {"asked_for": 200, "allowed": 50}}
+    part = {"ok": True, "data": {"columns": ["segment", "arr_active"], "rows": [["enterprise", 5000]],
+                                 "coverage": dict(cov), "filters_applied": []},
+            "coverage": dict(cov)}
+    D._drop_read_bookkeeping(part)
+    assert part["data"]["rows"] == [["enterprise", 5000]]
+    assert part["data"]["coverage"] == {"returned": 3, "total": 3, "truncated": False}
+    assert "coverage" not in part and "filters_applied" not in part["data"]
+
+
+def test_the_h3_handoff_keeps_the_top_categories():
+    """Live round 7 (H3): a 72-category chart read top-50, three one-row KPIs and
+    the filter block, beside a long knowledge step. Every category row was pruned
+    and the writer could not name the second-highest category."""
+    from app.services.agent_flows.runtime.context import StepView, compile_context
+    from app.services.agent_flows.runtime.handlers import data as D
+    from app.services.agent_flows.runtime.state import render_value
+
+    cats = [[1258681.34 - i * 20000, f"category_{i:02d}"] for i in range(50)]
+    cat = {"chart_id": 686, "title": "Olist · Doanh thu theo danh mục · page-1",
+           "summary": {"ok": True, "data": {"chart_name": "c", "total_rows": 72, "columns": [
+               {"name": "dataset_table_438.total_revenue", "kind": "number", "total": 13591643.7}]}},
+           "data": {"ok": True, "data": {"chart_id": 686, "columns": ["revenue", "category"], "rows": cats,
+                                         "row_count": 50, "coverage": {"returned": 50, "total": 72, "truncated": True,
+                                                                      "capped_by_policy": {"asked_for": 200, "allowed": 50}}}},
+           "rows_ordered_by": "dataset_table_438.total_revenue",
+           "coverage": {"rows_read": 50, "rows_total": 72, "complete": False, "note": "ONLY 50/72 ROWS WERE READ"}}
+    D._compact(cat)
+    kpis = []
+    for cid in (679, 688, 682):
+        k = {"chart_id": cid, "title": f"Olist KPI {cid}",
+             "summary": {"ok": True, "data": {"chart_name": "k", "chart_type": "KPI", "total_rows": 1,
+                                              "columns": [{"name": "dataset_table_438.total_revenue", "kind": "number",
+                                                           "total": 13591643.7}]}},
+             "data": {"ok": True, "data": {"chart_id": cid, "columns": ["dataset_table_438.total_revenue"],
+                                           "rows": [[13591643.7]], "row_count": 1,
+                                           "coverage": {"returned": 1, "total": 1, "truncated": False}}}}
+        D._compact(k)
+        kpis.append(k)
+    filters = D._compact_filters({"ok": True, "data": {"filter_count": 0, "has_filters": False, "active_filters": [],
+                                                       "note": "These filters are merged from " * 10}})
+    assert "note" not in filters["data"]
+    doc = {"scope": {"read": 4, "available": 12}, "charts": [cat, *kpis], "filters": filters, "read_ok": True}
+    knowledge = json.dumps({"results": [{"content": "x " * 5500}]})
+    p = compile_context([StepView("doc", "doc", render_value(doc)), StepView("k", "k", knowledge)], 8000)
+    assert '"category_00"' in p.text and '"category_01"' in p.text, p.text[:1500]
+
+
+def test_active_filters_are_never_compacted():
+    from app.services.agent_flows.runtime.handlers import data as D
+
+    active = {"ok": True, "data": {"filter_count": 1, "has_filters": True,
+                                   "active_filters": [{"field": "segment", "value": "enterprise"}], "note": "n"}}
+    assert D._compact_filters(active) is active
+
+
+OLIST_NAMES = {681: "Olist · Giá trị đơn trung bình · page-1", 679: "Olist · Doanh thu sản phẩm · page-1",
+               686: "Olist · Doanh thu theo danh mục · page-1", 688: "Olist · Doanh thu sản phẩm · page-2",
+               682: "Olist · Điểm đánh giá TB · page-1"}
+
+
+def _named_call(names):
+    def call(name, args):
+        if name == "list_charts":
+            return {"ok": True, "data": {
+                "charts": [{"chart_id": c, "chart_name": n, "measures": ["Total revenue"]} for c, n in names.items()],
+                "selection": {"status": "ambiguous", "selected_ids": list(names)}}}
+        if name == "search_business_assets":
+            return {"ok": True, "data": {"results": []}}
+        return {"ok": False}
+    return call
+
+
+def test_a_chart_whose_name_fits_clearly_best_is_not_ambiguous():
+    """Live round 7 (Q2): the hybrid read nothing and said the report had no
+    category revenue, beside a chart named "Doanh thu theo danh mục"."""
+    got = RS.resolve_charts("Danh mục nào có doanh thu cao nhất và chiếm bao nhiêu % tổng doanh thu?",
+                            list(OLIST_NAMES), call=_named_call(OLIST_NAMES))
+    assert got["status"] == "semantic" and got["chart_ids"] == [686], got
+
+
+def test_a_tie_by_name_stays_ambiguous():
+    got = RS.resolve_charts("doanh thu sản phẩm bao nhiêu", list(OLIST_NAMES), call=_named_call(OLIST_NAMES))
+    assert got["status"] == "ambiguous" and got["chart_ids"] == [], got
+
+
+def test_one_shared_content_word_is_not_a_winner():
+    names = {1: "Doanh thu theo tháng", 2: "Số đơn theo bang"}
+    got = RS.resolve_charts("thời tiết doanh nghiệp hôm nay", list(names), call=_named_call(names))
+    assert got["chart_ids"] == [], got
+
+
+def test_an_unrecognised_filter_payload_is_kept_as_it_came():
+    """Caught by the replay snapshot: a payload without the filter shape was
+    compacted to `{}`, dropping data the compactor never read."""
+    from app.services.agent_flows.runtime.handlers import data as D
+
+    other = {"ok": True, "kind": "table", "data": {"columns": ["category"], "rows": [["moveis"]]}}
+    assert D._compact_filters(other) is other

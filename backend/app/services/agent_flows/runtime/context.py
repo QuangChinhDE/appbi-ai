@@ -113,6 +113,13 @@ def _carries_identity(node: Any) -> bool:
     )
 
 
+#: Lists of scalars that are positional headers, and lists whose elements are
+#: positional rows — see `_shrink_json`.
+_POSITIONAL_KEYS = ("columns",)
+_ROW_LIST_KEYS = ("rows", "sample_rows")
+_ROW = "\x00row"
+
+
 def _shrink_json(obj: Any, budget: int) -> tuple[Any, bool]:
     """Halve the biggest list repeatedly until the object fits, BULK FIRST.
 
@@ -131,19 +138,29 @@ def _shrink_json(obj: Any, budget: int) -> tuple[Any, bool]:
             return obj, reduced
         bulk: list[Any] = []
         entities: list[Any] = []
-        stack: list[Any] = [obj]
+        stack: list[tuple[Any, str]] = [(obj, "")]
         while stack:
-            node = stack.pop()
+            node, key = stack.pop()
             if isinstance(node, dict):
-                stack.extend(node.values())
+                stack.extend((v, str(k)) for k, v in node.items())
             elif isinstance(node, list):
+                # A ROW AND A HEADER ARE ONE UNIT. Halving the cells of
+                # `[864, 3, 72, 104, "2026-07-01"]`, or the names in a `columns`
+                # header, leaves values that no longer say which column they are
+                # — live round 7 handed the writer `[864, "… (4 mục nữa đã lược)"]`
+                # under a header cut to `["arr_active", "…"]`. Whole rows go
+                # instead: the `rows` list itself stays a candidate.
+                if key == _ROW or (key in _POSITIONAL_KEYS
+                                   and all(not isinstance(x, (dict, list)) for x in node)):
+                    continue
                 # A list already down to one item plus its "… N more" marker
                 # cannot be halved again; counting it made this loop spin its
                 # 80 passes on `[chart, marker]` and return still over budget.
                 real = len(node) - (1 if node and _is_marker(node[-1]) else 0)
                 if real > 1:
                     (entities if _carries_identity(node) else bulk).append(node)
-                stack.extend(node)
+                child = _ROW if key in _ROW_LIST_KEYS else ""
+                stack.extend((v, child) for v in node)
 
         def biggest(cands):
             best, size = None, 0
