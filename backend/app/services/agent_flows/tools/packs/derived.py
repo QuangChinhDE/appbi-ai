@@ -750,10 +750,35 @@ def tool_total_measure(ctx: ToolContext, args: dict) -> dict:
         )
 
     total = sum(values)
+    whole = _whole_of_members(ctx, chart_id, columns, rows, m_idx)
+    # THE QUESTION NAMES ONE MEMBER: the whole is not its answer. Same rule as
+    # `period_not_in_chart` for a period. Live round 8: the whole-note above was
+    # ignored and "ARR của phân khúc enterprise là 6,500" was reported three times
+    # out of three (enterprise: 5,000).
+    asked_member = _member_named_in_question(ctx, whole)
+    if asked_member:
+        dim = whole["total_of"]["dimension"]
+        return R.err(
+            f"chart {chart_id}: the question asks about '{asked_member}', one value of '{dim}'; "
+            f"this total is the WHOLE across all {whole['total_of']['members']} values — "
+            "not the asked figure.",
+            code="member_not_total",
+            retryable=False,
+            recovery=(f"Call share_of with chart_id={chart_id}, item='{asked_member}' "
+                      f"(dimension '{dim}') for its own value."),
+            detail={"chart_id": chart_id, "dimension": dim, "member": asked_member},
+        )
+    if whole:
+        whole["total_of"].pop("all", None)    # matched against; not shipped
     return R.ok(
         {
             "chart_id": chart_id,
             "measure": columns[m_idx],
+            # THE WHOLE, SAID AS THE WHOLE. On a chart broken down by segment this
+            # is every segment added up, and nothing in the payload used to say so:
+            # live round 8, a specialist reported "ARR của phân khúc enterprise là
+            # 6,500" — the three segments' total, enterprise being 5,000.
+            **whole,
             # WHAT TIME THIS NUMBER IS ABOUT: `period` when one was asked, and
             # `periods_covered` always, so a total over 24 months cannot be read
             # as the value of one.
@@ -791,6 +816,40 @@ def tool_total_measure(ctx: ToolContext, args: dict) -> dict:
         coverage=R.Coverage(returned=len(values), total=len(rows), truncated=False,
                             computed_over_all=True),
     )
+
+
+def _whole_of_members(ctx: ToolContext, chart_id: int, columns: list[str], rows: list[list],
+                      m_idx: int) -> dict:
+    """When the rows are MEMBERS of a breakdown (not periods), name the breakdown."""
+    t_idx = _time_column(ctx, chart_id, columns, rows, m_idx)
+    for d_idx, name in enumerate(columns):
+        if d_idx in (m_idx, t_idx) or _column_is_numeric(rows, d_idx):
+            continue
+        members = sorted({str(r[d_idx]) for r in rows if d_idx < len(r) and r[d_idx] not in (None, "")})
+        if len(members) > 1:
+            return {
+                "total_of": {"dimension": name, "members": len(members), "some": members[:5],
+                             "all": members},
+                "whole_note": (f"This is the WHOLE across all {len(members)} values of '{name}' "
+                               f"({', '.join(members[:5])}{', …' if len(members) > 5 else ''}) — not "
+                               "the value of any one of them. One member's value: share_of "
+                               "(item=the member)."),
+            }
+    return {}
+
+
+def _member_named_in_question(ctx: ToolContext, whole: dict) -> str:
+    """The one breakdown member the viewer's question names, if exactly one."""
+    import re
+
+    from app.core.text_fold import fold_text
+
+    if not whole:
+        return ""
+    question = fold_text(str(getattr(ctx, "question", "") or ""))
+    named = [m for m in whole["total_of"].get("all", whole["total_of"]["some"])
+             if len(m) > 2 and re.search(rf"(?<![^\W_]){re.escape(fold_text(m))}(?![^\W_])", question)]
+    return named[0] if len(named) == 1 else ""
 
 
 def _partition_whole(ctx: ToolContext, chart_id: int, measure_name: str, groups_sum: float) -> dict | None:

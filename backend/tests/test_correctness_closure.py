@@ -669,3 +669,71 @@ def test_an_unrecognised_filter_payload_is_kept_as_it_came():
 
     other = {"ok": True, "kind": "table", "data": {"columns": ["category"], "rows": [["moveis"]]}}
     assert D._compact_filters(other) is other
+
+
+# ── found in live round 8: the segments' total reported as enterprise's ARR ──
+@pytest.fixture()
+def by_segment(monkeypatch):
+    types = {"segment": "text", "arr_active": "numeric"}
+    data = {"columns": ["segment", "arr_active"],
+            "rows": [["enterprise", 5000], ["mid", 300], ["smb", 1200]], "filters_applied": []}
+    monkeypatch.setattr(DER, "_fetch_chart_data", lambda ctx, cid, **kw: copy.deepcopy(data), raising=False)
+    measure_meta.clear_cache()
+    cfg = {"chartType": "BAR", "roleConfig": {"metrics": [], "selectedColumns": list(types)}}
+    return Ctx(extract_chart_field_semantics(cfg, types))
+
+
+def test_a_total_over_members_says_it_is_the_whole(by_segment):
+    """Live round 8 (C_coord S5): `total_measure` on ARR-by-segment returned 6,500
+    with nothing saying it was all three segments; the specialist reported it as
+    enterprise's ARR (5,000)."""
+    got = DER.tool_total_measure(by_segment, {"chart_id": 1, "measure": "arr_active"})
+    assert got["ok"] and got["data"]["value"] == 6500
+    assert got["data"]["total_of"]["dimension"] == "segment" and got["data"]["total_of"]["members"] == 3
+    assert "enterprise" in got["data"]["whole_note"] and "share_of" in got["data"]["whole_note"]
+
+
+def test_a_total_over_periods_is_not_called_a_whole_of_members(saas, monkeypatch):
+    _declare(monkeypatch, cus_churned={"type": "sum"})
+    got = DER.tool_total_measure(saas, {"chart_id": 1, "measure": "cus_churned",
+                                        "period_from": "2026-01", "period_to": "2026-08"})
+    assert got["ok"] and "total_of" not in got["data"], got
+
+
+def test_a_name_winner_breaks_a_tie_between_concepts():
+    """Live round 8 (Q2): the vocabulary reached revenue through several metrics at
+    equal strength — ambiguous — while one of their charts is named for the
+    question."""
+    assets = [{"type": "metric", "id": "doanh_thu_san_pham", "name": "Doanh thu sản phẩm", "detail": "doanh thu"},
+              {"type": "metric", "id": "gia_tri_don", "name": "Giá trị đơn", "detail": "doanh thu chia số đơn"}]
+    cands = {("doanh_thu_san_pham", ""): [{"chart_id": 679, "match": "measure"}, {"chart_id": 686, "match": "measure"}],
+             ("gia_tri_don", ""): [{"chart_id": 681, "match": "measure"}]}
+
+    def call(name, args):
+        if name == "list_charts":
+            return {"ok": True, "data": {"charts": [{"chart_id": c, "chart_name": n} for c, n in OLIST_NAMES.items()],
+                                         "selection": {"status": "ambiguous", "selected_ids": list(OLIST_NAMES)}}}
+        if name == "search_business_assets":
+            return {"ok": True, "data": {"results": assets}}
+        if name == "resolve_chart_candidates":
+            return {"ok": True, "data": {"candidates": cands.get((args.get("metric") or "", args.get("dimension") or ""), [])}}
+        return {"ok": False}
+
+    got = RS.resolve_charts("Danh mục nào có doanh thu cao nhất và chiếm bao nhiêu % tổng doanh thu?",
+                            list(OLIST_NAMES), call=call)
+    assert got["status"] == "semantic" and got["chart_ids"] == [686], got
+
+
+def test_a_question_naming_one_member_is_not_answered_with_the_whole(by_segment):
+    by_segment.question = "ARR của phân khúc enterprise là bao nhiêu?"
+    got = DER.tool_total_measure(by_segment, {"chart_id": 1, "measure": "arr_active"})
+    assert got["ok"] is False and got["error_code"] == "member_not_total", got
+    assert "item='enterprise'" in got["recovery"]
+    share = DER.tool_share_of(by_segment, {"chart_id": 1, "measure": "arr_active", "item": "enterprise"})
+    assert share["ok"] and share["data"]["value"] == 5000
+
+
+def test_the_whole_is_still_given_when_the_question_asks_for_it(by_segment):
+    by_segment.question = "Tổng ARR của mọi phân khúc là bao nhiêu?"
+    got = DER.tool_total_measure(by_segment, {"chart_id": 1, "measure": "arr_active"})
+    assert got["ok"] and got["data"]["value"] == 6500 and "all" not in got["data"]["total_of"]

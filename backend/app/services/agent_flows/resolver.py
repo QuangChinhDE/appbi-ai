@@ -458,6 +458,12 @@ def resolve_charts(question: str, allowed: list[int], *, call: Call) -> dict:
                     ids.append(c["chart_id"])
             return {"status": "semantic", "chart_ids": ids, "candidates": won,
                     "concepts": [winner]}
+        # Same rule by NAME, among the charts the concepts reached: live round 8
+        # (Q2) reached revenue through three metrics at equal strength, while one
+        # of their charts is "Doanh thu theo danh mục" — the question, in words.
+        named = _by_name_winner(question, ids, lex_names)
+        if named:
+            return named
         return {"status": "ambiguous", "chart_ids": [], "candidates": cands,
                 "concepts": concepts}
     return {"status": "semantic", "chart_ids": ids, "candidates": cands,

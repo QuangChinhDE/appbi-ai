@@ -153,6 +153,21 @@ def _close(a: float, b: float) -> bool:
     return abs(a - b) <= max(0.006, abs(b) * 0.0005)
 
 
+def _changes(report: str, measures: set) -> list[float]:
+    """Differences and % changes between two valid figures of the same measure."""
+    out: list[float] = []
+    for m in measures:
+        vals = [f.value for f in FACTS if f.report == report and f.measure == m
+                and f.aggregation == "valid"]
+        for x in vals:
+            for y in vals:
+                if x != y:
+                    out.append(abs(x - y))
+                    if y:
+                        out.append(abs(x - y) / abs(y) * 100)
+    return out
+
+
 _MISSING = re.compile(r"(không có (dữ liệu|số liệu|biểu đồ|thông tin)|không tìm thấy|chưa có dữ liệu|"
                       r"no (data|chart)|not available|không thể cung cấp)", re.IGNORECASE)
 
@@ -201,6 +216,11 @@ def grade(answer: str, expect: Expect, *, status: str = "ok", notices: list[str]
                                   and f.measure not in asked_measures for f in hits)                 and not any(f.measure in named and f.aggregation == "invalid" for f in hits):
             continue          # a true figure under its own name: not wrong (completeness is judged below)
         if any(_close(v, f.value) for f in expect.facts) or any(_close(v, d) for d in expect.derived):
+            continue
+        # A CHANGE BETWEEN TWO TRUE FIGURES of a measure the question asked about
+        # (difference or % change) is derived, not invented. Round 8 graded "MRR
+        # tháng 6 là 70, tăng 4.0 (6.06%) so với tháng 5" (66) as unsupported.
+        if not hits and any(_close(v, c) for c in _changes(expect.report, asked_measures)):
             continue
         if hits:
             f = hits[0]
@@ -257,6 +277,10 @@ def self_check() -> None:
     # A chart identifier is not a figure; a figure beside it still is.
     assert numbers("biểu đồ 1219 không cho phép; chart 684; ID 684") == []
     assert numbers("biểu đồ ARR là 5244") == [5244.0]
+    # A change between two true figures of the asked measure is derived, not invented:
+    s3 = Expect([Fact("mrr_active", 70, period="2026-06")])
+    assert grade("MRR tháng 6/2026 là 70, tăng 4.0 (6.06%) so với tháng 5.", s3).verdict == "correct"
+    assert grade("MRR tháng 6/2026 là 70, tăng 9.13% so với tháng 5.", s3).verdict == "unsupported_number"
     # The answer that escaped `wrong_as_verified` in every architecture:
     g = grade("GMV gồm phí vận chuyển. Theo báo cáo, GMV toàn kỳ là 13,591,643.70.", q3)
     assert g.verdict == "wrong_metric" and g.confident_wrong, g
