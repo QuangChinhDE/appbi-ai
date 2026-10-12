@@ -267,3 +267,42 @@ def test_a_stalled_turn_ends_with_an_error_and_a_terminator(client, db, people, 
     assert '"error"' in frames[-2], frames
     assert frames[-1] == 'data: {"type": "done"}', frames
     assert cleaned.get("ran") is True
+
+
+# ── chat-only reader ───────────────────────────────────────────────────────────
+def _chat_flow(db, author, key):  # noqa: F811
+    from app.models.agent_brain import AgentBrainVersion
+
+    db.add(AgentBrainVersion(
+        brain_key=key, version=1, name=f"Flow {key}", status="published",
+        owner_email=author.email, flow_type="chat",
+        body={"name": key, "nodes": [{"key": "a", "type": "stop", "name": "A", "message": "ok"}]},
+    ))
+    db.commit()
+
+
+def test_a_chat_only_reader_sees_and_uses_what_was_shared_with_them(client, db, people):  # noqa: F811
+    """`chat` is its own module key so a reader needs no builder access. The flow
+    scope still demanded `agent_flows` above `none`, so a reader granted ONLY
+    `chat` saw an empty catalogue, even for flows shared with them."""
+    author = make_user(db, "ch-author", chat="edit", agent_flows="edit")
+    reader = make_user(db, "ch-reader", chat="edit")            # agent_flows: none
+    nochat = make_user(db, "ch-nochat", agent_flows="edit")     # chat: none
+    key = f"chatonly_{uuid.uuid4().hex[:8]}"
+    other = f"chatother_{uuid.uuid4().hex[:8]}"
+    _chat_flow(db, author, key)
+    _chat_flow(db, author, other)
+    share(db, "agent_brain", key, reader, "view", author)
+    share(db, "agent_brain", key, nochat, "view", author)
+
+    keys = [b["brain_key"] for b in client.get("/api/v1/agent-flows/chat/brains",
+                                               headers=reader.headers).json()["brains"]]
+    assert key in keys and other not in keys
+
+    r = client.post("/api/v1/agent-flows/chat/threads", headers=reader.headers, json={"brain_key": key})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/v1/agent-flows/chat/threads", headers=reader.headers, json={"brain_key": other})
+    assert r.status_code == 404, r.text
+
+    # The module floor still holds: no `chat`, no Chat — whatever else they hold.
+    assert client.get("/api/v1/agent-flows/chat/brains", headers=nochat.headers).status_code == 403

@@ -77,6 +77,8 @@ def test_a_bot_flow_is_refused_at_the_chat_door_by_its_type(monkeypatch):
     import app.services.agent_flows.permissions as perms
 
     monkeypatch.setattr(perms, "usable_brains", lambda db, user: _Q(row))
+    # Chat resolves through its own scope (gated on `chat`, not `agent_flows`).
+    monkeypatch.setattr(perms, "chat_usable_brains", lambda db, user: _Q(row))
 
     got_row, flow, problem = direct_chat.resolve_for_chat(None, object(), "k")
 

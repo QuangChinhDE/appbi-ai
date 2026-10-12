@@ -110,7 +110,7 @@ def published_chat_brains(db: Session, user: Any) -> list[tuple[AgentBrainVersio
     picker would list the same assistant nine times.
     """
     from app.services.agent_flows import registry as reg
-    from app.services.agent_flows.permissions import usable_brains
+    from app.services.agent_flows.permissions import chat_usable_brains as usable_brains
 
     rows = (
         usable_brains(db, user)
@@ -146,7 +146,7 @@ def resolve_for_chat(
     report. Each of those must stop the next question rather than the next thread.
     """
     from app.services.agent_flows import registry as reg
-    from app.services.agent_flows.permissions import usable_brains
+    from app.services.agent_flows.permissions import chat_usable_brains as usable_brains
 
     row = (
         usable_brains(db, user)
