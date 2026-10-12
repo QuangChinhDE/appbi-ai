@@ -44,6 +44,12 @@ export interface ChatBrain {
    *  must degrade to name + purpose rather than render an assistant as
    *  capability-less. */
   capability?: ReaderCapability | null;
+  /** False when this reader would be refused every question right now — the
+   *  rollout policy does not include them, or a step has no AI key. Listed
+   *  anyway, so "where did my assistant go" has an answer. Optional: an older
+   *  backend omits it, and absent means available. */
+  available?: boolean;
+  unavailable_reason?: string;
 }
 
 export interface ChatThread {
@@ -52,6 +58,9 @@ export interface ChatThread {
   title: string;
   created_at: string | null;
   last_active_at: string | null;
+  /** Rename and delete are the owner's. Absent on an older backend, which is
+   *  treated as "mine" — the behaviour this field replaced. */
+  is_owner?: boolean;
 }
 
 export interface ChatCitation {
@@ -70,8 +79,8 @@ export interface ChatMessage {
   citations?: ChatCitation[];
   run_id?: number;
   rating?: string | null;
-  /** Typed blocks from the terminal `result` envelope. Only ever set on a live
-   *  turn — a restored transcript keeps the prose, which is what was recorded. */
+  /** Typed blocks from the terminal `result` envelope — on a live turn, and on a
+   *  restored one, rebuilt server-side through the same reader boundary. */
   blocks?: AnswerBlock[];
 }
 
@@ -140,9 +149,29 @@ export async function createThread(brainKey: string): Promise<ChatThread> {
   return data;
 }
 
-export async function readThread(threadId: number): Promise<ChatThreadDetail> {
-  const { data } = await apiClient.get(`${BASE}/threads/${threadId}`);
+export async function readThread(threadId: number, lang?: string): Promise<ChatThreadDetail> {
+  const { data } = await apiClient.get(`${BASE}/threads/${threadId}`, {
+    params: lang ? { lang } : undefined,
+  });
   return data;
+}
+
+/** Thumbs up / down on one answer; `null` clears it. Scoped by the conversation:
+ *  the server refuses a run that is not in this thread, and a reader who may
+ *  only read it. */
+export async function rateAnswer(
+  threadId: number, runId: number, rating: 'up' | 'down' | null,
+): Promise<void> {
+  await apiClient.post(`${BASE}/threads/${threadId}/runs/${runId}/rating`, { rating });
+}
+
+/** An HTTP refusal decided before the stream opened, with its status kept so the
+ *  caller can word it in the reader's language instead of echoing the server. */
+export class ChatHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'ChatHttpError';
+  }
 }
 
 export async function renameThread(threadId: number, title: string): Promise<ChatThread> {
@@ -171,6 +200,7 @@ export async function deleteThread(threadId: number): Promise<void> {
 export async function* streamChatTurn(
   threadId: number,
   question: string,
+  lang: string,
   signal?: AbortSignal,
 ): AsyncGenerator<ChatEvent, void, unknown> {
   const base = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
@@ -178,7 +208,9 @@ export async function* streamChatTurn(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ question }),
+    // `lang` is the UI language ('vi' | 'en'). The server used to run every turn
+    // as Vietnamese, whatever the reader had chosen.
+    body: JSON.stringify({ question, lang: lang === 'en' ? 'en' : 'vi' }),
     signal,
   });
 
@@ -190,7 +222,7 @@ export async function* streamChatTurn(
     } catch {
       /* a non-JSON error body is still an error */
     }
-    throw new Error(detail);
+    throw new ChatHttpError(String(detail), response.status);
   }
 
   // 180s: the server's own idle watchdog is 180s and its keepalive is every 8s, so
