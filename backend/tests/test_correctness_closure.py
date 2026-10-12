@@ -737,3 +737,37 @@ def test_the_whole_is_still_given_when_the_question_asks_for_it(by_segment):
     by_segment.question = "Tổng ARR của mọi phân khúc là bao nhiêu?"
     got = DER.tool_total_measure(by_segment, {"chart_id": 1, "measure": "arr_active"})
     assert got["ok"] and got["data"]["value"] == 6500 and "all" not in got["data"]["total_of"]
+
+
+# ── found in live round 9: a series max vouched for "the latest month" ──────
+def _latest_world(saas, monkeypatch, period):
+    from app.services.agent_flows.runtime import claim_check as CC
+    from app.services.agent_flows.runtime.state import RunState
+
+    monkeypatch.setattr(CC, "_question_measures", lambda ctx, q: {"arr_active"})
+    saas.question = "ARR ở tháng gần nhất có dữ liệu là bao nhiêu và đó là tháng nào?"
+    state = RunState()
+    state.chart_dims[1] = ["year_month"]
+    args = {"chart_id": 1, "measure": "arr_active", "period": period}
+    state.record_evidence(DER.tool_total_measure(saas, args), tool="total_measure", args=args)
+    summary = {"ok": True, "kind": "narrative", "data": {"chart_id": 1, "chart_name": "ARR theo tháng", "total_rows": 8,
+               "columns": [{"name": "arr_active", "kind": "number", "total": 5244.0, "min": 72.0, "max": 864.0,
+                            "avg": 655.5}, {"name": "year_month", "kind": "datetime"}]}}
+    state.record_evidence(summary, tool="get_chart_summary", args={"chart_id": 1})
+    return CC, state
+
+
+@pytest.mark.parametrize("text", ["ARR ở tháng gần nhất (2026-07) là 864.",
+                                  "ARR ở tháng gần nhất có dữ liệu là 864 và tháng đó là 2026-07."])
+def test_a_series_max_does_not_vouch_for_the_latest_month(saas, monkeypatch, text):
+    """Live round 9 (B_chain H2): the reader called August "missing data", July's
+    864 was published as the latest month, and the summary's max (864) let it
+    through — the data runs to August (72)."""
+    CC, state = _latest_world(saas, monkeypatch, "2026-07")
+    flagged = CC.check(state, saas, text).get("flagged") or []
+    assert [(f["value"], f["why"]) for f in flagged] == [(864.0, "wrong_period")], flagged
+
+
+def test_the_true_latest_month_still_passes_beside_the_summary(saas, monkeypatch):
+    CC, state = _latest_world(saas, monkeypatch, "2026-08")
+    assert (CC.check(state, saas, "ARR ở tháng gần nhất (2026-08) là 72.").get("flagged") or []) == []

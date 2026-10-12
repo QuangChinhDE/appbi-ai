@@ -181,7 +181,10 @@ def _summary(data: dict, chart_dims: list[str]) -> list[dict]:
             if n is not None:
                 # On a grouped chart these ARE members' values (the max of revenue
                 # by category is one category's revenue); on a KPI tile, whole.
-                out.append(_entry(n, measure=m, dimension=dim if dim else None))
+                # Marked as the series EXTREME it is: over a time axis it is some
+                # period's value, never "the latest" (live round 9: ARR's max 864 —
+                # July — vouched for "ARR ở tháng gần nhất là 864").
+                out.append({**_entry(n, measure=m, dimension=dim if dim else None), "extreme": k})
     top = _num(data.get("top_share_pct"))
     if top is not None and dim:
         # A KPI tile's summary carries top_share_pct = 100 always — not a share.
@@ -347,7 +350,8 @@ def _describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None
         for k in ("min", "max"):
             n = _num(data.get(k))
             if n is not None:
-                out.append(_entry(n, measure=measure, dimension=dims_of[0] if dims_of else None))
+                out.append({**_entry(n, measure=measure, dimension=dims_of[0] if dims_of else None),
+                            "extreme": k})
         return out
     # Everything else — an ANALYSIS of the chart it names (distribution,
     # anomalies, drill-down…): its figures are about that chart's breakdown, so

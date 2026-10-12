@@ -1119,9 +1119,12 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                             "of": {"measure": support[0].get("measure"), "dimension": None, "member": None}})
             continue
         # "THE LATEST PERIOD" is checked against the data's own last period.
-        if _asks_latest(question) and support and all(
-                _is_time(e.get("dimension")) and e.get("member") and e.get("series_last") for e in support) \
-                and all(_not_the_latest(e) for e in support):
+        # A series EXTREME (a summary's min/max, no period of its own) cannot vouch
+        # for "the latest period"; the dated readings of the same figure decide.
+        dated = [e for e in support if not e.get("extreme")]
+        if _asks_latest(question) and dated and all(
+                _is_time(e.get("dimension")) and e.get("member") and e.get("series_last") for e in dated) \
+                and all(_not_the_latest(e) for e in dated):
             flagged.append({"value": value, "pct": pct, "why": "wrong_period",
                             "of": {"measure": support[0].get("measure"), "dimension": None,
                                    "member": support[0].get("member")}})
