@@ -65,7 +65,34 @@ def _humanize_field(field_ref: str) -> str:
     return name[:1].upper() + name[1:]
 
 
-def extract_chart_field_semantics(config: Any) -> dict[str, Any]:
+#: Physical types that hold a number a tool can measure.
+_NUMERIC_TYPES = ("int", "numeric", "decimal", "float", "double", "real", "number", "money", "bignumeric")
+#: Physical types that are time.
+_TIME_TYPES = ("date", "time", "timestamp")
+#: Names that say "this number labels a thing" — an id, a code, a postcode — or a
+#: calendar part. Summing either is meaningless, so they stay dimensions.
+_IDENTIFIER_RE = re.compile(
+    r"(^|_)(id|ids|key|code|codes|zip|zipcode|postcode|postal|prefix|phone|no|number|sku|ean|"
+    r"year|month|quarter|week|day|hour|yyyymm|year_month)$")
+
+
+def _column_kind(name: str, column_types: dict[str, str] | None) -> str:
+    """`measure` / `time` / `dimension` for one TABLE column, from its PHYSICAL
+    type and name. Unknown type → `dimension`, the behaviour before types were read."""
+    leaf = str(name).split(".")[-1].strip().lower()
+    t = str((column_types or {}).get(leaf) or "").lower()
+    if not t:
+        return "dimension"
+    if any(k in t for k in _TIME_TYPES):
+        return "time"
+    if any(k in t for k in _NUMERIC_TYPES):
+        return "dimension" if _IDENTIFIER_RE.search(leaf) else "measure"
+    return "dimension"
+
+
+def extract_chart_field_semantics(
+    config: Any, column_types: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Derive the chart's on-screen measure/dimension vocabulary from its config.
 
     Returns ``{"measures": [{field,label,agg}], "dimensions": [{field,label}],
@@ -114,20 +141,53 @@ def extract_chart_field_semantics(config: Any) -> dict[str, Any]:
     for d in (role.get("dimensions") or []):
         if isinstance(d, str) and d and d not in dim_refs:
             dim_refs.append(d)
-    # Standard-table mode carries dimensions in selectedColumns, not metrics.
+    # A STANDARD TABLE carries its columns in `selectedColumns`, with no metrics.
+    #
+    # They used to be read as dimensions, every one — so a monthly table of
+    # `year_month, mrr_active, arr_active, cus_churned` told discovery it had NO
+    # measures: it never matched "ARR", the measuring tools fell back to a column
+    # by position, and a KPI elsewhere answered a monthly question. The chart
+    # engine itself keeps these as row values (it groups by them unless the
+    # semantic layer declares a measure); for the AGENT what matters is that a
+    # numeric, non-identifier column is something it can measure. Its aggregation
+    # stays UNDECLARED (`agg: None`, `kind: "column"`), so nothing downstream
+    # assumes it sums across time.
+    time_dims: list[str] = []
     if not measures and not dim_refs:
         for col in (role.get("selectedColumns") or []):
             ref = col.get("field") if isinstance(col, dict) else col
-            if isinstance(ref, str) and ref and ref not in dim_refs:
+            if not (isinstance(ref, str) and ref) or ref in dim_refs:
+                continue
+            kind = _column_kind(ref, column_types)
+            if kind == "measure":
+                lbl = _label(ref)
+                label_by_field.setdefault(ref, lbl)
+                measures.append({"field": ref, "label": lbl, "agg": None, "kind": "column"})
+            else:
                 dim_refs.append(ref)
+                if kind == "time":
+                    time_dims.append(ref)
 
     dimensions: list[dict[str, Any]] = []
     for field_ref in dim_refs:
         lbl = _label(field_ref)
         label_by_field.setdefault(field_ref, lbl)
-        dimensions.append({"field": field_ref, "label": lbl})
+        dimensions.append({"field": field_ref, "label": lbl,
+                           **({"time": True} if field_ref in time_dims else {})})
 
     return {"measures": measures, "dimensions": dimensions, "label_by_field": label_by_field}
+
+
+def column_types_of(chart: Any) -> dict[str, str]:
+    """{bare column name: physical type} from the chart's dataset table cache."""
+    dt = getattr(chart, "dataset_table", None)
+    cache = getattr(dt, "columns_cache", None) if dt is not None else None
+    cols = cache.get("columns") if isinstance(cache, dict) else None
+    out: dict[str, str] = {}
+    for c in cols or []:
+        if isinstance(c, dict) and c.get("name"):
+            out[str(c["name"]).split(".")[-1].lower()] = str(c.get("type") or "")
+    return out
 
 
 def fields_block(meta: dict) -> dict:
@@ -323,6 +383,12 @@ class ToolContext:
     #: (`handlers/data.bounded_scope`), so a Skill's own attachments cannot widen
     #: what the caller was allowed to read.
     knowledge_ceiling: dict[str, Any] | None = None
+    #: THE RUN'S OWN SCOPE (`permissions.run_scope`: owner's current rights ∩ what
+    #: the flow attached ∩ the link ∩ the caller), recorded by dispatch when it is
+    #: computed. A step's attachments REPLACE `knowledge_scope`; without this, a
+    #: document the caller may not read — removed by `run_scope` — came straight
+    #: back through the step that attached it. `bounded_scope` intersects with it.
+    run_scope_ceiling: dict[str, Any] | None = None
     #: The most rows a single read may return, set per run from the binding's
     #: `capabilities.max_rows_per_call`. None means fall back to `MAX_TOP_N`.
     #:
@@ -370,7 +436,8 @@ class ToolContext:
                     page_charts[str(_pid)].append(dc.chart_id)
             custom_title = layout.get("custom_title") if isinstance(layout, dict) else None
             try:
-                fields = extract_chart_field_semantics(getattr(dc.chart, "config", None))
+                fields = extract_chart_field_semantics(
+                    getattr(dc.chart, "config", None), column_types_of(dc.chart))
             except Exception:
                 logger.warning(
                     "dashboard_ai_bot field-semantics extract failed chart_id=%s",
@@ -483,7 +550,8 @@ class ToolContext:
             if chart.id in self.chart_meta:
                 continue
             try:
-                fields = extract_chart_field_semantics(getattr(chart, "config", None))
+                fields = extract_chart_field_semantics(
+                    getattr(chart, "config", None), column_types_of(chart))
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "chat field-semantics extract failed chart_id=%s", chart.id

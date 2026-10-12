@@ -150,7 +150,11 @@ def list_tools(web_enabled: bool = False, _: User = Depends(can_view)) -> dict[s
     """The tool picker, grouped by pack. Withheld packs come back flagged rather than
     omitted: an author who cannot find web search should learn the deployment has it
     off, not conclude it never existed."""
-    return {"packs": tool_catalogue(web_enabled=web_enabled)}
+    from app.services.agent_flows import roles
+
+    # ROLES RIDE WITH THE TOOLS they bound, so the picker can never show a role
+    # whose boundary names a tool it was not also sent.
+    return {"packs": tool_catalogue(web_enabled=web_enabled), "roles": roles.catalogue()}
 
 
 @router.get("/skills")
@@ -171,6 +175,15 @@ def list_skills(
 @router.get("/models")
 def list_models(_: User = Depends(can_view)) -> dict[str, Any]:
     return {"providers": model_catalogue()}
+
+
+@router.get("/models/usage")
+def list_model_usage(db: Session = Depends(get_db), user: User = Depends(can_view)) -> dict[str, Any]:
+    """Flows this user may use, grouped by the model each step runs on — with
+    the vendor lifecycle and the recommended replacement. Read-only."""
+    from app.services.agent_flows.credentials import model_usage
+
+    return {"models": model_usage(db, user)}
 
 
 @router.get("/authoring-prompt")

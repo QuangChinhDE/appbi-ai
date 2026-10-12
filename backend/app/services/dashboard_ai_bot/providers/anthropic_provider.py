@@ -83,6 +83,15 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
             out.append({"role": "user", "content": blocks})
         elif role == "assistant":
             _flush_tool_results()
+            # THE ROUND EXACTLY AS THE MODEL PRODUCED IT. A thinking model's tool
+            # turn must come back with every thinking / redacted_thinking block
+            # complete and unmodified, in order, beside its tool_use (Anthropic:
+            # "Modified thinking blocks are rejected with a 400 error"). The
+            # runtime carries the round's blocks as `provider_state.content`.
+            kept = (msg.get("provider_state") or {}).get("content")
+            if isinstance(kept, list) and kept:
+                out.append({"role": "assistant", "content": kept})
+                continue
             blocks: list[dict] = []
             text = msg.get("content")
             if text:
@@ -92,7 +101,7 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
                     "type": "tool_use",
                     "id": tc["id"],
                     "name": tc["name"],
-                    "input": tc.get("args") or {},
+                    "input": _tool_args(tc),
                 })
             if blocks:
                 out.append({"role": "assistant", "content": blocks})
@@ -104,6 +113,31 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
             })
     _flush_tool_results()
     return out
+
+
+def _tool_args(tc: dict) -> dict:
+    for key in ("args", "arguments"):
+        value = tc.get(key)
+        if isinstance(value, dict) and value:
+            return value
+    return {}
+
+
+def _tools_named_in(messages: list[dict]) -> list[dict]:
+    """Minimal definitions for the tools a history already used.
+
+    An answer-only round over a tool history must still DEFINE those tools — the
+    API refuses tool_use blocks otherwise — and must not rewrite them into text
+    on a thinking model (that changes the turn the thinking belongs to). Declared
+    with `tool_choice: none`, so nothing can be called.
+    """
+    names: list[str] = []
+    for msg in messages:
+        for block in msg.get("content") if isinstance(msg.get("content"), list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") not in names:
+                names.append(block.get("name"))
+    return [{"name": n, "description": "(đã dùng ở lượt trước)",
+             "input_schema": {"type": "object", "additionalProperties": True}} for n in names if n]
 
 
 def _flatten_tool_blocks(messages: list[dict]) -> list[dict]:
@@ -152,7 +186,17 @@ async def stream_anthropic(
     tools: list[dict] | None = None,
     model: str = ANTHROPIC_MODEL,
     max_tokens: int = 2048,
+    strict: bool = False,
 ) -> AsyncGenerator[AgentEvent, None]:
+    """Stream one Messages call.
+
+    `strict` is the Agent Flow contract (other callers keep today's behaviour):
+    thinking blocks are captured with their signatures and the round's content is
+    emitted as `provider_state` for verbatim replay; an answer-only round keeps the
+    tool history structurally intact (`tool_choice: none`) instead of flattening
+    it; output cut at `max_tokens` and malformed tool arguments are reported;
+    errors carry a classified `code`.
+    """
     headers = {
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
@@ -179,7 +223,11 @@ async def stream_anthropic(
         "messages": _to_anthropic_messages(messages),
         "stream": True,
     }
-    if not tools:
+    used = _tools_named_in(payload["messages"]) if (strict and not tools) else []
+    if used:
+        payload["tools"] = used
+        payload["tool_choice"] = {"type": "none"}
+    elif not tools:
         # AN ANSWER-ONLY ROUND OVER A TOOL HISTORY. Anthropic refuses a request
         # whose messages hold tool_use / tool_result blocks when it defines no
         # tools — which is exactly an agent's final round and every correction
@@ -200,6 +248,9 @@ async def stream_anthropic(
 
     # Track in-flight blocks: index -> {type, id, name, input_buffer}
     blocks: dict[int, dict[str, Any]] = {}
+    #: Strict mode: the round's content blocks in order, exactly as produced.
+    round_blocks: list[tuple[int, dict]] = []
+    stop_reason = ""
     # Anthropic emits usage in two parts: input_tokens lands in message_start
     # while output_tokens streams in message_delta and is finalised by
     # message_stop. Tally locally and emit once when the response ends.
@@ -217,6 +268,14 @@ async def stream_anthropic(
                 if resp.status_code != 200:
                     body = await resp.aread()
                     detail = _extract_error_detail(body)
+                    if strict:
+                        from app.services.dashboard_ai_bot.providers.errors import classify
+
+                        perr = classify(resp.status_code, body)
+                        logger.warning("agent_flow anthropic_error model=%s status=%s code=%s",
+                                       model, resp.status_code, perr.code)
+                        yield AgentEvent(type="error", text=perr.text("Anthropic", model), extra=perr.extra())
+                        return
                     logger.warning(
                         "dashboard_ai_bot anthropic_error model=%s status=%s detail=%s",
                         model,
@@ -280,8 +339,13 @@ async def stream_anthropic(
                                 "name": block.get("name"),
                                 "input_json": "",
                             }
+                        elif bt == "thinking":
+                            blocks[idx] = {"type": "thinking", "thinking": block.get("thinking") or "",
+                                           "signature": block.get("signature") or ""}
+                        elif bt == "redacted_thinking":
+                            blocks[idx] = {"type": "redacted_thinking", "data": block.get("data") or ""}
                         else:
-                            blocks[idx] = {"type": "text"}
+                            blocks[idx] = {"type": "text", "text": ""}
                     elif et == "content_block_delta":
                         idx = event.get("index", 0)
                         delta = event.get("delta") or {}
@@ -292,29 +356,56 @@ async def stream_anthropic(
                         if dt == "text_delta":
                             text = delta.get("text") or ""
                             if text:
+                                if block.get("type") == "text":
+                                    block["text"] = block.get("text", "") + text
                                 yield AgentEvent(type="text", text=text)
+                        elif dt == "thinking_delta":
+                            # Kept for replay, never shown to the reader.
+                            block["thinking"] = block.get("thinking", "") + (delta.get("thinking") or "")
+                        elif dt == "signature_delta":
+                            block["signature"] = block.get("signature", "") + (delta.get("signature") or "")
                         elif dt == "input_json_delta":
                             block["input_json"] += delta.get("partial_json") or ""
                     elif et == "content_block_stop":
                         idx = event.get("index", 0)
                         block = blocks.pop(idx, None)
+                        if block and block.get("type") in ("thinking", "redacted_thinking"):
+                            round_blocks.append((idx, dict(block)))
+                        elif block and block.get("type") == "text" and block.get("text"):
+                            round_blocks.append((idx, {"type": "text", "text": block["text"]}))
                         if block and block.get("type") == "tool_use":
+                            malformed = ""
                             try:
                                 args = json.loads(block.get("input_json") or "{}") or {}
-                            except json.JSONDecodeError:
-                                args = {}
+                            except json.JSONDecodeError as exc:
+                                args, malformed = {}, str(exc)
+                            if not isinstance(args, dict):
+                                args, malformed = {}, "arguments were not a JSON object"
+                            round_blocks.append((idx, {"type": "tool_use", "id": block.get("id") or "",
+                                                       "name": block.get("name") or "", "input": args}))
                             yield AgentEvent(
                                 type="tool_call",
                                 tool_call_id=block.get("id") or "",
                                 tool_name=block.get("name") or "",
-                                tool_args=args if isinstance(args, dict) else {},
+                                tool_args=args,
+                                extra={"malformed_args": malformed} if (strict and malformed) else {},
                             )
                     # message_delta / message_stop: nothing to emit
                     elif et == "message_delta":
                         u = (event.get("usage") or {})
                         if u:
                             usage_out += int(u.get("output_tokens") or 0)
+                        stop_reason = str((event.get("delta") or {}).get("stop_reason") or stop_reason)
                     elif et == "message_stop":
+                        if strict and any(b.get("type") in ("thinking", "redacted_thinking")
+                                          for _, b in round_blocks):
+                            yield AgentEvent(type="provider_state", extra={"state": {
+                                "content": [b for _, b in sorted(round_blocks, key=lambda p: p[0])]}})
+                        if strict and stop_reason == "max_tokens":
+                            from app.services.dashboard_ai_bot.providers.errors import ProviderError
+
+                            perr = ProviderError("truncated", 200)
+                            yield AgentEvent(type="error", text=perr.text("Anthropic", model), extra=perr.extra())
                         if usage_in or usage_out:
                             yield AgentEvent(
                                 type="usage",
@@ -339,10 +430,12 @@ async def stream_anthropic(
                             usage_out = 0
     except httpx.TimeoutException:
         logger.warning("dashboard_ai_bot anthropic_timeout model=%s", model)
-        yield AgentEvent(type="error", text="Anthropic request timed out.", extra={"http_status": 408})
+        yield AgentEvent(type="error", text="Anthropic request timed out.",
+                         extra={"http_status": 408, "code": "timeout", "retryable": True})
     except Exception as exc:
         logger.exception("Anthropic stream error")
-        yield AgentEvent(type="error", text=f"Anthropic transport error: {type(exc).__name__}", extra={"http_status": 503})
+        yield AgentEvent(type="error", text=f"Anthropic transport error: {type(exc).__name__}",
+                         extra={"http_status": 503, "code": "stream_interrupted", "retryable": True})
 
 
 def _extract_error_detail(body: bytes) -> str:

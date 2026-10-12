@@ -181,7 +181,10 @@ def _summary(data: dict, chart_dims: list[str]) -> list[dict]:
             if n is not None:
                 # On a grouped chart these ARE members' values (the max of revenue
                 # by category is one category's revenue); on a KPI tile, whole.
-                out.append(_entry(n, measure=m, dimension=dim if dim else None))
+                # Marked as the series EXTREME it is: over a time axis it is some
+                # period's value, never "the latest" (live round 9: ARR's max 864 —
+                # July — vouched for "ARR ở tháng gần nhất là 864").
+                out.append({**_entry(n, measure=m, dimension=dim if dim else None), "extreme": k})
     top = _num(data.get("top_share_pct"))
     if top is not None and dim:
         # A KPI tile's summary carries top_share_pct = 100 always — not a share.
@@ -196,12 +199,31 @@ def describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None 
              ledger: list[dict] | None = None) -> list[dict]:
     """Every figure this result carries, with what it means (see module doc)."""
     out = _describe(tool, result, chart_dims=chart_dims, ledger=ledger)
+    # WHICH CHART the figure was read from, so a later check can ask what the
+    # measure IS (its declared aggregation over time), not only what it is called.
+    data = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), dict) else {}
+    if isinstance(data.get("chart_id"), int):
+        out = [{**e, "chart_id": e.get("chart_id", data["chart_id"])} for e in out]
+    # A TOTAL OVER A RANGE says which range. Without it, churn summed over
+    # 2026-01..2026-08 read as an all-time figure and the period check withheld a
+    # correct 60 for a question about January to August (live H1).
+    cov = data.get("periods_covered") if isinstance(data.get("periods_covered"), dict) else {}
+    sel = cov.get("selected") if isinstance(cov.get("selected"), list) else None
+    if sel and len(sel) > 1:
+        span = [str(sel[0]), str(sel[-1])]
+        out = [{**e, "period_range": span} if not e.get("dimension") and not e.get("member") else e
+               for e in out]
     # A READ FILTERED TO ONE PERIOD IS THAT PERIOD'S FIGURE (review: a correct
     # total_measure(filters=[month=2018-03]) was withheld as an all-time number).
     label = _filtered_period(result)
     if label:
         out = [{**e, "dimension": "__time__", "member": label}
                if not e.get("dimension") and not e.get("member") else e for e in out]
+    # THE SERIES' LAST PERIOD travels with a one-period figure, so "the latest
+    # month" can be checked against the data rather than against the model's word
+    # (live H2: July's 864 published as the latest month while the data ran to August).
+    if cov.get("last"):
+        out = [{**e, "series_last": str(cov["last"])} if e.get("member") else e for e in out]
     return out
 
 
@@ -209,6 +231,13 @@ def _filtered_period(result: Any) -> str | None:
     from app.services.time_semantics import named_periods
 
     data = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), dict) else {}
+    # A READ ASKED FOR ONE PERIOD (`total_measure(period=…)`) is that period's
+    # figure, exactly like one filtered to it: ARR for 2026-08 is not an all-time
+    # number. Only when the period selected a single bucket.
+    asked = data.get("period")
+    selected = (data.get("periods_covered") or {}).get("selected") if isinstance(data.get("periods_covered"), dict) else None
+    if isinstance(asked, str) and asked and isinstance(selected, list) and len(selected) == 1:
+        return asked
     filters = data.get("filters_applied") or (result.get("filters_applied") if isinstance(result, dict) else None)
     labels = set()
     for f in filters or []:
@@ -321,7 +350,8 @@ def _describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None
         for k in ("min", "max"):
             n = _num(data.get(k))
             if n is not None:
-                out.append(_entry(n, measure=measure, dimension=dims_of[0] if dims_of else None))
+                out.append({**_entry(n, measure=measure, dimension=dims_of[0] if dims_of else None),
+                            "extreme": k})
         return out
     # Everything else — an ANALYSIS of the chart it names (distribution,
     # anomalies, drill-down…): its figures are about that chart's breakdown, so

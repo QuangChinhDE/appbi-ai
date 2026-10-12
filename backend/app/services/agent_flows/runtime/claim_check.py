@@ -318,11 +318,26 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
                 return False
         return True
     whole = [e for e in support if not e.get("dimension") and not e.get("member")]
+    # A RANGE TOTAL THAT COVERS THE ASKED PERIODS answers them (claim_scope
+    # `period_range`): "Jan–Aug" is the range 2026-01..2026-08, not a whole.
+    if whole and len(whole) == len(support) and all(_range_covers(e.get("period_range"), asked)
+                                                    for e in whole):
+        return False
     if len(whole) == len(support):
         # WORD-BOUNDED: "chung" inside "nhìn chung"/"kiểm chứng" let an all-time
         # figure pass as a quarter's (adversarial review).
         return not any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", sentence) for w in _WHOLE_WORDS)
     timed = [e for e in support if _is_time(e.get("dimension")) and e.get("member")]
+    # ONE PERIOD IS NOT A TOTAL OVER SEVERAL. Asked for ARR "cộng dồn của 8 tháng
+    # đầu năm 2026", the tool refused the cross-month sum and the writer published
+    # August's 72 as the total (live, specialist chain). A finer row inside a
+    # coarser asked period answers "which month was lowest in 2017", never
+    # "what was the total". Checked before the mixed-reading exit below: the same
+    # one-period read is also described as a `year_month` figure with no member,
+    # and that second reading of the SAME result let the total through.
+    refs = {e.get("ref") for e in timed}
+    if _asks_total(question) and timed and all(_finer_than_all(e, asked) for e in timed)             and all(e.get("ref") in refs for e in support):
+        return True
     if len(timed) != len(support):
         return False
     labels = [_periods(str(e["member"]).replace("Q", " q")) or _periods("nam " + str(e["member"]))
@@ -338,6 +353,67 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
 
 
 _GRAIN_RANK = {"m": 0, "q": 1, "y": 2}
+
+
+_TOTAL_WORDS = ("tong", "cong don", "tich luy", "luy ke", "total", "cumulative", "in total", "sum of")
+_LATEST_WORDS = ("gan nhat", "moi nhat", "cuoi cung", "latest", "most recent", "last month", "thang truoc")
+
+
+def _asks_total(question: str) -> bool:
+    import re
+
+    q = _fold(question or "")
+    return any(re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", q) for w in _TOTAL_WORDS)
+
+
+def _asks_latest(question: str) -> bool:
+    import re
+
+    q = _fold(question or "")
+    return any(re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", q) for w in _LATEST_WORDS[:5])
+
+
+def _finer_than_all(e: dict, asked: set[tuple]) -> bool:
+    lab = _periods(str(e.get("member") or "").replace("Q", " q")) or _periods("nam " + str(e.get("member") or ""))
+    return bool(lab) and all(_nests(p, a) for p in lab for a in asked)
+
+
+def _not_the_latest(e: dict) -> bool:
+    """A one-period figure whose period is not the last of its series."""
+    import re
+
+    last, member = str(e.get("series_last") or ""), str(e.get("member") or "")
+    m1, m2 = re.match(r"^(\d{4}-\d{2})", last), re.match(r"^(\d{4}-\d{2})", member)
+    return bool(m1 and m2) and m1.group(1) != m2.group(1)
+
+
+def _range_covers(span: Any, asked: set[tuple]) -> bool:
+    """`span` = [first, last] period labels of a summed range; True when it is
+    exactly the span the question asks for (first asked month … last asked month)."""
+    import re
+
+    if not (isinstance(span, (list, tuple)) and len(span) == 2) or not asked:
+        return False
+    ends = []
+    for label in span:
+        m = re.match(r"^(\d{4})-(\d{2})", str(label))
+        if not m:
+            return False
+        ends.append((int(m.group(1)), int(m.group(2))))
+    lo, hi = ends
+    months: list[tuple[int, int]] = []
+    for p in asked:
+        if p[0] == "m":
+            months.append((p[1], p[2]))
+        elif p[0] == "q":
+            months += [(p[1], 3 * p[2] - 2), (p[1], 3 * p[2])]
+        elif p[0] == "y":
+            months += [(p[1], 1), (p[1], 12)]
+    if not months:
+        return False
+    # EXACTLY the asked span: a narrower range (Jul–Aug for "Jan–Aug") or a wider
+    # one is a different total, and is left to the period rule to flag.
+    return lo == min(months) and hi == max(months)
 
 
 def _nests(p: tuple, a: tuple) -> bool:
@@ -877,6 +953,23 @@ def _derived_plain(value: float, operands: list) -> bool:
     return False
 
 
+def _sums_a_balance(ctx: Any, e: dict) -> bool:
+    """This whole figure SUMS a measure the semantic model declares not additive
+    over time (`time_aggregation` other than sum/count). Unknown → False: no
+    declaration, no claim about it."""
+    chart_id, measure = e.get("chart_id"), e.get("measure")
+    if not isinstance(chart_id, int) or not measure:
+        return False
+    try:
+        from app.services.agent_flows.tools.packs import measure_meta
+
+        info = measure_meta.describe_measure(ctx, chart_id, str(measure))
+    except Exception:                                           # noqa: BLE001
+        return False
+    ta = info.get("time_aggregation")
+    return bool(ta) and ta not in ("sum", "count") and str(info.get("agg") or "sum").lower() == "sum"
+
+
 def _names_measure(ctx: Any, measure: str) -> bool:
     from app.services.agent_flows.tools.packs.discover import _score, _terms_of
 
@@ -970,6 +1063,14 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         e.get("member") and (e.get("dimension") == asked_breakdown
                              or (_is_time(asked_breakdown) and _is_time(e.get("dimension"))))
         for e in ledger)
+    # Every measure the report can speak of — the vocabulary a clause is read in.
+    try:
+        from app.services.agent_flows.runtime import intent as _I
+
+        report_measures = set((_I.vocabulary(ctx).get("measure_names") or {}).keys())
+    except Exception:                                           # noqa: BLE001
+        report_measures = set()
+    report_measures |= set(t["measures"]) | {e["measure"] for e in ledger if e.get("measure")}
     for value, pct in claims:
         if not pct and value in labels:
             continue                     # the "5" of "5 sao" is a label, not a figure
@@ -1017,6 +1118,17 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             flagged.append({"value": value, "pct": pct, "why": "period_absent",
                             "of": {"measure": support[0].get("measure"), "dimension": None, "member": None}})
             continue
+        # "THE LATEST PERIOD" is checked against the data's own last period.
+        # A series EXTREME (a summary's min/max, no period of its own) cannot vouch
+        # for "the latest period"; the dated readings of the same figure decide.
+        dated = [e for e in support if not e.get("extreme")]
+        if _asks_latest(question) and dated and all(
+                _is_time(e.get("dimension")) and e.get("member") and e.get("series_last") for e in dated) \
+                and all(_not_the_latest(e) for e in dated):
+            flagged.append({"value": value, "pct": pct, "why": "wrong_period",
+                            "of": {"measure": support[0].get("measure"), "dimension": None,
+                                   "member": support[0].get("member")}})
+            continue
         asked_periods = _periods(question) or intent_periods
         if not asked_periods and support and all(
                 _is_time(e.get("dimension")) and e.get("member") for e in support):
@@ -1025,6 +1137,18 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             flagged.append({"value": value, "pct": pct, "why": "wrong_period",
                             "of": {"measure": support[0].get("measure"), "dimension": None,
                                    "member": support[0].get("member")}})
+            continue
+        # A WHOLE-RANGE SUM OF A BALANCE IS NOT A FIGURE, HOWEVER IT IS FRAMED.
+        # Live (deterministic hybrid): asked to compare ARR in July and August, the
+        # writer published "tổng ARR từ tất cả các tháng là 5244" — a KPI tile that
+        # sums a monthly balance across every month. The chart value is real; its
+        # meaning is not. Decided by the semantic model's own declaration
+        # (`time_aggregation`), never by the measure's name.
+        if support and all(not e.get("dimension") and not e.get("member") for e in support) \
+                and all(_sums_a_balance(ctx, e) for e in support):
+            flagged.append({"value": value, "pct": pct, "why": "aggregation_unsafe",
+                            "of": {"measure": support[0].get("measure"), "dimension": None,
+                                   "member": None}})
             continue
         # A list item inherits the line that introduces it: "São Paulo có … đơn,
         # bao gồm:" then "- Đã giao: 96,478" gives the item to São Paulo (live 5072).
@@ -1043,6 +1167,26 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             e = support[0]
             flagged.append({"value": value, "pct": pct, "why": reasons[0],
                             "of": {k: e.get(k) for k in ("measure", "dimension", "member")}})
+            continue
+        # THE CLAUSE NAMES WHOSE FIGURE THIS IS. The check above compares the
+        # evidence with the measures the QUESTION asks for, so a question naming
+        # both GMV and product revenue let revenue's 13,591,643.70 be published
+        # as "GMV toàn kỳ" (live eval, every architecture): revenue WAS asked for.
+        # When the figure's own clause names one of the report's measures and no
+        # reading of the figure is that measure (or shares its root), the figure
+        # is another measure's, whatever the question asked.
+        # THE CLAUSE, OR ITS SENTENCE WHEN THE CLAUSE NAMES NOTHING: in "Về giá trị
+        # GMV toàn kỳ, theo báo cáo, nó là 13,591,643.70" the clause around the number
+        # is "nó là …" — the measure is named earlier in the sentence (live round 5).
+        named_here = _measures_named(ctx, _clause_of(text, value), report_measures) \
+            or _measures_named(ctx, sentence, report_measures)
+        if named_here and all(
+                e.get("measure") and e["measure"] not in named_here
+                and not _same_root(e.get("measure"), named_here) for e in support):
+            e = support[0]
+            flagged.append({"value": value, "pct": pct, "why": "other_measure",
+                            "of": {"measure": e.get("measure"), "dimension": e.get("dimension"),
+                                   "member": e.get("member"), "named": sorted(named_here)}})
             continue
         if absent_words and _words_in_clause(text, value, absent_words):
             # Asked for a quantity the report does not measure; this figure's
@@ -1080,6 +1224,21 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         # 13,591,643.7" — the report total as the top state's value. Whether or not
         # the breakdown was read, a whole-report figure cannot be the answer to
         # "which member is highest" in the sentence that says so.
+        # A WHOLE GIVEN TO A MEMBER BY NAME. Live round 5 (deterministic hybrid):
+        # "ARR của phân khúc enterprise là 6500" — the segments' total, while the
+        # same read holds enterprise's own 5000. When the evidence knows the named
+        # member of this measure, a whole figure in its sentence is not that member's.
+        if whole_only:
+            measures = {e.get("measure") for e in support if e.get("measure")}
+            members = {str(e["member"]) for e in ledger
+                       if e.get("member") and e.get("measure") in measures and not _is_time(e.get("dimension"))}
+            named_member = next((m for m in sorted(members, key=len, reverse=True)
+                                 if len(m) > 2 and _names(sentence, m)), None)
+            if named_member and not _framed_as_population(sentence, value):
+                flagged.append({"value": value, "pct": pct, "why": "whole_as_member",
+                                "of": {"measure": support[0].get("measure"), "dimension": None,
+                                       "member": named_member}})
+                continue
         if whole_only and _has_words(question, _RANK_WORDS) and _has_words(sentence, _RANK_WORDS) \
                 and not _framed_as_population(sentence, value) \
                 and not _given_to_other_than_asked(_clause_of(text, value), None):

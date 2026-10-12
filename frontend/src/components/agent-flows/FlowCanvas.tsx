@@ -29,7 +29,7 @@ import { GripVertical, Plus } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import { isBranching, isContainer, type FlowNode, type InsertTarget, type NodeSpec, type ToolSpec } from '@/lib/agentFlows';
+import { isBranching, isContainer, type AgentNode, type FlowNode, type InsertTarget, type NodeSpec, type ToolSpec } from '@/lib/agentFlows';
 import { toolLabel } from './inspector/ToolPicker';
 import { idBox, idInsert, idNode, idRule, useFlowEdges } from './useFlowEdges';
 import type { MiniRect } from './Minimap';
@@ -290,6 +290,7 @@ function NodeCard({
   // exists for Tool steps and is exactly why they all read alike before.
   const title = node.name || (toolSpec ? toolLabel(toolSpec, language) : '') || specLabel || node.type;
   const never = runCount === 0;
+  const readsFrom = node.type === 'agent' ? ((node as AgentNode).reads_from || []) : [];
   return (
     <div
       ref={register(idNode(node.key))}
@@ -370,6 +371,13 @@ function NodeCard({
                 : t('agentFlows.canvas.runPolicy.oncePerSession')}
             </span>
           )}
+          {node.type === 'agent' && (node as AgentNode).role && (
+            <span data-testid={`canvas-role-${node.key}`}
+              title={t('agentFlows.roles.badgeTitle', { n: String(((node as AgentNode).tools || []).length) })}
+              className="rounded-full border border-brand/25 bg-brand/10 px-1.5 py-px text-tiny text-brand">
+              {roleBadge(t, (node as AgentNode).role || '')}
+            </span>
+          )}
           {spec?.costs_llm && (
             <span title={t('agentFlows.canvas.llmTitle')}
               className="rounded-full border border-brand/20 bg-brand/5 px-1.5 py-px text-tiny text-brand">
@@ -379,8 +387,14 @@ function NodeCard({
         </div>
         <div className="px-2.5 py-2">
           <p className="line-clamp-2 text-tiny leading-snug text-text-secondary">{describe(node, t, toolSpec, language)}</p>
-          {(never || node.output_var) && (
+          {(never || node.output_var || readsFrom.length > 0) && (
             <div className="mt-1.5 flex flex-wrap gap-1">
+              {readsFrom.length > 0 && (
+                <span data-testid={`canvas-reads-${node.key}`}
+                  className="rounded border border-brand/20 bg-brand/5 px-1.5 py-px text-tiny text-brand">
+                  {`← ${readsFrom.join(', ')}`}
+                </span>
+              )}
               {node.output_var && (
                 <span className="rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1.5 py-px text-tiny text-text-tertiary">
                   {`→ {{${node.output_var}}}`}
@@ -739,4 +753,14 @@ function MergeLabel() {
       </span>
     </div>
   );
+}
+
+
+/** A role's short name on the card. The labels live in the i18n catalogue for
+ *  the roles that ship; an unknown key is shown as itself rather than hidden, so a
+ *  retired role is visible on the canvas. */
+function roleBadge(t: (k: string) => string, role: string): string {
+  const key = `agentFlows.roles.badge.${role}`;
+  const got = t(key);
+  return got === key ? role : got;
 }

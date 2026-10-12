@@ -1,0 +1,363 @@
+{
+ "note": "Live runs through AppBI's runtime path (runtime.handlers.agent._stream) against the real vendor APIs on 2026-10-12. Keys were read from the test environment and are not recorded. BLOCKED rows show the vendor's real refusal of the available key.",
+ "providers": {
+  "openai": {
+   "status": "LIVE",
+   "provider": "openai",
+   "run_at": "2026-10-12T08:46:27Z",
+   "results": [
+    {
+     "provider": "openai",
+     "model": "gpt-6-luna",
+     "checks": {
+      "text": {
+       "pass": true,
+       "error": null,
+       "streamed_chars": 5
+      },
+      "tool_once": {
+       "pass": true,
+       "error": null
+      },
+      "multi_round": {
+       "pass": true,
+       "error": null,
+       "rounds": 3,
+       "chain": [
+        "find_region",
+        "region_revenue"
+       ]
+      },
+      "answer_only": {
+       "pass": true,
+       "error": null,
+       "text": "$58,213 USD"
+      },
+      "usage": {
+       "pass": true,
+       "prompt_tokens": 678,
+       "completion_tokens": 64
+      }
+     },
+     "elapsed_s": 8.2,
+     "certified": true
+    },
+    {
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "checks": {
+      "text": {
+       "pass": true,
+       "error": null,
+       "streamed_chars": 5
+      },
+      "tool_once": {
+       "pass": true,
+       "error": null
+      },
+      "multi_round": {
+       "pass": true,
+       "error": null,
+       "rounds": 3,
+       "chain": [
+        "find_region",
+        "region_revenue"
+       ]
+      },
+      "answer_only": {
+       "pass": true,
+       "error": null,
+       "text": "$58,213 USD."
+      },
+      "usage": {
+       "pass": true,
+       "prompt_tokens": 678,
+       "completion_tokens": 66
+      }
+     },
+     "elapsed_s": 11.5,
+     "certified": true
+    },
+    {
+     "provider": "openai",
+     "model": "gpt-6-astra",
+     "checks": {
+      "text": {
+       "pass": true,
+       "error": null,
+       "streamed_chars": 5
+      },
+      "tool_once": {
+       "pass": true,
+       "error": null
+      },
+      "multi_round": {
+       "pass": true,
+       "error": null,
+       "rounds": 3,
+       "chain": [
+        "find_region",
+        "region_revenue"
+       ]
+      },
+      "answer_only": {
+       "pass": true,
+       "error": null,
+       "text": "$58,213 USD."
+      },
+      "usage": {
+       "pass": true,
+       "prompt_tokens": 678,
+       "completion_tokens": 66
+      }
+     },
+     "elapsed_s": 10.1,
+     "certified": true
+    },
+    {
+     "provider": "openai",
+     "model": "gpt-4o-mini",
+     "checks": {
+      "text": {
+       "pass": true,
+       "error": null,
+       "streamed_chars": 6
+      },
+      "tool_once": {
+       "pass": true,
+       "error": null
+      },
+      "multi_round": {
+       "pass": true,
+       "error": null,
+       "rounds": 3,
+       "chain": [
+        "find_region",
+        "region_revenue"
+       ]
+      },
+      "answer_only": {
+       "pass": true,
+       "error": null,
+       "text": "The revenue of the region that Hanoi belongs to is $58,213."
+      },
+      "usage": {
+       "pass": true,
+       "prompt_tokens": 636,
+       "completion_tokens": 66
+      }
+     },
+     "elapsed_s": 6.5,
+     "certified": true
+    }
+   ],
+   "negatives": {
+    "unknown_model": {
+     "code": "no_entitlement",
+     "status": 404,
+     "text": "OpenAI / appbi-no-such-model-1: API key hợp lệ nhưng không có quyền dùng model này. Chọn model khác, hoặc bật quyền model này cho tài khoản của key."
+    },
+    "truncation": {
+     "code": "truncated",
+     "status": 200,
+     "text": "OpenAI / gpt-6-luna: Câu trả lời bị cắt vì chạm giới hạn độ dài đầu ra. Thu hẹp câu hỏi; nếu lặp lại, báo quản trị viên."
+    },
+    "truncation_pass": true
+   }
+  },
+  "gemini": {
+   "status": "BLOCKED",
+   "provider": "gemini",
+   "run_at": "2026-10-12T08:48:21Z",
+   "results": [
+    {
+     "provider": "gemini",
+     "model": "gemini-3.8-flash",
+     "checks": {
+      "text": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 400
+       },
+       "streamed_chars": 0
+      },
+      "tool_once": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 400
+       }
+      },
+      "multi_round": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 400
+       },
+       "rounds": 1,
+       "chain": []
+      },
+      "answer_only": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 400
+       },
+       "text": ""
+      },
+      "usage": {
+       "pass": false,
+       "prompt_tokens": 0,
+       "completion_tokens": 0
+      }
+     },
+     "elapsed_s": 1.6,
+     "certified": false
+    },
+    {
+     "provider": "gemini",
+     "model": "gemini-3.5-flash-lite",
+     "checks": {
+      "text": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 400
+       },
+       "streamed_chars": 0
+      },
+      "tool_once": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 400
+       }
+      },
+      "multi_round": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 400
+       },
+       "rounds": 1,
+       "chain": []
+      },
+      "answer_only": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 400
+       },
+       "text": ""
+      },
+      "usage": {
+       "pass": false,
+       "prompt_tokens": 0,
+       "completion_tokens": 0
+      }
+     },
+     "elapsed_s": 1.4,
+     "certified": false
+    }
+   ]
+  },
+  "anthropic": {
+   "status": "BLOCKED",
+   "provider": "anthropic",
+   "run_at": "2026-10-12T08:47:47Z",
+   "results": [
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5",
+     "checks": {
+      "text": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 401
+       },
+       "streamed_chars": 0
+      },
+      "tool_once": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 401
+       }
+      },
+      "multi_round": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 401
+       },
+       "rounds": 1,
+       "chain": []
+      },
+      "answer_only": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 401
+       },
+       "text": ""
+      },
+      "usage": {
+       "pass": false,
+       "prompt_tokens": 0,
+       "completion_tokens": 0
+      }
+     },
+     "elapsed_s": 2.3,
+     "certified": false
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-haiku-5-5",
+     "checks": {
+      "text": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 401
+       },
+       "streamed_chars": 0
+      },
+      "tool_once": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 401
+       }
+      },
+      "multi_round": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 401
+       },
+       "rounds": 1,
+       "chain": []
+      },
+      "answer_only": {
+       "pass": false,
+       "error": {
+        "code": "invalid_credentials",
+        "status": 401
+       },
+       "text": ""
+      },
+      "usage": {
+       "pass": false,
+       "prompt_tokens": 0,
+       "completion_tokens": 0
+      }
+     },
+     "elapsed_s": 2.2,
+     "certified": false
+    }
+   ]
+  }
+ }
+}

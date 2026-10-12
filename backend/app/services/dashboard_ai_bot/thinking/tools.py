@@ -1340,7 +1340,11 @@ TOOL_DEFINITIONS: list[dict] = [
             "period_b (literal labels in the time dimension). Returns delta, "
             "pct_change, and a verdict (improving/worsening/flat). Use this "
             "INSTEAD of compare_segments when comparing the same metric across "
-            "time."
+            "time. When the question NAMES a period (e.g. 'ARR in August 2026 vs "
+            "the month before'), pass it as `period`: that period is the one "
+            "compared, even if its value looks unusually low. Without `period`, an "
+            "auto/mom/yoy run may set aside a suspected incomplete last period and "
+            "says so in `excluded_periods`/`note_partial`."
         ),
         "input_schema": {
             "type": "object",
@@ -1349,9 +1353,15 @@ TOOL_DEFINITIONS: list[dict] = [
                 "mode": {"type": "string", "enum": ["auto", "mom", "qoq", "yoy", "custom"]},
                 "period_a": {"type": "string", "description": "Required for mode=custom"},
                 "period_b": {"type": "string", "description": "Required for mode=custom"},
+                "period": {"type": "string", "description": (
+                    "The period the question asks about, as the chart labels it "
+                    "('2026-08'). Compared against the period one step (mom), three "
+                    "(qoq) or twelve (yoy) before it. Never replaced by another period.")},
                 "measure": {"type": "string", "description": (
                     "The measure to compare when the chart carries more than one "
-                    "(e.g. total_revenue). Defaults to the measure the question asked.")},
+                    "(e.g. arr_active). If the chart has several and none is named "
+                    "or asked, the tool refuses with measure_ambiguous rather than "
+                    "picking one.")},
             },
             "required": ["chart_id"],
         },

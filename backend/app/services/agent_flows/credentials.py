@@ -507,6 +507,48 @@ def usage(db: Session, credential_id: int) -> list[dict[str, Any]]:
     return out
 
 
+def model_usage(db: Session, user: Any) -> list[dict[str, Any]]:
+    """Which flows THIS user may use run on which model — draft and published.
+
+    How an author finds what to move before a vendor retires a model. Nothing is
+    rewritten: a published version keeps the model it was published with until
+    its author publishes a change.
+    """
+    from app.models.agent_brain import AgentBrainVersion
+    from app.services.agent_flows import models_catalogue as cat
+    from app.services.agent_flows.permissions import usable_brains
+
+    rows = usable_brains(db, user).order_by(
+        AgentBrainVersion.brain_key, AgentBrainVersion.version.desc()).all()
+    keep, latest = [], set()
+    for r in rows:
+        if r.brain_key not in latest:
+            latest.add(r.brain_key)
+            keep.append(r)
+        elif r.status == "published":
+            keep.append(r)
+    by_model: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in keep:
+        for n in _model_nodes_raw((r.body or {}).get("nodes")):
+            prov = str(n.get("provider") or "").strip().lower()
+            model = str(n.get("model") or "").strip()
+            if prov in ("", "inherit"):
+                # The same reading `contract._upgrade_model_steps` gives a legacy
+                # step when the flow is loaded — what it actually runs on.
+                prov = cat.DEFAULT_PROVIDER
+                model = model or cat.legacy_default_model()
+            model = model or cat.default_model(prov)
+            s = cat.spec(prov, model) or {}
+            entry = by_model.setdefault((prov, model), {
+                "provider": prov, "model": model, "label": s.get("label") or model,
+                "lifecycle": s.get("lifecycle") or "unknown", "replacement": s.get("replacement"),
+                "lifecycle_warning": cat.lifecycle_warning(prov, model), "steps": []})
+            entry["steps"].append({"brain_key": r.brain_key, "flow_name": r.name, "version": r.version,
+                                   "status": r.status, "step_key": str(n.get("key") or ""),
+                                   "step_name": str(n.get("name") or n.get("key") or "")})
+    return sorted(by_model.values(), key=lambda e: (e["lifecycle"] == "active", e["provider"], e["model"]))
+
+
 def usage_counts(db: Session) -> dict[int, int]:
     counts: dict[int, set[tuple[str, str]]] = {}
     for r in _current_rows(db):
@@ -550,21 +592,25 @@ async def probe(provider: str, secret: str) -> dict[str, Any]:
             resp = await client.get(url, headers=headers(secret))
         latency = int((time.monotonic() - started) * 1000)
         if resp.status_code == 200:
-            return {"ok": True, "error": None, "latency_ms": latency}
+            return {"ok": True, "error": None, "latency_ms": latency, "code": None}
         body = resp.text or ""
+        from app.services.dashboard_ai_bot.providers.errors import classify
+
+        code = classify(resp.status_code, resp.content or b"").code
         # Google answers a bad key with 400 API_KEY_INVALID, not 401 — measured
         # against a real invalid key. Named as what it is, not as "bad request".
         if resp.status_code == 400 and ("API_KEY_INVALID" in body or "API key not valid" in body):
             msg = _STATUS_MESSAGES[401]
         else:
             msg = _STATUS_MESSAGES.get(resp.status_code) or f"Nhà cung cấp trả lỗi {resp.status_code}."
-        return {"ok": False, "error": sanitize_error(msg, secret=secret), "latency_ms": latency}
+        return {"ok": False, "error": sanitize_error(msg, secret=secret), "latency_ms": latency,
+                "code": code}
     except httpx.TimeoutException:
         return {"ok": False, "error": "Hết thời gian chờ nhà cung cấp phản hồi.",
-                "latency_ms": int((time.monotonic() - started) * 1000)}
+                "latency_ms": int((time.monotonic() - started) * 1000), "code": "timeout"}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": sanitize_error(f"Không kết nối được: {type(exc).__name__}", secret=secret),
-                "latency_ms": int((time.monotonic() - started) * 1000)}
+                "latency_ms": int((time.monotonic() - started) * 1000), "code": "provider_outage"}
 
 
 async def test(db: Session, user: Any, credential_id: Any) -> dict[str, Any]:
@@ -579,6 +625,168 @@ async def test(db: Session, user: Any, credential_id: Any) -> dict[str, Any]:
     row.last_test_error = None if result["ok"] else sanitize_error(result["error"], secret=secret)
     db.commit()
     return result
+
+
+# ═══ Is THIS model usable with THIS key? ══════════════════════════════════════
+#: One model's metadata, read without spending tokens. 404 means the name is
+#: unknown to the vendor OR the key may not see it — the vendor does not say which.
+_MODEL_REQUESTS: dict[str, Any] = {
+    "openai": lambda m: f"https://api.openai.com/v1/models/{m}",
+    "anthropic": lambda m: f"https://api.anthropic.com/v1/models/{m}",
+    "gemini": lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}",
+}
+
+#: The smoke test's tool: the model must call it and then use its result.
+_SMOKE_TOOL = {
+    "name": "get_check_number",
+    "description": "Returns the check number for the requested label.",
+    "input_schema": {"type": "object", "properties": {"label": {"type": "string"}},
+                     "required": ["label"]},
+}
+_SMOKE_VALUE = 7319
+
+
+def _level(level: str, status: str, message: str = "", code: str | None = None, **extra: Any) -> dict:
+    return {"level": level, "status": status, "message": message, "code": code, **extra}
+
+
+async def _availability(provider: str, secret: str, model: str) -> dict:
+    import httpx
+
+    from app.services.dashboard_ai_bot.providers.errors import MESSAGES, classify
+
+    url = _MODEL_REQUESTS[provider](model)
+    headers = _TEST_REQUESTS[provider][1](secret)
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=headers)
+    except httpx.TimeoutException:
+        return _level("availability", "fail", MESSAGES["timeout"][0], "timeout")
+    except Exception as exc:  # noqa: BLE001
+        return _level("availability", "fail", sanitize_error(f"Không kết nối được: {type(exc).__name__}",
+                                                             secret=secret), "provider_outage")
+    if resp.status_code == 200:
+        return _level("availability", "pass", "Nhà cung cấp xác nhận key thấy model này.")
+    perr = classify(resp.status_code, resp.content or b"")
+    from app.services.agent_flows.models_catalogue import known_model
+
+    if resp.status_code == 404 and perr.code in ("unknown_model", "model_unavailable", "bad_request"):
+        # The vendor's docs say this model exists (it is catalogued from them), so
+        # a 404 for THIS key is an entitlement problem, not a typo.
+        perr = type(perr)("no_entitlement" if known_model(provider, model) else "unknown_model",
+                          404, perr.detail)
+    what, fix = MESSAGES.get(perr.code, MESSAGES["bad_request"])
+    return _level("availability", "fail", f"{what} {fix}", perr.code)
+
+
+async def _smoke(provider: str, secret: str, model: str) -> dict:
+    """ONE REAL TOOL LOOP through the exact runtime path a step uses (`_stream`):
+    the model must call the tool with valid arguments, receive the result, and
+    answer with it. A greeting proves nothing about a tool-using step."""
+    import time as _t
+
+    from app.services.agent_flows.runtime.handlers.agent import _stream
+
+    system = ("You are a connectivity check. Call get_check_number with label 'smoke' exactly once, "
+              "then reply with only the number it returned.")
+    messages: list[dict] = [{"role": "user", "content": "What is the check number for 'smoke'?"}]
+    started = _t.monotonic()
+    usage = {"prompt_tokens": 0, "completion_tokens": 0}
+    rounds: list[dict] = []
+    for round_no in (1, 2):
+        text, calls, state, err = "", [], {}, None
+        async for ev in _stream(provider=provider, api_key=secret, model=model, system_prompt=system,
+                                messages=messages, tools=[_SMOKE_TOOL] if round_no == 1 else []):
+            if ev.type == "text":
+                text += ev.text
+            elif ev.type == "tool_call":
+                calls.append(ev)
+            elif ev.type == "provider_state":
+                state.update((ev.extra or {}).get("state") or {})
+            elif ev.type == "usage":
+                usage["prompt_tokens"] += int(ev.extra.get("prompt_tokens") or 0)
+                usage["completion_tokens"] += int(ev.extra.get("completion_tokens") or 0)
+            elif ev.type == "error":
+                err = ev
+        rounds.append({"round": round_no, "tool_calls": len(calls), "text_chars": len(text)})
+        elapsed = int((_t.monotonic() - started) * 1000)
+        if err is not None:
+            return _level("smoke", "fail", sanitize_error(err.text, secret=secret),
+                          (err.extra or {}).get("code"), rounds=rounds, latency_ms=elapsed, usage=usage)
+        if round_no == 1:
+            good = [c for c in calls if c.tool_name == _SMOKE_TOOL["name"]
+                    and isinstance(c.tool_args, dict) and c.tool_args.get("label")]
+            if not good:
+                return _level("smoke", "fail", "Model không gọi công cụ thử với tham số hợp lệ.",
+                              "unsupported_tools", rounds=rounds, latency_ms=elapsed, usage=usage)
+            messages.append({"role": "assistant", "content": text,
+                             "tool_calls": [{"id": c.tool_call_id, "name": c.tool_name, "args": c.tool_args}
+                                            for c in calls],
+                             **({"provider_state": state} if state else {})})
+            for c in calls:
+                messages.append({"role": "tool", "tool_call_id": c.tool_call_id, "name": c.tool_name,
+                                 "result": {"ok": True, "data": {"check_number": _SMOKE_VALUE}}})
+            continue
+        if str(_SMOKE_VALUE) not in text.replace(",", "").replace(".", ""):
+            return _level("smoke", "fail", "Model không dùng kết quả công cụ để trả lời.",
+                          "bad_request", rounds=rounds, latency_ms=elapsed, usage=usage)
+        return _level("smoke", "pass", "Model gọi công cụ, nhận kết quả và trả lời đúng (2 lượt, thật).",
+                      rounds=rounds, latency_ms=elapsed, usage=usage)
+    return _level("smoke", "fail", "Không hoàn tất.", "bad_request")
+
+
+async def check_model(db: Session, user: Any, credential_id: Any, model: str, *,
+                      smoke: bool = False) -> dict[str, Any]:
+    """Credential → model available → protocol compatible → (optional) a real tool loop.
+
+    Each level is reported on its own; a later level is `not_run` when an earlier
+    one failed. `verdict` is `ready` only when the real tool loop passed —
+    "the key works" and "the model is listed" are not "this step will run".
+    """
+    from app.services.agent_flows import models_catalogue as cat
+
+    row = get_for(db, user, credential_id, level="view")
+    secret = _decrypt(row)
+    provider = row.provider
+    s = cat.spec(provider, model)
+    levels: list[dict] = []
+    if not secret:
+        levels.append(_level("credential", "fail", "Key không giải mã được — hãy nhập lại key.",
+                             "invalid_credentials"))
+    else:
+        got = await probe(provider, secret)
+        levels.append(_level("credential", "pass" if got["ok"] else "fail",
+                             "Key được nhà cung cấp chấp nhận." if got["ok"] else (got["error"] or ""),
+                             got.get("code"), latency_ms=got.get("latency_ms")))
+    if levels[-1]["status"] == "pass":
+        levels.append(await _availability(provider, secret, model))
+    else:
+        levels.append(_level("availability", "not_run", "Bỏ qua vì key chưa dùng được."))
+    if not s:
+        levels.append(_level("compatibility", "fail",
+                             f"'{model}' không có trong danh sách model của {provider}.", "unknown_model"))
+    elif not cat.selectable(provider, model):
+        levels.append(_level("compatibility", "fail", cat.lifecycle_warning(provider, model)
+                             or "AppBI chưa hỗ trợ giao thức của model này.", "unsupported_endpoint"))
+    else:
+        levels.append(_level("compatibility", "pass",
+                             "AppBI hỗ trợ giao thức và công cụ của model này."
+                             + (f" {cat.lifecycle_warning(provider, model)}" if cat.lifecycle_warning(provider, model) else ""),
+                             certification=(s.get("certification") or {}).get("status")))
+    ready_so_far = all(lv["status"] == "pass" for lv in levels)
+    if smoke and ready_so_far:
+        levels.append(await _smoke(provider, secret, model))
+    else:
+        levels.append(_level("smoke", "not_run",
+                             "Chưa chạy thử thật." if not smoke else "Bỏ qua vì một bước trước chưa đạt."))
+    if all(lv["status"] == "pass" for lv in levels):
+        verdict = "ready"
+    elif ready_so_far:
+        verdict = "available_untested"
+    else:
+        verdict = "not_ready"
+    return {"provider": provider, "model": model, "verdict": verdict, "levels": levels,
+            "certification": (s or {}).get("certification")}
 
 
 # ═══ Saving a flow: who may put which key on which step ═══════════════════════
