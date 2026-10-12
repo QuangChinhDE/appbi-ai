@@ -66,3 +66,16 @@ Two negative checks also passed live:
 | M10 unknown model refused and named | PASS |
 | M11 text-only model refused with tools | Server-side test only. No catalogued model is text-only, so there is nothing to select in the UI. |
 | M12 published flow keeps its model | PASS (live) |
+
+### Representative quality (`evidence/quality_*.json`)
+
+These runs use the meaning-graded questions from PR #14: 14 questions, 1 repeat, live, on the SaaS and Olist fixtures.
+
+| Model | Single agent | Specialist chain | Confident wrong | p50 (single / chain) | Cost |
+|---|---|---|---|---|---|
+| gpt-6-luna | 12/14 | 12/14 | **0** | 8.9 s / 20.2 s | $0.06 |
+| gpt-6.1-sol | 11/14 | 10/14 | **0** | 12.8 s / 35.7 s | $0.95 |
+
+The remaining misses are `incomplete` answers and legitimate refusals; the chart-684 dependency from PR #14 accounts for some of them. Neither model produced a confident wrong answer. Luna is the cost-effective choice here. Sol is not more accurate on this set, and it is slower.
+
+The default model was **not** changed: new steps still start on `gpt-4o-mini`. Changing it needs the full 3-repeat evaluation; this is one repeat.
