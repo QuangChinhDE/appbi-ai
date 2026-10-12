@@ -144,8 +144,12 @@ async def stream_gemini(
     tools: list[dict] | None = None,
     model: str = GEMINI_MODEL,
     max_tokens: int = 2048,
+    strict: bool = False,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Gemini WITH tool calling, through the OpenAI-compatible endpoint.
+
+    `strict` (Agent Flow): Gemini 3's thought signatures on tool calls are kept and
+    replayed, truncation is reported, errors are classified — see `stream_openai`.
 
     The single-shot adapter above ignores `tools`: an Agent step granted tools
     would have silently lost every one of them on Gemini. This one keeps them.
@@ -162,5 +166,6 @@ async def stream_gemini(
         max_tokens=max_tokens,
         base_url=GEMINI_OPENAI_BASE_URL,
         vendor="gemini",
+        strict=strict,
     ):
         yield ev

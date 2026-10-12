@@ -11,14 +11,14 @@
  * Used by the Agent step and by the Coordinate step's planner: both are model
  * calls, and both run on a key of their own.
  */
-import { AlertTriangle, KeyRound } from 'lucide-react';
-import React from 'react';
+import { AlertTriangle, CheckCircle2, Circle, KeyRound, Loader2, XCircle } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
 
 import { useAiKeys } from '@/components/agent-flows/aiKeys/AiKeysContext';
 import { PROVIDER_LABELS } from '@/components/agent-flows/aiKeys/AiKeysModal';
 import {
-  DEFAULT_MODEL, DEFAULT_PROVIDER, defaultCredentialFor,
-  type AiCredential, type Provider, type ProviderGroup,
+  checkModel, DEFAULT_MODEL, DEFAULT_PROVIDER, defaultCredentialFor,
+  type AiCredential, type ModelCheck, type ModelInfo, type Provider, type ProviderGroup,
 } from '@/lib/agentFlows';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -63,6 +63,21 @@ export function ModelPicker({ value, providers, onChange, testId = 'model-picker
   // a flow shared with me. The step keeps it (saving other edits does not strip it);
   // the run re-checks it and fails by name if it is no longer usable.
   const foreign = value.credential_id != null && loaded && !current;
+  const chosen = value.model || models[0]?.model || '';
+  const info = models.find((m) => m.model === chosen);
+
+  // What the author is shown in the list: the name, then how far the claim goes.
+  const optionLabel = (m: ModelInfo) => {
+    const parts = [m.label];
+    if (m.lifecycle && m.lifecycle !== 'active') parts.push(t(`agentFlows.model.life.${m.lifecycle}`));
+    if (m.certification) parts.push(t(`agentFlows.model.status.${m.certification.status}`));
+    return parts.join(' · ');
+  };
+  // A stored model the catalogue no longer lists is SHOWN as itself, never
+  // silently replaced by the first option.
+  const options = models.filter((m) => m.selectable !== false || m.model === chosen)
+    .map((m) => ({ value: m.model, label: optionLabel(m) }));
+  if (chosen && !info) options.unshift({ value: chosen, label: chosen });
 
   return (
     <div className="space-y-1.5" data-testid={testId}>
@@ -79,12 +94,14 @@ export function ModelPicker({ value, providers, onChange, testId = 'model-picker
         <label className="block">
           <span className="mb-0.5 block text-tiny text-text-tertiary">{t('agentFlows.model.model')}</span>
           <Select
-            value={value.model || models[0]?.model || ''}
+            value={chosen}
             onChange={(v) => onChange({ model: v })}
-            options={models.map((m) => ({ value: m.model, label: m.label }))}
+            options={options}
           />
         </label>
       </div>
+
+      <ModelFacts testId={testId} model={chosen} info={info} />
 
       <div
         data-testid={`${testId}-key`}
@@ -154,6 +171,115 @@ export function ModelPicker({ value, providers, onChange, testId = 'model-picker
           </>
         )}
       </div>
+
+      <ModelCheckPanel testId={testId} credentialId={current ? current.id : null} model={chosen} />
+    </div>
+  );
+}
+
+function ModelFacts({ testId, model, info }: { testId: string; model: string; info?: ModelInfo }) {
+  const { t } = useI18n();
+  if (!info) {
+    return model ? (
+      <p data-testid={`${testId}-unknown`} className="rounded-md bg-danger/10 px-2 py-1 text-caption text-danger">
+        {t('agentFlows.model.unknownModel', { model })}
+      </p>
+    ) : null;
+  }
+  const price = info.price;
+  const cert = info.certification;
+  return (
+    <div data-testid={`${testId}-facts`} className="space-y-0.5 rounded-md bg-surface-2 px-2 py-1.5 text-caption text-text-secondary">
+      {info.purpose && <p>{info.purpose}</p>}
+      <p className="flex flex-wrap gap-x-2">
+        <span data-testid={`${testId}-tools`}>{info.tools ? t('agentFlows.model.tools') : t('agentFlows.model.noTools')}</span>
+        {info.reasoning && info.reasoning !== 'none' && <span>· {t('agentFlows.model.reasoning')}</span>}
+      </p>
+      <p data-testid={`${testId}-price`}>
+        {price && price.input_per_mtok != null && price.output_per_mtok != null
+          ? t('agentFlows.model.price', { input: price.input_per_mtok, output: price.output_per_mtok })
+          : t('agentFlows.model.priceUnknown')}
+        {price?.source && (
+          <>
+            {' '}(<a href={price.source} target="_blank" rel="noreferrer" className="underline">
+              {t('agentFlows.model.priceSource', { date: price.as_of })}</a>)
+          </>
+        )}
+        {price?.note && <span className="text-text-tertiary"> — {price.note}</span>}
+      </p>
+      {cert && (
+        <p data-testid={`${testId}-cert`} data-status={cert.status}
+          className={cert.status === 'unverified' ? 'text-warning' : 'text-success'}>
+          {cert.status === 'certified'
+            ? t('agentFlows.model.certified', { date: cert.as_of })
+            : cert.status === 'legacy_verified'
+              ? t('agentFlows.model.legacyVerified')
+              : t('agentFlows.model.unverified', { reason: cert.reason || '' })}
+        </p>
+      )}
+      {info.lifecycle_warning && (
+        <p data-testid={`${testId}-lifecycle`} className="flex items-start gap-1 text-warning">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />{info.lifecycle_warning}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ModelCheckPanel({ testId, credentialId, model }: { testId: string; credentialId: number | null; model: string }) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ModelCheck | null>(null);
+  const [failed, setFailed] = useState('');
+  // A result is about ONE key and ONE model: it goes when either changes.
+  useEffect(() => { setResult(null); setFailed(''); }, [credentialId, model]);
+
+  const run = async () => {
+    if (credentialId == null || !model) return;
+    setBusy(true);
+    setFailed('');
+    try {
+      setResult(await checkModel(credentialId, model, true));
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setFailed(typeof detail === 'string' ? detail : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        data-testid={`${testId}-check`}
+        disabled={busy || credentialId == null || !model}
+        onClick={run}
+        title={credentialId == null ? t('agentFlows.model.checkNeedsKey') : undefined}
+        className="inline-flex items-center gap-1 text-caption font-emphasis text-brand underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-text-tertiary disabled:no-underline"
+      >
+        {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+        {busy ? t('agentFlows.model.checking') : t('agentFlows.model.check')}
+      </button>
+      {failed && <p className="text-caption text-danger">{failed}</p>}
+      {result && (
+        <div data-testid={`${testId}-check-result`} data-verdict={result.verdict}
+          className={cn('rounded-md px-2 py-1.5 text-caption',
+            result.verdict === 'ready' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning')}>
+          <p className="font-emphasis">{t(`agentFlows.model.verdict.${result.verdict}`)}</p>
+          <ul className="mt-0.5 space-y-0.5 text-text-secondary">
+            {result.levels.map((lv) => (
+              <li key={lv.level} data-testid={`${testId}-level-${lv.level}`} data-status={lv.status} data-code={lv.code || ''}
+                className="flex items-start gap-1">
+                {lv.status === 'pass' ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-success" />
+                  : lv.status === 'fail' ? <XCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-danger" />
+                    : <Circle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-text-tertiary" />}
+                <span><span className="font-emphasis">{t(`agentFlows.model.level.${lv.level}`)}:</span> {lv.message}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

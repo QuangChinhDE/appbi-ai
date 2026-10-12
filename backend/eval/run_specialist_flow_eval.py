@@ -290,7 +290,16 @@ def main() -> None:
     ap.add_argument("--only", default="")
     ap.add_argument("--suite", default="all", choices=["all", "olist", "saas"])
     ap.add_argument("--out", required=True)
+    ap.add_argument("--model", default="", help="run every model step on this catalogued model")
     args = ap.parse_args()
+    if args.model:
+        # Priced from the same table the product uses, never a guess.
+        from app.services.dashboard_ai_bot.cost import price_for
+
+        global MODEL, PRICE
+        MODEL = args.model
+        p = price_for(MODEL)
+        PRICE = {"in": p.tiers[0].input_per_1m, "out": p.tiers[0].output_per_1m}
 
     api = Api(args.api, open(args.token_file).read().strip())
     spent = 0.0

@@ -132,7 +132,7 @@ def _intent_credential(flow: Flow, credentials: Any) -> tuple[str, str, str]:
     classification, and it ran on `gpt-4o-mini` before steps chose their own model.
     Putting it on a step's reasoning model would spend its whole timeout thinking.
     """
-    from app.services.agent_flows.models_catalogue import default_model
+    from app.services.agent_flows.models_catalogue import intent_model
 
     if credentials is None:
         return "", "", ""
@@ -144,7 +144,7 @@ def _intent_credential(flow: Flow, credentials: Any) -> tuple[str, str, str]:
             got = credentials.for_node(node)
         except Exception:                                       # noqa: BLE001
             continue
-        return got.provider, got.api_key, default_model(got.provider) or got.model
+        return got.provider, got.api_key, intent_model(got.provider) or got.model
     return "", "", ""
 
 

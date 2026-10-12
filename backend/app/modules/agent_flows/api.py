@@ -177,6 +177,15 @@ def list_models(_: User = Depends(can_view)) -> dict[str, Any]:
     return {"providers": model_catalogue()}
 
 
+@router.get("/models/usage")
+def list_model_usage(db: Session = Depends(get_db), user: User = Depends(can_view)) -> dict[str, Any]:
+    """Flows this user may use, grouped by the model each step runs on — with
+    the vendor lifecycle and the recommended replacement. Read-only."""
+    from app.services.agent_flows.credentials import model_usage
+
+    return {"models": model_usage(db, user)}
+
+
 @router.get("/authoring-prompt")
 def authoring_prompt(
     web_enabled: bool = True, _: User = Depends(can_view)

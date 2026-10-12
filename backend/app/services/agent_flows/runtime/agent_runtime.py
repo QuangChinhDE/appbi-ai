@@ -288,6 +288,10 @@ class ModelReply:
     tool_calls: list[AgentEvent] = field(default_factory=list)
     #: The round hit the run's deadline. The provider error is already recorded.
     timed_out: bool = False
+    #: Opaque vendor state this round produced and the NEXT round must send back
+    #: unchanged (reasoning items, thinking blocks, thought signatures). Never shown,
+    #: never interpreted here — only carried onto the assistant turn.
+    provider_state: dict = field(default_factory=dict)
 
 
 def _skill_capabilities(node: AgentNode, rctx: Any) -> tuple[list, dict[str, str]]:
@@ -433,6 +437,8 @@ class AgentRuntime:
         #: while the answer was blank, which is the single most misleading thing a
         #: run log can do.
         self.provider_error = ""
+        #: The classified cause (`providers.errors`), when the adapter gave one.
+        self.provider_error_code = ""
         self.last_reply = ModelReply()
         #: None until the first round is asked (nothing to compare against yet).
         self.offered_names: set[str] | None = None
@@ -487,6 +493,10 @@ class AgentRuntime:
             **({"handoff": prior["handoff"]} if prior.get("handoff") else {}),
             **self.view.to_trace(), "final_rounds": self.final_rounds,
             **({"claim_review": self.claim_review} if self.claim_review else {}),
+            # WHICH MODEL THIS STEP CALLED — the id sent to the vendor, so a run
+            # can prove each step ran on what its author chose (never a fallback).
+            "model": {"provider": self.provider, "model": self.model,
+                      **({"error_code": self.provider_error_code} if self.provider_error_code else {})},
         }
 
     # ── corrections ──────────────────────────────────────────────────────────
@@ -646,6 +656,11 @@ class AgentRuntime:
                     if ev.type == "tool_call":
                         reply.tool_calls.append(ev)
                         continue
+                    if ev.type == "provider_state":
+                        state_part = (ev.extra or {}).get("state")
+                        if isinstance(state_part, dict):
+                            reply.provider_state.update(state_part)
+                        continue
                     if ev.type == "text":
                         reply.text += ev.text
                         if stream_text:
@@ -658,6 +673,7 @@ class AgentRuntime:
                         )
                     if ev.type == "error":
                         self.provider_error = ev.text or "nhà cung cấp trả về lỗi"
+                        self.provider_error_code = str((ev.extra or {}).get("code") or "")
                         continue
                     yield ev
         except TimeoutError:

@@ -114,10 +114,45 @@ export interface ToolPack {
   tools: ToolSpec[];
 }
 
+/** One catalogued model and what is actually known about it (see the backend's
+ *  `models_catalogue.py`): the vendor's lifecycle, the protocol AppBI uses, and
+ *  what AppBI itself certified against the real API. */
+export interface ModelInfo {
+  model: string;
+  label: string;
+  tier_hint: string;
+  purpose?: string;
+  lifecycle?: 'active' | 'legacy' | 'deprecated' | 'retired';
+  retire_after?: string;
+  replacement?: string;
+  endpoint?: string;
+  tools?: boolean;
+  reasoning?: string;
+  recommended?: boolean;
+  selectable?: boolean;
+  lifecycle_warning?: string;
+  price?: { input_per_mtok: number | null; output_per_mtok: number | null; source: string; as_of: string; note?: string };
+  certification?: { status: 'certified' | 'legacy_verified' | 'unverified'; as_of: string; evidence?: string; reason?: string };
+}
+
 export interface ProviderGroup {
   provider: Provider;
   label: string;
-  models: { model: string; label: string; tier_hint: string }[];
+  models: ModelInfo[];
+}
+
+export interface ModelCheckLevel {
+  level: 'credential' | 'availability' | 'compatibility' | 'smoke';
+  status: 'pass' | 'fail' | 'not_run';
+  message: string;
+  code: string | null;
+}
+
+export interface ModelCheck {
+  provider: Provider;
+  model: string;
+  verdict: 'ready' | 'available_untested' | 'not_ready';
+  levels: ModelCheckLevel[];
 }
 
 /** A stored AI key, as any client may see it. There is no field for the secret —
@@ -1045,6 +1080,13 @@ export async function deleteCredential(id: number): Promise<AiCredentialUsage[]>
 export async function testCredential(id: number): Promise<{ ok: boolean; error: string | null; latency_ms: number }> {
   const { data } = await apiClient.post<{ ok: boolean; error: string | null; latency_ms: number }>(
     `${BASE}/credentials/${id}/test`);
+  return data;
+}
+
+/** Credential → model available → supported → (smoke) one real tool call. */
+export async function checkModel(credentialId: number, model: string, smoke = true): Promise<ModelCheck> {
+  const { data } = await apiClient.post<ModelCheck>(`${BASE}/credentials/${credentialId}/check-model`,
+    { model, smoke });
   return data;
 }
 
