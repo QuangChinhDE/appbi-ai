@@ -61,3 +61,59 @@ nothing. Each finding below was reproduced against the code and the SaaS fixture
 - **Symptom:** `builder.spec` "no failed requests" saw an aborted RSC navigation fetch: 3/6 runs on the branch, 1/6 on clean demo (so it also exists upstream).
 - **Cause:** the branch fetched `/tools` twice (packs, then roles).
 - **Fix and result:** one request for both, then 8/8 clean.
+
+## Correctness closure (rounds 7–10, 2026-10-12)
+
+The grader judges meaning (`backend/eval/grading.py`). Two grader defects were fixed. Re-grading every earlier round with each fix moves exactly one verdict:
+- a chart id ("biểu đồ 1219") was read as a figure;
+- a correct % change between two true figures was graded as unsupported.
+
+### Final live evaluation on e47e27f8: gpt-4o-mini, 168 runs (4 flows × 14 questions × 3 repeats), $0.32 (`evidence/live_eval_round10_e47e27f8.json`)
+
+| Flow | Correct | Golden | Holdout | Confident wrong | p50 / p95 latency |
+|---|---|---|---|---|---|
+| A one custom agent | 36/42 | 19/21 | 17/21 | **0** | 6.2 s / 17.5 s |
+| B specialist chain | 36/42 | 19/21 | 17/21 | **0** | 15.4 s / 34.7 s |
+| C coordinator | 38/42 | 20/21 | 18/21 | **0** | 7.2 s / 14.5 s |
+| D Report Read + writer | 25/42 | 16/21 | 9/21 | **0** | 4.8 s / 9.0 s |
+
+### Defects found live in rounds 7–9 and fixed
+
+Each fix has a regression test in `test_correctness_closure.py` that fails without it.
+
+**D read nothing for "ARR tháng 8/2026".** Two resolver gaps:
+- Period and question words were counted in measure strength. Strength now counts content words only.
+- A named grain did not choose the time-axis chart. It now prefers the chart that plots the measure over time.
+
+With no vocabulary, an on-screen measure label now narrows the match, and a clear winner by chart name is not ambiguous.
+
+**D's writer received no rows.** The handoff reducer had three faults:
+- It pruned the rows and kept summary stats, including ARR summed over months (5,244).
+- It halved individual rows and column headers.
+- It repeated each refusal reason twice.
+
+Now a complete read hands over its rows, and the reducer drops whole rows only.
+
+**"ARR of enterprise is 6,500".** That figure is the total of all segments, and was reported 3/3 in C. `total_measure` now names a total over breakdown members as the whole. When the question names one member, it refuses with `member_not_total` and gives the exact `share_of` call. Live: 5/5 correct.
+
+**July's 864 published as "the latest month".** The chart summary's max vouched for the claim. Series extremes no longer vouch for "the latest period".
+
+**MRR share across months (16.02%).** `share_of`/`rank_values` give no share or total over periods for a measure not declared additive over time.
+
+### Remaining limits (not wrong answers)
+
+**Q4 (12/12 incomplete): blocked by a dependency.** Chart 684 (GMV by month) is refused by the semantic layer's key guard on this rig: the date-dimension key cannot be verified. Every flow says it could not read the chart.
+
+**D churn questions (S4, H1): by design.** The SaaS fixture has no governed vocabulary, and the resolver does not translate "khách hàng rời bỏ" to "Cus churned". The tool-using flows answer these.
+
+**R2 (sum ARR over months):** a refusal or a withheld figure, never a published sum.
+
+### Browser acceptance on e47e27f8, retries 0
+
+**Full run:** 77 tests, 76 passed, 1 failed, 0 skipped, 0 flaky (`evidence/browser_acceptance_e47e27f8.json`).
+
+**The one failure was a test-parsing defect, not a role breach:**
+- The trace records a failed call as `describe_time_coverage(not_applicable)`.
+- The membership check now strips the outcome suffix. Every call must still be one of the reader's tools.
+
+**Re-run of the specialist spec:** 21/21 passed with a live model (`evidence/browser_specialists_rerun.json`).

@@ -196,7 +196,11 @@ test.describe('specialist journeys (live model)', () => {
     const ma = stepOf(env, 'ma');
     expect(ma, `steps: ${JSON.stringify((env.trace?.steps ?? []).map((s: any) => [s.key, s.status, s.error]))} notices: ${JSON.stringify(codes(env))}`).toBeTruthy();
     const reader = new Set(['resolve_chart_candidates', 'list_charts', 'describe_time_coverage']);
-    for (const t of rr.tool_calls) expect(reader.has(t), t).toBe(true);
+    // The trace records a call that returned an error as `name(code)` — e.g.
+    // `describe_time_coverage(not_applicable)` on a category chart. The boundary
+    // is about WHICH tool was called, so the outcome suffix is stripped; every
+    // call must still be one of the reader's tools.
+    for (const t of rr.tool_calls) expect(reader.has(String(t).replace(/\(.*\)$/, '')), t).toBe(true);
     expect(ma.capabilities.handoff.mode).toBe('inputs');
     expect(ma.capabilities.handoff.included).toContain('rr');
     expect(env.answer.text.toLowerCase()).toContain('health');
