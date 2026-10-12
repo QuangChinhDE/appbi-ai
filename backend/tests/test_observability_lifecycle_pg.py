@@ -884,3 +884,55 @@ def test_a_scan_over_its_time_budget_stops_running_monitors_and_says_so(db, worl
     out = S.run_scan(db, dataset_id=world["ds"].id)
     assert len(ran) < 3 and out["monitors_skipped"] == 3 - len(ran)
     assert out["status"] == "partial" and "time budget" in out["errors"][0]
+
+
+# ── Health contract: active anomaly metrics are monitoring ──────────────────
+
+def _usage_row(client, who, ds_id):
+    rows = client.get("/api/v1/observability/usage", headers=who.headers).json()
+    return next(r for r in rows if r["datasetId"] == ds_id)
+
+
+def _metric(db, world, status, *, ok_at=None):
+    from app.models.anomaly import MonitoredMetric
+
+    m = MonitoredMetric(dataset_table_id=world["tbl"].id, metric_column=f"c{uuid.uuid4().hex[:4]}",
+                        owner_id=world["owner"].id, last_check_status=status,
+                        last_checked_at=datetime.utcnow() if status else None,
+                        last_check_error="history query failed" if status == "error" else None,
+                        last_ok_at=ok_at)
+    db.add(m)
+    db.commit()
+    return m
+
+
+def test_a_dataset_monitored_only_by_an_anomaly_metric_is_observed_and_counted(client, db, world):  # noqa: F811
+    _metric(db, world, "ok", ok_at=datetime.utcnow())
+    r = _usage_row(client, world["owner"], world["ds"].id)
+    assert r["observed"] is True
+    assert r["checks"]["active"] == 1 and r["checks"]["passing"] == 1
+    assert r["health"] == "healthy"
+
+
+@pytest.mark.parametrize("status,expected", [("error", "error"), ("insufficient", "unknown"), (None, "unknown"),
+                                             ("anomaly", "breached")])
+def test_a_failing_or_unjudged_anomaly_detector_is_never_healthy(client, db, world, status, expected):  # noqa: F811
+    from app.models.observability import ObservabilityMonitor
+
+    db.add(ObservabilityMonitor(dataset_id=world["ds"].id, dataset_table_id=world["tbl"].id, kind="schema",
+                                name="s", config={}, severity="warning", last_status="ok",
+                                last_checked_at=datetime.utcnow()))
+    db.commit()
+    _metric(db, world, status)
+    r = _usage_row(client, world["owner"], world["ds"].id)
+    assert r["health"] == expected, r
+    assert r["checks"]["active"] == 2 and r["checks"]["passing"] == 1
+
+
+def test_the_distribution_pillar_reflects_active_anomaly_metrics(client, db, world):  # noqa: F811
+    _metric(db, world, "ok", ok_at=datetime.utcnow())
+    _metric(db, world, "error")
+    ov = client.get("/api/v1/observability/overview", headers=world["owner"].headers).json()
+    dist = next(p for p in ov["pillars"] if p["pillar"] == "distribution")
+    assert dist["monitors"] >= 2 and dist["errored"] >= 1
+    assert dist["status"] != "not_monitored" and dist["status"] != "healthy"

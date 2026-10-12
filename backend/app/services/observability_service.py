@@ -446,6 +446,33 @@ class ObservabilityService:
         return out
 
     @staticmethod
+    def _metric_state(db: Session, dataset_ids: List[int]) -> Dict[int, Dict[str, int]]:
+        """Per dataset, its ACTIVE anomaly metrics by the outcome of their last
+        check: ok (passing) | anomaly (breached) | error | insufficient / never
+        checked (unknown). An anomaly detector is a check like any other - one
+        that could not run or could not judge is never "healthy"."""
+        out: Dict[int, Dict[str, int]] = {}
+        if not dataset_ids:
+            return out
+        rows = (db.query(DatasetTable.dataset_id, MonitoredMetric.last_check_status)
+                .join(MonitoredMetric, MonitoredMetric.dataset_table_id == DatasetTable.id)
+                .filter(DatasetTable.dataset_id.in_(dataset_ids))
+                .filter(MonitoredMetric.is_active == True)  # noqa: E712
+                .all())
+        for ds_id, st in rows:
+            b = out.setdefault(ds_id, {"active": 0, "ok": 0, "breached": 0, "errored": 0, "unknown": 0})
+            b["active"] += 1
+            if st == "ok":
+                b["ok"] += 1
+            elif st == "anomaly":
+                b["breached"] += 1
+            elif st == "error":
+                b["errored"] += 1
+            else:
+                b["unknown"] += 1
+        return out
+
+    @staticmethod
     def health_state(*, open_incidents: int, breached: int, errored: int, unknown: int, checks: int,
                      semantic_invalid: bool = False) -> str:
         """One honest state: semantic_invalid > breached > error > unknown >
@@ -1273,6 +1300,7 @@ class ObservabilityService:
         # The quality pillar is judged on the rules' latest run, not on their
         # mere existence (a rule never run read "healthy").
         q_state = ObservabilityService._quality_run_state(db, dataset_ids) if dataset_ids else {}
+        m_state = ObservabilityService._metric_state(db, dataset_ids)
         for pillar in ("freshness", "volume", "schema", "distribution", "quality"):
             kind_monitors = [m for m in mon_by_kind.get(pillar, []) if m.is_active]
             breached = sum(1 for m in kind_monitors if m.last_status == "breached")
@@ -1282,13 +1310,19 @@ class ObservabilityService:
                 breached += sum(q["breached"] for q in q_state.values())
                 errored += sum(q["errored"] for q in q_state.values())
                 unknown += sum(q["unknown"] for q in q_state.values())
-            checks = len(kind_monitors) + (quality_rules if pillar == "quality" else 0)
+            n_metrics = 0
+            if pillar == "distribution":                # the anomaly detectors
+                n_metrics = sum(m["active"] for m in m_state.values())
+                breached += sum(m["breached"] for m in m_state.values())
+                errored += sum(m["errored"] for m in m_state.values())
+                unknown += sum(m["unknown"] for m in m_state.values())
+            checks = len(kind_monitors) + (quality_rules if pillar == "quality" else 0) + n_metrics
             state = ObservabilityService.health_state(
                 open_incidents=by_pillar.get(pillar, 0), breached=breached, errored=errored,
                 unknown=unknown, checks=checks)
             pillars.append({
                 "pillar": pillar,
-                "monitors": len(kind_monitors),
+                "monitors": len(kind_monitors) + n_metrics,
                 "breached": breached,
                 "errored": errored,
                 "unknown": unknown,
@@ -1680,6 +1714,13 @@ class ObservabilityService:
             for key, bucket in (("errored", err_per_ds), ("unknown", unk_per_ds), ("breached", brk_per_ds)):
                 if q[key]:
                     bucket[ds_id] = bucket.get(ds_id, 0) + q[key]
+        # Active anomaly metrics are checks too (Distribution pillar).
+        metric_state = ObservabilityService._metric_state(db, dataset_ids)
+        metrics_per_ds = {ds_id: m["active"] for ds_id, m in metric_state.items()}
+        for ds_id, m in metric_state.items():
+            for key, bucket in (("errored", err_per_ds), ("unknown", unk_per_ds), ("breached", brk_per_ds)):
+                if m[key]:
+                    bucket[ds_id] = bucket.get(ds_id, 0) + m[key]
 
         # Semantic usability: the model's state from its metadata now (cheap),
         # or the scan's live finding (an open semantic incident) — either way a
@@ -1694,7 +1735,8 @@ class ObservabilityService:
             return st
 
         def _checks(ds_id: int) -> Dict[str, int]:
-            active = active_mon_per_ds.get(ds_id, 0) + enabled_rules_per_ds.get(ds_id, 0)
+            active = (active_mon_per_ds.get(ds_id, 0) + enabled_rules_per_ds.get(ds_id, 0)
+                      + metrics_per_ds.get(ds_id, 0))
             failing = brk_per_ds.get(ds_id, 0)
             errored = err_per_ds.get(ds_id, 0)
             not_run = unk_per_ds.get(ds_id, 0)
@@ -1733,6 +1775,7 @@ class ObservabilityService:
                 "activeMonitors": active_mon_per_ds.get(d.id, 0),
                 "qualityRules": rules_per_ds.get(d.id, 0),
                 "enabledRules": enabled_rules_per_ds.get(d.id, 0),
+                "anomalyMetrics": metrics_per_ds.get(d.id, 0),
                 "openIncidents": inc_per_ds.get(d.id, 0),
                 # The checks that actually run, by their latest result. Paused
                 # monitors / disabled rules are configuration, not coverage.
@@ -1743,13 +1786,15 @@ class ObservabilityService:
                 "health": ObservabilityService.health_state(
                     open_incidents=inc_per_ds.get(d.id, 0), breached=brk_per_ds.get(d.id, 0),
                     errored=err_per_ds.get(d.id, 0), unknown=unk_per_ds.get(d.id, 0),
-                    checks=active_mon_per_ds.get(d.id, 0) + enabled_rules_per_ds.get(d.id, 0),
+                    checks=(active_mon_per_ds.get(d.id, 0) + enabled_rules_per_ds.get(d.id, 0)
+                            + metrics_per_ds.get(d.id, 0)),
                     semantic_invalid=sem["status"] == "fail"),
                 "semantic": sem,
                 "unused": len(ds_chart_ids) == 0,
                 # "observed" = has any check set up (monitor or rule), an open
                 # incident, or a known semantic failure (listed even unmonitored)
                 "observed": (mon_per_ds.get(d.id, 0) > 0 or rules_per_ds.get(d.id, 0) > 0
+                             or metrics_per_ds.get(d.id, 0) > 0
                              or inc_per_ds.get(d.id, 0) > 0 or sem["status"] == "fail"),
             })
         out.sort(key=lambda x: (-(x["chartCount"] + x["dashboardCount"]), -x["rows"]))
