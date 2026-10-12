@@ -399,6 +399,7 @@
  "POST /api/v1/integrations/embed/resolve": "cross",
  "POST /api/v1/notifications/read-all": "identity",
  "POST /api/v1/observability/alert-channels": "cross",
+ "POST /api/v1/observability/alert-channels/{channel_id}/retry-deliveries": "resource",
  "POST /api/v1/observability/alert-channels/{channel_id}/test": "resource",
  "POST /api/v1/observability/datasets/{dataset_id}/scan": "resource",
  "POST /api/v1/observability/scan": "global",

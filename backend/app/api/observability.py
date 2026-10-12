@@ -633,6 +633,29 @@ def delete_alert_channel(
           resource_type="alert_channel", resource_id=str(channel_id), details=details)
 
 
+@router.post("/alert-channels/{channel_id}/retry-deliveries")
+def retry_channel_deliveries(
+    channel_id: int, request: Request,
+    db: Session = Depends(get_db), user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Send again what never reached this channel (failed / given up), for
+    incidents still unresolved. Manage permission; audited."""
+    ch = _load_channel_for_manage(db, user, channel_id)
+    if not ch.is_active:
+        raise HTTPException(status_code=409, detail="Enable the channel before retrying its deliveries.")
+    from app.services.observability_notifier import channel_delivery_counts, dispatch_due, requeue_undelivered
+
+    out = requeue_undelivered(db, ch)
+    sent = dispatch_due(db) if out["requeued"] else 0
+    audit(db, AuditAction.ALERT_CHANNEL_UPDATED, request=request, user_id=user.id,
+          resource_type="alert_channel", resource_id=str(ch.id),
+          details={"action": "retry_deliveries", **out, "sent": sent})
+    db.refresh(ch)
+    return {**out, "sent": sent,
+            "channel": _channel_dict(ch, reveal_target=True, can_manage=True,
+                                     deliveries=channel_delivery_counts(db).get(ch.id))}
+
+
 @router.post("/alert-channels/{channel_id}/test")
 def test_alert_channel(
     channel_id: int, request: Request,

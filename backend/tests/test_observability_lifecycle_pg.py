@@ -777,3 +777,52 @@ def test_results_saved_but_run_record_not_is_not_reported_as_success(client, db,
     if run_id:
         assert db.get(ObservabilityScanRun, run_id).status == "failed"
     assert db.query(ObservabilityScanRun).filter(ObservabilityScanRun.status == "running").count() == 0
+
+
+# ── R3: recovering deliveries that gave up ──────────────────────────────────
+
+def test_dead_deliveries_are_recovered_once_on_request_and_never_resend_delivered(client, db, world, sends):  # noqa: F811
+    from app.models.observability import ObservabilityAlertDelivery as D
+    from app.services.observability_notifier import MAX_ATTEMPTS, dispatch_due, notify_new_incidents
+
+    sent, fail = sends
+    ch = _channel(db, world["ds"].id, "recover")
+    ch.owner_id = world["owner"].id
+    db.commit()
+    dead_inc, done_inc, gone_inc = _incident(db, world), _incident(db, world), _incident(db, world)
+    notify_new_incidents(db, [done_inc])                     # delivered fine
+    fail.add(ch.id)
+    notify_new_incidents(db, [dead_inc, gone_inc])
+    t = datetime.utcnow()
+    for _ in range(MAX_ATTEMPTS + 1):
+        t += timedelta(days=1)
+        dispatch_due(db, now=t)
+    row = lambda inc: db.query(D).filter(D.incident_id == inc.id, D.channel_id == ch.id).one()  # noqa: E731
+    db.expire_all()
+    assert row(dead_inc).status == "dead" and row(gone_inc).status == "dead"
+    gone_inc.status = "resolved"
+    db.commit()
+    dispatch_due(db, now=t + timedelta(days=30))             # nothing revives a dead row on its own
+    assert row(dead_inc).status == "dead"
+
+    fail.clear()                                             # the user fixed the channel
+    before = list(sent)
+    assert client.post(f"/api/v1/observability/alert-channels/{ch.id}/retry-deliveries",
+                       headers=world["viewer"].headers).status_code in (403, 404)
+    r = client.post(f"/api/v1/observability/alert-channels/{ch.id}/retry-deliveries", headers=world["owner"].headers)
+    assert r.status_code == 200, r.text
+    assert (r.json()["requeued"], r.json()["cancelled"]) == (1, 1)
+    db.expire_all()
+    new = sent[len(before):]
+    assert new.count((ch.id, dead_inc.id)) == 1 and (ch.id, done_inc.id) not in new and (ch.id, gone_inc.id) not in new
+    assert row(dead_inc).status == "sent" and row(gone_inc).status == "cancelled" and row(done_inc).status == "sent"
+    r = client.post(f"/api/v1/observability/alert-channels/{ch.id}/retry-deliveries", headers=world["owner"].headers)
+    assert r.json()["requeued"] == 0                          # idempotent: nothing left to recover
+
+
+def test_retry_needs_an_active_channel(client, db, world, sends):  # noqa: F811
+    ch = _channel(db, world["ds"].id, "paused")
+    ch.owner_id, ch.is_active = world["owner"].id, False
+    db.commit()
+    r = client.post(f"/api/v1/observability/alert-channels/{ch.id}/retry-deliveries", headers=world["owner"].headers)
+    assert r.status_code == 409
