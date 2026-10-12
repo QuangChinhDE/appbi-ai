@@ -158,6 +158,11 @@ class Settings(BaseSettings):
     # Govern = Metrics/Glossary/Classification; Observability = Data Quality/Incidents/Alerts.
     GOVERN_ENABLED: bool = True
     OBSERVABILITY_ENABLED: bool = True
+    # Wall-clock budget of ONE scan's monitor phase. Each monitor query is
+    # already bounded (60 s timeout; BigQuery: dry-run + billing cap); this bounds
+    # their sum, so a slow source cannot keep the scan (and its lock) for hours.
+    # Monitors not reached are reported as not run and the scan is partial.
+    OBSERVABILITY_SCAN_BUDGET_SECONDS: int = 1800
     # ── Agent Flow capability discovery ─────────────────────────────────
     # How many capabilities an Agent step is SHOWN in full per reasoning round
     # when it was granted more (runtime/capabilities.py). Visibility only — what

@@ -857,3 +857,30 @@ def test_a_disabled_module_answers_nothing_and_sends_nothing(client, db, world, 
     sched._run_anomaly_scan.__wrapped__()
     sched._dispatch_alerts.__wrapped__()
     assert "scan" in calls and "dispatch" in calls
+
+
+# ── R5: a scan is bounded in time ───────────────────────────────────────────
+
+def test_a_scan_over_its_time_budget_stops_running_monitors_and_says_so(db, world, monkeypatch):  # noqa: F811
+    import time
+
+    from app.core.config import settings
+    from app.models.observability import ObservabilityMonitor
+    from app.services.observability_service import ObservabilityService as S
+
+    for k in ("freshness", "volume", "schema"):
+        db.add(ObservabilityMonitor(dataset_id=world["ds"].id, dataset_table_id=world["tbl"].id, kind=k,
+                                    name=k, config={}, severity="warning"))
+    db.commit()
+    ran = []
+
+    def slow(m, db_):
+        ran.append(m.id)
+        time.sleep(1.2)
+        return {"status": "ok", "value": None, "detail": {}, "created_incident": None}
+
+    monkeypatch.setattr(S, "run_monitor", staticmethod(slow))
+    monkeypatch.setattr(settings, "OBSERVABILITY_SCAN_BUDGET_SECONDS", 1)
+    out = S.run_scan(db, dataset_id=world["ds"].id)
+    assert len(ran) < 3 and out["monitors_skipped"] == 3 - len(ran)
+    assert out["status"] == "partial" and "time budget" in out["errors"][0]

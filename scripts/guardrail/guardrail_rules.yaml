@@ -420,7 +420,8 @@ features:
     keywords: [observability, incident, incidents, "alert channel", delivery, freshness, volume,
                "schema drift", monitor, scan, "needs attention"]
     invariants: []
-    required_tests: [observability_lifecycle, observability_monitors, observability_authz, pair5_data_state]
+    required_tests: [observability_lifecycle, observability_monitors, observability_monitors_mysql,
+                     observability_authz, pair5_data_state]
 
 
   - id: agent_flows
@@ -694,6 +695,12 @@ tests:
       recover with one incident across repeated scans; volume is unknown while learning then breaches on a drop
       and stays breached; a dropped column breaches; an unreadable table is `error` and the dataset is never
       healthy; pausing / deleting a monitor resolves its incident and stops counting it as coverage"
+  observability_monitors_mysql:
+    requires: postgres+mysql
+    run: "pytest backend/tests/test_observability_monitors_mysql_pg.py"
+    locks: "freshness / volume / schema monitors against a REAL MySQL 8.4 source: fresh rows pass and stale rows
+      breach, the row count is the source's, an added column breaches against the live relation, an unreachable
+      source is an error and the scan partial (CI integration-golden job's MySQL service; fails, never skips, in CI)"
   observability_authz:
     requires: postgres
     run: "pytest backend/tests/test_authz_observability_http_pg.py"

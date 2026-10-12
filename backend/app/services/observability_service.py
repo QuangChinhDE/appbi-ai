@@ -1164,8 +1164,17 @@ class ObservabilityService:
         if dataset_id:
             mq = mq.filter(ObservabilityMonitor.dataset_id == dataset_id)
         monitors = mq.all()
-        breached = errored = 0
+        breached = errored = skipped = 0
+        import time as _time
+
+        from app.core.config import settings as _settings
+
+        budget = float(getattr(_settings, "OBSERVABILITY_SCAN_BUDGET_SECONDS", 1800) or 0)
+        t0 = _time.monotonic()
         for m in monitors:
+            if budget and _time.monotonic() - t0 > budget:
+                skipped += 1                          # not run: its last result stays, dated
+                continue
             r = step(f"monitor {m.id}", lambda m=m: ObservabilityService.run_monitor(m, db))
             if r is None:
                 errored += 1
@@ -1188,7 +1197,11 @@ class ObservabilityService:
         # fails and nothing is committed.
         enqueue_deliveries(db, new_incidents)
         db.commit()
+        if skipped:
+            errors.insert(0, f"{skipped} monitor(s) not run: the scan's time budget "
+                             f"({int(budget)} s) ran out")
         counts = {"monitors": len(monitors), "breached": breached, "monitor_errors": errored,
+                  "monitors_skipped": skipped,
                   "quality_folded": len(q_new), "anomaly_folded": len(a_new), "semantic_folded": len(s_new),
                   "new_incidents": len(new_incidents)}
         return {"counts": counts, "errors": errors, "new_incidents": new_incidents}
