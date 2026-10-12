@@ -119,6 +119,16 @@ _TEXT: dict[str, dict[str, str]] = {
         "vi": "Bạn chỉ có quyền xem cuộc trò chuyện này, không thể hỏi tiếp hay đánh giá.",
         "en": "You can only read this conversation; you cannot continue or rate it.",
     },
+    "turn_in_progress": {
+        "vi": "Cuộc trò chuyện này đang có một câu hỏi chưa trả lời xong (có thể ở tab "
+              "khác). Hãy đợi câu trả lời đó rồi hỏi tiếp.",
+        "en": "This conversation is still answering another question (perhaps in another "
+              "tab). Wait for that answer, then ask again.",
+    },
+    "rate_owner_only": {
+        "vi": "Chỉ người tạo cuộc trò chuyện mới đánh giá được câu trả lời.",
+        "en": "Only the person who started this conversation can rate its answers.",
+    },
     "stream_too_long": {
         "vi": "Câu hỏi chạy quá lâu và đã bị dừng.",
         "en": "The question ran too long and was stopped.",
@@ -158,6 +168,11 @@ def _thread_dict(t: Any, user: Any = None) -> dict:
         # which rows those are, so the sidebar stops offering a pencil and a bin
         # on a colleague's shared conversation that would only answer 403.
         out["is_owner"] = str(t.user_id) == str(getattr(user, "id", ""))
+        # MANAGE (rename, delete) is the owner's — and `chat: full`'s, which
+        # manages anything in the module the way `full` does in every module
+        # (`_require_owner`). Managing is not speaking: `full` still may not add a
+        # turn or rate one. The client offers exactly what this says.
+        out["can_manage"] = out["is_owner"] or direct_chat._is_module_admin(user, "chat")
     return out
 
 
@@ -357,6 +372,11 @@ def delete_thread(
         raise HTTPException(status_code=404, detail="Không tìm thấy cuộc trò chuyện")
     _require_owner(db, user, thread, "xoá")
     direct_chat.soft_delete(db, thread)
+    # THE CONVERSATION'S MEMORY GOES WITH IT. The transcript ages out on the
+    # run-content window; the facts the assistant carried between turns live in
+    # `ai_chat_sessions` and nothing ever pruned them, so a deleted conversation
+    # kept its memory forever. Nothing reads it after deletion.
+    _forget_memory(db, thread.session_key)
     return {"ok": True}
 
 
@@ -397,8 +417,9 @@ async def send_message(
         detail = verdict.message
         if body.lang == "en":
             detail = (
-                f"You have used all of today's AI chat turns ({verdict.runs_today}/"
-                f"{verdict.limit_runs}). The limit resets at the start of tomorrow."
+                f"You have used all {verdict.limit_runs} AI chat turns allowed in 24 hours "
+                f"({verdict.runs_today}/{verdict.limit_runs}). Try again later — the "
+                f"limit counts the last 24 hours."
             )
         raise HTTPException(status_code=429, detail=detail)
 
@@ -443,6 +464,16 @@ async def send_message(
     )
 
     lang = body.lang
+
+    # ONE ACTIVE TURN PER CONVERSATION. Two tabs (or an owner and an editor)
+    # asking at once each read the history and memory before the other wrote, so
+    # the second answer was built on a stale conversation and the last memory
+    # write won. Taken before the stream opens so the refusal is a plain status;
+    # released only after the turn's own record is written (end of the stream).
+    turn_lock = _ThreadTurnLock.acquire(thread_id_value)
+    if turn_lock is None:
+        await agen.aclose()
+        raise HTTPException(status_code=423, detail=_text("turn_in_progress", lang))
 
     async def sse_stream():
         loop = asyncio.get_event_loop()
@@ -511,6 +542,7 @@ async def send_message(
                 # Still running only if the cancelled step ignored cancellation for
                 # 5s; its task finishes on its own and records the turn there.
                 logger.warning("[chat] turn generator still running at close (thread %s)", thread_id)
+            turn_lock.release()
             # The engine ends every run with `done`; this is for the paths that never
             # reached it — a timeout, or an exception — so the client always has a
             # terminator to stop on rather than waiting out its own idle timer.
@@ -525,6 +557,20 @@ async def send_message(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+def _forget_memory(db: Session, session_key: str | None) -> None:
+    if not session_key:
+        return
+    from app.models.ai_chat_session import AiChatSession
+
+    try:
+        db.query(AiChatSession).filter(AiChatSession.session_key == session_key).delete(
+            synchronize_session=False)
+        db.commit()
+    except Exception:  # noqa: BLE001 — the delete itself already succeeded
+        db.rollback()
+        logger.warning("[chat] memory not cleared for a deleted thread", exc_info=True)
 
 
 # ═══ Judging an answer ════════════════════════════════════════════════════════
@@ -542,15 +588,20 @@ def rate_answer(
     The Studio's rating route demands authoring rights on the flow — right for an
     author grading runs, wrong for the reader who actually received the answer.
     This one is scoped by the CONVERSATION instead: the run must belong to this
-    thread, and the caller must be able to add to the thread (owner or `edit`).
-    A read-only sharee and an oversight reader may look, not judge. The rating
-    lands on the same `agent_flow_runs.rating` the author's Runs tab filters by.
+    thread, and the caller must be the conversation's OWNER.
+
+    ONE RATING PER ANSWER, AND IT IS THE OWNER'S. The verdict lands on the run
+    (`agent_flow_runs.rating`, the field the author's Runs tab filters by), so it
+    has exactly one holder. Letting an `edit` sharee rate too meant two people
+    silently overwriting each other's verdict on one row. A run does not record
+    who asked a turn, so "the asker" cannot be the holder without a schema change;
+    the owner is the person the conversation — and its feedback — belongs to.
     """
     thread = direct_chat.get_thread(db, user, thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy cuộc trò chuyện")
-    if not direct_chat.may_write(direct_chat.thread_access(db, user, thread)):
-        raise HTTPException(status_code=403, detail=_text("read_only_write", "vi"))
+    if direct_chat.thread_access(db, user, thread) != "owner":
+        raise HTTPException(status_code=403, detail=_text("rate_owner_only", "vi"))
 
     from app.models.agent_flow_run import AgentFlowRun
 
@@ -564,6 +615,70 @@ def rate_answer(
     run.rating = body.rating
     db.commit()
     return {"ok": True, "run_id": run.id, "rating": run.rating}
+
+
+class _ThreadTurnLock:
+    """A Postgres session advisory lock on (CHAT, thread id), held for one turn.
+
+    On its OWN connection from a non-pooled engine: the lock lives for the whole
+    stream, and holding a pooled connection that long would drain the pool the
+    request path needs. Closing the connection releases the lock, so a crashed
+    worker cannot leave a conversation locked. Not Postgres (SQLite tests): no-op.
+    """
+
+    _KEY = 0x43484154  # "CHAT"
+    _engine = None
+
+    def __init__(self, conn: Any, thread_id: int):
+        self._conn = conn
+        self._thread_id = thread_id
+
+    @classmethod
+    def _eng(cls):
+        if cls._engine is None:
+            from sqlalchemy import create_engine
+            from sqlalchemy.pool import NullPool
+
+            from app.core.database import app_engine
+
+            cls._engine = create_engine(app_engine.url, poolclass=NullPool)
+        return cls._engine
+
+    @classmethod
+    def acquire(cls, thread_id: int) -> "_ThreadTurnLock | None":
+        from app.core.database import app_engine
+        from sqlalchemy import text
+
+        if app_engine.dialect.name != "postgresql":
+            return cls(None, thread_id)
+        conn = cls._eng().connect()
+        got = conn.execute(text("SELECT pg_try_advisory_lock(:k, :t)"),
+                           {"k": cls._KEY, "t": int(thread_id)}).scalar()
+        conn.commit()
+        if not got:
+            conn.close()
+            return None
+        return cls(conn, thread_id)
+
+    def release(self) -> None:
+        if self._conn is None:
+            return
+        from sqlalchemy import text
+
+        try:
+            self._conn.execute(text("SELECT pg_advisory_unlock(:k, :t)"),
+                               {"k": self._KEY, "t": int(self._thread_id)})
+        except Exception:  # noqa: BLE001 — closing releases it regardless
+            logger.warning("[chat] turn lock unlock failed (thread %s)", self._thread_id)
+        finally:
+            self._conn.close()
+            self._conn = None
+
+    def __del__(self):  # a stream that never started still frees the lock
+        try:
+            self.release()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _frame(payload: dict) -> str:

@@ -173,6 +173,14 @@ def test_reader_rates_an_answer_in_their_conversation(client, db, people):  # no
     assert r.status_code == 404, r.text
     r = client.post(f"{base}/{run.id}/rating", headers=people["viewer"].headers, json={"rating": "up"})
     assert r.status_code == 403, r.text
+    # ONE holder per verdict: an `edit` sharee may continue the conversation but
+    # may not overwrite the owner's rating on the same run.
+    share(db, "chat_thread", t.id, people["editor"], "edit", people["owner"])
+    r = client.post(f"{base}/{run.id}/rating", headers=people["editor"].headers, json={"rating": "up"})
+    assert r.status_code == 403, r.text
+    # Oversight reads; it does not judge.
+    r = client.post(f"{base}/{run.id}/rating", headers=people["admin"].headers, json={"rating": "up"})
+    assert r.status_code == 403, r.text
     db.expire_all()
     assert db.get(AgentFlowRun, run.id).rating == "down"
     assert db.get(AgentFlowRun, foreign.id).rating is None
@@ -320,5 +328,111 @@ def test_quota_refusal_is_worded_in_the_readers_language(client, db, people, mon
     en = client.post(url, headers=people["owner"].headers, json={"question": "q", "lang": "en"})
     vi = client.post(url, headers=people["owner"].headers, json={"question": "q", "lang": "vi"})
     assert en.status_code == vi.status_code == 429
-    assert "3/3" in en.json()["detail"] and "today" in en.json()["detail"]
+    assert "3/3" in en.json()["detail"] and "24 hours" in en.json()["detail"]
     assert vi.json()["detail"] == "Bạn đã dùng hết lượt (3/3)."
+
+
+# ── T1: keeping the conversation is not keeping the machinery ─────────────────
+def test_prune_minimizes_a_live_conversation_instead_of_keeping_internals(db, people):  # noqa: F811
+    from app.models.agent_flow_run import AgentFlowRunContent
+    from app.services.agent_flows.envelope import Answer, FlowOutput, MetricBlock, Notice
+    from app.services.agent_flows.runs import prune
+
+    out = FlowOutput(
+        run_id="r", answer=Answer(blocks=[MetricBlock(label="Doanh thu", value=42)]),
+        notices=[Notice(code="diag", text="author secret", audience="author"),
+                 Notice(code="partial_rows", text="reader note")],
+    )
+    live = _thread(db, people["owner"])
+    old = _run(db, live, answer="42", envelope=out.to_dict(), age_days=400)
+    fresh = _run(db, live, answer="43", envelope=out.to_dict(), age_days=1)
+    db.query(AgentFlowRunContent).filter(AgentFlowRunContent.run_id.in_([old.id, fresh.id])).update(
+        {"input_envelope": {"memory": {"facts": ["x"]}}, "notices": [n.model_dump(mode="json") for n in out.notices]},
+        synchronize_session=False)
+    db.commit()
+
+    result = prune(db, content_days=180, step_days=30)
+    assert result["chat_content_minimized"] >= 1
+    db.expire_all()
+    o = db.query(AgentFlowRunContent).filter_by(run_id=old.id).one()
+    f = db.query(AgentFlowRunContent).filter_by(run_id=fresh.id).one()
+    assert o.input_envelope is None and f.input_envelope is not None      # only past the window
+    assert o.answer == "42" and o.question
+    assert [n["code"] for n in o.notices] == ["partial_rows"]
+    assert "author secret" not in str(o.output_envelope)
+    assert o.output_envelope["answer"]["blocks"][0]["value"] == 42         # still restorable
+
+
+def test_deleting_a_conversation_forgets_its_memory(client, db, people):  # noqa: F811
+    from app.models.ai_chat_session import AiChatSession
+
+    t = _thread(db, people["owner"])
+    db.add(AiChatSession(token=f"chat:{t.id}", session_key=t.session_key, conv_state={"facts": ["secret"]}))
+    db.commit()
+    r = client.delete(f"/api/v1/agent-flows/chat/threads/{t.id}", headers=people["owner"].headers)
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    assert db.query(AiChatSession).filter_by(session_key=t.session_key).count() == 0
+
+
+# ── T3: one active turn per conversation ──────────────────────────────────────
+def test_a_second_turn_is_refused_while_one_is_running(client, db, people, monkeypatch):  # noqa: F811
+    import os
+
+    import sqlalchemy as sa
+
+    from app.services.agent_flows import dispatch
+    from app.services.dashboard_ai_bot.events import AgentEvent
+
+    started = []
+
+    async def fake_run(db, **kw):
+        started.append(kw["thread_id"])
+        yield AgentEvent(type="done")
+
+    monkeypatch.setattr(dispatch, "run_for_chat_thread", fake_run)
+    t = _thread(db, people["owner"])
+    other = _thread(db, people["owner"])
+    url = f"/api/v1/agent-flows/chat/threads/{t.id}/messages"
+
+    # Another session holds THIS conversation's turn lock (another tab mid-answer).
+    holder = sa.create_engine(os.environ["AUTHZ_PG_OWNER_URL"], poolclass=sa.pool.NullPool).connect()
+    assert holder.execute(sa.text("SELECT pg_try_advisory_lock(:k, :t)"),
+                          {"k": 0x43484154, "t": t.id}).scalar()
+    try:
+        r = client.post(url, headers=people["owner"].headers, json={"question": "q", "lang": "en"})
+        assert r.status_code == 423, r.text
+        assert "another question" in r.json()["detail"]
+        assert started == []                                   # nothing ran, nothing recorded
+        # A different conversation is not blocked by it.
+        r = client.post(f"/api/v1/agent-flows/chat/threads/{other.id}/messages",
+                        headers=people["owner"].headers, json={"question": "q"})
+        assert r.status_code == 200, r.text
+    finally:
+        holder.close()
+
+    r = client.post(url, headers=people["owner"].headers, json={"question": "q"})
+    assert r.status_code == 200, r.text
+    # And the lock is released after a turn: the next one is admitted too.
+    r = client.post(url, headers=people["owner"].headers, json={"question": "q2"})
+    assert r.status_code == 200, r.text
+    assert started == [other.id, t.id, t.id]
+
+
+# ── T4: managing is not speaking ──────────────────────────────────────────────
+def test_oversight_manages_but_does_not_speak(client, db, people):  # noqa: F811
+    t = _thread(db, people["owner"])
+    share(db, "chat_thread", t.id, people["editor"], "edit", people["owner"])
+    rows = {r["id"]: r for r in client.get("/api/v1/agent-flows/chat/threads",
+                                           headers=people["admin"].headers).json()["threads"]}
+    assert rows[t.id]["can_manage"] is True and rows[t.id]["is_owner"] is False
+    rows = {r["id"]: r for r in client.get("/api/v1/agent-flows/chat/threads",
+                                           headers=people["editor"].headers).json()["threads"]}
+    assert rows[t.id]["can_manage"] is False
+    assert client.patch(f"/api/v1/agent-flows/chat/threads/{t.id}", headers=people["editor"].headers,
+                        json={"title": "x"}).status_code == 403
+    assert client.post(f"/api/v1/agent-flows/chat/threads/{t.id}/messages", headers=people["admin"].headers,
+                       json={"question": "q"}).status_code == 403
+    assert client.patch(f"/api/v1/agent-flows/chat/threads/{t.id}", headers=people["admin"].headers,
+                        json={"title": "moderated"}).status_code == 200
+    assert client.delete(f"/api/v1/agent-flows/chat/threads/{t.id}", headers=people["admin"].headers).status_code == 200

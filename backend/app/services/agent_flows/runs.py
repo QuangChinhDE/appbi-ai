@@ -776,13 +776,42 @@ def prune(
         .join(AgentFlowChatThread, AgentFlowChatThread.id == AgentFlowRun.chat_thread_id)
         .filter(AgentFlowChatThread.deleted_at.is_(None))
     )
+    cutoff = now - timedelta(days=content_days)
     content = (
         db.query(AgentFlowRunContent)
-        .filter(AgentFlowRunContent.created_at < now - timedelta(days=content_days))
+        .filter(AgentFlowRunContent.created_at < cutoff)
         .filter(~AgentFlowRunContent.run_id.in_(live_chat_runs))
         .delete(synchronize_session=False)
     )
+    # KEEPING THE CONVERSATION IS NOT KEEPING THE MACHINERY. A live thread's row
+    # past the window keeps what the reader saw — question, answer, citations,
+    # reader notices, the reader projection of the envelope (its typed blocks) —
+    # and drops the author's copy: the input envelope (history, memory, scope,
+    # binding) and the output envelope's trace, usage, memory delta and author
+    # diagnostics. Those age out on the same window as everywhere else.
+    minimized = 0
+    stale_live = (
+        db.query(AgentFlowRunContent)
+        .filter(AgentFlowRunContent.created_at < cutoff)
+        .filter(AgentFlowRunContent.run_id.in_(live_chat_runs))
+        .filter(AgentFlowRunContent.input_envelope.isnot(None))
+        .all()
+    )
+    for row in stale_live:
+        row.input_envelope = None
+        row.notices = [
+            n for n in (row.notices or []) if (n or {}).get("audience", "reader") != "author"
+        ] or None
+        try:
+            row.output_envelope = (
+                FlowOutput.model_validate(row.output_envelope).to_reader_dict()
+                if isinstance(row.output_envelope, dict) else None
+            )
+        except Exception:  # noqa: BLE001 — an unreadable old shape keeps nothing extra
+            row.output_envelope = None
+        minimized += 1
     db.commit()
-    result = {"steps_deleted": int(steps or 0), "content_deleted": int(content or 0)}
+    result = {"steps_deleted": int(steps or 0), "content_deleted": int(content or 0),
+              "chat_content_minimized": minimized}
     logger.info("[flow] pruned run history: %s", result)
     return result
