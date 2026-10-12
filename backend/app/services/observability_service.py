@@ -1029,7 +1029,9 @@ class ObservabilityService:
         with job_lock(ObservabilityService.SCAN_LOCK) as owned:
             if not owned:
                 raise ObservabilityService.ScanBusy("A scan is already running.")
-            ObservabilityService.reap_stale_runs(db)
+            # We hold the scan lock: any row still 'running' belongs to a scan
+            # whose process died (the lock dies with its session).
+            ObservabilityService._reap_running(db)
             run = ObservabilityScanRun(scope="dataset" if dataset_id else "global", dataset_id=dataset_id,
                                        trigger=trigger, triggered_by=user_id, status="running",
                                        started_at=datetime.utcnow())
@@ -1043,6 +1045,8 @@ class ObservabilityService:
                 db.rollback()
                 ObservabilityService._finish_run(db, run_id, "failed", {},
                                                  [f"{type(exc).__name__}: {str(exc)[:500]}"])
+                # (if even that cannot be written, the next scan / status read
+                # reaps the row as failed - it is never left looking successful)
                 raise ObservabilityService.ScanFailed(
                     "The scan failed and its results were not saved.", run_id) from exc
             # A monitor that could not run is a check that did not happen: the
@@ -1051,7 +1055,13 @@ class ObservabilityService:
             if result["counts"].get("monitor_errors"):
                 result["errors"].insert(0, f"{result['counts']['monitor_errors']} monitor(s) could not run")
             status = "partial" if result["errors"] else "succeeded"
-            ObservabilityService._finish_run(db, run_id, status, result["counts"], result["errors"])
+            if not ObservabilityService._finish_run(db, run_id, status, result["counts"], result["errors"]):
+                # The results ARE committed, but the scan's own record is not:
+                # the scan is not reported as a success. The row stays 'running'
+                # until the lock is released, then reads as failed.
+                raise ObservabilityService.ScanFailed(
+                    "The scan's results were saved, but its record could not be updated. "
+                    "Check the scanner status; the next scan will run normally.", run_id)
 
         sent = 0
         try:
@@ -1071,36 +1081,66 @@ class ObservabilityService:
         logger.info("[obs] scan %s", out)
         return out
 
-    STALE_RUN_HOURS = 6
-
     @staticmethod
-    def reap_stale_runs(db: Session) -> int:
-        """A run still 'running' long after any scan could take (the process was
-        killed mid-scan) is failed, so the status never shows a phantom scan."""
+    def _reap_running(db: Session) -> int:
+        """Fail every run still marked 'running'. Only call while holding the
+        scan lock (or having just proved nobody holds it)."""
         from app.models.observability import ObservabilityScanRun
 
-        cutoff = datetime.utcnow() - timedelta(hours=ObservabilityService.STALE_RUN_HOURS)
         n = (db.query(ObservabilityScanRun)
-             .filter(ObservabilityScanRun.status == "running", ObservabilityScanRun.started_at < cutoff)
+             .filter(ObservabilityScanRun.status == "running")
              .update({"status": "failed", "finished_at": datetime.utcnow(),
-                      "errors": ["The scan stopped without finishing (process restarted?)."]},
+                      "errors": ["The scan stopped without finishing (the scanner process ended)."]},
                      synchronize_session=False))
         db.commit()
         return n
 
     @staticmethod
-    def _finish_run(db: Session, run_id: int, status: str, counts: dict, errors: list) -> None:
+    def reap_orphan_runs(db: Session) -> int:
+        """A run marked 'running' while NO process holds the scan lock is a scan
+        whose process died (the advisory lock is released with its session).
+        Proven by taking the lock - never by a timer, which left a dead scan
+        looking 'running' for hours, nor while a real scan holds it."""
+        from app.core.scheduler_lock import job_lock
         from app.models.observability import ObservabilityScanRun
 
-        try:
-            run = db.query(ObservabilityScanRun).filter(ObservabilityScanRun.id == run_id).first()
+        if db.query(ObservabilityScanRun.id).filter(ObservabilityScanRun.status == "running").first() is None:
+            return 0
+        with job_lock(ObservabilityService.SCAN_LOCK) as owned:
+            if not owned:
+                return 0                             # a scan is genuinely running
+            return ObservabilityService._reap_running(db)
+
+    @staticmethod
+    def _finish_run(db: Session, run_id: int, status: str, counts: dict, errors: list) -> bool:
+        """Record the run's outcome; True when it is durably written. One retry
+        on a fresh connection (the scan's own session may be the broken one)."""
+        from app.core.database import SessionLocal
+        from app.models.observability import ObservabilityScanRun
+
+        def write(s: Session) -> None:
+            run = s.query(ObservabilityScanRun).filter(ObservabilityScanRun.id == run_id).first()
             if run is not None:
                 run.status, run.counts, run.errors = status, counts, errors[:100]
                 run.finished_at = datetime.utcnow()
-                db.commit()
+                s.commit()
+
+        try:
+            write(db)
+            return True
         except Exception:  # noqa: BLE001
             db.rollback()
-            logger.exception("[obs] could not record scan run %s", run_id)
+            logger.exception("[obs] could not record scan run %s - retrying on a fresh session", run_id)
+        fresh = SessionLocal()
+        try:
+            write(fresh)
+            return True
+        except Exception:  # noqa: BLE001
+            fresh.rollback()
+            logger.exception("[obs] scan run %s outcome NOT recorded", run_id)
+            return False
+        finally:
+            fresh.close()
 
     @staticmethod
     def _scan_body(db: Session, dataset_id: Optional[int]) -> Dict[str, Any]:

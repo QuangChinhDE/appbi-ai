@@ -171,6 +171,11 @@ def scanner_status(db: Session = Depends(get_db), user: User = Depends(get_curre
                 "counts": r.counts or {}, "errors": (r.errors or [])[:10] if _is_obs_admin(user) else
                 (["Some checks could not run."] if r.errors else [])}
 
+    # A run left 'running' by a dead scanner reads as failed, not as running.
+    try:
+        ObservabilityService.reap_orphan_runs(db)
+    except Exception:  # noqa: BLE001 — the read below still answers
+        db.rollback()
     last = (db.query(ObservabilityScanRun).filter(ObservabilityScanRun.scope == "global")
             .order_by(ObservabilityScanRun.id.desc()).first())
     last_ok = (db.query(ObservabilityScanRun).filter(ObservabilityScanRun.scope == "global")

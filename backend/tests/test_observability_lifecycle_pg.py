@@ -708,3 +708,72 @@ def test_a_scan_left_running_by_a_killed_process_is_reaped(db, world):  # noqa: 
     S.run_scan(db, dataset_id=world["ds"].id)
     db.expire_all()
     assert db.get(ObservabilityScanRun, r.id).status == "failed"
+
+
+# ── R2: scanner crash and the scan's own record ─────────────────────────────
+
+def _admin(db):
+    return make_user(db, "obs-admin-r2", observability="full", datasets="full")
+
+
+def test_status_reaps_a_run_whose_scanner_died_without_waiting(client, db, world):  # noqa: F811
+    from app.models.observability import ObservabilityScanRun
+
+    r = ObservabilityScanRun(scope="global", trigger="schedule", status="running",
+                             started_at=datetime.utcnow() - timedelta(minutes=3))
+    db.add(r)
+    db.commit()
+    body = client.get("/api/v1/observability/status", headers=_admin(db).headers).json()
+    db.expire_all()
+    assert db.get(ObservabilityScanRun, r.id).status == "failed"
+    assert body["running"] is False
+
+
+def test_status_never_reaps_a_scan_that_is_really_running(client, db, world):  # noqa: F811
+    import threading
+
+    from app.core.scheduler_lock import job_lock
+    from app.models.observability import ObservabilityScanRun
+    from app.services.observability_service import ObservabilityService as S
+
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with job_lock(S.SCAN_LOCK):
+            held.set()
+            release.wait(10)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    held.wait(10)
+    try:
+        r = ObservabilityScanRun(scope="global", trigger="manual", status="running", started_at=datetime.utcnow())
+        db.add(r)
+        db.commit()
+        body = client.get("/api/v1/observability/status", headers=_admin(db).headers).json()
+        db.expire_all()
+        assert db.get(ObservabilityScanRun, r.id).status == "running" and body["running"] is True
+    finally:
+        release.set()
+        t.join()
+        db.query(ObservabilityScanRun).filter(ObservabilityScanRun.status == "running").update(
+            {"status": "failed"}, synchronize_session=False)
+        db.commit()
+
+
+def test_results_saved_but_run_record_not_is_not_reported_as_success(client, db, world, monkeypatch):  # noqa: F811
+    from app.models.observability import ObservabilityScanRun
+    from app.services.observability_service import ObservabilityService as S
+
+    real = S._finish_run
+    monkeypatch.setattr(S, "_finish_run", staticmethod(
+        lambda db_, run_id, status, counts, errors: False if status != "failed" else real(db_, run_id, status, counts, errors)))
+    r = client.post(f"/api/v1/observability/datasets/{world['ds'].id}/scan", headers=world["owner"].headers)
+    assert r.status_code == 500, r.text
+    run_id = r.json()["detail"]["run_id"] if isinstance(r.json().get("detail"), dict) else None
+    monkeypatch.setattr(S, "_finish_run", real)
+    client.get("/api/v1/observability/status", headers=_admin(db).headers)    # scanner gone -> reaped
+    db.expire_all()
+    if run_id:
+        assert db.get(ObservabilityScanRun, run_id).status == "failed"
+    assert db.query(ObservabilityScanRun).filter(ObservabilityScanRun.status == "running").count() == 0
