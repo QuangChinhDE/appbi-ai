@@ -254,6 +254,70 @@ test('switching thread mid-stream never writes the old turn into the new thread'
   expect(problems).toEqual([]);
 });
 
+// ── T3: two tabs, one conversation ───────────────────────────────────────────
+test('a second tab cannot start a turn while the first is answering; history stays ordered', async ({ browser }) => {
+  const owner = await api(browser, 'owner');
+  const id = await newThreadWithTurn(owner, fx.flows.fast, q('Two tabs'));
+  const tabA = await open(browser, 'owner');
+  const tabB = await open(browser, 'owner', { allow: /423|Failed to load resource/ });
+  const threadUrl = `/chat?brain=${fx.flows.fast}&thread=${id}`;
+  await tabA.page.goto(threadUrl);
+  await tabB.page.goto(threadUrl);
+  await expect(answers(tabB.page)).toHaveCount(1);
+
+  // A asks, B asks immediately after. With the fast flow either outcome is
+  // legal (B refused while A runs, or admitted after it) — the slow-flow test
+  // below pins the refusal deterministically.
+  const aSent = tabA.page.waitForResponse((r) => r.url().includes('/messages') && r.request().method() === 'POST');
+  await ask(tabA.page, q('From tab A'));
+  await aSent;
+  const bSent = tabB.page.waitForResponse((r) => r.url().includes('/messages') && r.request().method() === 'POST');
+  await ask(tabB.page, q('From tab B'));
+  const bStatus = (await bSent).status();
+  // The fast flow may finish before B arrives; both outcomes are legal, and each
+  // must be SAID honestly and recorded exactly once.
+  if (bStatus === 423) {
+    await expect(answers(tabB.page).last()).toContainText('still answering another question');
+    await expect(tabB.page.getByTestId('chat-turn-status')).toContainText('failed');
+  } else {
+    expect(bStatus).toBe(200);
+  }
+  await expect.poll(async () => (await transcript(owner, id)).messages.filter((m: any) => m.role === 'user').length,
+    { timeout: 20_000 }).toBe(bStatus === 423 ? 2 : 3);
+  const qs = (await transcript(owner, id)).messages.filter((m: any) => m.role === 'user').map((m: any) => m.content);
+  expect(qs[0]).toBe(q('Two tabs'));
+  expect(qs[1]).toBe(q('From tab A'));
+  expect(new Set(qs).size).toBe(qs.length);                      // no duplicates
+  expect([...tabA.problems, ...tabB.problems]).toEqual([]);
+});
+
+test('a slow turn holds the conversation: a second tab is refused, then admitted after', async ({ browser }) => {
+  const owner = await api(browser, 'owner');
+  const id = await newThreadWithTurn(owner, fx.flows.slow, q('Slow two tabs'));
+  const threadUrl = `/chat?brain=${fx.flows.slow}&thread=${id}`;
+  const tabA = await open(browser, 'owner');
+  const tabB = await open(browser, 'owner', { allow: /423|Failed to load resource/ });
+  await tabA.page.goto(threadUrl);
+  await tabB.page.goto(threadUrl);
+  const aSent = tabA.page.waitForResponse((r) => r.url().includes('/messages') && r.request().method() === 'POST');
+  await ask(tabA.page, q('Slow A'));
+  await aSent;
+  await expect(tabA.page.getByTestId('chat-stop')).toBeVisible();      // A is mid-answer
+
+  const bSent = tabB.page.waitForResponse((r) => r.url().includes('/messages') && r.request().method() === 'POST');
+  await ask(tabB.page, q('Slow B'));
+  expect((await bSent).status()).toBe(423);
+  await expect(answers(tabB.page).last()).toContainText('still answering another question');
+  await expect(composer(tabB.page)).toBeEnabled();
+
+  await expect(answers(tabA.page).last()).toContainText(fx.slow_answer, { timeout: 30_000 });
+  await ask(tabB.page, q('Slow B again'));
+  await expect(answers(tabB.page).last()).toContainText(fx.slow_answer, { timeout: 30_000 });
+  const qs = (await transcript(owner, id)).messages.filter((m: any) => m.role === 'user').map((m: any) => m.content);
+  expect(qs).toEqual([q('Slow two tabs'), q('Slow A'), q('Slow B again')]);   // ordered, refused turn not recorded
+  expect([...tabA.problems, ...tabB.problems]).toEqual([]);
+});
+
 // ── 10: stop ─────────────────────────────────────────────────────────────────
 test('stop ends the turn, says so, and the record agrees after reload', async ({ browser }) => {
   const owner = await api(browser, 'owner');
@@ -327,6 +391,8 @@ test('view share reads only; edit share continues; oversight reads only; revoke 
   await expect(composer(e.page)).toBeEnabled();
   await ask(e.page, q('Editor follow-up'));
   await expect(answers(e.page)).toHaveCount(2);
+  // The verdict on an answer is the owner's alone: the editor is not offered it.
+  await expect(answers(e.page).first().getByRole('button', { name: 'Helpful', exact: true })).toHaveCount(0);
 
   // OVERSIGHT (`chat: full`): reads, may not write — UI and API agree.
   const o = await open(browser, 'overseer');

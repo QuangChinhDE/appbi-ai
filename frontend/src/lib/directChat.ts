@@ -61,6 +61,9 @@ export interface ChatThread {
   /** Rename and delete are the owner's. Absent on an older backend, which is
    *  treated as "mine" — the behaviour this field replaced. */
   is_owner?: boolean;
+  /** Rename and delete: the owner, or `chat: full` (module management). Absent
+   *  on an older backend, which falls back to `is_owner`. */
+  can_manage?: boolean;
 }
 
 export interface ChatCitation {

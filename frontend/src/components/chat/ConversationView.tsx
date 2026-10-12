@@ -125,9 +125,10 @@ export function ConversationView({
   const readonlyText = reason && READONLY_KEYS.has(reason)
     ? t(`chat.readonly.${reason}`)
     : (detail?.readonly_message || t('chat.readonlyFallback'));
-  // Rating is a judgement on the conversation, so it follows the same rule as
-  // adding to it: the owner or an `edit` sharee. The server enforces the same.
-  const canRate = !detail || detail.access === 'owner' || detail.access === 'edit';
+  // ONE verdict per answer, held by the conversation's owner — an `edit` sharee
+  // may continue the conversation but not overwrite the owner's rating. A brand
+  // new conversation (no detail yet) is the reader's own. Server enforces it.
+  const canRate = !detail || detail.access === 'owner';
 
   const [sharing, setSharing] = React.useState(false);
   //: Somebody else's conversation, open because they shared it (or because this
@@ -434,8 +435,9 @@ function ThreadList({
           <p className="px-2 py-2 text-tiny text-text-quaternary">{t('chat.noConversationMatch')}</p>
         ) : null}
         {shown.map((th) => {
-          // Absent on an older backend means "mine" — the behaviour before.
-          const mine = th.is_owner !== false;
+          // Owner, or `chat: full` managing the module. Absent on an older
+          // backend means "mine" — the behaviour before.
+          const mine = th.can_manage ?? (th.is_owner !== false);
           return (
             <div
               key={th.id}

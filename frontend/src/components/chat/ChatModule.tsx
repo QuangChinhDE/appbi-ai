@@ -451,6 +451,7 @@ function errText(
   if (status === 403) return t('chat.error.readOnly');
   if (status === 404) return t('chat.error.notFound');
   if (status === 409) return t('chat.error.noKey');
+  if (status === 423) return t('chat.error.busy');
   // ONLY the quota refusal carries a server sentence worth showing (its limits).
   // Anything else — a 500, a proxy page, a network error — is worded here: raw
   // server text is not a reader message and may carry internals.
