@@ -185,6 +185,19 @@ test('O08b an anomaly whose detector could not run stays open and says why (no f
   await shot(page, 'O08b-detector-error-stays-open');
 });
 
+// ── O25: anomaly detectors are checks ─────────────────────────────────────
+test('O25 active anomaly metrics count as checks; a detector that errored keeps the dataset from reading healthy', async ({ page }) => {
+  const usage = page.waitForResponse((r) => r.url().endsWith('/observability/usage'));
+  await page.goto('/observability');
+  const row = (await (await usage).json() as any[]).find((r) => r.datasetId === fx.datasets.anomaly);
+  expect(row.anomalyMetrics).toBe(3);
+  expect(row.checks).toMatchObject({ active: 3, passing: 1, failing: 1, errored: 1 });
+  expect(row.health).not.toBe('healthy');
+  await expect(page.getByTestId(`obs-checks-${fx.datasets.anomaly}`)).toContainText('1 of 3 passing');
+  await expect(page.getByTestId(`obs-checks-${fx.datasets.anomaly}`)).toContainText('1 could not run');
+  await shot(page, 'O25-anomaly-metrics-are-checks');
+});
+
 // ── O10 / O11 ─────────────────────────────────────────────────────────────
 test('O10/O11 acknowledge and resolve are recorded; resolving a still-failing check reopens on the next scan', async ({ page }) => {
   const inc = (await (await page.request.get(`/api/v1/observability/incidents?dataset_id=${fx.datasets.stale}&status=open&pillar=freshness`)).json()).items[0];

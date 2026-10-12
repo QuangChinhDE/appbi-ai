@@ -149,3 +149,39 @@ def test_an_unreachable_mysql_source_is_an_error_and_the_scan_partial(world):
     m = db.query(ObservabilityMonitor).filter(ObservabilityMonitor.dataset_id == ds.id,
                                               ObservabilityMonitor.kind == "freshness").one()
     assert m.last_status == "error" and out["status"] == "partial" and out["monitor_errors"] >= 1
+
+
+def test_mysql_anomaly_detector_reports_ok_anomaly_and_error_from_the_source(world, mysql):
+    """The anomaly detector (Distribution pillar) on a REAL MySQL source: a
+    normal day is ok, a spike is an anomaly, an unreachable source is an error
+    - never a silent 'nothing found'."""
+    from app.models.anomaly import MonitoredMetric
+    from app.services.anomaly_detection import AnomalyDetectionService as A
+
+    db, ds, t, src = world
+    eng, _cfg = mysql
+    daily = f"{TABLE}_daily"
+    with eng.begin() as c:
+        c.execute(sa.text(f"CREATE TABLE {daily} (day DATE, amount DECIMAL(12,2))"))
+        for i, v in enumerate([100, 104, 98, 101, 99, 103, 97, 100, 102, 101]):    # oldest .. today
+            c.execute(sa.text(f"INSERT INTO {daily} VALUES (UTC_DATE() - INTERVAL {9 - i} DAY, {v})"))
+    try:
+        t.source_table_name = f"{_cfg['database']}.{daily}"
+        t.columns_cache = {"columns": [{"name": "day", "type": "date"}, {"name": "amount", "type": "decimal"}]}
+        m = MonitoredMetric(dataset_table_id=t.id, metric_column="amount", time_column="day",
+                            aggregation="sum", owner_id=ds.owner_id, threshold_z_score=2.0)
+        db.add(m)
+        db.commit()
+        status, found, reason = A.check_metric_outcome(m, db)
+        assert (status, found) == ("ok", []), reason
+        with eng.begin() as c:
+            c.execute(sa.text(f"UPDATE {daily} SET amount = 900 WHERE day = UTC_DATE()"))
+        status, found, _ = A.check_metric_outcome(m, db)
+        assert status == "anomaly" and found and found[0]["current_value"] == 900.0
+        src.config = {**src.config, "port": 1}
+        db.commit()
+        status, found, reason = A.check_metric_outcome(m, db)
+        assert status == "error" and found == [] and reason
+    finally:
+        with eng.begin() as c:
+            c.execute(sa.text(f"DROP TABLE IF EXISTS {daily}"))
