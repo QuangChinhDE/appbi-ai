@@ -150,6 +150,21 @@ def main() -> int:
             db.add(AnomalyAlert(monitored_metric_id=rec_m.id, detected_at=now - timedelta(days=30),
                                 current_value=1.0, expected_value=100.0, z_score=-5.0, change_pct=-99.0,
                                 severity="warning"))
+        # R1: a metric whose detector could NOT run since its old alert - its
+        # open incident must stay open (no new alert is not recovery).
+        err_m = metric("loaded_at")
+        err_m.last_checked_at, err_m.last_check_status = now, "error"
+        err_m.last_check_error = "history query failed: OperationalError"
+        if not db.query(AnomalyAlert).filter(AnomalyAlert.monitored_metric_id == err_m.id).first():
+            db.add(AnomalyAlert(monitored_metric_id=err_m.id, detected_at=now - timedelta(days=30),
+                                current_value=1.0, expected_value=50.0, z_score=-4.0, change_pct=-98.0,
+                                severity="warning"))
+        err_key = f"anomaly:metric_{err_m.id}"
+        if not db.query(ObservabilityIncident).filter(ObservabilityIncident.dedup_key == err_key).first():
+            db.add(ObservabilityIncident(dataset_id=anomaly.id, dataset_table_id=anomaly_t.id, source="anomaly",
+                                         pillar="distribution", dedup_key=err_key, title="loaded_at: unconfirmed anomaly",
+                                         detail={}, severity="warning", status="open",
+                                         first_seen_at=now - timedelta(days=30), last_seen_at=now - timedelta(days=30)))
         rec_key = f"anomaly:metric_{rec_m.id}"
         if not db.query(ObservabilityIncident).filter(ObservabilityIncident.dedup_key == rec_key).first():
             db.add(ObservabilityIncident(dataset_id=anomaly.id, dataset_table_id=anomaly_t.id, source="anomaly",
@@ -218,7 +233,7 @@ def main() -> int:
             "datasets": {"fresh": fresh.id, "stale": stale.id, "broken": broken.id, "anomaly": anomaly.id,
                          "backlog": backlog.id, "schema": schema_ds.id},
             "tables": {"fresh": fresh_t.id, "schema": schema_t.id},
-            "metrics": {"new": new_m.id, "recovering": rec_m.id},
+            "metrics": {"new": new_m.id, "recovering": rec_m.id, "errored": err_m.id},
             "channel": ch.id,
             "users": {"editor": tok(editor), "viewer": tok(viewer), "outsider": tok(outsider)},
         }
