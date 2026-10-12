@@ -18,7 +18,7 @@ const SHOTS = process.env.OBS_SHOTS || '../.artifacts/observability-e2e';
 type Fx = {
   datasets: Record<'fresh' | 'stale' | 'broken' | 'anomaly' | 'backlog' | 'schema', number>;
   tables: { fresh: number; schema: number };
-  metrics: { new: number; recovering: number };
+  metrics: { new: number; recovering: number; errored: number };
   channel: number;
   users: Record<'editor' | 'viewer' | 'outsider', string>;
 };
@@ -171,6 +171,20 @@ test('O07/O08 a new anomaly opens an incident; one whose metric recovered is res
   await shot(page, 'O07-anomaly');
 });
 
+// ── O08b (R1) ─────────────────────────────────────────────────────────────
+test('O08b an anomaly whose detector could not run stays open and says why (no false recovery)', async ({ page }) => {
+  await openDataset(page, fx.datasets.anomaly);
+  await runChecks(page);
+  await runChecks(page);
+  const all = await (await page.request.get(`/api/v1/observability/incidents?dataset_id=${fx.datasets.anomaly}&pillar=distribution`)).json();
+  const inc = all.items.find((i: any) => i.title.startsWith('loaded_at:'));
+  expect(inc.status).toBe('open');
+  expect(inc.detail.detector.status).toBe('error');
+  await page.goto(`/observability?dataset=${fx.datasets.anomaly}&dt=incidents&incident=${inc.id}`);
+  await expect(page.locator(`#obs-incident-detail-${inc.id}`)).toContainText('could not run, so recovery is not confirmed');
+  await shot(page, 'O08b-detector-error-stays-open');
+});
+
 // ── O10 / O11 ─────────────────────────────────────────────────────────────
 test('O10/O11 acknowledge and resolve are recorded; resolving a still-failing check reopens on the next scan', async ({ page }) => {
   const inc = (await (await page.request.get(`/api/v1/observability/incidents?dataset_id=${fx.datasets.stale}&status=open&pillar=freshness`)).json()).items[0];
@@ -252,6 +266,22 @@ test('O13 the admin sees the global scope and the scanner banner reports undeliv
   await page.getByTestId('obs-channel-add').click();
   await expect(page.getByTestId('obs-channel-scope').locator('option[value="global"]')).toHaveCount(1);
   await shot(page, 'O14-delivery-banner');
+});
+
+// ── O14b (R3) ─────────────────────────────────────────────────────────────
+test('O14b undelivered alerts are retried on request: the dead row is queued again, delivered rows untouched', async ({ page }) => {
+  await page.goto('/observability');
+  await page.getByRole('button', { name: 'Alert channels' }).click();
+  const resp = page.waitForResponse((r) => r.url().endsWith(`/alert-channels/${fx.channel}/retry-deliveries`));
+  await page.getByTestId(`obs-channel-${fx.channel}-retry`).click();
+  const r = await resp;
+  expect(r.status()).toBe(200);
+  const body = await r.json();
+  expect(body.requeued).toBeGreaterThanOrEqual(1);          // the seeded dead + failed rows
+  await expect(page.getByText(/queued again/)).toBeVisible();
+  // the target is unreachable on purpose: they fail again and are SHOWN failing, never silently gone
+  await expect(page.getByTestId(`obs-channel-${fx.channel}-failures`)).toBeVisible();
+  await shot(page, 'O14b-retry-undelivered');
 });
 
 // ── O15 ───────────────────────────────────────────────────────────────────

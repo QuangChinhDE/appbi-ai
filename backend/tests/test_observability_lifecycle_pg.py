@@ -107,7 +107,9 @@ def test_a_new_anomaly_alert_after_resolution_opens_a_new_incident(db, world):  
     assert len(_open_for(db, key)) == 1, "a fresh anomaly after resolution must open again"
 
 
-def test_anomaly_incident_resolves_once_the_metric_has_no_recent_alert(db, world):  # noqa: F811
+def test_anomaly_incident_resolves_on_a_clean_check_after_the_alert(db, world):  # noqa: F811
+    """Recovery needs evidence: a check that ran and found the metric normal
+    AFTER the newest alert (was: "no alert for N days", see the R1 tests)."""
     from app.services.observability_service import ObservabilityService as S
 
     m, a = _metric_with_alert(db, world)
@@ -115,11 +117,99 @@ def test_anomaly_incident_resolves_once_the_metric_has_no_recent_alert(db, world
     S.fold_anomaly(db)
     db.commit()
     assert len(_open_for(db, key)) == 1
-    a.detected_at = datetime.utcnow() - timedelta(days=30)   # the metric has been normal since
+    a.detected_at = datetime.utcnow() - timedelta(days=30)
+    m.last_checked_at = m.last_ok_at = datetime.utcnow()
+    m.last_check_status = "ok"
     db.commit()
     S.fold_anomaly(db)
     db.commit()
-    assert _open_for(db, key) == [], "an anomaly whose metric recovered stayed open forever"
+    assert _open_for(db, key) == [], "an anomaly whose metric was checked normal stayed open"
+
+
+# ── R1: "no new alert" is not "recovered" ───────────────────────────────────
+
+@pytest.mark.parametrize("status,error", [("error", "history query failed: OperationalError"),
+                                          ("insufficient", "fewer than 8 days of data"),
+                                          (None, None)])
+def test_an_anomaly_is_not_recovered_when_the_detector_could_not_judge(db, world, status, error):  # noqa: F811
+    """The source was unreachable for days (error), the data too thin
+    (insufficient) or the metric never checked (None): no new alert, but no
+    evidence either - the incident stays open and says why."""
+    from app.services.observability_service import ObservabilityService as S
+
+    m, a = _metric_with_alert(db, world)
+    key = f"anomaly:metric_{m.id}"
+    S.fold_anomaly(db)
+    db.commit()
+    a.detected_at = datetime.utcnow() - timedelta(days=30)        # far past every window
+    m.last_checked_at = datetime.utcnow() if status else None
+    m.last_check_status, m.last_check_error = status, error
+    db.commit()
+    for _ in range(3):
+        S.fold_anomaly(db)
+        db.commit()
+    [inc] = _open_for(db, key)
+    assert inc.detail["detector"]["status"] == (status or "never")
+    assert inc.detail["detector"]["error"] == error
+
+
+def test_a_clean_check_older_than_the_alert_is_not_recovery(db, world):  # noqa: F811
+    from app.services.observability_service import ObservabilityService as S
+
+    m, a = _metric_with_alert(db, world)
+    m.last_ok_at = a.detected_at - timedelta(hours=1)
+    m.last_check_status = "error"
+    db.commit()
+    S.fold_anomaly(db)
+    db.commit()
+    assert len(_open_for(db, f"anomaly:metric_{m.id}")) == 1
+
+
+def test_a_stale_alert_cleared_by_a_clean_check_never_opens(db, world):  # noqa: F811
+    from app.services.observability_service import ObservabilityService as S
+
+    m, a = _metric_with_alert(db, world)
+    m.last_ok_at = datetime.utcnow()
+    m.last_check_status = "ok"
+    db.commit()
+    S.fold_anomaly(db)
+    db.commit()
+    assert _open_for(db, f"anomaly:metric_{m.id}") == []
+
+
+def test_run_all_checks_records_an_unreachable_source_as_error_not_normal(db, world):  # noqa: F811
+    """The real detector against a source that refuses connections."""
+    from app.models.anomaly import MonitoredMetric
+    from app.models.dataset import DatasetTable
+    from app.models.models import DataSource, DataSourceType
+    from app.services.anomaly_detection import AnomalyDetectionService
+
+    src = DataSource(name=f"down-{uuid.uuid4().hex[:6]}", type=DataSourceType.POSTGRESQL,
+                     owner_id=world["owner"].id,
+                     config={"host": "127.0.0.1", "port": 1, "database": "x", "username": "x", "password": "x"})
+    db.add(src)
+    db.flush()
+    t = DatasetTable(dataset_id=world["ds"].id, display_name="down", source_kind="physical_table",
+                     source_table_name="public.nope", datasource_id=src.id)
+    db.add(t)
+    db.flush()
+    m = MonitoredMetric(dataset_table_id=t.id, metric_column="amount", time_column="day", owner_id=world["owner"].id)
+    db.add(m)
+    db.commit()
+    others = db.query(MonitoredMetric).filter(MonitoredMetric.id != m.id, MonitoredMetric.is_active == True).all()  # noqa: E712
+    for o in others:                     # this run checks only the metric under test
+        o.is_active = False
+    db.commit()
+    try:
+        out = AnomalyDetectionService.run_all_checks(db)
+    finally:
+        for o in others:
+            o.is_active = True
+        db.commit()
+    db.refresh(m)
+    assert out["errored"] == 1
+    assert m.last_check_status == "error" and m.last_checked_at and m.last_ok_at is None
+    assert m.last_check_error
 
 
 # ── H03 delivery ────────────────────────────────────────────────────────────
@@ -618,3 +708,179 @@ def test_a_scan_left_running_by_a_killed_process_is_reaped(db, world):  # noqa: 
     S.run_scan(db, dataset_id=world["ds"].id)
     db.expire_all()
     assert db.get(ObservabilityScanRun, r.id).status == "failed"
+
+
+# ── R2: scanner crash and the scan's own record ─────────────────────────────
+
+def _admin(db):
+    return make_user(db, "obs-admin-r2", observability="full", datasets="full")
+
+
+def test_status_reaps_a_run_whose_scanner_died_without_waiting(client, db, world):  # noqa: F811
+    from app.models.observability import ObservabilityScanRun
+
+    r = ObservabilityScanRun(scope="global", trigger="schedule", status="running",
+                             started_at=datetime.utcnow() - timedelta(minutes=3))
+    db.add(r)
+    db.commit()
+    body = client.get("/api/v1/observability/status", headers=_admin(db).headers).json()
+    db.expire_all()
+    assert db.get(ObservabilityScanRun, r.id).status == "failed"
+    assert body["running"] is False
+
+
+def test_status_never_reaps_a_scan_that_is_really_running(client, db, world):  # noqa: F811
+    import threading
+
+    from app.core.scheduler_lock import job_lock
+    from app.models.observability import ObservabilityScanRun
+    from app.services.observability_service import ObservabilityService as S
+
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with job_lock(S.SCAN_LOCK):
+            held.set()
+            release.wait(10)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    held.wait(10)
+    try:
+        r = ObservabilityScanRun(scope="global", trigger="manual", status="running", started_at=datetime.utcnow())
+        db.add(r)
+        db.commit()
+        body = client.get("/api/v1/observability/status", headers=_admin(db).headers).json()
+        db.expire_all()
+        assert db.get(ObservabilityScanRun, r.id).status == "running" and body["running"] is True
+    finally:
+        release.set()
+        t.join()
+        db.query(ObservabilityScanRun).filter(ObservabilityScanRun.status == "running").update(
+            {"status": "failed"}, synchronize_session=False)
+        db.commit()
+
+
+def test_results_saved_but_run_record_not_is_not_reported_as_success(client, db, world, monkeypatch):  # noqa: F811
+    from app.models.observability import ObservabilityScanRun
+    from app.services.observability_service import ObservabilityService as S
+
+    real = S._finish_run
+    monkeypatch.setattr(S, "_finish_run", staticmethod(
+        lambda db_, run_id, status, counts, errors: False if status != "failed" else real(db_, run_id, status, counts, errors)))
+    r = client.post(f"/api/v1/observability/datasets/{world['ds'].id}/scan", headers=world["owner"].headers)
+    assert r.status_code == 500, r.text
+    run_id = r.json()["detail"]["run_id"] if isinstance(r.json().get("detail"), dict) else None
+    monkeypatch.setattr(S, "_finish_run", real)
+    client.get("/api/v1/observability/status", headers=_admin(db).headers)    # scanner gone -> reaped
+    db.expire_all()
+    if run_id:
+        assert db.get(ObservabilityScanRun, run_id).status == "failed"
+    assert db.query(ObservabilityScanRun).filter(ObservabilityScanRun.status == "running").count() == 0
+
+
+# ── R3: recovering deliveries that gave up ──────────────────────────────────
+
+def test_dead_deliveries_are_recovered_once_on_request_and_never_resend_delivered(client, db, world, sends):  # noqa: F811
+    from app.models.observability import ObservabilityAlertDelivery as D
+    from app.services.observability_notifier import MAX_ATTEMPTS, dispatch_due, notify_new_incidents
+
+    sent, fail = sends
+    ch = _channel(db, world["ds"].id, "recover")
+    ch.owner_id = world["owner"].id
+    db.commit()
+    dead_inc, done_inc, gone_inc = _incident(db, world), _incident(db, world), _incident(db, world)
+    notify_new_incidents(db, [done_inc])                     # delivered fine
+    fail.add(ch.id)
+    notify_new_incidents(db, [dead_inc, gone_inc])
+    t = datetime.utcnow()
+    for _ in range(MAX_ATTEMPTS + 1):
+        t += timedelta(days=1)
+        dispatch_due(db, now=t)
+    row = lambda inc: db.query(D).filter(D.incident_id == inc.id, D.channel_id == ch.id).one()  # noqa: E731
+    db.expire_all()
+    assert row(dead_inc).status == "dead" and row(gone_inc).status == "dead"
+    gone_inc.status = "resolved"
+    db.commit()
+    dispatch_due(db, now=t + timedelta(days=30))             # nothing revives a dead row on its own
+    assert row(dead_inc).status == "dead"
+
+    fail.clear()                                             # the user fixed the channel
+    before = list(sent)
+    assert client.post(f"/api/v1/observability/alert-channels/{ch.id}/retry-deliveries",
+                       headers=world["viewer"].headers).status_code in (403, 404)
+    r = client.post(f"/api/v1/observability/alert-channels/{ch.id}/retry-deliveries", headers=world["owner"].headers)
+    assert r.status_code == 200, r.text
+    assert (r.json()["requeued"], r.json()["cancelled"]) == (1, 1)
+    db.expire_all()
+    new = sent[len(before):]
+    assert new.count((ch.id, dead_inc.id)) == 1 and (ch.id, done_inc.id) not in new and (ch.id, gone_inc.id) not in new
+    assert row(dead_inc).status == "sent" and row(gone_inc).status == "cancelled" and row(done_inc).status == "sent"
+    r = client.post(f"/api/v1/observability/alert-channels/{ch.id}/retry-deliveries", headers=world["owner"].headers)
+    assert r.json()["requeued"] == 0                          # idempotent: nothing left to recover
+
+
+def test_retry_needs_an_active_channel(client, db, world, sends):  # noqa: F811
+    ch = _channel(db, world["ds"].id, "paused")
+    ch.owner_id, ch.is_active = world["owner"].id, False
+    db.commit()
+    r = client.post(f"/api/v1/observability/alert-channels/{ch.id}/retry-deliveries", headers=world["owner"].headers)
+    assert r.status_code == 409
+
+
+# ── R4: a disabled module is off everywhere ─────────────────────────────────
+
+def test_a_disabled_module_answers_nothing_and_sends_nothing(client, db, world, monkeypatch):  # noqa: F811
+    from app.core.config import settings
+    from app.services import anomaly_scheduler as sched
+
+    admin = make_user(db, "obs-admin-r4", observability="full", datasets="full")
+    assert client.get("/api/v1/observability/overview", headers=admin.headers).status_code == 200
+    calls = []
+    monkeypatch.setattr("app.services.anomaly_detection.AnomalyDetectionService.run_all_checks",
+                        staticmethod(lambda db_: calls.append("anomaly") or {}))
+    monkeypatch.setattr("app.services.observability_service.ObservabilityService.scan_all",
+                        staticmethod(lambda db_, **k: calls.append("scan") or {}))
+    monkeypatch.setattr("app.services.observability_notifier.dispatch_due",
+                        lambda db_, **k: calls.append("dispatch") or 0)
+
+    monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", False)
+    for method, path in (("get", "/api/v1/observability/overview"), ("get", "/api/v1/observability/incidents"),
+                         ("post", "/api/v1/observability/scan"), ("get", "/api/v1/observability/alert-channels")):
+        assert getattr(client, method)(path, headers=admin.headers).status_code == 404, path
+    sched._run_anomaly_scan.__wrapped__()
+    sched._dispatch_alerts.__wrapped__()
+    assert "scan" not in calls and "dispatch" not in calls
+
+    monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", True)          # positive control
+    assert client.get("/api/v1/observability/overview", headers=admin.headers).status_code == 200
+    sched._run_anomaly_scan.__wrapped__()
+    sched._dispatch_alerts.__wrapped__()
+    assert "scan" in calls and "dispatch" in calls
+
+
+# ── R5: a scan is bounded in time ───────────────────────────────────────────
+
+def test_a_scan_over_its_time_budget_stops_running_monitors_and_says_so(db, world, monkeypatch):  # noqa: F811
+    import time
+
+    from app.core.config import settings
+    from app.models.observability import ObservabilityMonitor
+    from app.services.observability_service import ObservabilityService as S
+
+    for k in ("freshness", "volume", "schema"):
+        db.add(ObservabilityMonitor(dataset_id=world["ds"].id, dataset_table_id=world["tbl"].id, kind=k,
+                                    name=k, config={}, severity="warning"))
+    db.commit()
+    ran = []
+
+    def slow(m, db_):
+        ran.append(m.id)
+        time.sleep(1.2)
+        return {"status": "ok", "value": None, "detail": {}, "created_incident": None}
+
+    monkeypatch.setattr(S, "run_monitor", staticmethod(slow))
+    monkeypatch.setattr(settings, "OBSERVABILITY_SCAN_BUDGET_SECONDS", 1)
+    out = S.run_scan(db, dataset_id=world["ds"].id)
+    assert len(ran) < 3 and out["monitors_skipped"] == 3 - len(ran)
+    assert out["status"] == "partial" and "time budget" in out["errors"][0]

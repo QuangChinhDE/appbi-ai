@@ -19,7 +19,7 @@ import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 import { relativeTime, LoadErrorState } from './ui';
 import {
-  listAlertChannels, createAlertChannel, updateAlertChannel, deleteAlertChannel, testAlertChannel,
+  listAlertChannels, createAlertChannel, updateAlertChannel, deleteAlertChannel, testAlertChannel, retryChannelDeliveries,
   getObservabilityMe, getUsage, loadErrorOf, apiErrorMessage,
   type AlertChannel, type ChannelKind, type LoadError, type ObservabilityMe, type Severity, type UsageRow,
 } from '@/lib/observability';
@@ -138,6 +138,16 @@ export function AlertChannelsModal({ onClose, defaultDatasetId }: { onClose: () 
                           <AlertCircle className="h-3 w-3" aria-hidden />
                           {t('observability.alertChannels.deliveryProblems', { failed: dl.failed, dead: dl.dead })}
                           {c.lastError ? ` — ${c.lastError}` : ''}
+                          {manage && c.isActive && (
+                            <button type="button" data-testid={`obs-channel-${c.id}-retry`} disabled={busyId === c.id}
+                              onClick={() => run(c, async () => {
+                                const r = await retryChannelDeliveries(c.id);
+                                toast.success(t('observability.alertChannels.retried', { requeued: r.requeued, sent: r.sent, cancelled: r.cancelled }));
+                              })}
+                              className="ml-2 rounded underline hover:no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">
+                              {t('observability.alertChannels.retryUndelivered')}
+                            </button>
+                          )}
                         </div>
                       )}
                       {dl.failed === 0 && dl.dead === 0 && c.lastError && (

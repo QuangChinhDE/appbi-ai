@@ -845,14 +845,20 @@ class ObservabilityService:
     @staticmethod
     def fold_anomaly(db: Session, lookback_days: int = 14,
                      dataset_ids: Optional[List[int]] = None) -> List[ObservabilityIncident]:
-        """One incident per monitored metric, driven by the metric's NEWEST alert.
+        """One incident per monitored metric, driven by the metric's NEWEST alert
+        and by the outcome of its checks.
 
-        - opens only for an alert newer than the metric's last resolution (a
-          person resolving it is final for the alerts it already covered) and
-          still inside the recovery window (an old alert says nothing about now);
-        - refreshes the open incident with the newest alert;
-        - auto-resolves once the metric has been alert-free for its recovery
-          window, or when the metric was deleted / switched off.
+        Opening: only for an alert newer than the metric's last resolution (a
+        person resolving it is final for the alerts it covered), inside the
+        recovery window (an old alert says nothing about now), and not already
+        cleared by a clean check after it.
+
+        Recovering needs EVIDENCE: a check that ran and found the metric normal
+        AFTER the newest alert (``last_ok_at``). "No new alert" is not evidence -
+        the detector may not have run (source unreachable, too little data,
+        metric never checked). Such an incident stays open and says why.
+
+        A deleted / paused metric resolves (a person's decision).
         Returns NEW incidents."""
         now = datetime.utcnow()
         since = now - timedelta(days=lookback_days)
@@ -873,21 +879,26 @@ class ObservabilityService:
             key = f"anomaly:metric_{metric.id}"
             handled.add(key)
             if not metric.is_active:
-                continue                                  # resolved below as removed/paused
-            window = ObservabilityService._anomaly_recovery_window(metric)
-            if a.detected_at < now - window:
-                ObservabilityService.resolve_incidents(db, key, reason="metric_recovered")
-                continue
-            open_inc = (db.query(ObservabilityIncident.id)
+                continue                                  # resolved below as paused
+            cleared = metric.last_ok_at is not None and metric.last_ok_at > a.detected_at
+            open_inc = (db.query(ObservabilityIncident)
                         .filter(ObservabilityIncident.dedup_key == key)
                         .filter(ObservabilityIncident.status != "resolved").first())
-            if open_inc is None:
-                last_resolved = (db.query(ObservabilityIncident.resolved_at)
-                                 .filter(ObservabilityIncident.dedup_key == key)
-                                 .filter(ObservabilityIncident.status == "resolved")
-                                 .order_by(ObservabilityIncident.resolved_at.desc()).first())
-                if last_resolved and last_resolved[0] and a.detected_at <= last_resolved[0]:
-                    continue                              # already handled by a person / recovery
+            if open_inc is not None:
+                if cleared:
+                    ObservabilityService.resolve_incidents(db, key, reason="metric_recovered")
+                else:
+                    ObservabilityService._annotate_detector(open_inc, metric)
+                continue
+            window = ObservabilityService._anomaly_recovery_window(metric)
+            if cleared or a.detected_at < now - window:
+                continue                                  # nothing current to report
+            last_resolved = (db.query(ObservabilityIncident.resolved_at)
+                             .filter(ObservabilityIncident.dedup_key == key)
+                             .filter(ObservabilityIncident.status == "resolved")
+                             .order_by(ObservabilityIncident.resolved_at.desc()).first())
+            if last_resolved and last_resolved[0] and a.detected_at <= last_resolved[0]:
+                continue                                  # already handled by a person / recovery
             inc, was_created = ObservabilityService.upsert_incident(
                 db, dataset_id=table.dataset_id, dataset_table_id=table.id,
                 source="anomaly", dedup_key=key,
@@ -900,29 +911,50 @@ class ObservabilityService:
                 severity="critical" if a.severity in ("critical", "error") else (
                     a.severity if a.severity in ("warning", "info") else "warning"),
             )
+            ObservabilityService._annotate_detector(inc, metric)
             if was_created:
                 created.append(inc)
 
-        # Open anomaly incidents with no recent alert at all: recovered, or their
-        # metric was deleted / paused.
+        # Open anomaly incidents whose newest alert is older than the lookback.
         oq = (db.query(ObservabilityIncident)
               .filter(ObservabilityIncident.source == "anomaly")
               .filter(ObservabilityIncident.status != "resolved"))
         if dataset_ids is not None:
             oq = oq.filter(ObservabilityIncident.dataset_id.in_(dataset_ids))
+        from sqlalchemy import func
+
         for inc in oq.all():
-            if inc.dedup_key in handled:
-                metric_id = ObservabilityService._key_id(inc.dedup_key)
-                m = db.query(MonitoredMetric).filter(MonitoredMetric.id == metric_id).first() if metric_id else None
-                if m is not None and not m.is_active:
-                    ObservabilityService.resolve_incidents(db, inc.dedup_key, reason="metric_paused")
-                continue
             metric_id = ObservabilityService._key_id(inc.dedup_key)
             m = db.query(MonitoredMetric).filter(MonitoredMetric.id == metric_id).first() if metric_id else None
-            reason = ("metric_removed" if m is None else "metric_paused" if not m.is_active
-                      else "metric_recovered")
-            ObservabilityService.resolve_incidents(db, inc.dedup_key, reason=reason)
+            if m is None:
+                ObservabilityService.resolve_incidents(db, inc.dedup_key, reason="metric_removed")
+                continue
+            if not m.is_active:
+                ObservabilityService.resolve_incidents(db, inc.dedup_key, reason="metric_paused")
+                continue
+            if inc.dedup_key in handled:
+                continue
+            last_alert = (db.query(func.max(AnomalyAlert.detected_at))
+                          .filter(AnomalyAlert.monitored_metric_id == m.id).scalar())
+            if m.last_ok_at is not None and (last_alert is None or m.last_ok_at > last_alert):
+                ObservabilityService.resolve_incidents(db, inc.dedup_key, reason="metric_recovered")
+            else:
+                ObservabilityService._annotate_detector(inc, m)
         return created
+
+    @staticmethod
+    def _annotate_detector(inc: ObservabilityIncident, metric: MonitoredMetric) -> None:
+        """Say on the incident why it is still open when the detector could not
+        confirm either way (so "still open" is not read as "still abnormal")."""
+        status = metric.last_check_status or "never"
+        d = dict(inc.detail or {}) if isinstance(inc.detail, dict) else {}
+        d["detector"] = {
+            "status": status,
+            "checked_at": ObservabilityService._utc_iso(metric.last_checked_at),
+            "error": metric.last_check_error,
+            "last_ok_at": ObservabilityService._utc_iso(metric.last_ok_at),
+        }
+        inc.detail = d
 
     @staticmethod
     def _key_id(key: str) -> Optional[int]:
@@ -997,7 +1029,9 @@ class ObservabilityService:
         with job_lock(ObservabilityService.SCAN_LOCK) as owned:
             if not owned:
                 raise ObservabilityService.ScanBusy("A scan is already running.")
-            ObservabilityService.reap_stale_runs(db)
+            # We hold the scan lock: any row still 'running' belongs to a scan
+            # whose process died (the lock dies with its session).
+            ObservabilityService._reap_running(db)
             run = ObservabilityScanRun(scope="dataset" if dataset_id else "global", dataset_id=dataset_id,
                                        trigger=trigger, triggered_by=user_id, status="running",
                                        started_at=datetime.utcnow())
@@ -1011,6 +1045,8 @@ class ObservabilityService:
                 db.rollback()
                 ObservabilityService._finish_run(db, run_id, "failed", {},
                                                  [f"{type(exc).__name__}: {str(exc)[:500]}"])
+                # (if even that cannot be written, the next scan / status read
+                # reaps the row as failed - it is never left looking successful)
                 raise ObservabilityService.ScanFailed(
                     "The scan failed and its results were not saved.", run_id) from exc
             # A monitor that could not run is a check that did not happen: the
@@ -1019,7 +1055,13 @@ class ObservabilityService:
             if result["counts"].get("monitor_errors"):
                 result["errors"].insert(0, f"{result['counts']['monitor_errors']} monitor(s) could not run")
             status = "partial" if result["errors"] else "succeeded"
-            ObservabilityService._finish_run(db, run_id, status, result["counts"], result["errors"])
+            if not ObservabilityService._finish_run(db, run_id, status, result["counts"], result["errors"]):
+                # The results ARE committed, but the scan's own record is not:
+                # the scan is not reported as a success. The row stays 'running'
+                # until the lock is released, then reads as failed.
+                raise ObservabilityService.ScanFailed(
+                    "The scan's results were saved, but its record could not be updated. "
+                    "Check the scanner status; the next scan will run normally.", run_id)
 
         sent = 0
         try:
@@ -1039,36 +1081,66 @@ class ObservabilityService:
         logger.info("[obs] scan %s", out)
         return out
 
-    STALE_RUN_HOURS = 6
-
     @staticmethod
-    def reap_stale_runs(db: Session) -> int:
-        """A run still 'running' long after any scan could take (the process was
-        killed mid-scan) is failed, so the status never shows a phantom scan."""
+    def _reap_running(db: Session) -> int:
+        """Fail every run still marked 'running'. Only call while holding the
+        scan lock (or having just proved nobody holds it)."""
         from app.models.observability import ObservabilityScanRun
 
-        cutoff = datetime.utcnow() - timedelta(hours=ObservabilityService.STALE_RUN_HOURS)
         n = (db.query(ObservabilityScanRun)
-             .filter(ObservabilityScanRun.status == "running", ObservabilityScanRun.started_at < cutoff)
+             .filter(ObservabilityScanRun.status == "running")
              .update({"status": "failed", "finished_at": datetime.utcnow(),
-                      "errors": ["The scan stopped without finishing (process restarted?)."]},
+                      "errors": ["The scan stopped without finishing (the scanner process ended)."]},
                      synchronize_session=False))
         db.commit()
         return n
 
     @staticmethod
-    def _finish_run(db: Session, run_id: int, status: str, counts: dict, errors: list) -> None:
+    def reap_orphan_runs(db: Session) -> int:
+        """A run marked 'running' while NO process holds the scan lock is a scan
+        whose process died (the advisory lock is released with its session).
+        Proven by taking the lock - never by a timer, which left a dead scan
+        looking 'running' for hours, nor while a real scan holds it."""
+        from app.core.scheduler_lock import job_lock
         from app.models.observability import ObservabilityScanRun
 
-        try:
-            run = db.query(ObservabilityScanRun).filter(ObservabilityScanRun.id == run_id).first()
+        if db.query(ObservabilityScanRun.id).filter(ObservabilityScanRun.status == "running").first() is None:
+            return 0
+        with job_lock(ObservabilityService.SCAN_LOCK) as owned:
+            if not owned:
+                return 0                             # a scan is genuinely running
+            return ObservabilityService._reap_running(db)
+
+    @staticmethod
+    def _finish_run(db: Session, run_id: int, status: str, counts: dict, errors: list) -> bool:
+        """Record the run's outcome; True when it is durably written. One retry
+        on a fresh connection (the scan's own session may be the broken one)."""
+        from app.core.database import SessionLocal
+        from app.models.observability import ObservabilityScanRun
+
+        def write(s: Session) -> None:
+            run = s.query(ObservabilityScanRun).filter(ObservabilityScanRun.id == run_id).first()
             if run is not None:
                 run.status, run.counts, run.errors = status, counts, errors[:100]
                 run.finished_at = datetime.utcnow()
-                db.commit()
+                s.commit()
+
+        try:
+            write(db)
+            return True
         except Exception:  # noqa: BLE001
             db.rollback()
-            logger.exception("[obs] could not record scan run %s", run_id)
+            logger.exception("[obs] could not record scan run %s - retrying on a fresh session", run_id)
+        fresh = SessionLocal()
+        try:
+            write(fresh)
+            return True
+        except Exception:  # noqa: BLE001
+            fresh.rollback()
+            logger.exception("[obs] scan run %s outcome NOT recorded", run_id)
+            return False
+        finally:
+            fresh.close()
 
     @staticmethod
     def _scan_body(db: Session, dataset_id: Optional[int]) -> Dict[str, Any]:
@@ -1092,8 +1164,17 @@ class ObservabilityService:
         if dataset_id:
             mq = mq.filter(ObservabilityMonitor.dataset_id == dataset_id)
         monitors = mq.all()
-        breached = errored = 0
+        breached = errored = skipped = 0
+        import time as _time
+
+        from app.core.config import settings as _settings
+
+        budget = float(getattr(_settings, "OBSERVABILITY_SCAN_BUDGET_SECONDS", 1800) or 0)
+        t0 = _time.monotonic()
         for m in monitors:
+            if budget and _time.monotonic() - t0 > budget:
+                skipped += 1                          # not run: its last result stays, dated
+                continue
             r = step(f"monitor {m.id}", lambda m=m: ObservabilityService.run_monitor(m, db))
             if r is None:
                 errored += 1
@@ -1116,7 +1197,11 @@ class ObservabilityService:
         # fails and nothing is committed.
         enqueue_deliveries(db, new_incidents)
         db.commit()
+        if skipped:
+            errors.insert(0, f"{skipped} monitor(s) not run: the scan's time budget "
+                             f"({int(budget)} s) ran out")
         counts = {"monitors": len(monitors), "breached": breached, "monitor_errors": errored,
+                  "monitors_skipped": skipped,
                   "quality_folded": len(q_new), "anomaly_folded": len(a_new), "semantic_folded": len(s_new),
                   "new_incidents": len(new_incidents)}
         return {"counts": counts, "errors": errors, "new_incidents": new_incidents}

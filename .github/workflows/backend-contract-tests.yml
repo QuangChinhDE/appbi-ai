@@ -584,6 +584,13 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_source_concurrency_pg.py
+      # Observability monitors against a REAL MySQL 8.4 source (this job's
+      # service): freshness / volume / schema drift / an unreachable source as
+      # error + partial scan. Fails (never skips) in CI without MySQL.
+      - name: "GATE — Observability monitors on MySQL"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_observability_monitors_mysql_pg.py
   # ── Authorization / security gate ─────────────────────────────────────────
   #
   # EVERY MODULE MOUNTED, PINNED DEPENDENCIES, REAL POSTGRES ROLES.

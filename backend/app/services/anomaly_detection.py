@@ -15,7 +15,7 @@ Design decisions:
 import logging
 import statistics
 from datetime import datetime, date, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -72,8 +72,16 @@ class AnomalyDetectionService:
     def check_metric(metric: MonitoredMetric, db: Session) -> List[Dict[str, Any]]:
         """
         Check one metric for anomalies.
-        Returns list of anomaly dicts (empty = no anomaly detected).
+        Returns list of anomaly dicts (empty = no anomaly detected OR the check
+        could not run - use check_metric_outcome to tell those apart).
         """
+        return AnomalyDetectionService.check_metric_outcome(metric, db)[1]
+
+    @staticmethod
+    def check_metric_outcome(metric: MonitoredMetric, db: Session) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
+        """(status, anomalies, reason). status: ok | anomaly | error | insufficient.
+        "ok" only when the queries ran and the latest value is inside the
+        expected band - never for a check that failed or could not judge."""
         from app.services.live_query_service import (
             _dialect_for_ds_type,
             _quote_identifier,
@@ -83,12 +91,12 @@ class AnomalyDetectionService:
 
         table: DatasetTable = metric.dataset_table
         if not table:
-            return []
+            return "error", [], "dataset table missing"
         datasource: DataSource = db.query(DataSource).filter(
             DataSource.id == table.datasource_id
         ).first()
         if not datasource:
-            return []
+            return "error", [], "data source missing"
 
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
@@ -98,7 +106,7 @@ class AnomalyDetectionService:
             plan = resolve_dataset_table_relation(datasource, table)
         except Exception as exc:
             logger.warning("AnomalyDetection: failed to build query plan for metric %s — %s", metric.id, exc)
-            return []
+            return "error", [], f"cannot build the table query: {type(exc).__name__}"
 
         base = f"({plan.sql}) AS base_table"
 
@@ -107,7 +115,7 @@ class AnomalyDetectionService:
 
         if not time_col or not metric_col:
             # Without time column we can't do period comparison — skip
-            return []
+            return "insufficient", [], "no time column"
 
         dt_expr = AnomalyDetectionService._date_bucket_day(time_col, dialect)
         time_expr = AnomalyDetectionService._date_bucket_day(time_col, dialect)
@@ -130,29 +138,33 @@ class AnomalyDetectionService:
             )
         except Exception as exc:
             logger.warning("AnomalyDetection: history query failed for metric %s — %s", metric.id, exc)
-            return []
+            return "error", [], f"history query failed: {type(exc).__name__}"
 
         if len(history) < 8:
-            return []  # not enough data
+            return "insufficient", [], "fewer than 8 days of data"
 
         values = [float(r.get("val") or 0) for r in history]
         window = values[-8:-1]  # last 7 days (excluding today)
         if len(window) < 3:
-            return []
+            return "insufficient", [], "fewer than 3 baseline days"
 
         mean = statistics.mean(window)
         try:
             std = statistics.stdev(window)
         except statistics.StatisticsError:
             std = 0.0
-        if std == 0:
-            return []
-
         current = values[-1]
+        if std == 0:
+            # A constant baseline: equal is normal; a different value cannot be
+            # scored - it is not evidence of "normal" either.
+            if current == mean:
+                return "ok", [], None
+            return "insufficient", [], "constant baseline, value changed"
+
         z = (current - mean) / std
 
         if abs(z) < metric.threshold_z_score:
-            return []
+            return "ok", [], None
 
         change_pct = round((current - mean) / mean * 100, 1) if mean else 0
         severity = "info"
@@ -196,7 +208,7 @@ class AnomalyDetectionService:
         if breakdowns:
             anomaly["dimension_values"] = breakdowns
 
-        return [anomaly]
+        return "anomaly", [anomaly], None
 
     @staticmethod
     def run_all_checks(db: Session) -> Dict[str, int]:
@@ -210,9 +222,22 @@ class AnomalyDetectionService:
 
         checked = 0
         found = 0
+        errored = 0
         for metric in metrics:
+            now = datetime.utcnow()
             try:
-                anomalies = AnomalyDetectionService.check_metric(metric, db)
+                status, anomalies, reason = AnomalyDetectionService.check_metric_outcome(metric, db)
+            except Exception as exc:  # noqa: BLE001 — recorded as a failed check, never as normal
+                logger.warning("AnomalyDetection: metric %s failed — %s", metric.id, exc)
+                status, anomalies, reason = "error", [], f"{type(exc).__name__}"
+            metric.last_checked_at = now
+            metric.last_check_status = status
+            metric.last_check_error = reason if status in ("error", "insufficient") else None
+            if status == "ok":
+                metric.last_ok_at = now
+            if status == "error":
+                errored += 1
+            try:
                 for a in anomalies:
                     alert = AnomalyAlert(
                         monitored_metric_id=metric.id,
@@ -230,15 +255,17 @@ class AnomalyDetectionService:
             except Exception as exc:
                 logger.warning("AnomalyDetection: metric %s failed — %s", metric.id, exc)
 
-        if found > 0:
-            try:
-                db.commit()
-            except Exception as exc:
-                logger.error("AnomalyDetection: commit failed — %s", exc)
-                db.rollback()
+        # Always commit: the check outcomes are what the Observability fold
+        # reads to decide whether an anomaly is over.
+        try:
+            db.commit()
+        except Exception as exc:
+            logger.error("AnomalyDetection: commit failed — %s", exc)
+            db.rollback()
+            raise
 
-        logger.info("AnomalyDetection: checked=%d anomalies_found=%d", checked, found)
-        return {"checked": checked, "anomalies_found": found}
+        logger.info("AnomalyDetection: checked=%d anomalies_found=%d errored=%d", checked, found, errored)
+        return {"checked": checked, "anomalies_found": found, "errored": errored}
 
     @staticmethod
     def _build_explanation(metric: MonitoredMetric, anomaly: Dict) -> str:
