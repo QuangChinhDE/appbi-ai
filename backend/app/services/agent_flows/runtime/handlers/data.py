@@ -291,6 +291,8 @@ async def run_report_read(
 
     if node.include_filters:
         out["filters"] = _call(rctx, state, "inspect_filters", {})
+        if node.detail == "compact":
+            out["filters"] = _compact_filters(out["filters"])
 
     # BY THE QUESTION, WHEN THE AUTHOR ASKED FOR THAT. An explicit `chart_ids`
     # list always wins: the author already answered "which charts", and a keyword
@@ -826,6 +828,27 @@ def _compact(entry: dict) -> None:
     for key in ("summary", "data"):
         if key in entry:
             _note_status(entry, key, entry.get(key))
+    # ONE FAILURE, SAID ONCE. A chart refused for the question ("this KPI is the
+    # all-period figure, not the month asked") failed its summary and its rows with
+    # the same sentence, so the reason travelled twice — ~350 characters a chart of
+    # a handoff that, in live round 7, then had no room left for the rows.
+    s_part, d_part = entry.get("summary"), entry.get("data")
+    _drop_read_bookkeeping(d_part)
+    if (isinstance(s_part, dict) and isinstance(d_part, dict) and not s_part.get("ok")
+            and not d_part.get("ok") and s_part.get("error") == d_part.get("error")):
+        del entry["summary"]
+        return
+    # WHEN EVERY ROW IS HERE, THE ROWS ARE THE EVIDENCE. The summary then only
+    # repeats them — the title, the type, the column names, the row count — plus
+    # cross-row stats, and a cross-row total is meaningless for a balance. Live
+    # round 7: a 4,427-character read over a ~4,000 share lost ALL its rows to the
+    # handoff reducer while "arr_active total 5244" (ARR summed over eight months)
+    # survived, and the writer said July and August were not in the report. A read
+    # that is only PART of the chart keeps its summary: there it says what the rows
+    # cannot.
+    if _rows_complete(entry.get("data")) and isinstance(s_part, dict) and s_part.get("ok"):
+        del entry["summary"]
+        return
     summary = (entry.get("summary") or {}).get("data") if isinstance(entry.get("summary"), dict) else None
     if not isinstance(summary, dict):
         return
@@ -846,6 +869,49 @@ def _compact(entry: dict) -> None:
         "total_rows": summary.get("total_rows"),
         "columns": columns,
     }
+
+
+def _compact_filters(result: Any) -> Any:
+    """No filter is active: the facts say so, and the paragraph explaining where
+    filters come from is for a model that has a filter to read. The evidence was
+    recorded when the tool was called."""
+    data = result.get("data") if isinstance(result, dict) and result.get("ok") else None
+    # Only a payload that SAYS no filter is active. Anything else is kept as it
+    # came: compacting a shape this does not recognise drops data it never read.
+    if not (isinstance(data, dict) and data.get("has_filters") is False
+            and data.get("active_filters") == []):
+        return result
+    return {"ok": True, "data": {k: data[k] for k in ("filter_count", "has_filters", "active_filters")
+                                 if k in data}}
+
+
+def _drop_read_bookkeeping(data_part: Any) -> None:
+    """What the row tool says about ITSELF, not about the chart: the request cap it
+    applied, an empty filter list, and the same coverage block twice (the tool's
+    and the result wrapper's). Every figure and the coverage itself survive."""
+    if not isinstance(data_part, dict) or not data_part.get("ok"):
+        return
+    inner = data_part.get("data") if isinstance(data_part.get("data"), dict) else None
+    for part in (data_part, inner):
+        if isinstance(part, dict):
+            cov = part.get("coverage")
+            if isinstance(cov, dict):
+                cov.pop("capped_by_policy", None)
+            if part.get("filters_applied") == []:
+                part.pop("filters_applied", None)
+    if inner is not None and data_part.get("coverage") == inner.get("coverage"):
+        data_part.pop("coverage", None)
+
+
+def _rows_complete(data_part: Any) -> bool:
+    """Every row of the chart came back (nothing capped, nothing truncated)."""
+    if not isinstance(data_part, dict) or not data_part.get("ok"):
+        return False
+    inner = data_part.get("data") if isinstance(data_part.get("data"), dict) else data_part
+    cov = inner.get("coverage") if isinstance(inner, dict) else None
+    rows = inner.get("rows") if isinstance(inner, dict) else None
+    return (isinstance(cov, dict) and isinstance(rows, list) and bool(rows)
+            and cov.get("truncated") is False and cov.get("returned") == cov.get("total") == len(rows))
 
 
 def _flag_partial(entry: dict, state: RunState, node: ReportReadNode) -> None:
@@ -919,6 +985,30 @@ _NOTHING = {"doc_ids": [-1], "dataset_ids": [-1], "metric_names": ["\x00"], "ter
 
 
 def bounded_scope(ctx: Any, scope: dict[str, list]) -> dict[str, list]:
+    """A step's knowledge scope: inside the Skill ceiling, then inside the RUN's.
+
+    The run ceiling (`ctx.run_scope_ceiling`, set by dispatch from
+    `permissions.run_scope`) is owner ∩ attached ∩ link ∩ caller. A step's own
+    document or dataset attachment is kept only if the run scope kept it — so a
+    viewer whose rights `run_scope` removed a document for cannot get it back
+    through the step that attached it (found while hardening Specialized Agents:
+    the Knowledge Reader role reads exactly through these attachments).
+    """
+    out = _bounded_by_skill(ctx, scope)
+    run = getattr(ctx, "run_scope_ceiling", None)
+    if not isinstance(run, dict):
+        return out
+    for key in ("doc_ids", "dataset_ids"):
+        own = list(out.get(key) or [])
+        if not own or own == list(_NOTHING[key]):
+            continue
+        allowed = {str(x) for x in (run.get(key) or [])}
+        kept = [x for x in own if str(x) in allowed]
+        out[key] = kept or list(_NOTHING[key])
+    return out
+
+
+def _bounded_by_skill(ctx: Any, scope: dict[str, list]) -> dict[str, list]:
     """A step's knowledge scope, never wider than the CEILING its run was given.
 
     A step's attachments REPLACE the context's scope — that is how a step narrows.

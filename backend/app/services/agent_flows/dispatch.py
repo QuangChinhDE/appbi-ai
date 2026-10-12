@@ -509,6 +509,7 @@ async def run_for_link(
     ctx.knowledge_scope = public_run_scope(
         db, row, flow, binding_info.knowledge.model_dump(), getattr(binding, "created_by", None)
     )
+    ctx.run_scope_ceiling = dict(ctx.knowledge_scope)
     # AND ALSO THESE. The line above is the report the viewer is on; this one is
     # what its author attached on top of it — the only way a bot flow reaches past
     # a single report, and the thing that lets `search_business_assets` answer
@@ -857,6 +858,7 @@ async def run_preview(
         ctx.knowledge_scope = _run_scope(
             db, brain_row, flow, binding_info.knowledge.model_dump()
         )
+        ctx.run_scope_ceiling = dict(ctx.knowledge_scope)
 
     ctx.allowed_chart_ids = set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
     # THE SAME ADDON THE LIVE LINK GETS, so the Test button answers the question an
@@ -1095,6 +1097,7 @@ async def run_for_chat_thread(
         ctx.knowledge_scope = {"doc_ids": [], "dataset_ids": [], "metric_names": []}
     else:
         ctx.knowledge_scope = run_scope(db, row, flow, binding_info.knowledge.model_dump(), caller=_caller)
+    ctx.run_scope_ceiling = dict(ctx.knowledge_scope)
     # THE CHARTS THIS ASSISTANT WAS GRANTED — derived from the knowledge scope, not
     # from a link. A chat flow that attached no dataset still measures nothing, so
     # attaching remains the gate; what changed is that attaching now opens it.

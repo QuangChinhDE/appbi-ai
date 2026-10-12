@@ -18,7 +18,8 @@ import { Search, X } from 'lucide-react';
 import { Input } from '@/components/ui/Input';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import type { NodeSpec, NodeType } from '@/lib/agentFlows';
+import type { AgentRole, NodeSpec, NodeType } from '@/lib/agentFlows';
+import { roleText } from '@/lib/agentFlows';
 
 const CATEGORIES: { key: string; labelKey: string }[] = [
   { key: 'all', labelKey: 'agentFlows.library.category.all' },
@@ -44,12 +45,16 @@ function specText(
 }
 
 export function NodeLibrary({
-  specs, positionLabel, onPick, onClose,
+  specs, positionLabel, onPick, onClose, roles = [], onPickRole,
 }: {
   specs: NodeSpec[];
   positionLabel: string;
   onPick: (type: NodeType) => void;
   onClose: () => void;
+  /** Specialized Agent roles. Each is an ordinary Agent step started on that
+   *  role — one click, no wizard; the generic Agent above stays the custom one. */
+  roles?: AgentRole[];
+  onPickRole?: (role: AgentRole) => void;
 }) {
   const { t, language } = useI18n();
   const [query, setQuery] = React.useState('');
@@ -64,6 +69,13 @@ export function NodeLibrary({
       || specText(s, 'description', language, t).toLowerCase().includes(q);
     return inCat && match;
   });
+
+  const agentSpec = specs.find((s) => s.type === 'agent');
+  const q = query.trim().toLowerCase();
+  const shownRoles = onPickRole && agentSpec && (category === 'all' || category === agentSpec.category)
+    ? roles.filter((r) => !q || [roleText(r, 'label', language), roleText(r, 'purpose', language),
+      r.label_vi, r.label_en].some((x) => x.toLowerCase().includes(q)))
+    : [];
 
   return (
     <div
@@ -159,7 +171,48 @@ export function NodeLibrary({
                 </button>
               ))}
             </div>
-            {!shown.length && (
+            {shownRoles.length > 0 && (
+              <div className="mt-3" data-testid="node-library-roles">
+                <b className="block px-0.5 text-tiny font-strong uppercase tracking-wide text-text-tertiary">
+                  {t('agentFlows.roles.libraryTitle')}
+                </b>
+                <span className="mb-1.5 block px-0.5 text-tiny text-text-tertiary">
+                  {t('agentFlows.roles.libraryHint')}
+                </span>
+                <div className="grid grid-cols-2 gap-2">
+                  {shownRoles.map((r) => (
+                    <button
+                      key={r.key}
+                      type="button"
+                      data-testid={`node-role-${r.key}`}
+                      onClick={() => onPickRole?.(r)}
+                      className="flex min-h-[70px] gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2.5 text-left transition hover:border-brand/40 hover:bg-brand/[0.02]"
+                    >
+                      <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-small">
+                        {agentSpec?.icon}
+                      </span>
+                      <span className="min-w-0">
+                        <b className="flex items-center gap-1 text-caption font-strong">
+                          {roleText(r, 'label', language)}
+                          <span className="rounded border border-brand/20 bg-brand/5 px-1 text-tiny text-brand">
+                            {t('agentFlows.common.llm')}
+                          </span>
+                        </b>
+                        <span className="mt-0.5 block text-tiny leading-snug text-text-tertiary">
+                          {roleText(r, 'purpose', language)}
+                        </span>
+                        <span className="mt-0.5 block text-tiny text-text-quaternary">
+                          {r.allowed_tools.length
+                            ? t('agentFlows.roles.toolCount', { n: String(r.default_tools.length) })
+                            : t('agentFlows.roles.noTools')}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {!shown.length && !shownRoles.length && (
               <p className="p-6 text-center text-caption text-text-tertiary">
                 {t('agentFlows.library.empty')}
               </p>

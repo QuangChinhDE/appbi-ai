@@ -150,7 +150,11 @@ def list_tools(web_enabled: bool = False, _: User = Depends(can_view)) -> dict[s
     """The tool picker, grouped by pack. Withheld packs come back flagged rather than
     omitted: an author who cannot find web search should learn the deployment has it
     off, not conclude it never existed."""
-    return {"packs": tool_catalogue(web_enabled=web_enabled)}
+    from app.services.agent_flows import roles
+
+    # ROLES RIDE WITH THE TOOLS they bound, so the picker can never show a role
+    # whose boundary names a tool it was not also sent.
+    return {"packs": tool_catalogue(web_enabled=web_enabled), "roles": roles.catalogue()}
 
 
 @router.get("/skills")

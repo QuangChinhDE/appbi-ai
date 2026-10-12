@@ -248,10 +248,34 @@ export function NumberField({
 
 
 
-export function PathForm({ path, onChange }: { path: FlowPath; onChange: (p: FlowPath) => void }) {
+/** Remove this branch — or, at the minimum the server enforces, say why not. */
+function RemoveBranch({ onRemove, label, blocked, testId }: {
+  onRemove?: () => void; label: string; blocked: string; testId: string;
+}) {
+  return (
+    <div className="mb-2 flex justify-end">
+      {onRemove ? (
+        <button type="button" data-testid={testId} onClick={onRemove}
+          className="rounded-md px-2 py-1 text-caption text-danger hover:bg-danger/5">
+          {label}
+        </button>
+      ) : (
+        <span className="text-tiny text-text-tertiary" data-testid={`${testId}-blocked`}>{blocked}</span>
+      )}
+    </div>
+  );
+}
+
+export function PathForm({ path, onChange, onRemove }: {
+  path: FlowPath; onChange: (p: FlowPath) => void;
+  /** Absent when the IF is at its minimum of two paths. */
+  onRemove?: () => void;
+}) {
   const { t } = useI18n();
   return (
     <div className="p-3">
+      <RemoveBranch onRemove={onRemove} label={t('agentFlows.inspector.removePath')}
+        blocked={t('agentFlows.inspector.removePathMin')} testId="remove-path" />
       <Field label={t('agentFlows.inspector.branchName')}>
         <Input value={path.name || ''} onChange={(e) => onChange({ ...path, name: e.target.value })} />
       </Field>
@@ -291,10 +315,16 @@ export function PathForm({ path, onChange }: { path: FlowPath; onChange: (p: Flo
   );
 }
 
-export function CaseForm({ item, onChange }: { item: SwitchCase; onChange: (c: SwitchCase) => void }) {
+export function CaseForm({ item, onChange, onRemove }: {
+  item: SwitchCase; onChange: (c: SwitchCase) => void;
+  /** Absent when the Switch is down to its last case. */
+  onRemove?: () => void;
+}) {
   const { t } = useI18n();
   return (
     <div className="p-3">
+      <RemoveBranch onRemove={onRemove} label={t('agentFlows.inspector.removeCase')}
+        blocked={t('agentFlows.inspector.removeCaseMin')} testId="remove-case" />
       <Field label={t('agentFlows.inspector.caseLabel')}>
         <Input value={item.label || ''} onChange={(e) => onChange({ ...item, label: e.target.value })} />
       </Field>

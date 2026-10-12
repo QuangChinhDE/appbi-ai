@@ -383,6 +383,38 @@ class AgentNode(BaseNode):
     #: a step whose whole output is one token.
     choice_hints: dict[str, str] = Field(default_factory=dict)
     context_policy: ContextPolicy = "question"
+    #: A Specialized Agent role (`roles.ROLES`), or "" for a custom step — what
+    #: every step written before roles existed is, unchanged. A role BOUNDS the
+    #: grants (`tool_names`); it never adds one. Not validated here: a body
+    #: re-parsed on every run must still load if a role is later retired, and then
+    #: it fails closed (no tools) instead of failing to parse.
+    role: str = ""
+    #: The earlier steps whose results this step is handed, by node key. Empty =
+    #: the step before it (`previous`), as always. Each named step is projected
+    #: through the same `compile_context` the answering step uses, its failure or
+    #: absence is said out loud, and what was reduced is recorded on the trace.
+    reads_from: list[str] = Field(default_factory=list)
+    #: Whether the ANSWERING step ends with 2-3 `[FOLLOWUP]` suggestion lines (the
+    #: chips a reader can click). On by default — every flow written before this
+    #: field existed asked for them. Off: the prompt says not to, and any line the
+    #: model writes anyway is removed, so the setting and the answer cannot disagree.
+    #: Ignored on any other step, which never gets the follow-up contract.
+    followups: bool = True
+
+    @field_validator("reads_from")
+    @classmethod
+    def _reads_from_unique(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for k in v or []:
+            k = str(k or "").strip()
+            if k and k not in out:
+                out.append(k)
+        return out
+
+    @field_validator("role")
+    @classmethod
+    def _role_clean(cls, v: str) -> str:
+        return (v or "").strip()
 
     @model_validator(mode="after")
     def _choice_has_options(self) -> "AgentNode":
@@ -424,11 +456,33 @@ class AgentNode(BaseNode):
         return self
 
     def tool_names(self) -> list[str]:
+        """What this step may CALL: its grants, bounded by its role.
+
+        The single choke point every runtime consumer reads (the capability view,
+        the schemas, `tool_registry.execute(allowed=...)`), so a grant outside the
+        role cannot reach the model or run even if a body bypassed the save check.
+        """
+        from app.services.agent_flows import roles
+
         out: list[str] = []
         for g in self.tools:
             if g.tool not in out:
                 out.append(g.tool)
+        out = roles.bounded(self.role, out)
+        r = roles.get(self.role)
+        # A KNOWLEDGE ROLE WITH NOTHING ATTACHED reads nothing. An empty scope is
+        # open (knowledge_scope_open_when_empty), so without this the "Docs
+        # expert" would search every document its owner can see.
+        if r is not None and r.needs_knowledge and not self.knowledge:
+            return []
         return out
+
+    def effective_grants(self) -> list[ToolGrant]:
+        """The grant objects (with their notes and pinned versions) that survive
+        `tool_names()`. Read wherever the runtime walks grants itself — a Skill
+        grant resolved from `self.tools` directly would slip past the role."""
+        keep = set(self.tool_names())
+        return [g for g in self.tools if g.tool in keep]
 
 
 class ReportReadNode(BaseNode):
@@ -1583,6 +1637,7 @@ class Flow(_Model):
             n.output_var for n in self.all_nodes()
             if isinstance(n, ReportReadNode) and n.output_var
         }
+        by_key = {x.key: x for x in self.all_nodes()}
         for n in self.agent_nodes():
             granted = {t.tool for t in n.tools}
             keyed = sorted(granted & _CHART_KEYED_TOOLS)
@@ -1591,6 +1646,13 @@ class Flow(_Model):
             if granted & _CHART_LOOKUP_TOOLS:
                 continue
             if read_vars and (node_referenced_vars(n) & read_vars):
+                continue
+            # A THIRD WAY: an explicit input from a step that reads the report or
+            # can look charts up hands this one the ids (`AgentNode.reads_from`).
+            if any(isinstance(src, ReportReadNode)
+                   or (isinstance(src, AgentNode)
+                       and set(src.tool_names()) & _CHART_LOOKUP_TOOLS)
+                   for src in (by_key.get(k) for k in n.reads_from)):
                 continue
             handed = (
                 "prompt không đọc "
@@ -1646,6 +1708,10 @@ class Flow(_Model):
         # is invisible on the canvas — it looks exactly like a node that runs.
         out.extend(self.unknown_capability_problems())
         out.extend(self.nested_coordinator_problems())
+        out.extend(self.role_grant_errors())
+        out.extend(self.role_dependency_problems())
+        out.extend(self.input_problems())
+        out.extend(self.incomplete_config_problems())
         dead = self.unreachable_nodes()
         if dead:
             out.append(
@@ -1736,6 +1802,107 @@ class Flow(_Model):
                     )
         return out
 
+    def role_grant_errors(self) -> list[str]:
+        """Steps whose role is unknown or whose grants leave the role's boundary.
+
+        Refused at SAVE (422) and at publish — never acknowledgeable: a role is a
+        promise about what a step can do, and a body that breaks it is a forged or
+        stale payload, not an author's trade-off. (`tool_names()` would drop the
+        extra grant at run time anyway; refusing it here means the stored flow
+        never claims an ability it does not have.)
+        """
+        from app.services.agent_flows import roles
+
+        out: list[str] = []
+        for n in self.agent_nodes():
+            if not n.role:
+                continue
+            if not roles.is_known(n.role):
+                out.append(f"Bước “{n.name or n.key}”: vai trò “{n.role}” không tồn tại.")
+                continue
+            outside = roles.grant_problems(n.role, [g.tool for g in n.tools])
+            if outside:
+                label = roles.get(n.role).label_vi
+                out.append(
+                    f"Bước “{n.name or n.key}” ({label}) được cấp công cụ ngoài phạm vi "
+                    f"vai trò: {', '.join(outside)}. Bỏ các công cụ này, hoặc chuyển "
+                    "bước sang Agent tùy chỉnh."
+                )
+        return out
+
+    def role_dependency_problems(self) -> list[str]:
+        """A role's setup it cannot work without — checked at publish."""
+        from app.services.agent_flows import roles
+
+        out: list[str] = []
+        for n in self.agent_nodes():
+            r = roles.get(n.role)
+            if r is None:
+                continue
+            if r.needs_knowledge and not n.knowledge:
+                out.append(
+                    f"Bước “{n.name or n.key}” ({r.label_vi}) chưa đính kèm nguồn tri "
+                    "thức nào — vai trò này chỉ tra trong nguồn được đính kèm, nên "
+                    "sẽ không đọc được gì."
+                )
+            if r.allowed_tools and not n.tools:
+                out.append(
+                    f"Bước “{n.name or n.key}” ({r.label_vi}) chưa được cấp công cụ nào "
+                    "— vai trò này cần công cụ để làm việc."
+                )
+        return out
+
+    def input_problems(self) -> list[str]:
+        """`reads_from` naming a step that does not exist, is itself, a router, or
+        cannot have run before it. Order is document order (`all_nodes`), which is
+        execution order for every container this engine has."""
+        order = [n.key for n in self.all_nodes()]
+        by_key = {n.key: n for n in self.all_nodes()}
+        out: list[str] = []
+        for n in self.agent_nodes():
+            here = order.index(n.key) if n.key in order else -1
+            for k in n.reads_from:
+                src = by_key.get(k)
+                who = f"Bước “{n.name or n.key}”"
+                if src is None:
+                    out.append(f"{who} nhận đầu vào từ “{k}” nhưng không có bước đó.")
+                elif k == n.key:
+                    out.append(f"{who} không thể nhận đầu vào từ chính nó.")
+                elif getattr(src, "type", "") in ROUTING_NODE_TYPES:
+                    out.append(
+                        f"{who} nhận đầu vào từ bước rẽ nhánh/điều phối “{src.name or k}” "
+                        "— bước đó chỉ ghi đường đi, không có kết quả. Chọn bước bên trong nó."
+                    )
+                elif order.index(k) > here:
+                    out.append(
+                        f"{who} nhận đầu vào từ “{src.name or k}” — bước đó chạy SAU, "
+                        "nên lúc này chưa có kết quả."
+                    )
+        return out
+
+    def incomplete_config_problems(self) -> list[str]:
+        """Required expressions left blank — what a freshly added step looks like.
+
+        The builder used to seed Switch, Loop and Filter with `{{}}`. That is not a
+        template (the variable pattern needs a name), so no check saw it: it
+        resolved to the literal text "{{}}", a Switch matched nothing and ran its
+        fallback, a Loop ran ONCE over the string "{{}}", and a Filter's
+        `is_not_empty` was always true — while validation said the flow was fine.
+        A draft may be incomplete; a flow that runs or publishes may not.
+        """
+        out: list[str] = []
+        for n in self.all_nodes():
+            who = f"Bước “{n.name or n.key}”"
+            if any(_EMPTY_TEMPLATE_RE.search(t or "") for t in _templated_strings(n)):
+                out.append(f"{who} có biểu thức trống {{{{}}}} — chọn biến hoặc nhập giá trị.")
+            if isinstance(n, SwitchNode) and not (n.value or "").strip():
+                out.append(f"{who} (Switch) chưa có giá trị để rẽ nhánh.")
+            if isinstance(n, LoopNode) and not (n.over or "").strip():
+                out.append(f"{who} (Loop) chưa chọn danh sách để lặp.")
+            if isinstance(n, FilterNode) and not (n.conditions or []):
+                out.append(f"{who} (Filter) chưa có điều kiện nào.")
+        return list(dict.fromkeys(out))
+
     def blocking_problems(self) -> list[str]:
         """The subset of `warnings()` that is a DEFECT rather than a trade-off.
 
@@ -1768,6 +1935,10 @@ class Flow(_Model):
         # at save time rather than by a reader.
         out.extend(self.unknown_capability_problems())
         out.extend(self.nested_coordinator_problems())
+        out.extend(self.role_grant_errors())
+        out.extend(self.role_dependency_problems())
+        out.extend(self.input_problems())
+        out.extend(self.incomplete_config_problems())
         dead = self.unreachable_nodes()
         answer_key = self.answer_node or (self.nodes[-1].key if self.nodes else "")
         # A ROUTER IS NOT AN ANSWER. Found by the acceptance journeys: an If at the
@@ -1942,6 +2113,11 @@ def node_referenced_vars(node: Any) -> set[str]:
         if getattr(binding, "source", "") == "variable" and getattr(binding, "ref", ""):
             found.add(re.split(r"[.\[]", binding.ref, maxsplit=1)[0].strip())
     return found
+
+
+#: `{{}}` / `{{ }}` — a placeholder nobody filled in. Not a template: the variable
+#: pattern needs a name, which is exactly why nothing else catches it.
+_EMPTY_TEMPLATE_RE = re.compile(r"\{\{\s*\}\}")
 
 
 def _templated_strings(node: Any) -> list[str]:

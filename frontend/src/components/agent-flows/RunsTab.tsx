@@ -856,6 +856,20 @@ function CapabilityView({ view }: { view: CapabilityTrace }) {
           {t('agentFlows.trace.evidence')}: {view.evidence.map((e) => `${e.ref} (${e.tool})`).join(', ')}
         </p>
       )}
+      {view.handoff && (
+        <p className="mt-0.5" data-testid="trace-handoff">
+          {t(`agentFlows.trace.handoff.${view.handoff.mode}`)}
+          {!!view.handoff.included?.length && ` · ${t('agentFlows.trace.handoff.included')}: ${view.handoff.included.join(', ')}`}
+          {!!view.handoff.reduced?.length && ` · ${t('agentFlows.trace.handoff.reduced')}: ${view.handoff.reduced.join(', ')}`}
+          {!!view.handoff.omitted?.length && ` · ${t('agentFlows.trace.handoff.omitted')}: ${view.handoff.omitted.join(', ')}`}
+          {!!view.handoff.missing?.length && (
+            <span className="text-warning">
+              {` · ${t('agentFlows.trace.handoff.missing')}: `}
+              {view.handoff.missing.map((m) => `${m.key} (${m.status}${m.error ? `: ${m.error}` : ''})`).join(', ')}
+            </span>
+          )}
+        </p>
+      )}
       {!!view.invoked?.length && <p className="mt-0.5">{t('agentFlows.trace.invoked')}: {view.invoked.join(', ')}</p>}
       {!!view.rejected?.length && (
         <ul className="mt-0.5 space-y-0.5 text-warning">

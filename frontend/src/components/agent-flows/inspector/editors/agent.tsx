@@ -6,9 +6,10 @@ import { Plus, Trash2 } from 'lucide-react';
 import { Input, Textarea } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { HintText, SectionTitle } from '../../shared';
-import { Advanced, Field, NumberField, Select } from '../fields';
+import { Advanced, Field, NumberField, Select, Toggle } from '../fields';
 import { ModelPicker } from '../ModelPicker';
-import { ToolPicker } from '../ToolPicker';
+import { ToolPicker, toolLabel } from '../ToolPicker';
+import { ReadsFromSection, RoleSection } from '../RoleSection';
 import { WhatTheAiSees } from '../WhatTheAiSees';
 import { useI18n } from '@/providers/LanguageProvider';
 import { KnowledgeAttachments } from '../../shared';
@@ -30,9 +31,29 @@ export function AgentEditor(props: NodeEditorProps) {
   const node = props.node as AgentNode;
   void language; void spec; void toolPacks; void providers; void attachable;
   void brainKey; void flowType; void isAnswerNode; void seeing; void setSeeing;
+  const roles = props.roles || [];
+  const role = roles.find((r) => r.key === node.role) || null;
+  // A ROLE NARROWS THE PICKER TO ITS BOUNDARY. Display only — the server bounds
+  // the grants on save, publish and run whatever this shows.
+  const allowed = role ? new Set(role.allowed_tools) : null;
+  const shownPacks = allowed
+    ? toolPacks
+      .map((p) => ({ ...p, tools: p.tools.filter((tl) => allowed.has(tl.name)) }))
+      .filter((p) => p.tools.length > 0)
+    : toolPacks;
+  const labelOf = (name: string) => {
+    for (const p of toolPacks) {
+      const hit = p.tools.find((tl) => tl.name === name);
+      if (hit) return toolLabel(hit, language);
+    }
+    return name;
+  };
   return (
     <>
         <>
+          {roles.length > 0 && (
+            <RoleSection node={node} roles={roles} set={set} toolLabel={labelOf} />
+          )}
           <Field label={t('agentFlows.inspector.agentPrompt')}
             hint={t('agentFlows.inspector.agentPromptHint')}>
             <Textarea rows={6} value={node.prompt}
@@ -135,6 +156,19 @@ export function AgentEditor(props: NodeEditorProps) {
               )}
             </Field>
           )}
+          {/* F10 — the follow-up chips are the author's choice, on the step that
+              answers (no other step is ever asked for them). */}
+          {isAnswerNode && node.output_format !== 'json' && (
+            <div className="mt-3 rounded-lg border border-[rgb(var(--border-line))] px-2.5"
+              data-testid="agent-followups">
+              <Toggle
+                on={node.followups !== false}
+                title={t('agentFlows.inspector.followups')}
+                hint={t('agentFlows.inspector.followupsHint')}
+                onChange={(v) => set({ followups: v } as Partial<FlowNode>)}
+              />
+            </div>
+          )}
           <Advanced
             name="limits"
             title={t('agentFlows.inspector.maxToolCalls')}
@@ -165,9 +199,12 @@ export function AgentEditor(props: NodeEditorProps) {
           )}
           <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
             <SectionTitle>{t('agentFlows.inspector.grantedTools')}</SectionTitle>
+            {role && !role.allowed_tools.length ? (
+              <HintText>{t('agentFlows.roles.writerNoTools')}</HintText>
+            ) : (
             <ToolPicker
-              packs={toolPacks}
-              skills={props.skills}
+              packs={shownPacks}
+              skills={role ? [] : props.skills}
               granted={(node.tools || []).map((t) => t.tool)}
               onToggle={(name, on) => set({
                 tools: on
@@ -186,12 +223,15 @@ export function AgentEditor(props: NodeEditorProps) {
                 } as Partial<FlowNode>);
               }}
             />
+            )}
             {isAnswerNode && (node.tools || []).length > 0 && (
               <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-caption text-warning">
                 {t('agentFlows.inspector.answerToolsWarning')}
               </p>
             )}
           </div>
+
+          <ReadsFromSection node={node} steps={props.earlierSteps || []} set={set} />
 
           {/* An agent that may CALL tools may also LOOK THINGS UP. Both are reach,
               so they sit together rather than in two different mental places. */}
