@@ -394,7 +394,13 @@ async def send_message(
 
     verdict = chat_quota.check_chat_quota(db, user)
     if not verdict.allowed:
-        raise HTTPException(status_code=429, detail=verdict.message)
+        detail = verdict.message
+        if body.lang == "en":
+            detail = (
+                f"You have used all of today's AI chat turns ({verdict.runs_today}/"
+                f"{verdict.limit_runs}). The limit resets at the start of tomorrow."
+            )
+        raise HTTPException(status_code=429, detail=detail)
 
     row, flow, problem = direct_chat.resolve_for_chat(db, user, thread.brain_key)
 

@@ -44,6 +44,9 @@ sys.path.insert(0, str(BACKEND))
 DOMAIN = "chat.e2e.test"
 PILOT = ("owner", "editor", "viewer", "overseer", "outsider")
 ANSWER = "Doanh thu tháng 9 là 8.043.020.000 ₫ (nguồn: bộ dữ liệu bán hàng)."
+#: Distinct on purpose: a turn from the slow flow leaking into another thread must be
+#: VISIBLE, which it would not be if both flows said the same sentence.
+SLOW_ANSWER = "Câu trả lời chậm: tồn kho cuối kỳ là 1.204 đơn vị."
 
 
 def pilot_emails() -> str:
@@ -106,7 +109,8 @@ def main() -> int:
         fast = flow(f"chat_fast_{run}", f"E2E Doanh thu {run}", [stop],
                     "Trả lời nhanh về doanh thu (trợ lý kiểm thử).")
         slow = flow(f"chat_slow_{run}", f"E2E Chậm {run}",
-                    [{"key": "wait", "type": "delay", "name": "Wait", "seconds": 6}, stop],
+                    [{"key": "wait", "type": "delay", "name": "Wait", "seconds": 6},
+                     {**stop, "message": SLOW_ANSWER}],
                     "Trả lời sau vài giây (trợ lý kiểm thử).")
         db.commit()
 
@@ -118,6 +122,7 @@ def main() -> int:
         out = {
             "run": run,
             "answer": ANSWER,
+            "slow_answer": SLOW_ANSWER,
             "users": {n: {"id": str(u.id), "email": u.email, "access": tok(u)} for n, u in people.items()},
             "flows": {"fast": fast, "slow": slow},
         }

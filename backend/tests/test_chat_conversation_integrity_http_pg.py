@@ -306,3 +306,19 @@ def test_a_chat_only_reader_sees_and_uses_what_was_shared_with_them(client, db, 
 
     # The module floor still holds: no `chat`, no Chat — whatever else they hold.
     assert client.get("/api/v1/agent-flows/chat/brains", headers=nochat.headers).status_code == 403
+
+
+def test_quota_refusal_is_worded_in_the_readers_language(client, db, people, monkeypatch):  # noqa: F811
+    from app.services.agent_flows import chat_quota
+    from app.services.agent_flows.chat_quota import ChatQuotaVerdict
+
+    monkeypatch.setattr(chat_quota, "check_chat_quota", lambda db, user: ChatQuotaVerdict(
+        allowed=False, reason="runs_per_day", message="Bạn đã dùng hết lượt (3/3).",
+        runs_today=3, limit_runs=3))
+    t = _thread(db, people["owner"])
+    url = f"/api/v1/agent-flows/chat/threads/{t.id}/messages"
+    en = client.post(url, headers=people["owner"].headers, json={"question": "q", "lang": "en"})
+    vi = client.post(url, headers=people["owner"].headers, json={"question": "q", "lang": "vi"})
+    assert en.status_code == vi.status_code == 429
+    assert "3/3" in en.json()["detail"] and "today" in en.json()["detail"]
+    assert vi.json()["detail"] == "Bạn đã dùng hết lượt (3/3)."

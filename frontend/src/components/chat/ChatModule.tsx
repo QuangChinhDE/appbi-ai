@@ -74,7 +74,12 @@ export function ChatModule() {
   //: callback closes over the render it started in, and asking that stale value
   //: "is this still the open thread?" always answers yes.
   const activeThreadRef = React.useRef(threadId);
-  activeThreadRef.current = threadId;
+  //: A thread this screen has just CREATED and is showing, before the router has
+  //: put its id in the URL. Without it, a render in that gap reset the active
+  //: thread to 0 and the turn's own updates were dropped — a send that failed
+  //: fast lost its bubble and its "failed" label.
+  const pendingThreadRef = React.useRef<number | null>(null);
+  activeThreadRef.current = threadId || pendingThreadRef.current || 0;
   //: A thread whose transcript is ALREADY on screen because we are the ones
   //: writing it. Sending the first message creates the thread and puts its id in
   //: the URL, which wakes the loader below — and at that moment the server has
@@ -117,9 +122,20 @@ export function ChatModule() {
   // and going back to the catalogue all change `threadId`; closing the page
   // unmounts. The server records the abandoned turn, so nothing is lost silently.
   React.useEffect(() => {
+    // The URL has caught up with a thread we created; it is the truth again.
+    if (threadId && pendingThreadRef.current === threadId) pendingThreadRef.current = null;
     const turn = turnRef.current;
-    if (turn && turn.threadId !== threadId) turn.controller.abort();
+    if (turn && turn.threadId && turn.threadId !== threadId && pendingThreadRef.current !== turn.threadId) {
+      turn.controller.abort();
+    }
   }, [threadId]);
+
+  /** Leaving this conversation on purpose — back, or a new one — ends its turn,
+   *  including one still creating its thread (which must not then navigate). */
+  const leave = React.useCallback(() => {
+    pendingThreadRef.current = null;
+    turnRef.current?.controller.abort();
+  }, []);
   React.useEffect(() => () => { turnRef.current?.controller.abort(); }, []);
 
   const loadThread = React.useCallback((id: number, opts: { quiet?: boolean } = {}) => {
@@ -186,8 +202,17 @@ export function ChatModule() {
     if (!turn.threadId) {
       try {
         const th = await createThread(brainKey);
+        if (controller.signal.aborted) {
+          // Left (Back / New conversation / Stop) while the thread was being
+          // made: nothing was asked, so nothing is shown and nobody is moved.
+          turnRef.current = null;
+          setStreaming(false);
+          refreshThreads();
+          return;
+        }
         turn.threadId = th.id;
         skipLoadRef.current = th.id;
+        pendingThreadRef.current = th.id;
         activeThreadRef.current = th.id;
         setThreads((prev) => [th, ...prev.filter((x) => x.id !== th.id)]);
         setDetail({
@@ -275,8 +300,13 @@ export function ChatModule() {
       }
     } catch (e) {
       if (!controller.signal.aborted) {
-        patchTurn(turn, { content: streamed, status: 'failed' });
-        toast.error(errText(e, t('chat.error.send'), t));
+        // THE REASON GOES WHERE THE FAILURE IS — under the turn — not in a toast
+        // that sat on top of the Send button the reader needs to retry.
+        const reason = errText(e, t('chat.error.send'), t);
+        patchTurn(turn, {
+          content: streamed ? `${streamed}\n\n_⚠️ ${reason}_` : `_⚠️ ${reason}_`,
+          status: 'failed',
+        });
       }
     } finally {
       const stillMine = turnRef.current === turn;
@@ -299,7 +329,10 @@ export function ChatModule() {
       // THE SERVER'S RECORD REPLACES THE LIVE DRAFT once the turn is over, so
       // what is on screen is what reload will show — and the answer gains its
       // run id, which is what rating it needs. Quiet: no spinner, no wipe on error.
-      if (!controller.signal.aborted && activeThreadRef.current === turn.threadId) {
+      // ONLY after a terminal result: a send refused before the server recorded
+      // anything (HTTP 500, network) has no record, and refreshing would erase
+      // the question and its "failed" label from under the reader.
+      if (gotResult && !controller.signal.aborted && activeThreadRef.current === turn.threadId) {
         void loadThread(turn.threadId, { quiet: true });
       }
     }
@@ -313,7 +346,6 @@ export function ChatModule() {
     set(rating);
     try {
       await rateAnswer(threadId, runId, rating);
-      if (rating) toast.success(t('chat.rate.thanks'));
     } catch (e) {
       set(before);
       toast.error(errText(e, t('chat.error.rate'), t));
@@ -361,9 +393,9 @@ export function ChatModule() {
           onInputChange={setInput}
           onSend={send}
           onStop={() => turnRef.current?.controller.abort()}
-          onBack={() => go('')}
-          onNewThread={() => { setMessages([]); setDetail(null); go(brainKey); }}
-          onOpenThread={(id) => go(brainKey, id)}
+          onBack={() => { leave(); go(''); }}
+          onNewThread={() => { leave(); setMessages([]); setDetail(null); go(brainKey); }}
+          onOpenThread={(id) => { if (id !== threadId) leave(); go(brainKey, id); }}
           onRename={doRename}
           onDelete={setDeleting}
           onRate={doRate}
@@ -419,8 +451,13 @@ function errText(
   if (status === 403) return t('chat.error.readOnly');
   if (status === 404) return t('chat.error.notFound');
   if (status === 409) return t('chat.error.noKey');
-  const msg = (e as { response?: { data?: { detail?: unknown } }; message?: string });
-  const detail = msg?.response?.data?.detail;
-  if (typeof detail === 'string' && detail) return detail;
-  return msg?.message && msg.message !== 'undefined' ? msg.message : fallback;
+  // ONLY the quota refusal carries a server sentence worth showing (its limits).
+  // Anything else — a 500, a proxy page, a network error — is worded here: raw
+  // server text is not a reader message and may carry internals.
+  if (status === 429) {
+    const msg = e as { message?: string; response?: { data?: { detail?: unknown } } };
+    const detail = e instanceof ChatHttpError ? msg.message : msg?.response?.data?.detail;
+    if (typeof detail === 'string' && detail) return detail;
+  }
+  return fallback;
 }

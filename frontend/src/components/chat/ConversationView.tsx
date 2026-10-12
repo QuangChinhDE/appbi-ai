@@ -51,6 +51,22 @@ const NOTICE_KEYS: Record<string, string> = {
   web_disabled: 'chat.notice.webOff',
 };
 
+/** Answer-integrity notices the ENGINE words in Vietnamese. On the Vietnamese UI
+ *  its own sentence is the better one (it names the counts and items); on the
+ *  English UI it would be the only Vietnamese on the screen, so the reader gets
+ *  this sentence instead. Integrity first: these are the ones that say "do not
+ *  trust this figure yet". */
+const EN_NOTICE_KEYS: Record<string, string> = {
+  figures_without_evidence: 'chat.notice.figuresWithoutEvidence',
+  figures_unverified: 'chat.notice.figuresUnverified',
+  claims_unverified: 'chat.notice.claimsUnverified',
+  labels_unverified: 'chat.notice.labelsUnverified',
+  requested_breakdown_unavailable: 'chat.notice.breakdownUnavailable',
+  tool_budget_reached: 'chat.notice.toolBudget',
+  steps_skipped_for_budget: 'chat.notice.stepsSkipped',
+  run_failed: 'chat.notice.runFailed',
+};
+
 /** Read-only reasons the client words itself, so the sentence follows the UI
  *  language. Anything else falls back to the server's own sentence. */
 const READONLY_KEYS = new Set([
@@ -351,7 +367,7 @@ function ThreadList({
   const shown = React.useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return threads;
-    return threads.filter((th) => (th.title || t('chat.untitled')).toLowerCase().includes(q));
+    return threads.filter((th) => (th.title || t('chat.untitledRow')).toLowerCase().includes(q));
   }, [threads, query, t]);
 
   return (
@@ -390,6 +406,7 @@ function ThreadList({
           className="mt-3 w-full"
           leadingIcon={<MessageSquarePlus className="h-3.5 w-3.5" />}
           onClick={onNewThread}
+          data-testid="chat-new-conversation"
         >
           {t('chat.newConversation')}
         </Button>
@@ -432,6 +449,7 @@ function ThreadList({
                   <Input
                     value={renameText}
                     onChange={(e) => setRenameText(e.target.value)}
+                    aria-label={t('chat.rename')}
                     className="h-7 text-xs"
                     autoFocus
                     onKeyDown={(e) => {
@@ -456,9 +474,11 @@ function ThreadList({
                     onClick={() => onOpenThread(th.id)}
                     aria-current={th.id === threadId ? 'page' : undefined}
                     className="min-w-0 flex-1 truncate text-left text-caption text-text-secondary"
-                    title={th.title || t('chat.untitled')}
+                    title={th.title || t('chat.untitledRow')}
                   >
-                    {th.title || t('chat.untitled')}
+                    {/* NOT "New conversation": that is the button above, and a row
+                        reading the same as the action was two things with one name. */}
+                    {th.title || t('chat.untitledRow')}
                   </button>
                   {/* Owner only — the server refuses anyone else. Always visible
                       below `lg` (a touch screen has no hover), on hover or
@@ -585,7 +605,7 @@ function Bubble({
   onRate: (runId: number, rating: 'up' | 'down' | null) => void;
   onFollowup?: (q: string) => void;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [copied, setCopied] = React.useState(false);
 
   if (message.role === 'user') {
@@ -602,6 +622,7 @@ function Bubble({
   // READER SURFACE. The server already drops author diagnostics at its own
   // boundary; refusing them here too means neither layer is trusted alone.
   const notices = readerNotices(message.notices).filter((n) => NOTICE_KEYS[n.code] || n.text);
+  const noticeKey = (code: string) => NOTICE_KEYS[code] || (language === 'en' ? EN_NOTICE_KEYS[code] : undefined);
   // WHAT HAPPENED TO THIS TURN, said in words. A failed, refused or stopped turn
   // must not look like a finished answer that happens to be short.
   const statusKey = live ? '' : (
@@ -629,7 +650,7 @@ function Bubble({
         <div className="space-y-1">
           {notices.map((n, i) => (
             <p key={i} className="text-caption text-text-tertiary">
-              ⓘ {NOTICE_KEYS[n.code] ? t(NOTICE_KEYS[n.code]) : n.text}
+              ⓘ {noticeKey(n.code) ? t(noticeKey(n.code)!) : n.text}
             </p>
           ))}
         </div>
@@ -659,6 +680,7 @@ function Bubble({
       {message.citations?.length ? (
         <CitationCards citations={message.citations as never} collapsible />
       ) : null}
+      {message.citations?.length ? <DataSources citations={message.citations} /> : null}
 
       {done ? (
         <div className="flex items-center gap-0.5 text-text-quaternary">
@@ -687,6 +709,57 @@ function Bubble({
             </>
           ) : null}
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+const SOURCE_KINDS = new Set(['chart', 'metric', 'dataset', 'term', 'web']);
+
+/** The NON-document sources behind an answer — the chart, metric or dataset a
+ *  figure was read from. `CitationCards` renders documents only, so in Chat an
+ *  answer grounded in data showed its number with no source at all.
+ *
+ *  Labels only, never a link to a chart: the reader may not hold access to the
+ *  chart itself, and a link that answers 403 is worse than a name. A `web`
+ *  source is the one exception, opening outside the app. */
+function DataSources({ citations }: { citations: NonNullable<ChatMessage['citations']> }) {
+  const { t } = useI18n();
+  const [open, setOpen] = React.useState(false);
+  const seen = new Set<string>();
+  const rows = citations.filter((c) => {
+    if (!SOURCE_KINDS.has(c.kind)) return false;
+    const k = `${c.kind}:${c.ref}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  if (!rows.length) return null;
+  return (
+    <div data-testid="chat-data-sources" className="text-micro text-text-quaternary">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 transition-colors hover:text-text-secondary">
+        <FileText className="h-3 w-3" />
+        {t('chat.sources.title', { n: rows.length })}
+      </button>
+      {open ? (
+        <ul className="mt-1.5 space-y-1">
+          {rows.map((c) => (
+            <li key={`${c.kind}:${c.ref}`} className="flex min-w-0 gap-1.5 text-tiny text-text-tertiary">
+              <span className="shrink-0 rounded bg-surface-2 px-1 text-text-quaternary">
+                {t(`chat.sourceKind.${c.kind}`)}
+              </span>
+              {c.kind === 'web' && c.url && /^https?:\/\//i.test(c.url) ? (
+                <a href={c.url} target="_blank" rel="noopener noreferrer" className="truncate underline">
+                  {c.label || c.url}
+                </a>
+              ) : (
+                <span className="truncate">{c.label || c.ref}</span>
+              )}
+              {c.quote ? <span className="truncate italic">— {c.quote}</span> : null}
+            </li>
+          ))}
+        </ul>
       ) : null}
     </div>
   );
