@@ -96,6 +96,16 @@ layers:
     label: "Backend scripts / QA harnesses (NOT runtime; not committed as app code)"
     may_depend_on: ["*"]
 
+  # The external MCP integration (docker-compose.mcp.yml). An independent service:
+  # it reaches AppBI ONLY over HTTP with the user's delegated token, so it may not
+  # import anything from backend/ or frontend/ (see
+  # docs/features/mcp-integration-layer/spec.md). Its tests read backend route
+  # declarations as text (AST), never by import.
+  - id: integrations_mcp
+    match: ["integrations/appbi-mcp/**", "docker-compose.mcp.yml"]
+    label: "External MCP integration (independent container, HTTP-only client of AppBI)"
+    may_depend_on: ["integrations_mcp"]
+
   - id: repo_infra
     match: ["scripts/ci/**", "scripts/guardrail/**", "scripts/cert/**",
             ".github/**", ".githooks/**",
@@ -249,6 +259,12 @@ protected:
 #    description (validate_fix_plan) to the right owner files.
 # ─────────────────────────────────────────────────────────────────────────────
 features:
+  - id: mcp_integration
+    label: "External MCP integration (Claude connector): OAuth, delegated PAT, plans/approvals, Dataset + Dashboard tools"
+    files: ["integrations/appbi-mcp/**", "docker-compose.mcp.yml", "frontend/src/app/connect/mcp/**"]
+    keywords: [mcp, "remote mcp", connector, claude, "mcp-oauth", "connect claude", "plan_dataset", "plan_dashboard", "execute_plan"]
+    required_tests: [mcp_integration_offline, mcp_integration_live]
+
   - id: schema_migrations
     label: "Alembic schema migrations (single head, parent committed, additive)"
     files: ["backend/alembic/**"]
@@ -755,6 +771,13 @@ tests:
     requires: postgres-fixture
     run: "python backend/scripts/test_explore_dashboard_parity.py"
     locks: "preview SQL/data == dashboard tile"
+  mcp_integration_offline:
+    run: "python integrations/appbi-mcp/scripts/run_offline_tests.py"
+    locks: "MCP OAuth (discovery, PKCE, txn binding, refresh rotation/reuse, code replay), allowlist ⊆ real backend routes, forbidden live-write routes unreachable, body guards, approvals (GET never approves, CSRF, cross-user), exactly-once operations"
+  mcp_integration_live:
+    requires: appbi-mcp-rig
+    run: "python integrations/appbi-mcp/scripts/run_offline_tests.py -m live tests/live"
+    locks: "real MCP client + real browser against a running AppBI rig: connect, Dataset/Dashboard journeys with SQL-checked values, co-author safety, security negatives, isolation"
   tsc:
     run: "cd frontend && npx tsc --noEmit"
     locks: "frontend type-safety (schema/prop changes)"

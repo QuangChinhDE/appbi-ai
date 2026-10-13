@@ -1,0 +1,80 @@
+name: MCP integration
+
+# The external MCP integration (integrations/appbi-mcp) is an independent service
+# with its own dependency set, so it has its own workflow. It also runs when the
+# backend's routers change: the allowlist contract test reads the backend's route
+# table, so an AppBI route rename that would break a Claude tool fails HERE.
+
+on:
+  push:
+    paths:
+      - "integrations/appbi-mcp/**"
+      - "docker-compose.mcp.yml"
+      - "docker-compose.yml"
+      - "nginx.conf"
+      - "frontend/src/app/connect/mcp/**"
+      - "backend/app/api/**"
+      - "backend/app/routers/**"
+      - ".github/workflows/mcp-integration.yml"
+  pull_request:
+    paths:
+      - "integrations/appbi-mcp/**"
+      - "docker-compose.mcp.yml"
+      - "docker-compose.yml"
+      - "nginx.conf"
+      - "frontend/src/app/connect/mcp/**"
+      - "backend/app/api/**"
+      - "backend/app/routers/**"
+      - ".github/workflows/mcp-integration.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    env:
+      # Not read by these tests (they never import the backend); declared because
+      # every pytest job in this repo states them (scripts/ci/verify.py checks).
+      ENVIRONMENT: test
+      METADATA_CATALOG_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Offline suite (OAuth, allowlist ⊆ backend routes, approvals, operations)
+        run: python integrations/appbi-mcp/scripts/run_offline_tests.py
+
+  container:
+    runs-on: ubuntu-latest
+    env:
+      ENVIRONMENT: test
+      METADATA_CATALOG_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compose files are valid (Core alone, and the MCP project)
+        env:
+          MCP_PUBLIC_URL: https://mcp.ci.example.com
+          MCP_STATE_KEY: ci-placeholder
+        run: |
+          touch .env
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -p appbi-mcp -f docker-compose.mcp.yml config --quiet
+      - name: Build image
+        run: docker build -t appbi-mcp:ci --build-arg APPBI_MCP_BUILD_SHA=${{ github.sha }} integrations/appbi-mcp
+      - name: Runs non-root, starts, answers health and the OAuth challenge
+        run: |
+          test "$(docker image inspect appbi-mcp:ci --format '{{.Config.User}}')" = "10001:10001"
+          KEY=$(python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
+          docker run -d --name mcp --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
+            -v mcpstate:/data -p 127.0.0.1:8090:8090 \
+            -e MCP_PUBLIC_URL=http://localhost:8090 -e APPBI_API_URL=http://appbi.invalid/api/v1 -e MCP_STATE_KEY="$KEY" \
+            appbi-mcp:ci
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8090/mcp-oauth/healthz && break; sleep 1; done
+          curl -sf http://127.0.0.1:8090/.well-known/oauth-protected-resource/mcp | grep -q '"resource":"http://localhost:8090/mcp"'
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8090/mcp -H 'content-type: application/json' -d '{}')
+          test "$code" = "401"
+          # AppBI unreachable → not ready (503), but the process stays up.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8090/mcp-oauth/readyz)" = "503"
+          docker logs mcp | tail -20
