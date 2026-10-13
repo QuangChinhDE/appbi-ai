@@ -226,6 +226,12 @@ def list_chat_brains(
     lang = "en" if lang == "en" else "vi"
     for row, flow in direct_chat.published_chat_brains(db, user):
         unavailable = _availability(db, user, flow)
+        cap = reader_capability.capability(flow, surface="chat", lang=lang)
+        reach = direct_chat.reader_reach(db, user, row, flow, lang=lang)
+        # SUGGESTIONS ABOUT THIS ASSISTANT'S DATA. The fixed examples name another
+        # report's measures ("GMV toàn kỳ…"); offered on a SaaS assistant they could
+        # only be refused. None at all when the reader reaches no chart.
+        cap["suggested_questions"] = direct_chat.grounded_suggestions(cap.get("can") or [], reach)
         out.append({
             "brain_key": row.brain_key,
             "name": row.name,
@@ -238,7 +244,12 @@ def list_chat_brains(
             # and carries tool names, pack names, node keys and document ids —
             # none of it the reader's business — and Chat refuses tools the flow
             # was granted, so the author's answer would also be the wrong answer.
-            "capability": reader_capability.capability(flow, surface="chat", lang=lang),
+            "capability": cap,
+            # What THIS reader can reach of what the assistant attached — counts and
+            # flags, never ids or names of anything withheld (`reader_reach`).
+            "reader_access": {k: reach[k] for k in ("attached_count", "reachable_count",
+                                                   "withheld_data", "withheld_documents",
+                                                   "data_attached")},
             # Listed even when it cannot answer for this reader (pilot not open to
             # them, no key yet): hiding it would make "where did my assistant go"
             # unanswerable. The code says why; the client words it.

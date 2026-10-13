@@ -222,6 +222,67 @@ def block_message(code: str, locale: str = "vi") -> str:
 
 
 # ═══ The contract a direct chat runs under ════════════════════════════════════
+#: Question shapes a reader can ask about ONE chart they can actually reach — so a
+#: suggestion names this assistant's data, not another report's ("GMV toàn kỳ" on
+#: a SaaS assistant is a suggestion that can only be refused).
+_GROUNDED = {
+    "lookup": ("{name}: số kỳ gần nhất là bao nhiêu?", "{name}: what is the latest figure?"),
+    "trend": ("{name} mấy kỳ gần đây đang tăng hay giảm?", "Is {name} going up or down lately?"),
+    "comparison": ("{name} kỳ gần nhất so với kỳ trước thế nào?", "{name}: latest period versus the one before?"),
+    "ranking": ("Trong {name}, nhóm nào cao nhất?", "In {name}, which group is highest?"),
+    "freshness": ("{name} có số liệu đến kỳ nào?", "How recent is the data in {name}?"),
+}
+
+
+def reader_reach(db: Session, user: Any, row: AgentBrainVersion, flow: Flow, *, lang: str = "vi") -> dict[str, Any]:
+    """What THIS reader can reach of what the assistant attached — reader-safe.
+
+    Sharing an assistant does not lend its author's reading rights (`run_scope`,
+    caller term): a reader reaches an attached dataset or document only if they
+    may read it themselves or the author delegated it to them. Found in the
+    browser: a reader the assistant was shared with asked "ARR tháng 8?" and was
+    told the data did not exist — while the catalogue showed "1 source" and a
+    list of things it "can answer". Counts and flags only; no ids, no names of
+    anything the reader may not read.
+    """
+    from app.models.models import Chart
+    from app.services.agent_flows.permissions import chart_scope, run_scope, unreadable_attachments
+
+    withheld = unreadable_attachments(db, row, flow, user)
+    mine = run_scope(db, row, flow, caller=user)
+    data_attached = sum(1 for s in flow.bound_sources() if s.source == "semantic")
+    names: list[str] = []
+    ids = sorted(chart_scope(db, mine))[:40]
+    if ids:
+        for c in db.query(Chart).filter(Chart.id.in_(ids)).order_by(Chart.id.asc()).all():
+            n = str(getattr(c, "name", "") or "").strip()
+            if n and n not in names:
+                names.append(n)
+    return {
+        "attached_count": len(flow.bound_sources()),
+        "reachable_count": len(mine["dataset_ids"]) + len(mine["doc_ids"]) + len(mine["metric_names"]),
+        "withheld_data": bool(withheld.get("dataset_ids")),
+        "withheld_documents": bool(withheld.get("doc_ids")),
+        "data_attached": data_attached > 0,
+        "chart_names": names[:3],
+        "en": str(lang or "").lower().startswith("en"),
+    }
+
+
+def grounded_suggestions(can: list[dict], reach: dict[str, Any]) -> list[str]:
+    """Up to three example questions about charts this reader can reach."""
+    names = reach.get("chart_names") or []
+    if not names:
+        return []
+    out: list[str] = []
+    for i, entry in enumerate(c for c in can if c.get("key") in _GROUNDED):
+        vi, en = _GROUNDED[entry["key"]]
+        out.append((en if reach.get("en") else vi).format(name=names[i % len(names)]))
+        if len(out) == 3:
+            break
+    return out
+
+
 def chat_contract(flow: Flow) -> Any:
     """The data contract for a turn with no report.
 

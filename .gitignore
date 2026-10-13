@@ -251,6 +251,7 @@ backend/scripts/regression_*.py
 !backend/tests/test_analytics_meaning.py
 !backend/tests/test_correctness_closure.py
 !backend/tests/test_model_compatibility.py
+!backend/tests/test_product_acceptance.py
 !backend/tests/test_flow_type.py
 !backend/tests/test_followup_and_freshness.py
 !backend/tests/test_govern_doc_citation.py

@@ -1110,6 +1110,25 @@ async def run_for_chat_thread(
     # Built HERE, not by the caller, because it needs the chart count and the scope
     # is only known once `adopt_scope` has run. A caller may still override it.
     base_system_prompt = base_system_prompt or chat_base_prompt(ctx)
+    # SAY WHY, WHEN A SOURCE IS WITHHELD FROM THIS READER. Without it the answer
+    # was "dữ liệu hiện có không cho biết…" — true of the reader's scope, false of
+    # the assistant, and not actionable (live Chat, product acceptance).
+    from app.services.agent_flows.permissions import unreadable_attachments as _unreadable
+
+    _withheld = _unreadable(db, row, flow, _caller) if _caller is not None else {}
+    scope_notices: list = []
+    if _withheld.get("dataset_ids") or _withheld.get("doc_ids"):
+        base_system_prompt += (
+            "\n\nPERMISSION NOTE: some sources attached to this assistant are not shared with the "
+            "person asking. If the question needs data you cannot find, say that the data has not "
+            "been shared with them and that they can ask the assistant's author for access — never "
+            "say the data does not exist."
+        )
+        scope_notices.append(Notice(
+            code="sources_withheld", audience="reader", severity="info",
+            text="Một số nguồn dữ liệu của trợ lý này chưa được chia sẻ cho bạn, nên câu trả lời "
+                 "chỉ dùng phần bạn được đọc. Hãy nhờ tác giả trợ lý cấp quyền nếu cần.",
+        ))
 
     fp = fingerprint(
         binding_id=0, version=row.version, filters=[], charts=[], locale=locale,
@@ -1150,7 +1169,7 @@ async def run_for_chat_thread(
         ):
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
-                out.notices = [*memory_notices, *out.notices]
+                out.notices = [*scope_notices, *memory_notices, *out.notices]
                 # READER BOUNDARY — ON THE WAY OUT ONLY.
                 #
                 # What is SENT drops author diagnostics; what is RECORDED keeps

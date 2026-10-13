@@ -297,7 +297,12 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
             asked = {*asked, base}
     if changes:
         # A change between periods: right when it is between the periods asked.
-        for e in changes:
+        # WRONG ONLY WHEN EVERY READING IS. The verdict used to be the FIRST
+        # reading's: live Chat (product acceptance, run 8642) — the model called
+        # compare_periods twice, once with the periods swapped; the same 792 came
+        # back from both, the swapped reading was listed first, and the correct
+        # "giảm 792 (91,7%) so với tháng 7" was hidden as the wrong period.
+        def _wrong_change(e: dict) -> bool:
             between: set[tuple] = set()
             for label in e.get("periods") or []:
                 between |= _periods(str(label).replace("Q", " q")) or _periods("nam " + str(label))
@@ -316,7 +321,9 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
                     if current[0] == baseline[0] and current < baseline:
                         return True
                 return False
-        return True
+            return True
+
+        return all(_wrong_change(e) for e in changes)
     whole = [e for e in support if not e.get("dimension") and not e.get("member")]
     # A RANGE TOTAL THAT COVERS THE ASKED PERIODS answers them (claim_scope
     # `period_range`): "Jan–Aug" is the range 2026-01..2026-08, not a whole.
@@ -793,6 +800,8 @@ def _false_equality(ctx: Any, clause: str, ledger: list[dict]) -> str | None:
 
 
 #: Words that say a period may not be complete (folded).
+_COMPARISON_WORDS = ("so voi", "so sanh", "doi chieu", "compared", "compare", "versus", "vs")
+
 _EDGE_CAVEAT_WORDS = ("chua day du", "khong day du", "chua hoan chinh", "chua tron", "khong tron",
                       "mot phan", "chua ket thuc", "bat thuong", "thieu du lieu", "co the chua",
                       "incomplete", "partial", "not complete", "unusually low", "may not be complete")
@@ -1130,6 +1139,16 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                                    "member": support[0].get("member")}})
             continue
         asked_periods = _periods(question) or intent_periods
+        # A COMPARISON ASKS ABOUT ITS BASELINE TOO. "Tháng 8 so với tháng trước?"
+        # names one month and asks about two: the previous month's own value is
+        # part of the answer, not a figure from an unasked period (live Chat:
+        # July's 864, stated beside August, was judged the wrong period).
+        if len(asked_periods) == 1 and _has_words(question, _COMPARISON_WORDS):
+            from app.services.time_semantics import comparison_baseline
+
+            base = comparison_baseline(question, next(iter(asked_periods)))
+            if base:
+                asked_periods = {*asked_periods, base}
         if not asked_periods and support and all(
                 _is_time(e.get("dimension")) and e.get("member") for e in support):
             asked_periods = _periods(_sentence_of(text, value))

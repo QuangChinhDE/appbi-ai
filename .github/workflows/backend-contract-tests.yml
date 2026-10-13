@@ -150,6 +150,7 @@ jobs:
             tests/test_analytics_meaning.py \
             tests/test_correctness_closure.py \
             tests/test_model_compatibility.py \
+            tests/test_product_acceptance.py \
             tests/test_flow_type.py \
             tests/test_followup_and_freshness.py \
             tests/test_govern_doc_citation.py \
