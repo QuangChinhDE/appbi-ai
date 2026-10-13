@@ -262,6 +262,15 @@ jobs:
         working-directory: backend
         run: python scripts/ci/seed_e2e_chart_hardening.py
 
+      # Chart VISUAL certification (chart-visual.spec.ts, project `chart-visual`,
+      # retries 0): one deterministic table with categories, a monthly date,
+      # positive/negative values, coordinates, state codes, an all-zero and an
+      # all-NULL measure and declared measures — every Builder chart type must
+      # visibly draw its marks on it. The spec FAILS when the fixture is missing.
+      - name: Seed the chart-visual fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_chart_visual.py
+
       # Observability journeys O01-O24 (observability.spec.ts, project
       # `observability`, retries 0): a live Postgres source with fresh / stale /
       # missing tables, anomaly alerts, a 260-incident backlog, a channel with
@@ -332,6 +341,17 @@ jobs:
         run: npx playwright test
 
       # A reviewer must be able to see what broke without reproducing it locally.
+      # One screenshot per chart type (+ BAR_LINE branches, tiles, transitions):
+      # the evidence a reviewer opens, kept on success too.
+      - name: Upload chart visual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chart-visual-evidence
+          path: .artifacts/chart-visual/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload traces and screenshots
         if: failure()
         uses: actions/upload-artifact@v4
