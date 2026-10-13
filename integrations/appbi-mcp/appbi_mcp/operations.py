@@ -187,6 +187,22 @@ class PlanStore:
         out["error"] = json.loads(row["error_json"]) if row["error_json"] else None
         return out
 
+    def claimed_resource_ids(self, step_key: str, field: str, *, exclude_plan: str) -> set[int]:
+        """Ids other plans' finished steps already own (so a reconcile never adopts them)."""
+        rows = self.store.query(
+            "SELECT result_json FROM operation_steps WHERE step_key = ? AND status = 'done' AND plan_id != ?",
+            (step_key, exclude_plan),
+        )
+        out: set[int] = set()
+        for r in rows:
+            try:
+                value = json.loads(r["result_json"] or "{}").get(field)
+                if value is not None:
+                    out.add(int(value))
+            except (ValueError, TypeError, AttributeError):
+                continue
+        return out
+
     def steps(self, plan_id: str) -> list[dict[str, Any]]:
         rows = self.store.query("SELECT step_key, status, sent_at, done_at FROM operation_steps WHERE plan_id = ? ORDER BY sent_at", (plan_id,))
         return [dict(r) for r in rows]

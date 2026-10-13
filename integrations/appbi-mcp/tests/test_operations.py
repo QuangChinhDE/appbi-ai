@@ -178,3 +178,8 @@ async def test_no_browser_session_goes_through_appbi_verification(app, client, f
     assert r.status_code == 302 and "/mcp-oauth/connect/start" in r.headers["location"]
     r = await client.post(f"/mcp-oauth/approve/{plan.id}", data={"decision": "approve"})
     assert r.status_code == 401 and plans.approval_state(plan) == "none"
+
+
+async def test_approval_page_is_rate_limited(app, client):
+    codes = [(await client.get("/mcp-oauth/approve/plan_nope")).status_code for _ in range(40)]
+    assert 429 in codes

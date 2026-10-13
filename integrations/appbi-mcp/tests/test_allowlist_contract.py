@@ -71,6 +71,7 @@ def test_unlisted_route_is_refused_before_any_request():
         ("POST", "/dashboards/5/publish", None),
         ("POST", "/datasets/5/model/joins", {"from_view_id": 1, "to_view_id": 2, "force": True}),
         ("PUT", "/datasets/5/model/views/3", {"measures": [], "rename_map": {"a": "b"}}),
+        ("PUT", "/datasets/5/model/views/3", {"dimensions": [], "measures": []}),  # no expected_view_version (F4)
         ("POST", "/datasets/", {"name": "x", "purpose": "operational"}),
         ("POST", "/datasets/5/tables", {"display_name": "x", "source_kind": "sql_query", "source_query": "select 1"}),
     ],

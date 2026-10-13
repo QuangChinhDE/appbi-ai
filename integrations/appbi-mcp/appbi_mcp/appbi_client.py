@@ -63,7 +63,6 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/datasets/{id}/generate-model"),
     ("POST", "/datasets/{id}/model/joins"),
     ("PUT", "/datasets/{id}/model/views/{id}"),
-    ("PUT", "/datasets/{id}/dictionary"),
     # datasets — publish (approval-gated by the caller)
     ("POST", "/datasets/{id}/publish"),
     # charts
@@ -102,6 +101,8 @@ FORBIDDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/datasets/{id}"),
     ("POST", "/datasets/{id}/model/joins/batch"),
     ("POST", "/datasets/{id}/tables/{id}/preview"),
+    # Last-write-wins with no version (F4): the dictionary is sent at dataset create.
+    ("PUT", "/datasets/{id}/dictionary"),
 )
 
 _COMPILED = [(m, _route(t), t) for m, t in ALLOWED_ROUTES]
@@ -157,6 +158,10 @@ def _guard_join(body: Any) -> None:
 def _guard_view_put(body: Any) -> None:
     if not isinstance(body, dict) or body.get("rename_map"):
         raise GuardViolation("this service never renames semantic fields")
+    # A whole-list save without the version it read could silently replace a
+    # concurrent edit (F4). AppBI refuses a stale version with 409.
+    if not body.get("expected_view_version"):
+        raise GuardViolation("semantic view saves must quote expected_view_version")
 
 
 def _guard_dataset_create(body: Any) -> None:

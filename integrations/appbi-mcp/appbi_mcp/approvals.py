@@ -80,6 +80,12 @@ def build_approval_routes(ctx: AppContext) -> list[Route]:
     plans = PlanStore(ctx.store)
 
     async def approve(request: Request) -> Response:
+        from .ratelimit import client_ip
+
+        ip = client_ip({k.lower(): v for k, v in request.headers.items()}, request.client.host if request.client else None)
+        allowed, _ = ctx.auth_limiter.allow(f"approve:{ip}")
+        if not allowed:
+            return message("Too many requests", "Wait a minute and try again.", status=429, tone="err")
         plan_id = request.path_params["plan_id"]
         session = request.cookies.get(SESSION_COOKIE, "")
         user_id = browser_session_user(ctx, request)

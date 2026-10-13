@@ -40,8 +40,16 @@ async def _run(env: Env, plan: Plan, body_fn: Any) -> dict[str, Any]:
         if exc.detail is not None:
             result["detail"] = exc.detail
     except AppbiError as exc:
-        status = outcome_for_appbi_error(exc)
-        result = {"status": status, "message": exc.message, "appbi_error": exc.as_dict()}
+        if exc.status == 401:
+            # The user's AppBI token was revoked/expired mid-run: stop, end this
+            # connection, and say what already exists. Nothing further executes.
+            env.app.provider.revoke_grant(env.principal.grant_id, "appbi_401_during_operation")
+            status = "credential_revoked"
+            result = {"status": status, "message": "AppBI stopped accepting this connection's token during the run. "
+                      "Reconnect AppBI in Claude, then call this tool again to resume."}
+        else:
+            status = outcome_for_appbi_error(exc)
+            result = {"status": status, "message": exc.message, "appbi_error": exc.as_dict()}
     except Exception as exc:  # noqa: BLE001 - never leave an operation "running"
         log.exception("operation %s crashed", plan.id)
         status = "partially_failed"
@@ -51,7 +59,7 @@ async def _run(env: Env, plan: Plan, body_fn: Any) -> dict[str, Any]:
     if run.notes:
         result["notes"] = run.notes
     result["steps"] = env.plans.steps(plan.id)
-    if status in ("partially_failed", "conflict"):
+    if status in ("partially_failed", "conflict", "credential_revoked"):
         result["next"] = "Call the same tool again to resume; finished steps are not repeated."
     elif status == "blocked":
         result["next"] = "AppBI refused a step. Resources listed under 'resources' already exist as drafts; fix the plan and plan again, or continue in AppBI."

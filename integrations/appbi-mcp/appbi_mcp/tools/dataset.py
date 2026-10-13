@@ -238,16 +238,39 @@ async def run_dataset_plan(env: Env, run: Run) -> dict[str, Any]:
     me = env.principal.user_id
 
     async def find_dataset(since: float) -> dict[str, Any] | None:
+        """Adopt the dataset an unconfirmed create produced — only when that is certain.
+
+        AppBI auto-suffixes a taken name ("Sales (1)"), so candidates are the exact
+        name or name + " (n)", owned by this user, created after the attempt, and not
+        already recorded as another plan's dataset. More than one candidate (e.g. two
+        same-name plans racing) is ambiguous: fail closed instead of guessing.
+        """
+        import re
+
+        pattern = re.compile(rf"^{re.escape(p['name'])}( \(\d+\))?$")
+        claimed = env.plans.claimed_resource_ids("create_dataset", "dataset_id", exclude_plan=plan.id)
         rows = await env.appbi.get("/datasets/", skip=0, limit=500)
-        for d in rows or []:
-            if str(d.get("owner_id")) == str(me) and str(d.get("name", "")).startswith(p["name"]):
-                created = _ts(d.get("created_at"))
-                if created is not None and created >= since:
-                    return {"dataset_id": d["id"], "name": d["name"]}
-        return None
+        found = [
+            d for d in rows or []
+            if str(d.get("owner_id")) == str(me) and pattern.match(str(d.get("name", "")))
+            and (_ts(d.get("created_at")) or 0) >= since and int(d["id"]) not in claimed
+        ]
+        if len(found) > 1:
+            raise OperationError(
+                "partially_failed",
+                f"Cannot tell which of {len(found)} new datasets named like '{p['name']}' this plan created; "
+                "nothing was adopted or created. Check the datasets in AppBI.",
+                step="create_dataset", detail=[{"id": d["id"], "name": d["name"]} for d in found],
+            )
+        return {"dataset_id": found[0]["id"], "name": found[0]["name"]} if found else None
 
     async def create_dataset() -> dict[str, Any]:
-        d = await env.appbi.post("/datasets/", {"name": p["name"], "description": p.get("description"), "purpose": "reporting"})
+        body: dict[str, Any] = {"name": p["name"], "description": p.get("description"), "purpose": "reporting"}
+        if p.get("overview"):
+            # Written WITH the dataset: the dictionary PUT is last-write-wins with
+            # no version, so this service never uses it (F4).
+            body["dictionary"] = {"overview": p["overview"]}
+        d = await env.appbi.post("/datasets/", body)
         return {"dataset_id": d["id"], "name": d["name"]}
 
     ds = await run.write("create_dataset", create_dataset, reconcile=find_dataset)
@@ -345,47 +368,69 @@ async def run_dataset_plan(env: Env, run: Run) -> dict[str, Any]:
         if (rec := env.plans.step(plan.id, key)) and rec["status"] == "done":
             measure_checks.extend(rec["result"].get("checks", []))
             continue
-        model = await env.appbi.get(f"/datasets/{dataset_id}/model")
-        view = next(v for v in model["views"] if v.get("dataset_table_id") == tid)
-        existing = {str(x.get("name")): x for x in view.get("measures", []) or []}
-        new_bodies = []
-        checks = []
-        for m in measures:
-            body = _measure_body(m)
-            if m["name"] in existing:
-                checks.append({"measure": f"{view['name']}.{m['name']}", "result": "already_present"})
-                continue
-            dry = await env.appbi.post(f"/datasets/{dataset_id}/model/views/{view['id']}/measures/dry-run", body)
-            if not dry.get("ok"):
-                raise OperationError("blocked", f"AppBI rejected measure '{m['name']}': {dry.get('error')}", step=key, detail={"compiled_sql": dry.get("compiled_sql")})
-            new_bodies.append(body)
-            checks.append({"measure": f"{view['name']}.{m['name']}", "result": "validated"})
-        if new_bodies:
-            dims = view.get("dimensions", [])
-            payload = {"dimensions": dims, "measures": list(existing.values()) + new_bodies}
+        validated: dict[str, dict[str, Any]] = {}
 
-            async def put_view(view: dict[str, Any] = view, payload: dict[str, Any] = payload, checks: list[dict[str, Any]] = checks) -> dict[str, Any]:
-                await env.appbi.put(f"/datasets/{dataset_id}/model/views/{view['id']}", payload)
-                return {"checks": checks}
+        async def save_measures(tid: int = tid, measures: list[dict[str, Any]] = measures,
+                                validated: dict[str, dict[str, Any]] = validated, key: str = key) -> dict[str, Any]:
+            # Read → merge onto what is there → save QUOTING the version read. A
+            # concurrent edit makes AppBI answer 409 view_stale; we re-read and merge
+            # onto THAT state once, so nobody's acknowledged change is replaced (F4).
+            for attempt in range(2):
+                model = await env.appbi.get(f"/datasets/{dataset_id}/model")
+                view = next(v for v in model["views"] if v.get("dataset_table_id") == tid)
+                version = view.get("view_version")
+                if not version:
+                    raise OperationError(
+                        "blocked",
+                        "This AppBI version cannot protect a semantic view from concurrent edits (no view_version), "
+                        "so no measures were written. Add them in AppBI, or upgrade AppBI.",
+                        step=key,
+                    )
+                existing = {str(x.get("name")): x for x in view.get("measures", []) or []}
+                new_bodies: list[dict[str, Any]] = []
+                checks: list[dict[str, Any]] = []
+                for m in measures:
+                    body = _measure_body(m)
+                    if m["name"] in existing:
+                        checks.append({"measure": f"{view['name']}.{m['name']}", "result": "already_present"})
+                        continue
+                    if m["name"] not in validated:
+                        dry = await env.appbi.post(f"/datasets/{dataset_id}/model/views/{view['id']}/measures/dry-run", body)
+                        if not dry.get("ok"):
+                            raise OperationError("blocked", f"AppBI rejected measure '{m['name']}': {dry.get('error')}", step=key,
+                                                 detail={"compiled_sql": dry.get("compiled_sql")})
+                        validated[m["name"]] = body
+                    new_bodies.append(body)
+                    checks.append({"measure": f"{view['name']}.{m['name']}", "result": "validated"})
+                if not new_bodies:
+                    return {"checks": checks}
+                try:
+                    await env.appbi.put(f"/datasets/{dataset_id}/model/views/{view['id']}", {
+                        "dimensions": view.get("dimensions", []),
+                        "measures": list(existing.values()) + new_bodies,
+                        "expected_view_version": version,
+                    })
+                    return {"checks": checks}
+                except AppbiError as exc:
+                    stale = exc.status == 409 and isinstance(exc.detail, dict) and exc.detail.get("code") == "view_stale"
+                    if stale and attempt == 0:
+                        continue
+                    if exc.status == 409:
+                        raise OperationError("conflict", f"The semantic view kept changing while measures were added: {exc.message}",
+                                             step=key, detail=exc.detail) from exc
+                    raise
+            raise OperationError("conflict", "Could not save measures.", step=key)
 
-            async def find_view(_since: float, view: dict[str, Any] = view, new_bodies: list[dict[str, Any]] = new_bodies, checks: list[dict[str, Any]] = checks) -> dict[str, Any] | None:
-                fresh = await env.appbi.get(f"/datasets/{dataset_id}/model")
-                v = next((x for x in fresh["views"] if x["id"] == view["id"]), {})
-                names = {str(x.get("name")) for x in v.get("measures", []) or []}
-                return {"checks": checks} if all(b["name"] in names for b in new_bodies) else None
+        async def find_view(_since: float, tid: int = tid, measures: list[dict[str, Any]] = measures) -> dict[str, Any] | None:
+            fresh = await env.appbi.get(f"/datasets/{dataset_id}/model")
+            v = next((x for x in fresh["views"] if x.get("dataset_table_id") == tid), {})
+            names = {str(x.get("name")) for x in v.get("measures", []) or []}
+            if all(m["name"] in names for m in measures):
+                return {"checks": [{"measure": f"{v.get('name')}.{m['name']}", "result": "present"} for m in measures]}
+            return None
 
-            await run.write(key, put_view, reconcile=find_view)
-        measure_checks.extend(checks)
-
-    if p.get("overview"):
-        async def put_dictionary() -> dict[str, Any]:
-            current = await env.appbi.get(f"/datasets/{dataset_id}/dictionary") or {}
-            current = dict(current.get("dictionary") or current) if isinstance(current, dict) else {}
-            current["overview"] = p["overview"]
-            await env.appbi.put(f"/datasets/{dataset_id}/dictionary", current)
-            return {"ok": True}
-
-        await run.write("dictionary", put_dictionary)
+        result = await run.write(key, save_measures, reconcile=find_view)
+        measure_checks.extend(result.get("checks", []))
 
     # ── AppBI's verdict on the whole model ──
     health = await env.appbi.get(f"/datasets/{dataset_id}/model/health", execute="true")

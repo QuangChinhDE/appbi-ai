@@ -109,6 +109,13 @@ def pin_measure_aggregations(config: dict[str, Any], measure_types: dict[str, st
     return cfg, notes
 
 
+def model_fingerprint(model: dict[str, Any]) -> str:
+    from ..state import canonical_json, sha256_hex
+    from .discovery import model_digest
+
+    return sha256_hex(canonical_json(model_digest(model or {})))
+
+
 def default_size(chart_type: str) -> tuple[int, int]:
     """Mirror of the Builder's `defaultSizeForChartType` (frontend/src/lib/dashboard-pages.ts)."""
     t = chart_type.lower()
@@ -189,12 +196,15 @@ async def plan_dashboard(env: Env, plan: DashboardPlanInput) -> dict[str, Any]:
             errors.append(f"filter field '{f.field}' is not a dimension of dataset {p.dataset_id}")
 
     existing_dash: dict[str, Any] | None = None
-    fingerprint: dict[str, Any] = {}
+    # Charts are validated against THIS model; a later change to it (a measure
+    # renamed or removed in AppBI) must stop the run rather than create charts
+    # against a model that no longer matches what was approved.
+    fingerprint: dict[str, Any] = {"model": model_fingerprint(model)}
     if p.dashboard_id is not None:
         existing_dash = await env.appbi.get(f"/dashboards/{p.dashboard_id}")
         if (existing_dash.get("user_permission") or "edit") not in ("edit", "full", "owner"):
             errors.append("you can view this dashboard but not edit it")
-        fingerprint = {"shared_rev": (existing_dash.get("shared_draft") or {}).get("rev")}
+        fingerprint["shared_rev"] = (existing_dash.get("shared_draft") or {}).get("rev")
     else:
         visible = await env.appbi.get("/dashboards/", skip=0, limit=500)
         if any(str(d.get("name", "")).strip().lower() == p.dashboard_name.strip().lower() for d in visible or []):
@@ -307,6 +317,16 @@ async def run_dashboard_plan(env: Env, run: Run) -> dict[str, Any]:
     me = str(env.principal.user_id)
     dashboard_id = p.get("dashboard_id")
 
+    if env.plans.step(run.plan.id, "start_check") is None:
+        model = await env.appbi.get(f"/datasets/{p['dataset_id']}/model")
+        if model_fingerprint(model) != run.plan.fingerprint.get("model"):
+            raise OperationError("stale_plan", "The dataset's model changed since this plan was validated. Plan again.", step="start_check")
+        if dashboard_id is not None:
+            current = await env.appbi.get(f"/dashboards/{dashboard_id}")
+            if (current.get("shared_draft") or {}).get("rev") != run.plan.fingerprint.get("shared_rev"):
+                raise OperationError("stale_plan", "Someone changed this dashboard's shared draft since the plan was made. Plan again.", step="start_check")
+        env.plans.mark(run.plan.id, "start_check", "done", result={"ok": True})
+
     if dashboard_id is None:
         async def create_dashboard() -> dict[str, Any]:
             try:
@@ -325,11 +345,6 @@ async def run_dashboard_plan(env: Env, run: Run) -> dict[str, Any]:
 
         dash = await run.write("create_dashboard", create_dashboard, reconcile=find_dashboard)
         dashboard_id = int(dash["dashboard_id"])
-    elif env.plans.step(run.plan.id, "start_check") is None:
-        current = await env.appbi.get(f"/dashboards/{dashboard_id}")
-        if (current.get("shared_draft") or {}).get("rev") != run.plan.fingerprint.get("shared_rev"):
-            raise OperationError("stale_plan", "Someone changed this dashboard's shared draft since the plan was made. Plan again.", step="start_check")
-        env.plans.mark(run.plan.id, "start_check", "done", result={"ok": True})
     run.resources.append({"type": "dashboard", "id": dashboard_id, "url": env.link(f"/dashboards/{dashboard_id}"), "state": "draft"})
 
     created: list[dict[str, Any]] = []
