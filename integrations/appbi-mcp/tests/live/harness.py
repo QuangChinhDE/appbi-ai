@@ -150,11 +150,19 @@ class Person:
         else:
             await page.get_by_role("button", name="Allow").click()
         # The MCP answers with a page that meta-refreshes to the loopback callback.
-        try:
-            await page.wait_for_url("http://localhost:*/callback*", timeout=30_000)
-        except Exception:
-            self.events.append(f"after consent: {page.url} :: {(await page.content())[:300]}")
-            raise
+        # AppBI limits PAT creation to 10/min per IP (every rig browser shares the
+        # edge's IP); the consent page then shows AppBI's error and keeps Allow
+        # enabled, so a patient user waits a minute and clicks Allow again.
+        for attempt in range(3):
+            try:
+                await page.wait_for_url("http://localhost:*/callback*", timeout=30_000)
+                break
+            except Exception:
+                self.events.append(f"after consent: {page.url} :: {(await page.inner_text('body'))[:300]}")
+                if attempt == 2 or self.consent_choice == "deny" or "/connect/mcp/" not in page.url:
+                    raise
+                await page.wait_for_timeout(62_000)
+                await page.get_by_role("button", name="Allow").click()
         await page.close()
 
     async def approve(self, approval_url: str, decision: str = "Approve") -> str:

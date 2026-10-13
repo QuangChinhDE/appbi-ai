@@ -102,8 +102,10 @@ async def test_revocation_during_a_running_operation_stops_it():
             res = tool_json(res)
             # Either the run finished before the revocation landed, or it stopped — never "blocked"/silent.
             assert res["status"] in ("credential_revoked", "draft_ready"), res
-            if res["status"] == "credential_revoked":
-                assert (await raw_mcp_post(p.storage.tokens.access_token, WHOAMI)).status_code == 401
+            if res["status"] == "draft_ready":
+                # The run beat the revocation, so the service has not seen AppBI refuse the
+                # token yet; it learns on the next upstream call, which must not succeed.
+                assert tool_json(await client.call_tool("whoami", {}))["status"] == "credential_revoked"
             # Nothing runs after revocation: a further call is refused at the HTTP layer.
             assert (await raw_mcp_post(p.storage.tokens.access_token, WHOAMI)).status_code == 401
 

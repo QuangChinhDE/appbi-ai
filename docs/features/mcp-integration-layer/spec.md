@@ -282,6 +282,7 @@ Each change below came from a real client, browser or rig run, not from review.
 | D7 | Chart name clash → suffix with the dashboard name | Short counter `Title (2)` | Chart names are unique per owner and render as tile titles. |
 | D8 | `GET /dashboards/{id}` tile `_v` | `tile_base_v` = keys of the caller's `draft_layouts` with the live `_v` (default 0), **the Builder's exact rule** (`buildTileBaseV`) | Publish checks only the tiles it is given (`api/dashboards.py:3022`). |
 | D9 | — | DNS-rebinding guard also accepts the public URL's bare hostname | nginx forwards `$host`, which drops the port. |
+| D10 | Reject = nothing happens | **A rejection is recorded and final for that plan** (`plan_rejections`): the page stops offering Approve, approve/consume are refused, and `execute_plan`/`publish` return `rejected` | Real Claude Desktop run (2026-10-14): after a browser Reject the tool still said `awaiting_approval`, so Claude asked the user to approve again. |
 
 ## 13. Core findings
 

@@ -117,6 +117,22 @@ def test_approval_is_bound_to_user_and_hash_and_single_use(plans):
     assert plans.get(plan.id, "someone-else") is None
 
 
+def test_rejection_is_final_even_over_an_earlier_approval(plans):
+    plan = _plan(plans)
+    plans.approve(plan, "u1")
+    assert plans.reject(plan, "u1")
+    assert plans.approval_state(plan) == "rejected"
+    assert not plans.consume_approval(plan)
+    plans.approve(plan, "u1")
+    assert plans.approval_state(plan) == "rejected"
+    # Once a plan has started, a late rejection does not pretend to stop it.
+    started = _plan(plans)
+    plans.approve(started, "u1")
+    assert plans.consume_approval(started)
+    assert not plans.reject(started, "u1")
+    assert plans.approval_state(started) == "consumed"
+
+
 def test_tampered_plan_body_fails_hash(plans):
     plan = _plan(plans)
     plan.body["name"] = "changed"
@@ -160,6 +176,17 @@ async def test_post_requires_csrf_then_approves(app, client, fake_appbi):
     csrf = re.search(r"name=csrf value='([0-9a-f]+)'", page).group(1)
     r = await client.post(f"/mcp-oauth/approve/{plan.id}", data={"decision": "approve", "csrf": csrf, "plan_hash": plan.plan_hash})
     assert r.status_code == 200 and plans.approval_state(plan) == "approved"
+
+
+async def test_reject_is_recorded_and_the_page_stops_offering_approve(app, client, fake_appbi):
+    plans, plan = await _approval_setup(app, client, fake_appbi)
+    csrf = re.search(r"name=csrf value='([0-9a-f]+)'", (await client.get(f"/mcp-oauth/approve/{plan.id}")).text).group(1)
+    r = await client.post(f"/mcp-oauth/approve/{plan.id}", data={"decision": "reject", "csrf": csrf, "plan_hash": plan.plan_hash})
+    assert r.status_code == 200 and plans.approval_state(plan) == "rejected"
+    r = await client.post(f"/mcp-oauth/approve/{plan.id}", data={"decision": "approve", "csrf": csrf, "plan_hash": plan.plan_hash})
+    assert plans.approval_state(plan) == "rejected" and "Rejected" in r.text
+    page = (await client.get(f"/mcp-oauth/approve/{plan.id}")).text
+    assert "value=approve" not in page
 
 
 async def test_another_users_session_cannot_see_or_approve(app, client, fake_appbi):

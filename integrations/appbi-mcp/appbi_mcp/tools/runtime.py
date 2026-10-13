@@ -122,7 +122,7 @@ def _audit(app: AppContext, principal: Principal | None, event: str, args: dict[
                     outcome,
                     appbi_status,
                     canonical_json(resources) if resources else None,
-                    int((time.time() - started) * 1000),
+                    int((time.monotonic() - started) * 1000),
                 ),
             )
     except Exception:  # noqa: BLE001 - audit must never break a tool call
@@ -151,7 +151,7 @@ def _register(mcp: Any, app: AppContext, spec: ToolSpec) -> None:
     new_sig = sig.replace(parameters=[*params, ctx_param], return_annotation=dict[str, Any])
 
     async def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        started = time.time()
+        started = time.monotonic()  # durations must not follow wall-clock steps
         ctx: Context = kwargs.pop("ctx")
         request = ctx.request_context.request
         principal: Principal | None = getattr(getattr(request, "state", None), "principal", None) if request is not None else None

@@ -104,14 +104,29 @@ class PlanStore:
         now = time.time()
         with self.store.transaction() as cur:
             cur.execute(
-                "INSERT INTO approvals(plan_id, user_id, plan_hash, approved_at, expires_at) VALUES (?, ?, ?, ?, ?) "
+                "INSERT INTO approvals(plan_id, user_id, plan_hash, approved_at, expires_at) "
+                "SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM plan_rejections WHERE plan_id = ?) "
                 "ON CONFLICT(plan_id) DO UPDATE SET approved_at = excluded.approved_at, expires_at = excluded.expires_at, "
                 "plan_hash = excluded.plan_hash WHERE approvals.consumed_at IS NULL",
-                (plan.id, user_id, plan.plan_hash, now, now + APPROVAL_TTL),
+                (plan.id, user_id, plan.plan_hash, now, now + APPROVAL_TTL, plan.id),
             )
 
+    def reject(self, plan: Plan, user_id: str) -> bool:
+        """Record the user's rejection; final for this plan. False once the plan has started."""
+        if plan.user_id != user_id:
+            raise PermissionError("rejection by a different user")
+        with self.store.transaction() as cur:
+            cur.execute(
+                "INSERT OR IGNORE INTO plan_rejections(plan_id, user_id, rejected_at) "
+                "SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM approvals WHERE plan_id = ? AND consumed_at IS NOT NULL)",
+                (plan.id, user_id, time.time(), plan.id),
+            )
+            return self.store.query_one("SELECT 1 FROM plan_rejections WHERE plan_id = ?", (plan.id,)) is not None
+
     def approval_state(self, plan: Plan) -> str:
-        """none | approved | expired | consumed | mismatch"""
+        """none | approved | expired | consumed | mismatch | rejected"""
+        if self.store.query_one("SELECT 1 FROM plan_rejections WHERE plan_id = ?", (plan.id,)):
+            return "rejected"
         row = self.store.query_one("SELECT * FROM approvals WHERE plan_id = ?", (plan.id,))
         if not row:
             return "none"
@@ -127,7 +142,8 @@ class PlanStore:
         with self.store.transaction() as cur:
             cur.execute(
                 "UPDATE approvals SET consumed_at = ? WHERE plan_id = ? AND user_id = ? AND plan_hash = ? "
-                "AND consumed_at IS NULL AND expires_at >= ?",
+                "AND consumed_at IS NULL AND expires_at >= ? "
+                "AND NOT EXISTS (SELECT 1 FROM plan_rejections WHERE plan_id = approvals.plan_id)",
                 (time.time(), plan.id, plan.user_id, plan.plan_hash, time.time()),
             )
             return cur.rowcount == 1

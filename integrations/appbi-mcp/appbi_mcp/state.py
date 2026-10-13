@@ -123,6 +123,13 @@ CREATE TABLE IF NOT EXISTS approvals (
     consumed_at  REAL
 );
 
+-- A rejection is final for that plan: it can no longer be approved or run.
+CREATE TABLE IF NOT EXISTS plan_rejections (
+    plan_id      TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    rejected_at  REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS operations (
     plan_id      TEXT PRIMARY KEY,
     user_id      TEXT NOT NULL,

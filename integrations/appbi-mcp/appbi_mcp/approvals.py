@@ -114,10 +114,14 @@ def build_approval_routes(ctx: AppContext) -> list[Route]:
                 return message("Not allowed", "This approval form is no longer valid. Reload the page.", status=403, tone="err")
             if str(form.get("plan_hash") or "") != plan.plan_hash or not plans.verify_hash(plan):
                 return message("Plan changed", "The plan changed after this page was opened. Reload it.", status=409, tone="err")
-            if str(form.get("decision") or "") != "approve":
-                return message("Not approved", "Nothing will be changed. You can tell Claude what to change.")
             if state == "consumed":
                 return message("Already used", "This plan was already approved and has started.", tone="ok")
+            if state == "rejected":
+                return message("Rejected", "You rejected this plan. Ask Claude to plan the change again.")
+            if str(form.get("decision") or "") != "approve":
+                plans.reject(plan, user_id)
+                return message("Rejected", "Nothing will be changed, and this plan can no longer be approved. "
+                                           "You can tell Claude what to change.")
             plans.approve(plan, user_id)
             return message(
                 "Approved",
@@ -128,9 +132,10 @@ def build_approval_routes(ctx: AppContext) -> list[Route]:
         status_line = {
             "approved": "<p class=ok>You already approved this plan. Claude can continue.</p>",
             "consumed": "<p class=ok>This plan was approved and has started.</p>",
+            "rejected": "<p>You rejected this plan. Ask Claude to plan the change again.</p>",
         }.get(state, "")
         form = ""
-        if state not in ("consumed",):
+        if state not in ("consumed", "rejected"):
             form = (
                 "<form method=post>"
                 f"<input type=hidden name=csrf value='{_csrf(ctx, plan_id, session)}'>"

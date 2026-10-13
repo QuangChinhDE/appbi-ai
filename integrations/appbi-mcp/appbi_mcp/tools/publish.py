@@ -26,6 +26,11 @@ def _not_found() -> dict[str, Any]:
     return {"status": "not_found", "message": "No such plan for this user."}
 
 
+def _rejected() -> dict[str, Any]:
+    return {"status": "rejected", "message": "The user rejected this plan in the browser; it can no longer be approved. "
+                                             "Do not ask them to approve it again: ask what to change and make a new plan."}
+
+
 async def _run(env: Env, plan: Plan, body_fn: Any) -> dict[str, Any]:
     """Claim the runner, execute, persist the result. One runner per plan."""
     if not env.plans.claim_runner(plan.id, env.principal.request_id, env.app.settings.operation_budget_seconds):
@@ -84,6 +89,8 @@ async def execute_plan(env: Env, plan_id: str) -> dict[str, Any]:
     op = env.plans.operation(plan.id)
     if op is None:
         state = env.plans.approval_state(plan)
+        if state == "rejected":
+            return _rejected()
         if state != "approved":
             return {"status": "awaiting_approval", "approval_state": state, "approval_url": env.approval_url(plan.id),
                     "message": "The user has not approved this plan in the browser yet."}
@@ -260,6 +267,8 @@ async def publish(env: Env, plan_id: str) -> dict[str, Any]:
     op = env.plans.operation(plan.id)
     if op is None:
         state = env.plans.approval_state(plan)
+        if state == "rejected":
+            return _rejected()
         if state != "approved":
             return {"status": "awaiting_approval", "approval_state": state, "approval_url": env.approval_url(plan.id)}
         # Nothing may have changed since the user looked at the approval page.
