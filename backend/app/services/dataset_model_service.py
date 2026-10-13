@@ -9,7 +9,7 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from app.models.semantic import SemanticView, SemanticModel, SemanticExplore
+from app.models.semantic import SemanticView, SemanticModel, SemanticExplore, view_version_of
 from app.models.dataset import Dataset, DatasetTable
 from app.models.models import DataSource
 from app.core.config import settings
@@ -2349,6 +2349,7 @@ def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
             "dimensions": v.dimensions or [],
             "measures": v.measures or [],
             "description": v.description,
+            "view_version": view_version_of(v.dimensions, v.measures, v.description),
         })
 
     calendar_presentation_view_name = next(

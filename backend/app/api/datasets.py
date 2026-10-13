@@ -5226,7 +5226,8 @@ def update_dataset_view(
         raise HTTPException(status_code=404, detail="Dataset not found")
     require_edit_access(db, current_user, dataset_obj, "datasets")
 
-    view = db.query(SemanticView).filter(SemanticView.id == view_id).first()
+    # Row lock: the version check below and the write are one atomic step.
+    view = db.query(SemanticView).filter(SemanticView.id == view_id).populate_existing().with_for_update().first()
     if not view:
         raise HTTPException(status_code=404, detail="View not found")
 
@@ -5239,6 +5240,24 @@ def update_dataset_view(
         raise HTTPException(status_code=403, detail="View does not belong to this dataset")
     if view.dataset_table_id is None or (table and is_generated_calendar_table(table)):
         raise HTTPException(status_code=400, detail="System-managed model tables cannot be edited here.")
+
+    # Optimistic concurrency (after the ownership checks, so a foreign view never
+    # answers with its version), the view counterpart of `expected_joins_version`:
+    # a writer that quotes the version it read gets 409 instead of silently
+    # replacing an edit made since. Optional, so existing callers are unchanged.
+    from app.models.semantic import view_version_of
+    expected_view_version = update_data.pop("expected_view_version", None) if isinstance(update_data, dict) else None
+    current_view_version = view_version_of(view.dimensions, view.measures, view.description)
+    if expected_view_version not in (None, "") and str(expected_view_version) != current_view_version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "view_stale",
+                "view_version": current_view_version,
+                "message": "This view was changed since it was read. Reload it and apply the change again.",
+            },
+        )
+
 
     # Phase-6: rename_map is an out-of-band field that the rewrite step
     # consumes — it must not be forwarded to the Pydantic SemanticViewUpdate
@@ -5502,6 +5521,7 @@ def update_dataset_view(
         "dimensions": view.dimensions or [],
         "measures": view.measures or [],
         "description": view.description,
+        "view_version": view_version_of(view.dimensions, view.measures, view.description),
         "renamed": rewrite_summary,
     }
 

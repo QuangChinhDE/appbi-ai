@@ -68,6 +68,20 @@ class SemanticModel(Base):
     dataset = relationship("Dataset", foreign_keys=[dataset_id])
 
 
+def view_version_of(dimensions, measures, description) -> str:
+    """Content version of a semantic view's authored definition — what a writer
+    quotes (expected_view_version) so its whole-list save cannot silently replace
+    an edit made since it read the view. Same scheme as joins_version_of."""
+    import hashlib
+    import json
+
+    blob = json.dumps(
+        {"dimensions": dimensions or [], "measures": measures or [], "description": description},
+        sort_keys=True, separators=(",", ":"), default=str,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
 def joins_version_of(joins) -> str:
     """Content version of an explore's stored relationship list — what a
     whole-list writer must quote (expected_joins_version) to replace it."""
