@@ -4188,8 +4188,8 @@ function DashboardDetailPageInner() {
       setExportRenderMode('snapshot');
       setExportProgress({ phase: 'prepare', ratio: 0, message: t('dashboards.export.exportPptx') });
       const originalPageId = activePageId;
+      const { exportDashboardPptx, incompleteChartsOf } = await import('@/lib/export-pptx');
       try {
-        const { exportDashboardPptx } = await import('@/lib/export-pptx');
         const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
         await exportDashboardPptx({
           title: dashboard.name || 'Dashboard',
@@ -4200,6 +4200,11 @@ function DashboardDetailPageInner() {
           send: async (payload) => {
             const res = await apiClient.post(`/dashboards/${dashboardId}/export-pptx`, payload, { responseType: 'blob' });
             return res.data as Blob;
+          },
+          labels: {
+            page: (index, total) => t('dashboards.export.progressPage', { index, total }),
+            chart: (index, total) => t('dashboards.export.progressChart', { index, total }),
+            building: t('dashboards.export.progressBuilding'),
           },
           onProgress: (ratio, message) => setExportProgress({ phase: 'capture', ratio, message: message || t('dashboards.export.exportPptx') }),
           pages: chosen.map((p) => ({
@@ -4216,10 +4221,13 @@ function DashboardDetailPageInner() {
                   title: l?.custom_title || dc.chart?.name || null,
                 };
               }),
+            // Show the page: in export mode every tile mounts and loads its data
+            // under the author's current filters (cached answers are reused); the
+            // exporter then waits on each tile's own state, not on a timer.
             getRoot: async () => {
               setCurrentPageId(p.id);
               await new Promise<void>((resolve) => {
-                requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 250)));
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
               });
               return dashboardContentRef.current;
             },
@@ -4229,7 +4237,16 @@ function DashboardDetailPageInner() {
         toast.success(t('dashboards.export.pptxDone'), { id: 'report-export' });
       } catch (err) {
         console.error('PowerPoint export failed', err);
-        toast.error(t('dashboards.export.pptxFailed'), { id: 'report-export' });
+        // The dialog stays open: Retry is one click away.
+        const charts = await incompleteChartsOf(err);
+        if (charts) {
+          toast.error(t('dashboards.export.pptxIncomplete', { count: charts.length }), {
+            id: 'report-export',
+            description: charts.map((c) => `• ${c}`).join('\n'),
+          });
+        } else {
+          toast.error(t('dashboards.export.pptxFailed'), { id: 'report-export' });
+        }
       } finally {
         setCurrentPageId(originalPageId);
         setIsExportingPdf(false);
@@ -5258,16 +5275,19 @@ function DashboardDetailPageInner() {
           {/* A device canvas renders at that device's representative width (its
               report container IS that wide): the layout drawn is the one a
               viewer at that width gets. */}
+          {/* An export (PDF / PowerPoint) is the DESKTOP report whatever device
+              the author is looking at; the device mode itself is untouched and
+              is what the canvas shows again afterwards. */}
           <div
-            data-device-frame={deviceMode}
-            style={deviceBreakpoint && !studioPreview ? { width: STUDIO_DEVICE_WIDTH[deviceMode], margin: '0 auto' } : undefined}
+            data-device-frame={isExportingPdf ? 'desktop' : deviceMode}
+            style={deviceBreakpoint && !studioPreview && !isExportingPdf ? { width: STUDIO_DEVICE_WIDTH[deviceMode], margin: '0 auto' } : undefined}
           >
           <DashboardGrid
             dashboardId={dashboardId}
             dashboardCharts={visibleDashboardCharts}
-            editorDesktop={deviceMode === 'desktop' && !studioPreview}
+            editorDesktop={(deviceMode === 'desktop' || isExportingPdf) && !studioPreview}
             deviceProfiles={pageDeviceProfiles}
-            onDeviceLayoutChange={canEditThisPage && deviceBreakpoint && !studioPreview ? handleDeviceLayoutChange : undefined}
+            onDeviceLayoutChange={canEditThisPage && deviceBreakpoint && !studioPreview && !isExportingPdf ? handleDeviceLayoutChange : undefined}
             onResolved={setDeviceSummary}
             resolvedRef={resolvedLayoutRef}
             measureRef={deviceMeasureRef}

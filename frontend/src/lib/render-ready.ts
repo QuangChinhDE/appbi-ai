@@ -29,6 +29,77 @@ export const READY_TIMEOUT_MS = 25000;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// ── Per-tile readiness ───────────────────────────────────────────────────────
+//
+// A page is not "ready" because SOME tile painted: a title or a status badge is
+// text, and a chart whose data had not arrived used to pass as painted — a real
+// PowerPoint shipped such a tile as an empty card. Every chart tile now states
+// where it is (`data-export-state` on its root, set by ChartTile and
+// ReadonlyChartTile):
+//   loading — not mounted, or its data is not in yet
+//   error   — the chart failed (it shows its error card)
+//   empty   — the data arrived with no rows (it shows its empty state)
+//   data    — rows arrived; the RENDERER must still draw them
+// and a `data` tile is ready only once its body holds real visual marks — the
+// definition the chart visual certification uses (e2e/tests/_chart_visual.ts):
+// painted SVG shapes that are not axes/grid/legend/clip chrome, a sized canvas,
+// table cells with text, a KPI value, or coloured HTML marks. A title or a
+// diagnostic string alone never counts. Tiles without a state (text, headers,
+// images, controls) have nothing to wait for.
+
+export type TileReadiness = 'loading' | 'ready-visual' | 'ready-empty' | 'ready-error' | 'ready-static';
+
+// Not data: axes, grid, legend, labels and their leader lines, tooltips, clip defs.
+const MARK_CHROME = '.recharts-cartesian-axis, .recharts-cartesian-grid, .recharts-legend-wrapper, defs, clipPath, .recharts-tooltip-wrapper, [data-chart-chrome], .recharts-reference-line, .recharts-pie-labels, .recharts-pie-label-line, .recharts-label-list, [data-export-hide]';
+
+function painted(el: Element): boolean {
+  const cs = getComputedStyle(el as HTMLElement);
+  if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return false;
+  const fill = el.getAttribute('fill') ?? cs.fill;
+  const stroke = el.getAttribute('stroke') ?? cs.stroke;
+  const fillOpacity = Number(el.getAttribute('fill-opacity') ?? cs.fillOpacity ?? 1);
+  return Boolean((fill && fill !== 'none' && fill !== 'transparent' && fillOpacity > 0)
+    || (stroke && stroke !== 'none' && stroke !== 'transparent'));
+}
+
+/** Does this element hold drawn data — not only a frame, a title or a badge? */
+export function hasVisualMarks(body: Element): boolean {
+  for (const el of body.querySelectorAll('svg rect, svg path, svg circle, svg polygon, svg ellipse, svg line, svg polyline')) {
+    if (el.closest(MARK_CHROME)) continue;
+    const r = el.getBoundingClientRect();
+    if ((r.width * r.height > 4 || (r.width > 1 && el.tagName.toLowerCase() === 'path')) && painted(el)) return true;
+  }
+  for (const c of body.querySelectorAll('canvas')) {
+    if (c.closest(MARK_CHROME)) continue;
+    const r = c.getBoundingClientRect();
+    if (r.width > 4 && r.height > 4) return true;
+  }
+  for (const cell of body.querySelectorAll('td, [role="cell"], [role="gridcell"]')) {
+    if ((cell.textContent || '').trim()) return true;
+  }
+  const kpi = body.querySelector('.dashboard-kpi-value');
+  if (kpi && (kpi.textContent || '').trim()) return true;
+  for (const el of body.querySelectorAll<HTMLElement>('[style*="background"]')) {
+    if (el.closest(MARK_CHROME)) continue;
+    const r = el.getBoundingClientRect();
+    const bg = getComputedStyle(el).backgroundColor;
+    if (r.width * r.height > 16 && bg && bg !== 'transparent' && !/rgba\([^)]*,\s*0\)/.test(bg)) return true;
+  }
+  return false;
+}
+
+/** Where one grid tile stands (its `.react-grid-item` / `[data-grid-item-id]` element). */
+export function tileReadiness(tile: Element): TileReadiness {
+  const host = tile.matches('[data-export-state]') ? tile : tile.querySelector('[data-export-state]');
+  if (!host) return 'ready-static';
+  const state = (host as HTMLElement).dataset.exportState;
+  if (state === 'error') return 'ready-error';
+  if (state === 'empty') return 'ready-empty';
+  if (state !== 'data') return 'loading';
+  const body = host.querySelector('[data-tile-body]') ?? host;
+  return hasVisualMarks(body) ? 'ready-visual' : 'loading';
+}
+
 function renderSignature(root: HTMLElement): { busy: boolean; key: string } {
   const spinners = root.querySelectorAll(
     '.animate-spin,[aria-busy="true"],[data-loading="true"],[data-tile-loading="true"]',
@@ -47,18 +118,13 @@ function renderSignature(root: HTMLElement): { busy: boolean; key: string } {
   let rows = 0;
   root.querySelectorAll('table').forEach((t) => { rows += t.querySelectorAll('tbody tr').length; });
   const tileEls = [...root.querySelectorAll<HTMLElement>('.react-grid-item')];
-  // A tile counts as "painted" when it holds a sized chart/table OR any text
-  // (KPI cards, text widgets have no svg). Tiles exist in the DOM the instant a
-  // page switches, so "tiles present but nothing painted yet" is the classic
-  // capture-too-early state — treat it as busy.
-  const painted = tileEls.filter((t) => {
-    const el = t.querySelector('svg,canvas,table') as HTMLElement | null;
-    if (el && el.getBoundingClientRect().height > 12) return true;
-    return (t.innerText || '').trim().length > 0;
-  }).length;
+  // EVERY tile must stand somewhere final (see tileReadiness): one painted tile
+  // no longer lets the page through while another is still a blank card.
+  const states = tileEls.map((t) => tileReadiness(t));
+  const loading = states.filter((s) => s === 'loading').length;
   return {
-    busy: spinners > 0 || pendingImages > 0 || (tileEls.length > 0 && painted === 0),
-    key: `${tileEls.length}|${painted}|${sized}|${rows}|${parts.join(',')}`,
+    busy: spinners > 0 || pendingImages > 0 || loading > 0,
+    key: `${tileEls.length}|${states.join(',')}|${sized}|${rows}|${parts.join(',')}`,
   };
 }
 
