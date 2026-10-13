@@ -106,6 +106,12 @@ const MIN_ITEM_WIDTH = 48;
  * the Recharts default so the Y-axis title isn't squeezed.
  */
 const CHART_BASE_MARGIN = { top: 8, right: 12, left: 5, bottom: 14 } as const;
+/** Recharts' own YAxis width. A value axis must ALWAYS receive a number:
+ *  Recharts 2.x reads an explicit `width={undefined}` as-is when it lays
+ *  out the plot, so the offset becomes NaN and every bar / line / x-tick is
+ *  drawn at NaN — axes and legend render, the plot stays blank (the BAR_LINE
+ *  "10 rows, empty chart" report; also any chart whose values are all 0). */
+const Y_AXIS_DEFAULT_WIDTH = 60;
 
 /**
  * Return XAxis props that adapt angle and height to the number of data
@@ -1461,9 +1467,9 @@ function applyTimeGranularity(
     });
 }
 
-function EmptyState({ message }: { message: string }) {
+function EmptyState({ message, testId }: { message: string; testId?: string }) {
   return (
-    <div className="h-full flex items-center justify-center text-text-quaternary" data-empty-state>
+    <div className="h-full flex items-center justify-center text-text-quaternary" data-empty-state data-testid={testId}>
       <p className="text-sm text-center max-w-xs px-4">{message}</p>
     </div>
   );
@@ -1631,7 +1637,18 @@ function ExploreChartInner({
   // During PDF export, turn OFF recharts enter-animations: html2canvas snapshots
   // the SVG ~immediately, so an animating chart (bars/lines growing from 0) gets
   // captured blank/partial. animate=false → final state is painted at once.
-  const animate = !useExportMode();
+  // Marks animate in, except for export and for a viewer who asked for reduced
+  // motion (OS setting) — there a chart is drawn complete at once.
+  const [reducedMotion, setReducedMotion] = useState(false);
+  useEffect(() => {
+    const mq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : undefined;
+    if (!mq) return;
+    setReducedMotion(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setReducedMotion(e.matches);
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, []);
+  const animate = !useExportMode() && !reducedMotion;
   // UX (Date Hierarchy in viewer) — read-only surfaces (dashboard tile, public
   // link) render WITHOUT onStyleConfigChange, so the editor's persisted drill
   // can't be changed there. Hold an EPHEMERAL drill level locally and inject it
@@ -2350,9 +2367,12 @@ function ExploreChartInner({
   const barValueExtent = useMemo(() => {
     if (!isBarFamily) return null;
     const rows = type === 'BAR_LINE' ? comboData : categoricalData;
+    // The keys of the series actually DRAWN: with a breakdown these are the
+    // pivoted member keys (Partner / Store / …), not metricKey() — reading the
+    // metric key found nothing and GROUPED/STACKED bars lost their 0 baseline.
     const keys = type === 'BAR_LINE'
       ? comboBarSeries.map((s) => s.key)
-      : metrics.map((m) => metricKey(m));
+      : categoricalSeries.map((s) => s.key);
     let lo = Infinity;
     let hi = -Infinity;
     for (const row of rows) {
@@ -2362,7 +2382,7 @@ function ExploreChartInner({
       }
     }
     return lo === Infinity ? null : { lo, hi };
-  }, [isBarFamily, type, comboData, categoricalData, comboBarSeries, metrics]);
+  }, [isBarFamily, type, comboData, categoricalData, comboBarSeries, categoricalSeries]);
   // Default value-axis bounds: anchor to 0 on the data side for bar charts,
   // 'auto' otherwise. Mixed-sign data (lo < 0 < hi) already straddles 0, so
   // 'auto'/'auto' is correct there too.
@@ -2425,9 +2445,14 @@ function ExploreChartInner({
   // BI auto-sizes the value-axis area the same way. Estimated from the data
   // max (Recharts rounds ticks to a similar magnitude) with padding.
   const yAxisWidth = useMemo(() => {
-    const keys = metrics.map((m) => metricKey(m));
+    // Measure the rows the value axis actually plots. BAR_LINE plots
+    // `comboData` (bar series on the left axis); its `categoricalData` is the
+    // un-rewritten result, whose value keys never match a series key.
+    const isCombo = type === 'BAR_LINE';
+    const keys = isCombo ? comboBarSeries.map((s) => s.key) : categoricalSeries.map((s) => s.key);
+    const rows = isCombo ? comboData : categoricalData;
     let maxAbs = 0;
-    for (const row of categoricalData) {
+    for (const row of rows) {
       for (const k of keys) {
         const v = Math.abs(Number(row?.[k]));
         if (Number.isFinite(v) && v > maxAbs) maxAbs = v;
@@ -2435,11 +2460,14 @@ function ExploreChartInner({
     }
     if (typeof style.yAxisMax === 'number') maxAbs = Math.max(maxAbs, Math.abs(style.yAxisMax));
     if (typeof style.yAxisMin === 'number') maxAbs = Math.max(maxAbs, Math.abs(style.yAxisMin));
-    if (!(maxAbs > 0)) return undefined; // no data → Recharts default width
-    const sample = formatAxisValue(maxAbs, style, metrics.length === 1 ? metricKey(metrics[0]) : undefined);
+    // All-zero / no numeric values: keep Recharts' default width (a NUMBER —
+    // never undefined, see Y_AXIS_DEFAULT_WIDTH).
+    if (!(maxAbs > 0)) return Y_AXIS_DEFAULT_WIDTH;
+    const sample = String(formatAxisValue(maxAbs, style, metrics.length === 1 ? metricKey(metrics[0]) : undefined) ?? '');
     const longest = Math.max(sample.length, 3) + 1; // +1 for a possible minus sign
-    return Math.min(150, Math.max(40, Math.ceil(longest * fontSize * 0.62) + 12));
-  }, [categoricalData, metrics, style, fontSize]);
+    const width = Math.min(150, Math.max(40, Math.ceil(longest * fontSize * 0.62) + 12));
+    return Number.isFinite(width) ? width : Y_AXIS_DEFAULT_WIDTH;
+  }, [type, comboData, comboBarSeries, categoricalData, categoricalSeries, metrics, style, fontSize]);
   const estimateYAxisWidth = useCallback((rows: Record<string, any>[], keys: string[], seriesKey?: string) => {
     let maxAbs = 0;
     for (const row of rows) {
@@ -2448,10 +2476,11 @@ function ExploreChartInner({
         if (Number.isFinite(value) && value > maxAbs) maxAbs = value;
       }
     }
-    if (!(maxAbs > 0)) return undefined;
-    const sample = formatAxisValue(maxAbs, style, seriesKey);
+    if (!(maxAbs > 0)) return Y_AXIS_DEFAULT_WIDTH;
+    const sample = String(formatAxisValue(maxAbs, style, seriesKey) ?? '');
     const longest = Math.max(sample.length, 3) + 1;
-    return Math.min(150, Math.max(42, Math.ceil(longest * fontSize * 0.62) + 12));
+    const width = Math.min(150, Math.max(42, Math.ceil(longest * fontSize * 0.62) + 12));
+    return Number.isFinite(width) ? width : Y_AXIS_DEFAULT_WIDTH;
   }, [fontSize, style]);
 
   // BI-standard (Power BI / Tableau): a cartesian chart labels its axes by
@@ -2592,7 +2621,7 @@ function ExploreChartInner({
     // <Label>) so it stays readable, never collides with the legend, and never
     // scrolls off-screen on a wide horizontally-scrolling chart.
     return (
-    <YAxis axisLine={chrome?.axisLine ?? false} tickLine={chrome?.axisLine ?? false} tick={{ fontSize, fill: axisTickFill }} tickFormatter={axisTickFormatter} domain={yDomain} allowDataOverflow={yAxisClamp} width={widthOverride ?? yAxisWidth} />
+    <YAxis axisLine={chrome?.axisLine ?? false} tickLine={chrome?.axisLine ?? false} tick={{ fontSize, fill: axisTickFill }} tickFormatter={axisTickFormatter} domain={yDomain} allowDataOverflow={yAxisClamp} width={widthOverride ?? yAxisWidth ?? Y_AXIS_DEFAULT_WIDTH} />
     );
   };
   // Render the X/Y axis TITLES as DOM labels around the chart (instead of SVG
@@ -2843,7 +2872,7 @@ function ExploreChartInner({
   // draw its axes and no marks, which reads as "the value is zero" or, worse,
   // as a working chart. Say so instead.
   if (AXIS_VALUE_CHART_TYPES.has(type) && !hasPlottableMeasure(data, normalizeRoleConfig(type, roleConfig))) {
-    return <EmptyState message={t('explore.emptyState.noNumericValues')} />;
+    return <EmptyState message={t('explore.emptyState.noNumericValues')} testId="chart-no-numeric-data" />;
   }
 
   if (type === 'KPI') {
@@ -3866,7 +3895,7 @@ function ExploreChartInner({
                   orientation="right"
                   tick={{ fontSize, fill: rightAxisColor }}
                   tickFormatter={(value: any) => formatAxisValue(value, style, rightAxisSeries.key)}
-                  width={rightAxisWidth}
+                  width={rightAxisWidth ?? Y_AXIS_DEFAULT_WIDTH}
                   domain={yRightDomain} allowDataOverflow={yRightClamp}
                   axisLine={{ stroke: rightAxisColor }}
                   tickLine={{ stroke: rightAxisColor }}

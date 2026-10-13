@@ -1170,6 +1170,16 @@ export function getChartRoleConfigRequirementMessage(
     return null;
   }
 
+  // RIBBON is time × breakdown × value (backend CHART_REQUIRED_ROLE_KEYS); it has
+  // no `dimension`, so the generic "Choose an X axis" check below refused a
+  // valid saved ribbon and the Builder never ran it.
+  if (chartType === 'RIBBON') {
+    if (!normalized.timeField && !normalized.dimension) return 'Choose a time field for this chart.';
+    if (!normalized.breakdown) return 'Choose a ribbon (breakdown) column for this chart.';
+    if (normalized.metrics.length === 0) return 'Choose at least one value column for this chart.';
+    return null;
+  }
+
   if (chartType === 'TIME_SERIES' || chartType === 'TIMELINE') {
     if (!normalized.timeField && !normalized.dimension) {
       return 'Choose a time field for this chart.';

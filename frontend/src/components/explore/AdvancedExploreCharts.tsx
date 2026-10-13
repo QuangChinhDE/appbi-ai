@@ -1022,8 +1022,8 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
         const fy1 = fy0 + plotH;
         // Projection. Geo preserves aspect (equal degrees/pixel, centred) so the
         // landmass isn't stretched — like a real map. Non-geo fills the box.
-        let sx: (v: number) => number;
-        let sy: (v: number) => number;
+        let sx: (v: number) => number = (v) => v;
+        let sy: (v: number) => number = (v) => v;
         if (isGeoMap) {
           const spanX = Math.max(bxMax - bxMin, 1e-6);
           const spanY = Math.max(byMax - byMin, 1e-6);
@@ -1032,12 +1032,18 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
           const ox = fx0 + (plotW - drawW) / 2, oy = fy0 + (plotH - drawH) / 2;
           sx = (v: number) => ox + (v - bxMin) * scale;
           sy = (v: number) => oy + drawH - (v - byMin) * scale; // invert latitude
-        } else {
-          sx = (v: number) => fx0 + ((v - bxMin) / Math.max(bxMax - bxMin, 1)) * plotW;
-          sy = (v: number) => fy1 - ((v - byMin) / Math.max(byMax - byMin, 1)) * plotH;
         }
         // Bubble radius scales with the plot so big tiles get bigger bubbles.
         const rMax = Math.max(8, Math.min(34, Math.min(plotW, plotH) * 0.14));
+        if (!isGeoMap) {
+          // Inset the data range by the largest mark so a point at the min / max
+          // sits INSIDE the plot rect — centred on the edge, a bubble at an
+          // extreme was cut in half (or to a quarter in a corner) by the clip.
+          const inset = Math.min((type === 'BUBBLE' ? rMax + 8 : 8), plotW / 4, plotH / 4);
+          const iw = Math.max(1, plotW - 2 * inset), ih = Math.max(1, plotH - 2 * inset);
+          sx = (v: number) => fx0 + inset + ((v - bxMin) / Math.max(bxMax - bxMin, 1)) * iw;
+          sy = (v: number) => fy1 - inset - ((v - byMin) / Math.max(byMax - byMin, 1)) * ih;
+        }
         const sr = (value: number) => {
           if (type === 'BUBBLE') return 4 + safeSqrtShare(value, maxR) * rMax;
           if (type === 'MAP_POINT') return hasSize ? 3 + safeSqrtShare(value, maxR) * rMax * 0.7 : 4;
@@ -1826,6 +1832,27 @@ function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]
   );
 }
 
+/** A time bucket as a person reads it: a month bucket ("2024-03-01T00:00:00Z")
+ *  as "Mar 24", any other date as yyyy-mm-dd; non-dates unchanged. Never the
+ *  raw ISO string (which an axis then cuts to "2024-03-01T0"). */
+const MONTH_LABEL = new Intl.DateTimeFormat(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' });
+function formatTimeLabel(value: unknown, monthly: boolean): string {
+  const raw = String(value ?? '');
+  const d = new Date(raw);
+  if (!raw || Number.isNaN(d.getTime()) || !/^\d{4}-\d{2}/.test(raw)) return raw;
+  return monthly ? MONTH_LABEL.format(d) : d.toISOString().slice(0, 10);
+}
+function isMonthlyBuckets(values: unknown[]): boolean {
+  const ds = values.map((v) => new Date(String(v ?? ''))).filter((d) => !Number.isNaN(d.getTime()));
+  return ds.length > 1 && ds.length === values.length && ds.every((d) => d.getUTCDate() === 1);
+}
+/** Identifier labels (which ribbon / which event) are not "data labels": they
+ *  stay on unless the author switched data labels off EXPLICITLY. The legacy
+ *  `showDataLabels` defaults to false and must not hide what a mark IS. */
+function identifierLabelsOn(style: ChartStyleConfig): boolean {
+  return style.dataLabelConfig?.enabled !== false;
+}
+
 function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; palette: string[]; style: ChartStyleConfig; onSelect?: (source: string) => void }) {
   const { t } = useI18n();
   // RIBBON's X is the time field — the axis MUST be chronological. Sort by
@@ -1850,7 +1877,8 @@ function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; 
     rankByTime.set(time, new Map(ranked.map((item, index) => [item.cat, index])));
   }
   const dlc = style.dataLabelConfig;
-  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+  const labelsEnabled = identifierLabelsOn(style);
+  const monthly = isMonthlyBuckets(times);
   return (
     <ResponsiveSvg>
       {(W, H) => {
@@ -1886,7 +1914,7 @@ function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; 
               );
             })}
             {times.map((time, index) => (
-              <text key={time} x={x(index)} y={labelY} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x(index)} ${labelY})`} fill="rgb(var(--text-tertiary))">{time.slice(0, 12)}</text>
+              <text key={time} x={x(index)} y={labelY} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x(index)} ${labelY})`} fill="rgb(var(--text-tertiary))">{formatTimeLabel(time, monthly)}</text>
             ))}
           </>
         );
@@ -1920,7 +1948,8 @@ function TimelineChart({ rows, roleConfig, metric, style, palette, preAggregated
   // existing charts (where labels always rendered for first 18 events)
   // don't lose their identifiers; turning the switch off hides them.
   const dlc = style.dataLabelConfig;
-  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? true;
+  const labelsEnabled = identifierLabelsOn(style);
+  const monthly = isMonthlyBuckets(events.map((event) => new Date(event.time).toISOString()));
   return (
     <ResponsiveSvg>
       {(W, H) => {
@@ -1950,6 +1979,11 @@ function TimelineChart({ rows, roleConfig, metric, style, palette, preAggregated
             {labelsEnabled && index < 18 && (
               <text x={x(event.time)} y={yy + (yy < axisY ? -14 : 24)} fontSize={labelFontSize} textAnchor="middle" fill={labelFontColor}>
                 {displayName.slice(0, 14)}
+              </text>
+            )}
+            {index < 18 && (
+              <text x={x(event.time)} y={yy < axisY ? axisY + 14 : axisY - 6} fontSize={9} textAnchor="middle" fill="rgb(var(--text-quaternary))" data-timeline-date="">
+                {formatTimeLabel(new Date(event.time).toISOString(), monthly)}
               </text>
             )}
             <title>{displayName}: {new Date(event.time).toISOString().slice(0, 10)}{metric ? `, ${formatNumber(event.value, styleForLabel)}` : ''}</title>

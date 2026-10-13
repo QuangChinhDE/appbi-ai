@@ -63,7 +63,7 @@ export default defineConfig({
     {
       name: 'chromium',
       dependencies: ['setup'],
-      testIgnore: [/security\/.*\.spec\.ts/, /chat\/.*\.spec\.ts/, /chart-hardening\.spec\.ts/, /observability\.spec\.ts/],
+      testIgnore: [/security\/.*\.spec\.ts/, /chat\/.*\.spec\.ts/, /chart-hardening\.spec\.ts/, /chart-visual\.spec\.ts/, /observability\.spec\.ts/],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/admin.json',
@@ -108,6 +108,24 @@ export default defineConfig({
         ...devices['Desktop Chrome'],
         storageState: '.auth/admin.json',
         viewport: { width: 1440, height: 900 },
+      },
+    },
+    {
+      // CHART VISUAL CERTIFICATION: every Builder chart type must visibly draw
+      // its data marks (not just axes / a legend). retries 0, animations off.
+      name: 'chart-visual',
+      dependencies: ['setup'],
+      testMatch: /chart-visual\.spec\.ts/,
+      retries: 0,
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: '.auth/admin.json',
+        viewport: { width: 1440, height: 900 },
+        trace: 'retain-on-failure',
+        screenshot: 'only-on-failure',
+        // Charts honour prefers-reduced-motion: every mark is drawn complete at
+        // once, so a measurement / screenshot never catches a half-drawn line.
+        contextOptions: { reducedMotion: 'reduce' },
       },
     },
     {
