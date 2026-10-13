@@ -619,6 +619,13 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
     # (mom) rightly compared the last complete months (2018-08 vs 2018-07, -5.23%),
     # and that correct change was then judged "another period's". Kept as a hint;
     # a follow-up relative to the previous question's explicit period keeps it.
+    # A RELATIVE FOLLOW-UP IS ANCHORED ON THE PERIOD JUST DISCUSSED, by rule. Live
+    # Public Report (product acceptance): after "ARR tháng 8 năm 2026?", the intent
+    # model resolved "So với tháng trước thì sao?" once as Aug/Jul and once as
+    # Jul/Jul — the answer then compared July with June, and the claim check,
+    # trusting the intent, could not object. One named period in the previous
+    # question is the conversation's anchor; its baseline is the calendar's.
+    anchor_relative_followup(model, question, previous, relative)
     relative_hint = []
     if relative and model.get("periods") and not named_periods(question) and not named_periods(previous or ""):
         relative_hint = list(model["periods"])
@@ -705,6 +712,34 @@ def _yearless(text: str) -> set[tuple]:
     for m in re.finditer(r"(?:quy|quarter|\bq)\s*([1-4])(?!\d)(?!\s*(?:/|-|\.|nam|of|,)?\s*(?:19|20)\d{2})", t):
         out.add(("q", int(m.group(1))))
     return out
+
+
+def anchor_relative_followup(model: dict, question: str, previous: str | None, relative: bool) -> None:
+    """A relative follow-up ("so với tháng trước") is anchored on the ONE period
+    the previous question named; its baseline is the calendar's, not the model's.
+    Mutates `model` in place and records a note when it overrides the model."""
+    from app.services.time_semantics import comparison_baseline, named_periods
+
+    import unicodedata
+
+    prev_named = sorted(named_periods(previous or ""))
+    if not relative or named_periods(question) or len(prev_named) != 1:
+        return
+    # Only a COMPARISON is anchored here. "Còn tháng trước đó thì sao?" asks ABOUT
+    # the earlier month (its period is that month — `test_intent_contract`); "So
+    # với tháng trước thì sao?" compares the period just discussed with it.
+    folded = "".join(c for c in unicodedata.normalize("NFKD", question or "")
+                     if not unicodedata.combining(c)).lower().replace("đ", "d")
+    if not any(w in folded for w in ("so voi", "so sanh", "doi chieu", "compared", "compare", "versus", " vs")):
+        return
+    anchor = tuple(prev_named[0])
+    base = comparison_baseline(question, anchor)
+    said = (model.get("periods"), model.get("baseline"))
+    model["periods"], model["baseline"] = [anchor], (tuple(base) if base else None)
+    if said != (model["periods"], model["baseline"]):
+        model.setdefault("notes", []).append(
+            f"follow-up anchored on the previous question's period {list(anchor)} "
+            f"(model said {said[0]} / {said[1]})")
 
 
 def anchor_years(periods: list, question: str, previous: str | None, coverage: dict) -> tuple[list, str]:

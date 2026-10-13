@@ -118,3 +118,17 @@ def test_a_spaced_followup_marker_is_still_the_marker():
     text = "ARR tháng 8/2026 là 72.\n[ FOLLOWUP] Bạn muốn xem tháng 7?\n[Follow Up] Xem phân khúc?"
     assert _canonical_markers(text).count("[FOLLOWUP]") == 2
     assert _strip_followups(_canonical_markers(text)) == "ARR tháng 8/2026 là 72."
+
+
+def test_a_relative_followup_is_anchored_on_the_period_just_discussed():
+    """P04 (browser, run 8651): after "ARR tháng 8 năm 2026?", the intent model read
+    "So với tháng trước thì sao?" as July/July and the answer compared July with June."""
+    from app.services.agent_flows.runtime.intent import anchor_relative_followup
+
+    model = {"periods": [("m", 2026, 7)], "baseline": ("m", 2026, 7), "notes": []}
+    anchor_relative_followup(model, "So với tháng trước thì sao?", "ARR tháng 8 năm 2026 là bao nhiêu?", True)
+    assert model["periods"] == [("m", 2026, 8)] and model["baseline"] == ("m", 2026, 7)
+    assert model["notes"]
+    keep = {"periods": [("m", 2026, 5)], "baseline": None, "notes": []}
+    anchor_relative_followup(keep, "Còn tháng 5/2026 thì sao?", "ARR tháng 8 năm 2026?", True)
+    assert keep["periods"] == [("m", 2026, 5)], "an explicit period in the question is never overridden"
