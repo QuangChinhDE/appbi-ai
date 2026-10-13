@@ -49,6 +49,7 @@ const NOTICE_KEYS: Record<string, string> = {
   partial_rows: 'chat.notice.partialRows',
   read_truncated: 'chat.notice.truncated',
   web_disabled: 'chat.notice.webOff',
+  sources_withheld: 'chat.notice.sourcesWithheld',
 };
 
 /** Answer-integrity notices the ENGINE words in Vietnamese. On the Vietnamese UI
@@ -526,6 +527,15 @@ function Welcome({
         </p>
       ) : null}
       <p className="text-caption text-text-tertiary">{t('chat.welcome.hint')}</p>
+      {/* The assistant was shared, but data its author attached was not shared
+          with THIS reader — so its figures will come back unanswered. Said
+          before the first question. Optional field: absent means nothing. */}
+      {brain.reader_access?.withheld_data ? (
+        <p className="mt-2 rounded-md border border-warning/30 bg-warning/10 px-2 py-1.5 text-caption text-warning"
+          data-testid="chat-data-withheld">
+          {t('chat.dataWithheld')}
+        </p>
+      ) : null}
 
       {/* BEFORE THE FIRST QUESTION, not after it comes back
           unanswered. An assistant with no anomaly tool should say
@@ -634,6 +644,12 @@ function Bubble({
           : ''
   );
   const copyText = (message.content || '').trim() || blocksAsText(message.blocks);
+  // Plain, not a hook: this runs after the early return for user messages.
+  const chartNames = new Map<number, string>();
+  for (const c of message.citations || []) {
+    const id = Number(c.ref);
+    if (c.kind === 'chart' && Number.isFinite(id) && c.label) chartNames.set(id, c.label);
+  }
   const done = !live && Boolean(copyText);
 
   const copy = async () => {
@@ -658,7 +674,11 @@ function Bubble({
         </div>
       ) : null}
 
-      {/* A wide table scrolls inside the answer rather than widening the page. */}
+      {/* A wide table scrolls inside the answer rather than widening the page.
+          CHART NAMES COME FROM THIS ANSWER'S OWN CITATIONS. There is no report
+          on screen to name a chart, so the outer map is empty and every chip
+          read "chart:1219"; the answer already carries each chart's label. */}
+      <ChartNamesContext.Provider value={chartNames}>
       <div className="min-w-0 overflow-x-auto text-small text-text-primary">
         {message.blocks?.length ? (
           <AnswerBlocks
@@ -674,6 +694,7 @@ function Bubble({
           <RichMarkdown text={body} />
         )}
       </div>
+      </ChartNamesContext.Provider>
 
       {statusKey ? (
         <p className="text-caption text-warning" data-testid="chat-turn-status">{t(statusKey)}</p>

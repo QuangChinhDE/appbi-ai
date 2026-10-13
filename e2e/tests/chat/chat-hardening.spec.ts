@@ -457,6 +457,7 @@ test('structured answer: metric, table, chart reference, citation and follow-ups
     const last = typed.messages[typed.messages.length - 1];
     last.content = '';
     last.blocks = [
+      { type: 'text', markdown: 'Revenue rose in September [chart:41].' },
       { type: 'metric', label: 'Revenue (Sep)', value: 8043020000, format: 'number' },
       { type: 'table', columns: [{ key: 'm', label: 'Month' }, { key: 'v', label: 'Revenue' }],
         rows: [{ m: 'Aug', v: 7900000000 }, { m: 'Sep', v: 8043020000 }] },
@@ -474,6 +475,9 @@ test('structured answer: metric, table, chart reference, citation and follow-ups
   await expect(ans).toContainText('Revenue (Sep)');
   await expect(ans.locator('table')).toContainText('Aug');
   // A chart reference with nowhere to open is content, never a dead button.
+  // A chart citation chip is named from the answer's own citations, never the raw id.
+  await expect(ans.getByText('Monthly revenue').first()).toBeVisible();
+  await expect(ans.getByText('chart:41')).toHaveCount(0);
   await expect(ans.getByText('Related chart')).toBeVisible();
   await expect(ans.getByRole('button', { name: /Related chart/ })).toHaveCount(0);
   // Both kinds of source are reachable: the chart a figure came from (which
@@ -487,6 +491,25 @@ test('structured answer: metric, table, chart reference, citation and follow-ups
   await expect(composer(page)).toHaveValue('Compare with last year');
   // Copy carries the figures even with no prose.
   await expect(ans.getByRole('button', { name: 'Copy answer' })).toBeVisible();
+  expect(problems).toEqual([]);
+});
+
+test('an assistant whose data was not shared with the reader says so before the first question', async ({ browser }) => {
+  const { page, problems } = await open(browser, 'owner');
+  // DETERMINISTIC INPUT: `reader_access` is supplied by Agent Flow's reader-scope
+  // work; this extends the real /brains response with it to pin the Chat side.
+  await page.route('**/agent-flows/chat/brains*', async (route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    for (const b of body.brains) {
+      if (b.brain_key === fx.flows.fast) b.reader_access = { attached_count: 1, reachable_count: 0, withheld_data: 1, withheld_documents: 0, data_attached: true };
+    }
+    await route.fulfill({ response: res, json: body });
+  });
+  await page.goto(`/chat?brain=${fx.flows.fast}`);
+  await expect(page.getByTestId('chat-data-withheld')).toContainText('has not been shared with you');
+  await page.goto(`/chat?brain=${fx.flows.slow}`);
+  await expect(page.getByTestId('chat-data-withheld')).toHaveCount(0);
   expect(problems).toEqual([]);
 });
 

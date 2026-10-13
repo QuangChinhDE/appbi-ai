@@ -50,6 +50,16 @@ export interface ChatBrain {
    *  backend omits it, and absent means available. */
   available?: boolean;
   unavailable_reason?: string;
+  /** What of the author's attached sources THIS reader can reach (counts only).
+   *  Optional and additive — supplied by Agent Flow's reader-scope work; absent
+   *  on a backend without it, which renders nothing. */
+  reader_access?: {
+    attached_count?: number;
+    reachable_count?: number;
+    withheld_data?: number;
+    withheld_documents?: number;
+    data_attached?: boolean;
+  } | null;
 }
 
 export interface ChatThread {
