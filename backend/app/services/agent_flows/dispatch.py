@@ -445,6 +445,49 @@ def _block_message(code: str) -> str:
     return pilot.BLOCK_MESSAGES.get(code) or BLOCK_MESSAGES.get(code) or BLOCK_MESSAGES["not_configured"]
 
 
+def _stopped_output(run_id: str, streamed: str, box: dict, notices: list, locale: str,
+                    elapsed_ms: int) -> FlowOutput:
+    """The record of a turn that ended before its `result` — the reader pressed Stop,
+    left, or the model was too slow.
+
+    Product acceptance (P07): run 8684 was recorded 75 s after Stop with 0 calls and 0
+    tokens and an empty answer, though the model had already been paid for and the
+    reader had seen part of the answer. Now the record carries what was spent so far
+    (the executor's live state, via `on_state`) and what the reader saw, as `partial`.
+    """
+    en = str(locale or "").lower().startswith("en")
+    text = (streamed or "").strip()
+    if text:
+        status, notice = "partial", Notice(
+            code="turn_stopped", audience="reader", severity="info",
+            text=("Stopped before the answer was complete — the text above may be incomplete."
+                  if en else "Câu trả lời đã dừng trước khi hoàn tất — nội dung trên có thể chưa đầy đủ."),
+        )
+    else:
+        status, notice = "failed", Notice(
+            code="turn_abandoned",
+            text=("The turn ended before an answer arrived — you left the page or stopped it, "
+                  "or the model was too slow." if en else
+                  "Lượt hỏi kết thúc trước khi có câu trả lời — bạn đã rời trang hoặc dừng lại, "
+                  "hoặc mô hình trả lời quá chậm."),
+        )
+    from app.services.agent_flows.envelope import text_answer
+
+    out = FlowOutput(
+        run_id=run_id, status=status,
+        answer=text_answer(text) if text else blocked(run_id, "").answer,
+        notices=[*notices, notice],
+    )
+    state = box.get("state")
+    if state is not None:
+        out.usage.llm_calls = int(getattr(state.budget, "llm_calls", 0) or 0)
+        out.usage.tool_calls = int(getattr(state.budget, "tool_calls", 0) or 0)
+        out.usage.prompt_tokens = int(getattr(state, "prompt_tokens", 0) or 0)
+        out.usage.completion_tokens = int(getattr(state, "completion_tokens", 0) or 0)
+    out.usage.ms = elapsed_ms
+    return out
+
+
 def explore_gate(db: Session, *, link: Any, dashboard: Any, ctx: Any) -> str | None:
     """May "Phân tích toàn diện" run on this link? None = yes (ctx narrowed); else the viewer's sentence.
 
@@ -604,6 +647,7 @@ async def run_for_link(
 
     recorded = False
     started = datetime.now(timezone.utc)
+    streamed, box = [], {}
     try:
         async for ev in executor.run_flow(
             inp, flow=flow, ctx=ctx, credentials=credentials,
@@ -611,7 +655,10 @@ async def run_for_link(
             # The link's privacy choice binds every run this turn creates —
             # including a Skill's child run.
             store_content=bool(binding.store_question_content),
+            on_state=lambda st: box.__setitem__("state", st),
         ):
+            if ev.type == "text" and ev.text:
+                streamed.append(ev.text)
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
                 out.notices = [*memory_notices, *out.notices]
@@ -644,20 +691,7 @@ async def run_for_link(
         # answers" report take an hour to diagnose.
         if not recorded:
             elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
-            aborted = FlowOutput(
-                run_id=run_id,
-                status="failed",
-                answer=blocked(run_id, "").answer,
-                notices=[
-                    *memory_notices,
-                    Notice(
-                        code="turn_abandoned",
-                        text="Lượt hỏi kết thúc trước khi có câu trả lời — "
-                             "người xem đóng trang, hoặc mô hình trả lời quá chậm.",
-                    ),
-                ],
-            )
-            aborted.usage.ms = elapsed
+            aborted = _stopped_output(run_id, "".join(streamed), box, memory_notices, locale, elapsed)
             runs_service.record(
                 db, inp=inp, out=aborted, brain_key=flow.key, version=row.version,
                 binding_id=binding.id,
@@ -1193,11 +1227,15 @@ async def run_for_chat_thread(
 
     recorded = False
     started = datetime.now(timezone.utc)
+    streamed, box = [], {}
     try:
         async for ev in executor.run_flow(
             inp, flow=flow, ctx=ctx, credentials=credentials,
             base_system_prompt=base_system_prompt, db=db,
+            on_state=lambda st: box.__setitem__("state", st),
         ):
+            if ev.type == "text" and ev.text:
+                streamed.append(ev.text)
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
                 out.notices = [*scope_notices, *memory_notices, *out.notices]
@@ -1226,25 +1264,7 @@ async def run_for_chat_thread(
         # and then found the thread empty.
         if not recorded:
             elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
-            aborted = FlowOutput(
-                run_id=run_id,
-                status="failed",
-                answer=blocked(run_id, "").answer,
-                notices=[
-                    *memory_notices,
-                    Notice(
-                        code="turn_abandoned",
-                        text=(
-                            "The turn ended before an answer arrived — you left the "
-                            "page or stopped it, or the model was too slow."
-                            if str(locale).lower().startswith("en") else
-                            "Lượt hỏi kết thúc trước khi có câu trả lời — bạn đã "
-                            "rời trang hoặc dừng lại, hoặc mô hình trả lời quá chậm."
-                        ),
-                    ),
-                ],
-            )
-            aborted.usage.ms = elapsed
+            aborted = _stopped_output(run_id, "".join(streamed), box, memory_notices, locale, elapsed)
             runs_service.record(
                 db, inp=inp, out=aborted, brain_key=flow.key, version=row.version,
                 binding_id=None, chat_thread_id=thread.id, store_content=True,

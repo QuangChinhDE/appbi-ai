@@ -246,6 +246,9 @@ interface ChatMessage extends AiChatMessage {
    *  holds this text, so it cannot be rated: a lit thumb here would be a
    *  verdict the operator never receives. Persisted so a reload agrees. */
   failed?: true;
+  /** The reader pressed Stop. What streamed stays, labelled as possibly incomplete;
+   *  the server records the same turn as `partial` / `turn_stopped`. */
+  stopped?: true;
   /** Written by this page, not by a run — the welcome, the tour pivot prompt.
    *  Same reason as `failed`: no run holds this text, so it offers no thumb.
    *  Persisted, because `isWelcome` is cleared after the first question. */
@@ -295,6 +298,9 @@ interface Props {
   /** True when the admin has pre-configured an API key for this link.
    *  When set, skip the key-entry view and send no key header (backend uses stored key). */
   keyConfigured?: boolean;
+  /** Server-decided: "Phân tích toàn diện" is offered only when the deployment enables it
+   *  (off for the pilot — the endpoint refuses too). */
+  exploreEnabled?: boolean;
   /** Viewer-applied slicer filters from the dashboard UI. Passed verbatim to
    *  every AI Bot call so the bot sees the same filtered data the user is
    *  looking at. When empty/missing the bot sees only the link's DA-defined
@@ -347,6 +353,7 @@ export function DashboardAiBot({
   sessionToken,
   dashboardName,
   keyConfigured,
+  exploreEnabled = false,
   viewerFilters,
 }: Props) {
   const { t } = useI18n();
@@ -845,6 +852,17 @@ export function DashboardAiBot({
       abortControllerRef.current = null;
       setIsStreaming(false);
       setActiveStatus('');
+      // STOPPED IS A STATE, NOT A BLANK (product acceptance, P07): the reader saw
+      // the turn end with nothing to say why. Keep what streamed and say it stopped.
+      const lastIdx = latestMessages.length - 1;
+      if (abortRef.current && lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant'
+          && !latestMessages[lastIdx].failed) {
+        latestMessages = [
+          ...latestMessages.slice(0, lastIdx),
+          { ...latestMessages[lastIdx], stopped: true },
+        ];
+        setMessages(latestMessages);
+      }
       // Persist the session to DB so history survives F5
       const safeMessages = latestMessages
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
@@ -1306,6 +1324,7 @@ export function DashboardAiBot({
             onStop={handleStop}
             onPickSuggestion={handlePickSuggestion}
             onWelcomeAction={handleWelcomeAction}
+            exploreEnabled={exploreEnabled}
             onPivotAction={handlePivotAction}
             briefing={briefing}
             convState={convState}
@@ -1587,6 +1606,7 @@ function ChatView({
   onStop,
   onPickSuggestion,
   onWelcomeAction,
+  exploreEnabled,
   onPivotAction,
   briefing,
   convState,
@@ -1613,6 +1633,7 @@ function ChatView({
   onStop: () => void;
   onPickSuggestion: (q: string) => void;
   onWelcomeAction: (kind: 'overview' | 'explore' | 'guide' | 'detail') => void;
+  exploreEnabled: boolean;
   onPivotAction: (kind: 'overview' | 'continue', pending: string) => void;
   briefing: AiBriefing | null;
   convState: AiConversationState | null;
@@ -1652,6 +1673,7 @@ function ChatView({
                   disabled={isStreaming}
                   onPickSuggestion={onPickSuggestion}
                   onWelcomeAction={onWelcomeAction}
+                  exploreEnabled={exploreEnabled}
                   onPivotAction={onPivotAction}
                   onRate={onRateMessage}
                   disableActions={isStreaming}
@@ -1695,7 +1717,7 @@ function ChatView({
         {/* Phase 16 — quick action pinned to the composer so long-lived
             sessions (which never see the welcome buttons again) can still
             launch a goal-driven exploration at any time. */}
-        {!isStreaming && !reconError && (
+        {exploreEnabled && !isStreaming && !reconError && (
           <div className="mb-2 flex">
             <button
               type="button"
@@ -1817,6 +1839,7 @@ function MessageBubble({
   disableActions = false,
   onPickSuggestion,
   onWelcomeAction,
+  exploreEnabled = false,
   onPivotAction,
   onRate,
 }: {
@@ -1827,6 +1850,7 @@ function MessageBubble({
   disableActions?: boolean;
   onPickSuggestion?: (q: string) => void;
   onWelcomeAction?: (kind: 'overview' | 'explore' | 'guide' | 'detail') => void;
+  exploreEnabled?: boolean;
   onPivotAction?: (kind: 'overview' | 'continue', pending: string) => void;
   onRate?: (index: number, rating: 'up' | 'down') => void;
 }) {
@@ -1901,6 +1925,11 @@ function MessageBubble({
         ) : (
           <RichMarkdown text={body} />
         )}
+        {!isUser && message.stopped && (
+          <p data-testid="ai-turn-stopped" className="mt-1.5 text-micro italic text-text-tertiary">
+            {message.content ? t('dashboards.aiBot.stopped') : t('dashboards.aiBot.stoppedEmpty')}
+          </p>
+        )}
         {!isUser && message.isWelcome && onWelcomeAction && (
           <div className="mt-2 flex flex-col gap-1.5">
             <button
@@ -1911,14 +1940,16 @@ function MessageBubble({
             >
               <BarChart3 className="h-3.5 w-3.5" /> Xem tổng quan báo cáo
             </button>
-            <button
-              type="button"
-              onClick={() => onWelcomeAction('explore')}
-              disabled={disableActions}
-              className="flex items-center gap-1.5 rounded-lg border border-brand/30 bg-surface-1 px-3 py-2 text-caption font-emphasis text-text-primary transition-colors hover:border-brand/50 hover:bg-brand/5 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Sparkles className="h-3.5 w-3.5 text-brand" /> Phân tích toàn diện (insight + hành động)
-            </button>
+            {exploreEnabled && (
+              <button
+                type="button"
+                onClick={() => onWelcomeAction('explore')}
+                disabled={disableActions}
+                className="flex items-center gap-1.5 rounded-lg border border-brand/30 bg-surface-1 px-3 py-2 text-caption font-emphasis text-text-primary transition-colors hover:border-brand/50 hover:bg-brand/5 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-brand" /> Phân tích toàn diện (insight + hành động)
+              </button>
+            )}
             <button
               type="button"
               onClick={() => onWelcomeAction('guide')}

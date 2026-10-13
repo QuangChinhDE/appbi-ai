@@ -2797,6 +2797,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           sessionToken={getPublicSession(token)}
           dashboardName={presentationTitle}
           keyConfigured={dashboard.public_link_appearance?.ai_bot_key_configured === true}
+          exploreEnabled={dashboard.public_link_appearance?.ai_explore_enabled === true}
           viewerFilters={appliedViewerFilters}
         />
       )}

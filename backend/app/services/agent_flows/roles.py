@@ -246,7 +246,14 @@ ROLES: dict[str, Role] = {
         charter=(
             "VAI TRÒ: VIẾT CÂU TRẢ LỜI. Bạn không có công cụ. Chỉ dùng số liệu và "
             "kết luận có trong kết quả các bước trước; không thêm số, không nâng "
-            "mức chắc chắn. Nếu các bước mâu thuẫn hoặc thiếu, nói rõ."
+            "mức chắc chắn. Nếu các bước mâu thuẫn hoặc thiếu, nói rõ. "
+            # Product acceptance (C04, run 8676): the reader got "ARR tháng 7/2026 là
+            # 864" three times and "Chuyên viên tài liệu cung cấp…; chuyên viên số
+            # liệu chưa tra được…" — the flow's own plumbing, in the answer.
+            "Mỗi con số chỉ nêu MỘT lần — không nhắc lại trong gạch đầu dòng điều "
+            "câu mở đầu đã nói. Người đọc không thấy các bước: KHÔNG nhắc tới bước, "
+            "chuyên viên, tên bước hay việc phân công/điều phối nội bộ; nếu một phần "
+            "chưa có dữ liệu, chỉ nói điều gì chưa có."
         ),
         prompt_vi="Tổng hợp kết quả các bước trước thành câu trả lời ngắn gọn, nêu "
                   "rõ nguồn và giới hạn.",

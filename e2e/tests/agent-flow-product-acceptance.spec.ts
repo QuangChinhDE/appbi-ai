@@ -13,9 +13,9 @@ import { expect, test, type Page } from '@playwright/test';
  * dồn mọi kỳ)" and "ARR theo phân khúc", a report slicer "Gói" on plan_code, and:
  *   PA_LINK_TOKEN        public link with a published report flow assigned
  *   PA_LOCKED_TOKEN      link locked to Gói 103, flow may read only the 3 monthly charts
- *   PA_UNASSIGNED_TOKEN  AI-enabled link with NO flow assigned
  *   PA_READER_EMAIL / PA_READER_PASSWORD  a Chat reader with "Trợ lý chỉ số SaaS"
- *                        (dataset delegated) and "Trợ lý quy ước Olist" (documents 25/26/30)
+ *                        (dataset delegated), "Trợ lý quy ước Olist" (documents 25/26/30) and
+ *                        "Trợ lý SaaS và quy ước" (both, with an answer-writer step)
  * Without them the journeys are SKIPPED, never faked. Cost: ~$0.05 per full run.
  *
  * Ground truth: ARR Jul 864 / Aug 72 (−792, −91,7 %); churn Jan–Aug 60, plan 104 → 43;
@@ -27,7 +27,6 @@ test.use({ storageState: { cookies: [], origins: [] } });
 
 const LINK = process.env.PA_LINK_TOKEN || '';
 const LOCKED = process.env.PA_LOCKED_TOKEN || '';
-const UNASSIGNED = process.env.PA_UNASSIGNED_TOKEN || '';
 const READER = process.env.PA_READER_EMAIL || '';
 const READER_PW = process.env.PA_READER_PASSWORD || '';
 const TURN_MS = 240_000;
@@ -112,13 +111,29 @@ test.describe('public report AI (anonymous viewer)', () => {
     for (const leaked of [/5[.,]?000/, /1[.,]?200/, /\b300\b/]) expect(a).not.toMatch(leaked);
   });
 
-  test('"Phân tích toàn diện" refuses where the assistant is not set up — in words for the viewer', async ({ page }) => {
-    test.skip(!UNASSIGNED, 'PA_UNASSIGNED_TOKEN not set');
-    await openPublicAi(page, UNASSIGNED);
-    await page.getByRole('button', { name: /Phân tích toàn diện/ }).first().click();
-    const refusal = page.getByText(/chưa được thiết lập/).first();
-    await expect(refusal).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText(/Agent Flow|ChatBot của link/)).toHaveCount(0);
+  test('"Phân tích toàn diện" is off for the pilot: no button, and a direct request is refused', async ({ page, request }) => {
+    test.skip(!LINK, 'PA_LINK_TOKEN not set');
+    await openPublicAi(page, LINK);
+    await expect(page.getByRole('button', { name: /Phân tích toàn diện/ })).toHaveCount(0);
+    const api = process.env.E2E_API_URL || 'http://localhost:8000';
+    const res = await request.post(`${api}/api/v1/public/dashboards/${LINK}/ai/agent/explore`, { data: {} });
+    expect(res.status()).toBe(403);
+  });
+
+  test('Stop leaves a clear stopped state, not a blank turn', async ({ page }) => {
+    test.skip(!LINK, 'PA_LINK_TOKEN not set');
+    test.setTimeout(120_000);
+    await openPublicAi(page, LINK);
+    const box = page.locator('textarea').last();
+    await box.fill('Phân tích chi tiết xu hướng MRR từng tháng và nguyên nhân biến động.');
+    await box.press('Enter');
+    const stop = page.getByRole('button', { name: /Stop generating|Dừng/ }).first();
+    await expect(stop).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(2500);
+    await stop.click();
+    await expect(page.getByTestId('ai-turn-stopped')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId('ai-turn-stopped')).toHaveText(/Đã dừng|Stopped/);
+    await expect(box).toBeEnabled();
   });
 });
 
@@ -148,6 +163,16 @@ test.describe('AI Chat (signed-in reader)', () => {
     expect(a2).toMatch(/792/);
     expect(a2).toMatch(/91[,.]7/);
     expect(a2).not.toMatch(WITHHELD);
+  });
+
+  test('a multi-specialist answer states each figure once and keeps its plumbing out', async ({ page }) => {
+    test.setTimeout(TURN_MS + 60_000);
+    await startWith(page, 'Trợ lý SaaS và quy ước');
+    const a = await askChat(page, 'ARR tháng 7/2026 là bao nhiêu, và trong tài liệu Olist GMV được định nghĩa thế nào?');
+    const body = a.split(/Sources \(|Data sources|Nguồn \(/)[0];
+    expect((body.match(/864/g) || []).length, 'the figure is stated once').toBe(1);
+    expect(body).toMatch(/thanh toán/);
+    expect(body).not.toMatch(/chuyên viên|specialist|bước /i);
   });
 
   test('a document assistant answers from the document, cited, with no false figure warning', async ({ page }) => {

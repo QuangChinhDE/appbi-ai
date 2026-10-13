@@ -1958,6 +1958,9 @@ def get_public_dashboard(
     else:
         safe_appearance.pop("ai_bot_key_configured", None)
     safe_appearance.pop("ai_bot_report_context_note", None)
+    # Whether the viewer is offered "Phân tích toàn diện" — the deployment's switch,
+    # never a link's own setting (the endpoint enforces the same switch).
+    safe_appearance["ai_explore_enabled"] = bool(settings.PUBLIC_AI_EXPLORE_ENABLED)
     dash.public_link_appearance = safe_appearance
     # Published device layouts as a viewer gets them: the served pages, published
     # tiles only, no author identity or revision. Shaped on the served copy only
@@ -4840,6 +4843,9 @@ async def save_ai_chat_session(
             # Likewise a bubble the page wrote itself (the welcome) — no run.
             if msg.get("local") is True and role == "assistant":
                 entry["local"] = True
+            # A turn the reader stopped: its partial text stays labelled on reload.
+            if msg.get("stopped") is True and role == "assistant":
+                entry["stopped"] = True
             safe_messages.append(entry)
 
     # THE THUMB HAS TO REACH THE RUN, NOT ONLY THE TRANSCRIPT.
@@ -5274,8 +5280,8 @@ async def chat_dashboard_ai_agent(
         # Idle is measured from the LAST REAL EVENT, not from the start of the
         # turn: a long but healthy run must not be cut off just for being long.
         _last_event = loop.time()
+        _pending: asyncio.Future | None = None
         try:
-            _pending: asyncio.Future | None = None
             while True:
                 # `asyncio.wait_for` CANCELS what it is waiting on when it times
                 # out. Using it for the keepalive tick therefore killed the very
@@ -5307,6 +5313,9 @@ async def chat_dashboard_ai_agent(
                     # and every proxy counts as traffic.
                     if loop.time() - _last_event > IDLE_TIMEOUT:
                         timed_out = True
+                        break
+                    # The viewer pressed Stop or left: stop paying for the turn.
+                    if await request.is_disconnected():
                         break
                     yield ": keepalive\n\n"
                     continue
@@ -5347,7 +5356,20 @@ async def chat_dashboard_ai_agent(
                 if loop.time() - started > HARD_TIMEOUT:
                     timed_out = True
                     break
+                if await request.is_disconnected():
+                    break
         finally:
+            # STOP MEANS STOP. With a step still in flight, `aclose()` raised "already
+            # running" — swallowed below — so the flow ran on, unseen and still paid
+            # for: run 8684 closed 75 s after the viewer pressed Stop, with nothing
+            # recorded (product acceptance, P07). Cancel the step first; the flow's
+            # own `finally` then records what was spent and streamed.
+            if _pending is not None and not _pending.done():
+                _pending.cancel()
+                try:
+                    await _pending
+                except BaseException:  # noqa: BLE001 — the cancellation we asked for
+                    pass
             try:
                 await agen.aclose()
             except Exception:
@@ -5482,6 +5504,14 @@ async def explore_dashboard_ai_agent(
     from fastapi.responses import StreamingResponse
     from app.services.dashboard_ai_bot.thinking.briefing import Briefing as _Briefing
     from app.services.dashboard_ai_bot.thinking.explorer import run_exploration_stream
+
+    # OFF FOR THE PILOT (product decision): refused before the link, a key or the
+    # engine is touched, so a direct request cannot spend either. The engine stays.
+    if not settings.PUBLIC_AI_EXPLORE_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Phân tích toàn diện đang tạm ngừng trên báo cáo công khai.",
+        )
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(

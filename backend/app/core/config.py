@@ -185,6 +185,10 @@ class Settings(BaseSettings):
     AGENT_FLOW_READER_MODE: str = "pilot"
     AGENT_FLOW_PILOT_LINK_IDS: str = ""   # comma-separated public-link ids
     AGENT_FLOW_PILOT_USERS: str = ""      # comma-separated Direct Chat emails
+    # "Phân tích toàn diện" on a public link: the Dashboard AI exploration engine,
+    # NOT an Agent Flow run (it spends the link's or server's key outside every Flow
+    # budget). Off for the pilot — the button is hidden and the endpoint refuses.
+    PUBLIC_AI_EXPLORE_ENABLED: bool = False
     # The OpenAI model a stored Agent Flow step written BEFORE steps chose their own
     # model is brought forward to (contract.upgrade_body). Must name a catalogued
     # OpenAI model, else `gpt-4o-mini`. The pilot sets the model it was certified

@@ -183,6 +183,9 @@ def test_a_refused_explore_resolves_no_key_and_starts_no_engine(monkeypatch):
     from app.services.agent_flows import dispatch as D
     from app.services.dashboard_ai_bot.thinking import explorer
 
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "PUBLIC_AI_EXPLORE_ENABLED", True)
     touched = []
     link = types.SimpleNamespace(id=5, token="tok")
     db = types.SimpleNamespace(query=lambda *a: types.SimpleNamespace(
@@ -295,3 +298,55 @@ def test_a_citation_number_is_not_a_figure_to_verify():
     text = "GMV là tổng tiền hàng đã thanh toán trong kỳ, chưa trừ hoàn tiền. [Nguồn: tài liệu 26] [KB] [1][3]"
     assert _verify_figures(RunState(), text_answer(text)) is None
     assert _verify_figures(RunState(), text_answer("GMV là 13,591,643.7 [Nguồn: tài liệu 26]"))
+
+
+def test_public_explore_is_off_for_the_pilot_even_by_direct_request(monkeypatch):
+    """Product decision (pilot): "Phân tích toàn diện" is hidden AND refused. A direct
+    POST must not reach the link, a key or the engine."""
+    from fastapi.testclient import TestClient
+
+    from app.api import public as PUB
+    from app.core.config import settings
+    from app.core.database import get_db
+    from app.main import app
+    from app.services.dashboard_ai_bot.thinking import explorer
+
+    assert settings.PUBLIC_AI_EXPLORE_ENABLED is False, "the pilot default is off"
+    touched = []
+    monkeypatch.setattr(PUB, "_get_dashboard_by_token", lambda *a, **kw: touched.append("link"))
+    monkeypatch.setattr(PUB, "resolve_public_ai_credentials", lambda *a, **kw: touched.append("key"))
+    monkeypatch.setattr(explorer, "run_exploration_stream", lambda **kw: touched.append("engine"))
+    app.dependency_overrides[get_db] = lambda: None
+    try:
+        res = TestClient(app).post("/api/v1/public/dashboards/tok/ai/agent/explore", json={})
+    finally:
+        app.dependency_overrides.clear()
+    assert res.status_code == 403 and "tạm ngừng" in res.text
+    assert touched == []
+
+
+def test_a_stopped_turn_records_what_was_shown_and_what_was_spent():
+    """P07 (browser, run 8684): Stop left a `failed` run with 0 calls, 0 tokens and an
+    empty answer, 75 s later. Now: the partial text, `partial`, `turn_stopped`, usage."""
+    from app.services.agent_flows.dispatch import _stopped_output
+
+    state = types.SimpleNamespace(prompt_tokens=1200, completion_tokens=80,
+                                  budget=types.SimpleNamespace(llm_calls=2, tool_calls=3))
+    out = _stopped_output("r1", "MRR tháng 1/2026 là 50, tháng 2", {"state": state}, [], "vi", 900)
+    assert out.status == "partial" and "MRR tháng 1/2026 là 50" in out.answer.plain_text()
+    assert [n.code for n in out.notices] == ["turn_stopped"]
+    assert (out.usage.llm_calls, out.usage.tool_calls, out.usage.prompt_tokens,
+            out.usage.completion_tokens, out.usage.ms) == (2, 3, 1200, 80, 900)
+
+    nothing = _stopped_output("r2", "  ", {}, [], "en", 10)
+    assert nothing.status == "failed" and [n.code for n in nothing.notices] == ["turn_abandoned"]
+    assert "stopped" in nothing.notices[0].text
+
+
+def test_the_answer_writer_is_told_to_state_each_figure_once_and_hide_its_plumbing():
+    """C04 (browser, run 8676): the figure appeared three times and the answer said
+    "Chuyên viên tài liệu cung cấp…; chuyên viên số liệu chưa tra được…"."""
+    from app.services.agent_flows.roles import get
+
+    charter = get("answer_writer").charter
+    assert "MỘT lần" in charter and "KHÔNG nhắc tới bước, chuyên viên" in charter
