@@ -1637,7 +1637,7 @@ function ChartTileBase({
           // primitives), so we lean on a CSS fade to soften what would
           // otherwise be a hard cut. bi-fade-in is the project's
           // standard 150ms ease-out used by filter cards.
-          <div key={exploreConfig.chartType} className="h-full bi-fade-in">
+          <div key={exploreConfig.chartType} className="h-full bi-fade-in" data-testid="tile-chart" data-chart-type={exploreConfig.chartType}>
             <ExploreChart
               type={exploreConfig.chartType}
               data={filteredData}

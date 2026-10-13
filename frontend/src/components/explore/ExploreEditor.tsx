@@ -676,8 +676,13 @@ function syncRoleConfigWithColumns(
   // "SUM of Year" off the auto-generated calendar (DA reported this on KPI).
   const isCalendarPartColumn = (column: ColumnMetadata) =>
     typeof column.viewName === 'string' && column.viewName.endsWith('__date_dim');
+  // A geographic coordinate (lat / lon …) is numeric but never a business
+  // value to SUM: auto-seeding it produced a "SUM of lat" line on a fresh
+  // Bar + Line. It stays pickable by hand; it is just never a default.
+  const isGeoCoordinate = (column: ColumnMetadata) =>
+    /^(lat|lng|lon|long|latitude|longitude)$/i.test(String(column.name).split('.').pop() ?? '');
   const metricCandidateColumns = numericColumns.filter(
-    (column) => !isIdentifierLikeField(column.name) && !isCalendarPartColumn(column),
+    (column) => !isIdentifierLikeField(column.name) && !isCalendarPartColumn(column) && !isGeoCoordinate(column),
   );
   const declaredMeasureColumns = columns.filter(
     (column) => column.fieldKind === 'measure' && !isCalendarPartColumn(column),
@@ -905,7 +910,10 @@ function syncRoleConfigWithColumns(
       next.dimension,
       ...next.metrics.map((metric) => metric.field),
     ].filter((value): value is string => Boolean(value)));
-    const lineMetricCandidate = metricCandidateColumns.find((column) => !excluded.has(column.name));
+    // A DECLARED measure first (it carries its own aggregation and meaning),
+    // then a real numeric column — never a coordinate / identifier.
+    const lineMetricCandidate = declaredMeasureColumns.find((column) => !excluded.has(column.name))
+      ?? metricCandidateColumns.find((column) => !excluded.has(column.name));
     if (lineMetricCandidate) {
       next.lineMetric = { field: lineMetricCandidate.name, agg: metricAggFor(lineMetricCandidate.name) };
     }
@@ -3661,7 +3669,7 @@ export function ExploreEditor({
                         primitives. Most chart-type swaps happen here in
                         Explore preview; ChartTile uses the same pattern
                         for dashboard tiles. */}
-                    <div key={chartType} className="flex-1 overflow-hidden bi-fade-in">
+                    <div key={chartType} className="flex-1 overflow-hidden bi-fade-in" data-testid="explore-chart" data-chart-type={chartType}>
                       {/* A chart renderer must never crash the whole Explore
                           page. The dashboard already wraps tiles in this
                           boundary; the Explore preview was the one unguarded
