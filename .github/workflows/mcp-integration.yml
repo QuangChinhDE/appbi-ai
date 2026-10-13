@@ -117,7 +117,8 @@ jobs:
       E2E_PASSWORD: ci-admin-password
       APPBI_RIG_URL: http://localhost:18180
       APPBI_RIG_API: http://localhost:8000/api/v1
-      APPBI_RIG_STATE: ${{ runner.temp }}/rig-state.json
+      # Job-level env may not use the `runner` context (GitHub rejects the file).
+      APPBI_RIG_STATE: ${{ github.workspace }}/.artifacts/rig-state.json
       APPBI_LIVE_ALLOWED_SKIPS: test_dataset_sync_and_publish_to_bigquery
     steps:
       - uses: actions/checkout@v4
@@ -178,7 +179,9 @@ jobs:
           APPBI_RIG_DB_HOST: 127.0.0.1
           APPBI_RIG_DB_USER: appbi
           APPBI_RIG_DB_PASSWORD: appbi
-        run: integrations/appbi-mcp/.venv/bin/python integrations/appbi-mcp/tests/live/rig/bootstrap_rig.py
+        run: |
+          mkdir -p .artifacts
+          integrations/appbi-mcp/.venv/bin/python integrations/appbi-mcp/tests/live/rig/bootstrap_rig.py
       - name: Live journeys (real MCP client + Chromium + AppBI + Postgres)
         working-directory: integrations/appbi-mcp
         run: .venv/bin/python -m pytest -m live tests/live -v -rs -p no:cacheprovider
