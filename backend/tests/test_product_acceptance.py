@@ -132,3 +132,166 @@ def test_a_relative_followup_is_anchored_on_the_period_just_discussed():
     keep = {"periods": [("m", 2026, 5)], "baseline": None, "notes": []}
     anchor_relative_followup(keep, "Còn tháng 5/2026 thì sao?", "ARR tháng 8 năm 2026?", True)
     assert keep["periods"] == [("m", 2026, 5)], "an explicit period in the question is never overridden"
+
+
+# ── P08 (code + browser): "Phân tích toàn diện" ran where the assistant was refused ──
+# Public chat runs only the link's assigned flow and refuses when nothing is assigned,
+# published or in the reader rollout. Explore is a separate engine on the viewer's,
+# the link's or the SERVER's key; it skipped that policy and the link's chart ceiling.
+
+def _gate(monkeypatch, *, problem="", pilot=None, ceiling=(1, 2)):
+    from app.services.agent_flows import dispatch as D
+
+    flow = None if problem else object()
+    row = None if problem else types.SimpleNamespace(version=3)
+    binding = types.SimpleNamespace(id=9)
+    monkeypatch.setattr(D, "resolve_for_link", lambda db, link, dashboard: (binding, row, flow, problem))
+    monkeypatch.setattr(D, "_reader_gate", lambda **kw: pilot)
+    monkeypatch.setattr(D, "build_report_info", lambda dashboard, ctx: None)
+    monkeypatch.setattr(D.binding_service, "build_binding_info",
+                        lambda *a, **kw: types.SimpleNamespace(allowed_chart_ids=list(ceiling)))
+    ctx = types.SimpleNamespace(allowed_chart_ids={1, 2, 3})
+    msg = D.explore_gate(None, link=types.SimpleNamespace(id=5, token="t"), dashboard=None, ctx=ctx)
+    return msg, ctx
+
+
+def test_explore_is_refused_where_chat_is_refused(monkeypatch):
+    from app.services.agent_flows.dispatch import BLOCK_MESSAGES
+
+    msg, ctx = _gate(monkeypatch, problem="not_configured")
+    assert msg == BLOCK_MESSAGES["not_configured"] and ctx.allowed_chart_ids == {1, 2, 3}
+
+
+def test_explore_follows_the_reader_rollout(monkeypatch):
+    msg, _ = _gate(monkeypatch, pilot="pilot_closed")
+    assert msg, "a link outside the rollout must not run Explore either"
+
+
+def test_explore_reads_only_the_charts_the_assignment_allows(monkeypatch):
+    msg, ctx = _gate(monkeypatch, ceiling=(2, 7))
+    assert msg is None and ctx.allowed_chart_ids == {2}
+
+
+def test_a_refused_explore_resolves_no_key_and_starts_no_engine(monkeypatch):
+    """The refusal comes BEFORE the key: a link nobody may explore is told why — not
+    asked for a key — and the server's key is never reached."""
+    from fastapi.testclient import TestClient
+
+    from app.api import public as PUB
+    from app.core.database import get_db
+    from app.main import app
+    from app.services.agent_flows import dispatch as D
+    from app.services.dashboard_ai_bot.thinking import explorer
+
+    touched = []
+    link = types.SimpleNamespace(id=5, token="tok")
+    db = types.SimpleNamespace(query=lambda *a: types.SimpleNamespace(
+        filter=lambda *a: types.SimpleNamespace(first=lambda: link)))
+    monkeypatch.setattr(PUB, "_get_dashboard_by_token",
+                        lambda *a, **kw: (types.SimpleNamespace(name="d"), [], None, {"ai_bot_enabled": True}))
+    monkeypatch.setattr(PUB, "_public_link_tool_context",
+                        lambda *a, **kw: types.SimpleNamespace(public_filters=[], allowed_chart_ids={1}))
+    monkeypatch.setattr(D, "explore_gate", lambda db, **kw: "Link này chưa gán trợ lý.")
+    monkeypatch.setattr(PUB, "resolve_public_ai_credentials", lambda *a, **kw: touched.append("key"))
+    monkeypatch.setattr(explorer, "run_exploration_stream", lambda **kw: touched.append("engine"))
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        res = TestClient(app).post("/api/v1/public/dashboards/tok/ai/agent/explore", json={})
+    finally:
+        app.dependency_overrides.clear()
+    assert res.status_code == 200 and "Link này chưa gán trợ lý." in res.text and '"done"' in res.text
+    assert touched == []
+
+
+def test_a_public_refusal_is_written_for_the_viewer_not_the_author():
+    """P08 (browser, link 180): an anonymous viewer was told "Vào phần ChatBot của
+    link, chọn một Agent Flow và định nghĩa phạm vi dữ liệu" — steps only the author
+    can take, in the author's vocabulary."""
+    from app.services.agent_flows.dispatch import BLOCK_MESSAGES
+
+    for code, text in BLOCK_MESSAGES.items():
+        low = text.lower()
+        assert not any(w in low for w in ("agent flow", "chatbot", "phạm vi dữ liệu", "binding", "gán")), code
+
+
+def test_a_withheld_figure_says_why_in_words_the_reader_can_act_on():
+    """Public link 177 (run 8662): "Tổng ARR cộng dồn của tất cả các tháng?" — 5244, a
+    sum of a monthly balance, was rightly withheld, but the reader was told "sai đại
+    lượng, sai kỳ, sai chiều/đối tượng, hoặc tự tính": four guesses and no way to
+    rephrase. The reason is named; the number never is."""
+    from app.services.agent_flows.runtime import claim_check as CC
+
+    flagged = [{"value": 5244.0, "pct": False, "why": "aggregation_unsafe"}]
+    for text in (CC.reader_note(flagged), CC.claims_unverified_text(flagged)):
+        assert "số dư" in text and "một kỳ cụ thể" in text and "5244" not in text and "5,244" not in text
+    assert "balance" in CC.reader_note(flagged, "en")
+    # A reason without reader wording keeps the generic sentence — never a half list.
+    mixed = [*flagged, {"value": 1.0, "pct": False, "why": "unsupported"}]
+    assert CC.reader_reasons(mixed) == [] and "sai đại lượng" in CC.claims_unverified_text(mixed)
+
+
+def test_the_readers_own_filter_value_is_a_label_not_a_figure(saas, monkeypatch):
+    """Public link 177 (browser): after the viewer picked Gói 104 in the slicer the
+    answer read "với bộ lọc Gói = [đã ẩn: chưa kiểm chứng]"."""
+    from app.services.agent_flows.runtime import claim_check as CC
+    from app.services.filter_layered_merge import DISCLOSE_KEY
+
+    shown = {"field": "dataset_table_687.plan_code", "label": "Gói", "operator": "in", "value": [104]}
+    text = "Tổng Cus churned là 43 (tháng 7 và 8/2026), với bộ lọc Gói = 104 đang áp dụng."
+    monkeypatch.setattr(saas, "public_filters", [shown], raising=False)
+    assert CC._filter_value_numbers(saas, text) == {104.0}
+    assert CC._filter_value_numbers(saas, "Doanh thu là 104.") == set(), "only beside the filter's name"
+    monkeypatch.setattr(saas, "public_filters", [{**shown, DISCLOSE_KEY: False}], raising=False)
+    assert CC._filter_value_numbers(saas, text) == set(), "a hidden constraint's value stays a figure"
+
+
+def test_the_answer_keeps_the_filter_value_the_reader_picked(saas, monkeypatch):
+    """The same journey through `check`: without the exemption 104 was withheld."""
+    from test_correctness_closure import DER, _declare
+
+    from app.services.agent_flows.runtime import claim_check as CC
+    from app.services.agent_flows.runtime.state import RunState
+
+    _declare(monkeypatch, cus_churned={"type": "sum"})
+    monkeypatch.setattr(CC, "_question_measures", lambda ctx, q: set())
+    monkeypatch.setattr(saas, "question", "Tổng số khách hàng rời bỏ là bao nhiêu?", raising=False)
+    monkeypatch.setattr(saas, "public_filters", [{"field": "dataset_table_687.plan_code", "label": "Gói",
+                                                  "operator": "in", "value": [104]}], raising=False)
+    state = RunState()
+    args = {"chart_id": 1, "measure": "cus_churned", "period_from": "2026-07", "period_to": "2026-08"}
+    state.record_evidence(DER.tool_total_measure(saas, args), tool="total_measure", args=args)
+    text = "Tổng Cus churned là 43 (tổng hai kỳ 2026-07 và 2026-08), với bộ lọc Gói = 104 đang áp dụng."
+    assert not CC.check(state, saas, text).get("flagged")
+    assert CC.check(state, saas, text.replace("43", "47")).get("flagged"), "a wrong figure is still withheld"
+
+
+def test_the_ai_is_told_which_filters_the_viewer_cannot_lift():
+    """P05 (browser, link 181): the answer twice advised the viewer to "bỏ bộ lọc
+    Gói = 103" — a link lock already shown read-only in the report's banner."""
+    from app.api.public import _filters_told_to_ai
+    from app.services.chart_contracts import AUTHORITATIVE_KEY
+    from app.services.dashboard_ai_bot.thinking.prompts import _format_filters
+    from app.services.filter_layered_merge import DISCLOSE_KEY
+
+    lock = {"field": "plan_code", "operator": "in", "value": [103], AUTHORITATIVE_KEY: True}
+    pick = {"field": "segment", "operator": "in", "value": ["smb"]}
+    hidden = {"field": "region", "operator": "in", "value": ["north"], AUTHORITATIVE_KEY: True, DISCLOSE_KEY: False}
+    told = _filters_told_to_ai([lock, pick, hidden])
+    assert [f.get("locked") for f in told[:2]] == [True, None], "the viewer's own pick is not locked"
+    assert told[2] == {"restricted_by_author": 1}, "a 🚫 one is counted, never named (link 182)"
+    assert not any(str(k).startswith("_") for f in told for k in f)
+    line = _format_filters(told)
+    assert "cannot remove" in line.split(";")[0] and "cannot remove" not in line.split(";")[1]
+    assert "north" not in line and "region" not in line and "never that no filter applies" in line
+
+
+def test_a_citation_number_is_not_a_figure_to_verify():
+    """Chat C03 (run 8674): "[Nguồn: tài liệu 26]" raised figures_unverified on a
+    correct document answer that contained no figure at all."""
+    from app.services.agent_flows.envelope import text_answer
+    from app.services.agent_flows.runtime.executor import _verify_figures
+    from app.services.agent_flows.runtime.state import RunState
+
+    text = "GMV là tổng tiền hàng đã thanh toán trong kỳ, chưa trừ hoàn tiền. [Nguồn: tài liệu 26] [KB] [1][3]"
+    assert _verify_figures(RunState(), text_answer(text)) is None
+    assert _verify_figures(RunState(), text_answer("GMV là 13,591,643.7 [Nguồn: tài liệu 26]"))

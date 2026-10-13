@@ -392,15 +392,22 @@ def flow_supplies_credentials(db: Session, *, token: str) -> bool:
         return False
 
 
+#: Every sentence here is shown to the VIEWER of a public link — often anonymous,
+#: never the person who can fix it. "Vào phần ChatBot của link, chọn một Agent
+#: Flow…" was author instructions printed to a reader (product acceptance, P08).
+#: The author learns the reason from the link's ChatBot panel and from Runs.
 BLOCK_MESSAGES = {
     "not_configured": (
-        "Link này chưa gán trợ lý. Vào phần ChatBot của link, chọn một Agent Flow và "
-        "định nghĩa phạm vi dữ liệu trước khi gán."
+        "Trợ lý AI của báo cáo này chưa được thiết lập. "
+        "Vui lòng liên hệ người chia sẻ báo cáo."
     ),
     "binding_broken": "Trợ lý đang được cấu hình lại cho báo cáo này.",
-    "not_published": "Trợ lý của link này chưa có bản phát hành nào.",
-    #: What a VIEWER is told. The step-by-step reason is recorded in Runs for the
-    #: author; a viewer can do nothing with a step name.
+    "not_published": (
+        "Trợ lý AI của báo cáo này chưa sẵn sàng. "
+        "Vui lòng liên hệ người chia sẻ báo cáo."
+    ),
+    #: The step-by-step reason is recorded in Runs for the author; a viewer can do
+    #: nothing with a step name.
     "missing_credential": (
         "Trợ lý của báo cáo này chưa được cấu hình AI key. "
         "Vui lòng liên hệ người quản lý báo cáo."
@@ -436,6 +443,30 @@ def _block_message(code: str) -> str:
     from app.services.agent_flows import pilot
 
     return pilot.BLOCK_MESSAGES.get(code) or BLOCK_MESSAGES.get(code) or BLOCK_MESSAGES["not_configured"]
+
+
+def explore_gate(db: Session, *, link: Any, dashboard: Any, ctx: Any) -> str | None:
+    """May "Phân tích toàn diện" run on this link? None = yes (ctx narrowed); else the viewer's sentence.
+
+    Explore is NOT an Agent Flow run: it is the Dashboard AI exploration engine, on
+    the viewer's, the link's or the deployment's key. It still answers to the same
+    LINK policy as chat (product acceptance, P08): a link whose assistant is not
+    assigned, not published or outside the reader rollout used to refuse every chat
+    turn while this button kept running — on the server's key, outside every Flow
+    budget. And it reads no chart the link's assignment left out: the ceiling is the
+    one `build_binding_info` computes for chat.
+    """
+    binding, row, flow, problem = resolve_for_link(db, link=link, dashboard=dashboard)
+    if not problem and flow is not None:
+        problem = _reader_gate(link_id=getattr(link, "id", None)) or problem
+    if problem or flow is None or row is None or binding is None:
+        return _block_message(problem or "not_configured")
+    info = binding_service.build_binding_info(
+        binding, flow=flow, report=build_report_info(dashboard, ctx),
+        link_token=getattr(link, "token", ""), version=row.version,
+    )
+    ctx.allowed_chart_ids = set(ctx.allowed_chart_ids or set()) & set(info.allowed_chart_ids)
+    return None
 
 
 async def run_for_link(

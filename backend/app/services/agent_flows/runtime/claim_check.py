@@ -741,6 +741,38 @@ def _has_words(text: str, words) -> bool:
     return any(re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", folded) for w in words)
 
 
+def _filter_value_numbers(ctx: Any, text: str) -> set[float]:
+    """Numbers that are the VALUE of a filter the reader can see, written beside that
+    filter's name ("bộ lọc Gói = 104") — labels, never figures.
+
+    Product acceptance, public link 177: after the viewer picked Gói 104 in the
+    report's slicer, the correct answer read "với bộ lọc Gói = [đã ẩn: chưa kiểm
+    chứng]" — the reader's own choice withheld as a figure from another measure.
+    Only DISCLOSED filters count: a 🚫 hidden constraint's value stays a figure, so
+    an answer that somehow names it is still withheld.
+    """
+    import re
+
+    from app.services.filter_layered_merge import disclosed_applied_filters
+
+    out: set[float] = set()
+    shown, _ = disclosed_applied_filters(getattr(ctx, "public_filters", None) or [])
+    for f in shown:
+        raw = f.get("value")
+        values = raw if isinstance(raw, list) else [raw]
+        names = {str(f.get("label") or "").strip(), str(f.get("field") or "").split(".")[-1].strip()}
+        for v in values:
+            try:
+                num = float(str(v).strip())
+            except (TypeError, ValueError):
+                continue
+            clause = _clause_of(text, num)
+            if clause and any(n and re.search(rf"(?<![^\W_]){re.escape(_fold(n))}(?![^\W_])", _fold(clause))
+                              for n in names):
+                out.add(num)
+    return out
+
+
 def _clause_of(text: str, value: float) -> str:
     """The clause (split on . ; , and line breaks) that carries `value`."""
     import re
@@ -1059,7 +1091,7 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                         if _squash(w) not in vocab}
     intent_periods = {tuple(p) for p in (intent.get("periods") or [])} \
         if intent.get("source") == "model" else set()
-    labels = _qualifier_numbers(asked_member, text, question)
+    labels = _qualifier_numbers(asked_member, text, question) | _filter_value_numbers(ctx, text)
     # A BREAKDOWN ASKED, NONE DELIVERED. Live a2d2e68b: "điểm đánh giá trung bình
     # theo từng tháng là 4.0864" (the all-time average) and "tổng doanh thu của người
     # bán theo bang là 13,591,643.7" (the report total) — one whole figure given as
@@ -1402,13 +1434,59 @@ def reader_note(flagged: list[dict], locale: str = "vi") -> str:
     lines: list[str] = []
     if not flagged:
         return ""
-    if str(locale or "").lower().startswith("en"):
+    en = str(locale or "").lower().startswith("en")
+    reasons = reader_reasons(flagged, locale)
+    if reasons:
+        lines.append(("⚠️ Withheld: " if en else "⚠️ Đã ẩn số chưa kiểm chứng: ") + "; ".join(reasons) + ".")
+    elif en:
         lines.append("⚠️ Withheld: the data this answer read does not produce these figures "
                      "for what was asked, so they are not shown.")
     else:
         lines.append("⚠️ Đã ẩn số chưa kiểm chứng: dữ liệu mà câu trả lời đã đọc không cho ra các "
                      "con số này cho đúng điều được hỏi, nên chúng không được hiển thị.")
     return "\n".join(lines)
+
+
+#: WHY A FIGURE WAS WITHHELD, in words a reader can act on (product acceptance,
+#: public link 177): "Tổng ARR cộng dồn của tất cả các tháng?" hid 5244 with "sai đại
+#: lượng, sai kỳ, sai chiều/đối tượng, hoặc tự tính" — four guesses, none of them the
+#: reason (ARR is a balance; its sum over months means nothing), so the reader could
+#: not rephrase. Reasons without reader wording keep the generic sentence.
+_READER_WHY = {
+    "aggregation_unsafe": (
+        "chỉ số này là số dư tại từng thời điểm, nên cộng dồn qua nhiều kỳ không cho ra con số "
+        "có nghĩa — hãy hỏi theo một kỳ cụ thể",
+        "this metric is a balance at a point in time, so adding it up across periods gives no "
+        "meaningful figure — ask about one period"),
+    "wrong_period": ("con số thuộc một kỳ khác với kỳ được hỏi",
+                     "the figure belongs to a different period than the one asked about"),
+    "other_measure": ("con số là của một chỉ số khác với chỉ số được hỏi",
+                      "the figure is for a different metric than the one asked about"),
+    "whole_as_member": ("con số là tổng chung, không riêng cho nhóm được hỏi",
+                        "the figure is an overall total, not the group asked about"),
+}
+_READER_WHY.update({"period_absent": _READER_WHY["wrong_period"],
+                    "measure_absent": _READER_WHY["other_measure"],
+                    "whole_as_breakdown": _READER_WHY["whole_as_member"],
+                    "edge_unqualified": _READER_WHY["whole_as_member"]})
+
+
+def reader_reasons(flagged: list[dict], locale: str = "vi") -> list[str]:
+    """Plain reasons for every withheld figure, or [] when any reason has no reader wording."""
+    if not flagged or any(f.get("why") not in _READER_WHY for f in flagged):
+        return []
+    i = 1 if str(locale or "").lower().startswith("en") else 0
+    return list(dict.fromkeys(_READER_WHY[f["why"]][i] for f in flagged))
+
+
+def claims_unverified_text(flagged: list[dict], locale: str = "vi") -> str:
+    """The reader notice for figures withheld from an answer — never the figures."""
+    reasons = reader_reasons(flagged, locale)
+    if reasons:
+        return f"{len(flagged)} con số đã bị ẩn khỏi câu trả lời: " + "; ".join(reasons) + "."
+    return (f"{len(flagged)} con số trong câu trả lời không có nguồn phù "
+            "hợp với điều được hỏi (sai đại lượng, sai kỳ, sai chiều/đối tượng, hoặc tự tính) "
+            "— chúng đã bị ẩn khỏi câu trả lời.")
 
 
 def with_reader_note(text: str, note: str) -> str:

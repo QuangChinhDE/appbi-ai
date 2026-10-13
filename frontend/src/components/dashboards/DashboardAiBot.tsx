@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, X, Send, Square, Loader2, Info, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity, Trash2, ThumbsUp, ThumbsDown, Brain, Zap } from 'lucide-react';
+import { Bot, X, Send, Square, Loader2, Info, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity, Trash2, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import {
   ChartChip, ChartNamesContext, ConfidenceBadge, InsightTypeChip, RichMarkdown,
@@ -205,10 +205,6 @@ function getStoredModePref(token: string): ModePref {
     return v === 'normal' || v === 'thinking' ? v : 'auto';
   } catch { return 'auto'; }
 }
-function setStoredModePref(token: string, v: ModePref): void {
-  try { sessionStorage.setItem(`dash_ai_mode_${token}`, v); } catch { /* ignore */ }
-}
-
 // Session key — a client-generated UUID stored in localStorage (survives F5/tab close).
 // Different sessions = different UUIDs. Never stored in the DB alongside the API key.
 function getOrCreateSessionKey(token: string): string {
@@ -383,10 +379,10 @@ export function DashboardAiBot({
   const [inputText, setInputText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeStatus, setActiveStatus] = useState<string>('');
-  const [modePref, setModePref] = useState<ModePref>(() => getStoredModePref(token));
-  // When modePref==='auto', the server tells us which depth it picked (route
-  // event) so we can show a read-only chip — no toggle needed.
-  const [routeMode, setRouteMode] = useState<'normal' | 'thinking' | null>(null);
+  // A preference stored by the removed depth chip; still sent, read only by telemetry.
+  const [modePref] = useState<ModePref>(() => getStoredModePref(token));
+  // Cleared per turn; no surface reads it since the depth chip went (a flow emits no route).
+  const [, setRouteMode] = useState<'normal' | 'thinking' | null>(null);
   // Conversation intent: 'guide' = the step-by-step teaching tour ("Hướng dẫn
   // xem báo cáo"); 'normal' = overview/detail/free Q&A. Reset on clear.
   const [chatMode, setChatMode] = useState<'normal' | 'guide'>('normal');
@@ -1133,16 +1129,6 @@ export function DashboardAiBot({
     setView('briefing');
   }, [sessionKey, sessionToken, token]);
 
-  // Cycle the depth preference: Auto → Normal → Thinking → Auto. Default is
-  // Auto (server router decides) so users normally never touch this.
-  const handleCycleMode = useCallback(() => {
-    setModePref((prev) => {
-      const next: ModePref = prev === 'auto' ? 'normal' : prev === 'normal' ? 'thinking' : 'auto';
-      setStoredModePref(token, next);
-      return next;
-    });
-  }, [token]);
-
   const handleRateMessage = useCallback((msgIndex: number, rating: 'up' | 'down') => {
     setMessages((prev) => {
       // One current verdict, never cleared — see lib/readerRating.ts. Clicking the
@@ -1233,27 +1219,10 @@ export function DashboardAiBot({
           </div>
         </div>
         <div className="flex items-center gap-1">
-          {view === 'chat' && (() => {
-            const effectiveThinking = modePref === 'thinking' || (modePref === 'auto' && routeMode === 'thinking');
-            const ModeIcon = effectiveThinking ? Brain : Zap;
-            const label = modePref === 'auto'
-              ? (routeMode ? `Tự động · ${routeMode === 'thinking' ? 'Sâu' : 'Nhanh'}` : 'Tự động')
-              : (modePref === 'thinking' ? t('dashboards.aiBot.thinkingLabel') : t('dashboards.aiBot.normalLabel'));
-            return (
-              <button
-                onClick={handleCycleMode}
-                className={`flex items-center gap-1 rounded px-2 py-1 text-micro transition-colors ${
-                  effectiveThinking
-                    ? 'bg-brand/10 text-brand hover:bg-brand/20'
-                    : 'text-text-tertiary hover:bg-surface-3 hover:text-text-primary'
-                }`}
-                title="Độ phân tích — bấm để đổi: Tự động → Nhanh (Normal) → Sâu (Thinking). Mặc định Tự động, hệ thống tự chọn theo câu hỏi."
-              >
-                <ModeIcon className="h-3 w-3" />
-                <span>{label}</span>
-              </button>
-            );
-          })()}
+          {/* No depth switch here. Every chat turn runs the link's assigned Agent
+              Flow, which decides its own depth; the "Tự động → Nhanh → Sâu" chip
+              that sat here changed only a telemetry label (product acceptance,
+              P06/F03) — a control that controls nothing. */}
           {view === 'chat' && !keyConfigured && (
             <button
               onClick={handleChangeKey}

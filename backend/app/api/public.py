@@ -3605,6 +3605,23 @@ def _resolve_public_snapshot_ttl(appearance_config: dict | None) -> int | None:
     return None if v == -1 else v
 
 
+def _filters_told_to_ai(filters: list | None) -> list[dict]:
+    """The disclosed filters (``disclosed_applied_filters`` — never a 🚫 one), each
+    server-owned entry marked ``locked``: the viewer cannot lift it, so the answer
+    must not advise them to."""
+    from app.services.chart_contracts import AUTHORITATIVE_KEY
+
+    out: list[dict] = []
+    for f in filters or []:
+        for shown in disclosed_applied_filters([f])[0]:
+            out.append({**shown, "locked": True} if isinstance(f, dict) and f.get(AUTHORITATIVE_KEY) else shown)
+    # 🚫 constraints are COUNTED, never named: told "(none)", the answer on link 182
+    # said "Báo cáo không có bộ lọc nào đang áp dụng" over data it had just called
+    # restricted by the report's settings.
+    withheld = disclosed_applied_filters(filters or [])[1]
+    return [*out, {"restricted_by_author": withheld}] if withheld else out
+
+
 def _public_link_tool_context(
     db: Session,
     dash: Dashboard,
@@ -5192,8 +5209,11 @@ async def chat_dashboard_ai_agent(
             dashboard_description=getattr(dash, "description", None),
             chart_count=len(getattr(ctx, "charts", []) or []),
             # What the model is TOLD: a 🚫 hidden constraint is applied through
-            # ctx.public_filters and never printed into the prompt.
-            filters_applied=disclosed_applied_filters(combined_filters)[0],
+            # ctx.public_filters and never printed into the prompt. A server-owned
+            # (🔒) one is told AS locked: on link 181 the answer twice advised the
+            # viewer to "bỏ bộ lọc Gói = 103" — a lock the viewer cannot lift and
+            # is already shown in its banner (product acceptance, P05).
+            filters_applied=_filters_told_to_ai(combined_filters),
             max_tool_calls=8,
             report_context_note=report_note,
             # A FLOW DOES NOT NEED THE TOOL NARRATION.
@@ -5473,17 +5493,6 @@ async def explore_dashboard_ai_agent(
             detail="AI bot is not enabled for this shared link.",
         )
 
-    effective_key, provider, model = resolve_public_ai_credentials(
-        appearance_config,
-        x_user_ai_key=x_user_ai_key,
-        x_user_ai_provider=x_user_ai_provider,
-        x_user_ai_model=x_user_ai_model,
-        missing_key_detail="X-User-Ai-Key header is required for AI explore.",
-    )
-    report_note = sanitize_report_context_note(
-        (appearance_config or {}).get("ai_bot_report_context_note"),
-    )
-
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
     ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
                                     [item for item in viewer_filters_body if isinstance(item, dict)],
@@ -5494,6 +5503,41 @@ async def explore_dashboard_ai_agent(
     # not read once — it is carried into every question the run generates.
     _guard_viewer_text(token, briefing=body.briefing or {})
     briefing_obj = _Briefing.from_dict(body.briefing or {}) if body.briefing else None
+
+    # THE SAME LINK POLICY AS CHAT. This is not an Agent Flow run, but a link whose
+    # assistant chat refuses (not assigned, not published, outside the reader
+    # rollout) must not keep spending through this button; and it reads only the
+    # charts the link's assignment allows. Told as a sentence, like a chat refusal.
+    from app.services.agent_flows.dispatch import explore_gate
+
+    _link_row = db.query(DashboardPublicLink).filter(
+        DashboardPublicLink.token == token,
+        DashboardPublicLink.is_active.is_(True),
+    ).first()
+    _refusal = (
+        explore_gate(db, link=_link_row, dashboard=dash, ctx=ctx)
+        if _link_row is not None else "Không xác định được link công khai của báo cáo này."
+    )
+    if _refusal:
+        from app.services.dashboard_ai_bot.events import AgentEvent as _Ev
+
+        async def _refused():
+            for ev in (_Ev(type="text", text=_refusal), _Ev(type="done")):
+                yield f"data: {_json.dumps(_event_to_envelope(ev), ensure_ascii=False, default=str)}\n\n"
+
+        return StreamingResponse(_refused(), media_type="text/event-stream")
+
+    # After the policy: a refused link is told why, not asked for a key it cannot use.
+    effective_key, provider, model = resolve_public_ai_credentials(
+        appearance_config,
+        x_user_ai_key=x_user_ai_key,
+        x_user_ai_provider=x_user_ai_provider,
+        x_user_ai_model=x_user_ai_model,
+        missing_key_detail="X-User-Ai-Key header is required for AI explore.",
+    )
+    report_note = sanitize_report_context_note(
+        (appearance_config or {}).get("ai_bot_report_context_note"),
+    )
 
     captured_key = effective_key
 
