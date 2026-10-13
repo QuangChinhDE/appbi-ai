@@ -81,3 +81,40 @@ def test_reader_reach_says_what_was_withheld_without_naming_it(monkeypatch):
     exposed = {k for k in got if k not in ("chart_names", "en")}
     assert not exposed & set(FORBIDDEN_KEYS)
     assert "186" not in str({k: got[k] for k in exposed})
+
+
+# ── P04 (browser): "Vì sao ARR tháng 8 giảm mạnh?" refused as "tháng 8/2023" ──
+from app.services.agent_flows.runtime.intent import anchor_years  # noqa: E402
+
+_COV = {"year_month": ("2026-01-01", "2026-08-01")}
+
+
+def test_a_year_the_question_never_said_comes_from_the_data_not_the_model():
+    """The intent model returned 2023-08 for a follow-up in a 2026 conversation; the
+    period was judged outside the data and the answer refused."""
+    got, note = anchor_years([("m", 2023, 8)], "Vì sao ARR tháng 8 giảm mạnh?",
+                             "Phân khúc nào đóng góp ARR lớn nhất?", _COV)
+    assert got == [("m", 2026, 8)] and "2023" in note
+
+
+def test_the_previous_turns_year_wins_over_the_data():
+    got, _ = anchor_years([("m", 2023, 8)], "còn tháng 8 thì sao?", "ARR tháng 7/2025 là bao nhiêu?", _COV)
+    assert got == [("m", 2025, 8)]
+
+
+def test_an_explicit_year_is_never_rewritten():
+    got, note = anchor_years([("m", 2026, 8)], "ARR tháng 8 năm 2026?", None, _COV)
+    assert got == [("m", 2026, 8)] and note == ""
+
+
+def test_no_anchor_means_no_period_rather_than_a_guessed_one():
+    got, note = anchor_years([("m", 2023, 8)], "tháng 8 thì sao?", None, {})
+    assert got == [] and "dropped" in note
+
+
+def test_a_spaced_followup_marker_is_still_the_marker():
+    from app.services.agent_flows.runtime.handlers.agent import _canonical_markers, _strip_followups
+
+    text = "ARR tháng 8/2026 là 72.\n[ FOLLOWUP] Bạn muốn xem tháng 7?\n[Follow Up] Xem phân khúc?"
+    assert _canonical_markers(text).count("[FOLLOWUP]") == 2
+    assert _strip_followups(_canonical_markers(text)) == "ARR tháng 8/2026 là 72."

@@ -600,6 +600,16 @@ async def resolve(state: Any, ctx: Any, *, question: str, previous: str,
     vocab["coverage"] = coverage
     from app.services.time_semantics import named_periods
 
+    # A YEAR THE QUESTION NEVER SAID IS NOT THE MODEL'S TO CHOOSE (live Public
+    # Report, product acceptance): "Vì sao ARR tháng 8 giảm mạnh?" — a follow-up in
+    # a conversation about 2026 — came back as 2023-08, was judged outside the
+    # data (2026-01..2026-08), and the answer refused a question the report holds.
+    if model.get("periods"):
+        anchored, note = anchor_years(model["periods"], question, previous, coverage)
+        if note:
+            model["notes"].append(note)
+            model["periods"] = anchored
+
     if model.get("periods") and not (named_periods(question) or relative or model.get("followup")):
         model["notes"].append(f"period not asked: {model['periods']}")
         model["periods"] = []
@@ -679,6 +689,66 @@ def _period_span(p: tuple) -> tuple[int, int] | None:
     if p[0] == "y":
         return p[1] * 12, p[1] * 12 + 11
     return None
+
+
+def _yearless(text: str) -> set[tuple]:
+    """(grain, n) of each month/quarter the text names WITHOUT a year."""
+    import re
+    import unicodedata
+
+    t = unicodedata.normalize("NFKD", text or "")
+    t = "".join(c for c in t if not unicodedata.combining(c)).lower().replace("đ", "d")
+    out: set[tuple] = set()
+    for m in re.finditer(r"(?:thang|thg|month)\s*(\d{1,2})(?!\d)(?!\s*(?:/|-|\.|nam|of|,)?\s*(?:19|20)\d{2})", t):
+        if 1 <= int(m.group(1)) <= 12:
+            out.add(("m", int(m.group(1))))
+    for m in re.finditer(r"(?:quy|quarter|\bq)\s*([1-4])(?!\d)(?!\s*(?:/|-|\.|nam|of|,)?\s*(?:19|20)\d{2})", t):
+        out.add(("q", int(m.group(1))))
+    return out
+
+
+def anchor_years(periods: list, question: str, previous: str | None, coverage: dict) -> tuple[list, str]:
+    """Replace a model-supplied year for a month/quarter the question named without one.
+
+    The year comes from, in order: the question itself (then nothing to do), the
+    previous turn, or the latest year of the data's own coverage that contains
+    that month/quarter. With no anchor the period is DROPPED rather than kept on a
+    guessed year. Returns (periods, note); note is "" when nothing changed.
+    """
+    from app.services.time_semantics import named_periods
+
+    yearless = _yearless(question)
+    if not yearless or named_periods(question):
+        return list(periods), ""
+    prev_years = sorted({p[1] for p in named_periods(previous or "") if len(p) > 1}, reverse=True)
+    spans = [sp for sp in (_month_span(a) for pair in (coverage or {}).values() for a in pair) if sp]
+    lo = min((sp[0] for sp in spans), default=None)
+    hi = max((sp[1] for sp in spans), default=None)
+
+    def from_coverage(g: str, n: int) -> int | None:
+        if lo is None:
+            return None
+        for year in range(hi // 12, lo // 12 - 1, -1):
+            first = year * 12 + ((n - 1) * 3 if g == "q" else n - 1)
+            last = first + (2 if g == "q" else 0)
+            if first <= hi and last >= lo:
+                return year
+        return None
+
+    out, changed = [], []
+    for p in periods:
+        p = tuple(p)
+        if len(p) < 3 or (p[0], p[2]) not in yearless:
+            out.append(p)
+            continue
+        year = prev_years[0] if prev_years else from_coverage(p[0], p[2])
+        if year is None:
+            changed.append(f"{list(p)} dropped (no year in the question, the conversation or the data)")
+            continue
+        if year != p[1]:
+            changed.append(f"{list(p)} -> {[p[0], year, p[2]]}")
+        out.append((p[0], year, p[2]))
+    return out, ("year anchored: " + "; ".join(changed)) if changed else ""
 
 
 def periods_outside(periods: list, coverage: dict) -> dict | None:

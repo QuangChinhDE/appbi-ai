@@ -508,7 +508,7 @@ export function DashboardAiBot({
     const last = messages[messages.length - 1];
     if (!last || last.role !== 'assistant' || !last.content) return;
     // Pull the FIRST followup question out of the answer text
-    const m = /\[FOLLOWUP\]\s*([^\n]+\?)/i.exec(last.content);
+    const m = /\[\s*FOLLOW\s*UP\s*\]\s*([^\n]+\?)/i.exec(last.content);
     if (!m) return;
     const candidate = m[1].trim();
     idleTimerRef.current = window.setTimeout(() => {

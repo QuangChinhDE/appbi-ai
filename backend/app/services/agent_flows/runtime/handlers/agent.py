@@ -263,7 +263,7 @@ async def run(
     provider_error = rt.provider_error
     system, messages, collected = strategy.system, strategy.messages, strategy.collected
 
-    text = _plain_formulas(collected.strip())
+    text = _canonical_markers(_plain_formulas(collected.strip()))
     if node.key == rctx.answer_key and getattr(node, "followups", True) is False:
         text = _strip_followups(text)
     if provider_error and not text:
@@ -643,6 +643,20 @@ _LATEX_FIXES = (
     (re.compile(r"\\times"), "×"),
     (re.compile(r"\\(?=[_%&#${}])"), ""),
 )
+
+
+_SPACED_FOLLOWUP_RE = re.compile(r"\[\s*follow\s*up\s*\]", re.IGNORECASE)
+
+
+def _canonical_markers(text: str) -> str:
+    """`[ FOLLOWUP]` / `[Follow Up]` → `[FOLLOWUP]`, ONCE, before anything reads them.
+
+    Live Public Report (product acceptance): the model wrote `[ FOLLOWUP]`; every
+    consumer matches the exact marker — the follow-ups switch, the language check,
+    the claim check's body/follow-up split and the renderers — so the suggestions
+    were judged as answer prose and rendered as raw text.
+    """
+    return _SPACED_FOLLOWUP_RE.sub("[FOLLOWUP]", text or "")
 
 
 _FOLLOWUP_LINE_RE = re.compile(r"^[\s>*•.)\-\d]*\[FOLLOWUP\].*$", re.IGNORECASE | re.MULTILINE)
