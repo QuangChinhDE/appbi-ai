@@ -22,6 +22,7 @@ export function CachedLiveBadge({ debug }: { debug?: TileFreshness | null }) {
   return (
     <span
       data-testid="tile-cached-as-of"
+      data-export-hide=""
       data-as-of={notice.asOf ?? ''}
       // Shrinks before the tile's title does: on a narrow tile the text
       // truncates down to the clock (the time stays in the tooltip), and the

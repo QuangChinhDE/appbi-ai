@@ -97,6 +97,17 @@ class ReportPptxRequest(BaseModel):
     pages: List[PptxPage] = Field(min_length=1, max_length=MAX_PAGES)
 
 
+class PptxIncompleteError(ValueError):
+    """The deck would carry a chart with no picture. A deck that silently shows
+    an empty block where a chart belongs reads as a finished report and is
+    wrong — the export fails instead, naming the charts (the browser offers
+    Retry). Not raised for KPI, table or text blocks."""
+
+    def __init__(self, charts: List[str]):
+        self.charts = charts
+        super().__init__(f"{len(charts)} chart(s) have no picture: {', '.join(charts)}")
+
+
 def _decode_image(data_url: Optional[str]) -> Optional[bytes]:
     if not data_url:
         return None
@@ -164,17 +175,30 @@ def _title_strip(slide, t: PptxTile, L, T, W) -> int:
     return h
 
 
+def _readable_image(data_url: Optional[str]) -> Optional[tuple[bytes, int, int]]:
+    """The chart picture and its size, or None when it is missing or not an image."""
+    raw = _decode_image(data_url)
+    if raw is None:
+        return None
+    from PIL import Image, UnidentifiedImageError  # pillow is a pinned dependency
+    try:
+        with Image.open(io.BytesIO(raw)) as im:
+            iw, ih = im.size
+    except (UnidentifiedImageError, OSError, ValueError):
+        return None
+    if iw < 2 or ih < 2:
+        return None
+    return raw, iw, ih
+
+
 def _place_chart(slide, t: PptxTile, L, T, W, H):
     used = _title_strip(slide, t, L, T, W)
-    raw = _decode_image(t.image)
     top = T + used
-    avail_h = H - used
-    if raw is None or avail_h <= 0:
-        _text_box(slide, L, top, W, max(avail_h, Inches(0.3)), "(biểu đồ không chụp được)", size=10, color=MUTED)
-        return
-    from PIL import Image  # pillow is a pinned dependency
-    with Image.open(io.BytesIO(raw)) as im:
-        iw, ih = im.size
+    avail_h = max(H - used, Inches(0.3))
+    picture = _readable_image(t.image)
+    if picture is None:  # build_report_pptx refuses such a deck before layout
+        raise PptxIncompleteError([t.title or "(chart)"])
+    raw, iw, ih = picture
     # Fit inside the box, keep the chart's shape, anchor top-left with the tile.
     scale = min(W / iw, avail_h / ih)
     pw, ph = int(iw * scale), int(ih * scale)
@@ -247,6 +271,13 @@ def _new_page_slide(prs, layout, req, page, content_w):
 
 
 def build_report_pptx(req: ReportPptxRequest) -> bytes:
+    missing = [
+        (t.title or f"{page.name or 'page'} · chart")
+        for page in req.pages for t in page.tiles
+        if t.kind == "chart" and _readable_image(t.image) is None
+    ]
+    if missing:
+        raise PptxIncompleteError(missing)
     prs = Presentation()
     prs.slide_width = SLIDE_W
     prs.slide_height = SLIDE_H

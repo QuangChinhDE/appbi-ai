@@ -1961,13 +1961,17 @@ def export_dashboard_pptx_route(
     The browser sends the rendered content (formatted values, table cells, chart
     pictures); this route only checks access and lays it out — it reads no data.
     """
-    from app.services.report_pptx_service import build_report_pptx
+    from app.services.report_pptx_service import PptxIncompleteError, build_report_pptx
 
     dash = DashboardService.get_by_id(db, dashboard_id)
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_view_access(db, current_user, dash, "dashboards")
-    content = build_report_pptx(body)
+    try:
+        content = build_report_pptx(body)
+    except PptxIncompleteError as exc:
+        # A deck with an empty chart block must not download as a success.
+        raise HTTPException(status_code=422, detail={"code": "pptx_chart_missing", "charts": exc.charts})
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", (dash.name or "dashboard")).strip("-") or "dashboard"
     return Response(
         content=content,

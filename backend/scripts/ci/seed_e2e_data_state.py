@@ -391,6 +391,98 @@ def _closure_007_fixture(db, user, ds) -> dict:
     }
 
 
+def _pptx_export_fixture(db, user, ds) -> dict:
+    """The PowerPoint export closure (dashboard-pptx-export.spec.ts).
+
+    Page "Tổng quan": two slicer CONTROLS in a band across the top (they must not
+    reach the deck, and the band they leave must close), four KPIs, a line, a
+    pie, a bar, a table, and — below the fold — the chart a real deck shipped
+    BLANK ("SỐ NGƯỜI DÙNG TRUY CẬP TRUNG BÌNH TRÊN NGÀY THEO ỨNG DỤNG"). That one
+    reads ANOTHER dataset, so the region slicer genuinely cannot apply to it: the
+    author sees the filter diagnostic, viewers and the deck never do.
+    Page "Chi tiết": never opened before the export. Page "Biểu đồ": one chart
+    per rendering family. Oracle: closure_sales North = 610 (4 rows), all = 685.
+    """
+    from app.models.semantic import SemanticView
+    from app.services.slicer_control_service import ensure_slicer_controls
+
+    token = "e2e-pptx-export"
+    dataset_id, table_id = _plain_dataset(
+        db, user, ds, "E2E closure original 007", "closure_sales", CLOSURE_COLUMNS,
+    )
+    _fb_dataset_id, fb_table_id = _plain_dataset(
+        db, user, ds, "E2E feedback executive", "feedback_exec", FEEDBACK_COLUMNS,
+    )
+    existing = db.query(DashboardPublicLink).filter(DashboardPublicLink.token == token).first()
+    if existing is not None:
+        return {"dashboard_id": int(existing.dashboard_id), "token": token}
+    view = db.query(SemanticView).filter(SemanticView.dataset_table_id == table_id).one()
+
+    def slicer(sid: str, field: str, label: str) -> dict:
+        return {
+            "id": sid, "field": field, "label": label,
+            "fieldKey": f"{view.name}.{field}", "semanticField": f"{view.name}.{field}",
+            "datasetId": dataset_id, "type": "dropdown", "operator": "in", "value": [], "scope": "all",
+        }
+
+    dashboard = Dashboard(
+        name="E2E PPTX export", owner_id=user.id,
+        pages_config=[{"id": "p1", "name": "Tổng quan"}, {"id": "p2", "name": "Chi tiết"},
+                      {"id": "p3", "name": "Biểu đồ"}],
+        slicers_config=[slicer("slicer-region", "region", "Region"), slicer("slicer-note", "note", "System ID")],
+        filters_config=[],
+    )
+    db.add(dashboard); db.flush()
+    amount = {"field": "amount", "agg": "sum"}
+    count = {"field": "id", "agg": "count"}
+    # Rows start at 0: ensure_slicer_controls (below) puts the control band at the
+    # top of every page the filters show on and moves the page's tiles down.
+    tiles = [
+        ("p1", "Tổng doanh số", "KPI", {"metrics": [amount]}, (0, 0, 9, 6), table_id),
+        ("p1", "Số đơn", "KPI", {"metrics": [count]}, (9, 0, 9, 6), table_id),
+        ("p1", "Đơn lớn nhất", "KPI", {"metrics": [{"field": "amount", "agg": "max"}]}, (18, 0, 9, 6), table_id),
+        ("p1", "Đơn nhỏ nhất", "KPI", {"metrics": [{"field": "amount", "agg": "min"}]}, (27, 0, 9, 6), table_id),
+        ("p1", "Doanh số theo ngày", "LINE",
+         {"dimension": "day", "timeField": "day", "metrics": [amount]}, (0, 6, 24, 12), table_id),
+        ("p1", "Tỷ trọng theo vùng", "PIE", {"dimension": "region", "metrics": [amount]}, (24, 6, 12, 12), table_id),
+        ("p1", "Doanh số theo vùng", "BAR", {"dimension": "region", "metrics": [amount]}, (0, 18, 18, 12), table_id),
+        ("p1", "Chi tiết giao dịch", "TABLE",
+         {"selectedColumns": ["id", "day", "region", "amount"], "metrics": []}, (18, 18, 18, 12), table_id),
+        ("p1", "SỐ NGƯỜI DÙNG TRUY CẬP TRUNG BÌNH TRÊN NGÀY THEO ỨNG DỤNG", "BAR",
+         {"dimension": "customer_acquisition_channel", "metrics": [{"field": "orders", "agg": "avg"}]},
+         (0, 30, 36, 12), fb_table_id),
+        ("p2", "Doanh số trang chi tiết", "KPI", {"metrics": [amount]}, (0, 0, 12, 6), table_id),
+        ("p2", "Xu hướng trang chi tiết", "LINE",
+         {"dimension": "day", "timeField": "day", "metrics": [amount]}, (12, 0, 24, 12), table_id),
+        ("p3", "Họ GROUPED_BAR", "GROUPED_BAR", {"dimension": "region", "breakdown": "note", "metrics": [amount]}, (0, 0, 12, 10), table_id),
+        ("p3", "Họ STACKED_BAR", "STACKED_BAR", {"dimension": "region", "breakdown": "note", "metrics": [amount]}, (12, 0, 12, 10), table_id),
+        ("p3", "Họ BAR_LINE", "BAR_LINE", {"dimension": "region", "metrics": [amount], "lineMetric": count}, (24, 0, 12, 10), table_id),
+        ("p3", "Họ TIME_SERIES", "TIME_SERIES", {"timeField": "day", "metrics": [amount]}, (0, 10, 12, 10), table_id),
+        ("p3", "Họ DONUT", "DONUT", {"dimension": "region", "metrics": [amount]}, (12, 10, 12, 10), table_id),
+        ("p3", "Họ SCATTER", "SCATTER", {"scatterX": "amount", "scatterY": "region_id", "metrics": []}, (24, 10, 12, 10), table_id),
+        ("p3", "Họ BUBBLE", "BUBBLE", {"scatterX": "amount", "scatterY": "region_id", "dimension": "region", "metrics": [count]}, (0, 20, 12, 10), table_id),
+        ("p3", "Họ RIBBON", "RIBBON", {"timeField": "day", "breakdown": "region", "metrics": [amount]}, (12, 20, 12, 10), table_id),
+        ("p3", "Họ TIMELINE", "TIMELINE", {"timeField": "day", "dimension": "region", "metrics": [amount]}, (24, 20, 12, 10), table_id),
+        ("p3", "Họ MATRIX", "MATRIX", {"tableMode": "pivot", "tableRowDimension": "region", "tableColumnDimension": "note",
+                                       "tablePivotMetric": amount, "metrics": []}, (0, 30, 36, 10), table_id),
+    ]
+    for page_id, title, chart_type, role, (x, y, w, h), tid in tiles:
+        chart = _closure_chart(db, user, tid, f"E2E PPTX {title}", chart_type, role)
+        db.add(DashboardChart(
+            dashboard_id=dashboard.id, chart_id=chart.id, widget_type="chart",
+            layout={"x": x, "y": y, "w": w, "h": h, "gv": 2, "pageId": page_id, "custom_title": title},
+        ))
+    db.flush()
+    db.refresh(dashboard)
+    ensure_slicer_controls(db, dashboard, origin="fixture")
+    db.add(DashboardPublicLink(
+        dashboard_id=dashboard.id, name="E2E PPTX export", token=token,
+        is_active=True, created_by=user.id, filters_config=[],
+        appearance_config={"allow_data_export": True},
+    ))
+    return {"dashboard_id": int(dashboard.id), "token": token}
+
+
 def _closure_pdf_fixture(db, user, ds) -> dict:
     """Three real worker pages with page bounds plus a relative Today filter."""
     token = "e2e-closure-pdf"
@@ -485,6 +577,7 @@ def main() -> int:
         out["closure_007"] = _closure_007_fixture(db, user, ds)
         out["closure_pdf"] = _closure_pdf_fixture(db, user, ds)
         out["feedback_exec"] = _feedback_fixture(db, user, ds)
+        out["pptx_export"] = _pptx_export_fixture(db, user, ds)
         db.commit()
         print(json.dumps(out))
         return 0

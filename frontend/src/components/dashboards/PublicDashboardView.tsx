@@ -1272,8 +1272,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       setExportRenderMode('snapshot');
       setExportProgress({ phase: 'prepare', ratio: 0, message: t('dashboards.export.exportPptx') });
       const originalPageId = activePageId;
+      const { exportDashboardPptx, incompleteChartsOf } = await import('@/lib/export-pptx');
       try {
-        const { exportDashboardPptx } = await import('@/lib/export-pptx');
         const session = getPublicSession(token) ?? undefined;
         const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
         await exportDashboardPptx({
@@ -1282,6 +1282,11 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           gridCols: DASHBOARD_GRID_COLS,
           filename: `${safePdfFilename(String(dashboard.public_link_name || dashboard.name || 'report'), 'report')}.pptx`,
           send: (payload) => publicDashboardApi.exportPptx(token, session, payload),
+          labels: {
+            page: (index, total) => t('dashboards.export.progressPage', { index, total }),
+            chart: (index, total) => t('dashboards.export.progressChart', { index, total }),
+            building: t('dashboards.export.progressBuilding'),
+          },
           onProgress: (ratio, message) => setExportProgress({ phase: 'capture', ratio, message: message || t('dashboards.export.exportPptx') }),
           pages: chosen.map((p) => ({
             name: p.name,
@@ -1316,9 +1321,9 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                   silent: true,
                 });
               }
-              // The extractor then waits on the shared readiness protocol.
+              // The extractor then waits on every tile's own state.
               await new Promise<void>((resolve) => {
-                requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 250)));
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
               });
               return gridSectionRef.current;
             },
@@ -1328,7 +1333,16 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         toast.success(t('dashboards.export.pptxDone'), { id: 'report-export' });
       } catch (err) {
         console.error('PowerPoint export failed', err);
-        toast.error(t('dashboards.export.pptxFailed'), { id: 'report-export' });
+        // The dialog stays open: Retry is one click away.
+        const charts = await incompleteChartsOf(err);
+        if (charts) {
+          toast.error(t('dashboards.export.pptxIncomplete', { count: charts.length }), {
+            id: 'report-export',
+            description: charts.map((c) => `• ${c}`).join('\n'),
+          });
+        } else {
+          toast.error(t('dashboards.export.pptxFailed'), { id: 'report-export' });
+        }
       } finally {
         setCurrentPageId(originalPageId);
         setForceVisibleAll(false);
