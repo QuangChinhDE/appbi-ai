@@ -259,7 +259,14 @@ async def raw_mcp_post(token: str | None, body: dict[str, Any], *, url: str = MC
 
 
 async def appbi_session_token(email: str, password: str) -> str:
+    """Log in through AppBI's real endpoint. AppBI limits logins to 5/min per IP and
+    in CI every client shares 127.0.0.1, so a 429 is waited out (twice at most)."""
     async with httpx2.AsyncClient(timeout=30) as c:
-        r = await c.post(f"{API_URL}/auth/login", json={"email": email, "password": password})
-        r.raise_for_status()
-        return r.json()["access_token"]
+        for attempt in range(3):
+            r = await c.post(f"{API_URL}/auth/login", json={"email": email, "password": password})
+            if r.status_code == 429 and attempt < 2:
+                await asyncio.sleep(62)
+                continue
+            r.raise_for_status()
+            return r.json()["access_token"]
+    raise RuntimeError("login kept being rate limited")

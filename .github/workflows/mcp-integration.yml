@@ -128,7 +128,9 @@ jobs:
         working-directory: backend
         run: |
           pip install -r requirements.txt
-          echo "DATASOURCE_ENCRYPTION_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> "$GITHUB_ENV"
+          KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')
+          echo "::add-mask::$KEY"   # never printed in later step env listings or logs
+          echo "DATASOURCE_ENCRYPTION_KEY=$KEY" >> "$GITHUB_ENV"
       - name: Schema + admin account
         working-directory: backend
         run: |

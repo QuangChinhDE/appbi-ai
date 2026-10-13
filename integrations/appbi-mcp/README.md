@@ -74,9 +74,13 @@ None of them are AppBI Core secrets.
 
 ## Deploy
 
-1. **Core** must be running with the current `docker-compose.yml`. It declares the
-   internal `appbi-mcp-link` network on the backend only. The first deploy recreates
-   the backend container once, to attach it.
+1. **Core** must be running with the current `docker-compose.yml` (declares the internal
+   `appbi-mcp-link` network on the backend only). **Applying that compose change recreates the
+   backend container once** — rehearsed: ~21 s of failed health checks on a loaded dev host
+   (`docker compose up -d` with the new file). Ship it **with a normal Core deploy** (which
+   recreates the backend anyway) or in a maintenance window. After that, starting, stopping,
+   upgrading or rolling back the MCP never touches Core (rehearsed: no failed health sample,
+   same backend container).
 2. **nginx:** the current `nginx.conf` already routes `/mcp`, `/mcp-oauth/` and
    `/.well-known/oauth-*` to `127.0.0.1:8090`. It forwards only `appbi_mcp_*`
    cookies and does not buffer.

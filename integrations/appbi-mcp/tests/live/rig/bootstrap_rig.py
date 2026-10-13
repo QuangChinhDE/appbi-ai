@@ -35,6 +35,8 @@ def main() -> None:
     admin_email, admin_password = os.environ["APPBI_RIG_ADMIN_EMAIL"], os.environ["APPBI_RIG_ADMIN_PASSWORD"]
     tok = httpx2.post(f"{API}/auth/login", json={"email": admin_email, "password": admin_password}, timeout=30).raise_for_status().json()["access_token"]
     h = {"Authorization": f"Bearer {tok}"}
+    admin_id = httpx2.get(f"{API}/auth/me", headers=h).raise_for_status().json()["id"]
+    state["users"]["admin"] = {"id": admin_id, "email": admin_email, "password": admin_password}
     existing = {u["email"]: u for u in httpx2.get(f"{API}/users/", headers=h).json()}
     for key, (email, name, perms) in PEOPLE.items():
         if email in existing:

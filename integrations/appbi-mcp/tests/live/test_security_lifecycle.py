@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx2
 import pytest
 
-from .harness import API_URL, RIG_URL, Person, browser, mcp_session, raw_mcp_post, rig_state, signed_in_context, tool_json
+from .harness import API_URL, RIG_URL, Person, appbi_session_token, browser, mcp_session, raw_mcp_post, rig_state, signed_in_context, tool_json
 
 pytestmark = pytest.mark.live
 
@@ -26,10 +26,7 @@ WHOAMI = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": 
 
 async def _admin() -> dict[str, str]:
     a = rig_state()["users"]["admin"]
-    async with httpx2.AsyncClient(timeout=30) as c:
-        r = await c.post(f"{API_URL}/auth/login", json={"email": a["email"], "password": a["password"]})
-        r.raise_for_status()
-        return {"Authorization": f"Bearer {r.json()['access_token']}"}
+    return {"Authorization": f"Bearer {await appbi_session_token(a['email'], a['password'])}"}
 
 
 async def _connection_token_id(admin: dict[str, str], email: str) -> str:
@@ -120,8 +117,8 @@ async def test_password_change_does_not_end_the_connection_yet():
         async with mcp_session(p) as client:
             assert tool_json(await client.call_tool("whoami", {}))["status"] == "ok"
             new_password = a["password"] + "x"
+            tok = await appbi_session_token(a["email"], a["password"])
             async with httpx2.AsyncClient(timeout=30) as c:
-                tok = (await c.post(f"{API_URL}/auth/login", json={"email": a["email"], "password": a["password"]})).json()["access_token"]
                 r = await c.post(f"{API_URL}/auth/change-password", headers={"Authorization": f"Bearer {tok}"},
                                  json={"old_password": a["password"], "new_password": new_password})
                 assert r.status_code == 200, r.text
