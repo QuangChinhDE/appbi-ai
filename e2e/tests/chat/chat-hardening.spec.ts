@@ -494,7 +494,7 @@ test('structured answer: metric, table, chart reference, citation and follow-ups
   expect(problems).toEqual([]);
 });
 
-test('an assistant whose data was not shared with the reader says so before the first question', async ({ browser }) => {
+test('an assistant whose data or documents were not shared with the reader says so before the first question, and counts only what they can use', async ({ browser }) => {
   const { page, problems } = await open(browser, 'owner');
   // DETERMINISTIC INPUT: `reader_access` is supplied by Agent Flow's reader-scope
   // work; this extends the real /brains response with it to pin the Chat side.
@@ -502,14 +502,18 @@ test('an assistant whose data was not shared with the reader says so before the 
     const res = await route.fetch();
     const body = await res.json();
     for (const b of body.brains) {
+      // fast: a dataset withheld. slow: three documents attached, none readable.
       if (b.brain_key === fx.flows.fast) b.reader_access = { attached_count: 1, reachable_count: 0, withheld_data: 1, withheld_documents: 0, data_attached: true };
+      if (b.brain_key === fx.flows.slow) { b.knowledge_count = 3; b.reader_access = { attached_count: 3, reachable_count: 0, withheld_data: 0, withheld_documents: 3, data_attached: false }; }
     }
     await route.fulfill({ response: res, json: body });
   });
   await page.goto(`/chat?brain=${fx.flows.fast}`);
-  await expect(page.getByTestId('chat-data-withheld')).toContainText('has not been shared with you');
+  await expect(page.getByTestId('chat-data-withheld')).toContainText('not been shared with you');
   await page.goto(`/chat?brain=${fx.flows.slow}`);
-  await expect(page.getByTestId('chat-data-withheld')).toHaveCount(0);
+  // Documents withheld warn too, and the count is what THIS reader can use (0), not 3.
+  await expect(page.getByTestId('chat-data-withheld')).toBeVisible();
+  await expect(page.getByText(/\b3 (sources|attached)\b/)).toHaveCount(0);
   expect(problems).toEqual([]);
 });
 

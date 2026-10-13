@@ -139,6 +139,21 @@ export type ChatEvent =
   | { type: 'result'; envelope: FlowOutputEnvelope }
   | { type: 'done' };
 
+/** How many of the assistant's sources THIS reader can use. The author may have
+ *  attached sources the reader was never given; counting those overstated what
+ *  the reader would get ("3 sources" when none were readable to them). Falls back
+ *  to the attached count on a backend without `reader_access`. */
+export function readerSourceCount(b: ChatBrain): number {
+  const n = b.reader_access?.reachable_count;
+  return typeof n === 'number' ? n : b.knowledge_count;
+}
+
+/** True when some attached data or documents are not shared with this reader. */
+export function readerSourcesWithheld(b: ChatBrain): boolean {
+  const a = b.reader_access;
+  return Boolean(a && ((a.withheld_data || 0) + (a.withheld_documents || 0)) > 0);
+}
+
 export async function listChatBrains(lang?: string): Promise<ChatBrain[]> {
   // `lang` reaches the capability labels, which are the only reader-facing
   // strings the backend produces here — the question classes were written for

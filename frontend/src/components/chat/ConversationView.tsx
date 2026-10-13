@@ -30,6 +30,7 @@ import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { AnswerBlock } from '@/lib/agentFlows';
+import { readerSourceCount, readerSourcesWithheld } from '@/lib/directChat';
 import type { ChatBrain, ChatMessage, ChatThread, ChatThreadDetail } from '@/lib/directChat';
 import { readerNotices } from '@/lib/notices';
 
@@ -397,7 +398,7 @@ function ThreadList({
             {brain ? (
               <span className="flex items-center gap-1 text-tiny text-text-quaternary">
                 <FileText className="h-3 w-3" />
-                {t('chat.card.sources', { n: brain.knowledge_count })}
+                {t('chat.card.sources', { n: readerSourceCount(brain) })}
               </span>
             ) : null}
           </span>
@@ -527,10 +528,10 @@ function Welcome({
         </p>
       ) : null}
       <p className="text-caption text-text-tertiary">{t('chat.welcome.hint')}</p>
-      {/* The assistant was shared, but data its author attached was not shared
-          with THIS reader — so its figures will come back unanswered. Said
-          before the first question. Optional field: absent means nothing. */}
-      {brain.reader_access?.withheld_data ? (
+      {/* The assistant was shared, but data or documents its author attached
+          were not shared with THIS reader — so those questions will come back
+          unanswered. Said before the first question. Absent field: nothing. */}
+      {readerSourcesWithheld(brain) ? (
         <p className="mt-2 rounded-md border border-warning/30 bg-warning/10 px-2 py-1.5 text-caption text-warning"
           data-testid="chat-data-withheld">
           {t('chat.dataWithheld')}
@@ -602,7 +603,7 @@ function Welcome({
 
       <p className="mt-3 flex items-center gap-1 text-tiny text-text-quaternary">
         <FileText className="h-3 w-3" />
-        {t('chat.welcome.sources', { n: brain.knowledge_count })}
+        {t('chat.welcome.sources', { n: readerSourceCount(brain) })}
       </p>
     </div>
   );
