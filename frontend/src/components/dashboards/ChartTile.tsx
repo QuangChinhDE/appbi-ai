@@ -39,6 +39,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { describeChartFailure } from '@/lib/chart-failure';
 import { useI18n } from '@/providers/LanguageProvider';
 import { CachedLiveBadge } from '@/components/dashboards/CachedLiveBadge';
+import { FilterDiagnostic } from '@/components/dashboards/FilterDiagnostic';
+import { buildFilterDiagnostics } from '@/lib/filter-diagnostic';
 import type { ChartSemanticBinding, DashboardPageConfig } from '@/types/api';
 import { ChartDetailModal } from './ChartDetailModal';
 import { buildInstanceParameterFilters } from '@/lib/chart-instance-parameters';
@@ -809,6 +811,19 @@ function ChartTileBase({
   // before even sending it) and BE-side drops (server saw it but had
   // no place to put it). User sees one number per tile either way.
   const droppedByBackend = chartData?.debug?.dropped_filters ?? [];
+  const filterDiagnostics = useMemo(() => buildFilterDiagnostics({
+    skipped: skippedGlobalFilters,
+    dropped: droppedByBackend,
+    filters: globalFilters,
+    unknownLabel: t('dashboards.tile.unknownField'),
+  }), [skippedGlobalFilters, droppedByBackend, globalFilters, t]);
+  // Where this tile stands for an export (lib/render-ready tileReadiness): a
+  // chart with rows must still be DRAWN before it may be captured.
+  // A refetch after a filter change still shows the PREVIOUS rows: not ready.
+  const exportState = chartDataError ? 'error'
+    : (isLoadingData || isFetchingData) ? 'loading'
+      : !chartData ? (isChartDataSuccess ? 'empty' : 'loading')
+        : Array.isArray(chartData.data) && chartData.data.length === 0 ? 'empty' : 'data';
 
 
   // Apply Explore-style filters (from stored config) then dashboard filters client-side
@@ -991,7 +1006,7 @@ function ChartTileBase({
   );
 
   const renderStatusCard = (content: React.ReactNode, tone: 'neutral' | 'danger' = 'neutral') => (
-    <div className={`dashboard-tile relative h-full rounded-lg border p-6 ${tone === 'danger' ? 'border-danger/30 bg-surface-1' : 'border-[rgb(var(--border-line))] bg-surface-1'}`}>
+    <div data-export-state="error" className={`dashboard-tile relative h-full rounded-lg border p-6 ${tone === 'danger' ? 'border-danger/30 bg-surface-1' : 'border-[rgb(var(--border-line))] bg-surface-1'}`}>
       {onRemove && (
         <button
           type="button"
@@ -1020,13 +1035,14 @@ function ChartTileBase({
         ref={visibilityRef}
         className="dashboard-tile relative h-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1"
         aria-hidden="true"
+        data-export-state="loading"
       />
     );
   }
 
   if (isLoadingChart) {
     return (
-      <div className="dashboard-tile relative h-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3 flex flex-col gap-3">
+      <div data-export-state="loading" className="dashboard-tile relative h-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3 flex flex-col gap-3">
         <div className="bi-skeleton h-4 w-2/5" />
         <div className="bi-skeleton flex-1 w-full" />
         <div className="flex gap-2">
@@ -1058,6 +1074,7 @@ function ChartTileBase({
          by p-3 so it won't poke the rounded corners — only the menu escapes. */
       data-tile-id={dashboardChartId}
       data-tile-kind={tileKindOf(chart?.chart_type)}
+      data-export-state={exportState}
       {...tileFrame.dataAttributes}
       className={`${tileFrame.className} bi-card-hover group flex h-full flex-col ${
         aiDesignMode ? 'cursor-pointer' : canEdit && !positionLocked ? 'drag-handle cursor-move' : ''
@@ -1090,6 +1107,7 @@ function ChartTileBase({
           tile (full name on hover); the colored ring shows the location. */}
       {editingBy && (
         <div
+          data-export-hide=""
           className="absolute -top-2 left-2 z-20 flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-bold uppercase text-white shadow-sm ring-2 ring-surface-1"
           style={{ backgroundColor: editingBy.color }}
           title={t('dashboards.tile.collaboratorEditing', { name: editingBy.name })}
@@ -1162,35 +1180,10 @@ function ChartTileBase({
             ) : (
               <span className="flex-1" aria-hidden />
             )}
-            {/* PBI parity (2026-06): NOT gated on canEdit. A viewer who applied a
-                dashboard filter must see when it didn't reach this chart — otherwise
-                the tile shows a number computed without their filter, silently. */}
-            {(skippedGlobalFilters.length > 0 || droppedByBackend.length > 0) && (
-              <span
-                className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded"
-                title={(() => {
-                  const lines: string[] = [];
-                  const total = skippedGlobalFilters.length + droppedByBackend.length;
-                  lines.push(
-                    total !== 1
-                      ? t('dashboards.tile.couldNotApplyFiltersPlural', { count: total })
-                      : t('dashboards.tile.couldNotApplyFiltersOne', { count: total }),
-                  );
-                  for (const f of skippedGlobalFilters) {
-                    lines.push(t('dashboards.tile.skippedNotInModel', { field: getFilterDisplayLabel(f) }));
-                  }
-                  for (const d of droppedByBackend) {
-                    const ref = d.semantic_field || d.field || t('dashboards.tile.unknownField');
-                    const reason = d.detail || d.reason;
-                    lines.push(`• ${ref} — ${reason}`);
-                  }
-                  return lines.join('\n');
-                })()}
-              >
-                <AlertTriangle className="h-3 w-3" />
-                {t('dashboards.tile.skippedBadge', { count: skippedGlobalFilters.length + droppedByBackend.length })}
-              </span>
-            )}
+            {/* Report filters that do not reach this chart: the AUTHOR is told
+                which, why and what it means, so the report can be fixed before
+                it is published. Viewers and exports never see it. */}
+            <FilterDiagnostic items={filterDiagnostics} />
             {/* A live result re-served from the cache says when it was read —
                 never presented as the source right now. */}
             <CachedLiveBadge debug={chartData?.debug} />
@@ -1198,6 +1191,7 @@ function ChartTileBase({
               href={`/explore/${chartId}?fromReport=${dashboardId}&tile=${dashboardChartId}`}
               target="_blank"
               rel="noreferrer"
+              data-export-hide=""
               onMouseDown={e => e.stopPropagation()}
               className="flex-shrink-0 rounded-md p-1 text-text-quaternary opacity-0 transition hover:bg-surface-2 hover:text-brand focus:opacity-100 group-hover:opacity-100"
               title={t('dashboards.tile.openInExploreNewTab')}

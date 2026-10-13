@@ -196,13 +196,12 @@ export function ReadonlyChartTile({
             : ''))
     : '';
   const kpiHeaderTitle = customTileTitle || configuredChartTitle || kpiMetricLabel || chartNameTrim;
-  // PBI parity (2026-06) — surface filters the BE could not apply to THIS
-  // chart (field unrelated to the visual's table, or a malformed join). The
-  // engine reports these in `debug.dropped_filters`; previously only the
-  // editor-facing ChartTile rendered a badge AND it was gated behind canEdit,
-  // so a viewer/public reader saw a number silently computed WITHOUT the
-  // filter they applied (the DA's "mông lung"). PowerBI shows every consumer
-  // when a slicer doesn't reach a visual; we do the same here.
+  // A filter the engine could not apply to THIS chart (`debug.dropped_filters`)
+  // is an AUTHOR diagnostic: the Builder (ChartTile) explains it so the author
+  // can fix the report before publishing. Viewers on /d, /embed and emb_ are not
+  // shown it (product contract 2026-10): "N bị bỏ qua" read as rows being
+  // dropped, and it leaked engine terms into published reports and decks. The
+  // numbers are unchanged — this is presentation only.
   // Report evidence — the rows this published tile shows, for narrative blocks
   // on the same report (builder, /d and /embed alike).
   const tileEvidence = useMemo(() => {
@@ -219,7 +218,11 @@ export function ReadonlyChartTile({
     });
   }, [roleConfig, dashboardChartId, chart?.chart_type, isKpiCard, kpiHeaderTitle, displayTitle, chartNameTrim, effectiveStyleConfig, chartData, roDatasetModel]);
   usePublishTileEvidence(dashboardChartId, tileEvidence, !chartData && !error);
-  const droppedByBackend = chartData?.debug?.dropped_filters ?? [];
+  // Where this tile stands for an export (lib/render-ready tileReadiness): a
+  // chart with rows must still be DRAWN before it may be captured.
+  const exportState = !chart || error ? 'error'
+    : !chartData ? 'loading'
+      : Array.isArray(chartData.data) && chartData.data.length === 0 ? 'empty' : 'data';
   const chartRenderStyleConfig = useMemo(() => {
     if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
     return { ...effectiveStyleConfig, chartTitle: '' };
@@ -370,6 +373,7 @@ export function ReadonlyChartTile({
         ref={visibilityRef}
         className="dashboard-tile h-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1"
         aria-hidden="true"
+        data-export-state="loading"
       />
     );
   }
@@ -383,6 +387,7 @@ export function ReadonlyChartTile({
          Phase-B14 — honor the dashboard theme's card radius/border. */
       data-tile-id={dashboardChartId ?? chart?.id ?? ''}
       data-tile-kind={tileKindOf(chart?.chart_type)}
+      data-export-state={exportState}
       {...tileFrame.dataAttributes}
       className={`${tileFrame.className} group h-full overflow-hidden transition-colors ${
         isCrossFilterSource || isHighlightSource
@@ -404,26 +409,9 @@ export function ReadonlyChartTile({
             label — instead of leaving an empty title band above the value.
             (Phase-B10/B11 + 2026-06 card-header consistency.) */}
         {(() => {
-          const droppedBadge = droppedByBackend.length > 0 ? (
-            <span
-              className="flex-shrink-0 inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
-              title={(() => {
-                const lines: string[] = [
-                  t('dashboards.readonlyChartTile.droppedFiltersTitle', { count: droppedByBackend.length }),
-                ];
-                for (const d of droppedByBackend) {
-                  const ref = d.semantic_field || d.field || t('dashboards.readonlyChartTile.unknownField');
-                  lines.push(`• ${ref} — ${d.detail || d.reason}`);
-                }
-                return lines.join('\n');
-              })()}
-            >
-              <AlertTriangle className="h-3 w-3" />
-              {t('dashboards.readonlyChartTile.droppedBadge', { count: droppedByBackend.length })}
-            </span>
-          ) : null;
           const havingToggle = havingOptions.length > 0 ? (
             <button
+              data-export-hide=""
               onClick={() => setIsHavingOpen((current) => !current)}
               className={`flex-shrink-0 rounded-full border border-transparent bg-surface-1 p-1.5 transition ${
                 isHavingOpen || havingFilters.length > 0
@@ -437,6 +425,7 @@ export function ReadonlyChartTile({
           ) : null;
           const exportButton = canExport ? (
             <button
+              data-export-hide=""
               onClick={handleExportData}
               className="flex-shrink-0 rounded-full border border-transparent bg-surface-1 p-1.5 text-text-quaternary opacity-0 transition group-hover:opacity-100 hover:border-[rgb(var(--border-line))] hover:bg-surface-2 hover:text-text-primary"
               title={t('dashboards.readonlyChartTile.exportData')}
@@ -447,7 +436,7 @@ export function ReadonlyChartTile({
           ) : null;
           // A live result re-served from the cache says when it was read.
           const cachedBadge = cachedLiveNotice(chartData?.debug) ? <CachedLiveBadge debug={chartData?.debug} /> : null;
-          const hasActions = Boolean(droppedBadge || cachedBadge || havingToggle || exportButton);
+          const hasActions = Boolean(cachedBadge || havingToggle || exportButton);
 
           // KPI: header row carries the metric label (the de-facto title) on
           // the left, level with the actions on the right; the card body then
@@ -459,12 +448,11 @@ export function ReadonlyChartTile({
                 {kpiHeaderTitle && (
                   <p data-pdf-tile-title className={TILE_KPI_LABEL_CLASS} style={themeTitleStyle} title={kpiHeaderTitle}>{kpiHeaderTitle}</p>
                 )}
-                {/* Always-visible status badges (dropped filters, "as of")
-                    sit IN the row: overlaid, they covered the label — in the
-                    PDF the "Tính đến …" badge hid the KPI's name. */}
-                {(droppedBadge || cachedBadge) && (
+                {/* The always-visible "as of" badge sits IN the row: overlaid,
+                    it covered the label — in the PDF the "Tính đến …" badge
+                    hid the KPI's name. */}
+                {cachedBadge && (
                   <div className="flex min-w-0 shrink items-center gap-1">
-                    {droppedBadge}
                     {cachedBadge}
                   </div>
                 )}
@@ -497,8 +485,7 @@ export function ReadonlyChartTile({
               </div>
               {hasActions && (
                 <div className="ml-auto flex min-w-0 shrink items-center gap-1">
-                  {droppedBadge}
-                    {cachedBadge}
+                  {cachedBadge}
                   {havingToggle}
                   {exportButton}
                 </div>

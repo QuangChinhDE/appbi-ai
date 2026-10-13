@@ -4262,13 +4262,17 @@ def export_public_dashboard_pptx(
     Lays out what the reader's browser rendered (already scoped by this link's
     locked/hidden filters); reads no data itself, so it cannot widen the link.
     """
-    from app.services.report_pptx_service import build_report_pptx
+    from app.services.report_pptx_service import PptxIncompleteError, build_report_pptx
     _refuse_report_export_on_embed_grant(token)
 
     dash, _public_filters, _link, _appearance = _get_dashboard_by_token(
         token, db, session_token=x_public_session, track_access=False,
     )
-    content = build_report_pptx(body)
+    try:
+        content = build_report_pptx(body)
+    except PptxIncompleteError as exc:
+        # A deck with an empty chart block must not download as a success.
+        raise HTTPException(status_code=422, detail={"code": "pptx_chart_missing", "charts": exc.charts})
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", (dash.name or "report")).strip("-") or "report"
     return Response(
         content=content,
