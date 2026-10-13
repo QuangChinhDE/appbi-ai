@@ -46,7 +46,8 @@ def main() -> None:
         httpx2.put(f"{API}/permissions/{uid}", headers=h, json={"permissions": perms}).raise_for_status()
         state["users"][key] = {"id": uid, "email": email, "password": password}
     if not state.get("datasource_id"):
-        cfg = {"host": "appbi-db", "port": 5432, "database": "shopsrc", "schema": "shop",
+        cfg = {"host": os.environ.get("APPBI_RIG_DB_HOST", "appbi-db"), "port": int(os.environ.get("APPBI_RIG_DB_PORT", "5432")),
+               "database": "shopsrc", "schema": "shop",
                "username": os.environ["APPBI_RIG_DB_USER"], "password": os.environ["APPBI_RIG_DB_PASSWORD"]}
         state["datasource_id"] = httpx2.post(f"{API}/datasources/", headers=h, json={"name": "Shop (rig)", "type": "postgresql", "config": cfg}).raise_for_status().json()["id"]
     for key in ("author_a", "author_b", "reader"):

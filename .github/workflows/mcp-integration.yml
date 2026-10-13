@@ -78,3 +78,112 @@ jobs:
           # AppBI unreachable → not ready (503), but the process stays up.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8090/mcp-oauth/readyz)" = "503"
           docker logs mcp | tail -20
+
+  # Real journeys through a real MCP client and a real browser, against a real
+  # AppBI (backend + Postgres + production frontend build) — no mocks. BigQuery is
+  # not available here, so the only allowed skip is the BigQuery publish journey
+  # (covered by the isolated rig); the no-host publish journey runs instead and
+  # must end in AppBI's own sync_failed. Any other skip fails the job.
+  live-journeys:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: appbi
+          POSTGRES_PASSWORD: appbi
+          POSTGRES_DB: appbi
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_NAME: appbi
+      DB_USER: appbi
+      DB_PASSWORD: appbi
+      ENVIRONMENT: test
+      METADATA_CATALOG_ENABLED: "true"
+      SECRET_KEY: mcp-live-ci-not-a-production-value
+      ALLOWED_PRIVATE_SOURCE_CIDRS: "127.0.0.0/8,::1/128"
+      CORS_ORIGINS: "http://localhost:18180"
+      PYTHONPATH: ${{ github.workspace }}/backend
+      NEXT_PUBLIC_API_URL: /api/v1
+      BACKEND_URL: http://localhost:8000/api/v1
+      E2E_EMAIL: admin@appbi.io
+      E2E_PASSWORD: ci-admin-password
+      APPBI_RIG_URL: http://localhost:18180
+      APPBI_RIG_API: http://localhost:8000/api/v1
+      APPBI_RIG_STATE: ${{ runner.temp }}/rig-state.json
+      APPBI_LIVE_ALLOWED_SKIPS: test_dataset_sync_and_publish_to_bigquery
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - name: Backend dependencies, schema, admin
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+          echo "DATASOURCE_ENCRYPTION_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> "$GITHUB_ENV"
+      - name: Schema + admin account
+        working-directory: backend
+        run: |
+          alembic upgrade head
+          python scripts/ci/seed_e2e_user.py
+      - name: Source database (deterministic shop data)
+        run: |
+          PGPASSWORD=appbi psql -h localhost -U appbi -d appbi -c "CREATE DATABASE shopsrc"
+          PGPASSWORD=appbi psql -h localhost -U appbi -d shopsrc -v ON_ERROR_STOP=1 -q -f integrations/appbi-mcp/tests/live/rig/seed_shop.sql
+      - name: Start the backend
+        working-directory: backend
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          for i in $(seq 1 60); do curl -sf http://localhost:8000/health && break; sleep 2; done
+          curl -sf http://localhost:8000/health
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - name: Build and start the frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+          npm run start -- --port 3000 &
+          for i in $(seq 1 60); do curl -sf http://localhost:3000/login && break; sleep 2; done
+          curl -sf http://localhost:3000/login
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: MCP service (own venv) + browser
+        run: |
+          python integrations/appbi-mcp/scripts/run_offline_tests.py -q tests/test_allowlist_contract.py
+          V=integrations/appbi-mcp/.venv/bin/python
+          $V -m pip install -q playwright==1.63.0
+          $V -m playwright install --with-deps chromium
+          export MCP_STATE_KEY=$($V -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+          cd integrations/appbi-mcp
+          MCP_PUBLIC_URL=http://localhost:18180 APPBI_API_URL=http://localhost:8000/api/v1 MCP_STATE_DIR=${{ runner.temp }}/mcp-state             nohup .venv/bin/python -m appbi_mcp > ${{ runner.temp }}/mcp.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://localhost:8090/mcp-oauth/healthz && break; sleep 1; done
+          curl -sf http://localhost:8090/mcp-oauth/readyz
+      - name: One origin in front (production nginx routing)
+        run: |
+          docker run -d --name edge --network host -v "$PWD/integrations/appbi-mcp/tests/live/rig/nginx.ci.conf:/etc/nginx/nginx.conf:ro" nginx:1.27
+          for i in $(seq 1 20); do curl -sf http://localhost:18180/mcp-oauth/healthz && break; sleep 1; done
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:18180/mcp); test "$code" = "401"
+      - name: Test principals
+        env:
+          APPBI_RIG_ADMIN_EMAIL: admin@appbi.io
+          APPBI_RIG_ADMIN_PASSWORD: ci-admin-password
+          APPBI_RIG_DB_HOST: 127.0.0.1
+          APPBI_RIG_DB_USER: appbi
+          APPBI_RIG_DB_PASSWORD: appbi
+        run: integrations/appbi-mcp/.venv/bin/python integrations/appbi-mcp/tests/live/rig/bootstrap_rig.py
+      - name: Live journeys (real MCP client + Chromium + AppBI + Postgres)
+        working-directory: integrations/appbi-mcp
+        run: .venv/bin/python -m pytest -m live tests/live -v -rs -p no:cacheprovider
+      - name: Service logs on failure
+        if: failure()
+        run: |
+          tail -n 200 ${{ runner.temp }}/mcp.log || true
+          docker logs edge 2>&1 | tail -n 50 || true

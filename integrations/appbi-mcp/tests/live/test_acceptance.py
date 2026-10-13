@@ -233,3 +233,25 @@ async def test_dataset_sync_and_publish_to_bigquery():
             assert res["recent_runs"][0]["status"] == "success"
             again = tool_json(await client.call_tool("publish", {"plan_id": rp["plan_id"]}))
             assert again["status"] == "published"  # idempotent: no second sync
+
+
+async def test_publish_without_a_bigquery_host_fails_honestly():
+    """Where no BigQuery host exists (public CI), publish must end in AppBI's own
+    sync_failed — never a fabricated 'published'."""
+    st = rig_state()
+    if st.get("bq_host_id"):
+        pytest.skip("rig HAS a BigQuery host; covered by test_dataset_sync_and_publish_to_bigquery")
+    async with browser() as b:
+        p = await person("author_a", b)
+        async with mcp_session(p) as client:
+            ds = await build_dataset(client, p, {"name": f"No host {int(time.time())}", "tables": tables(0, "orders"),
+                                                 "measures": [{"table": "orders", "name": "revenue", "type": "sum", "column": "amount"}]})
+            rp = tool_json(await client.call_tool("request_publish", {"resource_type": "dataset", "resource_id": ds["dataset_id"]}))
+            await p.approve(rp["approval_url"])
+            res = tool_json(await client.call_tool("publish", {"plan_id": rp["plan_id"]}))
+            for _ in range(6):
+                if res["status"] in ("published", "sync_failed"):
+                    break
+                res = tool_json(await client.call_tool("get_publish_status", {"dataset_id": ds["dataset_id"], "wait_seconds": 30}))
+            assert res["status"] == "sync_failed", res
+            assert res["last_sync_error"] and not res["has_published_data"]
