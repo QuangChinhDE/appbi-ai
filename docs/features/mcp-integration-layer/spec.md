@@ -283,7 +283,12 @@ Each change below came from a real client, browser or rig run, not from review.
 | D8 | `GET /dashboards/{id}` tile `_v` | `tile_base_v` = keys of the caller's `draft_layouts` with the live `_v` (default 0), **the Builder's exact rule** (`buildTileBaseV`) | Publish checks only the tiles it is given (`api/dashboards.py:3022`). |
 | D9 | — | DNS-rebinding guard also accepts the public URL's bare hostname | nginx forwards `$host`, which drops the port. |
 
-## 13. Core findings (reported, not changed here)
+## 13. Core findings
+
+Current status, owners and smallest fixes: `core-handoff.md`. F4 has since been closed in this
+branch by an isolated Core commit (view_version contract) + MCP fail-closed behaviour; the
+original findings follow.
+
 
 - **F1. `GET /datasources/{id}/tables/{schema}/{table}` fails for every stored PostgreSQL source.** Owner: Source Core, `services/datasource_service.py`.
   - **Repro:** on the rig as any user with view, the route returns `500 Failed to retrieve table details`. The log shows `password authentication failed`.
