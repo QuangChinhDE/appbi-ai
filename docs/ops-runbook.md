@@ -250,6 +250,39 @@ The Claude connector is a separate container. Everything about it is in
   connections, remove its `appbi_mcp_state` volume, then revoke the "Claude MCP"
   tokens.
 
+### Local single-host entry point with the connector (`--with-mcp`)
+
+On a single host without a host nginx (local / pilot), the connector and the app
+must share one browser origin, so one process owns `127.0.0.1:3000`:
+
+- **Owner:** the `edge` service from `docker-compose.edge.yml` (nginx, config
+  `deploy/nginx.local-edge.conf`). It routes `/mcp`, `/mcp-oauth/*` and the OAuth
+  discovery paths to the MCP project and everything else, unchanged, to the
+  frontend, which then has **no host port**. Port: `APPBI_HTTP_PORT` (default 3000).
+- **Start / update:** export `MCP_PUBLIC_URL`, `MCP_STATE_KEY` (and optionally
+  `APPBI_PUBLIC_URL`) in your shell, then `./run.sh --with-mcp`. It starts Core with
+  the overlay, then the MCP project (`-p appbi-mcp`) with an empty env file — Core's
+  `.env` is never read for the MCP.
+- **Stop:** `./run.sh --with-mcp --down` (MCP first, then Core).
+- **Restart:** `docker compose -f docker-compose.yml -f docker-compose.edge.yml restart edge`
+  (or `frontend`); the MCP: `docker compose -p appbi-mcp -f docker-compose.mcp.yml restart`.
+- **Reboot:** every container is `restart: unless-stopped`, so after a host / Docker
+  restart the edge, Core and the MCP come back on their own in their last shape.
+- **MCP stopped:** the edge keeps serving the app; only the MCP paths answer 502
+  (upstreams are resolved per request).
+- **Never run plain `docker compose up` (without `-f docker-compose.edge.yml`) while
+  the MCP is enabled.** It recreates the frontend with port 3000 and the edge loses
+  its port. Always use `./run.sh --with-mcp`, or pass both `-f` files.
+- **Independent upgrades:** Core (`./run.sh --with-mcp`) and the MCP
+  (`docker compose -p appbi-mcp -f docker-compose.mcp.yml up -d --build`) are separate
+  projects; upgrading or rolling back one does not recreate the other's containers.
+- **Roll back to frontend-on-3000:**
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.edge.yml rm -sf edge
+  docker compose -p appbi-mcp -f docker-compose.mcp.yml down   # optional
+  ./run.sh                                                     # frontend takes 3000 again
+  ```
+
 ## Emergency stop
 
 ```bash
