@@ -86,7 +86,10 @@ dbx(){  # dbx <client cmd...>   stdin passed through
 dbrev(){ dbx psql -Atc "SELECT string_agg(version_num, ',' ORDER BY version_num) FROM alembic_version" 2>/dev/null | tr -d '\r'; }
 # Run one client command as the dedicated backup role (values via env, never argv).
 as_backup(){ ( export PGHOST="$BK_PGHOST" PGPORT="$BK_PGPORT" PGUSER="$BK_PGUSER" PGPASSWORD="$BK_PGPASSWORD" \
-                      PGDATABASE="$BK_PGDATABASE" PGSSLMODE="$BK_PGSSLMODE"; "$@" ); }
+                      PGDATABASE="$BK_PGDATABASE"
+                # An empty PGSSLMODE is invalid to libpq ("invalid sslmode value").
+                if [ -n "$BK_PGSSLMODE" ]; then export PGSSLMODE="$BK_PGSSLMODE"; else unset PGSSLMODE; fi
+                "$@" ); }
 
 # ── automatic recovery for any failure BEFORE the migration ──────────────────
 STAGE="pre"; OLD_SHA=""; RECOVER_IMAGES=0
