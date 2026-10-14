@@ -25,7 +25,10 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
+    # Not "no-referrer": under it a browser sends `Origin: null` even on this page's own
+    # form POST, and the approval's same-origin check then refuses every real click.
+    # "same-origin" keeps the referrer off cross-site requests and sends the true Origin.
+    "Referrer-Policy": "same-origin",
     "Cache-Control": "no-store",
 }
 

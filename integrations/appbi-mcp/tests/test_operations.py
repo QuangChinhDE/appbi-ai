@@ -178,6 +178,23 @@ async def test_post_requires_csrf_then_approves(app, client, fake_appbi):
     assert r.status_code == 200 and plans.approval_state(plan) == "approved"
 
 
+async def test_approval_page_lets_the_browser_send_its_origin(app, client, fake_appbi):
+    """Real Claude Desktop pilot on appbi-ai (2026-10-14): with `Referrer-Policy:
+    no-referrer` Chromium posted the Approve form with `Origin: null` and the page
+    refused its own click (403). The rig's nginx overrode the header, so CI never saw it.
+    The page must send the true Origin, and a null Origin is still refused."""
+    plans, plan = await _approval_setup(app, client, fake_appbi)
+    r = await client.get(f"/mcp-oauth/approve/{plan.id}")
+    assert r.headers["referrer-policy"] == "same-origin"
+    csrf = re.search(r"name=csrf value='([0-9a-f]+)'", r.text).group(1)
+    form = {"decision": "approve", "csrf": csrf, "plan_hash": plan.plan_hash}
+    r = await client.post(f"/mcp-oauth/approve/{plan.id}", data=form, headers={"origin": "null"})
+    assert r.status_code == 403 and plans.approval_state(plan) == "none"
+    origin = app.state.ctx.settings.public_url
+    r = await client.post(f"/mcp-oauth/approve/{plan.id}", data=form, headers={"origin": origin})
+    assert r.status_code == 200 and plans.approval_state(plan) == "approved"
+
+
 async def test_reject_is_recorded_and_the_page_stops_offering_approve(app, client, fake_appbi):
     plans, plan = await _approval_setup(app, client, fake_appbi)
     csrf = re.search(r"name=csrf value='([0-9a-f]+)'", (await client.get(f"/mcp-oauth/approve/{plan.id}")).text).group(1)
