@@ -24,6 +24,7 @@ import {
   Pencil,
   Plus,
   RotateCcw,
+  RefreshCw,
   Save,
   Search,
   Sigma,
@@ -32,9 +33,13 @@ import {
   Type,
   X,
 } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   useUpdateModelView,
   useDeleteModelMeasure,
+  isViewStaleError,
+  modelKeys,
+  type DatasetModelResponse,
   dryRunMeasure,
   previewMeasure,
   type MeasurePreviewResult,
@@ -2858,6 +2863,8 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
   onRequestAddColumn,
 }: ModelViewEditPanelProps, ref) {
   const [activeTab, setActiveTab] = useState<PanelTab>(showDictionaryTab ? initialTab : 'fields');
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
 
   const tableId = view?.dataset_table_id ?? null;
 
@@ -3079,8 +3086,41 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
   // add sentinel toggles. ALWAYS rebuilds dimensions/measures from the view
   // first; THEN, if the page is in add-mode (focusMeasureName === '__new__'),
   // appends a blank measure and marks it active. One effect = no ordering bug.
+  // F4 — optimistic concurrency. `seedView` is the server state the current
+  // edits are based on; its `view_version` is quoted on every save so a save
+  // over a newer edit (another tab / user / MCP) is refused with 409
+  // `view_stale` instead of silently replacing it. A background refetch must
+  // NOT reseed while the editor is dirty — that would both wipe the edits and
+  // advance the base version, defeating the guard.
+  const [seedView, setSeedView] = useState<DatasetModelView | null>(null);
+  const seedViewRef = useRef<DatasetModelView | null>(null);
+  seedViewRef.current = seedView;
+  const dirtyRef = useRef(false);
+  const prevAddingRef = useRef(isAddingNew);
+  // Set by a 409 view_stale: the user's edits at the moment of the conflict,
+  // kept so they can be re-applied on top of the reloaded view.
+  const [staleConflict, setStaleConflict] = useState<{
+    measures: MeasureDefinition[];
+    dimensions: DimensionDefinition[];
+    viewDescription: string;
+    measureRowKeys: string[];
+    dimensionRowKeys: string[];
+    /** True once the latest server version has been loaded into the editor. */
+    reloaded?: boolean;
+  } | null>(null);
+
   useEffect(() => {
     if (!view) return;
+    const addingChanged = prevAddingRef.current !== isAddingNew;
+    prevAddingRef.current = isAddingNew;
+    const seeded = seedViewRef.current;
+    if (!addingChanged && seeded && seeded.id === view.id && dirtyRef.current) {
+      // Background refetch / optimistic update while the user has unsaved
+      // edits: keep the edits AND the version they were based on.
+      return;
+    }
+    if (!seeded || seeded.id !== view.id) setStaleConflict(null);
+    setSeedView(view);
     leaveHandledRef.current = false;
     const baseMeasures = view.measures.map((m) => ({ ...m }));
     const baseMeasureKeys = view.measures.map((m, index) => `${view.id}:measure:${index}:${m.name || 'field'}`);
@@ -3106,14 +3146,18 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, isAddingNew]);
 
+  // Dirtiness is measured against the state the edits are based on (the
+  // seed), not the latest prop — a refetch must not make edits look "clean".
+  const baseView = view && seedView && seedView.id === view.id ? seedView : view;
   const modelIsDirty =
-    !!view && (
-      JSON.stringify(measures) !== JSON.stringify(view.measures) ||
+    !!baseView && (
+      JSON.stringify(measures) !== JSON.stringify(baseView.measures) ||
       (contentMode !== 'measures' && (
-        JSON.stringify(dimensions) !== JSON.stringify(view.dimensions) ||
-        viewDescription !== (view.description || '')
+        JSON.stringify(dimensions) !== JSON.stringify(baseView.dimensions) ||
+        viewDescription !== (baseView.description || '')
       ))
     );
+  dirtyRef.current = modelIsDirty;
 
   // ── Draft (UX: never lose measure config) — EXPLICIT mode ──────────────────
   // Snapshots the full editable model state (incl. row keys so rename detection
@@ -3122,9 +3166,12 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
   // (→ saveDraft/flush) or on beforeunload (silent flush). Restore is via a
   // banner (never auto-applied). The draft lives in localStorage and NEVER
   // touches the BE — reports keep the saved formula until an explicit Save.
+  // `baseVersion` records which server version the draft was edited from, so
+  // a restore over a view that changed since can say so (see applyDraft).
+  const baseVersion = baseView?.view_version;
   const draftValue = useMemo(
-    () => ({ measures, dimensions, viewDescription, measureRowKeys, dimensionRowKeys }),
-    [measures, dimensions, viewDescription, measureRowKeys, dimensionRowKeys],
+    () => ({ measures, dimensions, viewDescription, measureRowKeys, dimensionRowKeys, baseVersion }),
+    [measures, dimensions, viewDescription, measureRowKeys, dimensionRowKeys, baseVersion],
   );
   const draftKey = view ? `appbi:measure-draft:v1:${datasetId}:${view.id}` : null;
   const { pendingDraft, restore: restoreDraft, discard: discardDraft, flush: flushDraft } = useLocalDraft({
@@ -3158,9 +3205,14 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
     if (pendingDraft && view && !draftDiffersFromSaved) discardDraft();
   }, [pendingDraft, view, draftDiffersFromSaved, discardDraft]);
 
-  const applyDraft = () => {
-    const data = restoreDraft();
-    if (!data || !view) return;
+  const applyEditSnapshot = (data: {
+    measures?: MeasureDefinition[];
+    dimensions?: DimensionDefinition[];
+    viewDescription?: string;
+    measureRowKeys?: string[];
+    dimensionRowKeys?: string[];
+  }) => {
+    if (!view) return;
     const restoredMeasures = Array.isArray(data.measures) ? data.measures : [];
     const restoredDimensions = Array.isArray(data.dimensions) ? data.dimensions : [];
     setMeasures(restoredMeasures);
@@ -3179,6 +3231,79 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
     setActiveNewRowKey(null);
   };
 
+  const applyDraft = () => {
+    const data = restoreDraft();
+    if (!data || !view) return;
+    // The restored edits are applied on top of the CURRENT server version (the
+    // seed is not rewound to the draft's base — that version may no longer
+    // exist). When the view changed since the draft was taken, say so: saving
+    // the restored draft replaces those newer changes.
+    const draftBase = (data as { baseVersion?: string }).baseVersion;
+    if (draftBase && baseVersion && draftBase !== baseVersion) {
+      toast.warning(t('datasets.modelEditor.draftBasedOnOlderVersion'));
+    }
+    applyEditSnapshot(data);
+  };
+
+  // The editor's own surgical measure DELETE changes the view's version. Move
+  // the base forward to the post-delete state ONLY when the server's result is
+  // exactly our base minus that measure — i.e. nobody else changed the view.
+  // Otherwise keep the old version so the next save is refused as stale
+  // rather than silently overwriting the other change.
+  const adoptAfterDelete = (
+    measureName: string,
+    res: { measures?: MeasureDefinition[]; dimensions?: DimensionDefinition[]; description?: string | null; view_version?: string } | undefined,
+  ) => {
+    setSeedView((prev) => {
+      if (!prev || !res?.view_version || !res.measures) return prev;
+      const expectedMeasures = prev.measures.filter((m) => m.name !== measureName);
+      const unchangedElsewhere =
+        JSON.stringify(res.measures) === JSON.stringify(expectedMeasures)
+        && JSON.stringify(res.dimensions ?? []) === JSON.stringify(prev.dimensions ?? [])
+        && (res.description ?? '') === (prev.description ?? '');
+      if (!unchangedElsewhere) return prev;
+      return { ...prev, measures: expectedMeasures, view_version: res.view_version };
+    });
+  };
+
+  // 409 view_stale → "Reload": fetch the latest model and show it (new base
+  // version), while the user's edits stay in `staleConflict` to re-apply.
+  const [isReloadingStale, setIsReloadingStale] = useState(false);
+  const reloadAfterStale = async () => {
+    if (!view) return;
+    // Edits typed after the 409 must survive too: refresh the kept snapshot
+    // (and the local draft) from the editor's current state before reloading.
+    const latestEdits = { measures, dimensions, viewDescription, measureRowKeys, dimensionRowKeys };
+    setStaleConflict((prev) => (prev ? { ...prev, ...latestEdits } : prev));
+    flushDraft();
+    setIsReloadingStale(true);
+    try {
+      await queryClient.refetchQueries({ queryKey: modelKeys.detail(datasetId), exact: true });
+      const fresh = queryClient
+        .getQueryData<DatasetModelResponse>(modelKeys.detail(datasetId))
+        ?.views.find((v) => v.id === view.id);
+      if (!fresh) return;
+      setSeedView(fresh);
+      setMeasures(fresh.measures.map((m) => ({ ...m })));
+      setMeasureRowKeys(fresh.measures.map((m, index) => `${fresh.id}:measure:${index}:${m.name || 'field'}`));
+      setDimensions(fresh.dimensions.map((d) => ({ ...d })));
+      setDimensionRowKeys(fresh.dimensions.map((d, index) => `${fresh.id}:dimension:${index}:${d.name || 'field'}`));
+      setViewDescription(fresh.description || '');
+      setActiveNewRowKey(null);
+      setStaleConflict((prev) => (prev ? { ...prev, reloaded: true } : prev));
+    } catch {
+      toast.error(t('datasets.modelEditor.staleReloadFailed'));
+    } finally {
+      setIsReloadingStale(false);
+    }
+  };
+
+  const reapplyStaleEdits = () => {
+    if (!staleConflict) return;
+    applyEditSnapshot(staleConflict);
+    setStaleConflict(null);
+  };
+
   // Revert the in-memory edits back to the saved view + drop the local draft.
   // Used by the leave-modal's "Bỏ thay đổi". Mirrors the unified view-load.
   const discardChanges = useCallback(() => {
@@ -3189,6 +3314,8 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
     setDimensionRowKeys(view.dimensions.map((d, index) => `${view.id}:dimension:${index}:${d.name || 'field'}`));
     setViewDescription(view.description || '');
     setActiveNewRowKey(null);
+    setSeedView(view);
+    setStaleConflict(null);
     discardDraft();
   }, [view, discardDraft]);
 
@@ -3373,8 +3500,22 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
     // measures still used by charts, it returns 409 with a structured detail
     // payload. We surface a confirm dialog so the user can choose to force-save
     // (charts will then show "field not found" until rebound) or cancel.
+    const expectedViewVersion = seedViewRef.current?.view_version;
+    // After a successful save the saved content becomes the new base, at the
+    // version the server returned — so the next save quotes it, and the
+    // refetch that follows reseeds normally (edits == base → not dirty).
+    const adoptSaved = (result: { view_version?: string } | undefined) => {
+      setSeedView((prev) => (prev && prev.id === view.id ? {
+        ...prev,
+        dimensions,
+        measures,
+        description: viewDescription,
+        view_version: result?.view_version ?? prev.view_version,
+      } : prev));
+      setStaleConflict(null);
+    };
     const trySave = async (force: boolean) => {
-      await updateView.mutateAsync({
+      return updateView.mutateAsync({
         datasetId,
         viewId: view.id,
         data: {
@@ -3384,13 +3525,26 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
           // Phase-6: only attach rename_map when something actually changed
           // so the BE rewrite path is a no-op for normal saves.
           ...(Object.keys(renameMap).length > 0 ? { rename_map: renameMap } : {}),
+          // F4: quote the version the edits are based on. `force` below only
+          // bypasses the cascade guard — a stale version is still refused.
+          ...(expectedViewVersion ? { expected_view_version: expectedViewVersion } : {}),
         },
         force,
       });
     };
 
+    // 409 view_stale: someone else saved this view since it was loaded. Keep
+    // the user's edits (in memory + a local draft) and offer Reload; never
+    // retry or force on their behalf.
+    const handleStale = () => {
+      setStaleConflict({ measures, dimensions, viewDescription, measureRowKeys, dimensionRowKeys });
+      flushDraft();
+      toast.error(t('datasets.modelEditor.staleToast'));
+    };
+
     try {
-      const result = (await trySave(false)) as unknown as { renamed?: Record<string, number> } | undefined;
+      const result = await trySave(false);
+      adoptSaved(result);
       // Phase-6: BE returns a `renamed` summary like {charts: 3, depends_on: 1}
       // when rename_map was applied. Surface it so the user knows how many
       // consumers got auto-rewritten.
@@ -3409,6 +3563,10 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
       discardDraft();
       return true;
     } catch (error: unknown) {
+      if (isViewStaleError(error)) {
+        handleStale();
+        return false;
+      }
       const response = (error as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
       const detail = response?.data?.detail;
       // Structured cascade payload from the BE → prompt for confirmation.
@@ -3428,11 +3586,15 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
         );
         if (proceed) {
           try {
-            await trySave(true);
+            adoptSaved(await trySave(true));
             discardDraft();
             toast.success('Đã lưu (cần sửa lại chart đang dùng).');
             return true;
           } catch (force_error: unknown) {
+            if (isViewStaleError(force_error)) {
+              handleStale();
+              return false;
+            }
             const fd = (force_error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
             toast.error(typeof fd === 'string' ? fd : 'Force save failed');
             return false;
@@ -3587,6 +3749,52 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
             {/* Draft restore banner — appears when an autosaved draft for this
                 table differs from what's saved (e.g. after a reload or after
                 switching away mid-edit and coming back). Restore is explicit. */}
+            {/* F4: the save was refused because the view changed since it was
+                loaded. Step 1 reloads the latest version; step 2 re-applies
+                the user's kept edits on top of it. Nothing is forced. */}
+            {staleConflict && (
+              <div
+                role="alert"
+                data-testid="model-view-stale-banner"
+                className="shrink-0 flex items-center gap-2 border-b border-danger/30 bg-danger/10 px-4 py-2"
+              >
+                <RefreshCw className="h-3.5 w-3.5 text-danger shrink-0" />
+                <span className="flex-1 text-[11px] leading-4 text-text-secondary">
+                  {staleConflict.reloaded
+                    ? t('datasets.modelEditor.staleReloadedMessage')
+                    : t('datasets.modelEditor.staleMessage')}
+                </span>
+                {staleConflict.reloaded ? (
+                  <button
+                    type="button"
+                    data-testid="model-view-stale-reapply"
+                    onClick={reapplyStaleEdits}
+                    className="inline-flex items-center gap-1 rounded-md bg-danger px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90 shrink-0"
+                  >
+                    <RotateCcw className="h-3 w-3" /> {t('datasets.modelEditor.staleReapply')}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="model-view-stale-reload"
+                    onClick={reloadAfterStale}
+                    disabled={isReloadingStale}
+                    className="inline-flex items-center gap-1 rounded-md bg-danger px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-60 shrink-0"
+                  >
+                    <RefreshCw className="h-3 w-3" /> {t('datasets.modelEditor.staleReload')}
+                  </button>
+                )}
+                {staleConflict.reloaded && (
+                  <button
+                    type="button"
+                    onClick={() => { setStaleConflict(null); discardDraft(); }}
+                    className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1 text-[11px] font-medium text-text-secondary hover:bg-surface-2 shrink-0"
+                  >
+                    {t('datasets.modelEditor.staleDiscardMine')}
+                  </button>
+                )}
+              </div>
+            )}
             {draftDiffersFromSaved && pendingDraft && (
               <div className="shrink-0 flex items-center gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2">
                 <RotateCcw className="h-3.5 w-3.5 text-warning shrink-0" />
@@ -3772,11 +3980,11 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
                               );
                               if (existsOnServer && view?.id != null) {
                                 try {
-                                  await deleteMeasureMutation.mutateAsync({
+                                  adoptAfterDelete(measureName, await deleteMeasureMutation.mutateAsync({
                                     datasetId,
                                     viewId: view.id,
                                     measureName,
-                                  });
+                                  }));
                                   toast.success(`Đã xoá measure "${measureName}".`);
                                 } catch (err: any) {
                                   const detail = err?.response?.data?.detail;
@@ -3788,12 +3996,12 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
                                     const hits = (detail?.affected_charts || []).length;
                                     if (confirm(`${hits} chart đang dùng measure "${measureName}". Vẫn xoá?`)) {
                                       try {
-                                        await deleteMeasureMutation.mutateAsync({
+                                        adoptAfterDelete(measureName, await deleteMeasureMutation.mutateAsync({
                                           datasetId,
                                           viewId: view.id,
                                           measureName,
                                           force: true,
-                                        });
+                                        }));
                                         toast.success(`Đã xoá measure "${measureName}" (force).`);
                                       } catch (forceErr: any) {
                                         toast.error(
