@@ -47,7 +47,9 @@ class JoinSpec(BaseModel):
 
 
 class MeasureFilterSpec(BaseModel):
-    field: str
+    field: str = Field(description="A column of the measure's own table, or '<table_key>.<column>' for a column of "
+                                   "another table the plan JOINS to (e.g. revenue of delivered orders: "
+                                   "'orders.order_status' eq 'delivered' on an order_items measure)")
     operator: Literal["eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "between", "contains", "starts_with", "ends_with", "is_null", "is_not_null"]
     value: Any = None
 
@@ -124,7 +126,36 @@ def _dependency_layers(measures: list[dict[str, Any]]) -> list[list[dict[str, An
     return layers
 
 
-def _measure_body(m: dict[str, Any]) -> dict[str, Any]:
+def _join_path_exists(joins: list[Any], a: str, b: str) -> bool:
+    """True when the plan's joins connect table keys a and b (in either direction)."""
+    graph: dict[str, set[str]] = {}
+    for j in joins:
+        graph.setdefault(j.from_table, set()).add(j.to_table)
+        graph.setdefault(j.to_table, set()).add(j.from_table)
+    seen, todo = {a}, [a]
+    while todo:
+        for n in graph.get(todo.pop(), set()) - seen:
+            if n == b:
+                return True
+            seen.add(n)
+            todo.append(n)
+    return False
+
+
+def _qualified_filters(filters: list[dict[str, Any]], view_names: dict[str, str]) -> list[dict[str, Any]]:
+    """A '<table_key>.<column>' filter becomes AppBI's '<semantic view>.<column>' reference; the
+    engine then applies it through the relationship (EXISTS), so the measure keeps its grain."""
+    out = []
+    for f in filters:
+        field = str(f.get("field") or "")
+        if "." in field:
+            key, col = field.split(".", 1)
+            f = {**f, "field": f"{view_names[key]}.{col}"}
+        out.append(f)
+    return out
+
+
+def _measure_body(m: dict[str, Any], view_names: dict[str, str] | None = None) -> dict[str, Any]:
     """The AppBI MeasureDefinition for a plan measure (structured fields only)."""
     body: dict[str, Any] = {"name": m["name"], "type": m["type"]}
     if m.get("column"):
@@ -136,7 +167,7 @@ def _measure_body(m: dict[str, Any]) -> dict[str, Any]:
     if m.get("description"):
         body["description"] = m["description"]
     if m.get("filters"):
-        body["filters"] = m["filters"]
+        body["filters"] = _qualified_filters(m["filters"], view_names or {})
     if m["type"] == "formula":
         body["expression"] = _formula_expression(m["expression"], m["depends_on"])
         body["depends_on"] = m["depends_on"]
@@ -160,7 +191,9 @@ async def plan_dataset(env: Env, plan: DatasetPlanInput) -> dict[str, Any]:
     """Validate a Dataset plan against AppBI and return an approval link. Writes nothing.
 
     Physical tables only. Joins go from the MANY side (fact) to the ONE side
-    (dimension). AppBI refuses a join whose 'one' side key is not unique (fan-out),
+    (dimension). A measure may be filtered by a column of a joined table
+    ('<table_key>.<column>'); never suggest creating views or changing the source
+    database to get a filtered measure. AppBI refuses a join whose 'one' side key is not unique (fan-out),
     and the plan reports that before anything is created. Measures are checked
     again by AppBI's semantic engine when the plan runs.
     """
@@ -209,7 +242,15 @@ async def plan_dataset(env: Env, plan: DatasetPlanInput) -> dict[str, Any]:
         if m.column and m.table in columns and m.column not in columns[m.table]:
             errors.append(f"measure '{m.name}': column '{m.column}' not in {m.table}")
         for f in m.filters:
-            if m.table in columns and f.field not in columns[m.table]:
+            if "." in f.field:
+                other, col = f.field.split(".", 1)
+                if other not in keys or other == m.table:
+                    errors.append(f"measure '{m.name}': filter '{f.field}' names table '{other}', which is not another table of this plan")
+                elif other in columns and col not in columns[other]:
+                    errors.append(f"measure '{m.name}': filter column '{col}' not in {other}")
+                elif not _join_path_exists(p.joins, m.table, other):
+                    errors.append(f"measure '{m.name}': filter on '{other}' needs the plan to join {m.table} and {other}")
+            elif m.table in columns and f.field not in columns[m.table]:
                 errors.append(f"measure '{m.name}': filter field '{f.field}' not in {m.table}")
     for m in p.measures:
         if m.type == "formula":
@@ -338,6 +379,7 @@ async def run_dataset_plan(env: Env, run: Run) -> dict[str, Any]:
     missing_views = [k for k, tid in table_ids.items() if tid not in view_by_table]
     if missing_views:
         raise OperationError("blocked", f"AppBI did not create semantic views for: {missing_views}", step="generate_model")
+    view_names = {k: str(view_by_table[tid]["name"]) for k, tid in table_ids.items()}
 
     # ── relationships ──
     join_results: list[dict[str, Any]] = []
@@ -419,7 +461,7 @@ async def run_dataset_plan(env: Env, run: Run) -> dict[str, Any]:
                 new_bodies: list[dict[str, Any]] = []
                 checks: list[dict[str, Any]] = []
                 for m in layer:
-                    body = _measure_body(m)
+                    body = _measure_body(m, view_names)
                     if m["name"] in existing:
                         checks.append({"measure": f"{view['name']}.{m['name']}", "result": "already_present"})
                         continue
@@ -481,7 +523,7 @@ async def run_dataset_plan(env: Env, run: Run) -> dict[str, Any]:
     for m in p["measures"][:8]:
         view = next(v for v in model["views"] if v.get("dataset_table_id") == table_ids[m["table"]])
         try:
-            prev = await env.appbi.post(f"/datasets/{dataset_id}/model/views/{view['id']}/measures/preview", {"measure": _measure_body(m)})
+            prev = await env.appbi.post(f"/datasets/{dataset_id}/model/views/{view['id']}/measures/preview", {"measure": _measure_body(m, view_names)})
             rows = prev.get("rows") or []
             samples.append({"measure": f"{view['name']}.{m['name']}", "value": next(iter(rows[0].values())) if rows else None, "ok": prev.get("ok")})
         except AppbiError as exc:

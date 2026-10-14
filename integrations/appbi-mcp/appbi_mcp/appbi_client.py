@@ -76,6 +76,7 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/dashboards/{id}"),
     ("POST", "/dashboards/"),
     ("POST", "/dashboards/{id}/charts"),
+    ("POST", "/dashboards/{id}/widgets"),
     ("PUT", "/dashboards/{id}/draft-filters"),
     ("POST", "/dashboards/{id}/publish"),
 )
@@ -136,6 +137,16 @@ def _guard_add_tile(body: Any) -> None:
         raise GuardViolation("tiles must be added with layout.draftOnly = true")
 
 
+def _guard_add_slicer(body: Any) -> None:
+    """Only slicer CONTROLS (a filter's on-grid control), only as the caller's draft."""
+    _guard_add_tile(body)
+    if body.get("widget_type") != "slicer":
+        raise GuardViolation("this service only adds slicer controls as widgets")
+    cfg = body.get("widget_config")
+    if not isinstance(cfg, dict) or not cfg.get("slicerId") or set(cfg) - {"slicerId", "treatment", "origin"}:
+        raise GuardViolation("a slicer control carries only slicerId, treatment and origin")
+
+
 def _guard_draft_filters(body: Any) -> None:
     if not isinstance(body, dict) or not body.get("base_rev"):
         raise GuardViolation("draft-filters writes must carry base_rev")
@@ -177,6 +188,7 @@ def _guard_table_add(body: Any) -> None:
 BODY_GUARDS: dict[tuple[str, str], Callable[[Any], None]] = {
     ("POST", "/dashboards/"): _guard_dashboard_create,
     ("POST", "/dashboards/{id}/charts"): _guard_add_tile,
+    ("POST", "/dashboards/{id}/widgets"): _guard_add_slicer,
     ("PUT", "/dashboards/{id}/draft-filters"): _guard_draft_filters,
     ("POST", "/dashboards/{id}/publish"): _guard_dashboard_publish,
     ("POST", "/datasets/{id}/model/joins"): _guard_join,
