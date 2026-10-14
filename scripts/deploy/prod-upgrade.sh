@@ -28,6 +28,8 @@
 #   APPBI_COMPOSE_FILES        extra -f files, space separated
 #   APPBI_BACKUP_DIR           default ../appbi-backups
 #   APPBI_DB_CLIENT_NETWORK    docker network for the managed-DB client (default: host)
+#   APPBI_BACKUP_DATABASE_URL  managed DB with FORCE-RLS tables: a BYPASSRLS read role for pg_dump
+#                              (from the secret store; required only when the app role cannot bypass RLS)
 #   APPBI_PROVIDER_SNAPSHOT    managed Postgres only: the provider snapshot/backup id
 #                              taken during the freeze (REQUIRED unless the next is set)
 #   APPBI_ACCEPT_NO_PROVIDER_SNAPSHOT=yes   proceed on pg_dump alone
@@ -82,6 +84,9 @@ dbx(){  # dbx <client cmd...>   stdin passed through
   else docker run --rm -i --network "${APPBI_DB_CLIENT_NETWORK:-host}" -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE "$PG_CLIENT_IMAGE" "$@"; fi
 }
 dbrev(){ dbx psql -Atc "SELECT string_agg(version_num, ',' ORDER BY version_num) FROM alembic_version" 2>/dev/null | tr -d '\r'; }
+# Run one client command as the dedicated backup role (values via env, never argv).
+as_backup(){ ( export PGHOST="$BK_PGHOST" PGPORT="$BK_PGPORT" PGUSER="$BK_PGUSER" PGPASSWORD="$BK_PGPASSWORD" \
+                      PGDATABASE="$BK_PGDATABASE" PGSSLMODE="$BK_PGSSLMODE"; "$@" ); }
 
 # ── automatic recovery for any failure BEFORE the migration ──────────────────
 STAGE="pre"; OLD_SHA=""; RECOVER_IMAGES=0
@@ -139,6 +144,36 @@ else
   if [ -z "${APPBI_PROVIDER_SNAPSHOT:-}" ] && [ "${APPBI_ACCEPT_NO_PROVIDER_SNAPSHOT:-}" != "yes" ]; then
     die "managed Postgres: take a provider snapshot during the window and pass APPBI_PROVIDER_SNAPSHOT=<id> (or APPBI_ACCEPT_NO_PROVIDER_SNAPSHOT=yes)"
   fi
+fi
+
+# Can the backup actually read every row? Tables with FORCE ROW LEVEL SECURITY
+# (govern_doc_block / govern_doc_chunk) refuse pg_dump for a role that is neither
+# superuser nor BYPASSRLS — typical on managed Postgres. `--enable-row-security`
+# would "work" by silently dumping only the rows the policy shows: an incomplete
+# backup, so never that. A dedicated backup credential is required instead.
+FORCED_RLS="$(dbx psql -Atc "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relrowsecurity AND c.relforcerowsecurity" | tr -d '\r')"
+APP_BYPASS="$(dbx psql -Atc "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user" | tr -d '\r')"
+BACKUP_VIA=""
+if [ "${FORCED_RLS:-0}" != "0" ] && [ "$APP_BYPASS" != "t" ]; then
+  [ "$LOCAL_DB" = "0" ] || die "$FORCED_RLS table(s) force row-level security and the local DB user cannot bypass it — cannot take a complete backup"
+  [ -n "${APPBI_BACKUP_DATABASE_URL:-}" ] || die "$FORCED_RLS table(s) force row-level security and the app role cannot bypass it, so pg_dump would refuse (or be incomplete). Pass APPBI_BACKUP_DATABASE_URL for a role with BYPASSRLS + read access (e.g. GRANT pg_read_all_data) — taken from your secret store, not .env"
+  eval "$(DATABASE_URL="$APPBI_BACKUP_DATABASE_URL" "$PY_BIN" - <<'PY'
+import os, shlex
+from urllib.parse import urlparse, unquote, parse_qs
+u = urlparse(os.environ["DATABASE_URL"].replace("+psycopg2", "").replace("+psycopg", ""))
+q = parse_qs(u.query)
+for k, v in {"BK_PGHOST": u.hostname, "BK_PGPORT": str(u.port or 5432), "BK_PGUSER": unquote(u.username or ""),
+             "BK_PGPASSWORD": unquote(u.password or ""), "BK_PGDATABASE": (u.path or "/").lstrip("/"),
+             "BK_PGSSLMODE": (q.get("sslmode") or [""])[0]}.items():
+    print(f"{k}={shlex.quote(v)}")
+PY
+)"
+  BACKUP_VIA="backup-credential"
+  bk_ok="$(as_backup dbx psql -Atc "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user" 2>/dev/null | tr -d '\r')" || true
+  [ "$bk_ok" = "t" ] || die "APPBI_BACKUP_DATABASE_URL does not connect as a superuser/BYPASSRLS role"
+  ok "$FORCED_RLS force-RLS table(s): backup uses the dedicated BYPASSRLS credential"
+else
+  ok "backup role can read every row (force-RLS tables: ${FORCED_RLS:-0}, bypass: ${APP_BYPASS:-?})"
 fi
 
 # ── PRE 3: environment ───────────────────────────────────────────────────────
@@ -234,7 +269,8 @@ ok "backend/frontend stopped"
 
 # ── BACKUP ───────────────────────────────────────────────────────────────────
 say "BACKUP -> $BK"
-dbx pg_dump -Fc > "$BK/db.dump" || die "pg_dump failed"
+if [ -n "$BACKUP_VIA" ]; then as_backup dbx pg_dump -Fc > "$BK/db.dump" || die "pg_dump (backup credential) failed"
+else dbx pg_dump -Fc > "$BK/db.dump" || die "pg_dump failed"; fi
 docker run --rm -v "$DATA_VOL:/data:ro" -v "$BK:/bk" alpine:3.20 tar -C /data -czf /bk/appbi_data.tgz . || die "file-storage volume backup failed"
 install -m 600 .env "$BK/env.backup"
 { echo "old_checkout=$OLD_SHA"; echo "old_serving=$SERVING"; echo "old_revision=$OLD_REV"
