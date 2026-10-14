@@ -98,7 +98,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     from sqlalchemy import create_engine, text
-    from app.services.source_network_policy import resolve_and_check
+    from app.core.source_network_policy import resolve_and_check
 
     with create_engine(_database_url()).connect() as conn:
         rows = conn.execute(text(

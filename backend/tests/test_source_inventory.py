@@ -6,7 +6,7 @@ inventory must flag every such source BEFORE the deploy, using the very policy
 function the connector calls, and must not relax it.
 """
 from app.services.source_inventory import evaluate
-from app.services.source_network_policy import SourceNetworkPolicyError
+from app.core.source_network_policy import SourceNetworkPolicyError
 
 ROWS = [
     (1, "warehouse pg", "postgresql", {"host": "10.0.0.5", "port": 5432}),
@@ -44,7 +44,7 @@ def test_probe_distinguishes_allowed_but_unreachable():
 
 
 def test_real_policy_keeps_metadata_refused_even_when_private_is_allowed(monkeypatch):
-    from app.services import source_network_policy as pol
+    from app.core import source_network_policy as pol
 
     class S:  # every private range allowlisted — metadata must still be refused
         ALLOWED_PRIVATE_SOURCE_CIDRS = "10.0.0.0/8,169.254.0.0/16"
