@@ -90,10 +90,13 @@ if [ "$LOCAL_DB" = "1" ]; then
     -c "ALTER DATABASE \"${DB}_rollback_tmp\" RENAME TO \"$DB\"" >/dev/null
   ok "database restored (upgraded copy kept as ${DB}_failed_*)"
 else
-  # pg_restore's own SQL, minus the objects the app role does not own (extensions,
-  # their comments) — replayed after DROP OWNED in ONE transaction.
+  # pg_restore's own SQL, replayed after DROP OWNED in ONE transaction.
+  # Extensions are KEPT: DROP OWNED removes the ones the app role owns (e.g. the
+  # trusted `unaccent`), and the dump's `CREATE EXTENSION IF NOT EXISTS` recreates
+  # them; an admin-owned one (`vector`) survives DROP OWNED and is a no-op. Only
+  # COMMENT ON EXTENSION is dropped — it needs the extension's owner.
   BKA="$(cd "$BK" && pwd)"
-  docker run --rm -v "$BKA:/bk:ro" "$PG_CLIENT_IMAGE" pg_restore -l /bk/db.dump | grep -vE ' EXTENSION | COMMENT - EXTENSION ' > "$BK/rollback.list"
+  docker run --rm -v "$BKA:/bk:ro" "$PG_CLIENT_IMAGE" pg_restore -l /bk/db.dump | grep -vE ' COMMENT - EXTENSION ' > "$BK/rollback.list"
   { echo "SET client_min_messages = warning;"; echo "DROP OWNED BY CURRENT_USER;"
     docker run --rm -v "$BKA:/bk:ro" "$PG_CLIENT_IMAGE" pg_restore --no-owner --no-acl -L /bk/rollback.list -f - /bk/db.dump
   } | dbx psql -q -v ON_ERROR_STOP=1 --single-transaction >/dev/null \
