@@ -42,7 +42,7 @@ Claude ──HTTPS──► nginx ─/mcp, /mcp-oauth/*, /.well-known/oauth-*─
   - A retry or timeout reconciles with AppBI before writing again.
   - Failures report what already exists, with links.
   - Nothing is deleted.
-- **Allowlisted.** The service can call only ~38 AppBI routes. Live-write routes
+- **Allowlisted.** The service can call only ~43 AppBI routes. Live-write routes
   are unreachable, along with public links, PATs, SQL execution and every `DELETE`.
   A test checks this against the backend's route table.
 
@@ -50,9 +50,27 @@ Claude ──HTTPS──► nginx ─/mcp, /mcp-oauth/*, /.well-known/oauth-*─
 
 | Scope | Tools |
 |---|---|
-| `appbi.read` | `whoami`, `list_data_sources`, `inspect_data_source`, `inspect_source_table`, `list_datasets`, `get_dataset`, `profile_dataset_table`, `list_dashboards`, `get_dashboard`, `get_chart_data`, `plan_dataset`, `plan_dashboard`, `request_publish`, `get_operation_status`, `get_publish_status` |
+| `appbi.read` | `whoami`, `list_data_sources`, `inspect_data_source`, `inspect_source_table`, `list_datasets`, `get_dataset`, `profile_dataset_table`, `list_dashboards`, `get_dashboard`, `get_chart_data`, `plan_dataset`, `plan_dashboard`, `get_import_skill`, `plan_dashboard_from_html`, `request_publish`, `get_operation_status`, `get_publish_status` |
 | `appbi.author` | `execute_plan` (approved plan → drafts) |
 | `appbi.publish` | `publish` (approved publish request) |
+
+### HTML report → dashboard
+
+The user attaches or pastes an HTML report; Claude passes its **text** (no paths, no
+URLs). Claude reads `get_import_skill(dataset_id)` and embeds an `appbi-import/v1`
+plan bound to the dataset's real columns in the user's markup. `plan_dashboard_from_html`
+runs AppBI's `analyze` → `validate-plans` → `dry-run-build` (strict fields) and returns
+an approval page listing every chart, slicer, section, the theme, warnings and what is
+**not converted**. `execute_plan` calls `build` with `draft_only=true`,
+`strict_fields=true` and the plan id as `idempotency_key`, so a resume never creates a
+second dashboard. Publishing is the usual `request_publish` / `publish`.
+
+The service parses nothing and runs nothing: AppBI's importer is regex-only, executes
+no script and fetches nothing. The client guards allow only `source_mode=existing_dataset`,
+`target_mode=new_dashboard`, no file parts, no `html_summary_json`, no
+`target_dashboard_id` / `prepared_dataset_id`, HTML ≤ 2 MB carrying a
+`<script type="application/appbi-dashboard">` plan, and a build only with
+`draft_only=true`, `strict_fields=true` and an idempotency key.
 
 ## Configuration
 

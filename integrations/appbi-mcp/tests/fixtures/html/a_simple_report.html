@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Olist Sales Snapshot</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 24px; color: #1d2433; }
+  .kpis { display: flex; gap: 16px; }
+  .kpi { border: 1px solid #e3e6ec; border-radius: 8px; padding: 12px 16px; flex: 1; }
+  .kpi .value { font-size: 28px; font-weight: 600; }
+  .chart { border: 1px dashed #9aa3b5; height: 260px; margin-top: 24px; display: flex; align-items: center; justify-content: center; }
+</style>
+</head>
+<body>
+  <h1>Olist Sales Snapshot</h1>
+  <p>Marketplace sales overview. Example values below are placeholders, not data.</p>
+  <section class="kpis">
+    <div class="kpi"><div class="label">Total Revenue</div><div class="value">R$ 1,234,567</div></div>
+    <div class="kpi"><div class="label">Orders</div><div class="value">9,876</div></div>
+    <div class="kpi"><div class="label">Average Order Value</div><div class="value">R$ 125.00</div></div>
+  </section>
+  <section>
+    <h2>Revenue by Product Category</h2>
+    <div class="chart">[bar chart: revenue by product category, top 10]</div>
+  </section>
+</body>
+</html>
