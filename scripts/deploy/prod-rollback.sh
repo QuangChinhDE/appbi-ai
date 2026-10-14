@@ -75,4 +75,15 @@ for _ in $(seq 60); do curl -fsS --max-time 5 "http://127.0.0.1:$BACKEND_PORT/he
 serving="$(curl -fsS --max-time 5 "http://127.0.0.1:$BACKEND_PORT/api/v1/health" | sed -nE 's/.*"git_sha":"([^"]*)".*/\1/p')"
 echo "    serving: ${serving:-unknown} (expected $(rec old_serving))"
 [ "$serving" = "$(rec old_serving)" ] || die "serving commit does not match the pre-upgrade one"
+# An old build may report "unknown"; then the commit check proves nothing, so
+# also require the running container to be the exact pre-upgrade image.
+for svc in backend frontend; do
+  want="$(rec "rollback_image_$svc")"; [ -n "$want" ] || continue
+  cid="$("${COMPOSE[@]}" ps -q "$svc" | head -1)"
+  [ "$(docker inspect -f '{{.Image}}' "$cid")" = "$(docker image inspect -f '{{.Id}}' "$want")" ] \
+    || die "$svc is not running the pre-upgrade image $want"
+  ok "$svc runs the pre-upgrade image"
+done
+old_rev="$("${COMPOSE[@]}" exec -T db psql -U "$DB_USER" -d "$DB_NAME" -Atc "SELECT string_agg(version_num, ',' ORDER BY version_num) FROM alembic_version" | tr -d '\r')"
+[ "$old_rev" = "$OLD_REV" ] || die "after start the schema is $old_rev, expected $OLD_REV"
 ok "ROLLBACK COMPLETE"

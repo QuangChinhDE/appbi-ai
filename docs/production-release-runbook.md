@@ -45,11 +45,24 @@ do, and list the decisions a script cannot make for you.
 
 ## 1. Upgrade
 
+The production checkout is still on the **old** commit, which does not contain
+these scripts. Take them from the release tag. Do not check the tag out by hand;
+the script does that itself, after the backup.
+
 ```bash
 cd /path/to/appbi-ai                     # the checkout production is served from
 git status                               # must be clean (untracked files are fine)
-scripts/deploy/prod-upgrade.sh <tag>     # interactive confirm; --yes for unattended
+git fetch --tags origin
+mkdir -p ../appbi-release-tools
+git show <tag>:scripts/deploy/prod-upgrade.sh  > ../appbi-release-tools/prod-upgrade.sh
+git show <tag>:scripts/deploy/prod-rollback.sh > ../appbi-release-tools/prod-rollback.sh
+bash ../appbi-release-tools/prod-upgrade.sh <tag>      # interactive confirm; --yes for unattended
 ```
+
+The current production build predates the baked commit identity, so its
+`/api/v1/health` reports `git_sha: "unknown"`. The deploy record therefore stores
+`old_checkout` (the commit checked out on the host) and the pre-upgrade image
+IDs. The rollback checks the image IDs, not the commit string.
 
 What it does, in order. A failure at any step stops the script.
 
@@ -115,7 +128,7 @@ Sign each item with your name and the time.
 ## 3. Rollback
 
 ```bash
-scripts/deploy/prod-rollback.sh ../appbi-backups/<stamp>-<tag>
+bash ../appbi-release-tools/prod-rollback.sh ../appbi-backups/<stamp>-<tag>
 ```
 
 It does the following:

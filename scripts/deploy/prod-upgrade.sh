@@ -70,7 +70,8 @@ say "PRE: environment (names only, never values)"
 for k in SECRET_KEY DATASOURCE_ENCRYPTION_KEY ADMIN_PASSWORD; do
   v="$(envv "$k")"; case "$v" in ""|CHANGE_ME*|change-this-in-production) die "$k missing or placeholder";; esac
 done
-[ "${#ADMIN_PW:=$(envv ADMIN_PASSWORD)}" -ge 12 ] || die "ADMIN_PASSWORD shorter than 12 chars: this release refuses to boot with it in production"
+ADMIN_PW="$(envv ADMIN_PASSWORD)"
+[ "${#ADMIN_PW}" -ge 12 ] || die "ADMIN_PASSWORD shorter than 12 chars: this release refuses to boot with it in production"
 unset ADMIN_PW
 [ -n "$(envv CORS_ORIGINS)" ] || echo "    [WARN] CORS_ORIGINS unset — defaults to localhost only"
 [ -n "$(envv ALLOWED_PRIVATE_SOURCE_CIDRS)" ] || [ "$(envv SOURCE_ALLOW_PRIVATE_NETWORK)" = "true" ] \
@@ -168,11 +169,11 @@ NOW="$(curl -fsS --max-time 5 "http://127.0.0.1:$BACKEND_PORT/api/v1/health" | s
 [ "$(dbrev)" = "$TARGET_HEAD" ] && ok "alembic $TARGET_HEAD" || { echo "    [FAIL] alembic $(dbrev)"; fail=1; }
 NEW_FP="$(for k in SECRET_KEY DATASOURCE_ENCRYPTION_KEY DB_PASSWORD; do printf '%s=%s ' "$k" "$(fp "$(envv "$k")")"; done)"
 [ "$NEW_FP" = "$SECRETS_FP" ] && ok "secrets unchanged (fingerprints)" || { echo "    [FAIL] a secret changed in .env"; fail=1; }
-code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$FRONTEND_PORT/login")"
+code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$FRONTEND_PORT/login" || true)"
 [ "$code" = "200" ] && ok "frontend /login 200" || { echo "    [FAIL] frontend /login $code"; fail=1; }
 TOK="$(dbx psql "${DB_ARGS[@]}" -Atc "SELECT token FROM dashboard_public_links WHERE is_active AND password_hash IS NULL ORDER BY id LIMIT 1" 2>/dev/null | tr -d '\r' || true)"
 if [ -n "$TOK" ]; then
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1:$BACKEND_PORT/api/v1/public/dashboards/$TOK")"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1:$BACKEND_PORT/api/v1/public/dashboards/$TOK" || true)"
   [ "$code" = "200" ] && ok "a public link answers 200" || { echo "    [FAIL] public link answered $code"; fail=1; }
 else echo "    [SKIP] no unprotected active public link to probe"; fi
 bad="$("${COMPOSE[@]}" ps --format '{{.Service}} {{.State}}' backend frontend | grep -viE ' running' || true)"
