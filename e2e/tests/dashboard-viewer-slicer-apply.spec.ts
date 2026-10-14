@@ -97,9 +97,20 @@ test.describe('dashboard slicer Apply — viewer and editor', () => {
       userId = String((await created.json()).id);
       const preset = await request.put(`${V1}/permissions/${userId}/preset`, { data: { preset: 'viewer' } });
       expect(preset.status(), await preset.text()).toBeLessThan(400);
-      // Dashboard share cascades to its datasets; 'view' only.
+      // 'view' only. A dashboard share lets the viewer read its charts, but a slicer's
+      // values are raw distinct values, which need view on the DATASET as well (verified on
+      // appbi-ai: distinct-values answered 403 "Permission denied: explore" until the
+      // dataset was shared). Owners share both; so does this test.
       const share = await request.post(`${V1}/shares/dashboard/${f.id}`, { data: { email, permission: 'view' } });
       expect(share.status(), await share.text()).toBeLessThan(400);
+      // The tile's embedded chart carries only dataset_table_id; the chart itself names its dataset.
+      const datasetIds = [...new Set(await Promise.all(f.ownCharts.map(async (cid) =>
+        (await (await request.get(`${V1}/charts/${cid}`)).json()).dataset_id)))].filter((d) => d != null);
+      expect(datasetIds.length, 'the fixture dashboard reads a dataset').toBeGreaterThan(0);
+      for (const ds of datasetIds) {
+        const s = await request.post(`${V1}/shares/dataset/${ds}`, { data: { email, permission: 'view' } });
+        expect(s.status(), await s.text()).toBeLessThan(400);
+      }
 
       const page = await ctx.newPage();
       await page.goto('/login');
