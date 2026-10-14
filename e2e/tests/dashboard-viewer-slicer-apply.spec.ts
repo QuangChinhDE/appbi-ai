@@ -40,7 +40,14 @@ async function fixtureCopy(request: APIRequestContext) {
     .map((dc) => dc.chart_id).filter((c) => c != null));
   const ownCharts = [...new Set((copy.dashboard_charts as any[]).map((dc) => dc.chart_id as number)
     .filter((c) => c != null && !seeded.has(c)))];
-  const kpi = (copy.dashboard_charts as any[]).find((dc) => dc.chart?.name === 'E2E Revenue');
+  // A duplicate gets its OWN charts, renamed to stay unique per owner ("E2E Revenue (2)", suffixes can stack),
+  // and the duplicate response may not embed them: read the copy back and match the KPI.
+  const full = await (await request.get(`${DASH}/${copy.id}`)).json();
+  const kpi = (full.dashboard_charts as any[]).find((dc) => {
+    const name = String(dc.chart?.name ?? '');
+    const type = String(dc.chart?.chart_type ?? '').toUpperCase();
+    return type === 'KPI' && /^E2E Revenue(?: \(\d+\)| \(Copy\))?$/.test(name);
+  });
   expect(kpi, 'the E2E Revenue KPI tile').toBeTruthy();
   return { id: copy.id as number, ownCharts, kpiTile: kpi.id as number };
 }
