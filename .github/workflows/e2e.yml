@@ -125,6 +125,13 @@ jobs:
       # workspace routes, which are only mounted with Workboards on; without it
       # every workspace assertion is a 404 before any auth check runs.
       WORKBOARDS_ENABLED: "true"
+      # NO WALL-CLOCK SCAN MID-SUITE. The backend schedules the anomaly +
+      # observability scan at 02:00 UTC; a run spanning that minute re-evaluated
+      # every seeded metric and rewrote the states the Observability specs assert
+      # (O08b failed on demo be16db20 and PR #18 dfd58335, both runs crossing
+      # 02:00; every run outside that window passed). Scans in this suite are
+      # the explicit ones the specs trigger.
+      APPBI_DAILY_SCAN: "off"
       PYTHONPATH: ${{ github.workspace }}/backend
       E2E_BASE_URL: http://localhost:3000
       E2E_API_URL: http://localhost:8000

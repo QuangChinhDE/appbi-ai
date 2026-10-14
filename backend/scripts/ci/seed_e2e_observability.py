@@ -153,8 +153,13 @@ def main() -> int:
         # R1: a metric whose detector could NOT run since its old alert - its
         # open incident must stay open (no new alert is not recovery).
         err_m = metric("loaded_at")
+        # Genuinely unrunnable, not just labelled so: its time column does not
+        # exist, so a REAL detector run (the 02:00 scan) also ends in 'error'
+        # (history query fails) - it used to have no time column, which a real
+        # run honestly reports as 'insufficient' and which broke O08b at 02:00 UTC.
+        err_m.time_column = "no_such_ts"
         err_m.last_checked_at, err_m.last_check_status = now, "error"
-        err_m.last_check_error = "history query failed: OperationalError"
+        err_m.last_check_error = "history query failed: ProgrammingError"
         if not db.query(AnomalyAlert).filter(AnomalyAlert.monitored_metric_id == err_m.id).first():
             db.add(AnomalyAlert(monitored_metric_id=err_m.id, detected_at=now - timedelta(days=30),
                                 current_value=1.0, expected_value=50.0, z_score=-4.0, change_pct=-98.0,

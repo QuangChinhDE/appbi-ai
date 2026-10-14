@@ -7,6 +7,7 @@ due (first sends after a failed scan dispatch, and retries with backoff).
 Uses APScheduler for background scheduling.
 """
 import logging
+import os
 from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -100,13 +101,19 @@ def startup():
     """Start the anomaly detection scheduler. Called from app lifespan."""
     global _scheduler
     _scheduler = BackgroundScheduler(timezone="UTC")
-    # Run daily at 2 AM UTC
-    _scheduler.add_job(
-        _run_anomaly_scan,
-        trigger=CronTrigger(hour=2, minute=0),
-        id="anomaly_daily_scan",
-        replace_existing=True,
-    )
+    # Run daily at 2 AM UTC. A deterministic test deployment turns the wall-clock
+    # scan off (APPBI_DAILY_SCAN=off): firing mid-suite it re-evaluates every
+    # seeded metric and rewrites the states the tests assert on.
+    daily = os.environ.get("APPBI_DAILY_SCAN", "on").strip().lower() != "off"
+    if daily:
+        _scheduler.add_job(
+            _run_anomaly_scan,
+            trigger=CronTrigger(hour=2, minute=0),
+            id="anomaly_daily_scan",
+            replace_existing=True,
+        )
+    else:
+        logger.warning("APPBI_DAILY_SCAN=off: the daily anomaly + observability scan is not scheduled")
     _scheduler.add_job(
         _dispatch_alerts,
         trigger=IntervalTrigger(minutes=10),
@@ -116,7 +123,7 @@ def startup():
         coalesce=True,
     )
     _scheduler.start()
-    logger.info("Anomaly detection scheduler started (daily at 02:00 UTC; alert dispatch every 10 min)")
+    logger.info("Anomaly detection scheduler started (daily scan %s; alert dispatch every 10 min)", "at 02:00 UTC" if daily else "OFF")
 
 
 def shutdown():
