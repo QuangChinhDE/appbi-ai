@@ -494,11 +494,15 @@ async def run_dashboard_plan(env: Env, run: Run) -> dict[str, Any]:
             for attempt in range(2):
                 current = await env.appbi.get(f"/dashboards/{dashboard_id}")
                 rev = (current.get("shared_draft") or {}).get("rev")
-                have = list(current.get("filters_config") or [])
+                # Report-wide SLICERS (slicers_config), as the Builder stages them: a
+                # control applies (and stages for Apply) only a slicer. A legacy
+                # filters_config entry with a control showed the choice but never
+                # applied it (real browser check, pilot P6).
+                have = list(current.get("slicers_config") or [])
                 keys = {str(f.get("semanticField") or f.get("fieldKey") or f.get("field")) for f in have}
                 merged = have + [f for f in p["filters"] if f["semanticField"] not in keys]
                 try:
-                    await env.appbi.put(f"/dashboards/{dashboard_id}/draft-filters", {"filters_config": merged, "base_rev": rev})
+                    await env.appbi.put(f"/dashboards/{dashboard_id}/draft-filters", {"slicers_config": merged, "base_rev": rev})
                     return {"filters": [f["semanticField"] for f in p["filters"]]}
                 except AppbiError as exc:
                     # A co-author wrote in between our read and write: re-read and
@@ -512,7 +516,7 @@ async def run_dashboard_plan(env: Env, run: Run) -> dict[str, Any]:
 
         async def find_filters(_since: float) -> dict[str, Any] | None:
             current = await env.appbi.get(f"/dashboards/{dashboard_id}")
-            keys = {str(f.get("semanticField")) for f in current.get("filters_config") or []}
+            keys = {str(f.get("semanticField")) for f in current.get("slicers_config") or []}
             return {"filters": list(keys)} if all(f["semanticField"] in keys for f in p["filters"]) else None
 
         await run.write("filters", stage_filters, reconcile=find_filters)
