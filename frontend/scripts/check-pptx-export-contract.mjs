@@ -278,6 +278,20 @@ check('a tile counts as drawn by its declared HTML marks; a renderer\'s own empt
   assert(rr.tileReadiness(titleOnly) === 'loading', 'a title passed as a drawn chart');
 });
 
+check('a tile\'s slide position is read against the page in the same instant (scrolling in between never skews it)', () => {
+  // CI 15732c06: a loading tile was scrolled into view, the page rect read once
+  // before the loop went stale, KPIs landed at y=-88 and the server refused the
+  // deck (422) — no download.
+  const ex = source('lib/export-pptx.ts');
+  const loop = ex.slice(ex.indexOf('for (const t of page.tiles)'));
+  const geomAt = loop.indexOf('const geom =');
+  assert(geomAt > 0, 'tile geometry not found in the page loop');
+  const before = loop.slice(0, geomAt);
+  assert(/const pageRect = root\.getBoundingClientRect\(\);\s*$/.test(before),
+    'the page rect must be measured right before the tile geometry, inside the loop');
+  assert(!/rootRect\.(top|left)/.test(ex), 'tile geometry uses a page rect measured before the loop');
+});
+
 if (failures.length) {
   for (const f of failures) console.error(`FAIL  ${f.name}\n      ${f.error.message}`);
   console.error(`\n${failures.length} failed, ${passed} passed`);
