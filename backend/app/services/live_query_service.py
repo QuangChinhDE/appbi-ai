@@ -1611,7 +1611,7 @@ class LiveQueryService:
         # Execute query against the source
         from app.services.datasource_service import DataSourceConnectionService
 
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         if ds_type == "bigquery":
             timeout = 60
@@ -1626,7 +1626,7 @@ class LiveQueryService:
             skip_bigquery_cost_check=True,
         )
 
-        execution_time_ms = (time.time() - start_time) * 1000
+        execution_time_ms = (time.perf_counter() - start_time) * 1000
 
         result = {
             "data": rows,
@@ -1765,7 +1765,7 @@ class LiveQueryService:
                     datasource.id,
                 )
 
-        start_time = time.time()
+        start_time = time.perf_counter()
         timeout = 60 if ds_type == "bigquery" else 30
 
         _, rows, execution_time_ms = DataSourceConnectionService.execute_query(
@@ -1776,7 +1776,7 @@ class LiveQueryService:
             skip_bigquery_cost_check=True,
         )
 
-        execution_time_ms = (time.time() - start_time) * 1000
+        execution_time_ms = (time.perf_counter() - start_time) * 1000
 
         result = {
             "data": rows,

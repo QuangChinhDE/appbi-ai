@@ -211,6 +211,7 @@ backend/scripts/regression_*.py
 # a dev's laptop. (Negations must follow the ignores; later match wins.)
 !backend/tests/
 !backend/tests/test_locked_contract.py
+!backend/tests/test_query_duration_monotonic.py
 !backend/tests/test_phase2_filter_propagation.py
 !backend/tests/test_phase4_symmetric_aggregates.py
 !backend/tests/test_filter_entry_schemas.py

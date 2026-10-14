@@ -3305,7 +3305,7 @@ def _execute_semantic_chart_runtime(
 
         verify_key_probes(engine.key_probes, ds_type=ds_type, config=_exec_config,
                           namespace=f"ds:{getattr(datasource, 'id', '')}")
-        start = time.time()
+        start = time.perf_counter()
         # Phase-12.7: wrap execute so connection errors / dialect mismatch /
         # missing physical column at the datasource surface as a ValueError
         # with debugging context, not a generic 500. ValueError because the
@@ -3520,7 +3520,7 @@ def _execute_semantic_chart_runtime(
                     "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
                     "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
                 ) from exc
-        elapsed_ms = (time.time() - start) * 1000
+        elapsed_ms = (time.perf_counter() - start) * 1000
 
         alias_map = _spec.response_aliases  # computed once on the spec above
         rows = remap_semantic_engine_rows(rows, alias_map)

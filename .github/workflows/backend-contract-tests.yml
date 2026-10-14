@@ -110,6 +110,7 @@ jobs:
           set -o pipefail
           python -m pytest -q --tb=short \
             tests/test_locked_contract.py \
+            tests/test_query_duration_monotonic.py \
             tests/test_phase2_filter_propagation.py \
             tests/test_phase4_symmetric_aggregates.py \
             tests/test_filter_entry_schemas.py \
