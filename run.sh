@@ -8,6 +8,8 @@
 #   ./run.sh --recreate      # force-recreate containers
 #   ./run.sh --down          # stop the stack and exit
 #   ./run.sh --logs          # follow logs after it's up
+#   ./run.sh --migrate       # approve pending DB migrations on an EXISTING database
+#                            # (back it up first — see docs/production-release-runbook.md)
 #
 # What it does, in order:
 #   1. Check the environment (docker, docker compose, running daemon).
@@ -31,6 +33,7 @@ for a in "$@"; do case "$a" in
   --recreate)      RECREATE=1;;
   --down)          DO_DOWN=1;;
   --logs)          FOLLOW_LOGS=1;;
+  --migrate)       export APPBI_MIGRATE_APPROVED=auto;;
   --skip-validate) VALIDATE=0;;
   -h|--help)       sed -n '2,20p' "$0"; exit 0;;
   *) echo "Unknown option: $a (see --help)" >&2; exit 2;;
@@ -85,7 +88,9 @@ fi
 if [ "$DO_PULL" = "1" ]; then
   say "Syncing git (fast-forward only)"
   branch="$(git rev-parse --abbrev-ref HEAD)"
-  git fetch --quiet origin "$branch" || true
+  # A failed fetch leaves origin/$branch stale; comparing against it would build
+  # old code while claiming a sync. Stop instead.
+  git fetch --quiet origin "$branch" || { bad "git fetch origin $branch failed — not continuing with an unsynced checkout"; exit 1; }
   if git merge-base --is-ancestor HEAD "origin/$branch" 2>/dev/null; then
     git merge --ff-only "origin/$branch" && ok "fast-forwarded $branch to origin/$branch"
   else
@@ -178,6 +183,7 @@ if [ "$fail" != "0" ]; then
   echo
   echo "Fix hints:"
   echo "  - migration/DB error    -> ${COMPOSE[*]} logs backend"
+  echo "  - pending migrations   -> back up the database, then ./run.sh --migrate"
   echo "  - port already in use   -> change FRONTEND_PORT/BACKEND_PORT in .env"
   echo "  - re-run clean          -> ./run.sh --recreate"
   exit 1
@@ -187,7 +193,7 @@ echo
 say "AppBI is up and healthy"
 echo "    Frontend : http://localhost:${FRONTEND_PORT}"
 echo "    Backend  : http://localhost:${BACKEND_PORT}/health"
-echo "    Login    : $(grep -m1 -E '^ADMIN_EMAIL=' .env | cut -d= -f2) / $(grep -m1 -E '^ADMIN_PASSWORD=' .env | cut -d= -f2)"
+echo "    Login    : $(grep -m1 -E '^ADMIN_EMAIL=' .env | cut -d= -f2) (password: ADMIN_PASSWORD in .env - not printed)"
 
 if ! grep -qE '^ALLOWED_PRIVATE_SOURCE_CIDRS=.+' .env 2>/dev/null && ! grep -qE '^SOURCE_ALLOW_PRIVATE_NETWORK=true' .env 2>/dev/null; then
   echo

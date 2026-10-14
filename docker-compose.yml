@@ -89,6 +89,10 @@ services:
       # exactly as it does today: health reports "unknown", and the
       # consumers treat that as NOT VERIFIED rather than as a match.
       GIT_SHA: ${GIT_SHA:-}
+      # Migration gate (backend/entrypoint.sh): an EXISTING database with pending
+      # revisions is upgraded only when this names the target head (set by the
+      # release runbook after a verified backup) or "auto" (run.sh --migrate).
+      APPBI_MIGRATE_APPROVED: ${APPBI_MIGRATE_APPROVED:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}

@@ -96,8 +96,29 @@ sys.stderr.write(
 sys.exit(1)
 PYEOF
 
+# ── Migration gate (fail-closed on an existing database) ────────────────────
+#
+# A fresh database (no alembic_version) is initialised automatically — that is a
+# first install, there is nothing to lose. An EXISTING database with pending
+# revisions is upgraded only when the operator approved this exact target:
+#
+#     APPBI_MIGRATE_APPROVED=<target head revision>   (what the release runbook
+#                                                      sets after a verified backup)
+#     APPBI_MIGRATE_APPROVED=auto                     (dev/one-command: run.sh --migrate,
+#                                                      docker-compose.dev.yml)
+#
+# Otherwise the container stops here, before uvicorn, and the schema is untouched.
+# A start with nothing pending is never gated, so restarts are unaffected.
+echo "==> Checking migration state..."
+python -m app.core.migration_gate || exit $?
+
 echo "==> Running Alembic migrations..."
 alembic upgrade head
+
+if [ "${1:-}" = "migrate" ]; then
+  echo "==> migrate-only run complete; not starting the server."
+  exit 0
+fi
 
 # ── Least-privilege runtime role, so row-level security actually runs ─────────
 #

@@ -11,7 +11,7 @@
 #        SECRET_KEY                 -> random 96-hex-char token
 #        DATASOURCE_ENCRYPTION_KEY  -> Fernet key (urlsafe base64 of 32 bytes)
 #        DB_PASSWORD (local-db only, fresh volume only) -> random 32-hex-char
-#        ADMIN_PASSWORD             -> defaults to 123456 (+ loud warning)
+#        ADMIN_PASSWORD             -> random per-install value (never printed)
 #   4. NEVER overwrite a value the user already set (only placeholders/empties).
 #   5. Warn about deprecated keys still present (e.g. OpenMetadata leftovers).
 #
@@ -122,10 +122,13 @@ fi
 # true on every `run`. This OVERRIDES an existing false for the flags below
 # (unlike secrets, which are preserved). Datasource sync is intentionally NOT
 # here either — it's a data-fetch mode, not a nav module.
+# An EXPLICIT false is the operator's decision and is preserved: forcing it back
+# to true on every run silently re-enabled modules a production install had
+# turned off. Only an absent/empty flag is defaulted to true.
 MODULE_FLAGS="METADATA_CATALOG_ENABLED GOVERN_ENABLED OBSERVABILITY_ENABLED"
 modules_on=()
 for mf in $MODULE_FLAGS; do
-  if [ "$(env_get "$mf")" != "true" ]; then env_set "$mf" "true"; modules_on+=("$mf"); fi
+  if [ -z "$(env_get "$mf")" ]; then env_set "$mf" "true"; modules_on+=("$mf"); fi
 done
 
 # ── 5. deprecated-key warnings (removed subsystems) ─────────────────────────
@@ -149,9 +152,9 @@ rm -f "$orig"
 # ── report ──────────────────────────────────────────────────────────────────
 [ ${#added[@]}     -gt 0 ] && echo "  [env] added missing keys: ${added[*]}"
 [ ${#generated[@]} -gt 0 ] && echo "  [env] generated secrets:  ${generated[*]}"
-[ ${#modules_on[@]} -gt 0 ] && echo "  [env] modules forced ON:  ${modules_on[*]}"
+[ ${#modules_on[@]} -gt 0 ] && echo "  [env] modules defaulted ON:  ${modules_on[*]}"
 if [ "$admin_defaulted" = "1" ]; then
-  echo "  [env] ADMIN_PASSWORD was a placeholder -> generated a random one: $(env_get ADMIN_PASSWORD)"
+  echo "  [env] ADMIN_PASSWORD was a placeholder -> generated a random one (read it from .env; not printed)"
   echo "  [env] (stored only in .env; it is used once, for the first administrator)"
 fi
 if [ ${#deprecated[@]} -gt 0 ]; then
