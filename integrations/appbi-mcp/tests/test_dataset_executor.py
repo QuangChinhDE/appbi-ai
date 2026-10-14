@@ -85,6 +85,12 @@ class ScriptedAppbi:
                 unknown = [t for t in re.findall(r"[A-Za-z_]\w*", bare) if t != "amount"]
                 if unknown:
                     return {"ok": False, "error": f"Unrecognized name: {unknown[0]}", "compiled_sql": f"SELECT {body['expression']}"}
+                # The candidate is checked against the view AS SAVED: a referenced
+                # measure that is not on it yet is unknown to the engine.
+                saved = {m["name"] for m in self.views[int(parts[-3])]["measures"]}
+                missing = [r for r in re.findall(r"\$\{([^}.]+)\}", body["expression"]) if r not in saved]
+                if missing:
+                    return {"ok": False, "error": f"Unknown semantic field in measure formula: {missing[0]}"}
             return {"ok": True}
         if template.endswith("/measures/preview"):
             return {"ok": True, "rows": [{"v": 1}]}
@@ -207,6 +213,9 @@ async def test_formula_measures_reach_appbi_as_measure_placeholders(setup):
     saved = {m["name"]: m for m in next(iter(appbi.views.values()))["measures"]}
     assert saved["aov"]["expression"] == "${revenue} / ${orders}"
     assert saved["gross_revenue"]["expression"] == "${revenue} + ${revenue} * 0"   # existing placeholder kept
+    # Bases were saved before the formulas that reference them (one PUT per layer).
+    puts = [c[2]["measures"] for c in appbi.calls if c[0] == "PUT"]
+    assert [m["name"] for m in puts[0]] == ["revenue", "orders"] and len(puts) == 2
 
 
 async def test_a_refused_measure_fails_its_step_and_a_rerun_resumes_without_duplicates(setup):

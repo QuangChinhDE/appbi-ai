@@ -107,6 +107,23 @@ def _formula_expression(expression: str, depends_on: list[str]) -> str:
     return out
 
 
+def _dependency_layers(measures: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Measures ordered so each layer only references measures saved in earlier ones
+    (or already on the view). A cycle cannot be layered; it is left to AppBI to refuse."""
+    names = {m["name"] for m in measures}
+    placed: set[str] = set()
+    remaining = list(measures)
+    layers: list[list[dict[str, Any]]] = []
+    while remaining:
+        layer = [m for m in remaining if all(d in placed or d not in names for d in (m.get("depends_on") or []))]
+        if not layer:
+            layer = remaining
+        layers.append(layer)
+        placed |= {m["name"] for m in layer}
+        remaining = [m for m in remaining if m not in layer]
+    return layers
+
+
 def _measure_body(m: dict[str, Any]) -> dict[str, Any]:
     """The AppBI MeasureDefinition for a plan measure (structured fields only)."""
     body: dict[str, Any] = {"name": m["name"], "type": m["type"]}
@@ -382,8 +399,8 @@ async def run_dataset_plan(env: Env, run: Run) -> dict[str, Any]:
             continue
         validated: dict[str, dict[str, Any]] = {}
 
-        async def save_measures(tid: int = tid, measures: list[dict[str, Any]] = measures,
-                                validated: dict[str, dict[str, Any]] = validated, key: str = key) -> dict[str, Any]:
+        async def save_layer(layer: list[dict[str, Any]], tid: int = tid,
+                             validated: dict[str, dict[str, Any]] = validated, key: str = key) -> list[dict[str, Any]]:
             # Read → merge onto what is there → save QUOTING the version read. A
             # concurrent edit makes AppBI answer 409 view_stale; we re-read and merge
             # onto THAT state once, so nobody's acknowledged change is replaced (F4).
@@ -401,7 +418,7 @@ async def run_dataset_plan(env: Env, run: Run) -> dict[str, Any]:
                 existing = {str(x.get("name")): x for x in view.get("measures", []) or []}
                 new_bodies: list[dict[str, Any]] = []
                 checks: list[dict[str, Any]] = []
-                for m in measures:
+                for m in layer:
                     body = _measure_body(m)
                     if m["name"] in existing:
                         checks.append({"measure": f"{view['name']}.{m['name']}", "result": "already_present"})
@@ -415,14 +432,14 @@ async def run_dataset_plan(env: Env, run: Run) -> dict[str, Any]:
                     new_bodies.append(body)
                     checks.append({"measure": f"{view['name']}.{m['name']}", "result": "validated"})
                 if not new_bodies:
-                    return {"checks": checks}
+                    return checks
                 try:
                     await env.appbi.put(f"/datasets/{dataset_id}/model/views/{view['id']}", {
                         "dimensions": view.get("dimensions", []),
                         "measures": list(existing.values()) + new_bodies,
                         "expected_view_version": version,
                     })
-                    return {"checks": checks}
+                    return checks
                 except AppbiError as exc:
                     stale = exc.status == 409 and isinstance(exc.detail, dict) and exc.detail.get("code") == "view_stale"
                     if stale and attempt == 0:
@@ -432,6 +449,14 @@ async def run_dataset_plan(env: Env, run: Run) -> dict[str, Any]:
                                              step=key, detail=exc.detail) from exc
                     raise
             raise OperationError("conflict", "Could not save measures.", step=key)
+
+        async def save_measures(measures: list[dict[str, Any]] = measures, save_layer: Any = save_layer) -> dict[str, Any]:
+            # AppBI dry-runs ONE candidate against the view as saved, so a formula can
+            # only be checked once the measures it references exist: save in layers.
+            checks: list[dict[str, Any]] = []
+            for layer in _dependency_layers(measures):
+                checks.extend(await save_layer(layer))
+            return {"checks": checks}
 
         async def find_view(_since: float, tid: int = tid, measures: list[dict[str, Any]] = measures) -> dict[str, Any] | None:
             fresh = await env.appbi.get(f"/datasets/{dataset_id}/model")
