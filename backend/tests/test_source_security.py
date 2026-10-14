@@ -21,7 +21,7 @@ import pytest
 from psycopg2 import sql as pg_sql
 
 import app.services.datasource_service as ds_mod
-import app.services.source_network_policy as netpol
+import app.core.source_network_policy as netpol
 from app.core.config import settings
 from app.services.sql_validator import validate_select_only
 

@@ -125,10 +125,16 @@ def _owned_or_shared(
     if resource_type == ResourceType.DATASET:
         # The Dataset policy also grants through DatasetGrant (user or team):
         # the list must show exactly what the object check allows.
-        from app.services.dataset_grants_service import grants_scope_subquery
+        from app.core.authz.dataset_policy import dataset_policy
 
-        visible.append(model.id.in_(grants_scope_subquery(user, db)))
+        visible.append(model.id.in_(dataset_policy().grants_scope_subquery(user, db)))
     return q.filter(or_(*visible))
+
+
+def _owned_or_shared_by_type(db: Session, model: Type[T], resource_type: str, user: User) -> Query:
+    """``_owned_or_shared`` keyed by the registry's resource-type string (used by
+    core.authz.decision.scope, which must not import models itself)."""
+    return _owned_or_shared(db, model, ResourceType(resource_type), user)
 
 
 # Keep old name for backward-compat with any remaining imports

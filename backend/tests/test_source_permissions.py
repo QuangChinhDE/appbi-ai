@@ -132,7 +132,7 @@ def env(monkeypatch):
 
     # Query path: real execute_user_query / validate_user_sql / validator /
     # read-only executor; only the driver is replaced.
-    import app.services.source_network_policy as netpol
+    import app.core.source_network_policy as netpol
     monkeypatch.setattr(netpol, "resolve_and_check", lambda host, port=None: "93.184.216.34")
 
     class _Cur:

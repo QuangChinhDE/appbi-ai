@@ -134,7 +134,7 @@ def no_source_allowance(monkeypatch):
 
 
 def _refused():
-    from app.services.source_network_policy import SourceNetworkPolicyError
+    from app.core.source_network_policy import SourceNetworkPolicyError
 
     return (egress.EgressDenied, SourceNetworkPolicyError)
 
