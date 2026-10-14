@@ -63,6 +63,14 @@ done
 
 echo "==> PostgreSQL is up"
 
+# Read-only pre-deployment check (scripts/deploy/prod-upgrade.sh): evaluate every
+# database source against the outbound source policy of THIS image, with the
+# DATABASE_URL derived above. Touches no schema; exits before any migration.
+if [ "${1:-}" = "source-inventory" ]; then
+  shift
+  exec python -m app.services.source_inventory "$@"
+fi
+
 # ── Check the pgvector extension before migrations (check-only) ─────────────
 # The application DB account is USE-ONLY — it must never create extensions. We
 # only VERIFY that 'vector' (pgvector) is present. If it is missing, stop with a

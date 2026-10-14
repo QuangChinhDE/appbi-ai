@@ -500,3 +500,4 @@ backend/ci_security.db
 !backend/tests/test_source_provider_contracts.py
 !backend/tests/test_source_concurrency_pg.py
 !backend/tests/test_migration_gate.py
+!backend/tests/test_source_inventory.py
