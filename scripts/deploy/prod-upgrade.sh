@@ -206,14 +206,15 @@ INV="$("${COMPOSE[@]}" run --rm --no-deps -T backend source-inventory --probe --
 set -e
 printf '%s\n' "$INV" > "$BK/source-inventory.json"
 [ "$inv_rc" = "0" ] || [ "$inv_rc" = "4" ] || { cat "$BK/source-inventory.err" >&2; die "source inventory could not run (exit $inv_rc)"; }
-NOT_OK="$(printf '%s' "$INV" | "$PY_BIN" -c '
+NOT_OK="$(printf '%s' "$INV" | "$PY_BIN" -c "
 import json, os, sys
-acc = {s.strip() for s in os.environ.get("APPBI_ACCEPT_BLOCKED_SOURCES", "").split(",") if s.strip()}
-bad = [v for v in json.loads(sys.stdin.read() or "[]") if v["verdict"] != "ALLOWED"]
-for v in bad:
-    mark = "accepted" if str(v["id"]) in acc else "BLOCKING"
-    print(f"{mark}|{v['id']}|{v['type']}|{v['host']}:{v['port']}|{v['verdict']}|{v['name']}|{v.get('reason') or ''}")
-')"
+acc = {s.strip() for s in os.environ.get('APPBI_ACCEPT_BLOCKED_SOURCES', '').split(',') if s.strip()}
+for v in json.loads(sys.stdin.read() or '[]'):
+    if v['verdict'] == 'ALLOWED':
+        continue
+    mark = 'accepted' if str(v['id']) in acc else 'BLOCKING'
+    print('|'.join([mark, str(v['id']), v['type'], '%s:%s' % (v['host'], v['port']), v['verdict'], v['name'], v.get('reason') or '']))
+")"
 tail -n1 "$BK/source-inventory.err" | sed 's/^/    /'
 if [ -n "$NOT_OK" ]; then
   printf '%s\n' "$NOT_OK" | awk -F'|' '{printf "    %-9s #%s %s %s %s  %s  %s\n",$1,$2,$3,$4,$5,$6,$7}'
