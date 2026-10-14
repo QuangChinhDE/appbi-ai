@@ -143,6 +143,7 @@ jobs:
             tests/test_error_taxonomy_and_empty.py \
             tests/test_chart_discovery_and_figure_correction.py \
             tests/test_chat_thread_sharing.py \
+            tests/test_chat_availability_single_rule.py \
             tests/test_coordinator_is_visible_to_the_flow.py \
             tests/test_flow_attached_but_unreadable.py \
             tests/test_flow_coordinate.py \
