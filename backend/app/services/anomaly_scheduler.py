@@ -100,13 +100,18 @@ def startup():
     """Start the anomaly detection scheduler. Called from app lifespan."""
     global _scheduler
     _scheduler = BackgroundScheduler(timezone="UTC")
-    # Run daily at 2 AM UTC
-    _scheduler.add_job(
-        _run_anomaly_scan,
-        trigger=CronTrigger(hour=2, minute=0),
-        id="anomaly_daily_scan",
-        replace_existing=True,
-    )
+    from app.core.config import settings
+    # Run daily at 2 AM UTC — unless disabled (the e2e rig: a run straddling
+    # 02:00 re-ran the detector over its seeded statuses and flaked O08b/O25).
+    if getattr(settings, "ANOMALY_DAILY_SCAN_ENABLED", True):
+        _scheduler.add_job(
+            _run_anomaly_scan,
+            trigger=CronTrigger(hour=2, minute=0),
+            id="anomaly_daily_scan",
+            replace_existing=True,
+        )
+    else:
+        logger.info("[anomaly] daily scan disabled (ANOMALY_DAILY_SCAN_ENABLED=false)")
     _scheduler.add_job(
         _dispatch_alerts,
         trigger=IntervalTrigger(minutes=10),

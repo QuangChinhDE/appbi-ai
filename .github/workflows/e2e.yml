@@ -69,6 +69,10 @@ jobs:
       # outbound source policy refuses loopback/private hosts by default, so the
       # rig opens loopback explicitly (operator knob), never by weakening the default.
       ALLOWED_PRIVATE_SOURCE_CIDRS: "127.0.0.0/8,::1/128"
+      # The observability specs assert detector states the seed writes. The 02:00
+      # UTC re-scan would overwrite them whenever a run straddles 02:00 (O08b/O25
+      # flaked that way), so the rig turns that one cron off. Alert dispatch stays.
+      ANOMALY_DAILY_SCAN_ENABLED: "false"
 
       # ONE SECRET, OR THE FRONTEND CANNOT READ WHAT THE BACKEND SIGNED.
       #

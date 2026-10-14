@@ -114,8 +114,10 @@ class AnomalyDetectionService:
         metric_col = metric.metric_column
 
         if not time_col or not metric_col:
-            # Without time column we can't do period comparison — skip
-            return "insufficient", [], "no time column"
+            # Without a time column there is no period to compare: the detector
+            # cannot run at all. That is an error to fix, not "too little data
+            # yet" - waiting would never make it judge (O08b).
+            return "error", [], "no time column configured: the detector cannot run"
 
         dt_expr = AnomalyDetectionService._date_bucket_day(time_col, dialect)
         time_expr = AnomalyDetectionService._date_bucket_day(time_col, dialect)
