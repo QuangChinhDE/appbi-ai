@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from typing import Any
 
@@ -35,6 +36,7 @@ class ScriptedAppbi:
         self.views: dict[int, dict[str, Any]] = {}
         self.calls: list[tuple[str, str, Any]] = []
         self.before_put_view: Any = None  # hook: a concurrent writer acting between read and save
+        self.refuse_dry_run = False
 
     def _model(self, ds_id: int) -> dict[str, Any]:
         views = []
@@ -74,6 +76,21 @@ class ScriptedAppbi:
         if template == "/datasets/{id}/model":
             return self._model(ds_id)
         if template.endswith("/measures/dry-run"):
+            if self.refuse_dry_run:
+                return {"ok": False, "error": "refused by AppBI"}
+            if body.get("type") == "formula":
+                # Like the real engine: only ${name} is a measure; any other identifier
+                # left in the expression is compiled as a column of the view.
+                bare = re.sub(r"\$\{[^}]*\}", " ", body.get("expression") or "")
+                unknown = [t for t in re.findall(r"[A-Za-z_]\w*", bare) if t != "amount"]
+                if unknown:
+                    return {"ok": False, "error": f"Unrecognized name: {unknown[0]}", "compiled_sql": f"SELECT {body['expression']}"}
+                # The candidate is checked against the view AS SAVED: a referenced
+                # measure that is not on it yet is unknown to the engine.
+                saved = {m["name"] for m in self.views[int(parts[-3])]["measures"]}
+                missing = [r for r in re.findall(r"\$\{([^}.]+)\}", body["expression"]) if r not in saved]
+                if missing:
+                    return {"ok": False, "error": f"Unknown semantic field in measure formula: {missing[0]}"}
             return {"ok": True}
         if template.endswith("/measures/preview"):
             return {"ok": True, "rows": [{"v": 1}]}
@@ -173,6 +190,47 @@ async def test_persistent_concurrent_edits_end_in_conflict_not_overwrite(setup):
     assert err.value.status == "conflict"
     names = [m["name"] for m in next(iter(appbi.views.values()))["measures"]]
     assert "revenue" not in names and all(n.startswith("edit_") for n in names)
+
+
+FORMULA_MEASURES = [
+    {"table": "orders", "name": "revenue", "type": "sum", "column": "amount", "filters": [], "depends_on": []},
+    {"table": "orders", "name": "orders", "type": "count", "column": None, "filters": [], "depends_on": []},
+    {"table": "orders", "name": "aov", "type": "formula", "expression": "revenue / orders", "filters": [],
+     "depends_on": ["revenue", "orders"]},
+    {"table": "orders", "name": "gross_revenue", "type": "formula", "expression": "${revenue} + revenue * 0", "filters": [],
+     "depends_on": ["revenue"]},
+]
+
+
+async def test_formula_measures_reach_appbi_as_measure_placeholders(setup):
+    """Real Claude Desktop pilot (2026-10-14): 'revenue + freight' reached AppBI verbatim,
+    the engine compiled `revenue` as a column and the whole measures step stopped."""
+    appbi = ScriptedAppbi()
+    env, run = setup(appbi)
+    run.plan.body["measures"] = json.loads(json.dumps(FORMULA_MEASURES))
+    result = await run_dataset_plan(env, run)
+    assert result["status"] == "draft_ready"
+    saved = {m["name"]: m for m in next(iter(appbi.views.values()))["measures"]}
+    assert saved["aov"]["expression"] == "${revenue} / ${orders}"
+    assert saved["gross_revenue"]["expression"] == "${revenue} + ${revenue} * 0"   # existing placeholder kept
+    # Bases were saved before the formulas that reference them (one PUT per layer).
+    puts = [c[2]["measures"] for c in appbi.calls if c[0] == "PUT"]
+    assert [m["name"] for m in puts[0]] == ["revenue", "orders"] and len(puts) == 2
+
+
+async def test_a_refused_measure_fails_its_step_and_a_rerun_resumes_without_duplicates(setup):
+    appbi = ScriptedAppbi()
+    env, run = setup(appbi)
+    appbi.refuse_dry_run = True
+    with pytest.raises(OperationError) as err:
+        await run_dataset_plan(env, run)
+    assert err.value.status == "blocked"
+    assert env.plans.step(run.plan.id, "measures:orders")["status"] == "failed"   # not left `sent`
+    appbi.refuse_dry_run = False
+    rerun = Run(plans=env.plans, plan=run.plan, deadline=time.time() + 60)
+    result = await run_dataset_plan(env, rerun)
+    assert result["status"] == "draft_ready"
+    assert len(appbi.datasets) == 1 and len([c for c in appbi.calls if c[:2] == ("POST", "/datasets/")]) == 1
 
 
 # ── adversarial review regressions ──────────────────────────────────────────────
