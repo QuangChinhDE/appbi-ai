@@ -289,7 +289,15 @@ say "BACKUP: restore-test the dump in a throwaway container"
 RT="appbi-restore-test-$STAMP"
 RT_IMAGE="pgvector/pgvector:pg$( [ "$LOCAL_DB" = 1 ] && echo 16 || echo $(( SERVER_NUM / 10000 )) )"
 docker run -d --rm --name "$RT" -e POSTGRES_USER=restoretest -e POSTGRES_PASSWORD=restoretest -e POSTGRES_DB=restoretest "$RT_IMAGE" >/dev/null || die "cannot start $RT_IMAGE for the restore test"
-for _ in $(seq 60); do docker exec "$RT" pg_isready -U restoretest -q 2>/dev/null && break; sleep 2; done
+# First boot runs initdb on a temporary server that answers pg_isready and then
+# shuts down; wait for the real server (init complete AND a query succeeds).
+rt_up=0
+for _ in $(seq 90); do
+  if docker logs "$RT" 2>&1 | grep -q "init process complete" \
+     && docker exec "$RT" psql -U restoretest -d restoretest -qAtc "SELECT 1" >/dev/null 2>&1; then rt_up=1; break; fi
+  sleep 2
+done
+[ "$rt_up" = "1" ] || { docker rm -f "$RT" >/dev/null 2>&1; die "restore-test container did not come up"; }
 docker exec -i "$RT" pg_restore -U restoretest -d restoretest --no-owner --no-acl --exit-on-error < "$BK/db.dump" \
   || { docker rm -f "$RT" >/dev/null 2>&1; die "the backup does NOT restore"; }
 cnt(){ printf '%s|%s' "$($1 psql $2 -Atc 'SELECT count(*) FROM users' | tr -d '\r')" "$($1 psql $2 -Atc 'SELECT count(*) FROM dashboards' | tr -d '\r')"; }
