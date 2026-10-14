@@ -212,6 +212,25 @@ def test_run_all_checks_records_an_unreachable_source_as_error_not_normal(db, wo
     assert m.last_check_error
 
 
+@pytest.mark.parametrize("flag,scheduled", [(None, True), ("on", True), ("off", False), ("OFF", False)])
+def test_the_daily_scan_can_be_kept_off_a_deterministic_deployment(monkeypatch, flag, scheduled):
+    """O08b: the 02:00 UTC scan fired inside an E2E run and rewrote seeded detector
+    states. APPBI_DAILY_SCAN=off leaves it unscheduled; alert dispatch still runs."""
+    from app.services import anomaly_scheduler as sched
+
+    if flag is None:
+        monkeypatch.delenv("APPBI_DAILY_SCAN", raising=False)
+    else:
+        monkeypatch.setenv("APPBI_DAILY_SCAN", flag)
+    sched.startup()
+    try:
+        assert (sched._scheduler.get_job("anomaly_daily_scan") is not None) is scheduled
+        assert (sched.next_run_time() is not None) is scheduled
+        assert sched._scheduler.get_job("observability_alert_dispatch") is not None
+    finally:
+        sched.shutdown()
+
+
 # ── H03 delivery ────────────────────────────────────────────────────────────
 
 @pytest.fixture()
