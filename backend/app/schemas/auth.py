@@ -13,34 +13,7 @@ from app.models.resource_share import ResourceType, SharePermission
 
 import re
 
-_COMMON_PASSWORDS = frozenset([
-    "password", "123456", "12345678", "qwerty", "abc123", "monkey", "master",
-    "dragon", "111111", "baseball", "iloveyou", "trustno1", "sunshine",
-    "princess", "welcome", "shadow", "superman", "michael", "football",
-    "password1", "password123", "admin", "letmein", "1234567", "123456789",
-    "12345", "1234567890", "0987654321", "000000", "654321", "qwerty123",
-    "admin123", "admin1234", "passw0rd", "p@ssw0rd", "p@ssword",
-])
-
-
-def _validate_password_strength(password: str) -> str:
-    """Enforce enterprise password policy."""
-    errors: list[str] = []
-    if len(password) < 8:
-        errors.append("at least 8 characters")
-    if not re.search(r"[A-Z]", password):
-        errors.append("at least 1 uppercase letter")
-    if not re.search(r"[a-z]", password):
-        errors.append("at least 1 lowercase letter")
-    if not re.search(r"\d", password):
-        errors.append("at least 1 digit")
-    if not re.search(r"[^A-Za-z0-9]", password):
-        errors.append("at least 1 special character")
-    if password.lower() in _COMMON_PASSWORDS:
-        errors.append("must not be a commonly used password")
-    if errors:
-        raise ValueError("Password must contain: " + ", ".join(errors))
-    return password
+from app.core.password_policy import _COMMON_PASSWORDS, _validate_password_strength  # noqa: F401,E402
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────

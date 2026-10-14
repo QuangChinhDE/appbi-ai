@@ -561,7 +561,7 @@ def test_datasource_connection_service_scrubs_returns_and_logs_at_the_real_bound
     # The outbound network policy resolves the host before the driver is
     # reached; give the synthetic host a public address so the DRIVER boundary
     # (what this test locks) is the one that fails.
-    import app.services.source_network_policy as netpol
+    import app.core.source_network_policy as netpol
     monkeypatch.setattr(netpol, "resolve_and_check", lambda host, port=None: "203.0.113.10")
 
     if provider == "postgresql":
@@ -625,7 +625,7 @@ def test_datasource_test_api_receives_the_service_safe_message(monkeypatch, capl
     import logging
     import app.api.datasources as api
     import app.services.datasource_service as mod
-    import app.services.source_network_policy as netpol
+    import app.core.source_network_policy as netpol
     from app.schemas.schemas import DataSourceDraftTestRequest, DataSourceTypeSchema
 
     secret = "api-boundary-secret-closure-123456"

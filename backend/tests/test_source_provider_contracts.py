@@ -102,7 +102,7 @@ def test_errors_are_classified_by_type_and_attributes():
     from google.auth.exceptions import RefreshError
 
     from app.services.source_errors import classify_source_error as c
-    from app.services.source_network_policy import SourceNetworkPolicyError
+    from app.core.source_network_policy import SourceNetworkPolicyError
 
     class _PgErr(Exception):
         def __init__(self, code):

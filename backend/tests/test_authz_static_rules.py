@@ -97,3 +97,40 @@ def test_system_principal_is_never_built_in_a_route():
             if rel.startswith(("api/", "routers/")) or "/api.py" in rel
             if re.search(r"\bSystemPrincipal\(|\bSystem\(", text)]
     assert not hits, hits
+
+
+# ── Dataset policy port (core -> services by registration, fail closed) ──────
+
+def test_dataset_policy_port_fails_closed_when_unregistered(monkeypatch):
+    """Core reaches the Dataset policy only through core.authz.dataset_policy.
+    With no provider registered it must REFUSE, never answer with a default."""
+    import pytest
+    from app.core.authz import dataset_policy as port
+    from app.core.dependencies import can_publish, get_effective_permission
+
+    monkeypatch.setattr(port, "_provider", None)
+
+    class Dataset:  # matched by type name in core.dependencies
+        id = 1
+        owner_id = 1
+
+    class _User:
+        id = 1
+        permissions = {"datasets": "edit"}
+
+    with pytest.raises(port.DatasetPolicyNotRegistered):
+        port.dataset_policy()
+    with pytest.raises(port.DatasetPolicyNotRegistered):
+        get_effective_permission(None, _User(), Dataset(), "datasets")
+    with pytest.raises(port.DatasetPolicyNotRegistered):
+        can_publish(None, _User(), Dataset(), "datasets")
+
+
+def test_dataset_policy_port_is_wired_by_services_package():
+    """Any import of app.services (every entrypoint does) registers THE Dataset
+    policy, so the fail-closed branch above is never the runtime path."""
+    import app.services  # noqa: F401
+    import app.services.dataset_grants_service as dgs
+    from app.core.authz.dataset_policy import dataset_policy
+
+    assert dataset_policy() is dgs

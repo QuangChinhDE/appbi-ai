@@ -45,7 +45,7 @@ def _is_placeholder(value: str) -> bool:
 
 def password_problem(password: str | None, *, production: bool) -> str | None:
     """Why ``password`` is not acceptable for the bootstrap admin, or None."""
-    from app.schemas.auth import _validate_password_strength
+    from app.core.password_policy import _validate_password_strength
 
     if password is None or _is_placeholder(password):
         return "ADMIN_PASSWORD is not set (or is a placeholder)"

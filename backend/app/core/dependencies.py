@@ -487,8 +487,9 @@ def get_effective_permission(db: Session, user: User, resource, module: str) -> 
     """
     if type(resource).__name__ == "Dataset":
         # ONE Dataset decision: the canonical capability model, read as a level.
-        from app.services import dataset_grants_service as _dgs
+        from app.core.authz.dataset_policy import dataset_policy
 
+        _dgs = dataset_policy()
         return _dgs.level_from_capabilities(_dgs.dataset_capabilities(db, user, resource))
 
     perms = _normalize_permissions(user)
@@ -524,7 +525,9 @@ def batch_effective_permissions(
     here goes through _min_permission_level rather than returning "full".
     """
     if resources and type(resources[0]).__name__ == "Dataset":
-        from app.services import dataset_grants_service as _dgs
+        from app.core.authz.dataset_policy import dataset_policy
+
+        _dgs = dataset_policy()
 
         caps = _dgs.batch_dataset_capabilities(db, user, resources)
         return {rid: _dgs.level_from_capabilities(c) for rid, c in caps.items()}
@@ -634,9 +637,9 @@ def can_publish(db: Session, user: User, resource, module: str) -> bool:
     if level == "full":
         return True
     if type(resource).__name__ == "Dataset":
-        from app.services.dataset_grants_service import dataset_capabilities
+        from app.core.authz.dataset_policy import dataset_policy
 
-        return "manage" in dataset_capabilities(db, user, resource)
+        return "manage" in dataset_policy().dataset_capabilities(db, user, resource)
     return LEVEL_ORDER[level] >= LEVEL_ORDER["edit"] and _is_owner(user, resource)
 
 
