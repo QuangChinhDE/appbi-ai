@@ -6,6 +6,7 @@ that what the plan references exists, records the plan, and runs the steps in
 order — each write at most once.
 """
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -95,6 +96,17 @@ class DatasetPlanInput(BaseModel):
         return v
 
 
+def _formula_expression(expression: str, depends_on: list[str]) -> str:
+    """The plan writes formulas over measure names ('revenue / orders_count'); AppBI's
+    engine reads a measure only as a `${name}` placeholder and compiles a bare name as a
+    COLUMN (`SELECT revenue + freight FROM ...`, rejected by the dry-run). Each whole-word
+    name listed in depends_on becomes `${name}`; existing placeholders are left alone."""
+    out = expression
+    for name in sorted(set(depends_on), key=len, reverse=True):
+        out = re.sub(rf"(?<![\w.${{]){re.escape(name)}(?![\w}}])", "${" + name + "}", out)
+    return out
+
+
 def _measure_body(m: dict[str, Any]) -> dict[str, Any]:
     """The AppBI MeasureDefinition for a plan measure (structured fields only)."""
     body: dict[str, Any] = {"name": m["name"], "type": m["type"]}
@@ -109,7 +121,7 @@ def _measure_body(m: dict[str, Any]) -> dict[str, Any]:
     if m.get("filters"):
         body["filters"] = m["filters"]
     if m["type"] == "formula":
-        body["expression"] = m["expression"]
+        body["expression"] = _formula_expression(m["expression"], m["depends_on"])
         body["depends_on"] = m["depends_on"]
     if m.get("format_kind"):
         fmt: dict[str, Any] = {"kind": m["format_kind"]}

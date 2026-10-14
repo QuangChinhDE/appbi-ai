@@ -288,6 +288,12 @@ class Run:
         except AppbiError as exc:
             self.plans.mark(self.plan.id, key, "failed", error=exc.as_dict())
             raise
+        except OperationError as exc:
+            # A refusal decided inside the step (e.g. a measure dry-run AppBI rejected)
+            # is a definite failure, not an unknown outcome: never leave it `sent`.
+            if exc.status != "partially_failed":
+                self.plans.mark(self.plan.id, key, "failed", error={"status": exc.status, "message": str(exc)})
+            raise
         self.plans.mark(self.plan.id, key, "done", result=result)
         return result
 
