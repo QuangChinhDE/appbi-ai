@@ -23,31 +23,51 @@ do, and list the decisions a script cannot make for you.
 
 ## 0. Before the maintenance window (no downtime)
 
-1. **Confirm the release tag exists and is verified.**
+1. **Confirm the release tag.**
    - It must be an annotated tag on `origin/master`.
    - CI must be green on that exact commit.
-2. **Read the behaviour changes for this release** (section 5) and make the
+2. **Identify the deployment model.** Run `docker ps` and `grep -c '^DATABASE_URL=.\+' .env`.
+   - **Bundled `local-db`** (a `<project>-db-1` container, `DATABASE_URL` empty):
+     the scripts back up and restore it themselves.
+   - **Managed / external Postgres** (`DATABASE_URL` set): the app account is
+     usually *not* superuser and lacks CREATEDB/CREATEROLE (two earlier production
+     incidents came from exactly that). Plan a **provider snapshot** for the window.
+     The upgrade refuses to run without `APPBI_PROVIDER_SNAPSHOT=<id>`, unless you
+     explicitly pass `APPBI_ACCEPT_NO_PROVIDER_SNAPSHOT=yes`.
+3. **Read the behaviour changes for this release** (section 5) and make the
    decisions they require.
-3. **Prepare `.env` for the new release.**
-   - Edit the production `.env` by hand. **Do not** replace it.
-   - Check every key in the "Environment changes" table in section 5.
-   - In particular:
-     - `ADMIN_PASSWORD` must be at least 12 characters. The release refuses to
-       start in production otherwise.
-     - `ALLOWED_PRIVATE_SOURCE_CIDRS` must cover the network of any
-       Postgres/MySQL source on a private address.
-4. **Check disk space.** Free space must be at least 2× (database size +
-   `appbi_data` volume size). The backup is written next to the checkout in
-   `../appbi-backups/` (override with `APPBI_BACKUP_DIR`).
-5. **Announce a write-freeze window.**
-   - Allow about 15 minutes, plus the build time on the host.
-   - During the window, backend and frontend are stopped. The database stays up.
+4. **Prepare `.env` by hand. Never replace it.**
+   - `ADMIN_PASSWORD` must be at least 12 characters, or the release refuses to start.
+   - `ALLOWED_PRIVATE_SOURCE_CIDRS`: Postgres/MySQL sources on private addresses
+     are **refused by default** in this release. Add the **narrowest** range
+     covering each internal source host, ideally `/32` per host. Run the inventory
+     below to get the list.
+   - Do **not** use `SOURCE_ALLOW_PRIVATE_NETWORK=true`. It opens every private
+     range to any user-chosen source host.
+   - Cloud metadata, link-local and other hard-denied ranges stay refused whatever
+     you list.
+   - Never put `APPBI_MIGRATE_APPROVED` in `.env`; the script refuses it.
+5. **Run the source inventory early**, on the release image, read-only. The
+   upgrade runs the same check as a hard gate (section 1, step GATE).
+   ```bash
+   # from a checkout of the tag on any host that can reach the production DB:
+   docker compose build backend
+   docker compose run --rm --no-deps backend source-inventory --probe
+   ```
+   - Every line must read `ALLOWED`.
+   - `BLOCKED` means a CIDR is missing (or the host is hard-denied).
+   - `UNREACHABLE` means it is allowed, but this host cannot reach it.
+6. **Check disk space.** Free space must be at least 2× (DB size + file-storage
+   volume size). Backups go to `../appbi-backups/` (override with `APPBI_BACKUP_DIR`).
+7. **Announce a write-freeze window.**
+   - Allow about 10 minutes of downtime. The build runs *before* the freeze, while
+     the old version still serves.
 
 ## 1. Upgrade
 
 The production checkout is still on the **old** commit, which does not contain
 these scripts. Take them from the release tag. Do not check the tag out by hand;
-the script does that itself, after the backup.
+the script does that itself.
 
 ```bash
 cd /path/to/appbi-ai                     # the checkout production is served from
@@ -56,47 +76,46 @@ git fetch --tags origin
 mkdir -p ../appbi-release-tools
 git show <tag>:scripts/deploy/prod-upgrade.sh  > ../appbi-release-tools/prod-upgrade.sh
 git show <tag>:scripts/deploy/prod-rollback.sh > ../appbi-release-tools/prod-rollback.sh
-bash ../appbi-release-tools/prod-upgrade.sh <tag>      # interactive confirm; --yes for unattended
+bash ../appbi-release-tools/prod-upgrade.sh <tag>              # local-db
+APPBI_PROVIDER_SNAPSHOT=<id> bash ../appbi-release-tools/prod-upgrade.sh <tag>   # managed DB
 ```
 
-The current production build predates the baked commit identity, so its
-`/api/v1/health` reports `git_sha: "unknown"`. The deploy record therefore stores
-`old_checkout` (the commit checked out on the host) and the pre-upgrade image
-IDs. The rollback checks the image IDs, not the commit string.
+The current production build reports `git_sha: "unknown"`. The deploy record
+therefore stores `old_checkout` and the exact pre-upgrade image IDs, and the
+rollback checks the image IDs.
 
-What it does, in order. A failure at any step stops the script.
+What it does, in order:
 
 | Step | What happens | If it fails |
 |---|---|---|
-| Identity | Requires `<tag>` to be annotated and on `origin/master`, and the tree to be clean. Records the checked-out commit and the commit currently serving. | Nothing has changed. |
-| Environment | Checks that `SECRET_KEY`, `DATASOURCE_ENCRYPTION_KEY` and `ADMIN_PASSWORD` are present and real. Records a **fingerprint** (sha256 prefix) of each secret, never the value. Warns about CORS and the source CIDR policy. | Nothing has changed. |
-| Schema | Reads `alembic_version` from the live database and computes the release's single head from the tag. | Nothing has changed. |
-| Write-freeze | Stops `backend`, `frontend` and `pdf-worker`. | Nothing has changed; start them again with `docker compose up -d`. |
-| Backup | Writes four things to the backup directory: `pg_dump -Fc` as `db.dump`, a tar of the `appbi_data` volume as `appbi_data.tgz`, `.env` as `env.backup` (mode 600), and the current images under `<project>-<svc>:rollback-<sha12>`. Records checksums in `SHA256SUMS`. | Services are down and nothing is migrated. Fix the cause and re-run, or start the old stack again. |
-| Restore test | Restores `db.dump` into a throwaway `pgvector:pg16` container and compares row counts. | Same as above. A backup that does not restore is not a backup. |
-| Build | Checks out the tag commit and builds with `GIT_SHA=<commit>`, so `/api/v1/health` reports the commit it actually runs. | Old images are still tagged; run the rollback. |
-| Migrate | `docker compose run --rm backend migrate` with `APPBI_MIGRATE_APPROVED=<head>`. This is the **only** runner that migrates. | Services stay down. Run the rollback (restores the DB). |
-| Start | `up -d --no-build backend frontend`. | — |
-| Post | Checks that the serving SHA equals the tag commit, alembic equals the head, the secret fingerprints are unchanged, containers are running, the frontend `/login` page returns 200, one public link returns 200, and the last 5 minutes of logs are free of tracebacks and 5xx responses. | Decide whether to fix forward or roll back (section 3). |
+| Identity | `<tag>` must be annotated and on `origin/master`; the tree must be clean. | Nothing changed. |
+| Discovery | Compose project from `APPBI_COMPOSE_PROJECT`, else `COMPOSE_PROJECT_NAME` in `.env`, else the directory name. The **running** backend container must exist. The file-storage volume is read from its actual `/app/.data` mount, and other mounts are listed. For local-db, the `db` container must exist. For managed DB, the server version is read and a matching `postgres:<major>` dump client is chosen. | Nothing changed. |
+| Environment | Required secrets present and real. Fingerprints (never values) of `SECRET_KEY`, `DATASOURCE_ENCRYPTION_KEY`, `DB_PASSWORD`, `DATABASE_URL` and `APP_DB_PASSWORD` are recorded. | Nothing changed. |
+| Schema | Reads the live revision and computes the tag's single head. | Nothing changed. |
+| Build | The old images are tagged `<project>-<svc>:rollback-<sha12>`. The tag is checked out and built with `GIT_SHA=<commit>`, while the old service is still serving. The image's own `alembic heads` must equal the computed head. | **Auto-recovery**: the old checkout and images are restored and the service keeps running. |
+| Source gate | `source-inventory --probe` runs in the new image with the production `.env`. Every Postgres/MySQL source must be `ALLOWED`; the only exception is ids listed in `APPBI_ACCEPT_BLOCKED_SOURCES`. The result is saved as `source-inventory.json`. | Auto-recovery. Fix `ALLOWED_PRIVATE_SOURCE_CIDRS` and re-run. |
+| Freeze | Stops backend, frontend and pdf-worker. The DB stays up. | Auto-recovery. |
+| Backup | `pg_dump -Fc` produces `db.dump`, the discovered volume is tarred, and `.env` is copied (mode 600). A record is written and checksums go to `SHA256SUMS`. | Auto-recovery. |
+| Restore test | `db.dump` is restored into a throwaway `pgvector` container of the server's major version, and row counts are compared. | Auto-recovery. A backup that does not restore is not a backup. |
+| Migrate | `docker compose run --rm backend migrate` with `APPBI_MIGRATE_APPROVED=<head>`. This is the **only** runner. | Rolled back by Postgres: auto-recovery. Part-applied: stop and run the rollback. |
+| Start + Post | Starts the services, then checks: serving SHA equals the tag, alembic equals the head, secret fingerprints are unchanged, `/login` returns 200, one public link returns 200, containers are running, and the logs are clean. | Fix forward or roll back (section 3). |
 
-**Why the backend refuses to migrate on its own.**
+"Auto-recovery" means: check out the old commit, re-tag the rollback images as
+`latest`, start backend and frontend, and print what is serving. The schema was
+never touched.
 
-- Since this release, `backend/entrypoint.sh` will not apply pending migrations
-  to an existing database unless `APPBI_MIGRATE_APPROVED` names the exact target
-  head.
-- A plain `docker compose up` or `./run.sh` on a database that is behind
-  therefore **stops** with a message, and the schema is untouched. Before this
-  release, any restart after a pull migrated immediately, with no backup.
-- Fresh installs, and restarts with nothing pending, are not affected.
-- For a dev or one-command install, use `./run.sh --migrate` after taking a
-  backup.
+**Why the backend refuses to migrate on its own.** `entrypoint.sh` applies
+pending migrations to an existing database only when `APPBI_MIGRATE_APPROVED`
+names the exact head. So a plain `docker compose up` or `./run.sh` on a database
+that is behind **stops**, and the schema is untouched.
 
-**External/managed Postgres** (`DATABASE_URL` set in `.env`):
+Two more cases:
+- A database that has tables but **no `alembic_version`** (a partial restore, or
+  a wrong `DB_NAME`) is refused even with approval. It is never treated as a
+  fresh install.
+- Fresh installs, and restarts with nothing pending, are unaffected.
 
-- The upgrade script runs `pg_dump` and the backup in a throwaway container on
-  the host network.
-- The rollback expects you to restore `db.dump` with your provider's tooling,
-  or use a provider snapshot, which is preferred.
+`./run.sh --migrate` approves `auto` for dev and one-command installs.
 
 ## 2. Acceptance checklist (after the script reports `UPGRADE COMPLETE`)
 
@@ -131,28 +150,34 @@ Sign each item with your name and the time.
 bash ../appbi-release-tools/prod-rollback.sh ../appbi-backups/<stamp>-<tag>
 ```
 
-It does the following:
-
-1. Verifies the backup checksums.
-2. Restores `.env`.
-3. Restores the database into a **staging** database first. It then swaps it in
-   and keeps the upgraded database as `<db>_failed_<time>` for forensics.
-4. Restores the `appbi_data` volume.
-5. Re-tags the pre-upgrade images.
-6. Checks out the old commit and starts it.
-7. Requires the serving SHA to equal the one recorded before the upgrade.
+1. Verifies `SHA256SUMS` and restores `.env`.
+2. **Database:**
+   - **local-db:** restores into a *staging* database, then swaps names. The
+     upgraded database is kept as `<db>_failed_<time>`.
+   - **Managed Postgres:** runs in ONE transaction: `DROP OWNED BY` the app role,
+     then replays the dump (extensions and ownership excluded).
+     - It needs no CREATEDB, rename or superuser privilege.
+     - Any error rolls the whole transaction back and leaves the database
+       unchanged. In that case, restore the provider snapshot named in
+       `deploy-record.txt`, which is preferred anyway when it is available.
+3. Restores the recorded file-storage volume.
+4. Re-tags the pre-upgrade images, checks out the old commit and starts it.
+5. Requires all of the following:
+   - the serving SHA equals the one recorded before the upgrade;
+   - **each container runs the exact pre-upgrade image ID**;
+   - the schema is the old revision.
 
 **Data-loss implications.** The rollback restores the moment of the backup.
 
-- Everything written after the upgrade started is discarded: new or edited
-  dashboards, grants, chat and agent runs, uploads, and synced data.
+- Everything written after it is discarded: dashboards, grants, chat and agent
+  runs, uploads, and synced data.
 - If the release was live for hours, weigh that loss against fixing forward.
-- Fixing forward is usually right for a single broken feature. Roll back for
-  data corruption, failed migrations, or a broken login or public surface.
+- Roll back for data corruption, failed migrations, or a broken login or public
+  surface.
+- Fix forward for a single broken feature.
 
 **Reverting git alone is not a rollback.** Several migrations in this release
-cannot be reversed by `alembic downgrade` (section 5). The database restore is
-the rollback; the code checkout only matches it.
+cannot be reversed by `alembic downgrade` (section 5).
 
 ## 4. Restore drill (do this once before the window)
 
@@ -203,3 +228,25 @@ Environment changes for an existing `.env`:
 | `TRUSTED_PROXY_CIDRS` / `TRUSTED_PROXY_HOPS` | New. The real client IP is taken from forwarded headers sent by trusted proxies. The default trusts RFC1918 networks and loopback, with 1 hop. | With a CDN or load balancer in front of nginx, raise `TRUSTED_PROXY_HOPS`. |
 | `APPBI_MIGRATE_APPROVED` | New migration gate (see section 1). | Leave **unset** in `.env`. The upgrade script passes it for one run only. |
 | `METADATA_CATALOG_ENABLED` / `GOVERN_ENABLED` / `OBSERVABILITY_ENABLED` | `run.sh` no longer forces an explicit `false` back to `true`. | None. A value you set now sticks. |
+
+## 6. Operator actions and accepted residual risks
+
+**Do once, on every environment where it exists:**
+
+- **Revoke the eval public link.** Before this release, the public-link token of
+  the eval fixture dashboard ("Olist Public", link id 39 on the dev database) was
+  committed in `gold_olist.py`. It was live and unprotected there.
+  - The code now reads `APPBI_EVAL_OLIST_TOKEN`, but the old value stays in git
+    history.
+  - On production, check `SELECT id, dashboard_id FROM dashboard_public_links
+    WHERE token = '<value from git history>'`.
+  - If that returns a row, deactivate the link and issue a new one.
+
+**Accepted residual risks:**
+
+| Risk | Why it is not changed in this release | Follow-up |
+|---|---|---|
+| The backend and pdf-worker containers run as root. | Existing `appbi_data` volumes hold root-owned files. Switching to a non-root `USER` makes the upgraded backend unable to write to them, so an ownership migration step would be needed. That is not a release-time change. | A separate change: add a `USER` together with a one-off `chown` job, and rehearse it on a volume copy. |
+| Base images use floating tags, and about half of `requirements.txt` is range-pinned. | The deployed artifact is whatever gets built on the host, so a later rebuild can drift from the image that was tested. | Generate a constraints/lock file from the certified image and build with it. |
+| The CSP allows `'unsafe-inline' 'unsafe-eval'` (`nginx.conf`). | Removing it needs a full browser regression over every chart type and export path. That was not done in this release. | Remove `'unsafe-eval'` in a dedicated change, with the E2E suite and the PDF/PPTX exporters as the gate. |
+| The scheduler lock fails open (`app/core/scheduler_lock.py`). | If the advisory-lock query itself errors, a scheduled job runs unguarded on every worker. In that state the job's own database work is very likely to fail too. All 13 scheduled jobs are already behind `single_run` / `job_lock`. | Make it fail closed for jobs that write data. |
