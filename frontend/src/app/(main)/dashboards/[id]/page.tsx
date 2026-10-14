@@ -2613,8 +2613,37 @@ function DashboardDetailPageInner() {
   // filter + layout to the public link together (no longer writes
   // straight to live `filters_config` / `pages_config`).
   const handleApplyFilters = async (scope: 'page' | 'all') => {
+    // In-session apply — identical for editors and viewers. This is what the
+    // canvas reads (applied slicers, cluster layout, the active page's
+    // filters/slicers via localPagesConfig) and what the staged-change count
+    // compares the drafts against, so it must run for viewers too.
+    let nextPages: any[] | null = null;
     if (scope === 'all') {
       setAppliedGlobalFilters(draftGlobalFilters);
+      setAppliedGlobalSlicers(draftGlobalSlicers);
+      if (draftSlicerClusterLayout) setAppliedSlicerClusterLayout(draftSlicerClusterLayout);
+    }
+    if (activePageId) {
+      // Stage the new pages_config (full page array, with current
+      // page's filters set to the draft set). For scope='all' this
+      // still ships since the DA may have touched both scopes in
+      // the same session.
+      nextPages = dashboardPages.map((p) => {
+        if (p.id !== activePageId) return p;
+        const next: any = { ...p };
+        // Per-page filters
+        if (draftPageFilters.length > 0) next.filters = draftPageFilters;
+        else delete next.filters;
+        // Per-page slicers (scope='page'). Strip images defensively — they
+        // belong to the global cluster (slicers_config), never per page.
+        const pageSlicers = draftPageSlicers.filter((s) => !(s && typeof s === 'object' && (s as any).type === 'image'));
+        if (pageSlicers.length > 0) next.slicers = pageSlicers;
+        else delete next.slicers;
+        return next;
+      });
+      // Mirror locally so the in-session state is applied (and, for an
+      // editor, stays consistent until refetch lands).
+      setLocalPagesConfig(nextPages as DashboardPageConfig[]);
     }
     if (!canEditResource) {
       // Viewers still get the in-session apply but no DB write.
@@ -2641,37 +2670,10 @@ function DashboardDetailPageInner() {
           .map((f) => toBaseFilter(f, { allowInactive: true }))
           .filter((b): b is BaseFilter => b !== null);
         body.slicers_config = draftGlobalSlicers;
-        setAppliedGlobalSlicers(draftGlobalSlicers);
         // Phase-G — ship cluster layout in the same Apply round-trip.
-        if (draftSlicerClusterLayout) {
-          body.slicer_cluster_layout = draftSlicerClusterLayout;
-          setAppliedSlicerClusterLayout(draftSlicerClusterLayout);
-        }
+        if (draftSlicerClusterLayout) body.slicer_cluster_layout = draftSlicerClusterLayout;
       }
-
-      if (activePageId) {
-        // Stage the new pages_config (full page array, with current
-        // page's filters set to the draft set). For scope='all' this
-        // still ships since the DA may have touched both scopes in
-        // the same session.
-        const nextPages = dashboardPages.map((p) => {
-          if (p.id !== activePageId) return p;
-          const next: any = { ...p };
-          // Per-page filters
-          if (draftPageFilters.length > 0) next.filters = draftPageFilters;
-          else delete next.filters;
-          // Per-page slicers (scope='page'). Strip images defensively — they
-          // belong to the global cluster (slicers_config), never per page.
-          const pageSlicers = draftPageSlicers.filter((s) => !(s && typeof s === 'object' && (s as any).type === 'image'));
-          if (pageSlicers.length > 0) next.slicers = pageSlicers;
-          else delete next.slicers;
-          return next;
-        });
-        body.pages_config = nextPages;
-        // Mirror locally so the editor state stays consistent until
-        // refetch lands.
-        setLocalPagesConfig(nextPages);
-      }
+      if (nextPages) body.pages_config = nextPages;
 
       await dashboardApi.updateDraftFilters(dashboardId, body);
       // Refresh dashboard so draft overlay surfaces from server.
