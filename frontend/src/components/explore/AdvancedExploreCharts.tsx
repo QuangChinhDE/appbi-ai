@@ -392,7 +392,7 @@ function ringSegment(cx: number, cy: number, outer: number, inner: number, start
 
 function EmptyAdvanced({ message }: { message: string }) {
   return (
-    <div className="flex h-full items-center justify-center text-sm text-text-tertiary">
+    <div className="flex h-full items-center justify-center text-sm text-text-tertiary" data-empty-state>
       {message}
     </div>
   );
@@ -1527,7 +1527,7 @@ function RegionChart({ items, style, palette, onSelect }: { items: NameValue[]; 
           const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
           const displayName = displaySeriesName(style, item.name);
           return (
-            <button key={item.name} onClick={() => onSelect?.(item.name)}
+            <button key={item.name} data-chart-mark="" onClick={() => onSelect?.(item.name)}
               className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-left hover:bg-surface-2">
               <div className="flex items-center justify-between gap-3">
                 <span className="truncate text-sm font-medium text-text-secondary">{displayName}</span>
@@ -2015,7 +2015,7 @@ function WordCloudChart({ items, style, palette, onSelect }: { items: NameValue[
           const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
           const displayName = displaySeriesName(style, item.name);
           return (
-            <button key={item.name} onClick={() => onSelect?.(item.name)}
+            <button key={item.name} data-chart-mark="" onClick={() => onSelect?.(item.name)}
               className="font-semibold leading-none hover:opacity-80"
               style={{
                 color: fontColor,

@@ -211,6 +211,7 @@ backend/scripts/regression_*.py
 # a dev's laptop. (Negations must follow the ignores; later match wins.)
 !backend/tests/
 !backend/tests/test_locked_contract.py
+!backend/tests/test_query_duration_monotonic.py
 !backend/tests/test_phase2_filter_propagation.py
 !backend/tests/test_phase4_symmetric_aggregates.py
 !backend/tests/test_filter_entry_schemas.py
@@ -244,6 +245,7 @@ backend/scripts/regression_*.py
 !backend/tests/test_error_taxonomy_and_empty.py
 !backend/tests/test_chart_discovery_and_figure_correction.py
 !backend/tests/test_chat_thread_sharing.py
+!backend/tests/test_chat_availability_single_rule.py
 !backend/tests/test_coordinator_is_visible_to_the_flow.py
 !backend/tests/test_flow_attached_but_unreadable.py
 !backend/tests/test_flow_coordinate.py

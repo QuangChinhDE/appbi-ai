@@ -168,6 +168,116 @@ check('both tile renderers publish their export state; the capture hides export-
   assert(/loading > 0/.test(rr) && /tileReadiness\(t\)/.test(rr), 'page readiness no longer waits for every tile');
 });
 
+// ── Every chart type can reach the deck ──────────────────────────────────────
+// How each registered chart type shows its data. A NEW ChartType fails here
+// until someone states how it is captured — and an HTML renderer must declare
+// its marks (`data-chart-mark`) or the tile never counts as drawn and the
+// export stops with "could not be rendered" (PODIUM did; WORD_CLOUD would).
+const CAPTURE = {
+  BAR: 'svg', HORIZONTAL_BAR: 'svg', LINE: 'svg', PIE: 'svg', DONUT: 'svg', RADAR: 'svg', POLAR_AREA: 'svg',
+  TIME_SERIES: 'svg', AREA: 'svg', STACKED_BAR: 'svg', GROUPED_BAR: 'svg', BAR_LINE: 'svg', SCATTER: 'svg',
+  BUBBLE: 'svg', HEATMAP: 'svg', TREEMAP: 'svg', FUNNEL: 'svg', GAUGE: 'svg', WATERFALL: 'svg', MAP_POINT: 'svg',
+  BOXPLOT: 'svg', BULLET: 'svg', SANKEY: 'svg', SUNBURST: 'svg', RIBBON: 'svg', TIMELINE: 'svg', NINE_BOX: 'svg',
+  TABLE: 'table', MATRIX: 'table', KPI: 'kpi',
+  // HTML renderers: [file, text that opens the renderer, text that closes it]
+  PODIUM: ['html', [
+    ['components/explore/ExploreChart.tsx', "if (type === 'PODIUM')", "if (type === 'PIE')"],
+    ['components/charts/ChartPreview.tsx', 'function PodiumDisplay(', '\n}\n'],
+  ]],
+  WORD_CLOUD: ['html', [['components/explore/AdvancedExploreCharts.tsx', 'function WordCloudChart(', '\n}\n']]],
+  MAP_REGION: ['html', [['components/explore/AdvancedExploreCharts.tsx', 'function RegionChart(', '\n}\n']]],
+};
+
+check('every ChartType in the registry has a stated capture route; HTML renderers declare their marks', () => {
+  const api = source('types/api.ts');
+  const body = api.slice(api.indexOf('export enum ChartType'));
+  const members = [...body.slice(0, body.indexOf('}')).matchAll(/^\s*([A-Z_]+)\s*=/gm)].map((m) => m[1]);
+  assert(members.length > 20, `ChartType enum not parsed (${members.length})`);
+  const missing = members.filter((m) => !CAPTURE[m]);
+  assert(!missing.length, `no PowerPoint capture route for: ${missing.join(', ')} — add it to CAPTURE`);
+  const stale = Object.keys(CAPTURE).filter((k) => !members.includes(k));
+  assert(!stale.length, `CAPTURE lists removed types: ${stale.join(', ')}`);
+  for (const [type, route] of Object.entries(CAPTURE)) {
+    if (!Array.isArray(route)) continue;
+    for (const [file, open, close] of route[1]) {
+      const src = source(file).replace(/\r\n/g, '\n');
+      const at = src.indexOf(open);
+      assert(at >= 0, `${type}: renderer "${open}" not found in ${file}`);
+      const end = src.indexOf(close, at + open.length);
+      const block = src.slice(at, end < 0 ? undefined : end);
+      assert(/data-chart-mark=""/.test(block), `${type}: ${file} renders HTML marks without data-chart-mark`);
+    }
+  }
+  const ex = source('lib/export-pptx.ts');
+  assert(/button:not\(\[data-chart-mark\]\)/.test(ex), 'the capture hides marks that are buttons (word cloud, region map)');
+  const adv = source('components/explore/AdvancedExploreCharts.tsx');
+  const empty = adv.slice(adv.indexOf('function EmptyAdvanced('), adv.indexOf('function ChartFrame('));
+  assert(/data-empty-state/.test(empty), 'an advanced chart\'s own empty message is not a final state');
+});
+
+// A tiny DOM: just enough for tileReadiness / hasVisualMarks.
+function fakeEl({ tag = 'div', attrs = {}, text = '', size = [200, 100], style = {}, children = [] } = {}) {
+  const el = {
+    tagName: tag.toUpperCase(), attrs, children, parent: null, _style: style,
+    dataset: Object.fromEntries(Object.entries(attrs).filter(([k]) => k.startsWith('data-'))
+      .map(([k, v]) => [k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase()), v])),
+    get textContent() { return text + children.map((c) => c.textContent).join(''); },
+    getAttribute(n) { return n in attrs ? attrs[n] : null; },
+    getBoundingClientRect() { return { width: size[0], height: size[1] }; },
+    matches(sel) { return sel.split(',').some((one) => matchOne(el, one.trim())); },
+    closest(sel) { let n = el; while (n) { if (n.matches(sel)) return n; n = n.parent; } return null; },
+    querySelectorAll(sel) {
+      const out = [];
+      const walk = (n) => n.children.forEach((c) => { if (c.matches(sel)) out.push(c); walk(c); });
+      walk(el);
+      return out;
+    },
+    querySelector(sel) { return el.querySelectorAll(sel)[0] ?? null; },
+  };
+  children.forEach((c) => { c.parent = el; });
+  return el;
+}
+function matchOne(el, sel) {
+  const m = sel.match(/^([a-z]*)((?:\[[^\]]+\]|\.[\w-]+)*)$/i);
+  if (!m) return false; // descendant / complex selectors never match in this fake
+  if (m[1] && el.tagName.toLowerCase() !== m[1].toLowerCase()) return false;
+  for (const part of m[2].match(/\[[^\]]+\]|\.[\w-]+/g) ?? []) {
+    if (part.startsWith('.')) {
+      if (!(el.attrs.class ?? '').split(/\s+/).includes(part.slice(1))) return false;
+      continue;
+    }
+    const [, name, op, value] = part.match(/^\[([\w-]+)(?:(\*?=)"?([^"\]]*)"?)?\]$/) ?? [];
+    if (!name || !(name in el.attrs)) return false;
+    if (op === '*=' && !String(el.attrs[name]).includes(value)) return false;
+    if (op === '=' && String(el.attrs[name]) !== value) return false;
+  }
+  return true;
+}
+globalThis.getComputedStyle = (el) => ({
+  display: 'block', visibility: 'visible', opacity: '1', backgroundColor: 'rgba(0, 0, 0, 0)', ...el._style,
+});
+
+check('a tile counts as drawn by its declared HTML marks; a renderer\'s own empty message is final', () => {
+  const rr = load('lib/render-ready.ts');
+  const tile = (...body) => fakeEl({ attrs: { 'data-export-state': 'data' }, children: [fakeEl({ attrs: { 'data-tile-body': '' }, children: body })] });
+  // PODIUM: gradient cards (no background-color), words inside.
+  const podium = tile(fakeEl({ attrs: { 'data-chart-mark': '', style: 'background: linear-gradient(#fff, #000)' }, text: 'Winner North 1,200', size: [140, 120] }));
+  assert(rr.tileReadiness(podium) === 'ready-visual', `podium: ${rr.tileReadiness(podium)}`);
+  // The same cards WITHOUT the declaration were never "drawn" — the defect.
+  const undeclared = tile(fakeEl({ attrs: { style: 'background: linear-gradient(#fff, #000)' }, text: 'Winner North 1,200', size: [140, 120] }));
+  assert(rr.tileReadiness(undeclared) === 'loading', 'undeclared gradient cards counted as drawn');
+  // A hollow declared mark (no words, no size) is not data.
+  const hollow = tile(fakeEl({ attrs: { 'data-chart-mark': '' }, size: [0, 0] }));
+  assert(rr.tileReadiness(hollow) === 'loading', 'a hollow mark counted as drawn');
+  // Rows arrived but the renderer cannot draw them (e.g. RIBBON with one time
+  // bucket) and says so: that message is the final picture.
+  const said = tile(fakeEl({ attrs: { 'data-empty-state': '' }, text: 'Select a time field, series and value' }));
+  assert(rr.tileReadiness(said) === 'ready-empty', `own empty message: ${rr.tileReadiness(said)}`);
+  // A title alone is still not a chart.
+  const titleOnly = tile(fakeEl({ text: 'DA1 RIBBON' }));
+  assert(rr.tileReadiness(titleOnly) === 'loading', 'a title passed as a drawn chart');
+});
+
 if (failures.length) {
   for (const f of failures) console.error(`FAIL  ${f.name}\n      ${f.error.message}`);
   console.error(`\n${failures.length} failed, ${passed} passed`);

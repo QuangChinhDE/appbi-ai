@@ -52,6 +52,9 @@ export interface ChatThread {
   title: string;
   created_at: string | null;
   last_active_at: string | null;
+  /** How the reader stands to this conversation (same value as the detail).
+   *  Optional: an older backend does not send it. */
+  access?: ThreadAccess;
 }
 
 export interface ChatCitation {

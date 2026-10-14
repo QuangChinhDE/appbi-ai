@@ -27,6 +27,9 @@ import type { ChatBrain, ChatMessage, ChatThread, ChatThreadDetail } from '@/lib
 import { readerNotices } from '@/lib/notices';
 
 const EMPTY_CHART_NAMES = new Map<number, string>();
+/** Read-only because of the ASSISTANT (unpublished, not chat-capable, not
+ *  yours) — as opposed to this person's access to the conversation. */
+const FLOW_UNAVAILABLE = new Set(['not_published', 'direct_chat_disabled', 'direct_chat_ineligible', 'permission_revoked', 'assistant_not_shared']);
 
 /** Notices worth showing a reader. The rest are for the Runs tab — a reader does
  *  not need to be told which branch of a flow did not match. */
@@ -376,7 +379,9 @@ export function ConversationView({
               disabled={readonly || streaming}
               rows={1}
               data-chat-input
-              placeholder={readonly ? t('chat.placeholderReadonly') : t('chat.placeholder')}
+              placeholder={readonly
+                ? t(FLOW_UNAVAILABLE.has(detail?.readonly_reason || '') ? 'chat.placeholderReadonly' : 'chat.placeholderReadonlyThread')
+                : t('chat.placeholder')}
               className={cn(
                 'min-h-[42px] max-h-40 flex-1 resize-y rounded-lg border border-[rgb(var(--border-line))]',
                 'bg-surface-1 px-3 py-2.5 text-small text-text-primary outline-none',

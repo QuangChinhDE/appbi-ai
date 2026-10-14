@@ -168,9 +168,15 @@ def list_threads(
     user: User = Depends(get_current_user),
     _: Any = Depends(can_chat),
 ):
+    # `access` per row (the same value the thread detail returns): the catalogue
+    # opens an assistant on the reader's most recent conversation they can ASK in.
+    # Without it, a conversation someone shared to read — or any conversation
+    # `chat: full` oversees — was opened instead, read-only, and an assistant the
+    # catalogue lists as available looked "no longer active".
     return {
         "threads": [
-            _thread_dict(t) for t in direct_chat.list_threads(db, user, brain_key)
+            {**_thread_dict(t), "access": direct_chat.thread_access(db, user, t)}
+            for t in direct_chat.list_threads(db, user, brain_key)
         ]
     }
 

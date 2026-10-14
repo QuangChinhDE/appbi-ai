@@ -79,6 +79,13 @@ export function hasVisualMarks(body: Element): boolean {
   }
   const kpi = body.querySelector('.dashboard-kpi-value');
   if (kpi && (kpi.textContent || '').trim()) return true;
+  // HTML renderers (PODIUM cards, …) declare their data marks explicitly: a
+  // gradient card or a coloured border has no background-color to detect.
+  for (const el of body.querySelectorAll('[data-chart-mark]')) {
+    if (el.closest(MARK_CHROME)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width * r.height > 16 && (el.textContent || '').trim()) return true;
+  }
   for (const el of body.querySelectorAll<HTMLElement>('[style*="background"]')) {
     if (el.closest(MARK_CHROME)) continue;
     const r = el.getBoundingClientRect();
@@ -97,7 +104,12 @@ export function tileReadiness(tile: Element): TileReadiness {
   if (state === 'empty') return 'ready-empty';
   if (state !== 'data') return 'loading';
   const body = host.querySelector('[data-tile-body]') ?? host;
-  return hasVisualMarks(body) ? 'ready-visual' : 'loading';
+  if (hasVisualMarks(body)) return 'ready-visual';
+  // Rows arrived but the renderer drew its own "nothing to draw" message (a
+  // role it needs is unset, fewer than two time buckets, …): that message IS
+  // the final picture, exactly as for a query with no rows.
+  if (body.querySelector('[data-empty-state]')) return 'ready-empty';
+  return 'loading';
 }
 
 function renderSignature(root: HTMLElement): { busy: boolean; key: string } {

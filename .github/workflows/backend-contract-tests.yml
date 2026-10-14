@@ -110,6 +110,7 @@ jobs:
           set -o pipefail
           python -m pytest -q --tb=short \
             tests/test_locked_contract.py \
+            tests/test_query_duration_monotonic.py \
             tests/test_phase2_filter_propagation.py \
             tests/test_phase4_symmetric_aggregates.py \
             tests/test_filter_entry_schemas.py \
@@ -142,6 +143,7 @@ jobs:
             tests/test_error_taxonomy_and_empty.py \
             tests/test_chart_discovery_and_figure_correction.py \
             tests/test_chat_thread_sharing.py \
+            tests/test_chat_availability_single_rule.py \
             tests/test_coordinator_is_visible_to_the_flow.py \
             tests/test_flow_attached_but_unreadable.py \
             tests/test_flow_coordinate.py \

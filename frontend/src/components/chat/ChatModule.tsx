@@ -271,7 +271,11 @@ export function ChatModule() {
             // one. A reader coming back to an assistant almost always means "carry
             // on", and making them pick from a list first is a step that answers a
             // question they did not ask.
-            const last = threads.find((x) => x.brain_key === key);
+            // Only a conversation they can ASK in: one shared to read, or one
+            // `chat: full` merely oversees, opens read-only — and made a working
+            // assistant look "no longer active". Otherwise a fresh conversation.
+            const last = threads.find((x) => x.brain_key === key
+              && (!x.access || x.access === 'owner' || x.access === 'edit'));
             go(key, last?.id);
           }}
         />
