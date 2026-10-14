@@ -46,7 +46,7 @@ async function fixtureCopy(request: APIRequestContext) {
   const kpi = (full.dashboard_charts as any[]).find((dc) => {
     const name = String(dc.chart?.name ?? '');
     const type = String(dc.chart?.chart_type ?? '').toUpperCase();
-    return type === 'KPI' && /^E2E Revenue(?: \(\d+\)| \(Copy\))?$/.test(name);
+    return type === 'KPI' && /^E2E Revenue(?: \(\d+\))*$/.test(name);
   });
   expect(kpi, 'the E2E Revenue KPI tile').toBeTruthy();
   return { id: copy.id as number, ownCharts, kpiTile: kpi.id as number };
