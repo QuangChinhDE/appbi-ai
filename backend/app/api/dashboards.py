@@ -91,6 +91,7 @@ from app.services.dashboard_html_import_service import (
     _load_uploaded_single_file_multi_sheet_profiles,
     ai_fix_chart_plan,
     SourceContractMismatch,
+    UnresolvedImportFields,
     analyze_dashboard_html_import,
     analyze_dashboard_html_import_batch,
     build_dashboard_from_import as build_dashboard_from_html_import_service,
@@ -141,6 +142,21 @@ def _normalize_import_source_mode(raw_value: str) -> str:
     if normalized not in {"existing_dataset", "upload_excel"}:
         raise HTTPException(status_code=400, detail="source_mode must be existing_dataset or upload_excel.")
     return normalized
+
+
+_IMPORT_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def _normalize_import_idempotency_key(raw_value: Optional[str]) -> Optional[str]:
+    if raw_value is None or not str(raw_value).strip():
+        return None
+    value = str(raw_value).strip()
+    if not _IMPORT_IDEMPOTENCY_KEY_RE.match(value):
+        raise HTTPException(
+            status_code=400,
+            detail="idempotency_key must be 1-128 characters of letters, digits, '.', '_', ':' or '-'.",
+        )
+    return value
 
 
 def _normalize_import_target_mode(raw_value: str) -> str:
@@ -723,10 +739,24 @@ async def build_html_dashboard_import(
     included_block_ids_json: Optional[str] = Form(None),
     excel_file: Optional[UploadFile] = File(None),
     excel_files: List[UploadFile] = File(default=[]),
+    draft_only: bool = Form(False),
+    strict_fields: bool = Form(False),
+    idempotency_key: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("dashboards", "edit")),
 ):
-    """Materialize analyzed chart plans into a native dashboard."""
+    """Materialize analyzed chart plans into a native dashboard.
+
+    Optional, default off (absent = the wizard's behaviour, unchanged):
+      * ``draft_only`` — everything created is the caller's draft until they
+        publish (``target_mode=new_dashboard`` only, else 400);
+      * ``strict_fields`` — unresolved chart fields are a 422
+        ``{"reason": "unresolved_fields", "unresolved": [...]}``, not a warning;
+      * ``idempotency_key`` — 1..128 chars of ``[A-Za-z0-9._:-]``
+        (``new_dashboard`` only): a repeat by the same user returns the first
+        build's dashboard (``idempotent_replay: true``) and creates nothing.
+    """
+    normalized_idempotency_key = _normalize_import_idempotency_key(idempotency_key)
     analysis = _parse_optional_json_form_field(analysis_json, "analysis_json")
     if not isinstance(analysis, dict):
         raise HTTPException(status_code=400, detail="analysis_json must decode to an object.")
@@ -793,6 +823,9 @@ async def build_html_dashboard_import(
             target_mode=normalized_target_mode,
             target_dashboard_id=target_dashboard_id,
             included_block_ids=included_block_ids,
+            draft_only=bool(draft_only),
+            strict_fields=bool(strict_fields),
+            idempotency_key=normalized_idempotency_key,
         )
         if prepared_dataset_id is not None:
             # Promote the draft dataset into a regular dataset once charts
@@ -811,6 +844,11 @@ async def build_html_dashboard_import(
         raise HTTPException(status_code=409, detail={
             "reason": "source_contract_mismatch",
             "findings": exc.findings,
+        }) from exc
+    except UnresolvedImportFields as exc:
+        raise HTTPException(status_code=422, detail={
+            "reason": "unresolved_fields",
+            "unresolved": exc.unresolved,
         }) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -833,6 +871,7 @@ async def dry_run_build_html_dashboard_import(
     included_block_ids_json: Optional[str] = Form(None),
     excel_file: Optional[UploadFile] = File(None),
     excel_files: List[UploadFile] = File(default=[]),
+    strict_fields: bool = Form(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("dashboards", "edit")),
 ):
@@ -909,6 +948,7 @@ async def dry_run_build_html_dashboard_import(
                 target_mode=normalized_target_mode,
                 target_dashboard_id=target_dashboard_id,
                 included_block_ids=included_block_ids,
+                strict_fields=bool(strict_fields),
             )
             # Hydrate response payload BEFORE rollback so the client can see
             # exactly what would have been created (ids will be invalid after
@@ -948,6 +988,15 @@ async def dry_run_build_html_dashboard_import(
         return payload
     except HTTPException:
         raise
+    except UnresolvedImportFields as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=422, detail={
+            "reason": "unresolved_fields",
+            "unresolved": exc.unresolved,
+        }) from exc
     except ValueError as exc:
         try:
             db.rollback()
