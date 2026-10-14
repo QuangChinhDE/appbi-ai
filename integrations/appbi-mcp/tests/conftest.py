@@ -53,7 +53,13 @@ class FakeAppbi:
         async def health(_: Request) -> JSONResponse:
             return JSONResponse({"status": "healthy"})
 
-        return Starlette(routes=[Route("/api/v1/auth/me", me), Route("/api/v1/health", health)])
+        async def anything_else(request: Request) -> JSONResponse:
+            # Recorded so a test can prove a refused tool never reached AppBI.
+            self.calls.append((request.method, request.url.path.removeprefix("/api/v1")))
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+
+        return Starlette(routes=[Route("/api/v1/auth/me", me), Route("/api/v1/health", health),
+                                 Route("/api/v1/{rest:path}", anything_else, methods=["GET", "POST", "PUT", "PATCH", "DELETE"])])
 
 
 def make_settings(tmp_path, **over: Any) -> Settings:

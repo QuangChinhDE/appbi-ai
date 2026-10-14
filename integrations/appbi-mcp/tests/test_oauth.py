@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+
+import pytest
 import sqlite3
 
 from .conftest import MCP_HEADERS, PUBLIC, REDIRECT, connect, pkce, register, rpc
@@ -129,14 +131,29 @@ async def test_revoked_appbi_pat_ends_the_connection(client, fake_appbi):
     assert r.status_code == 401
 
 
-async def test_read_only_grant_gets_403_insufficient_scope_on_writes(client, fake_appbi):
+@pytest.mark.parametrize("tool,args", [("execute_plan", {"plan_id": "plan_x"}), ("publish", {"plan_id": "plan_x"})])
+async def test_read_only_grant_is_refused_by_the_tool_with_a_clear_message(client, fake_appbi, tool, args):
+    """P8 (real Claude Desktop pilot): an HTTP 403 insufficient_scope is a step-up challenge;
+    for a read-only grant no step-up can succeed and the Desktop bridge waited until it
+    timed out. The call is refused by the tool layer instead: a normal result the user can
+    read, and nothing reaches AppBI."""
     pat = fake_appbi.add_user("a@example.com")
     tok = await connect(client, pat, granted="read")
     assert tok["scope"] == "appbi.read"
-    r = await client.post("/mcp", json=rpc("execute_plan", {"plan_id": "plan_x"}),
+    before = list(fake_appbi.calls)
+    r = await client.post("/mcp", json=rpc(tool, args),
                           headers={**MCP_HEADERS, "Authorization": f"Bearer {tok['access_token']}"})
-    assert r.status_code == 403
-    assert 'error="insufficient_scope"' in r.headers["www-authenticate"] and 'scope="appbi.author"' in r.headers["www-authenticate"]
+    assert r.status_code == 200 and "www-authenticate" not in r.headers
+    out = json.loads(r.json()["result"]["content"][0]["text"])
+    assert out["status"] == "insufficient_scope"
+    assert out["message"].startswith("This AppBI connection has read-only access.")
+    assert fake_appbi.calls == before          # refused before any AppBI request
+
+
+async def test_an_invalid_token_is_still_a_401_challenge(client, fake_appbi):
+    r = await client.post("/mcp", json=rpc("execute_plan", {"plan_id": "plan_x"}),
+                          headers={**MCP_HEADERS, "Authorization": "Bearer not-a-token"})
+    assert r.status_code == 401 and 'error="invalid_token"' in r.headers["www-authenticate"]
 
 
 async def test_tokens_and_pats_are_not_stored_in_clear(app, client, fake_appbi):
