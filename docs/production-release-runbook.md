@@ -34,6 +34,21 @@ do, and list the decisions a script cannot make for you.
      incidents came from exactly that). Plan a **provider snapshot** for the window.
      The upgrade refuses to run without `APPBI_PROVIDER_SNAPSHOT=<id>`, unless you
      explicitly pass `APPBI_ACCEPT_NO_PROVIDER_SNAPSHOT=yes`.
+   - **Managed Postgres: prepare a backup credential.** `govern_doc_block` and
+     `govern_doc_chunk` use `FORCE ROW LEVEL SECURITY`. If the app role is neither
+     superuser nor `BYPASSRLS`, `pg_dump` refuses those tables. The upgrade
+     detects this **before** the freeze and requires `APPBI_BACKUP_DATABASE_URL`.
+     - The credential is used only for `pg_dump`, and only via environment
+       variables.
+     - The rehearsed role:
+       ```sql
+       CREATE ROLE appbi_backup LOGIN BYPASSRLS PASSWORD '…';
+       GRANT pg_read_all_data TO appbi_backup;
+       ```
+     - Take it from the secret store, never from `.env`.
+     - Never work around this with `pg_dump --enable-row-security`. It "works" by
+       dumping only the rows the policy shows, so the backup is silently
+       incomplete.
 3. **Read the behaviour changes for this release** (section 5) and make the
    decisions they require.
 4. **Prepare `.env` by hand. Never replace it.**
@@ -44,6 +59,11 @@ do, and list the decisions a script cannot make for you.
      below to get the list.
    - Do **not** use `SOURCE_ALLOW_PRIVATE_NETWORK=true`. It opens every private
      range to any user-chosen source host.
+   - **Never allowlist the application's own metadata database** (`appbi-db`, or
+     the managed DB host). Sources pointing at it let any source author read
+     AppBI's internal tables. In the rehearsal copy, 13 legacy sources pointed
+     there. Repoint each such source at its real host, or accept that it stops,
+     by listing its id in `APPBI_ACCEPT_BLOCKED_SOURCES`.
    - Cloud metadata, link-local and other hard-denied ranges stay refused whatever
      you list.
    - Never put `APPBI_MIGRATE_APPROVED` in `.env`; the script refuses it.
@@ -249,4 +269,4 @@ Environment changes for an existing `.env`:
 | The backend and pdf-worker containers run as root. | Existing `appbi_data` volumes hold root-owned files. Switching to a non-root `USER` makes the upgraded backend unable to write to them, so an ownership migration step would be needed. That is not a release-time change. | A separate change: add a `USER` together with a one-off `chown` job, and rehearse it on a volume copy. |
 | Base images use floating tags, and about half of `requirements.txt` is range-pinned. | The deployed artifact is whatever gets built on the host, so a later rebuild can drift from the image that was tested. | Generate a constraints/lock file from the certified image and build with it. |
 | The CSP allows `'unsafe-inline' 'unsafe-eval'` (`nginx.conf`). | Removing it needs a full browser regression over every chart type and export path. That was not done in this release. | Remove `'unsafe-eval'` in a dedicated change, with the E2E suite and the PDF/PPTX exporters as the gate. |
-| The scheduler lock fails open (`app/core/scheduler_lock.py`). | If the advisory-lock query itself errors, a scheduled job runs unguarded on every worker. In that state the job's own database work is very likely to fail too. All 13 scheduled jobs are already behind `single_run` / `job_lock`. | Make it fail closed for jobs that write data. |
+| The scheduler lock fails open (`app/core/scheduler_lock.py`). | If the advisory-lock query itself errors, a scheduled job runs unguarded on every worker. In that state the job's own database work is very likely to fail too. The scheduled jobs use `single_run` / `job_lock` (13 call sites). | Make it fail closed for jobs that write data. |
