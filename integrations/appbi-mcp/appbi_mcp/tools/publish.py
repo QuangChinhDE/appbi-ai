@@ -14,11 +14,12 @@ from ..state import canonical_json, sha256_hex
 from .dashboard import run_dashboard_plan
 from .dataset import run_dataset_plan
 from .discovery import model_digest
+from .html_import import run_dashboard_html_plan
 from .runtime import Env, tool
 
 log = logging.getLogger("appbi_mcp.tools.publish")
 
-RUNNERS = {"dataset": run_dataset_plan, "dashboard": run_dashboard_plan}
+RUNNERS = {"dataset": run_dataset_plan, "dashboard": run_dashboard_plan, "dashboard_html": run_dashboard_html_plan}
 PUBLISH_TERMINAL = {"published", "sync_failed"}
 
 
