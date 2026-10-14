@@ -288,6 +288,36 @@ for (const [name, role, style, bars, points] of BL_BRANCHES) {
   });
 }
 
+// ── Data Labels toggle on a line ─────────────────────────────────────────────
+// User report: with Data Labels ON, a 21-month LINE / BAR_LINE / TIME_SERIES
+// printed no label at all — a 20-point density cap silently blanked them.
+// `id` gives 24 categories (past the old cap); the OFF control proves the
+// selector counts data labels, not other text.
+const LINE_LABELS: Array<[string, string, Record<string, unknown>, number]> = [
+  ['LINE 24 points', 'LINE', { dimension: f('id'), metrics: [sum('revenue')] }, 24],
+  ['BAR_LINE 24 points', 'BAR_LINE', { dimension: f('id'), metrics: [sum('leads')], lineMetric: sum('revenue') }, 24],
+  ['TIME_SERIES monthly', 'TIME_SERIES', { timeField: f('order_date'), metrics: [sum('revenue')], timeGrains: { [f('order_date')]: 'month' } }, 12],
+];
+for (const [name, type, role, points] of LINE_LABELS) {
+  test(`Data Labels ON prints values on the line: ${name}`, async ({ page }) => {
+    const errors = watchConsole(page);
+    const lineLabels = (chart: Locator) => chart.locator('.recharts-line .recharts-label-list text');
+    const off = await openInBuilder(page, await createChart(page.request, type, role, { dataLabelConfig: { enabled: false } }));
+    expect((off.body.data ?? []).length).toBe(points);
+    expect(await lineLabels(off.chart).count(), `${name}: labels OFF prints none`).toBe(0);
+
+    const on = await openInBuilder(page, await createChart(page.request, type, role, { dataLabelConfig: { enabled: true } }));
+    const m = await measureMarks(on.chart);
+    await on.chart.screenshot({ path: shotPath(`LABELS-${type}`) });
+    expect(m.nan, `${name}: NaN`).toBe(0);
+    const texts = (await lineLabels(on.chart).allTextContents()).filter((t) => t.trim());
+    // Auto-hide-overlap thins colliding labels; a readable share must remain.
+    expect(texts.length, `${name}: labels ON prints values on the line`).toBeGreaterThanOrEqual(Math.min(6, points));
+    expect(texts.every((t) => /\d/.test(t)), `${name}: every label is a value (${texts.join(' | ')})`).toBe(true);
+    expect(errors).toEqual([]);
+  });
+}
+
 // ── zero / null / empty are different things ─────────────────────────────────
 
 test('ZERO values draw the chart frame with its categories; NULL values say there is nothing numeric', async ({ page }) => {

@@ -2232,11 +2232,19 @@ function ExploreChartInner({
   // `displayData = sortedCategoricalData`, so its length is the true count of
   // marks that would each receive a printed label.
   const cartesianPointCount = sortedCategoricalData.length;
+  // The tight limits above are a DEFAULT for labels nobody asked for (a theme's
+  // 'always', the dashboard auto-bar labels). When the author turned Data Labels
+  // on themselves, blanking every label past 20 points is the same dead-control
+  // trap as the HBAR cap and the dots toggle: a 21-month LINE / BAR_LINE /
+  // TIME_SERIES showed nothing with the toggle on. Their choice is honoured up
+  // to the perf ceiling, and auto-hide-overlap thins labels that would collide.
+  const authorEnabledLabels = style.dataLabelConfig?.enabled === true
+    || (style.dataLabelConfig?.enabled === undefined && style.showDataLabels === true);
   const dataLabelContent = (seriesKey: string, seriesLabel: string, orientation: 'vertical' | 'horizontal' | 'point') => {
-    const densityLimit = orientation === 'point'
-      ? LABEL_DENSITY_POINT
-      : orientation === 'horizontal'
-        ? LABEL_DENSITY_HBAR
+    const densityLimit = authorEnabledLabels || orientation === 'horizontal'
+      ? LABEL_DENSITY_HBAR
+      : orientation === 'point'
+        ? LABEL_DENSITY_POINT
         : LABEL_DENSITY_BAR;
     // Dense chart → render no printed label (tooltip still carries the value).
     if (cartesianPointCount > densityLimit) return () => null;
