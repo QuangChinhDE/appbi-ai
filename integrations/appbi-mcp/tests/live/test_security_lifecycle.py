@@ -1,10 +1,9 @@
 """F2 — account and token lifecycle vs. a Claude connection (live rig).
 
 Policy (spec §13 F2): a revoked/expired token or a deactivated account stops every
-AppBI call at once and ends the Claude connection (401, refresh refused). A user's
-own password change does NOT end it today, because AppBI's PAT path does not check
-the security stamp — that case is asserted as the CURRENT behaviour so the Core
-fix (handoff F2) flips this test deliberately rather than silently.
+AppBI call at once and ends the Claude connection (401, refresh refused). Since the
+Core fix (spec W1 / F2) the connection's PAT is session-bound, so the user's own
+password change rotates the security stamp and ends the connection too.
 """
 
 from __future__ import annotations
@@ -110,8 +109,8 @@ async def test_revocation_during_a_running_operation_stops_it():
             assert (await raw_mcp_post(p.storage.tokens.access_token, WHOAMI)).status_code == 401
 
 
-async def test_password_change_does_not_end_the_connection_yet():
-    """CURRENT AppBI behaviour (F2, Core-owned): documents the gap; flips when fixed."""
+async def test_password_change_ends_the_connection():
+    """F2 fixed in Core: the MCP PAT is session-bound, so a password change ends it."""
     st = rig_state()
     a = st["users"]["author_a"]
     async with browser() as br:
@@ -126,5 +125,5 @@ async def test_password_change_does_not_end_the_connection_yet():
                 assert r.status_code == 200, r.text
             st["users"]["author_a"]["password"] = new_password
             Path(__import__("os").environ["APPBI_RIG_STATE"]).write_text(json.dumps(st, indent=2))
-            still = tool_json(await client.call_tool("whoami", {}))
-            assert still["status"] == "ok", "F2 fixed in Core? Update the policy test: a password change should now end the connection."
+            assert tool_json(await client.call_tool("whoami", {}))["status"] == "credential_revoked"
+            assert (await raw_mcp_post(p.storage.tokens.access_token, WHOAMI)).status_code == 401
