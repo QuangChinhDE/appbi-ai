@@ -11,6 +11,29 @@ None of these needs Core redesign.
 | F3 | AppBI ignores `X-Request-ID` | Backend platform / Observability | MCP-side audit is enough for the pilot; small Core change proposed | — |
 | F4 | Semantic view / dictionary saves are last-write-wins | Semantic layer (Dataset model) | **Contract added** (separate commit), MCP fails closed; FE adoption handed off | — |
 
+### Real Claude Desktop pilot on the existing `appbi-ai` (2026-10-14)
+
+The pilot ran against the real stack:
+- Core 7b03c95c, then MCP 56c349ca.
+- Data from BigQuery `dw_buoi_8`; snapshots on the declared platform host.
+- Pilot accounts `mcp_pilot_*`.
+
+Rechecked against this code:
+- **F2 is still open.** `_authenticate_personal_access_token` checks revoked, expiry, scopes and `user.status`, but not `security_stamp`. Deactivating a user does end the connection (verified).
+- **F4 (Visual Model editor) is still open.** The frontend sends no `expected_view_version`.
+- **F1 was not verifiable here.** Every Postgres source points at AppBI's own database, so the private-network guard refuses it.
+
+| # | Found by the pilot | Owner | Status |
+|---|---|---|---|
+| P1 | Approval page `Referrer-Policy: no-referrer`. The browser posted the form with `Origin: null`, and every Approve returned 403. The rig's nginx header had masked it. | MCP | **Fixed** (PR #22) |
+| P2 | Formula measures were sent as `revenue + freight`. The engine reads only `${name}` and compiled `revenue` as a column. | MCP | **Fixed** (PR #22) |
+| P3 | Each measure was dry-run before any was saved, so a formula could never see the measures it references. | MCP | **Fixed** (PR #22): measures are saved in dependency layers |
+| P4 | A refusal decided inside a step left the step `sent` instead of `failed`. | MCP | **Fixed** (PR #22) |
+| P5 | A measure filter on a joined table's column (for example "delivered revenue", where status is on `orders`) is refused at plan time. Core supports it (`scope: "dataset"` + `source_columns`). Claude then suggested creating a view in the source database. | MCP | Open: expose dataset-scoped measures |
+| P6 | Dashboard filters are created as **unplaced slicers**. Viewers see no filter control, although the filter logic is correct (verified against SQL). | MCP | Open: place slicers in the plan's layout |
+| P7 | A time series with revenue (~1M) and orders (~5k) shares one axis, so orders render flat at 0. Category bars are not sorted by value. | MCP plan quality | Open: secondary axis / sort in the plan |
+| P8 | On a read-only connection the bridge treats the 403 `insufficient_scope` as a step-up sign-in and waits. Claude reports a timeout. | MCP / client | Open: decide 403-for-step-up vs a tool-level `insufficient_scope` result |
+
 ## F1 — `GET /datasources/{id}/tables/{schema}/{table}` fails for stored Postgres sources
 
 - **Evidence:**

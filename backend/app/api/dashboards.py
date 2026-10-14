@@ -34,6 +34,7 @@ from app.core.dependencies import (
     batch_effective_permissions,
 )
 from app.core.authz import decision as _authz
+from app.core.authz.registry import LEVEL_ORDER as _AUTHZ_LEVEL_ORDER
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models.models import Chart, DashboardChart, Dashboard, DashboardPublicLink, DataSource, DataSourceType
 from app.models.dataset import Dataset, DatasetTable
@@ -91,6 +92,7 @@ from app.services.dashboard_html_import_service import (
     _load_uploaded_single_file_multi_sheet_profiles,
     ai_fix_chart_plan,
     SourceContractMismatch,
+    UnresolvedImportFields,
     analyze_dashboard_html_import,
     analyze_dashboard_html_import_batch,
     build_dashboard_from_import as build_dashboard_from_html_import_service,
@@ -141,6 +143,21 @@ def _normalize_import_source_mode(raw_value: str) -> str:
     if normalized not in {"existing_dataset", "upload_excel"}:
         raise HTTPException(status_code=400, detail="source_mode must be existing_dataset or upload_excel.")
     return normalized
+
+
+_IMPORT_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def _normalize_import_idempotency_key(raw_value: Optional[str]) -> Optional[str]:
+    if raw_value is None or not str(raw_value).strip():
+        return None
+    value = str(raw_value).strip()
+    if not _IMPORT_IDEMPOTENCY_KEY_RE.match(value):
+        raise HTTPException(
+            status_code=400,
+            detail="idempotency_key must be 1-128 characters of letters, digits, '.', '_', ':' or '-'.",
+        )
+    return value
 
 
 def _normalize_import_target_mode(raw_value: str) -> str:
@@ -723,10 +740,24 @@ async def build_html_dashboard_import(
     included_block_ids_json: Optional[str] = Form(None),
     excel_file: Optional[UploadFile] = File(None),
     excel_files: List[UploadFile] = File(default=[]),
+    draft_only: bool = Form(False),
+    strict_fields: bool = Form(False),
+    idempotency_key: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("dashboards", "edit")),
 ):
-    """Materialize analyzed chart plans into a native dashboard."""
+    """Materialize analyzed chart plans into a native dashboard.
+
+    Optional, default off (absent = the wizard's behaviour, unchanged):
+      * ``draft_only`` — everything created is the caller's draft until they
+        publish (``target_mode=new_dashboard`` only, else 400);
+      * ``strict_fields`` — unresolved chart fields are a 422
+        ``{"reason": "unresolved_fields", "unresolved": [...]}``, not a warning;
+      * ``idempotency_key`` — 1..128 chars of ``[A-Za-z0-9._:-]``
+        (``new_dashboard`` only): a repeat by the same user returns the first
+        build's dashboard (``idempotent_replay: true``) and creates nothing.
+    """
+    normalized_idempotency_key = _normalize_import_idempotency_key(idempotency_key)
     analysis = _parse_optional_json_form_field(analysis_json, "analysis_json")
     if not isinstance(analysis, dict):
         raise HTTPException(status_code=400, detail="analysis_json must decode to an object.")
@@ -793,6 +824,9 @@ async def build_html_dashboard_import(
             target_mode=normalized_target_mode,
             target_dashboard_id=target_dashboard_id,
             included_block_ids=included_block_ids,
+            draft_only=bool(draft_only),
+            strict_fields=bool(strict_fields),
+            idempotency_key=normalized_idempotency_key,
         )
         if prepared_dataset_id is not None:
             # Promote the draft dataset into a regular dataset once charts
@@ -811,6 +845,11 @@ async def build_html_dashboard_import(
         raise HTTPException(status_code=409, detail={
             "reason": "source_contract_mismatch",
             "findings": exc.findings,
+        }) from exc
+    except UnresolvedImportFields as exc:
+        raise HTTPException(status_code=422, detail={
+            "reason": "unresolved_fields",
+            "unresolved": exc.unresolved,
         }) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -833,6 +872,7 @@ async def dry_run_build_html_dashboard_import(
     included_block_ids_json: Optional[str] = Form(None),
     excel_file: Optional[UploadFile] = File(None),
     excel_files: List[UploadFile] = File(default=[]),
+    strict_fields: bool = Form(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("dashboards", "edit")),
 ):
@@ -909,6 +949,7 @@ async def dry_run_build_html_dashboard_import(
                 target_mode=normalized_target_mode,
                 target_dashboard_id=target_dashboard_id,
                 included_block_ids=included_block_ids,
+                strict_fields=bool(strict_fields),
             )
             # Hydrate response payload BEFORE rollback so the client can see
             # exactly what would have been created (ids will be invalid after
@@ -948,6 +989,15 @@ async def dry_run_build_html_dashboard_import(
         return payload
     except HTTPException:
         raise
+    except UnresolvedImportFields as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=422, detail={
+            "reason": "unresolved_fields",
+            "unresolved": exc.unresolved,
+        }) from exc
     except ValueError as exc:
         try:
             db.rollback()
@@ -1736,6 +1786,24 @@ def _other_authors_drafts(snapshot: Optional[Dict[str, Any]], user_key: str) -> 
     return out or None
 
 
+def _serialize_live_for_viewer(dash: Dashboard) -> DashboardResponse:
+    """The published report only: live fields, no draft overlay or metadata,
+    and no tile that exists only in someone's unpublished draft."""
+    base = DashboardResponse.model_validate(dash, from_attributes=True)
+    live_ids = {r.id for r in (dash.dashboard_charts or []) if not is_draft_only_item(r)}
+    charts = [dc.model_copy(update={"layout": strip_draft_row_keys(dc.layout)}) if isinstance(dc.layout, dict) else dc
+              for dc in base.dashboard_charts if dc.id in live_ids]
+    from app.services.dashboard_parameters import resolve_switcher_fields
+    return base.model_copy(update={
+        "dashboard_charts": charts,
+        "draft_layouts": None,
+        "draft_responsive_layouts": None,
+        "has_draft": False,
+        "shared_draft": None,
+        "parameter_fields": resolve_switcher_fields(charts, include_drafts=False),
+    })
+
+
 def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: User) -> DashboardResponse:
     """Build a DashboardResponse explicitly so the draft fields
     (draft_layouts + has_draft) actually flow through to the JSON. The
@@ -1753,6 +1821,12 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     """
     dash.user_permission = require_view_access(db, current_user, dash, "dashboards")
     _authz.attach_capabilities(db, current_user, [dash])
+    if _AUTHZ_LEVEL_ORDER.get(dash.user_permission, 0) < _AUTHZ_LEVEL_ORDER["edit"]:
+        # A viewer cannot write a draft, so they never read one: the shared
+        # draft (filters, slicers, pages, theme), its metadata and every
+        # author's unpublished tiles stay with the editors until Publish —
+        # the viewer reads the live report, as the public link does.
+        return _serialize_live_for_viewer(dash)
     snapshot = dash.draft_snapshot or {}
     # Phase-B17 — overlay only THIS user's pending layout draft (per-user).
     layouts_map = _draft_user_layouts(snapshot, str(current_user.id))

@@ -404,6 +404,7 @@ backend/_verify_gate.db
 !backend/tests/test_public_token_lifecycle.py
 !backend/tests/test_dashboard_responsive_layouts.py
 !backend/tests/test_dashboard_responsive_layouts_pg.py
+!backend/tests/test_dashboard_import_draft_build_pg.py
 !backend/tests/test_sql_literal_security.py
 !backend/tests/test_trusted_proxy_client_ip.py
 !backend/tests/test_embed_integration_security.py
@@ -451,7 +452,9 @@ backend/_verify_gate.db
 !backend/tests/test_pair2_golden_topology_pg.py
 !backend/tests/test_pair3_chartservice_pg.py
 !backend/tests/test_chart_final_hardening_pg.py
+!backend/tests/test_chart_dryrun_style_keys.py
 !backend/tests/test_semantic_foundation_pg.py
+!backend/tests/test_semantic_cross_view_measure_filter_save_pg.py
 !backend/tests/test_pair4_surfaces_pg.py
 !backend/tests/test_pair5_data_state_pg.py
 !backend/tests/test_core_product_contracts.py
@@ -474,8 +477,10 @@ backend/_verify_gate.db
 !backend/tests/test_observability_monitors_pg.py
 !backend/tests/test_observability_monitors_mysql_pg.py
 !backend/tests/test_permission_caps.py
+!backend/tests/test_pat_session_binding.py
 !backend/tests/test_authz_token_domains_http_pg.py
 !backend/tests/test_authz_publish_http_pg.py
+!backend/tests/test_authz_dashboard_viewer_live_http_pg.py
 !backend/tests/test_authz_workboard_credentials_http_pg.py
 !backend/tests/test_authz_registry.py
 !backend/tests/test_authz_chat_thread_owner_http_pg.py

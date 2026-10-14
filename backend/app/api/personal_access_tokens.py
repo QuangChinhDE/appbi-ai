@@ -77,6 +77,7 @@ def _serialize_token(item: PersonalAccessToken) -> PersonalAccessTokenResponse:
         token_hint=build_personal_access_token_hint(item.id, item.secret_suffix),
         scopes=item.scopes or {},
         revealable=bool(item.secret_enc),
+        bound_to_session=bool(item.bound_to_session),
         last_used_at=item.last_used_at,
         expires_at=item.expires_at,
         revoked_at=item.revoked_at,
@@ -166,6 +167,8 @@ def create_personal_access_token(
         secret_suffix=secret[-6:],
         scopes=requested_scopes,
         expires_at=_build_token_expiry(body.expires_in_days),
+        bound_to_session=bool(body.bind_to_session),
+        bound_security_stamp=(current_user.security_stamp or "") if body.bind_to_session else None,
     )
     db.add(token)
     db.commit()
@@ -178,7 +181,7 @@ def create_personal_access_token(
         user_id=current_user.id,
         resource_type="personal_access_token",
         resource_id=str(token.id),
-        details={"name": token.name, "scopes": token.scopes or {}},
+        details={"name": token.name, "scopes": token.scopes or {}, "bound_to_session": bool(token.bound_to_session)},
     )
 
     return PersonalAccessTokenCreateResponse(
@@ -348,6 +351,10 @@ def rotate_personal_access_token(
     if token.revoked_at is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Revoked tokens can't be regenerated")
     secret = _apply_new_secret(token)
+    if token.bound_to_session:
+        # Re-bind to the session that rotated it: rotating from a signed-in
+        # session after a password change is how the owner restores a bound token.
+        token.bound_security_stamp = current_user.security_stamp or ""
     db.commit()
     db.refresh(token)
     audit(
@@ -357,7 +364,7 @@ def rotate_personal_access_token(
         user_id=current_user.id,
         resource_type="personal_access_token",
         resource_id=str(token.id),
-        details={"name": token.name, "action": "rotated"},
+        details={"name": token.name, "action": "rotated", "bound_to_session": bool(token.bound_to_session)},
     )
     return PersonalAccessTokenCreateResponse(
         token=build_personal_access_token(token.id, secret),
@@ -389,6 +396,11 @@ def update_personal_access_token(
     token.name = body.name
     token.scopes = requested_scopes
     token.expires_at = _build_token_expiry(body.expires_in_days)
+    if body.bind_to_session and not token.bound_to_session:
+        # Binding may be added, never removed: an edit cannot turn a bound
+        # token back into one that survives a password change.
+        token.bound_to_session = True
+        token.bound_security_stamp = current_user.security_stamp or ""
     db.commit()
     db.refresh(token)
 
@@ -399,7 +411,7 @@ def update_personal_access_token(
         user_id=current_user.id,
         resource_type="personal_access_token",
         resource_id=str(token.id),
-        details={"name": token.name, "scopes": token.scopes or {}},
+        details={"name": token.name, "scopes": token.scopes or {}, "bound_to_session": bool(token.bound_to_session)},
     )
 
     return _serialize_token(token)

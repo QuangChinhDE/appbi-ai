@@ -1,5 +1,5 @@
 """API endpoints for Datasets (Table-based Datasets)"""
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from decimal import Decimal
 import json
 import re
@@ -477,6 +477,9 @@ def _validate_field_references(
     table: Optional[DatasetTable],
     dimensions: list[Any],
     measures: list[Any],
+    *,
+    own_view_name: Optional[str] = None,
+    resolve_view_table: Optional[Callable[[str], Optional[DatasetTable]]] = None,
 ) -> None:
     """Reject semantic definitions that reference columns the table doesn't have.
 
@@ -579,6 +582,40 @@ def _validate_field_references(
             if not isinstance(flt, dict):
                 continue
             field = flt.get("field")
+            # A filter qualified with ANOTHER view of the same dataset
+            # ("other_view.col") is legal: the engine applies it through the
+            # relationship as a correlated EXISTS. Check the column on THAT
+            # view's table. Reachability/ambiguity of the route is NOT checked
+            # here -- the engine (UNREACHABLE_VIEW / AMBIGUOUS_ROUTE) and the
+            # measure dry-run own that.
+            field_text = str(field or "").strip()
+            if (
+                resolve_view_table is not None
+                and "." in field_text
+                and not field_text.startswith("${")
+            ):
+                ref_view, ref_col = field_text.split(".", 1)
+                ref_view = ref_view.strip()
+                if ref_view and ref_view != (own_view_name or ""):
+                    other_table = resolve_view_table(ref_view)
+                    if other_table is None:
+                        # Legacy prefix (e.g. a table name) whose column is on
+                        # the own table: keep the old last-segment behaviour.
+                        if _last_segment(ref_col) in columns:
+                            continue
+                        errors.append(
+                            f"Measure \"{m_name}\": filter #{f_index + 1} trỏ vào view "
+                            f"\"{ref_view}\" không tồn tại trong dataset này."
+                        )
+                        continue
+                    other_columns = _columns_for_table(other_table)
+                    ref_target = _last_segment(ref_col)
+                    if other_columns and ref_target and ref_target not in other_columns:
+                        errors.append(
+                            f"Measure \"{m_name}\": filter #{f_index + 1} trỏ vào cột "
+                            f"\"{ref_target}\" không tồn tại trên view \"{ref_view}\"."
+                        )
+                    continue
             target = _last_segment(field)
             if target and target not in columns:
                 errors.append(
@@ -5393,7 +5430,25 @@ def update_dataset_view(
             m for m in final_measures
             if not (isinstance(m, dict) and str(m.get("name") or "").strip() in skipped_names)
         ]
-        _validate_field_references(table, final_dims, validatable_measures)
+        def _resolve_dataset_view_table(view_name: str) -> Optional[DatasetTable]:
+            other = (
+                db.query(DatasetTable)
+                .join(SemanticView, SemanticView.dataset_table_id == DatasetTable.id)
+                .filter(
+                    SemanticView.name == view_name,
+                    DatasetTable.dataset_id == dataset_id,
+                )
+                .first()
+            )
+            return other
+
+        _validate_field_references(
+            table,
+            final_dims,
+            validatable_measures,
+            own_view_name=view.name,
+            resolve_view_table=_resolve_dataset_view_table,
+        )
 
         # ── Gốc-A guard: a MEASURE must not share its name with a VISIBLE
         # dimension in the same view. Such a collision makes the ref
@@ -5611,11 +5666,18 @@ def delete_dataset_view_measure(
     flag_modified(view, "measures")
     db.commit()
     db.refresh(view)
+    from app.models.semantic import view_version_of
     return {
         "id": view.id,
         "name": view.name,
         "deleted_measure": target,
         "measures": view.measures or [],
+        # The editor quotes `view_version` on its next PUT; returning the
+        # post-delete state lets it adopt the new version only when nothing
+        # else changed the view (otherwise its next save is refused as stale).
+        "dimensions": view.dimensions or [],
+        "description": view.description,
+        "view_version": view_version_of(view.dimensions, view.measures, view.description),
     }
 
 

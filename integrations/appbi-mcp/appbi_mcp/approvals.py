@@ -28,6 +28,7 @@ from .pages import message, page
 KIND_TITLES = {
     "dataset": "Create a draft Dataset",
     "dashboard": "Create a draft Dashboard",
+    "dashboard_html": "Create a draft Dashboard from an HTML report",
     "dataset_publish": "Publish a Dataset",
     "dashboard_publish": "Publish a Dashboard",
 }

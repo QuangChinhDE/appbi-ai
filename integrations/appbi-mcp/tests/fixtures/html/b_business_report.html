@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Monthly E-commerce Business Review</title>
+<style>
+  body { font-family: Georgia, serif; margin: 32px; background: #fbfaf7; color: #222; }
+  header { border-bottom: 2px solid #2f5bea; margin-bottom: 16px; }
+  .filters { display: flex; gap: 12px; margin: 12px 0 24px; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px; }
+  .placeholder { height: 240px; background: #f0f2f7; display: flex; align-items: center; justify-content: center; }
+  table { width: 100%; border-collapse: collapse; } td, th { border-bottom: 1px solid #ddd; padding: 6px; text-align: left; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Monthly E-commerce Business Review</h1>
+    <p>Sales, delivery and seller performance for the Olist marketplace.</p>
+  </header>
+
+  <form class="filters">
+    <label>Purchase date <input type="date" name="from"> – <input type="date" name="to"></label>
+    <label>Customer state
+      <select name="customer_state"><option>All</option><option>SP</option><option>RJ</option><option>MG</option></select>
+    </label>
+    <label>Order status
+      <select name="order_status"><option>All</option><option>delivered</option><option>shipped</option><option>canceled</option></select>
+    </label>
+  </form>
+
+  <section>
+    <h2>1. Headline numbers</h2>
+    <div class="grid">
+      <div class="card"><div>Gross Merchandise Value</div><strong>R$ 13.6M</strong></div>
+      <div class="card"><div>Orders</div><strong>98,666</strong></div>
+      <div class="card"><div>Freight Revenue</div><strong>R$ 2.2M</strong></div>
+      <div class="card"><div>Active Sellers</div><strong>3,095</strong></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. Revenue trend</h2>
+    <p>Monthly revenue (item price) by purchase month.</p>
+    <div class="placeholder">[line chart: monthly revenue over order purchase timestamp]</div>
+  </section>
+
+  <section>
+    <h2>3. Where customers buy</h2>
+    <div class="placeholder">[bar chart: revenue by customer state]</div>
+  </section>
+
+  <section>
+    <h2>4. Top sellers</h2>
+    <table>
+      <thead><tr><th>Seller</th><th>Seller state</th><th>Orders</th><th>Revenue</th></tr></thead>
+      <tbody>
+        <tr><td>seller-a</td><td>SP</td><td>1,200</td><td>R$ 230,000</td></tr>
+        <tr><td>seller-b</td><td>PR</td><td>980</td><td>R$ 201,500</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>5. Notes</h2>
+    <p>Figures exclude canceled orders unless the status filter includes them.</p>
+  </section>
+</body>
+</html>

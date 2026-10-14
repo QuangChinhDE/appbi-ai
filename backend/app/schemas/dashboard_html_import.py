@@ -137,6 +137,14 @@ class DashboardHtmlImportBuildResponse(BaseModel):
         default=None,
         description="Mapping of source_key to dataset_table_id for multi-file imports.",
     )
+    draft_only: bool = Field(
+        default=False,
+        description="True when everything the build created is the caller's unpublished draft.",
+    )
+    idempotent_replay: bool = Field(
+        default=False,
+        description="True when an earlier build with the same idempotency_key is returned and nothing was created.",
+    )
 
 
 class DashboardHtmlImportBatchBuildPageResponse(BaseModel):

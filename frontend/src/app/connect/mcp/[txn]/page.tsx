@@ -131,11 +131,13 @@ export default function ConnectMcpPage() {
       const today = new Date().toISOString().slice(0, 10);
       const payload =
         info.mode === 'verify'
-          ? { name: info.pat.name, scopes: info.pat.scopes, expires_in_days: info.pat.expires_in_days }
+          ? { name: info.pat.name, scopes: info.pat.scopes, expires_in_days: info.pat.expires_in_days, bind_to_session: true }
           : {
               name: `Claude MCP · ${info.client_name.slice(0, 40)} · ${today}`,
               scopes: appbiScopes || {},
               expires_in_days: Math.min(days, info.max_expires_in_days || 90),
+              // The connection ends when this user's password or account status changes.
+              bind_to_session: true,
             };
       const created = await personalAccessTokensApi.create(payload);
       submitted.current = true;

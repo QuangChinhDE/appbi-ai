@@ -42,7 +42,7 @@ Claude ──HTTPS──► nginx ─/mcp, /mcp-oauth/*, /.well-known/oauth-*─
   - A retry or timeout reconciles with AppBI before writing again.
   - Failures report what already exists, with links.
   - Nothing is deleted.
-- **Allowlisted.** The service can call only ~38 AppBI routes. Live-write routes
+- **Allowlisted.** The service can call only ~43 AppBI routes. Live-write routes
   are unreachable, along with public links, PATs, SQL execution and every `DELETE`.
   A test checks this against the backend's route table.
 
@@ -50,9 +50,27 @@ Claude ──HTTPS──► nginx ─/mcp, /mcp-oauth/*, /.well-known/oauth-*─
 
 | Scope | Tools |
 |---|---|
-| `appbi.read` | `whoami`, `list_data_sources`, `inspect_data_source`, `inspect_source_table`, `list_datasets`, `get_dataset`, `profile_dataset_table`, `list_dashboards`, `get_dashboard`, `get_chart_data`, `plan_dataset`, `plan_dashboard`, `request_publish`, `get_operation_status`, `get_publish_status` |
+| `appbi.read` | `whoami`, `list_data_sources`, `inspect_data_source`, `inspect_source_table`, `list_datasets`, `get_dataset`, `profile_dataset_table`, `list_dashboards`, `get_dashboard`, `get_chart_data`, `plan_dataset`, `plan_dashboard`, `get_import_skill`, `plan_dashboard_from_html`, `request_publish`, `get_operation_status`, `get_publish_status` |
 | `appbi.author` | `execute_plan` (approved plan → drafts) |
 | `appbi.publish` | `publish` (approved publish request) |
+
+### HTML report → dashboard
+
+The user attaches or pastes an HTML report; Claude passes its **text** (no paths, no
+URLs). Claude reads `get_import_skill(dataset_id)` and embeds an `appbi-import/v1`
+plan bound to the dataset's real columns in the user's markup. `plan_dashboard_from_html`
+runs AppBI's `analyze` → `validate-plans` → `dry-run-build` (strict fields) and returns
+an approval page listing every chart, slicer, section, the theme, warnings and what is
+**not converted**. `execute_plan` calls `build` with `draft_only=true`,
+`strict_fields=true` and the plan id as `idempotency_key`, so a resume never creates a
+second dashboard. Publishing is the usual `request_publish` / `publish`.
+
+The service parses nothing and runs nothing: AppBI's importer is regex-only, executes
+no script and fetches nothing. The client guards allow only `source_mode=existing_dataset`,
+`target_mode=new_dashboard`, no file parts, no `html_summary_json`, no
+`target_dashboard_id` / `prepared_dataset_id`, HTML ≤ 2 MB carrying a
+`<script type="application/appbi-dashboard">` plan, and a build only with
+`draft_only=true`, `strict_fields=true` and an idempotency key.
 
 ## Configuration
 
@@ -96,6 +114,26 @@ None of them are AppBI Core secrets.
 4. **Anthropic's egress** (`160.79.104.0/21`) must reach `MCP_PUBLIC_URL`. The nginx
    `allow` list must not block it.
 
+### Single host without a host nginx (local / pilot)
+
+Use the version-controlled local edge instead of a hand-started proxy:
+
+```bash
+export MCP_PUBLIC_URL=http://localhost:3000 MCP_STATE_KEY=<from your secret store>
+./run.sh --with-mcp            # Core + docker-compose.edge.yml, then this project
+```
+
+- The `edge` service (`docker-compose.edge.yml`, `deploy/nginx.local-edge.conf`) owns
+  `127.0.0.1:${APPBI_HTTP_PORT:-3000}`. It has the same MCP routes and cookie filter as
+  `nginx.conf`, passes everything else unchanged to the frontend (which has no host
+  port), and preserves `Host`.
+- The edge joins this project's `appbi-mcp-ingress` network; `run.sh --with-mcp`
+  creates it (with this project's labels) when it does not exist yet.
+- With the MCP stopped the app keeps working; `/mcp` answers 502.
+- **Never** run plain `docker compose up` for Core without `-f docker-compose.edge.yml`
+  while this is enabled: the frontend takes port 3000 back. Start/stop/reboot/rollback:
+  `docs/ops-runbook.md`, "Local single-host entry point with the connector".
+
 ## Connect Claude
 
 The connector URL is `https://<your AppBI host>/mcp`.
@@ -114,6 +152,41 @@ The connector URL is `https://<your AppBI host>/mcp`.
   approve. Approve the publish the same way.
 - **Disconnecting:** revoke the "Claude MCP · …" token in **AppBI → Settings → API
   tokens**. The connection stops on its next call.
+
+### Claude Desktop against a local, plain-HTTP AppBI
+
+Claude's built-in connectors need HTTPS. For a local AppBI (for example
+`http://localhost:3000`), Claude Desktop reaches the MCP through a local bridge.
+The user never sees or copies a token: the connection is still AppBI sign-in plus
+consent, and AppBI creates and stores the PAT itself.
+
+1. **One entry point.** The browser address users already use must also serve
+   `/mcp`, `/mcp-oauth/*` and `/.well-known/oauth-*`. Put a reverse proxy on that
+   address with the same `location`s as `nginx.conf`, and set
+   `MCP_PUBLIC_URL = APPBI_PUBLIC_URL = <that address>`. Do not give MCP a second,
+   user-facing port: the connect page posts to a relative `/mcp-oauth/…` path.
+2. **Add the bridge** (pinned) to `claude_desktop_config.json` under `mcpServers`:
+   ```json
+   "appbi": {
+     "command": "node",
+     "args": ["<path>/node_modules/mcp-remote/dist/proxy.js", "http://localhost:3000/mcp",
+              "--transport", "http-only", "--allow-http", "--auth-timeout", "1800"]
+   }
+   ```
+   Install it with `npm install --ignore-scripts mcp-remote@0.1.38`. A long
+   `--auth-timeout` matters: with the 300 s default, the bridge gave up before people
+   had finished signing in.
+3. **Restart Claude Desktop.** A browser tab opens on the AppBI sign-in page. Sign in
+   as **yourself**, choose read-only (forced for view-only accounts) and an expiry
+   (7 days for trials), then click **Allow**.
+4. **Disconnect.** Revoke the token in AppBI → Settings → API tokens. Claude reports
+   that the connection is no longer accepted. To reconnect, restart Claude Desktop
+   and sign in again.
+
+Known with this bridge: AppBI lists the connection as "MCP CLI Client", because that
+is the name the bridge registers under. On a read-only connection, a write call is
+refused with HTTP 403 (`insufficient_scope`). The bridge treats that as a step-up
+sign-in and waits, so Claude reports a timeout instead of "read only".
 
 ## Operate
 

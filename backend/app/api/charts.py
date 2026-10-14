@@ -463,6 +463,14 @@ _FE_STYLE_CONFIG_KEYS: set[str] = {
     "chartSortRules", "dataLimit", "dataLimitDirection",
     # BAR_LINE
     "dualYAxis",
+    # Dual-axis: which series goes on the right axis (ExploreChart.tsx).
+    "yAxisRightSeriesKey",
+    # Axis tick display units (ExploreChart.tsx axis formatter).
+    "axisDisplayUnits",
+    # Series / table display overrides (ExploreChart, AdvancedExploreCharts).
+    "seriesLabels", "tableColumnFormats", "tableColumnLabels",
+    # KPI card background mode (ExploreChart → KPI card).
+    "kpiBackgroundMode",
     # AREA
     "areaOpacity",
     # LINE / AREA / TIME_SERIES — stroke + sizing

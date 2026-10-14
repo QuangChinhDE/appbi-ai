@@ -104,6 +104,15 @@ def _shrink(value: Any, budget: int) -> Any:
     return {"_truncated": True, "preview": text[: budget // 2]}
 
 
+READ_ONLY_MESSAGE = (
+    "This AppBI connection has read-only access. You can inspect and plan, but you cannot create or "
+    "publish. Connect with an appropriately authorized account if you need editing."
+)
+PUBLISH_MISSING_MESSAGE = (
+    "This AppBI connection can create drafts but cannot publish. Reconnect AppBI with publish access if you need it."
+)
+
+
 def _audit(app: AppContext, principal: Principal | None, event: str, args: dict[str, Any], outcome: str,
            appbi_status: int | None, resources: list[Any], started: float) -> None:
     try:
@@ -134,7 +143,7 @@ def _audit(app: AppContext, principal: Principal | None, event: str, args: dict[
 
 
 def register_all(mcp: Any, app: AppContext) -> dict[str, str]:
-    from . import dashboard, dataset, discovery, publish  # noqa: F401 - registration side effect
+    from . import dashboard, dataset, discovery, html_import, publish  # noqa: F401 - registration side effect
 
     scopes: dict[str, str] = {}
     for spec in REGISTRY:
@@ -161,7 +170,9 @@ def _register(mcp: Any, app: AppContext, spec: ToolSpec) -> None:
             return {"status": "unauthenticated", "message": "Sign in to AppBI again."}
         if not sc.satisfies(principal.scopes, spec.scope):
             _audit(app, principal, spec.name, bound, "insufficient_scope", None, [], started)
-            return {"status": "insufficient_scope", "required_scope": spec.scope}
+            read_only = not sc.satisfies(principal.scopes, sc.AUTHOR)
+            return {"status": "insufficient_scope", "required_scope": spec.scope,
+                    "message": READ_ONLY_MESSAGE if read_only else PUBLISH_MISSING_MESSAGE}
         client = app.appbi_for(principal)
         if client is None:
             _audit(app, principal, spec.name, bound, "credential_revoked", None, [], started)

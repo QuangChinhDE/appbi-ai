@@ -169,9 +169,9 @@ async def test_security_negatives():
         async with mcp_session(pr) as cr:
             assert pr.storage.tokens.scope.strip() == "appbi.read"
             plan = tool_json(await cr.call_tool("plan_dataset", {"plan": {"name": "Reader", "tables": tables(0, "orders")}}))
-            r = await raw_mcp_post(pr.storage.tokens.access_token, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                                                                     "params": {"name": "execute_plan", "arguments": {"plan_id": plan["plan_id"]}}})
-            assert r.status_code == 403 and "insufficient_scope" in r.headers["www-authenticate"]
+            # P8: refused by the tool with a readable message, not an HTTP step-up challenge.
+            out = tool_json(await cr.call_tool("execute_plan", {"plan_id": plan["plan_id"]}))
+            assert out["status"] == "insufficient_scope" and "read-only access" in out["message"]
 
 
 async def test_revoking_the_appbi_token_ends_the_connection():

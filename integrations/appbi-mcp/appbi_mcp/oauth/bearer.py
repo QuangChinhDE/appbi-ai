@@ -1,20 +1,24 @@
 """The HTTP gate in front of /mcp.
 
-Runs before the MCP SDK sees the request, so authorization failures are real
-HTTP statuses (Claude starts sign-in only on a 401; a tool outside the granted
-scopes is a 403 `insufficient_scope` the client can step up from):
+Runs before the MCP SDK sees the request, so credential failures are real HTTP
+statuses (Claude starts sign-in only on a 401):
 
 * no / unknown / expired / revoked / wrong-resource token  → 401 + WWW-Authenticate
-* a tools/call whose tool needs a scope the token lacks     → 403 insufficient_scope
 * more calls than the grant's budget                        → 429 + Retry-After
 * tokens in the query string are ignored, never accepted.
+
+A tools/call above the grant's scopes is NOT answered here: an HTTP 403
+`insufficient_scope` is a step-up challenge, and for a read-only grant (the user
+chose read-only, or their AppBI account cannot edit) no step-up can succeed — the
+pinned Claude Desktop bridge waited on it until it timed out (pilot finding P8). The
+tool layer refuses it instead, before any AppBI call, with a message the user can
+act on (`tools/runtime.py`).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -97,14 +101,6 @@ class McpAuthGate:
                 chunks.append(chunk)
                 more = message.get("more_body", False)
             body = b"".join(chunks)
-            needed = self._required_scope(body)
-            if needed and not sc.satisfies(token.scopes, needed):
-                await self._send(
-                    send,
-                    *self._challenge(403, "insufficient_scope", f"This action needs the {needed} permission", scope=needed),
-                    request_id,
-                )
-                return
 
         principal = Principal(
             user_id=token.subject or "",
@@ -132,22 +128,3 @@ class McpAuthGate:
             await send(message)
 
         await self.app(scope, replay if scope.get("method") == "POST" else receive, send_with_id)
-
-    def _required_scope(self, body: bytes) -> str | None:
-        """Highest scope any tools/call in this (possibly batched) body needs."""
-        try:
-            payload: Any = json.loads(body or b"null")
-        except ValueError:
-            return None  # the SDK answers malformed JSON-RPC itself
-        messages = payload if isinstance(payload, list) else [payload]
-        needed: str | None = None
-        rank = {sc.READ: 0, sc.AUTHOR: 1, sc.PUBLISH: 2}
-        for msg in messages:
-            if not isinstance(msg, dict) or msg.get("method") != "tools/call":
-                continue
-            name = (msg.get("params") or {}).get("name")
-            # Unknown tools still need at least read; the SDK reports them as unknown.
-            req = self.tool_scopes.get(str(name), sc.READ)
-            if needed is None or rank[req] > rank[needed]:
-                needed = req
-        return needed

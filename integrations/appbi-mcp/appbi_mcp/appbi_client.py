@@ -76,8 +76,15 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/dashboards/{id}"),
     ("POST", "/dashboards/"),
     ("POST", "/dashboards/{id}/charts"),
+    ("POST", "/dashboards/{id}/widgets"),
     ("PUT", "/dashboards/{id}/draft-filters"),
     ("POST", "/dashboards/{id}/publish"),
+    # HTML report import (W4) -- form-encoded; new draft dashboards only (guards below)
+    ("GET", "/datasets/{id}/import-skill"),
+    ("POST", "/dashboards/import-html/analyze"),
+    ("POST", "/dashboards/import-html/validate-plans"),
+    ("POST", "/dashboards/import-html/dry-run-build"),
+    ("POST", "/dashboards/import-html/build"),
 )
 
 # Never reachable. Kept as data so the contract test can assert none of these is
@@ -103,6 +110,11 @@ FORBIDDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/datasets/{id}/tables/{id}/preview"),
     # Last-write-wins with no version (F4): the dictionary is sent at dataset create.
     ("PUT", "/datasets/{id}/dictionary"),
+    # HTML import: batch/draft-dataset/AI-fix variants are never used (W4).
+    ("POST", "/dashboards/import-html/analyze-batch"),
+    ("POST", "/dashboards/import-html/build-batch"),
+    ("POST", "/dashboards/import-html/prepare-draft"),
+    ("POST", "/dashboards/import-html/fix-chart-plan"),
 )
 
 _COMPILED = [(m, _route(t), t) for m, t in ALLOWED_ROUTES]
@@ -134,6 +146,16 @@ def _guard_add_tile(body: Any) -> None:
     layout = body.get("layout") if isinstance(body, dict) else None
     if not isinstance(layout, dict) or layout.get("draftOnly") is not True:
         raise GuardViolation("tiles must be added with layout.draftOnly = true")
+
+
+def _guard_add_slicer(body: Any) -> None:
+    """Only slicer CONTROLS (a filter's on-grid control), only as the caller's draft."""
+    _guard_add_tile(body)
+    if body.get("widget_type") != "slicer":
+        raise GuardViolation("this service only adds slicer controls as widgets")
+    cfg = body.get("widget_config")
+    if not isinstance(cfg, dict) or not cfg.get("slicerId") or set(cfg) - {"slicerId", "treatment", "origin"}:
+        raise GuardViolation("a slicer control carries only slicerId, treatment and origin")
 
 
 def _guard_draft_filters(body: Any) -> None:
@@ -174,9 +196,101 @@ def _guard_table_add(body: Any) -> None:
         raise GuardViolation("only physical tables are added (no SQL tables)")
 
 
+# ── HTML report import (W4) ─────────────────────────────────────────────────────
+#
+# These routes take form fields, not JSON. The MCP forwards the user's HTML TEXT to
+# AppBI's sanitising importer and nothing else: no files, no browser-built summary,
+# no existing dashboard, no wizard draft dataset. It never executes or fetches anything.
+
+MAX_HTML_IMPORT_BYTES = 2 * 1024 * 1024  # AppBI's MAX_HTML_IMPORT_SIZE
+IMPORT_PLAN_TAG = re.compile(r"<script[^>]+type\s*=\s*[\"']application/appbi-dashboard[\"'][^>]*>", re.IGNORECASE)
+_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def _true(value: Any) -> bool:
+    return value is True or str(value).strip().lower() == "true"
+
+
+def _form_fields(form: Any, allowed: set[str], route: str) -> dict[str, Any]:
+    if not isinstance(form, dict):
+        raise GuardViolation(f"{route} takes form fields")
+    extra = sorted(set(form) - allowed)
+    if extra:
+        # Covers file parts (excel_file/excel_files), html_summary_json,
+        # target_dashboard_id, prepared_dataset_id, dataset_table_id, ...
+        raise GuardViolation(f"{route} does not accept {', '.join(extra)}")
+    for key, value in form.items():
+        if not isinstance(value, (str, int, bool)):
+            raise GuardViolation(f"{route}: field {key!r} must be plain text (no file parts)")
+    if form.get("source_mode") != "existing_dataset" and "source_mode" in allowed:
+        raise GuardViolation("HTML import only reads an existing dataset (source_mode=existing_dataset)")
+    return form
+
+
+def _guard_import_analyze(form: Any) -> None:
+    f = _form_fields(form, {"html_content", "source_mode", "dataset_id"}, "analyze")
+    if not f.get("dataset_id"):
+        raise GuardViolation("analyze needs a dataset_id")
+    html = f.get("html_content")
+    if not isinstance(html, str) or not html.strip():
+        raise GuardViolation("analyze needs html_content")
+    if len(html.encode("utf-8")) > MAX_HTML_IMPORT_BYTES:
+        raise GuardViolation("html_content is larger than 2 MB")
+    if not IMPORT_PLAN_TAG.search(html):
+        raise GuardViolation('html_content must embed an appbi-import/v1 plan in <script type="application/appbi-dashboard">')
+
+
+def _guard_import_validate(form: Any) -> None:
+    f = _form_fields(form, {"analysis_json", "dataset_id"}, "validate-plans")
+    if not f.get("analysis_json") or not f.get("dataset_id"):
+        raise GuardViolation("validate-plans needs analysis_json and dataset_id")
+
+
+_BUILD_FIELDS = {"analysis_json", "source_mode", "target_mode", "dashboard_name", "dataset_id",
+                 "included_block_ids_json", "strict_fields"}
+
+
+def _guard_import_build_common(f: dict[str, Any], route: str) -> None:
+    if not f.get("dataset_id") or not f.get("analysis_json"):
+        raise GuardViolation(f"{route} needs analysis_json and a dataset_id")
+    if f.get("target_mode") != "new_dashboard":
+        raise GuardViolation(f"{route} only creates a new dashboard (never appends to an existing one)")
+    if not str(f.get("dashboard_name") or "").strip():
+        raise GuardViolation(f"{route} needs a dashboard_name")
+    if not _true(f.get("strict_fields")):
+        raise GuardViolation(f"{route} must run with strict_fields=true")
+
+
+def _guard_import_dry_run(form: Any) -> None:
+    _guard_import_build_common(_form_fields(form, _BUILD_FIELDS, "dry-run-build"), "dry-run-build")
+
+
+def _guard_import_build(form: Any) -> None:
+    f = _form_fields(form, _BUILD_FIELDS | {"draft_only", "idempotency_key"}, "build")
+    _guard_import_build_common(f, "build")
+    if not _true(f.get("draft_only")):
+        raise GuardViolation("build must run with draft_only=true")
+    if not _IDEMPOTENCY_KEY.match(str(f.get("idempotency_key") or "")):
+        raise GuardViolation("build must carry an idempotency_key")
+
+
+# Routes whose body is form fields; every other route takes JSON.
+FORM_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/dashboards/import-html/analyze"),
+    ("POST", "/dashboards/import-html/validate-plans"),
+    ("POST", "/dashboards/import-html/dry-run-build"),
+    ("POST", "/dashboards/import-html/build"),
+})
+
+
 BODY_GUARDS: dict[tuple[str, str], Callable[[Any], None]] = {
+    ("POST", "/dashboards/import-html/analyze"): _guard_import_analyze,
+    ("POST", "/dashboards/import-html/validate-plans"): _guard_import_validate,
+    ("POST", "/dashboards/import-html/dry-run-build"): _guard_import_dry_run,
+    ("POST", "/dashboards/import-html/build"): _guard_import_build,
     ("POST", "/dashboards/"): _guard_dashboard_create,
     ("POST", "/dashboards/{id}/charts"): _guard_add_tile,
+    ("POST", "/dashboards/{id}/widgets"): _guard_add_slicer,
     ("PUT", "/dashboards/{id}/draft-filters"): _guard_draft_filters,
     ("POST", "/dashboards/{id}/publish"): _guard_dashboard_publish,
     ("POST", "/datasets/{id}/model/joins"): _guard_join,
@@ -269,14 +383,19 @@ class AppbiClient:
             },
         )
 
-    async def request(self, method: str, path: str, *, params: dict[str, Any] | None = None, json: Any = None) -> Any:
+    async def request(self, method: str, path: str, *, params: dict[str, Any] | None = None, json: Any = None,
+                      form: dict[str, Any] | None = None) -> Any:
         method = method.upper()
         template = match_route(method, path)
         if template is None:
             raise RouteNotAllowed(f"{method} {path} is not on the AppBI allowlist")
+        is_form = (method, template) in FORM_ROUTES
+        if is_form and json is not None or not is_form and form is not None:
+            raise GuardViolation(f"{template} takes {'form fields' if is_form else 'a JSON body'}")
         guard = BODY_GUARDS.get((method, template))
         if guard is not None:
-            guard(json)
+            guard(form if is_form else json)
+        data = {k: ("true" if v is True else "false" if v is False else str(v)) for k, v in form.items()} if form is not None else None
         for bad in _FORBIDDEN_PARAMS.get((method, template), set()):
             if params and params.get(bad):
                 raise GuardViolation(f"query parameter {bad!r} is not allowed on {template}")
@@ -287,7 +406,7 @@ class AppbiClient:
         async with self._client() as client:
             for attempt in range(attempts):
                 try:
-                    resp = await client.request(method, path, params=params, json=json)
+                    resp = await client.request(method, path, params=params, json=json, data=data)
                 except httpx2.ConnectError as exc:
                     # Nothing reached AppBI; safe to report (or retry a read).
                     last_exc = exc
@@ -318,6 +437,8 @@ class AppbiClient:
         except ValueError:
             payload = None
         if resp.status_code < 300:
+            if payload is None and resp.content and resp.headers.get("content-type", "").startswith("text/"):
+                return resp.text  # e.g. the dataset's import skill (text/markdown)
             return payload
         message, detail = _message_from(payload, resp.reason_phrase or f"HTTP {resp.status_code}")
         raise AppbiError(resp.status_code, _kind_for(resp.status_code), message, detail)
@@ -327,6 +448,9 @@ class AppbiClient:
 
     async def post(self, path: str, body: Any = None, **params: Any) -> Any:
         return await self.request("POST", path, json=body, params={k: v for k, v in params.items() if v is not None} or None)
+
+    async def post_form(self, path: str, form: dict[str, Any]) -> Any:
+        return await self.request("POST", path, form=form)
 
     async def put(self, path: str, body: Any = None, **params: Any) -> Any:
         return await self.request("PUT", path, json=body, params={k: v for k, v in params.items() if v is not None} or None)

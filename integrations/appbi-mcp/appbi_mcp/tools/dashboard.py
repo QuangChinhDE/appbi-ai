@@ -32,6 +32,17 @@ ChartType = Literal[
 ]
 
 
+class ChartStyle(BaseModel):
+    """Presentation keys AppBI's renderer honours (config.styleConfig)."""
+    dual_axis: bool | None = Field(default=None, description="LINE/TIME_SERIES with 2+ measures: second measure on a right axis. "
+                                                             "Default: on when the two measures' scales differ by 5x or more")
+    sort: Literal["value_desc", "value_asc", "none"] | None = Field(default=None, description="Bars: order by the first measure. Default value_desc for one-dimension bars")
+    top_n: int | None = Field(default=None, ge=1, le=500, description="Keep only the top N categories by the first measure")
+    number_format: Literal["auto", "number", "compact", "percent", "currency"] | None = None
+    currency_symbol: str | None = Field(default=None, max_length=8)
+    decimals: int | None = Field(default=None, ge=0, le=6)
+
+
 class ChartSpec(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     chart_type: ChartType
@@ -48,6 +59,7 @@ class ChartSpec(BaseModel):
         )
     )
     description: str | None = Field(default=None, max_length=1000)
+    style: ChartStyle | None = None
     width: int | None = Field(default=None, ge=4, le=GRID_COLS, description="Tile width on a 36-column grid")
     height: int | None = Field(default=None, ge=3, le=60)
 
@@ -109,6 +121,65 @@ def pin_measure_aggregations(config: dict[str, Any], measure_types: dict[str, st
     return cfg, notes
 
 
+_BAR_TYPES = {"BAR", "HORIZONTAL_BAR", "STACKED_BAR", "GROUPED_BAR"}
+_LINE_TYPES = {"LINE", "TIME_SERIES"}
+DUAL_AXIS_RATIO = 5.0
+
+
+def _metrics(config: dict[str, Any]) -> list[dict[str, Any]]:
+    m = (config.get("roleConfig") or {}).get("metrics")
+    return [x for x in (m if isinstance(m, list) else []) if isinstance(x, dict)]
+
+
+def _series_max(rows: list[dict[str, Any]], field: str) -> float:
+    vals = []
+    for r in rows:
+        for k, v in r.items():
+            if (k == field or k.endswith("__" + field)) and isinstance(v, (int, float)):
+                vals.append(abs(float(v)))
+    return max(vals, default=0.0)
+
+
+def apply_style(chart_type: str, config: dict[str, Any], style: dict[str, Any] | None,
+                preview: list[dict[str, Any]] | None = None) -> tuple[dict[str, Any], list[str]]:
+    """Map the plan's style onto config.styleConfig, with defaults that keep charts honest:
+    two measures of very different size share no axis (the small one would read as zero),
+    one-dimension bars are ordered by value. Returns (config, notes)."""
+    import copy
+
+    cfg = copy.deepcopy(config)
+    style_cfg = dict(cfg.get("styleConfig") or {})
+    st = dict(style or {})
+    notes: list[str] = []
+    metrics = _metrics(cfg)
+    if chart_type in _LINE_TYPES and len(metrics) >= 2:
+        dual = st.get("dual_axis")
+        if dual is None and preview:
+            a, b = _series_max(preview, metrics[0]["field"]), _series_max(preview, metrics[1]["field"])
+            dual = min(a, b) > 0 and max(a, b) / min(a, b) >= DUAL_AXIS_RATIO
+            if dual:
+                notes.append("the second measure is on a right axis (its scale is far smaller than the first)")
+        if dual:
+            style_cfg["dualYAxis"] = True   # the renderer puts the 2nd series on the right axis
+    role = cfg.get("roleConfig") or {}
+    one_dim = bool(role.get("dimension")) and not role.get("breakdown") and not role.get("legend")
+    sort = st.get("sort") or ("value_desc" if chart_type in _BAR_TYPES and one_dim and metrics else None)
+    if sort in ("value_desc", "value_asc") and metrics:
+        key = f"{metrics[0].get('agg') or 'auto'}__{metrics[0]['field']}"   # the renderer's metricKey
+        style_cfg["chartSortRules"] = [{"field": key, "direction": "desc" if sort == "value_desc" else "asc"}]
+    if st.get("top_n"):
+        style_cfg["dataLimit"], style_cfg["dataLimitDirection"] = int(st["top_n"]), "top"
+    if st.get("number_format"):
+        style_cfg["numberFormat"] = st["number_format"]
+    if st.get("currency_symbol"):
+        style_cfg["currencySymbol"] = st["currency_symbol"]
+    if st.get("decimals") is not None:
+        style_cfg["decimalPlaces"] = int(st["decimals"])
+    if style_cfg:
+        cfg["styleConfig"] = style_cfg
+    return cfg, notes
+
+
 def model_fingerprint(model: dict[str, Any]) -> str:
     from ..state import canonical_json, sha256_hex
     from .discovery import model_digest
@@ -154,8 +225,8 @@ def pack(sizes: list[tuple[int, int]], start_y: int = 0) -> list[dict[str, int]]
 
 def _filter_entry(f: dict[str, Any], dataset_id: int) -> dict[str, Any]:
     view, dim = f["field"].split(".", 1)
-    operator = {"dropdown": "in", "date": "between", "numeric": "gte"}[f["type"]]
-    value: Any = {"dropdown": [], "date": ["", ""], "numeric": ""}[f["type"]]
+    operator = {"dropdown": "in", "date": "between", "numeric": "between"}[f["type"]]
+    value: Any = {"dropdown": [], "date": ["", ""], "numeric": ["", ""]}[f["type"]]
     slug = re.sub(r"[^a-z0-9]+", "-", f["field"].lower()).strip("-")
     return {
         "id": f"f-mcp-{slug}",
@@ -167,7 +238,19 @@ def _filter_entry(f: dict[str, Any], dataset_id: int) -> dict[str, Any]:
         "operator": operator,
         "value": value,
         "label": f.get("label") or dim.replace("_", " ").title(),
+        # The control a viewer uses (the Builder's defaultInteractionFor): without it,
+        # and without a control tile on the grid, a filter is invisible to viewers.
+        "interactionType": {"dropdown": "dropdown", "date": "date_range", "numeric": "slider"}[f["type"]],
+        **({"datePreset": "custom"} if f["type"] == "date" else {}),
     }
+
+
+SLICER_W, SLICER_H, SLICERS_PER_ROW = 8, 3, 4   # the Builder's card control size on the 36-col grid
+
+
+def slicer_layouts(n: int, start_y: int) -> list[dict[str, int]]:
+    return [{"x": (i % SLICERS_PER_ROW) * SLICER_W, "y": start_y + (i // SLICERS_PER_ROW) * SLICER_H, "w": SLICER_W, "h": SLICER_H}
+            for i in range(n)]
 
 
 @tool(scope=sc.READ, title="Plan a dashboard", read_only=True)
@@ -235,6 +318,19 @@ async def plan_dashboard(env: Env, plan: DashboardPlanInput) -> dict[str, Any]:
             "name": name, "chart_type": ch.chart_type, "dataset_table_id": ch.dataset_table_id, "config": config,
             **({"description": ch.description} if ch.description else {}),
         })
+        if dry.get("ok") and (ch.style is not None or ch.chart_type in _LINE_TYPES | _BAR_TYPES):
+            styled, style_notes = apply_style(ch.chart_type, dry["normalized_config"], ch.style.model_dump() if ch.style else None,
+                                              dry.get("runtime_preview_sample") or [])
+            if styled != dry["normalized_config"]:
+                warnings.extend(f"{ch.title}: {n}" for n in style_notes)
+                dry2 = await env.appbi.post("/charts/dry-run-create", {
+                    "name": name, "chart_type": ch.chart_type, "dataset_table_id": ch.dataset_table_id, "config": styled,
+                    **({"description": ch.description} if ch.description else {}),
+                })
+                if dry2.get("ok"):
+                    dry = dry2
+                else:
+                    warnings.append(f"{ch.title}: AppBI refused the presentation settings; the chart keeps its default look")
         if not dry.get("ok"):
             rejected.append({
                 "chart": ch.title,
@@ -265,7 +361,10 @@ async def plan_dashboard(env: Env, plan: DashboardPlanInput) -> dict[str, Any]:
     start_y = 0
     if existing_dash:
         start_y = max(((t.get("layout") or {}).get("y", 0) + (t.get("layout") or {}).get("h", 0) for t in existing_dash.get("dashboard_charts", []) or []), default=0)
-    slots = pack([(charts[k]["w"], charts[k]["h"]) for k in order], start_y)
+    # Filter controls sit in a band above the charts, where a report's filter bar is.
+    band = slicer_layouts(len(p.filters), start_y)
+    chart_y = start_y + (-(-len(p.filters) // SLICERS_PER_ROW) * SLICER_H if p.filters else 0)
+    slots = pack([(charts[k]["w"], charts[k]["h"]) for k in order], chart_y)
     for k, slot in zip(order, slots):
         charts[k]["layout"] = slot
 
@@ -277,6 +376,7 @@ async def plan_dashboard(env: Env, plan: DashboardPlanInput) -> dict[str, Any]:
         "description": p.description,
         "charts": [{k: v for k, v in c.items() if k not in ("preview", "semantic_warnings")} for c in charts],
         "filters": filters,
+        "slicers": [{"slicer_id": f["id"], "layout": band[i]} for i, f in enumerate(filters)],
     }
     for c in charts:
         for w in c["semantic_warnings"]:
@@ -291,7 +391,8 @@ async def plan_dashboard(env: Env, plan: DashboardPlanInput) -> dict[str, Any]:
                 {"chart": c["name"], "type": c["chart_type"], "preview": "; ".join(", ".join(f"{k}={v}" for k, v in row.items()) for row in c["preview"][:3]) or "—"}
                 for c in charts
             ]},
-            {"title": "Filters", "items": [{"label": f["label"], "field": f["semanticField"], "type": f["type"]} for f in filters] or ["None"]},
+            {"title": "Filters (visible controls above the charts)", "items": [
+                {"label": f["label"], "field": f["semanticField"], "control": f["interactionType"]} for f in filters] or ["None"]},
             {"title": "What happens", "items": [
                 "AppBI creates the charts and adds them to the dashboard as your draft.",
                 "Filters are staged in the dashboard's shared draft; a change by a co-author since this plan stops the run instead of overwriting it.",
@@ -393,11 +494,15 @@ async def run_dashboard_plan(env: Env, run: Run) -> dict[str, Any]:
             for attempt in range(2):
                 current = await env.appbi.get(f"/dashboards/{dashboard_id}")
                 rev = (current.get("shared_draft") or {}).get("rev")
-                have = list(current.get("filters_config") or [])
+                # Report-wide SLICERS (slicers_config), as the Builder stages them: a
+                # control applies (and stages for Apply) only a slicer. A legacy
+                # filters_config entry with a control showed the choice but never
+                # applied it (real browser check, pilot P6).
+                have = list(current.get("slicers_config") or [])
                 keys = {str(f.get("semanticField") or f.get("fieldKey") or f.get("field")) for f in have}
                 merged = have + [f for f in p["filters"] if f["semanticField"] not in keys]
                 try:
-                    await env.appbi.put(f"/dashboards/{dashboard_id}/draft-filters", {"filters_config": merged, "base_rev": rev})
+                    await env.appbi.put(f"/dashboards/{dashboard_id}/draft-filters", {"slicers_config": merged, "base_rev": rev})
                     return {"filters": [f["semanticField"] for f in p["filters"]]}
                 except AppbiError as exc:
                     # A co-author wrote in between our read and write: re-read and
@@ -411,10 +516,30 @@ async def run_dashboard_plan(env: Env, run: Run) -> dict[str, Any]:
 
         async def find_filters(_since: float) -> dict[str, Any] | None:
             current = await env.appbi.get(f"/dashboards/{dashboard_id}")
-            keys = {str(f.get("semanticField")) for f in current.get("filters_config") or []}
+            keys = {str(f.get("semanticField")) for f in current.get("slicers_config") or []}
             return {"filters": list(keys)} if all(f["semanticField"] in keys for f in p["filters"]) else None
 
         await run.write("filters", stage_filters, reconcile=find_filters)
+
+    # Each filter gets its native control on the grid (as your draft), or viewers cannot use it.
+    placed: list[dict[str, Any]] = []
+    for i, sl in enumerate(p.get("slicers") or []):
+        async def add_slicer(sl: dict[str, Any] = sl, i: int = i) -> dict[str, Any]:
+            d = await env.appbi.post(f"/dashboards/{dashboard_id}/widgets", {
+                "widget_type": "slicer",
+                "layout": {**sl["layout"], "gv": GRID_VERSION, "draftOnly": True},
+                "widget_config": {"slicerId": sl["slicer_id"], "treatment": "auto", "origin": "author"},
+            })
+            tile = _my_slicer_tile(d, sl["slicer_id"], me)
+            if tile is None:
+                raise OperationError("partially_failed", "AppBI accepted the filter control but it is not in the dashboard response.", step=f"slicer:{i}")
+            return {"tile_id": tile["id"], "slicer_id": sl["slicer_id"]}
+
+        async def find_slicer(_since: float, sl: dict[str, Any] = sl) -> dict[str, Any] | None:
+            tile = _my_slicer_tile(await env.appbi.get(f"/dashboards/{dashboard_id}"), sl["slicer_id"], me)
+            return {"tile_id": tile["id"], "slicer_id": sl["slicer_id"]} if tile else None
+
+        placed.append(await run.write(f"slicer:{i}", add_slicer, reconcile=find_slicer))
 
     # Read back what AppBI now holds, and the numbers each chart renders.
     final = await env.appbi.get(f"/dashboards/{dashboard_id}")
@@ -437,8 +562,19 @@ async def run_dashboard_plan(env: Env, run: Run) -> dict[str, Any]:
         "preview_url": env.link(f"/dashboards/{dashboard_id}"),
         "charts": created,
         "filters": [f["label"] for f in p["filters"]],
+        "filter_controls_placed": len(placed),
         "note": "These changes are your draft: open preview_url in AppBI to see them. Publish with request_publish.",
     }
+
+
+def _my_slicer_tile(dashboard: dict[str, Any], slicer_id: str, me: str) -> dict[str, Any] | None:
+    for t in dashboard.get("dashboard_charts", []) or []:
+        layout = t.get("layout") or {}
+        cfg = t.get("widget_config") or {}
+        if (t.get("widget_type") == "slicer" and str(cfg.get("slicerId")) == slicer_id
+                and layout.get("draftOnly") and str(layout.get("draftOwner")) == me):
+            return t
+    return None
 
 
 def _my_draft_tile(dashboard: dict[str, Any], chart_id: int, me: str) -> dict[str, Any] | None:

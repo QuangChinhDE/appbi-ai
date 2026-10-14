@@ -208,6 +208,7 @@ export interface PersonalAccessTokenRecord {
   token_hint: string;
   scopes: Record<string, string>;
   revealable: boolean;
+  bound_to_session?: boolean;
   last_used_at: string | null;
   expires_at: string | null;
   revoked_at: string | null;
@@ -230,6 +231,8 @@ export interface PersonalAccessTokenUpsertPayload {
   name: string;
   scopes: Record<string, string>;
   expires_in_days?: number | null;
+  /** Token ends when the owner's password/status changes (security stamp rotates). */
+  bind_to_session?: boolean;
 }
 
 export const personalAccessTokensApi = {
