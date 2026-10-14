@@ -96,6 +96,26 @@ None of them are AppBI Core secrets.
 4. **Anthropic's egress** (`160.79.104.0/21`) must reach `MCP_PUBLIC_URL`. The nginx
    `allow` list must not block it.
 
+### Single host without a host nginx (local / pilot)
+
+Use the version-controlled local edge instead of a hand-started proxy:
+
+```bash
+export MCP_PUBLIC_URL=http://localhost:3000 MCP_STATE_KEY=<from your secret store>
+./run.sh --with-mcp            # Core + docker-compose.edge.yml, then this project
+```
+
+- The `edge` service (`docker-compose.edge.yml`, `deploy/nginx.local-edge.conf`) owns
+  `127.0.0.1:${APPBI_HTTP_PORT:-3000}`. It has the same MCP routes and cookie filter as
+  `nginx.conf`, passes everything else unchanged to the frontend (which has no host
+  port), and preserves `Host`.
+- The edge joins this project's `appbi-mcp-ingress` network; `run.sh --with-mcp`
+  creates it (with this project's labels) when it does not exist yet.
+- With the MCP stopped the app keeps working; `/mcp` answers 502.
+- **Never** run plain `docker compose up` for Core without `-f docker-compose.edge.yml`
+  while this is enabled: the frontend takes port 3000 back. Start/stop/reboot/rollback:
+  `docs/ops-runbook.md`, "Local single-host entry point with the connector".
+
 ## Connect Claude
 
 The connector URL is `https://<your AppBI host>/mcp`.

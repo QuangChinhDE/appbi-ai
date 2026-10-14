@@ -1,0 +1,53 @@
+# AppBI local edge overlay — the canonical local entry point when the Claude
+# connector (MCP integration) is enabled on the same host.
+#
+#   ./run.sh --with-mcp                                  # preferred: applies this overlay
+#   docker compose -f docker-compose.yml -f docker-compose.edge.yml up -d
+#
+# What it changes, and nothing else:
+#   - the frontend loses its host port (image, env, volumes, networks unchanged);
+#   - a small nginx `edge` takes 127.0.0.1:${APPBI_HTTP_PORT:-3000} instead and routes
+#     the MCP paths (same set as production nginx.conf) to the `appbi-mcp` service and
+#     everything else, unchanged, to the frontend (deploy/nginx.local-edge.conf).
+#
+# The edge resolves both upstreams at request time (Docker DNS + variables), so it
+# starts and keeps serving the app while the MCP project is stopped: only the MCP
+# paths answer 502. It does need the MCP ingress network to EXIST; `run.sh --with-mcp`
+# creates it (labelled for the appbi-mcp project) when it is missing.
+#
+# Once this overlay is in use, NEVER run plain `docker compose up` without it: that
+# would give port 3000 back to the frontend and the edge (and /mcp) would stop
+# answering. Roll back to frontend-on-3000 deliberately: docs/ops-runbook.md.
+services:
+  frontend:
+    ports: !reset []
+
+  edge:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ./deploy/nginx.local-edge.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "127.0.0.1:${APPBI_HTTP_PORT:-3000}:80"
+    networks:
+      - appbi-net
+      - mcp-ingress
+    healthcheck:
+      # Internal-only health listener (127.0.0.1:8081 inside the container); it
+      # does not depend on the frontend or the MCP being up.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+networks:
+  # Created and owned by the MCP project (docker-compose.mcp.yml, same name/variable).
+  mcp-ingress:
+    external: true
+    name: ${APPBI_MCP_INGRESS_NETWORK:-appbi-mcp-ingress}
