@@ -13,6 +13,10 @@ class PersonalAccessTokenCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     scopes: dict[str, str]
     expires_in_days: int | None = Field(default=None, ge=1, le=PAT_MAX_EXPIRES_IN_DAYS)
+    # True = the token ends when the owner's security stamp rotates (password
+    # change, status change, deactivation). On update it can only turn binding
+    # ON; it never unbinds a bound token.
+    bind_to_session: bool = False
 
     @field_validator("name")
     @classmethod
@@ -35,6 +39,7 @@ class PersonalAccessTokenResponse(BaseModel):
     token_hint: str
     scopes: dict[str, str] = {}
     revealable: bool = False
+    bound_to_session: bool = False
     last_used_at: datetime | None = None
     expires_at: datetime | None = None
     revoked_at: datetime | None = None

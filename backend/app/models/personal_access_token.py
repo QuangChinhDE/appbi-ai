@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 
@@ -33,6 +33,11 @@ class PersonalAccessToken(Base):
     # this token's links — the browser refuses to frame them elsewhere and
     # opening the URL outside an iframe is refused.
     embed_allowed_origins = Column(JSONB, nullable=True)
+    # Session-bound tokens (e.g. minted for an MCP connection) stop working when the
+    # owner's security_stamp rotates (password change, status change, deactivation).
+    # Legacy/unbound tokens are unaffected. "" = bound while the user had no stamp.
+    bound_to_session = Column(Boolean, nullable=False, server_default=text("false"), default=False)
+    bound_security_stamp = Column(String(64), nullable=True)
     last_used_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)
     revoked_at = Column(DateTime(timezone=True), nullable=True)
