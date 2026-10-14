@@ -149,6 +149,35 @@ export interface DatasetModelView {
   dimensions: DimensionDefinition[];
   measures: MeasureDefinition[];
   description?: string;
+  /** Content version of dimensions+measures+description. Quote it back as
+   *  `expected_view_version` on save; a stale one is refused with 409 `view_stale`. */
+  view_version?: string;
+}
+
+/** Response of PUT /datasets/{id}/model/views/{viewId}. */
+export interface UpdateModelViewResponse {
+  id: number;
+  name: string;
+  dimensions: DimensionDefinition[];
+  measures: MeasureDefinition[];
+  description?: string | null;
+  view_version?: string;
+  renamed?: Record<string, number>;
+}
+
+/** 409 detail when `expected_view_version` no longer matches the stored view. */
+export interface ViewStaleDetail {
+  code: 'view_stale';
+  view_version: string;
+  message: string;
+}
+
+export function isViewStaleError(error: unknown): error is { response: { status: 409; data: { detail: ViewStaleDetail } } } {
+  const response = (error as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
+  const detail = response?.data?.detail;
+  return response?.status === 409
+    && typeof detail === 'object' && detail !== null
+    && (detail as { code?: string }).code === 'view_stale';
 }
 
 export interface DatasetModelExplore {
@@ -367,11 +396,14 @@ export function useUpdateModelView() {
         /** Phase-6: BE auto-rewrites every Chart.config and depends_on
          *  reference that targets an old measure name in this map. */
         rename_map?: Record<string, string>;
+        /** Version the editor read; a stale one is refused (409 view_stale).
+         *  `force` does NOT bypass this — it only bypasses the cascade guard. */
+        expected_view_version?: string;
       };
       /** Phase-3: when true, bypass cascade guards (e.g. measure used by chart). */
       force?: boolean;
     }) => {
-      const response = await api.put(
+      const response = await api.put<UpdateModelViewResponse>(
         `/datasets/${datasetId}/model/views/${viewId}${force ? '?force=true' : ''}`,
         data
       );
@@ -383,6 +415,8 @@ export function useUpdateModelView() {
       const previousModel = queryClient.getQueryData<DatasetModelResponse>(
         modelKeys.detail(variables.datasetId)
       );
+      // The version token is request-only; it must not land in the cached view.
+      const { expected_view_version: _expected, ...optimistic } = variables.data;
 
       queryClient.setQueryData<DatasetModelResponse>(
         modelKeys.detail(variables.datasetId),
@@ -394,7 +428,7 @@ export function useUpdateModelView() {
               view.id === variables.viewId
                 ? {
                     ...view,
-                    ...variables.data,
+                    ...optimistic,
                     dimensions: variables.data.dimensions ?? view.dimensions,
                     measures: variables.data.measures ?? view.measures,
                     description: variables.data.description ?? view.description,
@@ -439,7 +473,15 @@ export function useDeleteModelMeasure() {
       measureName: string;
       force?: boolean;
     }) => {
-      const response = await api.delete(
+      const response = await api.delete<{
+        id: number;
+        name: string;
+        deleted_measure: string;
+        measures: MeasureDefinition[];
+        dimensions?: DimensionDefinition[];
+        description?: string | null;
+        view_version?: string;
+      }>(
         `/datasets/${datasetId}/model/views/${viewId}/measures/${encodeURIComponent(measureName)}${force ? '?force=true' : ''}`,
       );
       return response.data;

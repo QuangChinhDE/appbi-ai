@@ -5611,11 +5611,18 @@ def delete_dataset_view_measure(
     flag_modified(view, "measures")
     db.commit()
     db.refresh(view)
+    from app.models.semantic import view_version_of
     return {
         "id": view.id,
         "name": view.name,
         "deleted_measure": target,
         "measures": view.measures or [],
+        # The editor quotes `view_version` on its next PUT; returning the
+        # post-delete state lets it adopt the new version only when nothing
+        # else changed the view (otherwise its next save is refused as stale).
+        "dimensions": view.dimensions or [],
+        "description": view.description,
+        "view_version": view_version_of(view.dimensions, view.measures, view.description),
     }
 
 

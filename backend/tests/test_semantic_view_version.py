@@ -115,3 +115,29 @@ def test_a_foreign_view_is_refused_before_any_version_is_revealed(db):
 def test_an_empty_version_means_no_version(db):
     res = _put(db, {"dimensions": DIMS, "measures": [_measure("revenue")], "expected_view_version": ""})
     assert [m["name"] for m in res["measures"]] == ["revenue"]
+
+
+def _delete(db, name):
+    from app.api.datasets import delete_dataset_view_measure
+
+    return delete_dataset_view_measure(dataset_id=1, view_id=1, measure_name=name, force=True, db=db, current_user=object())
+
+
+def test_delete_returns_the_post_delete_version(db):
+    """The editor adopts this version after its own delete instead of 409-ing itself."""
+    _put(db, {"dimensions": DIMS, "measures": [_measure("revenue"), _measure("units", "amount", "count")]})
+    res = _delete(db, "units")
+    stored = db.get(SemanticView, 1)
+    assert res["view_version"] == view_version_of(stored.dimensions, stored.measures, stored.description)
+    assert res["dimensions"] == stored.dimensions and res["description"] == stored.description
+
+
+def test_a_stale_put_after_a_delete_cannot_resurrect_the_measure(db):
+    first = _put(db, {"dimensions": DIMS, "measures": [_measure("revenue"), _measure("units", "amount", "count")]})
+    _delete(db, "units")
+    with pytest.raises(HTTPException) as err:
+        _put(db, {"dimensions": DIMS, "measures": [_measure("revenue"), _measure("units", "amount", "count")],
+                  "expected_view_version": first["view_version"]})
+    assert err.value.status_code == 409 and err.value.detail["code"] == "view_stale"
+    db.expire_all()
+    assert [m["name"] for m in db.get(SemanticView, 1).measures] == ["revenue"]
