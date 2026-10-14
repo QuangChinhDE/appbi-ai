@@ -34,6 +34,7 @@ from app.core.dependencies import (
     batch_effective_permissions,
 )
 from app.core.authz import decision as _authz
+from app.core.authz.registry import LEVEL_ORDER as _AUTHZ_LEVEL_ORDER
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models.models import Chart, DashboardChart, Dashboard, DashboardPublicLink, DataSource, DataSourceType
 from app.models.dataset import Dataset, DatasetTable
@@ -1785,6 +1786,24 @@ def _other_authors_drafts(snapshot: Optional[Dict[str, Any]], user_key: str) -> 
     return out or None
 
 
+def _serialize_live_for_viewer(dash: Dashboard) -> DashboardResponse:
+    """The published report only: live fields, no draft overlay or metadata,
+    and no tile that exists only in someone's unpublished draft."""
+    base = DashboardResponse.model_validate(dash, from_attributes=True)
+    live_ids = {r.id for r in (dash.dashboard_charts or []) if not is_draft_only_item(r)}
+    charts = [dc.model_copy(update={"layout": strip_draft_row_keys(dc.layout)}) if isinstance(dc.layout, dict) else dc
+              for dc in base.dashboard_charts if dc.id in live_ids]
+    from app.services.dashboard_parameters import resolve_switcher_fields
+    return base.model_copy(update={
+        "dashboard_charts": charts,
+        "draft_layouts": None,
+        "draft_responsive_layouts": None,
+        "has_draft": False,
+        "shared_draft": None,
+        "parameter_fields": resolve_switcher_fields(charts, include_drafts=False),
+    })
+
+
 def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: User) -> DashboardResponse:
     """Build a DashboardResponse explicitly so the draft fields
     (draft_layouts + has_draft) actually flow through to the JSON. The
@@ -1802,6 +1821,12 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     """
     dash.user_permission = require_view_access(db, current_user, dash, "dashboards")
     _authz.attach_capabilities(db, current_user, [dash])
+    if _AUTHZ_LEVEL_ORDER.get(dash.user_permission, 0) < _AUTHZ_LEVEL_ORDER["edit"]:
+        # A viewer cannot write a draft, so they never read one: the shared
+        # draft (filters, slicers, pages, theme), its metadata and every
+        # author's unpublished tiles stay with the editors until Publish —
+        # the viewer reads the live report, as the public link does.
+        return _serialize_live_for_viewer(dash)
     snapshot = dash.draft_snapshot or {}
     # Phase-B17 — overlay only THIS user's pending layout draft (per-user).
     layouts_map = _draft_user_layouts(snapshot, str(current_user.id))
