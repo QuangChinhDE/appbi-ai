@@ -68,6 +68,8 @@ export interface PptxExportOptions {
   title: string;
   subtitle?: string | null;
   footer?: string | null;
+  /** Overrides of the export's time budget (tests); defaults are the exported caps. */
+  budget?: { captureMs?: number; sendMs?: number };
   gridCols: number;
   pages: PptxPageSource[];
   /** POST the payload; resolves with the .pptx blob. */
@@ -85,6 +87,14 @@ export class PptxIncompleteError extends Error {
   }
 }
 
+/** The server did not answer within PPTX_SEND_TIMEOUT_MS: no deck was made. */
+export class PptxTimeoutError extends Error {
+  constructor(public readonly afterMs: number) {
+    super(`PowerPoint export stopped: the deck was not built within ${Math.round(afterMs / 1000)} s`);
+    this.name = 'PptxTimeoutError';
+  }
+}
+
 const MAX_TABLE_ROWS = 25;
 const TABLE_LIKE = /^(TABLE|PIVOT|MATRIX)/i;
 const KPI_LIKE = /KPI|CARD|GAUGE/i;
@@ -94,6 +104,17 @@ const CONTROL_WIDGET_TYPES = new Set(['parameter_switcher']);
 const PAGE_READY_TIMEOUT_MS = 30_000;
 const TILE_RETRY_TIMEOUT_MS = 15_000;
 const TILES_MOUNT_TIMEOUT_MS = 15_000;
+/** TOTAL wall-clock budget for capturing every page. The per-step timeouts above
+ *  are each shrunk to what is left of it, so N pages x M charts can never add
+ *  up to an unbounded wait: at the deadline every chart not yet drawn is
+ *  reported (PptxIncompleteError) and no deck is made. */
+export const PPTX_CAPTURE_BUDGET_MS = 180_000;
+/** The server builds the deck; past this the export fails loudly. */
+export const PPTX_SEND_TIMEOUT_MS = 60_000;
+/** Longest an export can take from click to download or error toast (plus the
+ *  html2canvas work of the last captures). e2e/tests/dashboard-pptx-export.spec.ts
+ *  mirrors this value; frontend/scripts/check-pptx-export-contract.mjs keeps them equal. */
+export const PPTX_EXPORT_MAX_MS = PPTX_CAPTURE_BUDGET_MS + PPTX_SEND_TIMEOUT_MS;
 /** Share of plot-area pixels that differ from the card background: a frame,
  *  a hidden title or a hidden badge leave ~0; any drawn mark is far above this. */
 export const MIN_PLOT_INK = 0.0008;
@@ -179,11 +200,11 @@ async function waitForTile(tile: HTMLElement, timeoutMs: number): Promise<TileRe
 
 /** Wait until every expected tile of the page is in the DOM (a page switch
  *  mounts them a moment later); returns how many are missing at the deadline. */
-async function waitForTilesMounted(root: HTMLElement, ids: number[]): Promise<number> {
+async function waitForTilesMounted(root: HTMLElement, ids: number[], timeoutMs: number): Promise<number> {
   const started = Date.now();
   const missing = () => ids.filter((id) => !root.querySelector(`[data-grid-item-id="${id}"]`)).length;
   let n = missing();
-  while (n > 0 && Date.now() - started < TILES_MOUNT_TIMEOUT_MS) {
+  while (n > 0 && Date.now() - started < timeoutMs) {
     await sleep(100);
     n = missing();
   }
@@ -232,16 +253,21 @@ export async function exportDashboardPptx(opts: PptxExportOptions): Promise<void
   const totalCharts = opts.pages.reduce((n, p) => n + p.tiles.filter((t) => !isExportControl(t)
     && (!t.widgetType || t.widgetType === 'chart')).length, 0);
   let chartNo = 0;
+  const captureBudgetMs = opts.budget?.captureMs ?? PPTX_CAPTURE_BUDGET_MS;
+  const sendTimeoutMs = opts.budget?.sendMs ?? PPTX_SEND_TIMEOUT_MS;
+  const deadline = Date.now() + captureBudgetMs;
+  /** A step's own timeout, never past the export's overall deadline. */
+  const within = (stepMs: number) => Math.max(0, Math.min(stepMs, deadline - Date.now()));
   for (let i = 0; i < opts.pages.length; i++) {
     const page = opts.pages[i];
     opts.onProgress?.(0.05 + 0.8 * (i / Math.max(1, opts.pages.length)), opts.labels?.page(i + 1, opts.pages.length) ?? page.name);
     const root = await page.getRoot();
     if (!root) { pages.push({ name: page.name, width: 1, tiles: [] }); continue; }
     const wanted = page.tiles.filter((t) => !isExportControl(t));
-    await waitForTilesMounted(root, wanted.map((t) => t.id));
+    await waitForTilesMounted(root, wanted.map((t) => t.id), within(TILES_MOUNT_TIMEOUT_MS));
     // Every tile in a final state (drawn / empty / failed): the shared protocol,
     // bounded — what is still loading at the deadline is retried, then reported.
-    await waitForRenderReady(root, { timeoutMs: PAGE_READY_TIMEOUT_MS });
+    await waitForRenderReady(root, { timeoutMs: within(PAGE_READY_TIMEOUT_MS) });
     const rootRect = root.getBoundingClientRect();
     const content: Array<PptxTilePayload> = [];
     const controls: Rect[] = [];
@@ -272,7 +298,7 @@ export async function exportDashboardPptx(opts: PptxExportOptions): Promise<void
       let state = tileReadiness(el);
       if (state === 'loading') {
         el.scrollIntoView({ block: 'center' });
-        state = await waitForTile(el, TILE_RETRY_TIMEOUT_MS);
+        state = await waitForTile(el, within(TILE_RETRY_TIMEOUT_MS));
       }
       if (KPI_LIKE.test(type) && el.querySelector('.dashboard-kpi-value')) {
         content.push({ kind: 'kpi', ...geom, title, value: textOf(el.querySelector('.dashboard-kpi-value')) });
@@ -286,7 +312,7 @@ export async function exportDashboardPptx(opts: PptxExportOptions): Promise<void
       if (!image) {
         // One retry: back in view, renderer ready again, capture again.
         el.scrollIntoView({ block: 'center' });
-        state = await waitForTile(el, TILE_RETRY_TIMEOUT_MS);
+        state = await waitForTile(el, within(TILE_RETRY_TIMEOUT_MS));
         if (state !== 'loading') image = await captureChart(el, state);
       }
       if (!image) { failed.push(title || `#${t.id}`); continue; }
@@ -296,12 +322,18 @@ export async function exportDashboardPptx(opts: PptxExportOptions): Promise<void
   }
   if (failed.length) throw new PptxIncompleteError(failed);
   opts.onProgress?.(0.9, opts.labels?.building ?? '');
-  const blob = await opts.send({
-    title: opts.title,
-    subtitle: opts.subtitle ?? null,
-    footer: opts.footer ?? null,
-    pages,
-  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const blob = await Promise.race([
+    opts.send({
+      title: opts.title,
+      subtitle: opts.subtitle ?? null,
+      footer: opts.footer ?? null,
+      pages,
+    }),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new PptxTimeoutError(sendTimeoutMs)), sendTimeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

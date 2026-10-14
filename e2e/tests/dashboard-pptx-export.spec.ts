@@ -14,7 +14,16 @@ import { MIN_CHART_INK, readDeck, type Deck } from './_pptx';
  * pixels of every chart picture), against the real API and Postgres.
  */
 
-test.describe.configure({ mode: 'serial', timeout: 300_000 });
+/** MIRROR of PPTX_EXPORT_MAX_MS in frontend/src/lib/export-pptx.ts (capture
+ *  budget 180 s + server build 60 s): past it the export itself fails with an
+ *  error toast. check-pptx-export-contract.mjs keeps the two equal. */
+const PPTX_EXPORT_MAX_MS = 240_000;
+/** The download wait is DERIVED from that cap, never tuned to make a run pass:
+ *  the cap plus slack for the last captures and the browser's download. */
+const DOWNLOAD_WAIT_MS = PPTX_EXPORT_MAX_MS + 30_000;
+
+// A test = page load + one or two exports: the timeout follows the export cap.
+test.describe.configure({ mode: 'serial', timeout: Math.max(300_000, DOWNLOAD_WAIT_MS + 90_000) });
 
 const TOKEN = 'e2e-pptx-export';
 const PAGES = ['Tổng quan', 'Chi tiết', 'Biểu đồ'];
@@ -66,7 +75,7 @@ async function exportDeck(page: Page, path: string, pages: string[]): Promise<De
     if (!(await box.isChecked())) await box.check();
   }
   const [download] = await Promise.all([
-    page.waitForEvent('download', { timeout: 240_000 }),
+    page.waitForEvent('download', { timeout: DOWNLOAD_WAIT_MS }),
     page.getByRole('button', { name: /^(Export PowerPoint|Xuất PowerPoint)$/ }).click(),
   ]);
   expect(download.suggestedFilename()).toMatch(/\.pptx$/);
@@ -309,7 +318,7 @@ test('a refused deck names the charts, keeps the dialog for Retry, never says "d
   await page.unroute('**/export-pptx');
   // Retry succeeds, and the screen is again what it was.
   const [download] = await Promise.all([
-    page.waitForEvent('download', { timeout: 240_000 }),
+    page.waitForEvent('download', { timeout: DOWNLOAD_WAIT_MS }),
     page.getByRole('button', { name: /^(Export PowerPoint|Xuất PowerPoint)$/ }).click(),
   ]);
   expect(download.suggestedFilename()).toMatch(/\.pptx$/);
