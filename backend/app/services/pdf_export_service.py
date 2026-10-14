@@ -22,6 +22,8 @@ Design notes
 from __future__ import annotations
 
 import logging
+
+from app.core.log_safety import token_ref
 import os
 import secrets
 import uuid
@@ -134,13 +136,23 @@ def create_job(
     db.refresh(job)
     logger.info(
         "[pdf_export] queued job=%s dashboard=%s link=%s pages=%s",
-        job.id, dashboard_id, link_token, len((params or {}).get("pages") or []),
+        job.id, dashboard_id, token_ref(link_token), len((params or {}).get("pages") or []),
     )
     return job
 
 
 def get_job(db: Session, job_id: uuid.UUID) -> Optional[DashboardExportJob]:
     return db.query(DashboardExportJob).filter(DashboardExportJob.id == job_id).first()
+
+
+def _drop_viewer_session(job: DashboardExportJob | None) -> None:
+    """A password-protected link's viewer session (JWT) travels in `params` only
+    so the worker can open the same protected view. Once the job is terminal
+    nothing needs it, and a bearer credential must not sit in a table for the
+    file's lifetime. Caller commits."""
+    if job is None or not isinstance(job.params, dict) or not job.params.get("session"):
+        return
+    job.params = {k: v for k, v in job.params.items() if k != "session"}
 
 
 def cancel_job(db: Session, job: DashboardExportJob) -> DashboardExportJob:
@@ -151,6 +163,7 @@ def cancel_job(db: Session, job: DashboardExportJob) -> DashboardExportJob:
         job.status = ExportJobStatus.cancelled.value
         job.finished_at = _now()
         job.progress_message = "Đã hủy theo yêu cầu."
+        _drop_viewer_session(job)
         db.commit()
         db.refresh(job)
     return job
@@ -297,6 +310,7 @@ def complete_job(
             "expires_at": _now() + timedelta(hours=settings.PDF_FILE_TTL_HOURS),
         }
     )
+    _drop_viewer_session(get_job(db, job_id))
     db.commit()
 
 
@@ -316,6 +330,7 @@ def fail_job(db: Session, job_id: uuid.UUID, error: str, *, retryable: bool = Tr
         job.status = ExportJobStatus.failed.value
         job.finished_at = _now()
         job.progress_message = "Xuất PDF thất bại."
+        _drop_viewer_session(job)
     db.commit()
 
 

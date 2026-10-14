@@ -23,14 +23,17 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import React from 'react';
 
 import { hasPermission, usePermissions } from '@/hooks/use-permissions';
+import { useI18n } from '@/providers/LanguageProvider';
 import { resolveFlowId } from '@/lib/agentFlows';
 
+import { AiKeysProvider } from './aiKeys/AiKeysContext';
 import { BrainBuilder } from './BrainBuilder';
 import { BrainList } from './BrainList';
 
 const MODULE = 'agent_flows';
 
 export function AgentFlowsPage() {
+  const { t } = useI18n();
   const { data: perms } = usePermissions();
   const router = useRouter();
   const pathname = usePathname();
@@ -83,24 +86,28 @@ export function AgentFlowsPage() {
   if (param !== null && paramIsId && openKey === null) {
     return (
       <div className="p-6 text-caption text-text-tertiary">
-        {unknownId
-          ? 'Không mở được flow này — có thể link đã cũ, flow đã bị xoá, hoặc bạn không có quyền xem.'
-          : 'Đang mở flow…'}
+        {unknownId ? t('agentFlows.page.cannotOpen') : t('agentFlows.page.opening')}
       </div>
     );
   }
 
-  if (openKey !== null) {
-    return (
-      <BrainBuilder
-        brainKey={openKey}
-        canEdit={canEdit}
-        canPublish={canPublish}
-        onBack={backToList}
-      />
-    );
-  }
-  return <BrainList canEdit={canEdit} onOpen={openFlow} />;
+  // ONE list of AI keys for the module: the catalogue's manager and every step
+  // picker in the builder read the same one, so a key added anywhere shows up
+  // everywhere at once.
+  return (
+    <AiKeysProvider canEdit={canEdit}>
+      {openKey !== null ? (
+        <BrainBuilder
+          brainKey={openKey}
+          canEdit={canEdit}
+          canPublish={canPublish}
+          onBack={backToList}
+        />
+      ) : (
+        <BrainList canEdit={canEdit} onOpen={openFlow} />
+      )}
+    </AiKeysProvider>
+  );
 }
 
 export default AgentFlowsPage;

@@ -1,0 +1,298 @@
+{
+  "sha": "bac476b9",
+  "ranAt": "2026-09-29T06:27:09.534Z",
+  "results": {
+    "R3 public tampering": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the page scope SP+RJ is staged",
+        "PASS — a link locked inside the page scope narrows it ([{\"dataset_table_2.revenue\":5202955.05}] vs page [{\"dataset_table_2.revenue\":7027047.72}])",
+        "PASS — a link locked OUTSIDE the page scope returns no rows — it no longer replaces the page filter ([{\"dataset_table_2.revenue\":null}])",
+        "PASS — a crafted viewer filter cannot widen a lock",
+        "PASS — a chart asked for on a page it is not on is refused (200 {\"results\":[{\"chart_id\":9740,\"error\":\"Chart not found in this shared dashboard.\",\"status\":404}]})",
+        "PASS — an operator trick (not_in SP) stays inside the page scope: it reads RJ, not everything but SP ([{\"dataset_table_2.revenue\":1824092.67}] vs RJ [{\"dataset_table_2.revenue\":1824092.67}])",
+        "PASS — a filter on a field the viewer has no control for is ignored, not applied or errored ([{\"dataset_table_2.revenue\":7027047.72}] vs [{\"dataset_table_2.revenue\":7027047.72}])",
+        "PASS — the page dropdown offers only the page scope ([\"RJ\",\"SP\"])",
+        "PASS — search cannot reach values outside the scope ([])",
+        "PASS — a field that is not a viewer control has no distinct endpoint (404)",
+        "PASS — two embed claims see two different scopes ([{\"dataset_table_2.revenue\":5202955.05}] / [{\"dataset_table_2.revenue\":1824092.67}])",
+        "PASS — the SP embed equals the SP public link ([{\"dataset_table_2.revenue\":5202955.05}] vs [{\"dataset_table_2.revenue\":5202955.05}])",
+        "PASS — a crafted request under the SP claim cannot read RJ (it gets SP, or nothing) ([{\"dataset_table_2.revenue\":null}] (SP [{\"dataset_table_2.revenue\":5202955.05}], RJ [{\"dataset_table_2.revenue\":1824092.67}]))",
+        "PASS — a malformed embed claim is refused (400)",
+        "PASS — an embed with no claim is refused unless the full report is asked for (400)",
+        "PASS — a claim on a field that is not in the report is refused (400)"
+      ],
+      "metrics": {
+        "values": {
+          "page": "[{\"dataset_table_2.revenue\":7027047.72}]",
+          "sp": "[{\"dataset_table_2.revenue\":5202955.05}]",
+          "mg": "[{\"dataset_table_2.revenue\":null}]"
+        },
+        "distinct": [
+          "RJ",
+          "SP"
+        ]
+      },
+      "evidence": [],
+      "notes": []
+    },
+    "R4 disclosure": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — hidden + locked filters are staged",
+        "PASS — no public response names the hidden filters",
+        "PASS — the hidden link value never leaves the server",
+        "PASS — the locked filter is announced (read-only)",
+        "PASS — no emitted SQL in any public response",
+        "PASS — the public model does not list a field only a hidden constraint uses ({\"1\":{\"views\":[{\"name\":\"dataset_table_3\",\"dimensions\":[{\"name\":\"customer_state\",\"label\":\"customer_state\"}],\"measures\":[]},{\"name\":\"dataset_table_5\",\"dimensions\":[{\"name\":\"seller_state\",\"label\":\"seller)",
+        "PASS — the rendered /d page carries no hidden label"
+      ],
+      "metrics": {
+        "bodies": {
+          "structure": 36963,
+          "data": 7044,
+          "single": 7005,
+          "distinct": 121,
+          "error": 7044,
+          "recon": 56
+        }
+      },
+      "evidence": [
+        "R4-public-1440.jpg"
+      ],
+      "notes": []
+    },
+    "R5 two authors": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the second author gets the editor preset (200)",
+        "PASS — the report is shared with the second author for editing ({\"id\":85,\"resource_type\":\"dashboard\",\"resource_id\":\"1087\",\"target_type\":\"user\",\"user_id\":\"8802a261-fa63-4283-8f78-0c0b29e71af1\",\"team_id\":null,\"permission\":\"edi)",
+        "PASS — the second author is a different account (coauthor-1790659711833@appbi.io)",
+        "PASS — after asking, the second author is not held to view-only",
+        "PASS — neither author's draft is public before Publish",
+        "PASS — A's edit and B's edit of different tiles are both published (subtle / flush)",
+        "PASS — B publishing the tile A just published is stopped with a conflict dialog",
+        "PASS — the live report keeps A's version of the tile until B chooses (subtle)",
+        "PASS — A's filter pick is a shared draft edit ({\"rev\":\"2026-09-29T05:29:30.459054+00:00#1\",\"has_changes\":true,\"other_authors\":[]})",
+        "PASS — B's edit on the copy it opened before A's is refused, with Reload offered",
+        "PASS — a shared write that names no revision is refused (409)",
+        "PASS — A's pending pick survived both attempts",
+        "PASS — B's Publish asks about A's unpublished shared edits",
+        "PASS — \"Only mine\" published B's tile edit (card)",
+        "PASS — \"Only mine\" did not publish A's filter pick",
+        "PASS — A's pick is still pending",
+        "PASS — B's Discard asks before dropping A's shared edits",
+        "PASS — A's pick survived B's discard",
+        "PASS — simultaneous draft writes by two authors all succeed (200,200,200,200,200,200,200,200,200,200,200,200)",
+        "PASS — no simultaneous write by one author ever drops the other author's"
+      ],
+      "metrics": {
+        "sameTileNet": [
+          "PUT 1087/draft-layout 200",
+          "POST 1087/publish 409"
+        ],
+        "choice": "Other authors have unpublished changesThe report’s filters, pages or theme also have unpublished changes by E2E Admin. They are one shared draft.Publish my changes only — keep theirs as a draftPublish everything, including changes by E2E AdminLater"
+      },
+      "evidence": [
+        "R5-same-tile-conflict-B.jpg",
+        "R5-stale-shared-B.jpg",
+        "R5-publish-choice-B.jpg"
+      ],
+      "notes": []
+    },
+    "R6 report-only edit": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — a failed \"only this report\" leaves no chart behind",
+        "PASS — a failed \"only this report\" leaves the report untouched",
+        "PASS — exactly one chart was created ([9788])",
+        "PASS — the copy is marked as this report's ({\"dashboardId\":1088})",
+        "PASS — the copy does not take the shared chart's bare name (Olist · Revenue by category (418) · Olist commercial review (Copy) (30))",
+        "PASS — the library labels the copy (1)",
+        "PASS — Discard deletes the report copy",
+        "PASS — Discard puts the original chart back",
+        "PASS — the shared chart was never changed"
+      ],
+      "metrics": {},
+      "evidence": [
+        "R6-library-report-copy.jpg"
+      ],
+      "notes": []
+    },
+    "R7 long drag": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the report is longer than two screens (2066/900)",
+        "PASS — holding at the bottom edge scrolled the report to its end ({\"top\":1568,\"height\":2642,\"client\":900})",
+        "PASS — the tile was DROPPED directly under the last row (16,112,308,176 → 16,1968,308,176; last row ends at 1952)",
+        "PASS — the report did not grow into empty space (1968 → 2160)",
+        "PASS — nothing overlaps after the drop",
+        "PASS — after reload the tile is where it was dropped (16,1968,308,176 → 16,1968,308,176)",
+        "PASS — the draft stores the new position (61)",
+        "PASS — a locked tile does not move",
+        "PASS — dropping onto another tile never leaves an overlap ([])",
+        "PASS — the builder at 820px has no sideways scroll",
+        "PASS — the builder at 820px has no overlap"
+      ],
+      "metrics": {
+        "hold": {
+          "top": 1568,
+          "height": 2642,
+          "client": 900
+        },
+        "drop": {
+          "start": [
+            16,
+            112,
+            308,
+            176
+          ],
+          "dropped": [
+            16,
+            1968,
+            308,
+            176
+          ],
+          "lastRowBottom": 1952,
+          "gridH": 1968,
+          "gridAfter": 2160
+        }
+      },
+      "evidence": [
+        "R7-after-drop-reload.jpg"
+      ],
+      "notes": []
+    },
+    "R8 responsive": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — 1440px: no sideways scroll",
+        "PASS — 1440px: no bar value label is drawn over another bar",
+        "PASS — 1440px: every pie slice is named in a visible legend",
+        "PASS — 1440px: tables end at their last row — not clipped, not a tall empty tile ([])",
+        "PASS — 1440px: no KPI figure is cut",
+        "PASS — 1440px: no render defect",
+        "PASS — 820px: no sideways scroll",
+        "PASS — 820px: no bar value label is drawn over another bar",
+        "PASS — 820px: every pie slice is named in a visible legend",
+        "PASS — 820px: tables end at their last row — not clipped, not a tall empty tile ([])",
+        "PASS — 820px: no KPI figure is cut",
+        "PASS — 820px: no render defect",
+        "PASS — 390px: no sideways scroll",
+        "PASS — 390px: no bar value label is drawn over another bar",
+        "PASS — 390px: every pie slice is named in a visible legend",
+        "PASS — 390px: tables end at their last row — not clipped, not a tall empty tile ([])",
+        "PASS — 390px: no KPI figure is cut",
+        "PASS — 390px: no render defect"
+      ],
+      "metrics": {
+        "w1440": {
+          "overlapLabels": [],
+          "legendMissing": [],
+          "tableFit": [],
+          "kpiCut": [],
+          "sideways": false
+        },
+        "w820": {
+          "overlapLabels": [],
+          "legendMissing": [],
+          "tableFit": [],
+          "kpiCut": [],
+          "sideways": false
+        },
+        "w390": {
+          "overlapLabels": [],
+          "legendMissing": [],
+          "tableFit": [],
+          "kpiCut": [],
+          "sideways": false
+        }
+      },
+      "evidence": [
+        "R8-public-1440.jpg",
+        "R8-public-820.jpg",
+        "R8-public-390.jpg"
+      ],
+      "notes": []
+    },
+    "R9 parity": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the public link shows the builder's tiles (13 vs 13)",
+        "PASS — the embed shows the builder's tiles (13 vs 13)",
+        "PASS — the KPI figures agree on all three (4.1,91.9%,98.7K,R$13.6M,R$137.8 | 4.1,91.9%,98.7K,R$13.6M,R$137.8 | 4.1,91.9%,98.7K,R$13.6M,R$137.8)"
+      ],
+      "metrics": {
+        "builderKpi": [
+          "4.1",
+          "91.9%",
+          "98.7K",
+          "R$13.6M",
+          "R$137.8"
+        ],
+        "pubKpi": [
+          "4.1",
+          "91.9%",
+          "98.7K",
+          "R$13.6M",
+          "R$137.8"
+        ],
+        "emKpi": [
+          "4.1",
+          "91.9%",
+          "98.7K",
+          "R$13.6M",
+          "R$137.8"
+        ],
+        "builderTiles": 13,
+        "pubTiles": 13,
+        "emTiles": 13
+      },
+      "evidence": [
+        "R9-embed-1440.jpg"
+      ],
+      "notes": []
+    },
+    "R10 PDF": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — a long report is more than one page (3)",
+        "PASS — the export reports nothing missing ([])"
+      ],
+      "metrics": {
+        "pages": 3
+      },
+      "evidence": [
+        "R10-report.pdf"
+      ],
+      "notes": [
+        "Page quality (blank space, cut sections, lone headings, legends, glyphs) is judged on the rendered pages: e2e/acceptance/tools/pdf_review.py renders R10-report-page<N>.png and measures how full each page is."
+      ]
+    },
+    "R11 AI independent dataset": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the two directions compose the report differently (chart@15:24|chart@26:16|chart@26:16|kpi@9:10|kpi@9:10|kpi@9:10|table@37:32|widget@12:32|widget@15:8|widget@2:32|widget@3 || chart@15:32|chart@26:16|chart@26:16|kpi@4:10|kpi@4:10|kpi@4:10|table@33:32|widget@12:32|widget@24:32|widget@2:8|widget@8)",
+        "PASS — the redesign changed no number ($143.4,1.7M,12.1K → $143.4,1.7M,12.1K)",
+        "PASS — nothing Olist-specific leaked into another dataset's report",
+        "PASS — the AI-designed report is edited by hand like any report",
+        "PASS — the public report has the hand refinement",
+        "PASS — every published sentence is computed",
+        "PASS — filtered to one region, the findings are recomputed (the sentence changes) (Latest period+2.8%Revenue over timeIn Dec 2025, Revenue over time was 29.6K, +2.8% on Nov 2025.)"
+      ],
+      "metrics": {
+        "narrative": {
+          "said": "Latest period+2.6%Revenue over timeIn Dec 2025, Revenue over time was 101.8K, +2.6% on Nov 2025.",
+          "filtered": "Latest period+2.8%Revenue over timeIn Dec 2025, Revenue over time was 29.6K, +2.8% on Nov 2025."
+        }
+      },
+      "evidence": [
+        "R11-preview-executive.jpg",
+        "R11-preview-operations.jpg",
+        "R11-public-1440.jpg",
+        "R11-public-filtered-North.jpg"
+      ],
+      "notes": []
+    }
+  }
+}

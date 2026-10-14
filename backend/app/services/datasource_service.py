@@ -10,11 +10,13 @@ import time
 from typing import Generator, Iterator, List, Dict, Any, Tuple, Optional
 import pymysql
 import psycopg2
+from psycopg2 import sql as pg_sql
 from google.cloud import bigquery
 from google.oauth2 import service_account
 import json
 
 from app.core.logging import get_logger
+from app.services.source_errors import describe_source_error
 from app.core.config import settings
 from app.models import DataSourceType
 from app.services.sql_validator import validate_select_only
@@ -22,8 +24,88 @@ from app.services import physical_type_map as _ptm
 from app.services.google_sheets_connector import create_google_sheets_connector
 from app.services.manual_table_connector import create_manual_table_connector
 from app.services.google_data_access_service import get_google_credentials_for_user_id
+from app.core import egress as _egress
 
 logger = get_logger(__name__)
+
+
+# ── Identifier quoting + outbound connections (source hardening, spec F2/F4) ──
+
+_PG_IDENT_MAX = 63
+
+
+def validate_pg_schema_name(schema: Any) -> List[str]:
+    """Split a configured search_path ("a" or "a, b") into validated names.
+
+    Raises ValueError for an empty part, a NUL byte, or a name longer than a
+    Postgres identifier can be. The names are then ONLY ever emitted through
+    ``psycopg2.sql.Identifier`` — never interpolated."""
+    parts = [p.strip() for p in str(schema or "").split(",")]
+    if not parts or any(not p for p in parts):
+        raise ValueError("Schema name is not valid.")
+    for p in parts:
+        if "\x00" in p or len(p.encode("utf-8")) > _PG_IDENT_MAX:
+            raise ValueError("Schema name is not valid.")
+    return parts
+
+
+def _pg_set_search_path(cursor, schema: Any) -> None:
+    """The ONE place a Postgres search_path is set — identifiers via sql.Identifier."""
+    names = validate_pg_schema_name(schema)
+    stmt = pg_sql.SQL("SET search_path TO {}").format(
+        pg_sql.SQL(", ").join(pg_sql.Identifier(n) for n in names)
+    )
+    cursor.execute(stmt)
+
+
+def pg_ident(*names: Any) -> str:
+    """Quote a (possibly qualified) Postgres identifier for SQL built as text.
+
+    Same quoting rule as ``psycopg2.sql.Identifier`` (double quotes, embedded
+    quote doubled), usable before a connection exists. Refuses NUL."""
+    out = []
+    for name in names:
+        text = str(name)
+        if "\x00" in text:
+            raise ValueError("Identifier contains a NUL byte.")
+        out.append('"' + text.replace('"', '""') + '"')
+    return ".".join(out)
+
+
+def mysql_ident(*names: Any) -> str:
+    """Quote a (possibly qualified) MySQL identifier: backticks, embedded ` doubled."""
+    out = []
+    for name in names:
+        text = str(name)
+        if "\x00" in text:
+            raise ValueError("Identifier contains a NUL byte.")
+        out.append("`" + text.replace("`", "``") + "`")
+    return ".".join(out)
+
+
+def bq_table_ref(*parts: Any) -> str:
+    """A BigQuery `project.dataset.table` reference; refuses a backtick inside."""
+    text = ".".join(str(p) for p in parts if str(p))
+    if "`" in text or "\x00" in text or "\n" in text:
+        raise ValueError("BigQuery table reference is not valid.")
+    return f"`{text}`"
+
+
+def _pg_connect(**kwargs):
+    """psycopg2.connect through the outbound source network policy.
+
+    The host is resolved and every candidate checked; libpq then connects to the
+    CHECKED address (``hostaddr``) while ``host`` stays the name, so TLS
+    verification/SNI still see the real hostname and DNS cannot rebind. ONE path:
+    ``core.egress.pg_connect`` (which also refuses a DSN / caller-chosen
+    ``hostaddr``) asks ``source_network_policy.resolve_and_check`` for the address."""
+    return _egress.pg_connect(**kwargs)
+
+
+def _mysql_connect(**kwargs):
+    """pymysql.connect through the outbound source network policy (connects to
+    the checked IP; a unix socket is refused) - via ``core.egress.mysql_connect``."""
+    return _egress.mysql_connect(**kwargs)
 
 
 def _bigquery_dedup_outer_select(client, original_query: str) -> Optional[str]:
@@ -267,20 +349,100 @@ def _python_value_type_token(value: Any) -> str:
     return "string"
 
 
-def _build_arrow_table_from_sheet(pa_module, col_defs: List[Dict[str, Any]], rows: List[Dict[str, Any]]):
+_INT_LITERAL_RE = re.compile(r"^\(?[+-]?\d{1,3}(?:,\d{3})+\)?$|^\(?[+-]?\d+\)?$")
+_INT64_MIN, _INT64_MAX = -(2 ** 63), 2 ** 63 - 1
+
+
+def _exact_integers(raw: List[Any], coerced: List[Any]) -> Optional[List[Any]]:
+    """The column as Python ints when EVERY non-empty source value is an integer
+    literal (an int, or text like ``12`` / ``1,000`` / ``(5)``) within int64;
+    otherwise None. ``1.0``, ``2.5``, ``10%`` keep the column float."""
+    out: List[Any] = []
+    for r, c in zip(raw, coerced):
+        if c is None:
+            out.append(None)
+            continue
+        if isinstance(r, bool):
+            return None
+        if isinstance(r, int):
+            ok = True
+        elif isinstance(r, str):
+            ok = bool(_INT_LITERAL_RE.match(r.strip().replace(" ", "").replace("\xa0", "")))
+        else:
+            ok = False
+        if not ok or not float(c).is_integer():
+            return None
+        iv = int(r) if isinstance(r, int) else int(c)
+        if iv < _INT64_MIN or iv > _INT64_MAX:
+            return None
+        out.append(iv)
+    return out
+
+
+def _build_arrow_table_from_sheet(
+    pa_module, col_defs: List[Dict[str, Any]], rows: List[Dict[str, Any]], *, exact_integers: bool = False,
+):
+    """Arrow table for a schema-less sheet. ``number`` columns are float64;
+    with ``exact_integers`` (imported files) a column whose every value is an
+    integer literal is int64 instead, so an id column reads back as 1, not 1.0."""
     col_names = [c["name"] for c in col_defs]
-    col_types = {c["name"]: c.get("type", "string") for c in col_defs}
+    col_types = {c["name"]: (c.get("type") or "string") for c in col_defs}
 
     arrays = []
     for col_name in col_names:
         declared_type = col_types.get(col_name, "string")
-        values = [_coerce_sheet_value(row.get(col_name), declared_type) for row in rows]
+        raw = [row.get(col_name) for row in rows]
+        values = [_coerce_sheet_value(v, declared_type) for v in raw]
         if declared_type == "number":
-            arrays.append(pa_module.array(values, type=pa_module.float64()))
+            ints = _exact_integers(raw, values) if exact_integers else None
+            if ints is not None and any(v is not None for v in ints):
+                arrays.append(pa_module.array(ints, type=pa_module.int64()))
+            else:
+                arrays.append(pa_module.array(values, type=pa_module.float64()))
         else:
             arrays.append(pa_module.array(values, type=pa_module.string()))
 
     return pa_module.table(dict(zip(col_names, arrays)))
+
+
+PLATFORM_GCP_APPROVAL_FIELD = "platform_gcp_admin_approved_target"
+
+
+class PlatformCredentialNotAllowed(ValueError):
+    """The platform GCP credential may not be used for this source's target."""
+
+
+def platform_gcp_allowed_projects() -> set:
+    raw = str(getattr(settings, "PLATFORM_GCP_ALLOWED_PROJECTS", "") or "")
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
+def platform_gcp_target(config: Dict[str, Any]) -> str:
+    """What the platform credential would reach: the BigQuery project, else the spreadsheet."""
+    return str(config.get("project_id") or config.get("spreadsheet_id") or "").strip()
+
+
+def platform_gcp_target_allowed(config: Dict[str, Any]) -> bool:
+    allowed = platform_gcp_allowed_projects()
+    project = str(config.get("project_id") or "").strip()
+    target = platform_gcp_target(config)
+    approved = str(config.get(PLATFORM_GCP_APPROVAL_FIELD) or "").strip()
+    if approved and target and approved == target:
+        return True
+    if project:
+        return project in allowed
+    # A Sheets source carries no project: the platform identity is opened for
+    # Sheets only when the operator enabled the platform credential at all.
+    return bool(allowed) and bool(target)
+
+
+def uses_platform_gcp_credential(ds_type: str, config: Dict[str, Any]) -> bool:
+    if ds_type not in (DataSourceType.BIGQUERY.value, DataSourceType.GOOGLE_SHEETS.value):
+        return False
+    if str(config.get("auth_mode") or "service_account").strip().lower() == "google_oauth":
+        return False
+    own = config.get("credentials_json") or ""
+    return not (isinstance(own, str) and own.strip()) and bool((settings.GCP_SERVICE_ACCOUNT_JSON or "").strip())
 
 
 def _resolve_gcp_credentials_json(config: Dict[str, Any]) -> str:
@@ -298,6 +460,14 @@ def _resolve_gcp_credentials_json(config: Dict[str, Any]) -> str:
         return from_config.strip()
     platform_json = (settings.GCP_SERVICE_ACCOUNT_JSON or "").strip()
     if platform_json:
+        # F5: the platform identity is shared by every tenant. It is only usable
+        # for an allow-listed project, or for a target an administrator approved
+        # when the source was saved — enforced here, at execution, not just at save.
+        if not platform_gcp_target_allowed(config):
+            raise PlatformCredentialNotAllowed(
+                "The platform Google service account is not enabled for this project. "
+                "Provide this source's own credentials, or ask an administrator."
+            )
         return platform_json
     raise ValueError(
         "No GCP credentials found. Either provide credentials_json in the "
@@ -457,13 +627,18 @@ def _bigquery_client_cache_key(config: Dict[str, Any]) -> str | None:
         # the connected AppBI user id (the credential owner) + project, so two
         # datasources sharing one Google identity reuse one warm client. The
         # id may be encrypted in the raw config; decrypt to get a stable key.
-        from app.core.crypto import decrypt_config
-        dc = decrypt_config(config)
-        owner = str(dc.get("google_oauth_user_id") or "").strip()
-        if not owner:
+        #
+        # F7: the key is the identity of the GOOGLE credential actually used
+        # (account + client + refresh-token fingerprint, never the token), not
+        # the AppBI user who attached it — the same AppBI user can connect two
+        # sources to two Google accounts, and those must never share a client.
+        # Reconnecting (new refresh token) yields a new key.
+        from app.services.source_lifecycle import google_credential_identity
+        identity = google_credential_identity(config)
+        if not identity:
             return None  # can't key it safely → rebuild every time (old behaviour)
-        project_id = str(dc.get("project_id") or config.get("project_id") or "").strip()
-        return f"google_oauth:{project_id}:{owner}"
+        project_id = str(config.get("project_id") or "").strip()
+        return f"google_oauth:{project_id}:{identity}"
     try:
         creds_json = _resolve_gcp_credentials_json(config)
     except ValueError:
@@ -618,6 +793,32 @@ def _apply_optional_limit(sql_query: str, limit: int | None) -> str:
     return f"{normalized} LIMIT {int(limit)}"
 
 
+# F16: the structured connection test (source_health.run_connection_test) reads
+# what the last provider test in THIS context raised / recorded, so the tuple
+# API (success, message) stays unchanged for its many callers.
+import contextvars as _contextvars
+_LAST_TEST_EXC: "_contextvars.ContextVar[Optional[BaseException]]" = _contextvars.ContextVar(
+    "appbi_source_last_test_exc", default=None)
+_LAST_TEST_DETAIL: "_contextvars.ContextVar[Optional[Dict[str, Any]]]" = _contextvars.ContextVar(
+    "appbi_source_last_test_detail", default=None)
+
+
+def _require_source_capability(ds_type: Any, capability: str) -> None:
+    """F15: every tabular entry point refuses a provider without tables
+    (google_docs) with SourceNotTabularError (code source_not_tabular)."""
+    from app.services.source_capabilities import require_capability
+    require_capability(ds_type, capability)
+
+
+# Connection-test bounds (the Source update runs the test with no DB lock held,
+# but a request still must not hang). PG/MySQL: TCP+auth connect timeout.
+# BigQuery: per-API-call timeout (query submit, result wait, listing).
+# Google Sheets: googleapiclient's 60s socket timeout × CONNECTION_TEST_SHEETS_ATTEMPTS.
+CONNECTION_TEST_CONNECT_TIMEOUT_S = 5
+CONNECTION_TEST_API_TIMEOUT_S = 20
+CONNECTION_TEST_SHEETS_ATTEMPTS = 2
+
+
 class DataSourceConnectionService:
     """Service for managing connections to external data sources."""
     
@@ -634,25 +835,37 @@ class DataSourceConnectionService:
             Tuple of (success: bool, message: str)
         """
         from app.core.crypto import decrypt_config
+        from app.services.source_errors import describe_source_error
+
         config = decrypt_config(config)
         try:
             if ds_type == DataSourceType.POSTGRESQL.value:
-                return DataSourceConnectionService._test_postgresql(config)
+                success, message = DataSourceConnectionService._test_postgresql(config)
             elif ds_type == DataSourceType.MYSQL.value:
-                return DataSourceConnectionService._test_mysql(config)
+                success, message = DataSourceConnectionService._test_mysql(config)
             elif ds_type == DataSourceType.BIGQUERY.value:
-                return DataSourceConnectionService._test_bigquery(config)
+                success, message = DataSourceConnectionService._test_bigquery(config)
             elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
-                return DataSourceConnectionService._test_google_sheets(config)
+                success, message = DataSourceConnectionService._test_google_sheets(config)
             elif ds_type == DataSourceType.GOOGLE_DOCS.value:
-                return DataSourceConnectionService._test_google_docs(config)
+                success, message = DataSourceConnectionService._test_google_docs(config)
             elif ds_type == DataSourceType.MANUAL.value:
-                return DataSourceConnectionService._test_manual(config)
+                success, message = DataSourceConnectionService._test_manual(config)
             else:
                 return False, f"Unsupported data source type: {ds_type}"
+
+            # This is the shared boundary for every connection-test provider.
+            # Sanitize before either logging or returning, including successful
+            # tests that carry a metadata-listing warning.
+            safe_message = describe_source_error(message, config) if message else message
+            if not success:
+                logger.error("Connection test failed: %s", safe_message or "Unknown source error")
+            return success, safe_message
         except Exception as e:
-            logger.error(f"Connection test failed: {str(e)}")
-            return False, f"Connection failed: {str(e)}"
+            _LAST_TEST_EXC.set(e)
+            safe_error = describe_source_error(e, config)
+            logger.error("Connection test failed: %s", safe_error)
+            return False, f"Connection failed: {safe_error}"
     
     @staticmethod
     def _test_google_docs(config: Dict[str, Any]) -> Tuple[bool, str]:
@@ -680,6 +893,7 @@ class DataSourceConnectionService:
             email = config.get("google_oauth_email") or "the connected account"
             return True, f"Google account connected ({email}) with permission to read Docs."
         except Exception as exc:  # noqa: BLE001
+            _LAST_TEST_EXC.set(exc)
             return False, f"Google Docs connection failed: {exc}"
 
     @staticmethod
@@ -687,21 +901,22 @@ class DataSourceConnectionService:
         """Test PostgreSQL connection."""
         conn = None
         try:
-            conn = psycopg2.connect(
+            conn = _pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
                 user=config.get("username"),
                 password=config.get("password"),
-                connect_timeout=5
+                connect_timeout=CONNECTION_TEST_CONNECT_TIMEOUT_S
             )
             # Apply schema search_path if specified
             schema = config.get("schema_name") or config.get("schema")
             if schema:
                 with conn.cursor() as cur:
-                    cur.execute(f"SET search_path TO {schema}")
+                    _pg_set_search_path(cur, schema)
             return True, "Connection successful"
         except Exception as e:
+            _LAST_TEST_EXC.set(e)
             return False, str(e)
         finally:
             if conn:
@@ -712,16 +927,17 @@ class DataSourceConnectionService:
         """Test MySQL connection."""
         conn = None
         try:
-            conn = pymysql.connect(
+            conn = _mysql_connect(
                 host=config.get("host"),
                 port=config.get("port", 3306),
                 database=config.get("database"),
                 user=config.get("username"),
                 password=config.get("password"),
-                connect_timeout=5
+                connect_timeout=CONNECTION_TEST_CONNECT_TIMEOUT_S
             )
             return True, "Connection successful"
         except Exception as e:
+            _LAST_TEST_EXC.set(e)
             return False, str(e)
         finally:
             if conn:
@@ -729,41 +945,87 @@ class DataSourceConnectionService:
     
     @staticmethod
     def _test_bigquery(config: Dict[str, Any]) -> Tuple[bool, str]:
-        """Test BigQuery connection."""
+        """Test BigQuery connection.
+
+        Stages (recorded for the structured health result, F16): build the
+        client (auth), ``SELECT 1`` (reachable + queryable), then list tables of
+        the default dataset or datasets of the project (discoverable). A query
+        that works while listing fails is a WARNING, not a failure: the source
+        can run SQL but the table picker will be empty."""
+        checks = {"auth": "skipped", "reachable": "skipped", "queryable": "skipped", "discoverable": "skipped"}
+        detail: Dict[str, Any] = {"checks": checks, "warnings": [], "warning_code": None}
+        _LAST_TEST_DETAIL.set(detail)
         client = None
         try:
-            client = _build_bigquery_client(config)
+            try:
+                client = _build_bigquery_client(config)
+            except Exception:
+                checks["auth"] = "failed"
+                raise
+            checks["auth"] = "ok"
             # Test basic API access
             query = "SELECT 1"
-            client.query(query).result()
+            try:
+                client.query(query, timeout=CONNECTION_TEST_API_TIMEOUT_S).result(
+                    timeout=CONNECTION_TEST_API_TIMEOUT_S)
+            except Exception as qe:
+                from app.services.source_errors import classify_source_error
+                code = classify_source_error(qe)
+                if code == "auth":
+                    checks["auth"] = "failed"
+                elif code in ("network", "timeout"):
+                    checks["reachable"] = "failed"
+                else:
+                    checks["reachable"] = "ok"
+                    checks["queryable"] = "failed"
+                raise
+            checks["reachable"] = "ok"
+            checks["queryable"] = "ok"
 
             # Also verify dataset/table listing permission — this is what the datasource
             # actually needs after connecting.  If default_dataset is set, probe that
             # dataset directly (covers per-dataset IAM roles).  Otherwise attempt a
             # project-level dataset listing so the user gets an early warning.
-            default_dataset = config.get("default_dataset", "").strip()
+            default_dataset = str(config.get("default_dataset") or "").strip()
             if default_dataset:
                 try:
-                    list(client.list_tables(default_dataset, max_results=1))
+                    list(client.list_tables(default_dataset, max_results=1,
+                                            timeout=CONNECTION_TEST_API_TIMEOUT_S))
                 except Exception as e:
-                    return True, f"Connection successful, but could not list tables in dataset '{default_dataset}': {e}"
+                    from app.services.source_errors import classify_source_error
+                    checks["discoverable"] = "failed"
+                    detail["warning_code"] = classify_source_error(e)
+                    msg = f"Connection successful, but could not list tables in dataset '{default_dataset}': {e}"
+                    detail["warnings"].append(msg)
+                    return True, msg
             else:
                 try:
-                    datasets = list(client.list_datasets(max_results=1))
+                    datasets = list(client.list_datasets(max_results=1, timeout=CONNECTION_TEST_API_TIMEOUT_S))
                     if not datasets:
-                        return True, (
+                        checks["discoverable"] = "warning"
+                        msg = (
                             "Connection successful, but no datasets found in the project. "
                             "Check that the connected credential has bigquery.datasets.list on the project, "
                             "or set a Default Dataset to target a specific dataset."
                         )
+                        detail["warnings"].append(msg)
+                        return True, msg
                 except Exception as e:
-                    return True, f"Connection successful, but could not list datasets: {e}. Set a Default Dataset if the credential only has per-dataset access."
+                    from app.services.source_errors import classify_source_error
+                    checks["discoverable"] = "failed"
+                    detail["warning_code"] = classify_source_error(e)
+                    msg = f"Connection successful, but could not list datasets: {e}. Set a Default Dataset if the credential only has per-dataset access."
+                    detail["warnings"].append(msg)
+                    return True, msg
 
+            checks["discoverable"] = "ok"
             return True, "Connection successful"
         except Exception as e:
+            _LAST_TEST_EXC.set(e)
             return False, str(e)
         finally:
-            if client:
+            # F11: a test must never tear down the warm client other requests share.
+            if client and not _bq_client_is_cached(config, client):
                 client.close()
     
     @staticmethod
@@ -774,12 +1036,16 @@ class DataSourceConnectionService:
             if not spreadsheet_id:
                 return False, "Spreadsheet ID is required"
             connector = create_google_sheets_connector(config)
+            # Bounded: googleapiclient's per-request socket timeout
+            # (DEFAULT_HTTP_TIMEOUT_SEC=60) × at most this many attempts.
+            connector.max_attempts = CONNECTION_TEST_SHEETS_ATTEMPTS
             if connector.test_connection(spreadsheet_id):
                 # Also verify we can list sheets (confirms read access)
                 sheets = connector.list_sheets(spreadsheet_id)
                 return True, f"Connection successful — {len(sheets)} sheet(s) found"
             return False, "Failed to connect to Google Sheets. Check that the spreadsheet is shared with the service account."
         except Exception as e:
+            _LAST_TEST_EXC.set(e)
             return False, str(e)
     
     @staticmethod
@@ -796,6 +1062,8 @@ class DataSourceConnectionService:
         timeout_seconds: int = 30,
         query_params: list = None,
         skip_bigquery_cost_check: bool = False,
+        max_rows: Optional[int] = None,
+        maximum_bytes_billed: Optional[int] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]], float]:
         """
         Execute a SQL query against a data source.
@@ -808,6 +1076,9 @@ class DataSourceConnectionService:
             timeout_seconds: Query timeout in seconds (default: 30)
             query_params: Optional list of parameter values for %s placeholders
             skip_bigquery_cost_check: Skip dry-run scan guard for BigQuery callers
+                (internal engine callers only — never exposed to a request)
+            max_rows: Server-side fetch cap (fetchmany) — the Query Runner sets it
+            maximum_bytes_billed: BigQuery job-level billing cap
             
         Returns:
             Tuple of (columns, data, execution_time_ms)
@@ -815,19 +1086,24 @@ class DataSourceConnectionService:
         Raises:
             ValueError: If query is not a SELECT statement
         """
-        # Validate SQL query for safety
-        validate_select_only(sql_query)
+        _require_source_capability(ds_type, "query")
+        # Validate SQL query for safety (lexed in the source's own dialect)
+        validate_select_only(sql_query, ds_type)
 
         from app.core.crypto import decrypt_config
         config = decrypt_config(config)
 
-        start_time = time.time()
-        
+        start_time = time.perf_counter()
+
         try:
             if ds_type == DataSourceType.POSTGRESQL.value:
-                result = DataSourceConnectionService._execute_postgresql(config, sql_query, limit, timeout_seconds, query_params)
+                result = DataSourceConnectionService._execute_postgresql(
+                    config, sql_query, limit, timeout_seconds, query_params, max_rows=max_rows,
+                )
             elif ds_type == DataSourceType.MYSQL.value:
-                result = DataSourceConnectionService._execute_mysql(config, sql_query, limit, timeout_seconds, query_params)
+                result = DataSourceConnectionService._execute_mysql(
+                    config, sql_query, limit, timeout_seconds, query_params, max_rows=max_rows,
+                )
             elif ds_type == DataSourceType.BIGQUERY.value:
                 result = DataSourceConnectionService._execute_bigquery(
                     config,
@@ -835,6 +1111,8 @@ class DataSourceConnectionService:
                     limit,
                     timeout_seconds,
                     skip_cost_check=skip_bigquery_cost_check,
+                    max_rows=max_rows,
+                    maximum_bytes_billed=maximum_bytes_billed,
                 )
             elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
                 result = DataSourceConnectionService._execute_google_sheets(config, sql_query, limit)
@@ -842,13 +1120,83 @@ class DataSourceConnectionService:
                 result = DataSourceConnectionService._execute_manual(config, sql_query, limit)
             else:
                 raise ValueError(f"Unsupported data source type: {ds_type}")
-            
-            execution_time_ms = (time.time() - start_time) * 1000
-            return result[0], result[1], execution_time_ms
-            
+
+            columns, data = result[0], result[1]
+            if max_rows is not None and len(data) > max_rows:
+                data = data[:max_rows]
+            execution_time_ms = (time.perf_counter() - start_time) * 1000
+            return columns, data, execution_time_ms
+
         except Exception as e:
-            logger.error(f"Query execution failed: {str(e)}")
+            # No SQL, no raw driver text: provider, duration and the redacted cause.
+            logger.error(
+                "Query execution failed provider=%s duration_ms=%d cause=%s",
+                ds_type, int((time.perf_counter() - start_time) * 1000), describe_source_error(e, config),
+            )
             raise
+
+    @staticmethod
+    def execute_user_query(
+        ds_type: str,
+        config: Dict[str, Any],
+        sql_query: str,
+        limit: Optional[int] = None,
+        timeout_seconds: int = 30,
+    ) -> Dict[str, Any]:
+        """The ad-hoc Query Runner path (POST /datasources/query) — and ONLY it.
+
+        Server-side bounds the request cannot lift: rows are clamped to
+        ``SOURCE_QUERY_MAX_ROWS`` (fetched with fetchmany, so a ``LIMIT 10000000``
+        in the SQL still stops there) and reported as ``truncated``; the timeout is
+        bounded; Postgres/MySQL run in a READ ONLY transaction; BigQuery always
+        carries ``maximum_bytes_billed``. Internal analytical execution does not
+        come through here and keeps its own limits."""
+        _require_source_capability(ds_type, "query")
+        cap = max(1, int(settings.SOURCE_QUERY_MAX_ROWS or 1))
+        effective = min(int(limit), cap) if limit else cap
+        timeout = max(1, min(int(timeout_seconds or 30), 300))
+        columns, data, elapsed = DataSourceConnectionService.execute_query(
+            ds_type,
+            config,
+            sql_query,
+            limit=effective + 1,
+            timeout_seconds=timeout,
+            max_rows=effective + 1,
+            maximum_bytes_billed=int(settings.BQ_MAX_BYTES_BILLED),
+        )
+        truncated = len(data) > effective
+        return {
+            "columns": columns,
+            "data": data[:effective],
+            "execution_time_ms": elapsed,
+            "truncated": truncated,
+            "row_limit": effective,
+        }
+
+    @staticmethod
+    def validate_user_sql(ds_type: str, config: Dict[str, Any], sql_query: str) -> None:
+        """Check a SQL statement against the source WITHOUT running it in full.
+
+        Postgres/MySQL: the statement is wrapped ``SELECT * FROM (...) LIMIT 0`` in
+        a READ ONLY transaction (parsed + planned, no rows produced). BigQuery: a
+        dry run (no bytes billed). Sheets/manual: an in-memory one-row probe.
+        Raises on an invalid statement."""
+        _require_source_capability(ds_type, "query")
+        validate_select_only(sql_query, ds_type)
+        body = _normalize_sql_query(sql_query)
+        if ds_type == DataSourceType.BIGQUERY.value:
+            from app.core.crypto import decrypt_config
+            DataSourceConnectionService._estimate_bigquery_bytes(decrypt_config(config), body)
+            return
+        if ds_type in (DataSourceType.POSTGRESQL.value, DataSourceType.MYSQL.value):
+            wrapped = f"SELECT * FROM (\n{body}\n) AS _appbi_validate LIMIT 0"
+            DataSourceConnectionService.execute_query(
+                ds_type, config, wrapped, limit=None, timeout_seconds=10, max_rows=1,
+            )
+            return
+        DataSourceConnectionService.execute_query(
+            ds_type, config, body, limit=1, timeout_seconds=10, max_rows=1,
+        )
 
     @staticmethod
     def execute_write(
@@ -880,7 +1228,7 @@ class DataSourceConnectionService:
         from app.core.crypto import decrypt_config
         config = decrypt_config(config)
 
-        start_time = time.time()
+        start_time = time.perf_counter()
         if ds_type == DataSourceType.POSTGRESQL.value:
             columns, rows, rowcount = DataSourceConnectionService._execute_postgresql_write(
                 config, sql_query, query_params, timeout_seconds
@@ -894,7 +1242,7 @@ class DataSourceConnectionService:
                 f"Write operations are not supported on datasource type '{ds_type}'."
             )
 
-        execution_time_ms = (time.time() - start_time) * 1000
+        execution_time_ms = (time.perf_counter() - start_time) * 1000
         return columns, rows, rowcount, execution_time_ms
 
     @staticmethod
@@ -933,7 +1281,7 @@ class DataSourceConnectionService:
         from app.core.crypto import decrypt_config
         cfg = decrypt_config(config)
 
-        start = time.time()
+        start = time.perf_counter()
 
         if ds_type == DataSourceType.GOOGLE_SHEETS.value:
             from app.services.google_sheets_connector import (
@@ -952,7 +1300,7 @@ class DataSourceConnectionService:
                     values if isinstance(values, dict) else {},
                     auto_pk_columns=auto_pk_columns,
                 )
-                ms = (time.time() - start) * 1000
+                ms = (time.perf_counter() - start) * 1000
                 return row, 1, ms
             if op == "insert_many":
                 rows = values if isinstance(values, list) else []
@@ -960,7 +1308,7 @@ class DataSourceConnectionService:
                     spreadsheet_id, sheet_name, rows,
                     auto_pk_columns=auto_pk_columns,
                 )
-                ms = (time.time() - start) * 1000
+                ms = (time.perf_counter() - start) * 1000
                 return {"rows": result.get("rows") or []}, int(result.get("appended") or 0), ms
             if op == "update":
                 if not pk:
@@ -969,7 +1317,7 @@ class DataSourceConnectionService:
                     spreadsheet_id, sheet_name, pk, values or {},
                     lock_column=lock_column, lock_token=lock_token,
                 )
-                ms = (time.time() - start) * 1000
+                ms = (time.perf_counter() - start) * 1000
                 return row, 1, ms
             if op == "update_many":
                 rows = values if isinstance(values, list) else []
@@ -979,7 +1327,7 @@ class DataSourceConnectionService:
                     rows,
                     lock_column=lock_column,
                 )
-                ms = (time.time() - start) * 1000
+                ms = (time.perf_counter() - start) * 1000
                 return {"rows": result.get("rows") or []}, int(result.get("updated") or 0), ms
             if op == "delete":
                 if not pk:
@@ -988,7 +1336,7 @@ class DataSourceConnectionService:
                     spreadsheet_id, sheet_name, pk,
                     lock_column=lock_column, lock_token=lock_token,
                 )
-                ms = (time.time() - start) * 1000
+                ms = (time.perf_counter() - start) * 1000
                 return {}, 1, ms
             raise ValueError(f"Unsupported op '{op}'.")
 
@@ -1018,7 +1366,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -1030,7 +1378,7 @@ class DataSourceConnectionService:
             cursor.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
             schema = config.get("schema_name") or config.get("schema")
             if schema:
-                cursor.execute(f"SET search_path TO {schema}")
+                _pg_set_search_path(cursor, schema)
             cursor.execute(sql_query, query_params)
             rowcount = cursor.rowcount or 0
             columns: List[str] = []
@@ -1064,7 +1412,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = pymysql.connect(
+            conn = _mysql_connect(
                 host=config.get("host"),
                 port=config.get("port", 3306),
                 database=config.get("database"),
@@ -1132,7 +1480,7 @@ class DataSourceConnectionService:
             real_schema = schema if schema != "default" else (
                 config.get("schema_name") or config.get("schema") or "public"
             )
-            sql = f'SELECT * FROM "{real_schema}"."{table}"'
+            sql = f"SELECT * FROM {pg_ident(real_schema, table)}"
             if limit:
                 sql += f" LIMIT {int(limit)}"
             cols, rows = DataSourceConnectionService._execute_postgresql(
@@ -1145,7 +1493,7 @@ class DataSourceConnectionService:
             real_schema = schema if schema != "default" else (
                 config.get("database") or schema
             )
-            sql = f'SELECT * FROM `{real_schema}`.`{table}`'
+            sql = f"SELECT * FROM {mysql_ident(real_schema, table)}"
             if limit:
                 sql += f" LIMIT {int(limit)}"
             cols, rows = DataSourceConnectionService._execute_mysql(
@@ -1155,7 +1503,7 @@ class DataSourceConnectionService:
 
         elif ds_type == DataSourceType.BIGQUERY.value:
             project_id = config.get("project_id", "")
-            sql = f"SELECT * FROM `{project_id}.{schema}.{table}`"
+            sql = f"SELECT * FROM {bq_table_ref(project_id, schema, table)}"
             if limit:
                 sql += f" LIMIT {int(limit)}"
             cols, rows = DataSourceConnectionService._execute_bigquery(
@@ -1194,12 +1542,13 @@ class DataSourceConnectionService:
         limit: int = None,
         timeout_seconds: int = 30,
         query_params: list = None,
+        max_rows: Optional[int] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Execute query against PostgreSQL."""
+        """Execute a (validated) SELECT against PostgreSQL in a READ ONLY transaction."""
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -1207,26 +1556,28 @@ class DataSourceConnectionService:
                 password=config.get("password"),
                 connect_timeout=min(timeout_seconds, 10)
             )
+            # SELECT path: the database itself refuses any write the validator missed.
+            conn.set_session(readonly=True)
             cursor = conn.cursor()
-            
+
             # Set statement timeout
-            cursor.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
-            
+            cursor.execute("SET statement_timeout = %s", (int(timeout_seconds) * 1000,))
+
             # Apply schema search_path if specified
             schema = config.get("schema_name") or config.get("schema")
             if schema:
-                cursor.execute(f"SET search_path TO {schema}")
-            
+                _pg_set_search_path(cursor, schema)
+
             # Apply limit if specified
             query = _apply_optional_limit(sql_query, limit)
-            
+
             cursor.execute(query, query_params)
-            
+
             # Get column names
             columns = [desc[0] for desc in cursor.description]
-            
-            # Fetch data
-            rows = cursor.fetchall()
+
+            # Fetch data (server-side cap when the caller set one)
+            rows = cursor.fetchmany(int(max_rows)) if max_rows else cursor.fetchall()
             data = [dict(zip(columns, row)) for row in rows]
             
             return columns, data
@@ -1244,12 +1595,13 @@ class DataSourceConnectionService:
         limit: int = None,
         timeout_seconds: int = 30,
         query_params: list = None,
+        max_rows: Optional[int] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Execute query against MySQL."""
+        """Execute a (validated) SELECT against MySQL in a READ ONLY transaction."""
         conn = None
         cursor = None
         try:
-            conn = pymysql.connect(
+            conn = _mysql_connect(
                 host=config.get("host"),
                 port=config.get("port", 3306),
                 database=config.get("database"),
@@ -1260,18 +1612,23 @@ class DataSourceConnectionService:
                 write_timeout=timeout_seconds
             )
             cursor = conn.cursor()
-            
+            cursor.execute("START TRANSACTION READ ONLY")
+
             # Apply limit if specified
             query = _apply_optional_limit(sql_query, limit)
-            
+
             cursor.execute(query, query_params)
-            
+
             # Get column names
             columns = [desc[0] for desc in cursor.description]
-            
-            # Fetch data
-            rows = cursor.fetchall()
+
+            # Fetch data (server-side cap when the caller set one)
+            rows = cursor.fetchmany(int(max_rows)) if max_rows else cursor.fetchall()
             data = [dict(zip(columns, row)) for row in rows]
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001 — closing anyway
+                pass
 
             return columns, data
             
@@ -1288,8 +1645,14 @@ class DataSourceConnectionService:
         limit: int = None,
         timeout_seconds: int = 30,
         skip_cost_check: bool = False,
+        max_rows: Optional[int] = None,
+        maximum_bytes_billed: Optional[int] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Execute query against BigQuery."""
+        """Execute query against BigQuery.
+
+        Cost control (F14): unless an INTERNAL caller skipped the cost check, the
+        real job always carries ``maximum_bytes_billed`` — so a dry run that
+        fails (e.g. "ambiguous column") no longer means an unbounded job."""
         client = None
         try:
             project_id = config.get("project_id")
@@ -1298,6 +1661,13 @@ class DataSourceConnectionService:
             
             # Apply limit if specified
             query = _apply_optional_limit(sql_query, limit)
+
+            if not skip_cost_check and maximum_bytes_billed is None:
+                maximum_bytes_billed = int(settings.BQ_MAX_BYTES_BILLED)
+            job_config = (
+                bigquery.QueryJobConfig(maximum_bytes_billed=int(maximum_bytes_billed))
+                if maximum_bytes_billed else None
+            )
 
             if not skip_cost_check:
                 # Phase-15.59b — cost-check dry-run hits the SAME
@@ -1318,27 +1688,21 @@ class DataSourceConnectionService:
                         )
                 except Exception as cost_err:
                     if "ambiguous" in str(cost_err).lower():
+                        # The dedup retry below may still succeed; the real job
+                        # stays bounded by maximum_bytes_billed (job_config).
                         logger.info(
                             "[bq_dedup] cost-check dry-run hit ambiguous; "
-                            "skipping cost check so retry-with-dedup can run."
+                            "continuing under maximum_bytes_billed so retry-with-dedup can run."
                         )
                     else:
                         raise
 
-            logger.info(f"Executing BigQuery query on project {project_id}")
-            # Phase-15.58 — log the actual SQL string so DA can grep
-            # backend logs when BigQuery rejects with cryptic errors
-            # like "Column name is ambiguous". A 2-second snippet of
-            # the SQL (first 1500 chars) is enough to spot a missing
-            # table alias without dumping multi-KB queries.
-            sql_preview = (query or "").strip().replace("\n", " ")
-            if len(sql_preview) > 1500:
-                sql_preview = sql_preview[:1500] + " ... [truncated]"
-            logger.info(f"[bq_sql] {sql_preview}")
+            # No SQL text in logs (spec: logs carry source/provider/category/duration).
+            logger.info("Executing BigQuery query project=%s sql_chars=%d", project_id, len(query or ""))
 
             try:
-                query_job = client.query(query)
-                results = query_job.result(timeout=timeout_seconds)
+                query_job = client.query(query, job_config=job_config) if job_config else client.query(query)
+                results = query_job.result(timeout=timeout_seconds, max_results=max_rows) if max_rows else query_job.result(timeout=timeout_seconds)
             except Exception as first_err:
                 # Phase-15.58/59 — retry-with-dedup for ambiguous-column
                 # failure. Try 2 strategies in order:
@@ -1349,22 +1713,13 @@ class DataSourceConnectionService:
                 #      bug, can't auto-fix without breaking semantics.
                 err_msg = str(first_err)
                 if "ambiguous" not in err_msg.lower():
-                    # The INFO preview above is truncated at 1500 chars,
-                    # which hides the real failure site when the engine
-                    # emits a multi-KB nested-CTE / EXISTS chain that BQ
-                    # rejects (e.g. "Unexpected keyword SELECT at [419:76]").
-                    # Dump the FULL SQL on ERROR so DA can match the line/col
-                    # in the BQ error to the exact emitted text.
+                    # Never the SQL text or the raw provider message in logs.
                     logger.error(
-                        "[bq_sql_failed] BigQuery rejected query (full SQL follows). "
-                        "err=%s\n----- FULL SQL -----\n%s\n----- END SQL -----",
-                        err_msg, query,
+                        "[bq_sql_failed] BigQuery rejected query project=%s sql_chars=%d cause=%s",
+                        project_id, len(query or ""), describe_source_error(first_err, config),
                     )
                     raise
-                logger.warning(
-                    "[bq_dedup] ambiguous-column error received. SQL=%s",
-                    (query or "").replace("\n", " ")[:2000],
-                )
+                logger.warning("[bq_dedup] ambiguous-column error received; trying dedup rewrite.")
                 rewritten = _bigquery_dedup_outer_select(client, query)
                 if rewritten is None:
                     logger.error(
@@ -1372,9 +1727,9 @@ class DataSourceConnectionService:
                         "Likely semantic-engine emit bug. Re-raising original error."
                     )
                     raise
-                logger.info(f"[bq_sql_retry] {rewritten[:1500]}")
-                query_job = client.query(rewritten)
-                results = query_job.result(timeout=timeout_seconds)
+                logger.info("[bq_sql_retry] retrying with deduplicated outer SELECT")
+                query_job = client.query(rewritten, job_config=job_config) if job_config else client.query(rewritten)
+                results = query_job.result(timeout=timeout_seconds, max_results=max_rows) if max_rows else query_job.result(timeout=timeout_seconds)
             
             # Get column names
             columns = [field.name for field in results.schema]
@@ -1400,7 +1755,7 @@ class DataSourceConnectionService:
             return columns, data
             
         except Exception as e:
-            logger.error(f"BigQuery execution failed on project {config.get('project_id')}: {str(e)}")
+            logger.error(f"BigQuery execution failed on project {config.get('project_id')}: {describe_source_error(e, config)}")
             raise
         finally:
             # Perf (#5): only close a client we OWN. A cached client is shared
@@ -1454,6 +1809,62 @@ class DataSourceConnectionService:
         finally:
             if client and not _bq_client_is_cached(config, client):
                 client.close()
+
+    @staticmethod
+    def spool_extract_for_snapshot(
+        ds_type: str, config: Dict[str, Any], sql: str,
+        columns_meta: Optional[List[Dict[str, Any]]] = None, timeout_seconds: int = 280,
+        effective_types_out: Optional[Dict[str, str]] = None, progress_cb=None,
+    ) -> "_SnapshotSpool":
+        """Bounded-memory twin of ``extract_generic_for_snapshot`` for
+        PostgreSQL / MySQL. Reads through the server-side cursor
+        (``stream_query``) batch by batch into an anonymous temp file, verifying
+        each declared type incrementally (``TypeVerifier`` — the same rule as
+        ``verified_bq_type``) and calling ``progress_cb(rows_read)`` per batch,
+        which raises ``SyncCancelled`` on Stop; the cursor and the spool are
+        closed on any exit. The returned spool yields rows typed exactly as the
+        in-memory extract would have typed them."""
+        import json as _json
+        import tempfile
+
+        cols = [c for c in (columns_meta or []) if c.get("name")]
+        declared = {c["name"]: _ptm.bq_extract_load_type(c.get("source_type"), c.get("type")) for c in cols}
+        verifiers = {name: _ptm.TypeVerifier(bt) for name, bt in declared.items()}
+        spool = _SnapshotSpool(tempfile.TemporaryFile(mode="w+", encoding="utf-8"))
+        try:
+            _names, batches = DataSourceConnectionService.stream_query(
+                ds_type, config, sql, timeout_seconds=timeout_seconds,
+            )
+            try:
+                for batch in batches:
+                    for r in batch:
+                        row = {k: _snapshot_json_safe(v) for k, v in dict(r).items()}
+                        for name, ver in verifiers.items():
+                            ver.feed(row.get(name))
+                        spool.file.write(_json.dumps(row, ensure_ascii=False) + "\n")
+                    spool.row_count += len(batch)
+                    if progress_cb:
+                        progress_cb(spool.row_count)
+            finally:
+                close = getattr(batches, "close", None)
+                if close:
+                    close()  # releases the server-side cursor + connection
+        except BaseException:
+            spool.close()
+            raise
+        if cols:
+            type_by_name = {}
+            for name, bt in declared.items():
+                type_by_name[name] = verifiers[name].result()
+                if type_by_name[name] != bt:
+                    logger.info("[snapshot] column %r declared %s but values do not fit → loading as STRING",
+                                name, bt)
+            if effective_types_out is not None:
+                effective_types_out.clear()
+                effective_types_out.update(type_by_name)
+            spool.type_by_name = type_by_name
+            spool.bq_schema = [bigquery.SchemaField(name, bt) for name, bt in type_by_name.items()]
+        return spool
 
     @staticmethod
     def extract_generic_for_snapshot(
@@ -1726,6 +2137,7 @@ class DataSourceConnectionService:
             return v
 
         # ── schema + a ROW GENERATOR (bounded memory) ──
+        _spools: list = []  # PG/MySQL extract spools; closed (deleted) on every exit
         read_client = None
         if source_ds_type == "bigquery":
             read_client = _build_bigquery_client(source_config)
@@ -1746,10 +2158,28 @@ class DataSourceConnectionService:
             def _rows():
                 for r in it:  # RowIterator pages from BigQuery — bounded memory
                     yield {k: _coerce(val) for k, val in dict(r).items()}
+        elif str(getattr(source_ds_type, "value", source_ds_type)).lower() in ("postgresql", "mysql"):
+            # A warehouse table can be any size: read it through the server-side
+            # cursor into an on-disk spool (ONE consistent read, bounded RAM, Stop
+            # honoured between fetches), verify the declared types while reading,
+            # then load from the spool. execute_query → rows → safe_rows →
+            # typed_rows held the whole table in memory three times over.
+            spool = DataSourceConnectionService.spool_extract_for_snapshot(
+                source_ds_type, source_config, source_select_sql,
+                columns_meta=columns_meta, timeout_seconds=timeout_seconds,
+                effective_types_out=effective_types_out, progress_cb=progress_cb,
+            )
+            _spools.append(spool)
+            bq_schema = spool.bq_schema
+            _rows = spool.rows
+            if progress_cb is not None:
+                # Loading re-counts from 0; the rows were already counted while
+                # read. Keep the Stop check, never report progress going backwards.
+                _read_total, _outer_cb = spool.row_count, progress_cb
+                progress_cb = lambda n: _outer_cb(max(n, _read_total))  # noqa: E731
         else:
-            # Non-BQ (Sheets/manual/other warehouse): reuse the typed extract, which
-            # applies DECLARED types (join-key correctness). Sheets are small; large
-            # Postgres would stream via execute_query's cursor path upstream.
+            # Non-BQ (Sheets/manual): reuse the typed extract, which applies
+            # DECLARED types (join-key correctness). These sources are small.
             bq_schema, safe_rows = DataSourceConnectionService.extract_generic_for_snapshot(
                 source_ds_type, source_config, source_select_sql,
                 columns_meta=columns_meta, timeout_seconds=timeout_seconds,
@@ -1963,7 +2393,7 @@ class DataSourceConnectionService:
             n = int(getattr(write_client.get_table(new_ref), "num_rows", 0) or 0)
             return {"row_count": n, "changed": changed}
         except Exception as exc:  # noqa: BLE001 — any failure → caller full-rebuilds
-            logger.warning("[snapshot] partition-incremental not applied (%s) — full rebuild", str(exc)[:200])
+            logger.warning("[snapshot] partition-incremental not applied (%s) — full rebuild", describe_source_error(exc)[:200])
             return None
         finally:
             if read_client is not None and not _bq_client_is_cached(src, read_client):
@@ -2201,7 +2631,7 @@ class DataSourceConnectionService:
         timeout_seconds: int = 3600,
     ) -> Tuple[List[str], Generator[List[Dict[str, Any]], None, None]]:
         """Stream rows from PostgreSQL using a server-side cursor."""
-        conn = psycopg2.connect(
+        conn = _pg_connect(
             host=config.get("host"),
             port=config.get("port", 5432),
             database=config.get("database"),
@@ -2211,15 +2641,16 @@ class DataSourceConnectionService:
         )
         try:
             conn.autocommit = False  # Required for server-side cursors
+            conn.set_session(readonly=True)
 
             # SET commands must run on a regular cursor, not the named
             # (server-side) one — psycopg2 wraps named-cursor queries in
             # DECLARE ... CURSOR FOR ..., which causes a syntax error.
             setup_cur = conn.cursor()
-            setup_cur.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
+            setup_cur.execute("SET statement_timeout = %s", (int(timeout_seconds) * 1000,))
             schema = config.get("schema_name") or config.get("schema")
             if schema:
-                setup_cur.execute(f"SET search_path TO {schema}")
+                _pg_set_search_path(setup_cur, schema)
             setup_cur.close()
 
             cursor = conn.cursor(name="sync_stream_cursor")
@@ -2274,7 +2705,7 @@ class DataSourceConnectionService:
         timeout_seconds: int = 3600,
     ) -> Tuple[List[str], Generator[List[Dict[str, Any]], None, None]]:
         """Stream rows from MySQL using SSDictCursor (server-side streaming)."""
-        conn = pymysql.connect(
+        conn = _mysql_connect(
             host=config.get("host"),
             port=config.get("port", 3306),
             database=config.get("database"),
@@ -2286,6 +2717,7 @@ class DataSourceConnectionService:
         )
         try:
             cursor = conn.cursor(pymysql.cursors.SSCursor)
+            cursor.execute("START TRANSACTION READ ONLY")  # S7: user SQL never writes/locks
             cursor.execute(sql_query)
 
             columns = [desc[0] for desc in cursor.description]
@@ -2413,19 +2845,19 @@ class DataSourceConnectionService:
             real_schema = schema if schema != "default" else (
                 config.get("schema_name") or config.get("schema") or "public"
             )
-            sql = f'SELECT * FROM "{real_schema}"."{table}"'
+            sql = f"SELECT * FROM {pg_ident(real_schema, table)}"
             return DataSourceConnectionService._stream_postgresql(config, sql)
 
         elif ds_type_val == DataSourceType.MYSQL.value:
             real_schema = schema if schema != "default" else (
                 config.get("database") or schema
             )
-            sql = f'SELECT * FROM `{real_schema}`.`{table}`'
+            sql = f"SELECT * FROM {mysql_ident(real_schema, table)}"
             return DataSourceConnectionService._stream_mysql(config, sql)
 
         elif ds_type_val == DataSourceType.BIGQUERY.value:
             project_id = config.get("project_id", "")
-            sql = f"SELECT * FROM `{project_id}.{schema}.{table}`"
+            sql = f"SELECT * FROM {bq_table_ref(project_id, schema, table)}"
             return DataSourceConnectionService._stream_bigquery(config, sql)
 
         else:
@@ -2457,7 +2889,9 @@ class DataSourceConnectionService:
         from app.core.crypto import decrypt_config
         from app.services.sql_validator import validate_select_only
 
-        validate_select_only(sql_query)
+        # Lex in the SOURCE's dialect, like execute_query: without it every mode
+        # applies, and a Postgres `"schema"."table"` reads as MySQL string literals.
+        validate_select_only(sql_query, ds_type)
         raw_config = config  # keep for fallback (execute_query decrypts internally)
         config = decrypt_config(config)
 
@@ -2513,6 +2947,7 @@ class DataSourceConnectionService:
               Always unique within the result set.
             - `type`: inferred SQL type token.
         """
+        _require_source_capability(ds_type, "query")
         try:
             if ds_type == DataSourceType.POSTGRESQL.value:
                 raw = DataSourceConnectionService._infer_postgresql_types(config, sql_query)
@@ -2528,7 +2963,7 @@ class DataSourceConnectionService:
                 raise ValueError(f"Unsupported data source type: {ds_type}")
             return DataSourceConnectionService._enrich_columns_with_safe_names(raw)
         except Exception as e:
-            logger.error(f"Type inference failed: {str(e)}")
+            logger.error(f"Type inference failed: {describe_source_error(e, config)}")
             raise
 
     @staticmethod
@@ -2582,18 +3017,19 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
                 user=config.get("username"),
                 password=config.get("password")
             )
+            conn.set_session(readonly=True)  # S7: user SQL never writes/locks
             cursor = conn.cursor()
-            
+
             # Execute with LIMIT 0 to get column info without data
             cursor.execute(f"{sql_query.rstrip(';')} LIMIT 0")
-            
+
             columns = []
             for desc in cursor.description:
                 columns.append({
@@ -2626,7 +3062,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = pymysql.connect(
+            conn = _mysql_connect(
                 host=config.get("host"),
                 port=config.get("port", 3306),
                 database=config.get("database"),
@@ -2634,10 +3070,11 @@ class DataSourceConnectionService:
                 password=config.get("password")
             )
             cursor = conn.cursor()
-            
+            cursor.execute("START TRANSACTION READ ONLY")  # S7: user SQL never writes/locks
+
             # Execute with LIMIT 0 to get column info without data
             cursor.execute(f"{sql_query.rstrip(';')} LIMIT 0")
-            
+
             columns = []
             for desc in cursor.description:
                 columns.append({
@@ -2679,7 +3116,7 @@ class DataSourceConnectionService:
             return columns
             
         except Exception as e:
-            logger.error(f"BigQuery schema inference failed on project {config.get('project_id')}: {str(e)}")
+            logger.error(f"BigQuery schema inference failed on project {config.get('project_id')}: {describe_source_error(e, config)}")
             raise
         finally:
             if client:
@@ -2718,7 +3155,7 @@ class DataSourceConnectionService:
                 if cols:
                     return cols
             except Exception as exc:  # noqa: BLE001 — fall back to declarations
-                logger.info("Manual DuckDB type probe failed (%s); using declared types", exc)
+                logger.info("Manual DuckDB type probe failed (%s); using declared types", describe_source_error(exc))
             sheet_name = extract_sheet_name_from_sql(sql_query)
             data = connector.get_sheet_data(sheet_name)
             return [
@@ -2733,7 +3170,7 @@ class DataSourceConnectionService:
                 for col in data["columns"]
             ]
         except Exception as e:
-            logger.error(f"Manual type inference failed: {str(e)}")
+            logger.error(f"Manual type inference failed: {describe_source_error(e, config)}")
             raise
 
     @staticmethod
@@ -2789,7 +3226,7 @@ class DataSourceConnectionService:
                 if probed:
                     return probed
             except Exception as exc:  # noqa: BLE001
-                logger.info("Sheets type probe failed (%s); assuming text columns", exc)
+                logger.info("Sheets type probe failed (%s); assuming text columns", describe_source_error(exc))
             columns, _ = DataSourceConnectionService._execute_google_sheets(
                 live_config,
                 sql_query,
@@ -2797,7 +3234,7 @@ class DataSourceConnectionService:
             )
             return [{"name": str(column), "type": "string"} for column in columns]
         except Exception as e:
-            logger.error(f"Google Sheets type inference failed: {str(e)}")
+            logger.error(f"Google Sheets type inference failed: {describe_source_error(e, config)}")
             raise
 
     @staticmethod
@@ -2864,7 +3301,7 @@ class DataSourceConnectionService:
             )
             by_oid = {int(row[0]): str(row[1] or "").strip().lower() for row in cursor.fetchall()}
         except Exception as exc:  # noqa: BLE001 — never break type inference
-            logger.info("pg_type catalog lookup failed (%s); keeping 'unknown'", exc)
+            logger.info("pg_type catalog lookup failed (%s); keeping 'unknown'", describe_source_error(exc))
             return
         for col in columns:
             if col.get("type") != "unknown":
@@ -2911,6 +3348,7 @@ class DataSourceConnectionService:
         Returns:
             List of table dicts with 'name', 'schema', and 'type' keys
         """
+        _require_source_capability(ds_type, "discover")
         from app.core.crypto import decrypt_config
         config = decrypt_config(config)
         try:
@@ -2927,7 +3365,7 @@ class DataSourceConnectionService:
             else:
                 raise ValueError(f"Unsupported data source type: {ds_type}")
         except Exception as e:
-            logger.error(f"Failed to list tables: {str(e)}")
+            logger.error(f"Failed to list tables: {describe_source_error(e, config)}")
             raise
     
     @staticmethod
@@ -2939,7 +3377,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -2994,7 +3432,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = pymysql.connect(
+            conn = _mysql_connect(
                 host=config.get("host"),
                 port=config.get("port", 3306),
                 user=config.get("username"),
@@ -3079,7 +3517,7 @@ class DataSourceConnectionService:
                 try:
                     dataset_tables = list(client.list_tables(dataset_id))
                 except Exception as e:
-                    logger.warning(f"Could not list tables in dataset '{dataset_id}': {e}")
+                    logger.warning(f"Could not list tables in dataset '{dataset_id}': {describe_source_error(e, config)}")
                     continue
 
                 for table in dataset_tables:
@@ -3099,7 +3537,7 @@ class DataSourceConnectionService:
             return tables
 
         except Exception as e:
-            logger.error(f"BigQuery list tables failed on project {config.get('project_id')}: {str(e)}")
+            logger.error(f"BigQuery list tables failed on project {config.get('project_id')}: {describe_source_error(e, config)}")
             raise
         finally:
             if client:
@@ -3129,7 +3567,7 @@ class DataSourceConnectionService:
             return tables
 
         except Exception as e:
-            logger.error(f"Google Sheets list failed: {str(e)}")
+            logger.error(f"Google Sheets list failed: {describe_source_error(e, config)}")
             raise
 
     @staticmethod
@@ -3160,7 +3598,7 @@ class DataSourceConnectionService:
             logger.info(f"Manual datasource sheets listed: {len(tables)}")
             return tables
         except Exception as e:
-            logger.error(f"Manual table list failed: {str(e)}")
+            logger.error(f"Manual table list failed: {describe_source_error(e, config)}")
             raise
     
     @staticmethod
@@ -3229,8 +3667,9 @@ class DataSourceConnectionService:
                 import duckdb
                 import pyarrow as pa
 
-                _duck_start = time.time()
-                con = duckdb.connect(database=":memory:")
+                _duck_start = time.perf_counter()
+                from app.services.sql_validator import open_locked_duckdb
+                con = open_locked_duckdb()  # S1: no host files / settings
 
                 # Perf (#4): only register the tabs the SQL actually references.
                 # Loading the WHOLE workbook into DuckDB for every tile is the
@@ -3300,7 +3739,7 @@ class DataSourceConnectionService:
                 con.close()
 
                 rows = [dict(zip(columns, row)) for row in raw_rows]
-                _duck_ms = (time.time() - _duck_start) * 1000
+                _duck_ms = (time.perf_counter() - _duck_start) * 1000
                 # [perf] full cold cost of a Sheets tile: build N tabs into
                 # DuckDB + run the SQL. Compare against the cache=HIT line to
                 # see what Fix #3 saves on the next identical request.
@@ -3343,7 +3782,7 @@ class DataSourceConnectionService:
             return columns, rows
 
         except Exception as e:
-            logger.error(f"Google Sheets query failed: {str(e)}")
+            logger.error(f"Google Sheets query failed: {describe_source_error(e, config)}")
             raise
     
     @staticmethod
@@ -3368,7 +3807,8 @@ class DataSourceConnectionService:
                 import duckdb
                 import pyarrow as pa
 
-                con = duckdb.connect(database=":memory:")
+                from app.services.sql_validator import open_locked_duckdb
+                con = open_locked_duckdb()  # S1: no host files / settings
 
                 # Create a "manual" schema so queries like "manual"."table" work
                 con.execute("CREATE SCHEMA IF NOT EXISTS manual")
@@ -3381,7 +3821,7 @@ class DataSourceConnectionService:
                     col_names = [c["name"] for c in col_defs]
 
                     if rows:
-                        table = _build_arrow_table_from_sheet(pa, col_defs, rows)
+                        table = _build_arrow_table_from_sheet(pa, col_defs, rows, exact_integers=True)
                     else:
                         table = pa.table({c: pa.array([], type=pa.string()) for c in col_names})
 
@@ -3424,7 +3864,7 @@ class DataSourceConnectionService:
             return columns, rows
 
         except Exception as e:
-            logger.error(f"Manual table query failed: {str(e)}")
+            logger.error(f"Manual table query failed: {describe_source_error(e, config)}")
             raise
 
     # ── Schema Browser ────────────────────────────────────────────────────────
@@ -3435,6 +3875,7 @@ class DataSourceConnectionService:
         Return a schema-browser tree: list of schemas, each with tables/views + row counts.
         Currently implemented for PostgreSQL; other types delegate to list_tables().
         """
+        _require_source_capability(ds_type, "discover")
         from app.core.crypto import decrypt_config
         config = decrypt_config(config)
         if ds_type == DataSourceType.POSTGRESQL.value:
@@ -3457,7 +3898,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -3514,12 +3955,18 @@ class DataSourceConnectionService:
         Return detailed metadata for a single table: columns with PK/FK/IDX flags
         and a small preview dataset.
         """
+        _require_source_capability(ds_type, "discover")
         if ds_type == DataSourceType.POSTGRESQL.value:
             return DataSourceConnectionService._pg_table_detail(
                 config, schema_name, table_name, preview_rows
             )
         # Generic fallback using execute_query
-        full_name = f'"{schema_name}"."{table_name}"'
+        if ds_type == DataSourceType.MYSQL.value:
+            full_name = mysql_ident(schema_name, table_name)
+        elif ds_type == DataSourceType.BIGQUERY.value:
+            full_name = bq_table_ref(schema_name, table_name)
+        else:
+            full_name = pg_ident(schema_name, table_name)
         try:
             cols, data, _ = DataSourceConnectionService.execute_query(
                 ds_type, config, f"SELECT * FROM {full_name}", limit=preview_rows
@@ -3530,7 +3977,7 @@ class DataSourceConnectionService:
             return {"schema": schema_name, "name": table_name, "type": "table",
                     "row_count": None, "columns": columns, "preview": data}
         except Exception as e:
-            raise ValueError(f"Cannot fetch table detail: {e}")
+            raise ValueError(f"Cannot fetch table detail: {describe_source_error(e, config)}")
 
     @staticmethod
     def _pg_table_detail(
@@ -3542,7 +3989,7 @@ class DataSourceConnectionService:
         conn = None
         cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -3654,6 +4101,7 @@ class DataSourceConnectionService:
         table_name: str,
     ) -> List[Dict[str, str]]:
         """Return columns suitable as watermark (timestamp/date/integer types)."""
+        _require_source_capability(ds_type, "discover")
         from app.core.crypto import decrypt_config
         config = decrypt_config(config)
 
@@ -3709,6 +4157,7 @@ class DataSourceConnectionService:
         Return columns for a specific table via live source query.
         Each item: {"name": str, "type": str}
         """
+        _require_source_capability(ds_type, "discover")
         from app.core.crypto import decrypt_config
 
         config = decrypt_config(config)
@@ -3819,7 +4268,7 @@ class DataSourceConnectionService:
             WHERE c.contype = 'f'
         """
         try:
-            conn = psycopg2.connect(
+            conn = _pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -3843,7 +4292,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[fk_extract] Postgres FK query failed: {exc}")
+            logger.warning(f"[fk_extract] Postgres FK query failed: {describe_source_error(exc, config)}")
             return []
 
     @staticmethod
@@ -3879,7 +4328,7 @@ class DataSourceConnectionService:
               AND TABLE_NAME IN ({placeholders})
         """
         try:
-            conn = pymysql.connect(
+            conn = _mysql_connect(
                 host=config.get("host"),
                 port=int(config.get("port", 3306)),
                 database=config.get("database"),
@@ -3904,7 +4353,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[fk_extract] MySQL FK query failed: {exc}")
+            logger.warning(f"[fk_extract] MySQL FK query failed: {describe_source_error(exc, config)}")
             return []
 
     @staticmethod
@@ -3976,7 +4425,7 @@ class DataSourceConnectionService:
                     })
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[fk_extract] BigQuery FK query failed: {exc}")
+            logger.warning(f"[fk_extract] BigQuery FK query failed: {describe_source_error(exc, config)}")
             return []
 
     @staticmethod
@@ -4071,7 +4520,7 @@ class DataSourceConnectionService:
             ORDER BY ns.nspname, tbl.relname, src_attr.ord
         """
         try:
-            conn = psycopg2.connect(
+            conn = _pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -4092,7 +4541,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[pk_extract] Postgres PK query failed: {exc}")
+            logger.warning(f"[pk_extract] Postgres PK query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
@@ -4125,7 +4574,7 @@ class DataSourceConnectionService:
             ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
         """
         try:
-            conn = pymysql.connect(
+            conn = _mysql_connect(
                 host=config.get("host"),
                 port=int(config.get("port", 3306)),
                 database=config.get("database"),
@@ -4144,7 +4593,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[pk_extract] MySQL PK query failed: {exc}")
+            logger.warning(f"[pk_extract] MySQL PK query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
@@ -4195,7 +4644,7 @@ class DataSourceConnectionService:
                     out.setdefault(key, []).append(row["column_name"])
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[pk_extract] BigQuery PK query failed: {exc}")
+            logger.warning(f"[pk_extract] BigQuery PK query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
@@ -4224,7 +4673,7 @@ class DataSourceConnectionService:
             FROM information_schema.columns
         """
         try:
-            conn = psycopg2.connect(
+            conn = _pg_connect(
                 host=config.get("host"),
                 port=config.get("port", 5432),
                 database=config.get("database"),
@@ -4251,7 +4700,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[type_extract] Postgres column types query failed: {exc}")
+            logger.warning(f"[type_extract] Postgres column types query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
@@ -4282,7 +4731,7 @@ class DataSourceConnectionService:
               AND TABLE_NAME IN ({placeholders})
         """
         try:
-            conn = pymysql.connect(
+            conn = _mysql_connect(
                 host=config.get("host"),
                 port=int(config.get("port", 3306)),
                 database=config.get("database"),
@@ -4301,7 +4750,7 @@ class DataSourceConnectionService:
             conn.close()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[type_extract] MySQL column types query failed: {exc}")
+            logger.warning(f"[type_extract] MySQL column types query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
@@ -4346,14 +4795,14 @@ class DataSourceConnectionService:
                     out.setdefault(key, {})[row["column_name"]] = str(row["data_type"] or "").lower()
             return out
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[type_extract] BigQuery column types query failed: {exc}")
+            logger.warning(f"[type_extract] BigQuery column types query failed: {describe_source_error(exc, config)}")
             return {}
 
     @staticmethod
     def _pg_list_columns(config: Dict[str, Any], schema: str, table: str) -> List[Dict[str, str]]:
         conn = cursor = None
         try:
-            conn = psycopg2.connect(
+            conn = _pg_connect(
                 host=config.get("host"), port=config.get("port", 5432),
                 database=config.get("database"), user=config.get("username"),
                 password=config.get("password"),
@@ -4375,7 +4824,7 @@ class DataSourceConnectionService:
     def _mysql_list_columns(config: Dict[str, Any], database: str, table: str) -> List[Dict[str, str]]:
         conn = cursor = None
         try:
-            conn = pymysql.connect(
+            conn = _mysql_connect(
                 host=config.get("host"), port=config.get("port", 3306),
                 user=config.get("username"), password=config.get("password"),
             )
@@ -4410,7 +4859,7 @@ class DataSourceConnectionService:
             table_ref = client.get_table(table_ref_str)
             return [{"name": f.name, "type": f.field_type} for f in table_ref.schema]
         except Exception as e:
-            logger.warning(f"_bq_list_columns failed for table '{full_table}': {e}")
+            logger.warning(f"_bq_list_columns failed for table '{full_table}': {describe_source_error(e, config)}")
             return []
         finally:
             if client:
@@ -4467,3 +4916,79 @@ class DataSourceConnectionService:
             ]
         except Exception:
             return []
+
+
+def _snapshot_json_safe(v):
+    """JSON-safe value for a snapshot LOAD — same rules as the in-memory extract."""
+    import base64
+    import datetime as _dt
+    from decimal import Decimal
+
+    if v is None:
+        return None
+    if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
+        return v.isoformat()
+    if isinstance(v, Decimal):
+        return str(v)
+    if isinstance(v, bytes):
+        return base64.b64encode(v).decode("ascii")
+    if isinstance(v, dict):
+        return {k: _snapshot_json_safe(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_snapshot_json_safe(x) for x in v]
+    return v
+
+
+def _snapshot_coerce_to(bq_t: str, v):
+    """Coerce a JSON-safe value to its verified BigQuery type — same rules as
+    the in-memory extract's ``_coerce_to``. Unparseable → NULL."""
+    import json as _json
+
+    if v is None:
+        return None
+    try:
+        if bq_t == "INT64":
+            return int(float(v)) if not isinstance(v, bool) else int(v)
+        if bq_t == "FLOAT64":
+            return float(v)
+        if bq_t in ("NUMERIC", "BIGNUMERIC"):
+            return v if isinstance(v, str) else str(v)
+        if bq_t == "BOOL":
+            if isinstance(v, str):
+                return v.strip().lower() in ("true", "1", "yes", "t")
+            return bool(v)
+        if bq_t in ("STRING",):
+            return v if isinstance(v, str) else (
+                _json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v))
+        return v
+    except (TypeError, ValueError):
+        return None
+
+
+class _SnapshotSpool:
+    """An extracted table on local disk (anonymous temp file: never named,
+    removed by the OS on close / process exit)."""
+
+    def __init__(self, file):
+        self.file = file
+        self.row_count = 0
+        self.bq_schema = None
+        self.type_by_name: Optional[Dict[str, str]] = None
+
+    def rows(self):
+        import json as _json
+
+        self.file.seek(0)
+        types = self.type_by_name
+        for line in self.file:
+            row = _json.loads(line)
+            if types is None:
+                yield row
+            else:
+                yield {name: _snapshot_coerce_to(bt, row.get(name)) for name, bt in types.items()}
+
+    def close(self) -> None:
+        try:
+            self.file.close()
+        except Exception:  # noqa: BLE001
+            pass

@@ -36,7 +36,7 @@ import { AssistantCatalogue } from './AssistantCatalogue';
 import { ConversationView } from './ConversationView';
 
 export function ChatModule() {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const router = useRouter();
   const params = useSearchParams();
   const { data: permData } = usePermissions();
@@ -70,12 +70,19 @@ export function ChatModule() {
 
   React.useEffect(() => {
     let alive = true;
-    listChatBrains()
+    // `language` ('en'|'vi'), NOT `locale` ('en-US'|'vi-VN'). Passing the locale
+    // made the backend's `lang == "en"` check miss, so an English reader saw
+    // Vietnamese capability chips — the labels are the one reader-facing
+    // string the server produces here.
+    listChatBrains(language)
       .then((rows) => { if (alive) setBrains(rows); })
       .catch(() => { if (alive) setBrains([]); })
       .finally(() => { if (alive) setLoadingBrains(false); });
     return () => { alive = false; };
-  }, []);
+    // Re-fetched on a language switch: the capability labels come from the
+    // backend, so leaving this out would show Vietnamese classes on an English UI
+    // until the next reload.
+  }, [language]);
 
   // ALL threads, always — the catalogue shows a per-assistant count, and fetching
   // per assistant would be one request per card.
@@ -264,7 +271,11 @@ export function ChatModule() {
             // one. A reader coming back to an assistant almost always means "carry
             // on", and making them pick from a list first is a step that answers a
             // question they did not ask.
-            const last = threads.find((x) => x.brain_key === key);
+            // Only a conversation they can ASK in: one shared to read, or one
+            // `chat: full` merely oversees, opens read-only — and made a working
+            // assistant look "no longer active". Otherwise a fresh conversation.
+            const last = threads.find((x) => x.brain_key === key
+              && (!x.access || x.access === 'owner' || x.access === 'edit'));
             go(key, last?.id);
           }}
         />

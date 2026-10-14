@@ -1,8 +1,16 @@
 ﻿'use client';
 
+import { sectionTitlesOf } from '@/lib/report-meta';
+import { clearReportAnchor, reportAnchor, setReportAnchor, stampReportAnchor } from '@/lib/report-anchor';
+import { useMeasuredContentRows } from '@/lib/responsive-fit';
+import { resolveReportLayout, type PageProfiles } from '@/lib/responsive-layout/resolve';
+import { extractParamDefs, paramsToFilters, seedParamValues, tileDataKeys, tileRoleOverrides } from '@/lib/dashboard-params';
+import { groupIntoPrintBands } from '@/lib/print-bands';
+import { planKeyForElement, PRINTABLE_ELEMENT_TYPES } from '@/lib/export-layout';
+import { widgetTypeLabel } from '@/components/dashboards/widget-forms';
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
+import GridLayout from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
@@ -17,6 +25,8 @@ import {
 } from 'lucide-react';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
+import { GridSlicerTile, FilterApplyBar, stagedSlicerIds, type SlicerControlBinding } from '@/components/dashboards/GridSlicerTile';
+import { isSlicerControl, placedSlicerIds, replaceSlicerById, slicerIdOfControl } from '@/lib/slicer-placement';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
@@ -30,8 +40,6 @@ import {
 } from '@/lib/export-mode';
 import { parsePrintRenderOptions, type PrintRenderOptions } from '@/lib/print-render';
 import { toast } from '@/lib/toast';
-import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
-import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -47,7 +55,7 @@ import {
   getDashboardChartPageId,
   getDashboardChartsForPage,
   normalizeDashboardPages,
-  deriveStackedLayout,
+  reportBreakpointFor,
   computeReportRowHeight,
   dashboardRowHeight,
   DASHBOARD_GRID_COLS,
@@ -55,29 +63,28 @@ import {
   REPORT_STACK_BREAKPOINT,
 } from '@/lib/dashboard-pages';
 import { resolveStyleTokens } from '@/lib/dashboard-theme-tokens';
-import { applyScopeBound, dockLayoutClasses, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
+import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
 import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
-import { mergeSeedWithViewerSelections, resolvePublicPageFilterContext } from '@/lib/public-page-filters';
+import { mergeSeedWithViewerSelections, pageFilterFacts, resolvePublicPageFilterContext, statePageFilterFact, type PageFilterFact } from '@/lib/public-page-filters';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
+import { citedTilesOf } from '@/lib/report-evidence';
+import { auditRenderedTiles } from '@/lib/dashboard-presentation/render-audit';
+import { SectionBands } from './SectionBands';
+import { resolveStructure, toStructTiles } from '@/lib/report-structure';
+import { ReportMetaProvider } from '@/lib/report-meta';
+import { ReportEvidenceProvider } from '@/lib/report-evidence';
+import { snapshotCoherence } from '@/lib/snapshot-coherence';
 
 // Phase-B5 / Phase-B9 — responsive "Fit to width" grid for the public report.
-// Two breakpoints ONLY:
-//   • lg  (≥ REPORT_STACK_BREAKPOINT grid px): 12 columns, the EXACT authored
-//     layout — so a desktop resize stays in lg and never reflows/jumps. The row
-//     height scales WITH the grid width (see computeReportRowHeight) so tiles keep
-//     their authored aspect ratio on a TV, laptop, or tablet alike.
-//   • xs  (< REPORT_STACK_BREAKPOINT): 1 column, a pre-derived vertical stack —
-//     a real phone view instead of micro-tiles (or the old giant stacked cards).
-// Explicit layouts for BOTH breakpoints means react-grid-layout never
-// auto-generates (and never reflows) a layout. compactType=null +
-// preventCollision preserve coordinates exactly as provided.
-const ResponsiveReportGrid = WidthProvider(Responsive);
-const REPORT_BREAKPOINTS = { lg: REPORT_STACK_BREAKPOINT, xs: 0 };
-// Finer grid: 36 cols on desktop/tablet (matches the builder; ×3-migrated coords
-// render identically). Phone stack stays 1-col.
-const REPORT_COLS = { lg: DASHBOARD_GRID_COLS, xs: 1 };
+// Device layouts: the report draws ONE geometry, decided by the ONE resolver
+// (lib/responsive-layout/resolve.ts) for the width its container measures —
+// desktop as authored; tablet/phone AUTO (derived) or the page's published
+// CUSTOM layout. The grid renders that geometry at that width: it never picks
+// a breakpoint, measures a width or reflows a layout of its own
+// (compactType=null + preventCollision keep coordinates exactly as given).
 
 // Measure an element's CONTENT width (excludes padding) via ResizeObserver and
 // keep it in state. Used to drive the report grid's proportional row height from
@@ -95,7 +102,12 @@ function useContentWidth(): [(node: HTMLElement | null) => void, number | null] 
     if (node && typeof ResizeObserver !== 'undefined') {
       const observer = new ResizeObserver((entries) => {
         const contentWidth = entries[0]?.contentRect?.width;
-        if (typeof contentWidth === 'number' && contentWidth > 0) setWidth(contentWidth);
+        // Whole pixels: a sub-pixel change is not a new width (no re-render, no
+        // re-resolve, no breakpoint flicker).
+        if (typeof contentWidth === 'number' && contentWidth > 0) {
+          const next = Math.round(contentWidth);
+          setWidth((prev) => (prev === next ? prev : next));
+        }
       });
       observer.observe(node);
       observerRef.current = observer;
@@ -280,27 +292,6 @@ function getErrorMessage(error: any): string {
  * public chart-data endpoint allows 300 req/min, so 8 concurrent stays well
  * within budget even on a 20-tile dashboard with filter re-fetches.
  */
-/** Group dashboard tiles into their authored rows (same `y`), left to right. */
-function groupTilesIntoRows(charts: DashboardChart[]): DashboardChart[][] {
-  const sorted = [...charts].sort((a, b) => {
-    const ay = a.layout?.y ?? 0;
-    const by = b.layout?.y ?? 0;
-    if (ay !== by) return ay - by;
-    return (a.layout?.x ?? 0) - (b.layout?.x ?? 0);
-  });
-  const rows: DashboardChart[][] = [];
-  let currentY: number | null = null;
-  for (const chart of sorted) {
-    const y = chart.layout?.y ?? 0;
-    if (currentY === null || y !== currentY) {
-      rows.push([chart]);
-      currentY = y;
-    } else {
-      rows[rows.length - 1].push(chart);
-    }
-  }
-  return rows;
-}
 
 const CHART_FETCH_CONCURRENCY = 8;
 // PDF export retries a chart that failed to load before giving up and listing it
@@ -344,7 +335,7 @@ function formatSnapshotAsOf(value: string | null | undefined): string {
   });
 }
 
-export function PublicDashboardView({ variant = 'public' }: { variant?: 'public' | 'embed' }) {
+function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' | 'embed' }) {
   const params = useParams();
   const token = params.token as string;
   // Embed renders inside a host <iframe>: it grows to its content height and
@@ -352,6 +343,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // full-viewport app-shell the standalone /d page uses.
   const isEmbed = variant === 'embed';
   useParentResize(isEmbed);
+  const { t, locale } = useI18n();
 
   const [mounted, setMounted] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -361,6 +353,15 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
   const [chartData, setChartData] = useState<Record<number, ChartDataResponse>>({});
   const [chartErrors, setChartErrors] = useState<Record<number, string>>({});
+  // The generation contract (lib/snapshot-coherence): set when the tiles on
+  // screen still hold two snapshot generations of one dataset after a re-read —
+  // the header then says so instead of one "data as of" over both. The ref
+  // records that a publish landed mid-view (the PDF export reports it).
+  const [snapshotMixed, setSnapshotMixed] = useState(false);
+  const generationMovedRef = useRef(false);
+  // "data as of" = the oldest build among the tiles actually on screen (the
+  // report-level /snapshots/info value is only the fallback before any tile).
+  const tilesAsOf = useMemo(() => snapshotCoherence(chartData).asOf, [chartData]);
   // Mirrors of the two maps above. PDF export walks pages in a loop and must see
   // what the PREVIOUS iteration just fetched; a closure snapshot would report
   // every chart as "still missing" and refetch the whole report page by page.
@@ -369,7 +370,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   useEffect(() => { chartDataRef.current = chartData; }, [chartData]);
   useEffect(() => { chartErrorsRef.current = chartErrors; }, [chartErrors]);
   // #2 — per-chart viewer date-hierarchy grain (BE re-query). State drives the
-  // tile's active highlight; the ref is read inside the fetch callback so a
+  // tile's active grain button; the ref is read inside the fetch callback so a
   // grain change doesn't have to be a useCallback dependency.
   const [chartGrains, setChartGrains] = useState<Record<number, string>>({});
   const chartGrainsRef = useRef<Record<number, string>>({});
@@ -409,16 +410,22 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // C4 anti-spam — see authed page. Drops accidental rapid re-clicks on a
   // selection so they don't thrash the per-page chart fetch or toggle-clear it.
   const lastCrossFilterAtRef = useRef(0);
-  // Cross-highlight (PBI-parity) — opt-in per dashboard via theme_config. When
-  // mode='highlight', a data-point click sets THIS (not crossFilterState), so
-  // the baseline (viewer + link + page-scope filters) stays applied and the
-  // selection is a visual overlay only. `highlightChartData` holds the parallel
-  // P-filtered fetch per target chart.
-  const [highlightState, setHighlightState] = useState<{
-    sourceChartId: number;
-    filter: BaseFilter;
-  } | null>(null);
-  const [highlightChartData, setHighlightChartData] = useState<Record<number, ChartDataResponse>>({});
+  // A changed viewer read (applied filters, page-scope filters, cross-filter) is a
+  // NEW logical report read → fresh relative-date anchor, stamped during render so
+  // it precedes the refetch effect. A fixed export ?asOf is immutable
+  // (stampReportAnchor is a no-op then). Leaving the report clears the anchor.
+  const readSignature = JSON.stringify([appliedViewerFilters, pageHiddenFilters, crossFilterState]);
+  const readSignatureRef = useRef<string | null>(null);
+  if (readSignatureRef.current !== readSignature) {
+    if (readSignatureRef.current !== null) stampReportAnchor();
+    readSignatureRef.current = readSignature;
+  }
+  // Unmount only (a dashboard change re-stamps during render above). The mount
+  // half re-stamps if a dev StrictMode remount cleared it.
+  useEffect(() => {
+    if (!reportAnchor()) stampReportAnchor();
+    return () => clearReportAnchor();
+  }, []);
   const [pageState, setPageState] = useState<PageState>('unknown');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
@@ -456,21 +463,32 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // via onVisible; the fetch effect uses this set to gate which charts to request.
   const [visibleChartIds, setVisibleChartIds] = useState<Set<number>>(() => new Set());
   const [forceVisibleAll, setForceVisibleAll] = useState(false);
+  // Tiles a narrative block cites load with the page, not when scrolled to: a
+  // headline at the top must not say "updating" because its evidence is a
+  // chart below the fold.
+  const citedTileIds = useMemo(() => citedTilesOf(dashboard?.dashboard_charts), [dashboard?.dashboard_charts]);
   const publicContentRef = useRef<HTMLElement>(null);
   const gridSectionRef = useRef<HTMLElement>(null);
   // "Fit to width": measure the grid wrapper and scale the react-grid row height
   // with it, so tiles keep their authored aspect ratio from phone to TV. The
   // ref-callback attaches to whichever of the two grid branches is mounted.
   const [gridMeasureRef, gridWidth] = useContentWidth();
+  // The render-quality probe the e2e gate calls on the published report — the
+  // same DOM audit the builder's AI Design preview runs. Read-only, no network.
+  useEffect(() => {
+    (window as any).__APPBI_RENDER_AUDIT__ = () => auditRenderedTiles(document);
+    return () => { delete (window as any).__APPBI_RENDER_AUDIT__; };
+  }, []);
   // Finer grid: row height couples to the theme gap so the ×3-migrated layout
   // renders pixel-identical to the builder (see dashboardRowHeight).
   const reportRowHeight = computeReportRowHeight(gridWidth, getDashboardGridMargin(dashboard?.theme_config)[1]);
+  const fitRootRef = useRef<HTMLDivElement | null>(null);
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
   // True for the whole duration of a PDF export. Export takes over page
   // switching + data fetching, so the reactive effects (slicer seed, page
-  // fetch, viewport fetch, highlight refetch) must stand down — otherwise they
+  // fetch, viewport fetch) must stand down — otherwise they
   // race the exporter, bump chartRequestIdRef and make it discard the very
   // response it is waiting for. A ref (not state) because the effects need the
   // value in the same tick the export sets it.
@@ -513,6 +531,13 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   useEffect(() => () => clearSessionTimer(), [clearSessionTimer]);
 
   const loadDashboard = useCallback(async (sessionToken?: string) => {
+    // One relative-date anchor for every tile of THIS report read (across
+    // midnight). A PDF export passes its single per-export anchor via ?asOf so
+    // every page of one export shares one window (A3); a normal view stamps fresh.
+    const asOfParam = typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('asOf')
+      : null;
+    setReportAnchor(asOfParam);
     setPageState('loading');
     setLoading(true);
     setError(null);
@@ -580,6 +605,61 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     () => getDashboardChartsForPage(dashboard?.dashboard_charts, activePageId),
     [activePageId, dashboard?.dashboard_charts],
   );
+  // The page's published device layouts (absent = AUTO for that device).
+  const pageProfiles = ((dashboard as any)?.responsive_layouts?.pages?.[activePageId] ?? null) as PageProfiles | null;
+  // Tablet and phone AUTO: headers, text and KPI cards take the height of what
+  // they say at that width (lib/responsive-fit) — derived, never saved. A CUSTOM
+  // device layout is drawn as authored: nothing is measured for it.
+  const fitBreakpoint = reportBreakpointFor(gridWidth);
+  const fitIsCustom = fitBreakpoint !== 'lg' && pageProfiles?.[fitBreakpoint]?.mode === 'custom';
+  const measuredContentRows = useMeasuredContentRows(
+    fitRootRef,
+    {
+      enabled: !printMode && (gridWidth ?? 0) > 0 && fitBreakpoint !== 'lg' && !fitIsCustom,
+      width: gridWidth ?? 0,
+      rowHeight: reportRowHeight,
+      gapY: getDashboardGridMargin(dashboard?.theme_config)[1],
+    },
+    [currentPageId, chartData, dashboard?.dashboard_charts],
+  );
+
+  // Report parameters — the SAME semantics as the Builder (lib/dashboard-params):
+  // the page's switchers are seeded with their default (else first option), a
+  // field-bound switcher filters every chart on the page, a what-if switcher
+  // swaps the bound tiles' dimension/metric, and the viewer can switch them.
+  // The server accepts only values the author's switchers offer
+  // (app/services/dashboard_parameters.py).
+  const publicParamDefs = useMemo(() => extractParamDefs(visibleDashboardCharts), [visibleDashboardCharts]);
+  const [publicParamState, setPublicParamState] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setPublicParamState((prev) => seedParamValues(publicParamDefs, prev));
+  }, [publicParamDefs]);
+  // Seeded synchronously as well, so the first fetch already carries the
+  // defaults (no throwaway query before the seed effect lands).
+  // A server-rendered export carries the values the viewer had (?params=); the
+  // viewer's own switches, if any, win over them.
+  const publicParamValues = useMemo(
+    () => seedParamValues(
+      publicParamDefs,
+      printOptions?.params ? { ...printOptions.params, ...publicParamState } : publicParamState,
+    ),
+    [publicParamDefs, publicParamState, printOptions?.params],
+  );
+  const handlePublicParamChange = useCallback(
+    (name: string, value: any) => setPublicParamState((prev) => ({ ...seedParamValues(publicParamDefs, prev), [name]: value == null ? '' : String(value) })),
+    [publicParamDefs],
+  );
+  const publicParamFilters = useMemo(
+    () => paramsToFilters(publicParamDefs, publicParamValues, undefined, dashboard?.parameter_fields),
+    [publicParamDefs, publicParamValues, dashboard?.parameter_fields],
+  );
+  // Where each tile's data lives (chart id, or -tileId for a chart placed twice
+  // with different tile parameters — lib/dashboard-params.tileDataKeys).
+  const tileKeys = useMemo(() => tileDataKeys(dashboard?.dashboard_charts), [dashboard?.dashboard_charts]);
+  const dataKeyOf = useCallback(
+    (dc: { id: number; chart_id: number }) => tileKeys.get(dc.id) ?? dc.chart_id,
+    [tileKeys],
+  );
 
   // Phase-F (PBI-parity rework) — collect filter entries with
   // `publicMode === 'locked'` for the banner row. Locked entries are
@@ -587,26 +667,35 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // shown a read-only "ⓘ Đang lọc theo …" line so they understand
   // the data scope. `hidden` entries do not appear here by design —
   // see docs/filter-semantics.md §2.2/§9.
-  const lockedBannerEntries = useMemo(() => {
-    const result: { field: string; label?: string; value: any }[] = [];
+  // Per page: a page's own locked filters belong to that page only (the PDF
+  // states each page's, not the active page's).
+  const lockedEntriesFor = useCallback((pageId: string) => {
+    const result: { field: string; label?: string; value: any; operator?: string; datePreset?: any }[] = [];
     const collect = (entries: any[]) => {
       for (const e of entries || []) {
         if (!e || typeof e !== 'object') continue;
         const mode = e.publicMode ?? 'visible';
         if (mode !== 'locked') continue;
         if (e.showBanner === false) continue;
-        result.push({ field: e.field, label: e.label, value: e.value });
+        result.push({ field: e.field, label: e.label, value: e.value, operator: e.operator, datePreset: e.datePreset });
       }
     };
     if (dashboard) {
       collect((dashboard as any).filters_config || []);
-      const page = dashboardPages.find((p) => p.id === activePageId);
+      const page = dashboardPages.find((p) => p.id === pageId);
       if (page) {
         collect((page as any).filters || []);
       }
+      // The link's locked (🔒) filters: enforced by the server, served read-only
+      // so the reader is told the report is filtered. Hidden (🚫) link filters
+      // are never served.
+      for (const e of ((dashboard as any).public_link_locked_filters || []) as any[]) {
+        if (e && typeof e === 'object' && e.field) result.push({ field: e.field, label: e.label ?? undefined, value: e.value, operator: e.operator, datePreset: e.datePreset });
+      }
     }
     return result;
-  }, [dashboard, dashboardPages, activePageId]);
+  }, [dashboard, dashboardPages]);
+  const lockedBannerEntries = useMemo(() => lockedEntriesFor(activePageId), [lockedEntriesFor, activePageId]);
 
   // Phase-F THẬT (PBI-parity rework) — override-allowed filters list
   // for the "Xem chi tiết" mini-pane. Entries with publicMode='visible'
@@ -742,8 +831,6 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // Highlight is the DEFAULT click interaction (matches the authed builder);
   // per-chart opt-out via layout.highlightEnabled. Only explicit 'off' falls
   // back to legacy cross-filter.
-  const interactionsMode: 'off' | 'highlight' =
-    ((dashboard as any)?.theme_config?.interactions?.mode === 'off') ? 'off' : 'highlight';
 
   const handleCrossFilterChange = useCallback((sourceChartId: number, filter: BaseFilter | null) => {
     // One selection (PBI parity): SOURCE chart dims its non-selected marks,
@@ -804,9 +891,18 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       // chart_id and never need a /charts/{id}/data round-trip.
       .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
     // When chartIds is supplied (lazy viewport mode), only fetch those tiles.
-    const targetCharts = options?.chartIds
+    // One request per data key: two tiles of the same chart with the same tile
+    // parameters share one answer, as before.
+    const requestedCharts = options?.chartIds
       ? allCharts.filter((dc) => options.chartIds!.includes(dc.chart_id))
       : allCharts;
+    const seenKeys = new Set<number>();
+    const targetCharts = requestedCharts.filter((dc) => {
+      const key = dataKeyOf(dc);
+      if (seenKeys.has(key)) return false;
+      seenKeys.add(key);
+      return true;
+    });
 
     if (!options?.silent) {
       setChartsLoading(true);
@@ -841,31 +937,52 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       const viewerFilterSet = options?.viewerFilters ?? appliedViewerFilters;
       const hiddenFilterSet = options?.hiddenFilters ?? pageHiddenFiltersRef.current;
       const batchItems = targetCharts.map((dashboardChart) => {
-        const baseViewerFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
-          ? viewerFilterSet
-          : pageCrossFilterState
-            ? [...viewerFilterSet, pageCrossFilterState.filter]
-            : viewerFilterSet;
+        // A selection filters every OTHER tile — except one the author opted out
+        // (`layout.highlightEnabled === false`): it neither emits nor receives,
+        // exactly as in the Builder (DashboardGrid passes it no cross-filters).
+        const receivesSelection = pageCrossFilterState
+          && pageCrossFilterState.sourceChartId !== dashboardChart.chart_id
+          && (dashboardChart.layout as any)?.highlightEnabled !== false;
+        const baseViewerFilters = receivesSelection
+          ? [...viewerFilterSet, pageCrossFilterState!.filter]
+          : viewerFilterSet;
+        const overrides = tileRoleOverrides(
+          dashboardChart.parameters as Record<string, unknown> | undefined,
+          publicParamValues,
+        );
         return {
           chart_id: dashboardChart.chart_id,
-          filters: applyScopeBound(baseViewerFilters, hiddenFilterSet),
+          tile_id: dashboardChart.id,
+          // The page's switcher filters join the viewer's own choices; the server
+          // bounds both by the page scope and the link's locks.
+          filters: [...applyScopeBound(baseViewerFilters, hiddenFilterSet), ...publicParamFilters],
           granularity: chartGrainsRef.current[dashboardChart.chart_id],
+          ...(overrides ? { overrides } : {}),
         };
       });
 
-      type BatchEntry = { chartId: number; data: any; error: string | null; status?: number };
+      type BatchEntry = { chartId: number; key: number; data: any; error: string | null; status?: number };
       let entries: BatchEntry[];
       try {
-        const resp = await publicDashboardApi.getChartsDataBatch(token, sessionToken, batchItems);
-        const byId = new Map<number, { data?: any; error?: string; status?: number }>();
-        for (const r of resp.results || []) byId.set(r.chart_id, r);
+        const resp = await publicDashboardApi.getChartsDataBatch(token, sessionToken, batchItems, pageId);
+        const byTile = new Map<number, { data?: any; error?: string; status?: number; category?: string | null }>();
+        const byChart = new Map<number, { data?: any; error?: string; status?: number; category?: string | null }>();
+        for (const r of resp.results || []) {
+          if (r.tile_id != null) byTile.set(r.tile_id, r);
+          else byChart.set(r.chart_id, r);
+        }
         entries = targetCharts.map((dc) => {
-          const r = byId.get(dc.chart_id);
-          if (r && r.data) return { chartId: dc.chart_id, data: r.data, error: null };
+          const r = byTile.get(dc.id) ?? byChart.get(dc.chart_id);
+          if (r && r.data) return { chartId: dc.chart_id, key: dataKeyOf(dc), data: r.data, error: null };
           return {
             chartId: dc.chart_id,
+            key: dataKeyOf(dc),
             data: null,
-            error: r?.error || 'Could not load this chart.',
+            // A semantic refusal reads as what it is (the chart's meaning is
+            // undetermined), not as the engine's modelling prose.
+            error: r?.category
+              ? t(r.category === 'AMBIGUOUS_ROUTE' ? 'explore.failure.routeTitleNoTarget' : 'explore.failure.semantic_refusalTitle')
+              : (r?.error || 'Could not load this chart.'),
             status: r?.status,
           };
         });
@@ -882,7 +999,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         // Whole-batch transport failure → mark every target tile errored so the
         // page shows the error state instead of an infinite spinner.
         const msg = getErrorMessage(err);
-        entries = targetCharts.map((dc) => ({ chartId: dc.chart_id, data: null, error: msg }));
+        entries = targetCharts.map((dc) => ({ chartId: dc.chart_id, key: dataKeyOf(dc), data: null, error: msg }));
       }
 
       if (requestId !== chartRequestIdRef.current) {
@@ -903,11 +1020,34 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       const nextData = { ...chartDataRef.current };
       const nextErrors = { ...chartErrorsRef.current };
       for (const entry of entries) {
-        if (entry.data) nextData[entry.chartId] = entry.data;
-        else delete nextData[entry.chartId];
-        if (entry.error) nextErrors[entry.chartId] = entry.error;
-        else delete nextErrors[entry.chartId];
+        if (entry.data) nextData[entry.key] = entry.data;
+        else delete nextData[entry.key];
+        if (entry.error) nextErrors[entry.key] = entry.error;
+        else delete nextErrors[entry.key];
       }
+      // ONE view, ONE generation per dataset. A publish that landed between two
+      // reads leaves older tiles beside newer ones: re-read this page's older
+      // tiles once; older tiles of other pages are dropped (re-read on visit).
+      let coherence = snapshotCoherence(nextData);
+      if (!coherence.coherent) {
+        generationMovedRef.current = true;
+        const onPage = new Set(allCharts.map((dc) => dataKeyOf(dc)));
+        for (const id of coherence.stale) if (!onPage.has(id)) delete nextData[id];
+        const reread = batchItems.filter((_item, i) => coherence.stale.includes(dataKeyOf(targetCharts[i])));
+        if (reread.length) {
+          try {
+            const again = await publicDashboardApi.getChartsDataBatch(token, sessionToken, reread, pageId);
+            for (const r of again.results || []) {
+              const dc = targetCharts.find((d) => (r.tile_id != null ? d.id === r.tile_id : d.chart_id === r.chart_id));
+              if (r.data) nextData[dc ? dataKeyOf(dc) : r.chart_id] = r.data;
+            }
+          } catch {
+            /* the mixed state is reported below */
+          }
+        }
+        coherence = snapshotCoherence(nextData);
+      }
+      setSnapshotMixed(!coherence.coherent);
       chartDataRef.current = nextData;
       chartErrorsRef.current = nextErrors;
       setChartData(nextData);
@@ -927,69 +1067,8 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         setIsApplyingFilters(false);
       }
     }
-  }, [appliedViewerFilters, crossFilterState, dashboard, dashboardPages, activePageId, scheduleSessionExpiry, token]);
+  }, [appliedViewerFilters, crossFilterState, dashboard, dashboardPages, activePageId, scheduleSessionExpiry, token, dataKeyOf, publicParamFilters, publicParamValues]);
 
-  // Cross-highlight (public): when a selection is active, fetch a PARALLEL
-  // P-filtered dataset per TARGET chart (baseline viewer/page filters + the
-  // selection), stored separately so the baseline tiles keep their full data
-  // and the renderer overlays the highlighted portion. Source tile dims locally
-  // (no fetch). Gated on interactionsMode='highlight' (opt-in) so existing
-  // public links are byte-for-byte unchanged.
-  useEffect(() => {
-    // Same stand-down as the page-fetch effect: during export the page id changes
-    // programmatically, and a highlight overlay refetch would compete with the
-    // exporter's batch (and capture a half-applied highlight).
-    if (exportInProgressRef.current) return;
-    if (interactionsMode !== 'highlight' || !highlightState || !dashboard) {
-      setHighlightChartData((cur) => (Object.keys(cur).length ? {} : cur));
-      return;
-    }
-    const session = getPublicSession(token);
-    const targets = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId)
-      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id && dc.chart_id !== highlightState.sourceChartId)
-      // Per-chart opt-out: don't fetch a highlight overlay for tiles the author
-      // turned off (they render their baseline unchanged).
-      .filter((dc) => (dc.layout as any)?.highlightEnabled !== false);
-    let cancelled = false;
-    (async () => {
-      const entries = await runWithConcurrency(
-        targets,
-        async (dc) => {
-          const requestFilters = applyScopeBound(
-            [...appliedViewerFilters, highlightState.filter],
-            pageHiddenFiltersRef.current,
-          );
-          try {
-            const data = await publicDashboardApi.getChartData(
-              token, dc.chart_id, session ?? undefined, requestFilters, chartGrainsRef.current[dc.chart_id],
-            );
-            return { chartId: dc.chart_id, data };
-          } catch {
-            return { chartId: dc.chart_id, data: null };
-          }
-        },
-        CHART_FETCH_CONCURRENCY,
-      );
-      if (cancelled) return;
-      const map: Record<number, ChartDataResponse> = {};
-      for (const e of entries) if (e.data) map[e.chartId] = e.data as ChartDataResponse;
-      setHighlightChartData(map);
-    })();
-    return () => { cancelled = true; };
-  }, [highlightState, interactionsMode, activePageId, appliedViewerFilters, dashboard, token]);
-
-  // Drop the highlight when its source tile leaves the page; clear the unused
-  // interaction state when the mode flips, so they never overlap.
-  useEffect(() => {
-    if (!highlightState || !dashboard) return;
-    const exists = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId)
-      .some((dc) => dc.chart_id === highlightState.sourceChartId);
-    if (!exists) setHighlightState(null);
-  }, [activePageId, dashboard, highlightState]);
-  useEffect(() => {
-    if (interactionsMode === 'highlight') setCrossFilterState(null);
-    else setHighlightState(null);
-  }, [interactionsMode]);
 
   // #2 — public viewer date-hierarchy: change a chart's grain and re-fetch it
   // from the BE at that bucket (works on pre-aggregated charts). The grain ref
@@ -1033,7 +1112,8 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     // the printed report would come out empty below the fold.
     const lazyIds = targetCharts
       .map((dc) => dc.chart_id)
-      .filter((id) => forceVisibleAll || visibleChartIds.has(id));
+      .filter((id) => forceVisibleAll || visibleChartIds.has(id)
+        || targetCharts.some((dc) => dc.chart_id === id && citedTileIds.has(dc.id)));
     if (lazyIds.length === 0) {
       // Nothing visible yet (initial mount before IntersectionObserver fires).
       // Skip — the visibility effect will trigger fetch as tiles report in.
@@ -1043,7 +1123,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState, {
       chartIds: lazyIds,
     });
-  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, filtersSeeded, forceVisibleAll, pageState, token, visibleChartIds]);
+  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, filtersSeeded, forceVisibleAll, pageState, token, visibleChartIds, citedTileIds]);
 
   const handlePasswordSubmit = useCallback(async (password: string) => {
     setAuthSubmitting(true);
@@ -1072,20 +1152,16 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     setAuthError(null);
   }, []);
 
-  // Phase-B22 — human-readable summary of the slicers/filters the viewer has
-  // applied, baked into each PDF page header so an exported report says which
-  // slice of data it represents.
-  const summarizeViewerFilters = useCallback((): string => {
-    if (!appliedViewerFilters.length) return '';
-    return appliedViewerFilters
-      .map((f) => {
-        const label = getFilterDisplayLabel(f);
-        const val = formatFilterValue((f as { value?: unknown }).value);
-        return val ? `${label}: ${val}` : label;
-      })
-      .filter(Boolean)
-      .join(' · ');
-  }, [appliedViewerFilters]);
+  // Phase-B22 — human-readable summary of the slicers/filters that shape a
+  // page, baked into THAT page's PDF header so an exported report says which
+  // slice of data each page represents. The export passes the page's own
+  // context (the one it fetched that page's data with); a page's filters are
+  // not the active page's.
+  const summarizeViewerFilters = useCallback((context?: { pageId: string; applied: BaseFilter[]; pageHidden: BaseFilter[] }): string => pageFilterFacts({
+    applied: context?.applied ?? appliedViewerFilters,
+    pageHidden: context?.pageHidden ?? pageHiddenFilters,
+    locked: context ? lockedEntriesFor(context.pageId) : lockedBannerEntries,
+  }).map((f) => `${f.locked ? '🔒 ' : ''}${f.label}: ${statePageFilterFact(f, t)}`).join(' · '), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, lockedEntriesFor, t]);
 
   /**
    * Server-side export: hand the request to the render worker and poll.
@@ -1117,6 +1193,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         page_format: choices.format,
         layout: choices.layout,
         filters: appliedViewerFiltersRef.current,
+        params: publicParamValues,
         session,
       });
     } catch (err: any) {
@@ -1187,6 +1264,95 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // longer mix page A's page-scope filters into page B's numbers.
   const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
     if (!dashboard) return;
+    if (choices.fileType === 'pptx') {
+      // Editable PowerPoint: read what this reader sees on each chosen page.
+      exportInProgressRef.current = true;
+      setIsExportingPdf(true);
+      setForceVisibleAll(true);
+      setExportRenderMode('snapshot');
+      setExportProgress({ phase: 'prepare', ratio: 0, message: t('dashboards.export.exportPptx') });
+      const originalPageId = activePageId;
+      const { exportDashboardPptx, incompleteChartsOf } = await import('@/lib/export-pptx');
+      try {
+        const session = getPublicSession(token) ?? undefined;
+        const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
+        await exportDashboardPptx({
+          title: String(dashboard.public_link_name || dashboard.name || 'Báo cáo'),
+          footer: dashboard.public_link_name || dashboard.name || null,
+          gridCols: DASHBOARD_GRID_COLS,
+          filename: `${safePdfFilename(String(dashboard.public_link_name || dashboard.name || 'report'), 'report')}.pptx`,
+          send: (payload) => publicDashboardApi.exportPptx(token, session, payload),
+          labels: {
+            page: (index, total) => t('dashboards.export.progressPage', { index, total }),
+            chart: (index, total) => t('dashboards.export.progressChart', { index, total }),
+            building: t('dashboards.export.progressBuilding'),
+          },
+          onProgress: (ratio, message) => setExportProgress({ phase: 'capture', ratio, message: message || t('dashboards.export.exportPptx') }),
+          pages: chosen.map((p) => ({
+            name: p.name,
+            tiles: (dashboard.dashboard_charts ?? [])
+              .filter((dc) => getDashboardChartPageId(dc.layout) === p.id)
+              .map((dc) => ({
+                id: dc.id,
+                layout: { x: Number(dc.layout?.x) || 0, y: Number(dc.layout?.y) || 0, w: Number(dc.layout?.w) || DASHBOARD_GRID_COLS, h: Number(dc.layout?.h) || 6 },
+                chartType: (dc.chart as { chart_type?: string } | undefined)?.chart_type ?? null,
+                widgetType: dc.widget_type ?? null,
+                title: dc.chart?.name ?? null,
+              })),
+            getRoot: async () => {
+              setCurrentPageId(p.id);
+              const { controlSeed, hiddenFilters } = resolvePublicPageFilterContext(
+                dashboard as unknown as Record<string, unknown>, dashboardPages, p.id,
+              );
+              setPageHiddenFilters(hiddenFilters);
+              // Load EVERY chart of this page with THAT page's filter context
+              // (same as the PDF path). A page switch alone only lazy-loads the
+              // visible tiles, so pages the reader had not opened came out of
+              // the deck with no KPI values and no tables — silently.
+              const pending = getDashboardChartsForPage(dashboard.dashboard_charts ?? [], p.id)
+                .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id
+                  && !chartDataRef.current[dataKeyOf(dc)])
+                .map((dc) => dc.chart_id);
+              if (pending.length) {
+                await fetchChartsForPage(p.id, session, null, {
+                  chartIds: pending,
+                  viewerFilters: mergeSeedWithViewerSelections(controlSeed, appliedViewerFiltersRef.current),
+                  hiddenFilters,
+                  silent: true,
+                });
+              }
+              // The extractor then waits on every tile's own state.
+              await new Promise<void>((resolve) => {
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+              });
+              return gridSectionRef.current;
+            },
+          })),
+        });
+        setIsExportDialogOpen(false);
+        toast.success(t('dashboards.export.pptxDone'), { id: 'report-export' });
+      } catch (err) {
+        console.error('PowerPoint export failed', err);
+        // The dialog stays open: Retry is one click away.
+        const charts = await incompleteChartsOf(err);
+        if (charts) {
+          toast.error(t('dashboards.export.pptxIncomplete', { count: charts.length }), {
+            id: 'report-export',
+            description: charts.map((c) => `• ${c}`).join('\n'),
+          });
+        } else {
+          toast.error(t('dashboards.export.pptxFailed'), { id: 'report-export' });
+        }
+      } finally {
+        setCurrentPageId(originalPageId);
+        setForceVisibleAll(false);
+        setExportRenderMode(false);
+        setExportProgress(null);
+        setIsExportingPdf(false);
+        exportInProgressRef.current = false;
+      }
+      return;
+    }
     // Open the preview tab NOW, synchronously inside the export click, so the
     // popup blocker (which fires once the seconds-long capture has spent the
     // user activation) doesn't eat it. We fill it with the PDF when ready.
@@ -1199,7 +1365,9 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     // Preferred path: let the server render it. Falls through to the in-browser
     // engine when no worker is deployed or the job could not be completed, so
     // the button never dead-ends.
-    if (serverExportReady) {
+    // Custom is browser-rendered BY DESIGN (see runServerExport): no server
+    // attempt, and no "the server did not respond" toast — that was untrue.
+    if (serverExportReady && choices.layout !== 'custom') {
       try {
         const done = await runServerExport(choices, previewWindow);
         if (done) {
@@ -1231,10 +1399,24 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     // Charts that never produced data → listed in the PDF + the toast instead of
     // silently exporting an empty tile.
     const failures: PdfExportWarning[] = [];
+    generationMovedRef.current = false;
     try {
       const safeName = safePdfFilename(dashboard.public_link_name || dashboard.name, 'bao-cao');
       const storedSession = getPublicSession(token) ?? undefined;
-      const filtersSummary = summarizeViewerFilters();
+      // Each page's header states the filters that page's data was fetched
+      // with — the same merge ensurePageDataLoaded uses.
+      const filtersSummaryFor = (pageId: string) => {
+        const { controlSeed, hiddenFilters } = resolvePublicPageFilterContext(
+          dashboard as unknown as Record<string, unknown>,
+          dashboardPages,
+          pageId,
+        );
+        return summarizeViewerFilters({
+          pageId,
+          applied: mergeSeedWithViewerSelections(controlSeed, frozenViewerFilters),
+          pageHidden: hiddenFilters,
+        });
+      };
 
       // Fetch every chart of `pageId` with THAT page's filter context, retrying
       // the ones that fail; whatever is still broken is recorded as a warning.
@@ -1253,8 +1435,8 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         // Read the CURRENT data map (not a closure snapshot): earlier pages of
         // this same export have already written into it.
         let pending = targetCharts
-          .map((dc) => dc.chart_id)
-          .filter((id) => !chartDataRef.current[id]);
+          .filter((dc) => !chartDataRef.current[dataKeyOf(dc)])
+          .map((dc) => dc.chart_id);
         // The snapshot export exists to be fast: it takes ONE shot at a failed
         // chart and lists what is missing, rather than spending seconds of
         // backoff per tile. The full-data export keeps retrying.
@@ -1280,8 +1462,14 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
           failures.push({
             page: pageName,
             chart: chartNameById.get(id) || `Biểu đồ #${id}`,
-            reason: chartErrorsRef.current[id] || 'Không tải được dữ liệu',
+            reason: chartErrorsRef.current[id] || t('dashboards.readonlyChartTile.failedToLoad'),
           });
+        }
+        // A publish landed during the export: pages already captured hold the
+        // previous generation. Said in the file, never one silent "as of".
+        const movedNote = 'Dữ liệu được cập nhật trong lúc xuất — các trang trong file thuộc hai phiên bản dữ liệu; hãy xuất lại.';
+        if (generationMovedRef.current && !failures.some((f) => f.reason === movedNote)) {
+          failures.push({ page: pageName, chart: 'Toàn báo cáo', reason: movedNote });
         }
       };
 
@@ -1289,7 +1477,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
       const pageSources = (chosen.length ? chosen : [{ id: activePageId, name: '' }]).map((p) => ({
         name: p.name,
-        filtersSummary,
+        filtersSummary: filtersSummaryFor(p.id),
         getRoot: async () => {
           setCurrentPageId(p.id);
           // Keep the on-screen state coherent with the page being captured (the
@@ -1313,6 +1501,14 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
 
       const { exportDashboardPdf } = await import('@/lib/export-pdf');
       const result = await exportDashboardPdf({
+        description: dashboard?.description ?? null,
+        locale,
+        labels: {
+          filters: t('dashboards.pdf.filters'),
+          exportedAt: t('dashboards.pdf.exportedAt'),
+          dataAsOf: t('dashboards.pdf.dataAsOf'),
+          snapshotNote: t('dashboards.pdf.snapshotNote'),
+        },
         filename: `${safeName}.pdf`,
         title: reportTitle,
         orientation: choices.orientation,
@@ -1322,7 +1518,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         onProgress: setExportProgress,
         pages: pageSources,
         previewWindow,
-        dataAsOf: snapshotAsOf,
+        dataAsOf: snapshotCoherence(chartDataRef.current).asOf ?? snapshotAsOf,
         warnings: failures,
       });
       if (failures.length) {
@@ -1405,11 +1601,16 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const planCandidates = useMemo(() => {
     const pageNameById = new Map(dashboardPages.map((pg) => [pg.id, pg.name]));
     return (dashboard?.dashboard_charts ?? [])
-      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id)
+      // Charts, and the report elements that print (header, headings, text,
+      // insights) — an arranged handout keeps the report's own words.
+      .filter((dc) => ((!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id)
+        || PRINTABLE_ELEMENT_TYPES.has(String(dc.widget_type)))
       .map((dc) => ({
-        chartId: dc.chart_id,
-        title: dc.chart?.name || `Biểu đồ #${dc.chart_id}`,
-        chartType: (dc.chart as { chart_type?: string } | undefined)?.chart_type,
+        chartId: dc.widget_type && dc.widget_type !== 'chart' ? planKeyForElement(dc.id) : dc.chart_id,
+        title: dc.widget_type && dc.widget_type !== 'chart'
+          ? String((dc.widget_config as any)?.title || (dc.widget_config as any)?.headline || (dc.widget_type === 'hero_strip' ? (dashboard?.public_link_name || dashboard?.name) : '') || widgetTypeLabel(t, dc.widget_type))
+          : dc.chart?.name || `#${dc.chart_id}`,
+        chartType: dc.widget_type && dc.widget_type !== 'chart' ? 'ELEMENT' : (dc.chart as { chart_type?: string } | undefined)?.chart_type,
         pageId: getDashboardChartPageId(dc.layout),
         pageName: pageNameById.get(getDashboardChartPageId(dc.layout)) || undefined,
         layout: {
@@ -1419,7 +1620,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
           h: Number(dc.layout?.h ?? 6),
         },
       }));
-  }, [dashboard?.dashboard_charts, dashboardPages]);
+  }, [dashboard?.dashboard_charts, dashboard?.name, dashboardPages, t]);
 
   /**
    * Load one page's chart data for the export arranger's previews.
@@ -1433,8 +1634,8 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     if (!dashboard) return;
     const targets = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
       .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id)
-      .map((dc) => dc.chart_id)
-      .filter((id) => !chartDataRef.current[id]);
+      .filter((dc) => !chartDataRef.current[dataKeyOf(dc)])
+      .map((dc) => dc.chart_id);
     if (!targets.length) return;
     const { controlSeed, hiddenFilters } = resolvePublicPageFilterContext(
       dashboard as unknown as Record<string, unknown>, dashboardPages, pageId,
@@ -1491,11 +1692,38 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     // into the slicer values too (not only into chart data). Without this a
     // public slicer offered values outside the page-filter scope.
     pageHiddenFilters,
+    activePageId,
   );
   const hasPendingFilterChanges = useMemo(
     () => JSON.stringify(draftViewerFilters) !== JSON.stringify(appliedViewerFilters),
     [appliedViewerFilters, draftViewerFilters],
   );
+  // Which controls hold a choice the report does not show yet.
+  const stagedViewerIds = useMemo(
+    () => (hasPendingFilterChanges ? stagedSlicerIds(draftViewerFilters, appliedViewerFilters) : new Set<string>()),
+    [appliedViewerFilters, draftViewerFilters, hasPendingFilterChanges],
+  );
+  // Slicer controls placed on this page's grid (lib/slicer-placement) draw
+  // their slicer there; the filter bar shows the rest. The viewer's filters are
+  // the only state either one edits — the same staged list, the same Apply.
+  const placedViewerSlicerIds = useMemo(
+    () => placedSlicerIds(visibleDashboardCharts),
+    [visibleDashboardCharts],
+  );
+  const placedViewerFilters = useMemo(
+    () => draftViewerFilters.filter((f) => placedViewerSlicerIds.has(String(f.id ?? ''))),
+    [draftViewerFilters, placedViewerSlicerIds],
+  );
+  // What constrains this page that no control on it shows: a link or report
+  // lock, a filter the page carries, a slicer scoped to filter here without a
+  // control, or a slicer with no control on this page. A filtered page must
+  // never read as unfiltered.
+  const filterContextFacts = useMemo<PageFilterFact[]>(() => pageFilterFacts({
+    applied: appliedViewerFilters,
+    pageHidden: pageHiddenFilters,
+    locked: lockedBannerEntries,
+    withoutControl: new Set(appliedViewerFilters.map((f) => String(f.id ?? '')).filter((id) => !placedViewerSlicerIds.has(id))),
+  }), [appliedViewerFilters, pageHiddenFilters, lockedBannerEntries, placedViewerSlicerIds]);
   const publicTheme = useMemo(
     () => buildPublicLinkTheme(dashboard?.public_link_appearance),
     [dashboard?.public_link_appearance],
@@ -1523,25 +1751,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // read-only, already filter/permission-scoped). Admin toggle, default on.
   const dataExportEnabled = appearance.allow_data_export;
   const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
-  const showFilterControls = viewerFiltersEnabled && availableFilterColumns.length > 0;
   const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
-  // The saved dock, honoured on the public link exactly as in the builder.
-  //
-  // This used to be a boolean for 'left' only, duplicated from the builder's
-  // own branch — so widening the builder to six docks would have silently left
-  // the public report on two. Both now read `dockLayoutClasses`, and a rail is
-  // left OR right rather than a hard-coded side.
-  // Same resolution as the builder: author placement first, then the theme's
-  // composition default.
-  const slicerDock = String(
-    (dashboard as any)?.slicer_cluster_layout?.position
-    ?? resolveStyleTokens(((dashboard as any)?.theme_config ?? null) as any).filterDock,
-  );
-  const slicerClusterIsRail = slicerDock === 'left' || slicerDock === 'right';
-  const slicerDockClasses = dockLayoutClasses(slicerDock);
-  // 'hidden' keeps the filter VALUES (they are merged server-side) and drops
-  // only the UI — the case a locked public link is built for.
-  const slicerDockHidden = slicerDock === 'hidden';
 
   const handleApplyFilters = useCallback(() => {
     setIsApplyingFilters(true);
@@ -1558,9 +1768,9 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
     if (targetCharts.length === 0) return true;
     return targetCharts.every((dashboardChart) => (
-      Boolean(chartData[dashboardChart.chart_id]) || Boolean(chartErrors[dashboardChart.chart_id])
+      Boolean(chartData[dataKeyOf(dashboardChart)]) || Boolean(chartErrors[dataKeyOf(dashboardChart)])
     ));
-  }, [chartData, chartErrors, dashboard]);
+  }, [chartData, chartErrors, dashboard, dataKeyOf]);
 
   // PDF export now fetches each page's data on-demand inside doExportPdf, so the
   // dashboard load path no longer prefetches all pages. This was the single
@@ -1644,84 +1854,52 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // Render at STORED coordinates — NO liftLayoutToTop. The public report must be
   // pixel-WYSIWYG with the builder desktop: an intentional top gap the DA left is
   // preserved, not normalized away.
-  const layouts: Layout[] = visibleDashboardCharts.map((dashboardChart) => {
-    const layout = dashboardChart.layout;
-    return {
-      i: dashboardChart.id.toString(),
-      x: layout.x || 0,
-      y: layout.y || 0,
-      w: layout.w || 4,
-      h: layout.h || 4,
-    };
+  //
+  // One exception: a filter control that draws NOTHING for this viewer (its
+  // field is locked or hidden by the link, or its slicer's scope does not show
+  // it on this page) leaves no blank cell — its band closes, the builder's rule
+  // for a removed control (lib/grid-arrange withoutAbsentControls). Decided only
+  // once the viewer's filters are seeded, so the page never jumps. The filter
+  // itself still applies; the header says so (filterContextFacts).
+  const viewerSlicerIds = new Set(draftViewerFilters.map((f) => String(f.id ?? '')));
+  const absentControlIds = filtersSeeded
+    ? new Set(visibleDashboardCharts
+      .filter((dc) => isSlicerControl(dc) && !viewerSlicerIds.has(slicerIdOfControl(dc) ?? ''))
+      .map((dc) => dc.id))
+    : new Set<number>();
+  const gridDashboardCharts = absentControlIds.size
+    ? visibleDashboardCharts.filter((dc) => !absentControlIds.has(dc.id))
+    : visibleDashboardCharts;
+  // ONE resolver, ONE width: desktop as authored, tablet/phone AUTO (derived +
+  // content fit) or the page's published CUSTOM layout (drawn as stored). A
+  // control absent for this viewer closes its band — the same rule on desktop
+  // and in a custom layout.
+  const resolvedLayout = resolveReportLayout({
+    tiles: visibleDashboardCharts,
+    absentIds: absentControlIds,
+    profiles: pageProfiles,
+    containerWidth: gridWidth,
+    gap: getDashboardGridMargin(dashboard?.theme_config)[1],
+    measuredRows: measuredContentRows,
   });
+  const activeBreakpoint = resolvedLayout.breakpoint;
 
-  // Phase-G — single SlicerCluster node reused in both placements:
-  // stacked above the grid (top) or as a left column (left). Defined
-  // here so it can sit beside the grid section in left mode.
-  const slicerClusterNode = showFilterControls ? (
-    <div className="[&>div]:mb-0">
-      <SlicerCluster
-        items={[
-          ...draftViewerFilters,
-          ...(((dashboard as any)?.slicers_config || []).filter(
-            (c: any) => c && typeof c === 'object' && c.type === 'image',
-          )),
-        ]}
-        onChildrenChange={(next) => {
-          setDraftViewerFilters(
-            (next as any[]).filter(
-              (c) => !(c && typeof c === 'object' && (c as any).type === 'image'),
-            ),
-          );
-        }}
-        layout={(dashboard as any)?.slicer_cluster_layout || null}
-        columns={availableFilterColumns}
-        columnChartCount={availableFilterChartCount}
-        distinctValues={resolvedDistinctValues}
-        distinctStatus={resolvedDistinctStatus}
-        // Type-to-search over the FULL cached distinct set for high-cardinality
-        // slicers on a public/embed link. Hits the BE result cache via the
-        // public endpoint (no per-keystroke BigQuery, no authed call).
-        fetchServerDistinct={async (column, search) => {
-          if (!column.datasetId || !column.semanticField) return [];
-          try {
-            // Cascade the search results by the viewer's other active filters
-            // + page-scope (same context the prefetch uses); self-strips this
-            // field so the dropdown never pins its own value.
-            const filterContext = getDistinctValueFilterContext(
-              [...appliedViewerFilters, ...pageHiddenFilters], column,
-            );
-            const res = await publicDashboardApi.getFilterDistinctValues(
-              token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search,
-            );
-            return res.values ?? [];
-          } catch {
-            return [];
-          }
-        }}
-        hasPendingChanges={hasPendingFilterChanges}
-        onApply={handleApplyFilters}
-        onReset={handleResetFilters}
-        isApplying={isApplyingFilters}
-        lockSlots
-      />
-    </div>
-  ) : null;
 
   /**
-   * Does this surface offer PDF export?
+   * Does this surface offer report export (PDF / PowerPoint)?
    *
-   * OFF for the EMBED surface (2026-08-04, DA report: export is broken there).
-   * An embed link — the `/embed/emb_…` URL that POST
-   * /integrations/embed/resolve mints, plus any manual iframe of
-   * `/embed/<token>` — is a report living inside somebody else's app, where a
-   * half-working button is worse than none: the host has its own chrome and its
-   * viewers cannot be told "use the public link instead".
+   * PRODUCT CONTRACT (docs/features/dashboard-public-final-closure/spec.md,
+   * capability matrix): report export belongs to the public page `/d/<token>`.
+   * The embed surfaces — a stable `/embed/<token>` iframe and an integration
+   * `/embed/emb_…` grant — are a report inside another application's chrome:
+   * downloads, the export dialog and its progress live with the host there, not
+   * with us. So they offer no report export; per-tile CSV (the rows the viewer
+   * already received) follows the link's `allow_data_export` on every surface.
    *
-   * The public `/d/<token>` surface keeps its Export button.
-   *
-   * Set this back to `true` once export works when embedded — the feature is
-   * still wired underneath, only the entry point is hidden.
+   * The server agrees: an `emb_` grant is refused by the export endpoints
+   * (public._refuse_report_export_on_embed_grant). A stable token is the same
+   * credential on `/d` and `/embed`, so for it this is presentation, not a
+   * permission.
    */
   const exportEnabledOnThisSurface = !isEmbed;
 
@@ -1739,11 +1917,12 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
           : <Download className="h-4 w-4" />
       }
       className="print:hidden"
-      title="Export this dashboard as PDF"
+      title={t('dashboards.export.title')}
+      data-testid="public-export-open"
       data-html2canvas-ignore
     >
       <span className="hidden sm:inline">
-        {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+        {isExportingPdf ? t('dashboards.exportPdf.exporting') : t('dashboards.export.title')}
       </span>
     </Button>
   );
@@ -1782,12 +1961,20 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       >
         {presentationTitle}
       </h1>
-      {snapshotAsOf && (
+      {snapshotMixed ? (
+        <p
+          className="mt-0.5 text-[11px] font-medium text-warning-700"
+          role="status"
+          data-testid="snapshot-mixed"
+        >
+          Dữ liệu vừa được cập nhật trong lúc tải — các biểu đồ đang thuộc hai phiên bản dữ liệu. Tải lại trang để xem cùng một phiên bản.
+        </p>
+      ) : (tilesAsOf ?? snapshotAsOf) && (
         <p
           className="mt-0.5 text-[11px] text-text-tertiary"
-          title={`Số liệu tính đến ${formatSnapshotAsOf(snapshotAsOf)}`}
+          title={`Số liệu tính đến ${formatSnapshotAsOf(tilesAsOf ?? snapshotAsOf)}`}
         >
-          Số liệu tính đến {formatSnapshotAsOf(snapshotAsOf)}
+          Số liệu tính đến {formatSnapshotAsOf(tilesAsOf ?? snapshotAsOf)}
         </p>
       )}
     </div>
@@ -1801,7 +1988,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         return (
           <button
             key={page.id}
-            type="button"
+            type="button" data-testid={`public-page-tab-${page.id}`}
             onClick={() => {
               void handlePageSelect(page.id);
             }}
@@ -1821,123 +2008,6 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     </nav>
   ) : null;
 
-  const filterBannerEl = (lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) ? (
-    <div
-      className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary"
-      style={publicTheme.neutralPillStyle}
-      data-public-locked-banner
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        {lockedBannerEntries.length > 0 ? (
-          <>
-            <span className="font-medium text-text-tertiary">ⓘ Đang lọc theo:</span>
-            {lockedBannerEntries.map((entry, i) => (
-              <span key={`${entry.field}-${i}`} className="inline-flex items-center gap-1">
-                <span className="opacity-70">🔒</span>
-                <span className="font-medium">{entry.label ?? entry.field}</span>
-                <span className="text-text-quaternary">=</span>
-                <span className="font-mono">
-                  {Array.isArray(entry.value)
-                    ? entry.value.slice(0, 3).join(', ') + (entry.value.length > 3 ? `, +${entry.value.length - 3}` : '')
-                    : String(entry.value ?? '')}
-                </span>
-              </span>
-            ))}
-          </>
-        ) : (
-          <span className="text-text-tertiary">Bộ lọc nâng cao có sẵn.</span>
-        )}
-        <button
-          type="button"
-          onClick={() => setIsMiniPaneOpen((v) => !v)}
-          className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
-        >
-          {isMiniPaneOpen ? 'Đóng' : 'Xem chi tiết'}
-        </button>
-      </div>
-      {isMiniPaneOpen && (
-        <div className="mt-3 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-          {lockedBannerEntries.length > 0 && (
-            <div className="space-y-1.5">
-              <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                Bộ lọc cố định (do người chia sẻ link cấu hình)
-              </div>
-              {lockedBannerEntries.map((entry, i) => (
-                <div key={`lock-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
-                  <span>🔒</span>
-                  <span className="font-medium">{entry.label ?? entry.field}</span>
-                  <span className="text-text-quaternary">=</span>
-                  <span className="font-mono text-text-secondary">
-                    {Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
-                  </span>
-                  <span className="ml-auto text-tiny text-text-quaternary">Read-only</span>
-                </div>
-              ))}
-            </div>
-          )}
-          {overridableFilterEntries.length > 0 && (
-            <div className={`${lockedBannerEntries.length > 0 ? 'mt-3 border-t border-[rgb(var(--border-line))] pt-3' : ''} space-y-1.5`}>
-              <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                Bộ lọc có thể chỉnh
-              </div>
-              {overridableFilterEntries.map((entry, i) => {
-                const currentDraft = draftViewerFilters.find(
-                  (f) => f.field === entry.field || f.semanticField === entry.semanticField,
-                );
-                const displayValue = currentDraft?.value ?? entry.value;
-                return (
-                  <div key={`ov-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
-                    <span>👁</span>
-                    <span className="font-medium">{entry.label ?? entry.field}</span>
-                    <span className="text-text-quaternary">=</span>
-                    <input
-                      type="text"
-                      value={Array.isArray(displayValue) ? displayValue.join(', ') : String(displayValue ?? '')}
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        const nextValue = raw.includes(',')
-                          ? raw.split(',').map((s) => s.trim()).filter(Boolean)
-                          : raw;
-                        setDraftViewerFilters((prev) => {
-                          const others = prev.filter(
-                            (f) => f.field !== entry.field && f.semanticField !== entry.semanticField,
-                          );
-                          return [
-                            ...others,
-                            {
-                              ...(currentDraft ?? {}),
-                              id: currentDraft?.id ?? `override-${entry.field}`,
-                              field: entry.field,
-                              semanticField: entry.semanticField,
-                              type: (currentDraft?.type ?? entry.type ?? 'dropdown') as any,
-                              operator: (currentDraft?.operator ?? 'in') as any,
-                              value: nextValue,
-                            } as any,
-                          ];
-                        });
-                      }}
-                      placeholder={Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
-                      className="ml-auto w-48 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-tiny outline-none focus:ring-1 focus:ring-brand"
-                    />
-                  </div>
-                );
-              })}
-              <div className="mt-2 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleApplyFilters()}
-                  disabled={!hasPendingFilterChanges}
-                  className="rounded border border-brand bg-brand px-3 py-1 text-tiny font-emphasis text-text-inverse transition-opacity disabled:opacity-50"
-                >
-                  Apply
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  ) : null;
 
   const filterLiveEl = showLiveState ? (
     <div className="flex flex-col gap-3">
@@ -1976,31 +2046,6 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         </div>
       )}
 
-      {highlightState && (
-        <div
-          className="rounded-lg border border-brand/20 bg-brand/10 px-4 py-3 text-caption text-brand"
-          style={publicTheme.accentPillStyle}
-        >
-          <p className="font-emphasis">
-            Đang làm nổi bật từ {visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.layout?.custom_title
-              ?? visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.chart?.name
-              ?? `Chart ${highlightState.sourceChartId}`}
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className="break-words text-text-secondary">
-              {getFilterDisplayLabel(highlightState.filter)} = {formatFilterValue(highlightState.filter.value)}
-            </span>
-            <Button
-              variant="secondary"
-              size="xs"
-              onClick={() => setHighlightState(null)}
-              style={publicTheme.neutralPillStyle}
-            >
-              Bỏ chọn
-            </Button>
-          </div>
-        </div>
-      )}
 
       {chartLoadError && (
         <div className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-caption text-warning">
@@ -2019,6 +2064,49 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     </div>
   ) : null;
 
+  // Type-to-search for a public slicer control (public endpoint only — no
+  // authed call on this surface).
+  const fetchPublicServerDistinct = async (column: ColumnInfo, search: string): Promise<string[]> => {
+    if (!column.datasetId || !column.semanticField) return [];
+    try {
+      // Cascade the search results by the viewer's other active filters
+      // + page-scope (same context the prefetch uses); self-strips this
+      // field so the dropdown never pins its own value.
+      const filterContext = getDistinctValueFilterContext(
+        [...appliedViewerFilters, ...pageHiddenFilters], column,
+      );
+      const res = await publicDashboardApi.getFilterDistinctValues(
+        token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search, undefined, activePageId,
+      );
+      return res.values ?? [];
+    } catch {
+      return [];
+    }
+  };
+
+  // What a slicer control on this page's grid is bound to. Only the viewer's
+  // own seed can be shown: a field the link locks or hides was stripped by the
+  // server, and a slicer its scope keeps off this page is not in the seed — both
+  // resolve to "missing", and a viewer sees nothing there.
+  const publicSlicerBinding: SlicerControlBinding = {
+    slicers: draftViewerFilters,
+    siblingFilters: draftViewerFilters,
+    visibleHere: () => true,
+    filtersHere: () => true,
+    editing: false,
+    readOnly: !viewerFiltersEnabled,
+    onChange: (next) => setDraftViewerFilters((prev) => replaceSlicerById(prev, next)),
+    columns: availableFilterColumns,
+    columnChartCount: availableFilterChartCount,
+    distinctValues: resolvedDistinctValues,
+    distinctStatus: resolvedDistinctStatus,
+    fetchServerDistinct: fetchPublicServerDistinct,
+    // Only to say what a control filters (its tooltip) — no scope editing here.
+    dashboardPages: dashboardPages.map((p) => ({ id: p.id, name: p.name })),
+    stagedIds: stagedViewerIds,
+    onApply: () => { void handleApplyFilters(); },
+  };
+
   /**
    * One tile, rendered identically wherever it lands: inside the interactive
    * react-grid-layout canvas, or inside the static print flow below. Extracted
@@ -2031,6 +2119,22 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // floating on the page background and an image lost its border/rounding.
   // Pure-visual widgets (shape, which also draws line/divider) and the
   // self-framed parameter switcher stay frameless to avoid a double frame.
+  // What the report header says: the link's title for its audience, the
+  // report's description, and the filters this surface applies (the same
+  // wording as the PDF header).
+  // Switchers show — and apply — the same values the Builder does.
+  const publicParams: Record<string, any> = publicParamValues;
+  const reportMeta = {
+    // The title the link presents to its audience (headline, else the link's
+    // name, else the report's) — the same as the masthead and the PDF: a
+    // publisher names the link for its readers, and the internal report name
+    // must not reappear in the header.
+    name: presentationTitle,
+    description: dashboard?.description ?? null,
+    filterFacts: pageFilterFacts({ applied: appliedViewerFilters, pageHidden: pageHiddenFilters, locked: lockedBannerEntries })
+      .map((f) => `${f.locked ? '🔒 ' : ''}${f.label}: ${statePageFilterFact(f, t)}`),
+    sectionTitleOf: sectionTitlesOf(visibleDashboardCharts, resolveStructure(toStructTiles(visibleDashboardCharts)).sectionOf),
+  };
   function renderWidgetNode(dashboardChart: DashboardChart) {
     const wtype = dashboardChart.widget_type;
     // `transparentBackground` (per-widget config) drops the card frame so the
@@ -2038,16 +2142,20 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     // the self-framed parameter switcher already take.
     const transparentWidget = ((dashboardChart.widget_config ?? {}) as Record<string, any>).transparentBackground === true;
     // Decorative "element" widgets draw their own styling → frameless (no card).
-    const selfStyled = wtype === 'section_header' || wtype === 'callout' || wtype === 'hero_strip';
+    const selfStyled = wtype === 'section_header' || wtype === 'callout' || wtype === 'hero_strip' || wtype === 'slicer';
     const frameless = wtype === 'shape' || wtype === 'parameter_switcher' || selfStyled || transparentWidget;
     return (
-      <div key={dashboardChart.id.toString()} className="h-full">
+      <div key={dashboardChart.id.toString()} data-grid-item-id={dashboardChart.id} className="h-full">
         {frameless ? (
-          <div className="h-full w-full">
-            <DashboardWidget widget={dashboardChart} />
+          <div className="h-full w-full" data-tile-id={dashboardChart.id} data-tile-kind="widget" data-widget-type={wtype ?? undefined}>
+            {isSlicerControl(dashboardChart)
+              ? <GridSlicerTile tile={dashboardChart} binding={publicSlicerBinding} />
+              : <ReportMetaProvider value={reportMeta}><DashboardWidget widget={dashboardChart} params={publicParams} onParamChange={handlePublicParamChange} /></ReportMetaProvider>}
           </div>
         ) : (
           <div
+            data-tile-id={dashboardChart.id}
+            data-tile-kind="widget"
             className="dashboard-tile h-full w-full overflow-hidden rounded-lg border bg-surface-1"
             style={{
               borderRadius: 'var(--dashboard-card-radius, 0.5rem)',
@@ -2055,7 +2163,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))',
             }}
           >
-            <DashboardWidget widget={dashboardChart} />
+            <ReportMetaProvider value={reportMeta}><DashboardWidget widget={dashboardChart} params={publicParams} onParamChange={handlePublicParamChange} /></ReportMetaProvider>
           </div>
         )}
       </div>
@@ -2071,15 +2179,16 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     }
 
     const chart = dashboardChart.chart;
-    const payload = chartData[dashboardChart.chart_id];
-    const chartError = chartErrors[dashboardChart.chart_id];
+    const payload = chartData[dataKeyOf(dashboardChart)];
+    const chartError = chartErrors[dataKeyOf(dashboardChart)];
     const title = dashboardChart.layout.custom_title ?? '';
 
     return (
-      <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
+      <div key={dashboardChart.id.toString()} data-grid-item-id={dashboardChart.id} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
         <ChartErrorBoundary chartId={dashboardChart.chart_id}>
           <ReadonlyChartTile
             chart={chart}
+            dashboardChartId={dashboardChart.id}
             chartData={payload}
             error={chartError}
             title={title}
@@ -2091,8 +2200,8 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
             highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
             isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
             highlightData={null}
-            forceVisible={forceVisibleAll}
-            publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
+            forceVisible={forceVisibleAll || citedTileIds.has(dashboardChart.id)}
+            publicDatasetModels={(dashboard as any)?.public_dataset_models ?? {}}
             viewerGrain={chartGrains[dashboardChart.chart_id]}
             onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
             lockDateGrain={(dashboardChart.layout as any)?.lockDateGrain === true}
@@ -2117,42 +2226,21 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // render and blow up with React #310 ("rendered more hooks than last time").
   // The grouping is a sort over a handful of tiles — memoising it would cost
   // more than it saves.
-  const printTileRows = printMode ? groupTilesIntoRows(visibleDashboardCharts) : [];
+  // A tile whose content grows with its data in the full-data print (tables).
+  const isTableLikeTile = (dc: any): boolean =>
+    /^(TABLE|PIVOT|MATRIX)/i.test(String(dc?.chart?.chart_type ?? ''));
+  const printBands = printMode
+    ? groupIntoPrintBands(visibleDashboardCharts.map((dc) => ({
+      id: dc.id,
+      x: Number(dc.layout?.x) || 0,
+      y: Number(dc.layout?.y) || 0,
+      w: Number(dc.layout?.w) || DASHBOARD_GRID_COLS,
+      h: Number(dc.layout?.h) || 12,
+      kind: dc.widget_type ?? 'chart',
+      dc,
+    })))
+    : [];
 
-  const gridSectionEl = (
-    <ExportModeContext.Provider value={exportRenderMode || (printMode ? printRenderMode : false)}>
-      <section
-        ref={gridSectionRef}
-        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterIsRail ? 'min-w-0 flex-1' : 'w-full'}`}
-      >
-        {visibleDashboardCharts.length === 0 ? (
-          <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
-            <p className="text-caption text-text-tertiary">No charts on this page yet.</p>
-          </div>
-        ) : (
-          <div
-            ref={gridMeasureRef}
-            className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
-          >
-            <ResponsiveReportGrid
-              className="layout"
-              layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
-              breakpoints={REPORT_BREAKPOINTS}
-              cols={REPORT_COLS}
-              rowHeight={reportRowHeight}
-              margin={getDashboardGridMargin(dashboard?.theme_config)}
-              isDraggable={false}
-              isResizable={false}
-              compactType={null}
-              preventCollision={true}
-            >
-              {visibleDashboardCharts.map(renderTileNode)}
-            </ResponsiveReportGrid>
-          </div>
-        )}
-      </section>
-    </ExportModeContext.Provider>
-  );
 
   if (printMode) {
     // Paper shell: no app chrome, no scroll container, white background.
@@ -2172,30 +2260,94 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       >
         <ExportModeContext.Provider value={printRenderMode}>
           <main className="w-full px-3 py-2" data-pdf-root="1">
+            {printRenderMode === 'full' && (
+              // Paper repeats a table's header on every sheet, so a paginated
+              // table needs MORE height than its on-screen layout gave its
+              // (overflow-hidden) tile — which then clipped the last rows of a
+              // full-data export. Inside a growable band nothing may clip.
+              <style>{'[data-print-growable="1"] * { overflow: visible !important; }'}</style>
+            )}
             <section ref={gridSectionRef}>
-              {printTileRows.map((row, rowIndex) => (
-                <div
-                  key={`pdf-row-${rowIndex}`}
-                  className="pdf-print-row"
-                  style={{ display: 'flex', gap: `${rowGap}px`, marginBottom: `${rowGap}px` }}
-                >
-                  {row.map((dashboardChart) => (
+              {printBands.map((band, bandIndex) => {
+                const rowH = dashboardRowHeight(rowGap);
+                const px = (rows: number) => rows * rowH + Math.max(0, rows - 1) * rowGap;
+                if (printRenderMode === 'full') {
+                  // FULL-DATA export ("Keep dashboard layout"): a table expands
+                  // to every row, so a fixed-height band clipped it to the rows
+                  // that fit the authored tile (the PDF promised every row and
+                  // silently printed 4 of 40). The same 36-column geometry as a
+                  // CSS grid whose rows are AT LEAST the authored height and grow
+                  // with their content: short tiles keep the screen layout, a long
+                  // table grows and paginates instead of being cut.
+                  const growable = band.tiles.some((tile) => isTableLikeTile(tile.dc));
+                  return (
                     <div
-                      key={dashboardChart.id}
+                      key={`pdf-band-${bandIndex}`}
+                      className="pdf-print-row"
+                      data-print-band={bandIndex}
+                      data-print-growable={growable ? '1' : undefined}
                       style={{
-                        // Same fraction of the width the author gave the tile on
-                        // the (finer, 36-column) grid, so the sheet mirrors the
-                        // screen. Row height uses the finer per-gap row unit so a
-                        // ×3-migrated tile keeps its exact printed height.
-                        flex: `0 0 calc(${((dashboardChart.layout?.w ?? DASHBOARD_GRID_COLS) / DASHBOARD_GRID_COLS) * 100}% - ${rowGap}px)`,
-                        height: `${(dashboardChart.layout?.h ?? 12) * dashboardRowHeight(rowGap) + (((dashboardChart.layout?.h ?? 12) - 1) * rowGap)}px`,
+                        display: 'grid',
+                        gridTemplateColumns: `repeat(${DASHBOARD_GRID_COLS}, minmax(0, 1fr))`,
+                        gridAutoRows: `minmax(${rowH}px, auto)`,
+                        columnGap: `${rowGap}px`,
+                        rowGap: `${rowGap}px`,
+                        marginBottom: `${rowGap}px`,
+                        ...(growable ? {} : { breakInside: 'avoid', pageBreakInside: 'avoid' }),
+                        ...(band.keepWithNext ? { breakAfter: 'avoid', pageBreakAfter: 'avoid' } : {}),
                       }}
                     >
-                      {renderTileNode(dashboardChart)}
+                      {band.tiles.map((tile) => (
+                        <div
+                          key={tile.id}
+                          style={{
+                            gridColumn: `${tile.x + 1} / span ${Math.max(1, tile.w)}`,
+                            gridRow: `${tile.y - band.top + 1} / span ${Math.max(1, tile.h)}`,
+                            minWidth: 0,
+                            ...(isTableLikeTile(tile.dc) ? {} : { breakInside: 'avoid', pageBreakInside: 'avoid' }),
+                          }}
+                        >
+                          {renderTileNode(tile.dc)}
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              ))}
+                  );
+                }
+                return (
+                  <div
+                    key={`pdf-band-${bandIndex}`}
+                    className="pdf-print-row"
+                    data-print-band={bandIndex}
+                    // A band prints whole on one sheet; a lone section heading
+                    // stays with the section it opens.
+                    style={{
+                      position: 'relative',
+                      height: `${px(band.rows)}px`,
+                      marginBottom: `${rowGap}px`,
+                      breakInside: 'avoid',
+                      pageBreakInside: 'avoid',
+                      ...(band.keepWithNext ? { breakAfter: 'avoid', pageBreakAfter: 'avoid' } : {}),
+                    }}
+                  >
+                    {band.tiles.map((tile) => (
+                      <div
+                        key={tile.id}
+                        style={{
+                          // The column and offset the author gave the tile on the
+                          // 36-column grid, so the sheet mirrors the screen.
+                          position: 'absolute',
+                          left: `calc(${(tile.x / DASHBOARD_GRID_COLS) * 100}%)`,
+                          width: `calc(${(tile.w / DASHBOARD_GRID_COLS) * 100}% - ${rowGap}px)`,
+                          top: `${tile.y === band.top ? 0 : px(tile.y - band.top) + rowGap}px`,
+                          height: `${px(tile.h)}px`,
+                        }}
+                      >
+                        {renderTileNode(tile.dc)}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             </section>
           </main>
         </ExportModeContext.Provider>
@@ -2222,48 +2374,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       <main ref={publicContentRef} className={isEmbed
         ? 'w-full min-w-0 flex flex-col gap-1 px-3 pt-3 pb-0 sm:px-4'
         : 'flex-1 min-w-0 overflow-hidden flex flex-col gap-1 px-3 pt-4 pb-0 sm:px-4 lg:px-6 lg:pt-5'}>
-        {slicerClusterIsRail ? (
-          /* ── LEFT app-shell ──────────────────────────────────────────────
-             When the author placed the slicer cluster on the LEFT, the report
-             becomes a 2-column shell: the brand mark + title sit ABOVE the
-             filter rail in the left column, while the page tabs, Export, and
-             the chart grid pull to the TOP of the right column. This removes
-             the full-width header band so nothing floats with dead space above
-             the rail (user ask). The rail is sticky so filters stay in view. */
-          <div className="mx-auto flex min-h-0 w-full flex-1 flex-col gap-3 lg:flex-row lg:items-stretch">
-            {/* Left column = brand+title (top, level with the page tabs) then
-                the filter rail. gap-4 = 2× the previous title↔filter spacing.
-                This column is a fixed flex sibling so it never scrolls away. */}
-            <aside className="flex w-full flex-shrink-0 flex-col gap-4 lg:w-[280px]">
-              <div className="flex items-start gap-2.5 px-1">
-                {brandMarkEl}
-                {titleEl}
-              </div>
-              {showFilterControls && (
-                <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm">
-                  {slicerClusterNode}
-                </div>
-              )}
-            </aside>
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
-                {pageTabsEl}
-                <div className="ml-auto shrink-0">{exportButtonEl}</div>
-              </div>
-              {(filterBannerEl || filterLiveEl) && (
-                <div className="shrink-0 space-y-2">
-                  {filterBannerEl}
-                  {filterLiveEl}
-                </div>
-              )}
-              {/* Only the charts scroll. */}
-              <div className={isEmbed ? 'pb-4' : 'min-h-0 flex-1 overflow-y-auto pb-4'}>
-                {gridSectionEl}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <>
+        <>
         {/* Phase-B7 — FLUSH report header (was a bordered/elevated card on a
             gray page = "web widget" look). A report masthead is flat with just
             a hairline divider; tiles are the only cards. Removes one nesting
@@ -2284,12 +2395,19 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               >
                 {presentationTitle}
               </h1>
+              {/* What the report is for — unless this page opens with a report
+                  header, which states it itself (no second copy). */}
+              {dashboard?.description && !visibleDashboardCharts.some((dc) => dc.widget_type === 'hero_strip') && (
+                <p className="mt-0.5 line-clamp-2 text-[12.5px] leading-snug text-text-secondary" data-public-description>
+                  {dashboard.description}
+                </p>
+              )}
               {snapshotAsOf && (
                 <p
                   className="mt-0.5 truncate text-[11px] text-text-tertiary"
-                  title={`Số liệu tính đến ${formatSnapshotAsOf(snapshotAsOf)}`}
+                  title={`${t('dashboards.pdf.dataAsOf')} ${formatSnapshotAsOf(snapshotAsOf)}`}
                 >
-                  Số liệu tính đến {formatSnapshotAsOf(snapshotAsOf)}
+                  {t('dashboards.pdf.dataAsOf')} {formatSnapshotAsOf(snapshotAsOf)}
                 </p>
               )}
             </div>
@@ -2306,11 +2424,12 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                     : <Download className="h-4 w-4" />
                 }
                 className="print:hidden"
-                title="Export this dashboard as PDF"
+                title={t('dashboards.export.title')}
+      data-testid="public-export-open"
                 data-html2canvas-ignore
               >
                 <span className="hidden sm:inline">
-                  {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+                  {isExportingPdf ? t('dashboards.exportPdf.exporting') : t('dashboards.export.title')}
                 </span>
               </Button>
             </div>
@@ -2330,7 +2449,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                 return (
                   <button
                     key={page.id}
-                    type="button"
+                    type="button" data-testid={`public-page-tab-${page.id}`}
                     onClick={() => {
                       void handlePageSelect(page.id);
                     }}
@@ -2350,12 +2469,10 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
             </nav>
           )}
 
-          {/* In LEFT mode the slicer cluster moves out to the side rail, so the
-              header filter block must NOT render just because showFilterControls
-              is true — otherwise it draws an empty divider + padding. Only render
-              it for the top-mode slicers, live state, or the locked/override
-              banners. */}
-          {((showFilterControls && !slicerClusterIsRail && !slicerDockHidden) || showLiveState || lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+          {/* The header carries only state (loading, cross-filter) and the
+              locked/override banners. Filter CONTROLS are elements of the report
+              grid; there is no filter area here. */}
+          {(showLiveState || filterContextFacts.length > 0 || overridableFilterEntries.length > 0) && (
             <div className="mt-2 space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
 
               {/* Phase-F THẬT (PBI-parity rework) — banner for locked
@@ -2363,46 +2480,49 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                   with locked entries (read-only, 🔒) plus override-allowed
                   entries (editable). See docs/filter-semantics.md §9 +
                   user-approved wireframe. */}
-              {(lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+              {(filterContextFacts.length > 0 || overridableFilterEntries.length > 0) && (
                 <div
                   className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary"
                   style={publicTheme.neutralPillStyle}
                   data-public-locked-banner
+                  data-filter-context
                 >
-                  <div className="flex flex-wrap items-center gap-2">
-                    {lockedBannerEntries.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    {filterContextFacts.length > 0 ? (
                       <>
-                        <span className="font-medium text-text-tertiary">ⓘ Đang lọc theo:</span>
-                        {lockedBannerEntries.map((entry, i) => (
-                          <span key={`${entry.field}-${i}`} className="inline-flex items-center gap-1">
-                            <span className="opacity-70">🔒</span>
-                            <span className="font-medium">{entry.label ?? entry.field}</span>
-                            <span className="text-text-quaternary">=</span>
-                            <span className="font-mono">
-                              {Array.isArray(entry.value)
-                                ? entry.value.slice(0, 3).join(', ') + (entry.value.length > 3 ? `, +${entry.value.length - 3}` : '')
-                                : String(entry.value ?? '')}
-                            </span>
+                        <span className="font-medium text-text-tertiary">{t('dashboards.filterContext.filteredBy')}</span>
+                        {filterContextFacts.map((fact) => (
+                          <span
+                            key={fact.key}
+                            className="inline-flex items-center gap-1"
+                            data-filter-fact={fact.locked ? 'locked' : 'applied'}
+                            title={fact.locked ? t('dashboards.filterContext.lockedTitle') : t('dashboards.filterContext.appliedTitle')}
+                          >
+                            {fact.locked && <span className="opacity-70" aria-hidden>🔒</span>}
+                            <span className="font-medium">{fact.label}:</span>
+                            <span>{statePageFilterFact(fact, t)}</span>
                           </span>
                         ))}
                       </>
                     ) : (
-                      <span className="text-text-tertiary">Bộ lọc nâng cao có sẵn.</span>
+                      <span className="text-text-tertiary">{t('dashboards.filterContext.adjustable')}</span>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => setIsMiniPaneOpen((v) => !v)}
-                      className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
-                    >
-                      {isMiniPaneOpen ? 'Đóng' : 'Xem chi tiết'}
-                    </button>
+                    {(lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => setIsMiniPaneOpen((v) => !v)}
+                        className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
+                      >
+                        {isMiniPaneOpen ? t('dashboards.filterContext.close') : t('dashboards.filterContext.details')}
+                      </button>
+                    )}
                   </div>
                   {isMiniPaneOpen && (
                     <div className="mt-3 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-3">
                       {lockedBannerEntries.length > 0 && (
                         <div className="space-y-1.5">
                           <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                            Bộ lọc cố định (do người chia sẻ link cấu hình)
+                            {t('dashboards.filterContext.lockedHeading')}
                           </div>
                           {lockedBannerEntries.map((entry, i) => (
                             <div key={`lock-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
@@ -2412,7 +2532,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                               <span className="font-mono text-text-secondary">
                                 {Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
                               </span>
-                              <span className="ml-auto text-tiny text-text-quaternary">Read-only</span>
+                              <span className="ml-auto text-tiny text-text-quaternary">{t('dashboards.filterContext.readOnly')}</span>
                             </div>
                           ))}
                         </div>
@@ -2420,7 +2540,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                       {overridableFilterEntries.length > 0 && (
                         <div className={`${lockedBannerEntries.length > 0 ? 'mt-3 border-t border-[rgb(var(--border-line))] pt-3' : ''} space-y-1.5`}>
                           <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                            Bộ lọc có thể chỉnh
+                            {t('dashboards.filterContext.adjustableHeading')}
                           </div>
                           {overridableFilterEntries.map((entry, i) => {
                             const currentDraft = draftViewerFilters.find(
@@ -2481,11 +2601,6 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                 </div>
               )}
 
-              {/* Top mode renders the slicer cluster here (stacked
-                  above charts). Left mode renders it BESIDE the grid in
-                  the flex-row wrapper below instead. */}
-              {showFilterControls && !slicerClusterIsRail && !slicerDockHidden && slicerClusterNode}
-
               {showLiveState && (
                 <div className="flex flex-col gap-3">
                   {pendingPageId && (
@@ -2523,31 +2638,6 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                     </div>
                   )}
 
-                  {highlightState && (
-                    <div
-                      className="rounded-lg border border-brand/20 bg-brand/10 px-4 py-3 text-caption text-brand"
-                      style={publicTheme.accentPillStyle}
-                    >
-                      <p className="font-emphasis">
-                        Đang làm nổi bật từ {visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.layout?.custom_title
-                          ?? visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.chart?.name
-                          ?? `Chart ${highlightState.sourceChartId}`}
-                      </p>
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <span className="break-words text-text-secondary">
-                          {getFilterDisplayLabel(highlightState.filter)} = {formatFilterValue(highlightState.filter.value)}
-                        </span>
-                        <Button
-                          variant="secondary"
-                          size="xs"
-                          onClick={() => setHighlightState(null)}
-                          style={publicTheme.neutralPillStyle}
-                        >
-                          Bỏ chọn
-                        </Button>
-                      </div>
-                    </div>
-                  )}
 
                   {chartLoadError && (
                     <div className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-caption text-warning">
@@ -2571,19 +2661,14 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
 
         {/* Only the chart region scrolls; the header above stays pinned. */}
         <div className={isEmbed ? 'pb-4' : 'min-h-0 flex-1 overflow-y-auto pb-4'}>
-        <div className={`mx-auto w-full ${slicerClusterIsRail ? `flex flex-col gap-3 lg:items-start ${slicerDock === 'right' ? 'lg:flex-row-reverse' : 'lg:flex-row'}` : slicerDockClasses.wrapper}`}>
-        {slicerClusterIsRail && showFilterControls && !slicerDockHidden && (
-          <div className="w-full flex-shrink-0 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm lg:sticky lg:top-3 lg:w-[280px]">
-            {slicerClusterNode}
-          </div>
-        )}
+        <div className="mx-auto w-full">
         {/* Phase-B7 — FLUSH canvas (no card frame): tiles sit directly on the
             page background like a PBI report canvas, not inside a second
             bordered panel. */}
         <ExportModeContext.Provider value={exportRenderMode}>
         <section
           ref={gridSectionRef}
-          className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterIsRail ? 'min-w-0 flex-1' : 'w-full'}`}
+        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} w-full`}
         >
           {visibleDashboardCharts.length === 0 ? (
             <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
@@ -2594,11 +2679,33 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               ref={gridMeasureRef}
               className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
             >
-              <ResponsiveReportGrid
+              <div
+                className="relative"
+                ref={fitRootRef}
+                // Observability (tests, audits): what this surface drew, from the ONE width —
+                // nothing before that width is known (nothing is drawn then either).
+                data-report-width={gridWidth ?? 0}
+                data-report-breakpoint={gridWidth ? activeBreakpoint : undefined}
+                data-report-cols={gridWidth ? resolvedLayout.cols : undefined}
+                data-report-layout-source={gridWidth ? resolvedLayout.source : undefined}
+                data-report-layout={gridWidth ? JSON.stringify(resolvedLayout.layout.map(({ i, x, y, w, h }) => ({ i, x, y, w, h }))) : undefined}
+              >
+              {activeBreakpoint !== 'xs' && gridWidth ? (
+                <SectionBands
+                  layouts={resolvedLayout.layout}
+                  dashboardCharts={gridDashboardCharts}
+                  cols={resolvedLayout.cols}
+                  rowH={reportRowHeight}
+                  margin={getDashboardGridMargin(dashboard?.theme_config)}
+                  width={gridWidth}
+                />
+              ) : null}
+              {gridWidth ? (
+              <GridLayout
                 className="layout"
-                layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
-                breakpoints={REPORT_BREAKPOINTS}
-                cols={REPORT_COLS}
+                width={gridWidth}
+                layout={resolvedLayout.layout}
+                cols={resolvedLayout.cols}
                 rowHeight={reportRowHeight}
                 margin={getDashboardGridMargin(dashboard?.theme_config)}
                 isDraggable={false}
@@ -2606,7 +2713,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                 compactType={null}
                 preventCollision={true}
               >
-                {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
+                {gridDashboardCharts.map((dashboardChart: DashboardChart) => {
                   // Non-chart widgets (text/image/countdown/shape/parameter_switcher)
                   // skip the chart-fetch path and render via the shared DashboardWidget.
                   const isWidget = Boolean(
@@ -2617,16 +2724,17 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                   }
 
                   const chart = dashboardChart.chart;
-                  const payload = chartData[dashboardChart.chart_id];
-                  const chartError = chartErrors[dashboardChart.chart_id];
+                  const payload = chartData[dataKeyOf(dashboardChart)];
+                  const chartError = chartErrors[dataKeyOf(dashboardChart)];
                   // Phase-B11 — no auto chart-name title; only an explicit one.
                   const title = dashboardChart.layout.custom_title ?? '';
 
                   return (
-                    <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
+                    <div key={dashboardChart.id.toString()} data-grid-item-id={dashboardChart.id} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
                       <ChartErrorBoundary chartId={dashboardChart.chart_id}>
                         <ReadonlyChartTile
                           chart={chart}
+                          dashboardChartId={dashboardChart.id}
                           chartData={payload}
                           error={chartError}
                           title={title}
@@ -2641,8 +2749,8 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                           highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
                           isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
                           highlightData={null}
-                          forceVisible={forceVisibleAll}
-                          publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
+                          forceVisible={forceVisibleAll || citedTileIds.has(dashboardChart.id)}
+                          publicDatasetModels={(dashboard as any)?.public_dataset_models ?? {}}
                           viewerGrain={chartGrains[dashboardChart.chart_id]}
                           onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
                           lockDateGrain={(dashboardChart.layout as any)?.lockDateGrain === true}
@@ -2660,15 +2768,25 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                     </div>
                   );
                 })}
-              </ResponsiveReportGrid>
+              </GridLayout>
+              ) : null}
+              </div>
             </div>
           )}
         </section>
         </ExportModeContext.Provider>
         </div>{/* /Phase-G left-vs-top slicer arrangement wrapper */}
+        {/* Controls placed on the grid stage their choice like the bar; this is
+            the one Apply for all of them. */}
+        <FilterApplyBar
+          visible={placedViewerFilters.length > 0 && viewerFiltersEnabled && hasPendingFilterChanges && !exportInProgressRef.current}
+          isApplying={isApplyingFilters}
+          onApply={handleApplyFilters}
+          onReset={handleResetFilters}
+          count={stagedViewerIds.size}
+        />
         </div>{/* /scroll region */}
-          </>
-        )}
+        </>
       </main>
 
       {/* Belt and braces: with export hidden on this surface the dialog must not
@@ -2699,3 +2817,14 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     </DashboardThemeProvider>
   );
 }
+
+/** Every tile and narrative block of one rendered report shares one evidence
+ *  store, so a sentence states exactly what its tile is showing. */
+export function PublicDashboardView(props: React.ComponentProps<typeof PublicDashboardViewInner>) {
+  return (
+    <ReportEvidenceProvider>
+      <PublicDashboardViewInner {...props} />
+    </ReportEvidenceProvider>
+  );
+}
+

@@ -40,3 +40,10 @@ if not os.environ.get("DATABASE_URL"):
     os.environ["DATABASE_URL"] = f"sqlite:///{_HERE / '.pytest-fallback.db'}"
 if not os.environ.get("DATA_DIR"):
     os.environ["DATA_DIR"] = str(_HERE / ".testdata")
+# Source outbound network policy (source_network_policy.py) refuses loopback and
+# private addresses by default. The *_pg suites connect to a local Postgres as a
+# data source, so the test process opens loopback EXPLICITLY — the same knob an
+# operator uses — instead of the policy growing a test bypass. Never overrides a
+# value already set; test_source_security.py sets its own per test.
+if not os.environ.get("ALLOWED_PRIVATE_SOURCE_CIDRS"):
+    os.environ["ALLOWED_PRIVATE_SOURCE_CIDRS"] = "127.0.0.0/8,::1/128"

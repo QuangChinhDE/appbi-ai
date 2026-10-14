@@ -486,6 +486,17 @@ def collect_derived_dependency_table_ids(
     return dependency_ids
 
 
+# AppBI's internal dialect names are not all sqlglot's. sqlglot registers the
+# PostgreSQL dialect as "postgres"; passing "postgresql" raises "Unknown dialect
+# 'postgresql'. Did you mean postgres?" — which broke creating a calculated table
+# over a PostgreSQL source (the alias rewrite emits SQL through sqlglot).
+_SQLGLOT_DIALECT = {"postgresql": "postgres"}
+
+
+def _to_sqlglot_dialect(dialect: str) -> str:
+    return _SQLGLOT_DIALECT.get((dialect or "").strip().lower(), dialect)
+
+
 def rewrite_dataset_table_aliases_in_sql(
     sql: str,
     replacements: Dict[str, str],
@@ -526,35 +537,18 @@ def rewrite_dataset_table_aliases_in_sql(
         table.set("this", exp.Identifier(this=replacement, quoted=False))
         changed = True
 
-    return statement.sql(dialect=output_dialect) if changed else cleaned
+    return statement.sql(dialect=_to_sqlglot_dialect(output_dialect)) if changed else cleaned
 
 
 def _source_columns_for_transformations(table: DatasetTable | Any) -> list[str] | None:
-    columns_cache = getattr(table, "columns_cache", None)
-    if isinstance(columns_cache, dict):
-        source_columns = columns_cache.get("source_columns")
-        if isinstance(source_columns, list):
-            normalized = [str(item) for item in source_columns if str(item).strip()]
-            if normalized:
-                return normalized
-        raw_columns = columns_cache.get("columns")
-        if isinstance(raw_columns, list):
-            normalized = [
-                str(item.get("name") or "").strip()
-                for item in raw_columns
-                if isinstance(item, dict) and str(item.get("name") or "").strip()
-            ]
-            if normalized:
-                return normalized
-    if isinstance(columns_cache, list):
-        normalized = [
-            str(item.get("name") or "").strip()
-            for item in columns_cache
-            if isinstance(item, dict) and str(item.get("name") or "").strip()
-        ]
-        if normalized:
-            return normalized
-    return None
+    """One rule with the semantic model's resolver (dataset_model_service):
+    ``source_columns`` when cached, else the cached OUTPUT columns minus what
+    this table's own steps create — never a calculated column taken as source."""
+    from app.services.dataset_model_service import (
+        _source_columns_for_transformations as _model_source_columns,
+    )
+
+    return _model_source_columns(table)
 
 
 def _apply_table_transformations(

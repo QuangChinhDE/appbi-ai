@@ -206,15 +206,35 @@ def build_dictionary_stats(
     }
 
 
+def live_column_names(table: DatasetTable | object) -> set[str] | None:
+    """The columns a table has NOW (cached source columns + calculated fields),
+    or None when unknown (no cache yet → do not filter on a guess). Dictionary
+    notes survive schema evolution so the author can fix them, but AI context
+    must never describe a column that no longer exists."""
+    from app.services.dataset_model_service import cache_column_names
+
+    names = set(cache_column_names(getattr(table, "columns_cache", None)) or ())
+    if not names:
+        return None
+    for step in getattr(table, "transformations", None) or []:
+        if isinstance(step, dict) and step.get("type") in ("add_column", "js_formula"):
+            new_field = str((step.get("params") or {}).get("newField") or "").strip()
+            if new_field:
+                names.add(new_field)
+    return names
+
+
 def build_dictionary_context(
     dataset: Dataset,
     tables: Iterable[DatasetTable] | None = None,
 ) -> str:
     dictionary = normalize_dictionary_payload(getattr(dataset, "dictionary", None))
+    tables = list(tables or [])
     table_lookup = {
         int(table.id): (table.display_name or table.source_table_name or f"Table {table.id}")
-        for table in (tables or [])
+        for table in tables
     }
+    live_columns = {int(table.id): live_column_names(table) for table in tables}
     lines = [
         f"Dataset: {dataset.name}",
     ]
@@ -252,7 +272,10 @@ def build_dictionary_context(
                 table_id = int(note.get("table_id"))
             except (TypeError, ValueError):
                 continue
+            if tables and table_id not in table_lookup:
+                continue  # the table was deleted — its notes are not AI context
             header = table_lookup.get(table_id, f"Table {table_id}")
+            live = live_columns.get(table_id)
             detail_parts = []
             for key, label in (
                 ("business_role", "role"),
@@ -275,6 +298,8 @@ def build_dictionary_context(
                 if not isinstance(column_note, dict):
                     continue
                 column_name = _clean_text(column_note.get("column_name"))
+                if live is not None and column_name and column_name not in live:
+                    continue  # renamed / removed / source-dropped column
                 description = _clean_block_text(column_note.get("description"))
                 business_name = _clean_text(column_note.get("business_name"))
                 quality = column_note.get("quality") if isinstance(column_note.get("quality"), dict) else None

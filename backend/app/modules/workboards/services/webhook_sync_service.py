@@ -51,6 +51,7 @@ from app.modules.workboards.schemas import (
 )
 from app.modules.workboards.services import screen_runtime
 from app.modules.workboards.services.rls_service import CallerIdentity
+from app.core import egress as _egress
 
 logger = get_logger(__name__)
 
@@ -484,12 +485,13 @@ async def _execute_run(
                 }
 
                 try:
-                    resp = await client.post(
+                    resp = await _egress.http_post_async(
+                        client,
                         webhook.url,
                         headers=headers,
                         json=payload,
                     )
-                except httpx.HTTPError as exc:
+                except (httpx.HTTPError, _egress.EgressDenied) as exc:
                     run.failed_batches += 1
                     run.last_error = f"HTTP error on batch {batch_idx}: {exc!s}"[:1000]
                     run.last_response_status = None
@@ -677,12 +679,19 @@ async def test_webhook(
     started = time.perf_counter()
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            resp = await client.post(webhook.url, headers=headers, json=payload)
+            resp = await _egress.http_post_async(client, webhook.url, headers=headers, json=payload)
+        except _egress.EgressDenied:
+            return {
+                "ok": False,
+                "status": None,
+                "error": "Target not allowed by the outbound network policy.",
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+            }
         except httpx.HTTPError as exc:
             return {
                 "ok": False,
                 "status": None,
-                "error": str(exc),
+                "error": f"Delivery failed ({exc.__class__.__name__}).",
                 "duration_ms": int((time.perf_counter() - started) * 1000),
             }
     return {

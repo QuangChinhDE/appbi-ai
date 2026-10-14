@@ -1,0 +1,325 @@
+{
+  "sha": "dddb4c061079e88484b1585dce6c6ed863a8e01e",
+  "ranAt": "2026-09-26T20:43:03.529Z",
+  "results": {
+    "S1 create from scratch": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — olist: report has charts that ran (10)",
+        "PASS — olist: opening headline at the top",
+        "PASS — olist: headline is finding keys only",
+        "PASS — olist: a slicer",
+        "PASS — olist: a detail table",
+        "PASS — olist: headline sentences computed (ready,ready,ready)",
+        "PASS — olist: builder has no render defect",
+        "PASS — olist: incomplete months are drawn apart from the complete line (2 dashed segment(s))",
+        "PASS — olist: the revenue KPI states the span its total covers (1)",
+        "PASS — s1-olist /d at 1440px has no render defect",
+        "PASS — s1-olist /d at 1440px has no sideways scroll",
+        "PASS — s1-olist /d at 1440px: every published sentence is computed (ready,ready,ready)",
+        "PASS — s1-olist /d at 820px has no render defect",
+        "PASS — s1-olist /d at 820px has no sideways scroll",
+        "PASS — s1-olist /d at 820px: every published sentence is computed (ready,ready,ready)",
+        "PASS — s1-olist /d at 390px has no render defect",
+        "PASS — s1-olist /d at 390px has no sideways scroll",
+        "PASS — s1-olist /d at 390px: every published sentence is computed (ready,ready,ready)",
+        "PASS — sales: report has charts that ran (7)",
+        "PASS — sales: opening headline at the top",
+        "PASS — sales: headline is finding keys only",
+        "PASS — sales: a slicer",
+        "PASS — sales: a detail table",
+        "PASS — sales: headline sentences computed (ready)",
+        "PASS — sales: builder has no render defect",
+        "PASS — s1-sales /d at 1440px has no render defect",
+        "PASS — s1-sales /d at 1440px has no sideways scroll",
+        "PASS — s1-sales /d at 1440px: every published sentence is computed (ready)",
+        "PASS — s1-sales /d at 820px has no render defect",
+        "PASS — s1-sales /d at 820px has no sideways scroll",
+        "PASS — s1-sales /d at 820px: every published sentence is computed (ready)",
+        "PASS — s1-sales /d at 390px has no render defect",
+        "PASS — s1-sales /d at 390px has no sideways scroll",
+        "PASS — s1-sales /d at 390px: every published sentence is computed (ready)"
+      ],
+      "metrics": {
+        "olist_create_ms": 7595,
+        "olist_first_render_ms": 18226,
+        "olist_charts": [
+          "KPI:Total Revenue",
+          "KPI:Total Orders",
+          "KPI:Average Order Value",
+          "KPI:Delivered Orders",
+          "TIME_SERIES:Monthly Revenue Trend",
+          "TIME_SERIES:Freight by month",
+          "BAR:Revenue by Product Category",
+          "BAR:Revenue by Order Status",
+          "BAR:Freight by product category",
+          "TABLE:Product category — detail"
+        ],
+        "olist_headline": "Revenue for Jan 2018–Aug 2018 is R$ 7.4M, +137% on the same months of 2017 (R$ 3.1M).Monthly revenue review for the leadership teamRevenue rose 610%, from R$ 120.3K in Jan 2017 to R$ 854.7K in Aug 2018.health_beauty leads Revenue with R$ 1.",
+        "s1-olist_public_1440_ms": 4445,
+        "s1-olist_public_820_ms": 3544,
+        "s1-olist_public_390_ms": 3775,
+        "sales_create_ms": 4016,
+        "sales_first_render_ms": 3139,
+        "sales_charts": [
+          "KPI:Total Revenue",
+          "KPI:Average order value",
+          "KPI:Orders",
+          "BAR:Revenue by Region",
+          "BAR:Revenue by Channel",
+          "BAR:Orders by Channel",
+          "TABLE:Region — detail"
+        ],
+        "sales_headline": "Central leads Revenue with $ 667.6K, 38% of the total.Where does revenue come from, by region and channel?Static text — not linked to data",
+        "s1-sales_public_1440_ms": 3578,
+        "s1-sales_public_820_ms": 3025,
+        "s1-sales_public_390_ms": 3168
+      },
+      "evidence": [
+        "s1-olist-builder-1440.jpg",
+        "s1-olist-public-1440.jpg",
+        "s1-olist-public-820.jpg",
+        "s1-olist-public-390.jpg",
+        "s1-sales-builder-1440.jpg",
+        "s1-sales-public-1440.jpg",
+        "s1-sales-public-820.jpg",
+        "s1-sales-public-390.jpg"
+      ],
+      "notes": []
+    },
+    "S2 manual + style-only + locks": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — a manual drag moved the tile (16,208,1278,80 → 16,272,1278,16)",
+        "PASS — style-only preview moved or resized no tile",
+        "PASS — after Apply the geometry is unchanged",
+        "PASS — the locked tile kept its rectangle",
+        "PASS — the lock is saved ({\"x\":24,\"y\":9,\"w\":12,\"h\":16,\"gv\":2,\"pageId\":\"page-1\"})"
+      ],
+      "metrics": {
+        "s2_style_preview_ms": 4582
+      },
+      "evidence": [
+        "s2-authored.jpg",
+        "s2-manual-edited.jpg",
+        "s2-style-preview.jpg",
+        "s2-style-applied.jpg"
+      ],
+      "notes": [
+        "AI Design\n\nDescribe the look you want. Your layout stays as you built it unless you ask to rearrange; charts and data never change.\n\nWhole page (Overview). Style-only unless you ask to move things — select visuals to narrow it.\n\n1 locked visual(s) will not move.\n\nMake this look like a premium, modern SaaS report. Style only — keep my layout exactly as it is.\n\nApplied a modern SaaS theme with a dark mode and glass card treatment to enhance the premium look while maintaining the existing layout.\n\nLayout kept — style only\n\nRestyled 7 visuals\nTheme updated\n\nNEEDS YOUR APPROVAL\n\nThese change what a chart says, so they are applied only if you accept. Accepted changes are saved with the draft and recorded.\n\nSort this ranking by value, largest first\n\nNorth, South, Central→Central, South, North\n\nAccept\nReject\n\nPreviewing — nothing is saved yet\n\nPreview full report\nDiscard\nApply design"
+      ]
+    },
+    "S3 full redesign": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the redesign recomposed the page (14 moved/new)",
+        "PASS — after Apply: no render defect",
+        "PASS — after Apply: every block sentence computed (ready,ready/)"
+      ],
+      "metrics": {
+        "s3_redesign_preview_ms": 3480,
+        "s3_panel": " 12 visuals\nResized 10 visuals\nAdded 2 text block(s) bound to live findings\nTheme updated\n\n2 text block(s) the design wrote but did not place were placed by their role.\n\nGrouped the headline numbers into one row — a KPI reads better in a strip than at half-page width.\n\nVisual review of the rendered preview (advice, not a certificate): hierarchy 4/5, legibility 4/5, composition 4/5, balance 4/5, consistency 4/5, emphasis 4/5. The dashboard is well-organized with clear emphasis, but some elements could be improved for better clarity. Applied 6 presentation fixes within your permission.\n\nRe-checked the repaired preview (advice, not a certificate): hierarchy 4/5, legibility 4/5, composition 4/5, balance 4/5, consistency 4/5, emphasis 4/5. 2 of 6 repaired issue(s) no longer visible. Still visible: visual 4344 — Chart is visually dense and could benefit from grid lines for clarity.; visual 4345 — Pie chart legend is cramped, affecting readability.; visual 4349 — Bar chart lacks data labels, reducing immediate comprehension.; visual 4351 — Table text is small, affecting legibility..\n\nNEEDS YOUR APPROVAL\n\nThese change what a chart says, so they are applied only if you accept. Accepted changes are saved with the draft and recorded.\n\nSort this ranking by value, largest first\n\n1, 3, 5, 2→5, 4, 1, 3\n\nAccept\nReject\n\nPreviewing — nothing is saved yet\n\nPreview full report\nDiscard\nApply design"
+      },
+      "evidence": [
+        "s3-before.jpg",
+        "s3-preview-canvas.jpg",
+        "s3-studio-compare-1440.jpg",
+        "s3-after-apply.jpg"
+      ],
+      "notes": []
+    },
+    "S4 three directions": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — executive: no finding is said twice (period_comparison:4358,peak:4358,trend:4358,latest:4358,top_item:4359,trend:4362)",
+        "PASS — s4-executive /d at 1440px has no render defect",
+        "PASS — s4-executive /d at 1440px has no sideways scroll",
+        "PASS — s4-executive /d at 1440px: every published sentence is computed (ready,ready / ready,ready,ready,ready)",
+        "PASS — s4-executive /d at 820px has no render defect",
+        "PASS — s4-executive /d at 820px has no sideways scroll",
+        "PASS — s4-executive /d at 820px: every published sentence is computed (ready,ready / ready,ready,ready,ready)",
+        "PASS — s4-executive /d at 390px has no render defect",
+        "PASS — s4-executive /d at 390px has no sideways scroll",
+        "PASS — s4-executive /d at 390px: every published sentence is computed (ready,ready / ready,ready,ready,ready)",
+        "PASS — operations: no finding is said twice (latest:4373,latest:4377,concentration:4375,concentration:4376,concentration:4378,partial_periods:4373,partial_periods:4377)",
+        "PASS — s4-operations /d at 1440px has no render defect",
+        "PASS — s4-operations /d at 1440px has no sideways scroll",
+        "PASS — s4-operations /d at 1440px: every published sentence is computed (ready / ready / ready,ready,ready,ready,ready)",
+        "PASS — s4-operations /d at 820px has no render defect",
+        "PASS — s4-operations /d at 820px has no sideways scroll",
+        "PASS — s4-operations /d at 820px: every published sentence is computed (ready / ready / ready,ready,ready,ready,ready)",
+        "PASS — s4-operations /d at 390px has no render defect",
+        "PASS — s4-operations /d at 390px has no sideways scroll",
+        "PASS — s4-operations /d at 390px: every published sentence is computed (ready / ready / ready,ready,ready,ready,ready)",
+        "PASS — editorial: no finding is said twice (trend:4389,peak:4389,latest:4389,period_comparison:4389,trend:4393,peak:4393,latest:4393,top_item:4390,top_item:4391,top_item:4392,top_item:4394,partial_periods:4389,partial_periods:4393,concentration:4391,concentration:4392)",
+        "PASS — s4-editorial /d at 1440px has no render defect",
+        "PASS — s4-editorial /d at 1440px has no sideways scroll",
+        "PASS — s4-editorial /d at 1440px: every published sentence is computed (ready,ready / ready,ready / ready,ready,ready / ready / ready / ready / ready / ready,ready,ready,ready)",
+        "PASS — s4-editorial /d at 820px has no render defect",
+        "PASS — s4-editorial /d at 820px has no sideways scroll",
+        "PASS — s4-editorial /d at 820px: every published sentence is computed (ready,ready / ready,ready / ready,ready,ready / ready / ready / ready / ready / ready,ready,ready,ready)",
+        "PASS — s4-editorial /d at 390px has no render defect",
+        "PASS — s4-editorial /d at 390px has no sideways scroll",
+        "PASS — s4-editorial /d at 390px: every published sentence is computed (ready,ready / ready,ready / ready,ready,ready / ready / ready / ready / ready / ready,ready,ready,ready)",
+        "PASS — the three directions differ in blocks and theme ({\"executive\":\"headline,summary | theme brief/light\",\"operations\":\"callout,takeaway,takeaway | theme ops/dark\",\"editorial\":\"callout,chapter,chapter,chapter,chapter,chapter,chapter,headline | theme editorial/light\"})"
+      ],
+      "metrics": {
+        "executive_preview_ms": 430,
+        "executive_publish_ms": 1298,
+        "s4-executive_public_1440_ms": 4355,
+        "s4-executive_public_820_ms": 3848,
+        "s4-executive_public_390_ms": 4046,
+        "operations_preview_ms": 256,
+        "operations_publish_ms": 1343,
+        "s4-operations_public_1440_ms": 4100,
+        "s4-operations_public_820_ms": 3526,
+        "s4-operations_public_390_ms": 3685,
+        "editorial_preview_ms": 489,
+        "editorial_publish_ms": 3181,
+        "s4-editorial_public_1440_ms": 4600,
+        "s4-editorial_public_820_ms": 4016,
+        "s4-editorial_public_390_ms": 4799,
+        "signatures": {
+          "executive": "headline,summary | theme brief/light",
+          "operations": "callout,takeaway,takeaway | theme ops/dark",
+          "editorial": "callout,chapter,chapter,chapter,chapter,chapter,chapter,headline | theme editorial/light"
+        }
+      },
+      "evidence": [
+        "s4-executive-public-1440.jpg",
+        "s4-executive-public-820.jpg",
+        "s4-executive-public-390.jpg",
+        "s4-operations-public-1440.jpg",
+        "s4-operations-public-820.jpg",
+        "s4-operations-public-390.jpg",
+        "s4-editorial-public-1440.jpg",
+        "s4-editorial-public-820.jpg",
+        "s4-editorial-public-390.jpg"
+      ],
+      "notes": []
+    },
+    "S5 reference design": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the author is told what carried over from the reference (converted / approximated / not supported)",
+        "PASS — every tile of the result is a native, data-bound visual (no static picture)",
+        "PASS — the result opens with a headline, as the reference does",
+        "PASS — the reference image itself is not placed on the report (0 <img>)",
+        "PASS — no render defect"
+      ],
+      "metrics": {
+        "s5_reference_preview_ms": 4613,
+        "s5_panel": "AI Design\n\nDescribe the look you want. Your layout stays as you built it unless you ask to rearrange; charts and data never change.\n\nWhole page (Overview). Style-only unless you ask to move things — select visuals to narrow it.\n\nRedesign this report to follow the attached reference: its hierarchy, composition, typography and surfaces. Keep every number live.\n\nReorganized the report to match the reference's editorial style, with a focus on revenue trends and a balanced layout.\n\nPage recomposed\n\nMoved 12 visuals\nResized 11 visuals\nAdded 2 text block(s) bound to live findings\nTheme updated\n\n1 text block(s) the design wrote but did not place were placed by their role.\n\nThe reference opens with a headline; so does the report, stated from its own findings.\n\nFrom the reference — converted: kpi strip at the top; full-width hero chart; summary block. approximated: editorial style with serif font and soft card treatment. not supported here: custom fonts beyond serif.\n\nGrouped the headline numbers into one row — a KPI reads better in a strip than at half-page width.\n\nNEEDS YOUR APPROVAL\n\nThese change what a chart says, so they are applied only if you accept. Accepted changes are saved with the draft and recorded.\n\nSort this ranking by value, largest first\n\n1, 3, 5, 2→5, 4, 1, 3\n\nAccept\nReject\n\nPreviewing — nothing is saved yet\n\nPreview full report\nDiscard\nApply design"
+      },
+      "evidence": [
+        "s5-reference.png",
+        "s5-reference.html",
+        "s5-native-result.jpg"
+      ],
+      "notes": []
+    },
+    "S6 filters + narrative": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — KPIs changed with the filter",
+        "PASS — the narrative changed with the filter (no stale headline)",
+        "PASS — no sentence is still computing once the report settled (ready,ready,ready,ready,ready,ready)"
+      ],
+      "metrics": {
+        "s6_filter_to_ready_ms": 4225,
+        "s6_before": {
+          "sentences": [
+            "Revenue for Jan 2018–Aug 2018 is R$ 7.4M, +137% on the same months of 2017 (R$ 3.1M).",
+            "Revenue peaked in Nov 2017 at R$ 1.0M.",
+            "Revenue rose 610%, from R$ 120.3K in Jan 2017 to R$ 854.7K in Aug 2018.",
+            "In Aug 2018, Revenue was R$ 854.7K, −4.6% on Jul 2018.",
+            "credit_card leads Payment value with R$ 12.5M, 78% of the total.",
+            "Avg delivery days fell 38.9%, from 12.6 in Jan 2017 to 7.73 in Aug 2018."
+          ],
+          "kpis": [
+            "Revenue @keyframes appbiChartFadeIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } } R$13.6MAll periods · Sep 2016 – Sep 2018Jan 2018–Aug 2018R$ 7.4M▲ +137%vs same months 2017",
+            "Orders @keyframes appbiChartFadeIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } } 98.7K",
+            "Average order value @keyframes appbiChartFadeIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } } R$137.8",
+            "On-time delivery @keyframes appbiChartFadeIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } } 91.9%",
+            "Avg review score @keyframes appbiChartFadeIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } } 4.1"
+          ],
+          "states": "ready,ready,ready,ready,ready,ready"
+        },
+        "s6_after": {
+          "sentences": [
+            "Revenue for Jan 2018–Aug 2018 is R$ 3.0M, +164% on the same months of 2017 (R$ 1.1M).",
+            "Revenue peaked in May 2018 at R$ 436.6K.",
+            "Revenue rose 855%, from R$ 41.5K in Jan 2017 to R$ 396.6K in Aug 2018.",
+            "In Aug 2018, Revenue was R$ 396.6K, +21.5% on Jul 2018.",
+            "credit_card leads Payment value with R$ 4.7M, 78% of the total.",
+            "Avg delivery days fell 41.1%, from 10.5 in Jan 2017 to 6.2 in Aug 2018."
+          ],
+          "kpis": [
+            "Revenue @keyframes appbiChartFadeIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } } R$5.2MAll periods · Sep 2016 – Sep 2018Jan 2018–Aug 2018R$ 3.0M▲ +164%vs same months 2017",
+            "Orders @keyframes appbiChartFadeIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } } 41.4K",
+            "Average order value @keyframes appbiChartFadeIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } } R$125.8",
+            "On-time delivery @keyframes appbiChartFadeIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } } 94.1%",
+            "Avg review score @keyframes appbiChartFadeIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } } 4.2"
+          ],
+          "states": "ready,ready,ready,ready,ready,ready"
+        }
+      },
+      "evidence": [
+        "s6-before-filter.jpg",
+        "s6-after-filter-SP.jpg"
+      ],
+      "notes": []
+    },
+    "S7 undo/redo AI blocks": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — model: Apply created blocks (2)",
+        "PASS — model: Undo removed them",
+        "PASS — model: Redo re-created them",
+        "PASS — model: they survive a reload",
+        "PASS — model: they are published",
+        "PASS — direction: Apply created blocks (8)",
+        "PASS — direction: Undo removed them",
+        "PASS — direction: Redo re-created them",
+        "PASS — direction: they survive a reload",
+        "PASS — direction: they are published"
+      ],
+      "metrics": {
+        "s7_model_preview_ms": 2988
+      },
+      "evidence": [
+        "s7-model-after-publish.jpg",
+        "s7-direction-after-publish.jpg"
+      ],
+      "notes": []
+    },
+    "S8 public / embed / export": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — /d shows the same tiles as the builder (15 vs 15)",
+        "PASS — /d has no render defect",
+        "PASS — the export is a PDF",
+        "PASS — the export is not empty (515944 bytes)",
+        "PASS — the export of the published report has nothing missing ([])",
+        "PASS — every sheet prints at a readable size (min scale 0.7521665486903157)",
+        "PASS — /embed shows the same tiles as the builder (15 vs 15)",
+        "PASS — /embed has no render defect"
+      ],
+      "metrics": {
+        "s8_export_ms": 2590,
+        "s8_export": {
+          "pages": 6,
+          "minPrintScale": 0.7521665486903157,
+          "warnings": []
+        }
+      },
+      "evidence": [
+        "s8-builder.jpg",
+        "s8-d-1440.jpg",
+        "s8-export.pdf",
+        "s8-embed-1440.jpg"
+      ],
+      "notes": []
+    }
+  }
+}

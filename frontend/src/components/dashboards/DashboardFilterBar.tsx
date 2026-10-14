@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2, Check, RotateCcw,
   Calendar, Pencil, ToggleLeft, ToggleRight,
@@ -28,6 +29,50 @@ import { DateInput } from '@/components/ui/DateInput';
 import { useI18n } from '@/providers/LanguageProvider';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 import { pickSlicerVariant } from '@/lib/dashboard-theme-tokens';
+import { createSlicerEntry } from '@/lib/slicer-entry';
+import type { ResolvedTreatment } from '@/lib/slicer-placement';
+
+/**
+ * Where a grid control's value menu sits. It is portalled (a grid tile clips
+ * its content and every later tile paints over it), so it is placed from the
+ * control's own box: below it, flipped above when the room below is short, as
+ * wide as the control but never under 300px or wider than the viewport, and
+ * re-placed on scroll and resize so it stays attached.
+ */
+function useAnchoredMenuStyle(
+  open: boolean,
+  anchorRef: React.RefObject<HTMLElement | null>,
+): React.CSSProperties | null {
+  const [style, setStyle] = useState<React.CSSProperties | null>(null);
+  useEffect(() => {
+    if (!open) { setStyle(null); return; }
+    const place = () => {
+      const el = anchorRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const gap = 8;
+      const width = Math.min(Math.max(r.width, 300), vw - gap * 2);
+      const left = Math.min(Math.max(gap, r.left), vw - width - gap);
+      const below = vh - r.bottom - gap;
+      const above = r.top - gap;
+      const openAbove = below < 260 && above > below;
+      const maxHeight = Math.max(160, Math.min(520, (openAbove ? above : below) - 4));
+      setStyle(openAbove
+        ? { left, width, bottom: vh - r.top + 4, maxHeight }
+        : { left, width, top: r.bottom + 4, maxHeight });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open, anchorRef]);
+  return style;
+}
 
 // ─── Type badge helpers ────────────────────────────────────────
 const TYPE_BADGE: Record<FilterType, string> = { text: 'T', number: '#', date: 'D', dropdown: '=' };
@@ -155,6 +200,8 @@ interface DashboardFilterBarProps {
   distinctStatus?: Record<string, {
     isLoading: boolean;
     isError: boolean;
+    isUnavailable?: boolean;
+    isRestricted?: boolean;
     hasFilterContext: boolean;
     total?: number;
     hasMore?: boolean;
@@ -209,6 +256,19 @@ interface DashboardFilterBarProps {
     scope: 'all' | 'page' | 'custom',
     pageScope?: Record<string, { filter: boolean; visible: boolean }>,
   ) => void;
+  /** One control placed on the report grid: only the card, sized to its tile. */
+  bare?: boolean;
+  /** How the bare control is drawn (see lib/slicer-placement resolveTreatment). */
+  treatment?: ResolvedTreatment;
+  /** A grid control whose choice is staged but not applied yet. */
+  stagedPending?: boolean;
+  /** Some control on the page has a staged choice. */
+  anyStagedPending?: boolean;
+  /** The page's one Apply, offered in the control's open menu. */
+  onApplyStaged?: () => void;
+  /** The page's other slicers, for the "no values with these filters" hint a
+   *  bare control cannot see on its own. */
+  siblingFilters?: BaseFilter[];
 }
 
 type AddFilterColumnGroup = {
@@ -249,6 +309,12 @@ export function DashboardFilterBar({
   headerExtras,
   externalAddAnchorRef,
   onRegisterAddSlicer,
+  bare = false,
+  treatment,
+  stagedPending = false,
+  anyStagedPending = false,
+  onApplyStaged,
+  siblingFilters,
 }: DashboardFilterBarPropsWithExtras) {
   const { t } = useI18n();
   const [isExpanded, setIsExpanded] = useState(initialExpanded);
@@ -406,84 +472,18 @@ export function DashboardFilterBar({
     const col = columns.find(c => getColumnKey(c) === columnKey);
     if (!col) return;
     if (usedFields.has(columnKey)) return;
-
-    let linkedFields = col.defaultLinkedFields ? [...col.defaultLinkedFields] : undefined;
-
-    // Auto-link legacy non-semantic date columns when no explicit linked targets are provided.
-    if (!linkedFields?.length && col.type === 'date' && !col.semanticField) {
-      linkedFields = columns
-        .filter(c => c.type === 'date' && getColumnKey(c) !== columnKey && !usedFields.has(getColumnKey(c)))
-        .map(c => getColumnKey(c));
-      if (!linkedFields.length) linkedFields = undefined;
-    }
-
-    // Resolve operator + initial value from the chosen interaction. When no
-    // interaction is supplied (legacy callers), keep the previous
-    // column-type-driven defaults so the shape stays identical for them.
-    let operator: FilterOperator;
-    let value: any;
-    let datePreset: DatePreset | undefined;
-    if (interaction === 'dropdown' || interaction === 'fixed_list') {
-      operator = 'in';
-      value = [];
-    } else if (interaction === 'input') {
-      operator = 'contains';
-      value = '';
-    } else if (interaction === 'slider') {
-      operator = 'between';
-      value = ['', ''];
-    } else if (interaction === 'checkbox') {
-      operator = 'eq';
-      value = '';
-    } else if (interaction === 'date_range') {
-      operator = 'between';
-      datePreset = preset ?? 'this_month';
-      value = datePreset !== 'custom' ? computeDatePresetRange(datePreset) : ['', ''];
-    } else if (interaction === 'advanced') {
-      // Pick a sensible default per column type; user can switch operator after.
-      if (col.type === 'date') {
-        operator = 'between';
-        datePreset = preset ?? 'this_month';
-        value = datePreset !== 'custom' ? computeDatePresetRange(datePreset) : ['', ''];
-      } else if (col.type === 'number') {
-        operator = 'eq';
-        value = '';
-      } else {
-        operator = 'in';
-        value = [];
-      }
-    } else {
-      // Legacy fallback — unchanged from pre-Phase-9 inference.
-      const isMultiSelect = col.type === 'text' || col.type === 'dropdown';
-      datePreset = col.type === 'date' ? (preset ?? 'this_month') : undefined;
-      const dateValue = datePreset && datePreset !== 'custom'
-        ? computeDatePresetRange(datePreset)
-        : ['', ''];
-      operator = isMultiSelect ? 'in' : col.type === 'date' ? 'between' : 'gte';
-      value = isMultiSelect ? [] : col.type === 'date' ? dateValue : '';
-    }
-
-    const newFilter: BaseFilter = {
-      id:           `gf-${Date.now()}`,
-      field:        col.name,
-      fieldKey:     columnKey,
-      semanticField: col.semanticField,
-      datasetId:    col.datasetId,
-      linkedFields,
-      type:         col.type,
-      operator,
-      value,
-      label:        getColumnDisplayLabel(col),
-      datePreset,
-      // Phase-14 — persist the picked interaction so the card body
-      // dispatches to the right UI (input box / slider / checkbox / …)
-      // rather than re-inferring from col.type.
-      interactionType: interaction,
-      // Per-page slicer rework — a slicer added in the dashboard cluster
-      // defaults to "Trang này" (page scope, PBI default). The filter pane
-      // (showScopeToggle off) never gets a scope and behaves as before.
-      ...(showScopeToggle ? { scope: 'page' as const } : {}),
-    } as BaseFilter;
+    // The one entry factory — the grid's "Add element → Slicer" calls it too,
+    // so a control added there filters exactly like one added here. A slicer
+    // added in the dashboard cluster defaults to "Trang này" (page scope, PBI
+    // default); the filter pane (showScopeToggle off) never gets a scope.
+    const newFilter = createSlicerEntry({
+      column: col,
+      columns,
+      usedFields,
+      interaction,
+      preset,
+      pageScope: showScopeToggle,
+    });
     onFiltersChange([...filters, newFilter]);
     setAddingField(false);
     setAddFilterSearch('');
@@ -679,6 +679,83 @@ export function DashboardFilterBar({
       </>
     );
   };
+
+  // One card, as the bar renders it. The grid's slicer control renders the
+  // SAME card (bare mode below) — one set of value handlers, one staging.
+  const renderFilterCard = (f: BaseFilter, overrides: Partial<FilterCardProps> = {}) => {
+    // Conflict-detection signal: when the user picks values that have
+    // no intersection (e.g. Role=SDR & Phòng=BE.E), the cascading
+    // distinct query returns []. Surfacing the names of the other
+    // active filters here lets the user know which combo is empty
+    // instead of silently rendering "Loading values…".
+    const otherActiveFilters = (siblingFilters ?? filters).filter(
+      (other) => other.id !== f.id && isFilterValueActive(other),
+    );
+    return (
+      <FilterCard
+        key={f.id}
+        filter={f}
+        allColumns={columns}
+        allDistinctValues={distinctValues}
+        distinctStatus={distinctStatus?.[getFilterKey(f)]}
+        usedFields={usedFields}
+        columnChartCount={columnChartCount}
+        filterChartCount={getFilterChartCount(f)}
+        search={searchTerms[f.id] ?? ''}
+        onSearchChange={s => setSearchTerms(prev => ({ ...prev, [f.id]: s }))}
+        fetchServerDistinct={fetchServerDistinct}
+        onToggleValue={val => toggleValue(f.id, val)}
+        onSelectAll={vals => selectAll(f.id, vals)}
+        onDeselectAll={() => deselectAll(f.id)}
+        onUpdateValue={v => updateValue(f.id, v)}
+        onUpdateOperator={op => updateOperator(f.id, op)}
+        onUpdateDatePreset={preset => updateDatePreset(f.id, preset)}
+        onToggleLinkedField={col => toggleLinkedField(f.id, col)}
+        onUpdateLabel={l => updateLabel(f.id, l)}
+        onUpdateIcon={ic => updateIcon(f.id, ic)}
+        onSwitchDropdownMode={m => switchDropdownMode(f.id, m)}
+        onClear={() => clearFilter(f.id)}
+        onRemove={() => removeFilter(f.id)}
+        conflictingFilterLabels={otherActiveFilters.map((other) => getFilterDisplayLabel(other))}
+        lockSlots={lockSlots}
+        showScopeToggle={showScopeToggle}
+        slicerScope={((f as any).scope as 'all' | 'page' | 'custom') || 'all'}
+        slicerPageScope={(f as any).pageScope}
+        slicerKey={`${(f as any).datasetId ?? ''}|${String((f as any).semanticField ?? f.field ?? f.id ?? '').toLowerCase()}`}
+        dashboardPages={dashboardPages}
+        activePageId={activePageId}
+        onUpdateSlicerScope={onUpdateSlicerScope}
+        collapsedPopover={collapsedSlicers}
+        popoverPlacement={stackVertical ? (verticalPopoverPlacement ?? 'right') : 'bottom'}
+        onUpdateWidth={(w) => updateWidth(f.id, w)}
+        distributeChildren={distributeChildren && !stackVertical}
+        {...overrides}
+      />
+    );
+  };
+
+  // Bare: one control on the report grid. No bar chrome, no header, no Apply —
+  // the page shows ONE Apply for every staged control. The card is the same
+  // FilterCard with the same handlers, so a value picked here is staged into
+  // exactly the entry the bar would stage it into.
+  if (bare) {
+    const inline = treatment === 'list';
+    return (
+      <div className="grid-slicer-bar flex h-full w-full min-w-0" data-slicer-treatment={treatment ?? 'theme'}>
+        {filters.map((f) => renderFilterCard(f, {
+          collapsedPopover: !inline,
+          popoverPlacement: 'bottom',
+          fill: true,
+          treatment,
+          onUpdateWidth: undefined,
+          distributeChildren: false,
+          stagedPending,
+          anyStagedPending,
+          onApplyStaged,
+        }))}
+      </div>
+    );
+  }
 
   // ── Render ─────────────────────────────────────────────────────
   return (
@@ -1021,56 +1098,7 @@ export function DashboardFilterBar({
               }`
             : `px-3 pb-3 grid gap-3 ${stackVertical ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`
         }>
-          {filters.map(f => {
-            // Conflict-detection signal: when the user picks values that have
-            // no intersection (e.g. Role=SDR & Phòng=BE.E), the cascading
-            // distinct query returns []. Surfacing the names of the other
-            // active filters here lets the user know which combo is empty
-            // instead of silently rendering "Loading values…".
-            const otherActiveFilters = filters.filter(
-              (other) => other.id !== f.id && isFilterValueActive(other),
-            );
-            return (
-              <FilterCard
-                key={f.id}
-                filter={f}
-                allColumns={columns}
-                allDistinctValues={distinctValues}
-                distinctStatus={distinctStatus?.[getFilterKey(f)]}
-                usedFields={usedFields}
-                columnChartCount={columnChartCount}
-                filterChartCount={getFilterChartCount(f)}
-                search={searchTerms[f.id] ?? ''}
-                onSearchChange={s => setSearchTerms(prev => ({ ...prev, [f.id]: s }))}
-                fetchServerDistinct={fetchServerDistinct}
-                onToggleValue={val => toggleValue(f.id, val)}
-                onSelectAll={vals => selectAll(f.id, vals)}
-                onDeselectAll={() => deselectAll(f.id)}
-                onUpdateValue={v => updateValue(f.id, v)}
-                onUpdateOperator={op => updateOperator(f.id, op)}
-                onUpdateDatePreset={preset => updateDatePreset(f.id, preset)}
-                onToggleLinkedField={col => toggleLinkedField(f.id, col)}
-                onUpdateLabel={l => updateLabel(f.id, l)}
-                onUpdateIcon={ic => updateIcon(f.id, ic)}
-                onSwitchDropdownMode={m => switchDropdownMode(f.id, m)}
-                onClear={() => clearFilter(f.id)}
-                onRemove={() => removeFilter(f.id)}
-                conflictingFilterLabels={otherActiveFilters.map((other) => getFilterDisplayLabel(other))}
-                lockSlots={lockSlots}
-                showScopeToggle={showScopeToggle}
-                slicerScope={((f as any).scope as 'all' | 'page' | 'custom') || 'all'}
-                slicerPageScope={(f as any).pageScope}
-                slicerKey={`${(f as any).datasetId ?? ''}|${String((f as any).semanticField ?? f.field ?? f.id ?? '').toLowerCase()}`}
-                dashboardPages={dashboardPages}
-                activePageId={activePageId}
-                onUpdateSlicerScope={onUpdateSlicerScope}
-                collapsedPopover={collapsedSlicers}
-                popoverPlacement={stackVertical ? (verticalPopoverPlacement ?? 'right') : 'bottom'}
-                onUpdateWidth={(w) => updateWidth(f.id, w)}
-                distributeChildren={distributeChildren && !stackVertical}
-              />
-            );
-          })}
+          {filters.map((f) => renderFilterCard(f))}
         </div>
       )}
       {/* Empty state */}
@@ -1108,6 +1136,8 @@ interface FilterCardProps {
   distinctStatus?: {
     isLoading: boolean;
     isError: boolean;
+    isUnavailable?: boolean;
+    isRestricted?: boolean;
     hasFilterContext: boolean;
     total?: number;
     hasMore?: boolean;
@@ -1173,6 +1203,17 @@ interface FilterCardProps {
   /** Phase-G — persist the card width after the author drags its right
    * edge (collapsed-card mode, editor only). */
   onUpdateWidth?: (widthPx: number | undefined) => void;
+  /** A control on the report grid: the card fills its tile and its value menu
+   *  is portalled (a grid tile clips and stacks under its neighbours). */
+  fill?: boolean;
+  /** How a grid control is drawn; undefined = the bar's own rule. */
+  treatment?: ResolvedTreatment;
+  /** A grid control whose choice is staged but not applied yet. */
+  stagedPending?: boolean;
+  /** Some control on the page has a staged choice. */
+  anyStagedPending?: boolean;
+  /** The page's one Apply, offered in the control's open menu. */
+  onApplyStaged?: () => void;
 }
 
 interface DashboardFilterBarPropsWithExtras extends DashboardFilterBarProps {
@@ -1227,6 +1268,11 @@ function FilterCard({
   collapsedPopover = false,
   popoverPlacement = 'bottom',
   onUpdateWidth,
+  fill = false,
+  treatment,
+  stagedPending = false,
+  anyStagedPending = false,
+  onApplyStaged,
 }: FilterCardProps) {
   const { t } = useI18n();
   const typeLabel: Record<FilterType, string> = {
@@ -1241,10 +1287,15 @@ function FilterCard({
   // Phase-G — popover open state for collapsed slicer mode.
   const [popoverOpen, setPopoverOpen] = useState(false);
   const popoverWrapRef = useRef<HTMLDivElement>(null);
+  // A grid control's menu is portalled to <body>, so it is outside the wrapper.
+  const portalMenuRef = useRef<HTMLDivElement>(null);
+  const portalMenuStyle = useAnchoredMenuStyle(fill && popoverOpen, popoverWrapRef);
   useEffect(() => {
     if (!popoverOpen) return;
     const onDocClick = (e: MouseEvent) => {
-      if (popoverWrapRef.current && !popoverWrapRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (portalMenuRef.current?.contains(target)) return;
+      if (popoverWrapRef.current && !popoverWrapRef.current.contains(target)) {
         setPopoverOpen(false);
       }
     };
@@ -1360,10 +1411,15 @@ function FilterCard({
     // numeric slider has no option list to lay out.
     const kind = f.interactionType;
     if (kind && kind !== 'dropdown' && kind !== 'fixed_list' && kind !== 'checkbox') return false;
+    // A grid control's treatment is the author's choice of look: a dropdown or
+    // a compact card never lays its options out; "buttons" asks for them (the
+    // data still gets its veto). Presentation only — the entry is not touched.
+    if (treatment === 'dropdown' || treatment === 'compact') return false;
     const longest = mergedValues.reduce((m, v) => Math.max(m, String(v).length), 0);
-    return pickSlicerVariant(dashTokens?.slicerVariant, mergedValues.length, longest) === 'segmented';
+    const declared = treatment === 'buttons' ? 'segmented' : dashTokens?.slicerVariant;
+    return pickSlicerVariant(declared, mergedValues.length, longest) === 'segmented';
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dashTokens?.slicerVariant, mergedValues, f.interactionType]);
+  }, [dashTokens?.slicerVariant, mergedValues, f.interactionType, treatment]);
 
 
   // Server-side type-to-search results for high-cardinality dimensions. null =
@@ -1444,7 +1500,7 @@ function FilterCard({
   })();
 
   const cardContent = (
-    <div className="bi-fade-in border border-[rgb(var(--border-line))] rounded-lg bg-surface-2/70 overflow-hidden flex flex-col">
+    <div className={`bi-fade-in border border-[rgb(var(--border-line))] rounded-lg bg-surface-2/70 overflow-hidden flex flex-col ${fill && !collapsedPopover ? 'h-full w-full min-w-0' : ''}`}>
       {/* Card header — 2 lines so the slicer NAME is always legible. The old
           single row crammed Type + name + dataset + count + coverage + actions
           together, so the name truncated to a single letter ("Product slicer"
@@ -1835,7 +1891,17 @@ function FilterCard({
   // card stretches via flex-1 (set on the OUTER wrapper). We still set a
   // sensible width on the inner box so the popover anchor doesn't collapse
   // when the row has only 1 filter.
-  const cardWidthStyle: React.CSSProperties = openSide
+  // Width the segmented control needs: "All" plus each option at ~7.2px a
+  // character and the button's padding, plus the card's own padding.
+  const segmentedNeedPx = segmented
+    ? 32 + ['All', ...mergedValues.map((v: any) => String(v ?? ''))].reduce((sum, s) => sum + Math.ceil(s.length * 7.2) + 22, 0)
+    : 0;
+  const cardWidthStyle: React.CSSProperties = fill
+    // On the grid the TILE is the size the author chose: the card takes its
+    // width and its own height, centred in the tile. Stretching it to the tile
+    // turned a pill-styled card into an oval on a tall tile.
+    ? { width: '100%', maxHeight: '100%', minWidth: 0 }
+    : openSide
     ? { width: '100%' }
     : distributeChildren
       // "Distribute evenly" used to mean "stretch to fill", which on a wide
@@ -1844,10 +1910,17 @@ function FilterCard({
       // still the intent, but a control is capped at the width its content can
       // actually use; the row stays balanced and stops looking empty.
       ? { width: '100%', minWidth: 140, maxWidth: 320 }
-      : { width: `${liveWidth ?? f.widthPx ?? 190}px`, minWidth: 140, maxWidth: 320 };
+      : segmented
+        // Segmented buttons must show every option ("Central", not "C…"): the
+        // card is as wide as its options need, up to the row, never the
+        // dropdown's 190px.
+        ? { width: `${Math.max(liveWidth ?? f.widthPx ?? 190, segmentedNeedPx)}px`, minWidth: 140, maxWidth: '100%' }
+        : { width: `${liveWidth ?? f.widthPx ?? 190}px`, minWidth: 140, maxWidth: 320 };
   // Outer wrapper class: `inline-block` is the legacy fixed-width mode.
   // With distribute on, switch to `flex-1` so siblings share the row.
-  const outerWrapperClass = openSide
+  const outerWrapperClass = fill
+    ? 'relative flex h-full w-full min-w-0 items-center'
+    : openSide
     ? 'relative block w-full'
     : distributeChildren
       ? 'relative flex-1 min-w-0'
@@ -1861,14 +1934,27 @@ function FilterCard({
         // compact / glass / minimal) is applied from CSS via the wrapper's
         // data-dashboard-slicerstyle, so a themed report styles its filters the
         // same way it styles its cards instead of leaving them app-default.
-        className={`dashboard-slicer relative flex flex-col gap-0.5 rounded-lg border bg-surface-1 px-3 py-2 transition-colors ${
+        data-slicer-card=""
+        className={`dashboard-slicer relative flex flex-col gap-0.5 rounded-lg border bg-surface-1 px-3 py-2 transition-colors ${fill ? 'justify-center overflow-hidden' : ''} ${
           popoverOpen
             ? 'border-brand ring-1 ring-brand/30'
-            : hasValue
-              ? 'border-brand/45'
-              : 'border-[rgb(var(--border-line))]'
+            : stagedPending
+              // Chosen but not applied: the report still shows the old data.
+              ? 'border-amber-500 ring-2 ring-amber-400/30'
+              : hasValue
+                ? 'border-brand/45'
+                : 'border-[rgb(var(--border-line))]'
         }`}
+        data-slicer-staged={stagedPending ? '' : undefined}
       >
+        {stagedPending && (
+          <span
+            className="pointer-events-none absolute right-1.5 top-1.5 z-10 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-surface-1"
+            title={t('dashboards.slicerControl.staged')}
+            aria-label={t('dashboards.slicerControl.staged')}
+            role="img"
+          />
+        )}
         {/* Right-edge width drag handle (editor, Top mode). Custom
             pointer-drag → live FE width; commit to draft on release. */}
         {canResizeCard && (
@@ -1880,8 +1966,9 @@ function FilterCard({
             title={t('dashboards.filterCard.dragToResize')}
           />
         )}
-        {/* Title row — editable label (double-click in editor). */}
-        <span className="flex items-center justify-between gap-1">
+        {/* Title row — editable label (double-click in editor). A compact grid
+            control drops it; the label stays the control's accessible name. */}
+        <span className={`flex items-center justify-between gap-1 ${treatment === 'compact' ? 'hidden' : ''}`}>
           {isEditingLabel && !lockSlots ? (
             <input
               autoFocus
@@ -1956,8 +2043,10 @@ function FilterCard({
           <button
             type="button"
             onClick={() => setPopoverOpen((v) => !v)}
-            className="flex items-center justify-between gap-1.5 text-left"
+            className="flex min-w-0 items-center justify-between gap-1.5 text-left"
             title={`${getFilterDisplayLabel(f)}: ${valueSummary}`}
+            aria-label={`${getFilterDisplayLabel(f)}: ${valueSummary}`}
+            aria-expanded={popoverOpen}
           >
             <span className={`truncate text-sm ${hasValue ? 'font-medium text-text-primary' : 'text-text-tertiary'}`}>
               {valueSummary}
@@ -1966,7 +2055,34 @@ function FilterCard({
           </button>
         )}
       </div>
-      {popoverOpen && (
+      {popoverOpen && fill && portalMenuStyle && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={portalMenuRef}
+          data-slicer-menu=""
+          style={portalMenuStyle}
+          className="dashboard-slicer-menu fixed z-[9999] overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-xl"
+        >
+          {cardContent}
+          {onApplyStaged && (
+            // The page's one Apply, where the choice was just made. It applies
+            // every staged control, exactly like the bar at the bottom.
+            <div className="sticky bottom-0 z-10 flex items-center justify-between gap-2 border-t border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+              <span className="min-w-0 truncate text-[11px] text-text-tertiary">{t('dashboards.slicerControl.applyHint')}</span>
+              <button
+                type="button"
+                data-testid="slicer-menu-apply"
+                disabled={!anyStagedPending}
+                onClick={() => { onApplyStaged(); setPopoverOpen(false); }}
+                className="shrink-0 rounded-md bg-brand px-3 py-1 text-xs font-semibold text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {t('dashboards.applyBar.apply')}
+              </button>
+            </div>
+          )}
+        </div>,
+        document.body,
+      )}
+      {popoverOpen && !fill && (
         <div
           className={`dashboard-slicer-menu absolute z-50 w-[320px] max-h-[70vh] min-h-[18rem] overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-xl ${
             openRight
@@ -2013,6 +2129,8 @@ function SingleSelectBody({
   distinctStatus?: {
     isLoading: boolean;
     isError: boolean;
+    isUnavailable?: boolean;
+    isRestricted?: boolean;
     hasFilterContext: boolean;
     total?: number;
     hasMore?: boolean;
@@ -2028,6 +2146,7 @@ function SingleSelectBody({
     values.length === 0
     && (conflictingFilterLabels?.length ?? 0) > 0
     && !distinctStatus?.isError
+    && !distinctStatus?.isRestricted
     && !distinctStatus?.isLoading;
   // Phase-7.6 — when no values AND no in-list conflict, also check if a
   // cross-list filter (page-level, slicer cluster) was passed via the
@@ -2075,17 +2194,23 @@ function SingleSelectBody({
           </button>
         </div>
       )}
-      <div className="max-h-48 overflow-y-auto space-y-0.5">
+      <div className="no-drag max-h-[var(--slicer-list-max,12rem)] overflow-y-auto space-y-0.5">
         {filteredValues.length === 0 ? (
           <p className="text-xs text-text-quaternary italic py-1">
             {values.length === 0
               ? (showConflictBanner
                   ? t('dashboards.selectBody.noMatchingValues')
+                  : distinctStatus?.isRestricted
+                    ? t('dashboards.selectBody.restrictedByScope')
+                  : distinctStatus?.isUnavailable
+                    ? t('dashboards.selectBody.unavailable')
                   : distinctStatus?.isError
                     ? t('dashboards.selectBody.failedToLoad')
                     : emptyDueToFilter
                       ? t('dashboards.selectBody.noValuesActiveFilter')
-                      : (distinctStatus && !distinctStatus.isLoading)
+                      // No distinct query at all (the slicer resolves to no
+                      // source) is not "loading": nothing will ever arrive.
+                      : (!distinctStatus || !distinctStatus.isLoading)
                         ? t('dashboards.selectBody.noValuesAvailable')
                         : t('dashboards.selectBody.loadingValues'))
               : t('dashboards.selectBody.noMatch')}
@@ -2146,6 +2271,8 @@ function MultiSelectBody({
   distinctStatus?: {
     isLoading: boolean;
     isError: boolean;
+    isUnavailable?: boolean;
+    isRestricted?: boolean;
     hasFilterContext: boolean;
     total?: number;
     hasMore?: boolean;
@@ -2165,6 +2292,7 @@ function MultiSelectBody({
     values.length === 0
     && (conflictingFilterLabels?.length ?? 0) > 0
     && !distinctStatus?.isError
+    && !distinctStatus?.isRestricted
     && !distinctStatus?.isLoading;
   // Phase-7.6 — cross-list filter (page filter, slicer cluster filter
   // outside the current popup's filter list) can also produce 0 cascade
@@ -2222,17 +2350,23 @@ function MultiSelectBody({
       )}
 
       {/* Checkboxes */}
-      <div className="max-h-48 overflow-y-auto space-y-0.5">
+      <div className="no-drag max-h-[var(--slicer-list-max,12rem)] overflow-y-auto space-y-0.5">
         {filteredValues.length === 0 ? (
           <p className="text-xs text-text-quaternary italic py-1">
             {values.length === 0
               ? (showConflictBanner
                   ? t('dashboards.selectBody.noMatchingValues')
+                  : distinctStatus?.isRestricted
+                    ? t('dashboards.selectBody.restrictedByScope')
+                  : distinctStatus?.isUnavailable
+                    ? t('dashboards.selectBody.unavailable')
                   : distinctStatus?.isError
                     ? t('dashboards.selectBody.failedToLoad')
                     : emptyDueToFilter
                       ? t('dashboards.selectBody.noValuesActiveFilter')
-                      : (distinctStatus && !distinctStatus.isLoading)
+                      // No distinct query at all (the slicer resolves to no
+                      // source) is not "loading": nothing will ever arrive.
+                      : (!distinctStatus || !distinctStatus.isLoading)
                         ? t('dashboards.selectBody.noValuesAvailable')
                         : t('dashboards.selectBody.loadingValues'))
               : t('dashboards.selectBody.noMatch')}

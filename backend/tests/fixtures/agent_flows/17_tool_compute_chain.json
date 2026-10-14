@@ -1,0 +1,105 @@
+{
+  "covers": [
+    "tool node",
+    "compute",
+    "typed binding of a result field",
+    "step reference: a formula an author wrote over named steps"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "inputs": {
+          "chart_id": {
+            "source": "literal",
+            "value": 41
+          }
+        },
+        "key": "tong",
+        "name": "Ky nay",
+        "output_var": "tong",
+        "run_policy": "every_turn",
+        "tool": "total_measure",
+        "type": "tool"
+      },
+      {
+        "inputs": {
+          "chart_id": {
+            "source": "literal",
+            "value": 41
+          },
+          "item": {
+            "source": "literal",
+            "value": "moveis"
+          }
+        },
+        "key": "truoc",
+        "name": "Ky truoc",
+        "output_var": "truoc",
+        "run_policy": "every_turn",
+        "tool": "share_of",
+        "type": "tool"
+      },
+      {
+        "inputs": {
+          "expression": {
+            "source": "literal",
+            "value": "(a - b) / b * 100"
+          },
+          "vars": {
+            "source": "literal",
+            "value": {
+              "a": {
+                "path": "value",
+                "step": "tong"
+              },
+              "b": {
+                "path": "value",
+                "step": "truoc"
+              }
+            }
+          }
+        },
+        "key": "calc",
+        "name": "Tang truong",
+        "output_var": "calc",
+        "run_policy": "every_turn",
+        "tool": "compute",
+        "type": "tool"
+      },
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Tang {{calc.result}}% ({{calc.provenance}})",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "17_tool_compute_chain",
+  "tools": {
+    "by_name": {
+      "share_of": {
+        "data": {
+          "matched_exactly": true,
+          "rank": 1,
+          "share_pct": 40.0,
+          "value": 1000.0
+        },
+        "kind": "value",
+        "ok": true
+      },
+      "total_measure": {
+        "data": {
+          "formatted": "1.200",
+          "rows_counted": 3,
+          "value": 1200.0
+        },
+        "kind": "value",
+        "ok": true
+      }
+    },
+    "real_tools": [
+      "compute"
+    ]
+  }
+}

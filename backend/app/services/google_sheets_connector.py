@@ -135,7 +135,8 @@ class GoogleSheetsConnector:
         workboard operations. Retrying only retryable responses keeps normal
         validation errors fast while making transient quota bursts survivable.
         """
-        attempts = max(1, int(os.getenv("GOOGLE_SHEETS_RETRY_ATTEMPTS", "5")))
+        attempts = max(1, int(getattr(self, "max_attempts", None)
+                              or os.getenv("GOOGLE_SHEETS_RETRY_ATTEMPTS", "5")))
         base_delay = max(0.1, float(os.getenv("GOOGLE_SHEETS_RETRY_BASE_SECONDS", "0.75")))
         max_delay = max(base_delay, float(os.getenv("GOOGLE_SHEETS_RETRY_MAX_SECONDS", "8")))
         for attempt in range(attempts):

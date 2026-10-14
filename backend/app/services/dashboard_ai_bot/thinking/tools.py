@@ -23,6 +23,20 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
+from app.services.filter_layered_merge import disclosed_applied_filters
+
+
+def chart_cache_identity(ctx, chart_id) -> list:
+    """What a cached per-chart result depends on: the enforced filters, the AI
+    column scope, and the chart's PAGE scope. A pack built without a page scope
+    (an editor's run) must never answer a public viewer who is bounded by one."""
+    from app.services.dashboard_ai_bot.summary_cache import scope_hash
+    from app.services.dashboard_ai_bot.summary_cache import semantic_epoch
+    return [*(getattr(ctx, "public_filters", None) or []),
+            {"__ai_scope__": scope_hash(getattr(ctx, "excluded_columns", None))},
+            {"__page_scope__": (getattr(ctx, "page_scope_by_chart", None) or {}).get(chart_id) or []},
+            {"__snapshot_ttl__": getattr(ctx, "snapshot_ttl_minutes", None)},
+            {"__semantic__": semantic_epoch(getattr(ctx, "db", None))}]
 from app.services.dashboard_ai_bot.insight_pack import (
     build_chart_manifest,
     build_insight_pack,
@@ -43,6 +57,7 @@ from app.services.dashboard_ai_bot.tool_context import (
     _round,
     compute_related_charts as _compute_related_charts,
     fields_block as _fields_block,
+    resolve_column,
     resolve_field_label as _resolve_label,
 )
 
@@ -199,7 +214,7 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
             description=meta.get("description", ""),
             columns=columns,
             total_rows=total_rows,
-            filters_applied=ctx.public_filters,
+            filters_applied=disclosed_applied_filters(getattr(ctx, "public_filters", None))[0],
         )
         # On-screen vocabulary (configured measures + their aggregation, and
         # dimension labels) so the agent triages and names charts the way the
@@ -225,7 +240,8 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
         # documents only. The assistant then said the figure did not exist.
         "dashboard_name": getattr(ctx.dashboard, "name", "") or "",
         "dashboard_description": getattr(ctx.dashboard, "description", "") or "",
-        "filters_applied": ctx.public_filters,
+        "filters_applied": disclosed_applied_filters(getattr(ctx, "public_filters", None))[0],
+        **({"restricted_by_author": _withheld} if (_withheld := disclosed_applied_filters(getattr(ctx, "public_filters", None))[1]) else {}),
         # The report's page flow (DA's narrative). Read/overview FOLLOWING this
         # order, page by page — not as a flat chart dump. Names and ids only in
         # compact mode: the per-page chart lists repeat what `charts` already says.
@@ -393,8 +409,7 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
     # a pack built while a column was visible must not answer for a caller the column
     # is now hidden from. Folded into the filter hash so the key shape — and every
     # existing call site — stay exactly as they were.
-    cache_filters = [*(ctx.public_filters or []),
-                     {"__ai_scope__": scope_hash(getattr(ctx, "excluded_columns", None))}]
+    cache_filters = chart_cache_identity(ctx, chart_id)
 
     meta = ctx.chart_meta.get(chart_id, {})
 
@@ -482,6 +497,21 @@ _UNORDERED = "the chart's own order (NOT a ranking)"
 # Tool: get_chart_data ────────────────────────────────────────────────────────
 
 
+def _rows_of_asked_periods(ctx: Any, columns: list[str], rows: list[list], limit: int = 12) -> list[list]:
+    """Rows whose time label is a period the turn asked for (ctx.asked_periods)."""
+    from app.services.time_semantics import looks_like_time_name, named_periods
+
+    asked = {tuple(p) for p in (getattr(ctx, "asked_periods", None) or [])}
+    if not asked or not rows:
+        return []
+    idx = [i for i, c in enumerate(columns) if looks_like_time_name(str(c).rsplit(".", 1)[-1])]
+    if not idx:
+        return []
+    i = idx[0]
+    return [r for r in rows if i < len(r) and r[i] is not None
+            and named_periods(str(r[i])) & asked][:limit]
+
+
 def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
     chart_id = args.get("chart_id")
     if not isinstance(chart_id, int):
@@ -523,14 +553,25 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
         # found by the group-2 audit. The type is enough to act on; the full
         # text is in the server log for whoever is debugging.
         logger.warning("chart %s failed: %s", chart_id, exc)
+        # A semantic REFUSAL keeps its machine-readable category (AMBIGUOUS_ROUTE,
+        # FANOUT_RISK, …): the model is told the chart has NO answer for this
+        # question — never a retryable failure, never a number from elsewhere.
+        from app.services.chart_service import refusal_category
+
+        _cat = refusal_category(exc)
+        if _cat:
+            return _err(f"chart {chart_id} refused ({_cat}): the semantic model has no single "
+                        "answer for this chart in this context — report it as unavailable",
+                        code=f"semantic_refusal:{_cat}")
         return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
     columns: list[str] = data["columns"]
     rows: list[list] = data["rows"]
 
     if sort and sort_by:
+        sort_by = resolve_column(sort_by, columns) or sort_by
         if sort_by not in columns:
-            return _err(f"sort_by '{sort_by}' not in columns {columns}")
+            return _err(f"sort_by '{sort_by}' not in columns {columns}", code="bad_argument")
         idx = columns.index(sort_by)
         rev = (sort == "desc")
         try:
@@ -557,8 +598,14 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
     # both. See `agent_flows/tools/result.py` for the contract this feeds.
     total_rows = len(rows)
 
+    kept_for_period: list[list] = []
     if isinstance(top_n, int):
-        rows = rows[:top_n]
+        # THE PERIOD THE TURN ASKED FOR IS NEVER CUT OFF. Live efaa3873 run 7278:
+        # "GMV tháng 11/2017" read get_chart_data(684, sort desc, top_n 1), got only
+        # 2018-09, and answered that November 2017 was not in the data — the chart
+        # holds it. Rows of an asked period beyond the cut are returned too, marked.
+        kept_for_period = _rows_of_asked_periods(ctx, columns, rows[top_n:])
+        rows = rows[:top_n] + kept_for_period
 
     # ALWAYS say how the rows were ordered, including when nothing sorted them.
     # The audit found a truncated result whose note named no order at all, so
@@ -572,6 +619,8 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
         "truncated": truncated,
     }
     coverage["ordered_by"] = ordered_by
+    if kept_for_period:
+        coverage["kept_for_asked_period"] = len(kept_for_period)
     if asked_for is not None and asked_for > ceiling:
         # The caller asked for more than the run permits. Said out loud, because
         # the alternative is an operator raising a limit and watching nothing
@@ -597,6 +646,16 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
         "row_count": len(rows),
         "coverage": coverage,
         "filters_applied": data["filters_applied"],
+        # Freshness, as the chart's surfaces show it (a snapshot's build time,
+        # or a cached live read's read time): the answer says "tính đến HH:MM"
+        # instead of presenting the rows as the source right now.
+        **({"data_as_of": data["data_as_of"]} if data.get("data_as_of") else {}),
+        **({"data_cached": True} if data.get("data_cached") else {}),
+        # What the shared fetch says about the rows' meaning is the model's too
+        # (it was dropped here: a filter the chart could not apply, a Top-N
+        # source, an author restriction, an AI-scope exclusion).
+        **{k: data[k] for k in ("filters_not_applied", "source_top_n", "restricted_by_author",
+                                "excluded_columns") if data.get(k)},
     })
 
 
@@ -641,8 +700,10 @@ def tool_compare_segments(ctx: ToolContext, args: dict) -> dict:
 
     columns = data["columns"]
     rows = data["rows"]
+    dimension = resolve_column(dimension, columns) or dimension
+    measure = resolve_column(measure, columns) or measure
     if dimension not in columns:
-        return _err(f"dimension '{dimension}' not in columns {columns}")
+        return _err(f"dimension '{dimension}' not in columns {columns}", code="bad_argument")
     dim_idx = columns.index(dimension)
 
     # Pick measure: explicit or last numeric column != dimension
@@ -1279,7 +1340,11 @@ TOOL_DEFINITIONS: list[dict] = [
             "period_b (literal labels in the time dimension). Returns delta, "
             "pct_change, and a verdict (improving/worsening/flat). Use this "
             "INSTEAD of compare_segments when comparing the same metric across "
-            "time."
+            "time. When the question NAMES a period (e.g. 'ARR in August 2026 vs "
+            "the month before'), pass it as `period`: that period is the one "
+            "compared, even if its value looks unusually low. Without `period`, an "
+            "auto/mom/yoy run may set aside a suspected incomplete last period and "
+            "says so in `excluded_periods`/`note_partial`."
         ),
         "input_schema": {
             "type": "object",
@@ -1288,6 +1353,15 @@ TOOL_DEFINITIONS: list[dict] = [
                 "mode": {"type": "string", "enum": ["auto", "mom", "qoq", "yoy", "custom"]},
                 "period_a": {"type": "string", "description": "Required for mode=custom"},
                 "period_b": {"type": "string", "description": "Required for mode=custom"},
+                "period": {"type": "string", "description": (
+                    "The period the question asks about, as the chart labels it "
+                    "('2026-08'). Compared against the period one step (mom), three "
+                    "(qoq) or twelve (yoy) before it. Never replaced by another period.")},
+                "measure": {"type": "string", "description": (
+                    "The measure to compare when the chart carries more than one "
+                    "(e.g. arr_active). If the chart has several and none is named "
+                    "or asked, the tool refuses with measure_ambiguous rather than "
+                    "picking one.")},
             },
             "required": ["chart_id"],
         },

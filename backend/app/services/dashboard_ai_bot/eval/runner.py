@@ -123,6 +123,8 @@ if __name__ == "__main__":
     from app.services.dashboard_ai_bot.eval.gold_olist import OLIST_SUITE
 
     base = os.environ.get("EVAL_BASE_URL", "http://127.0.0.1:8000")
+    if not OLIST_SUITE.dashboard_token:
+        raise SystemExit("set APPBI_EVAL_OLIST_TOKEN to the eval dashboard's public-link token")
     fn = make_http_answer_fn(base_url=base, token=OLIST_SUITE.dashboard_token, mode="auto")
     rep = run_suite(OLIST_SUITE, fn)
     print(format_report(rep))

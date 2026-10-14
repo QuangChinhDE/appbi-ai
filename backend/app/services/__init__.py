@@ -13,6 +13,8 @@ from app.services.auto_tagging_service import AutoTaggingService
 from app.services.schema_change_service import SchemaChangeService
 from app.services.description_pipeline_service import DescriptionPipelineService
 from app.services.dataset_quality_service import DatasetQualityService
+# Registers THE Dataset policy with core.authz.dataset_policy (fail-closed port).
+from app.services import dataset_grants_service as _dataset_grants_service  # noqa: F401
 
 __all__ = [
     "DataSourceConnectionService",

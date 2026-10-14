@@ -11,12 +11,14 @@ from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 
+from app.services.chart_value_normalization import default_time_axis_sort, normalize_measure_values, time_completeness
+
 
 # [pbi-filter] correlation: track which chart_id is being rendered so
 # log lines emitted from deep inside the semantic engine (SQL emission,
 # measure-filter wrap) can be tied back to a specific dashboard tile by
 # DA. Set by ``get_chart_data`` / ``preview_chart_data``; defaults to
-# None for non-chart callers (CSV export, MCP previews, etc.).
+# None for non-chart callers (CSV export, previews, etc.).
 _pbi_chart_id_var: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "pbi_chart_id", default=None,
 )
@@ -46,6 +48,8 @@ from app.services.execution_plan import plan_chart_execution
 from app.services.chart_contracts import (
     _record_dropped_filter,
     enforce_no_hard_dropped_filters,
+    AUTHORITATIVE_KEY,
+    refuse_unapplied_authoritative,
     get_chart_active_role_config,
     get_chart_custom_sql,
     merge_chart_query_filters,
@@ -250,7 +254,7 @@ def _role_config_needs_semantic_runtime(
 
     Phase-15.25 — previously this returned False early when
     `base_view_name` was empty. That silently wiped out the dotted-ref
-    detection below, so an MCP-created chart whose `semanticBinding`
+    detection below, so an API-created chart whose `semanticBinding`
     hadn't been hydrated (binding={}, baseViewName="") routed every
     qualified-ref query to the legacy live builder — which can't JOIN.
     DA's symptom: chart with a joined-view dim (e.g. calendar
@@ -517,7 +521,26 @@ def _build_debug_response(runtime_result: dict) -> Optional[dict]:
         "execution_state": raw_debug.get("execution_state"),
         "execution_reason": raw_debug.get("execution_reason"),
         "snapshot_generation": raw_debug.get("snapshot_generation"),
+        "snapshot_dataset_id": raw_debug.get("snapshot_dataset_id"),
+        # Live-read freshness: when the source was read, and whether this
+        # response re-served that read from the result cache.
+        "result_as_of": raw_debug.get("result_as_of"),
+        "result_cached": raw_debug.get("result_cached"),
     }
+
+
+def _utc_iso_of(dt):
+    """A stored (naive UTC) instant on the wire, readable AS UTC (…Z)."""
+    from app.services.time_contract import utc_iso
+
+    return utc_iso(dt)
+
+
+def _utc_now_iso() -> str:
+    """Now, as an instant the browser reads AS UTC (…Z)."""
+    from datetime import datetime as _dt
+
+    return _dt.utcnow().isoformat() + "Z"
 
 
 def _build_semantic_alias_map(canonical_fields: list[str]) -> dict[str, str]:
@@ -526,7 +549,10 @@ def _build_semantic_alias_map(canonical_fields: list[str]) -> dict[str, str]:
     Mirrors `SemanticQueryEngine._safe_alias`. Used to rename keys in
     returned rows so the response contract matches the request (callers ask
     in `view.field` form, they get back `view.field` keyed rows)."""
+    from app.services.semantic_join_resolver import SemanticRefusal
+
     out: dict[str, str] = {}
+    by_folded: dict[str, str] = {}
     for raw in canonical_fields:
         canonical = str(raw or "").strip()
         if not canonical:
@@ -535,8 +561,18 @@ def _build_semantic_alias_map(canonical_fields: list[str]) -> dict[str, str]:
         # non-identifier char (not just '.') so a space-containing column like
         # 'Activity Group' maps to the same alias the engine emitted.
         alias = re.sub(r"[^A-Za-z0-9_]", "_", canonical)
-        # Two distinct refs cannot collide on the same alias because the
-        # engine itself rejects that case; first-write-wins is safe.
+        # Two DIFFERENT refs reducing to one result column (`C name` / `C_name`,
+        # or names differing only in case — Postgres folds an unquoted alias,
+        # BigQuery compares column names case-insensitively) would come back as
+        # ONE column carrying one field's values under both names. Refused.
+        prev = by_folded.setdefault(alias.lower(), canonical)
+        if prev != canonical:
+            raise SemanticRefusal(
+                f"Hai field '{prev}' và '{canonical}' trùng tên cột kết quả ('{alias}') nên giá trị của "
+                "một field sẽ hiện dưới tên của field kia — truy vấn bị từ chối. Đổi tên một field trong "
+                "Data Model (khác ký tự đặc biệt / chữ hoa-thường) hoặc bỏ một field khỏi chart.",
+                SemanticRefusal.UNSUPPORTED_CONTEXT,
+            )
         out.setdefault(alias, canonical)
     return out
 
@@ -553,11 +589,17 @@ def remap_semantic_engine_rows(
     """
     if not alias_to_canonical or not rows:
         return rows
+    # A warehouse may return the alias in another case than it was written:
+    # Postgres folds an unquoted alias to lower case (`view_Revenue` comes back
+    # `view_revenue`). Matched case-insensitively — distinct refs never fold to
+    # one alias (_build_semantic_alias_map refuses that) — else every field
+    # with a capital letter lost its values on Postgres (an empty column).
+    folded = {alias.lower(): canonical for alias, canonical in alias_to_canonical.items()}
     remapped: list[dict] = []
     for row in rows:
         new_row: dict[str, Any] = {}
         for key, value in row.items():
-            new_row[alias_to_canonical.get(key, key)] = value
+            new_row[alias_to_canonical.get(key) or folded.get(str(key).lower(), key)] = value
         remapped.append(new_row)
     return remapped
 
@@ -587,6 +629,66 @@ def _find_chart_name_conflict(
     if exclude_chart_id is not None:
         query = query.filter(Chart.id != exclude_chart_id)
     return query.first()
+
+
+def _view_is_in_model(db, binding: dict[str, Any], view_name: str) -> bool:
+    """Is ``view_name`` an UNRELATED plain view of the binding's model — one
+    the chart's base simply has no relationship to? A view of the dataset (or
+    an explore node), NOT a calendar (a raw calendar ref the role rewrite could
+    not place is not "unrelated") and NOT a view the model reaches only under
+    aliases (`geo` joined as `customer_geo` / `seller_geo`: which one the
+    filter means is ambiguous, not unrelated). Anything else → False, and the
+    caller keeps the hard refusal."""
+    model_id = (binding or {}).get("modelId")
+    if db is None or not model_id or not view_name:
+        return False
+    if "__" in view_name and view_name.endswith("_date_dim"):
+        return False
+    try:
+        from app.models.semantic import SemanticExplore as _SE
+
+        for _ex in db.query(_SE).filter(_SE.model_id == model_id).all():
+            for _j in _ex.joins or []:
+                if (isinstance(_j, dict) and _j.get("view") == view_name
+                        and str(_j.get("alias") or "").strip() not in ("", view_name)):
+                    return False      # reached only through role aliases: ambiguous, never ignored
+        from app.models.dataset import DatasetTable as _DT
+        from app.models.semantic import SemanticView as _SV
+
+        _v = db.query(_SV).filter(_SV.name == view_name).all()
+        for _row in _v:
+            _sql = str(getattr(_row, "sql_table_name", "") or "").upper()
+            if any(m in _sql for m in ("GENERATE_DATE_ARRAY", "GENERATE_SERIES", "CALENDAR_SERIES")):
+                return False
+            _t = db.get(_DT, _row.dataset_table_id) if getattr(_row, "dataset_table_id", None) else None
+            if _t is not None and is_generated_calendar_table(_t):
+                return False
+    except Exception:  # noqa: BLE001 — unknown → keep the hard drop
+        logger.debug("model view classification failed", exc_info=True)
+        return False
+    try:
+        from app.models.dataset import DatasetTable
+        from app.models.semantic import SemanticExplore, SemanticView
+
+        dataset_id = (binding or {}).get("datasetId")
+        if dataset_id is not None:
+            in_dataset = (
+                db.query(SemanticView.id)
+                .join(DatasetTable, DatasetTable.id == SemanticView.dataset_table_id)
+                .filter(DatasetTable.dataset_id == dataset_id, SemanticView.name == view_name)
+                .first()
+            )
+            if in_dataset is not None:
+                return True
+        for explore in db.query(SemanticExplore).filter(SemanticExplore.model_id == model_id).all():
+            if str(explore.base_view_name or "") == view_name:
+                return True
+            for join in explore.joins or []:
+                if isinstance(join, dict) and view_name in (join.get("alias"), join.get("view"), join.get("name")):
+                    return True
+    except Exception:  # noqa: BLE001 — unknown → keep the hard drop
+        logger.debug("model view lookup failed", exc_info=True)
+    return False
 
 
 def _semantic_field_is_supported_by_binding(
@@ -1045,9 +1147,18 @@ def _normalize_runtime_filters_for_chart(
             if multi and len(multi) > 1:
                 # Expand: emit one filter per role with identical operator/value.
                 # Skip the downstream single-filter append (`result.append(filt)`)
-                # by recording each expansion directly and `continue`-ing.
+                # by recording each expansion directly and `continue`-ing. Every
+                # copy carries the SAME fan id: the engine collapses copies of
+                # ONE fanned filter, never two different filters that merely
+                # share an operator and value (a 🔒 ship-date lock and a viewer's
+                # order-date pick).
+                import hashlib as _hl_fan
+
+                fan_id = _hl_fan.sha1(
+                    f"{semantic_field}|{filt.get('operator')}|{filt.get('value')!r}".encode("utf-8")
+                ).hexdigest()[:12]
                 for rw in multi:
-                    expanded = {**filt, **rw}
+                    expanded = {**filt, **rw, "_calendar_fan": fan_id}
                     result.append(expanded)
                 continue
             if multi and len(multi) == 1:
@@ -1059,6 +1170,21 @@ def _normalize_runtime_filters_for_chart(
             # direction) snapshot; the engine has richer knowledge. Skip this
             # legacy drop and let the engine decide downstream.
             if _prop_resolver is None or _prop_helpers is None:
+                # The semantic runtime's binding is derived from the CURRENT
+                # model: a field on a view OF THIS MODEL that the chart's base
+                # cannot reach is a filter on an unrelated table — PowerBI
+                # parity says ignore it, recorded (`unreachable_view`, the
+                # declared soft drop), never a 400 for the whole tile. Only a
+                # view the model does not have stays a hard `binding_unsupported`.
+                if include_joined_semantic and _view_is_in_model(db, binding, semantic_field.split(".", 1)[0]):
+                    _record_dropped_filter(
+                        diagnostics,
+                        filt,
+                        "unreachable_view",
+                        f"view {semantic_field.split('.', 1)[0]!r} has no relationship path to "
+                        f"{base_view_name!r}; ignored (PowerBI parity)",
+                    )
+                    continue
                 _record_dropped_filter(
                     diagnostics,
                     filt,
@@ -1208,12 +1334,17 @@ def _render_live_semantic_field_sql(
     field_def: dict,
     field_name: str,
     table_alias: str,
+    dialect: str | None = None,
 ) -> str | None:
     sql_template = str(field_def.get("sql") or field_name).strip()
     if not sql_template or sql_template == "*":
         return None
     if "${TABLE}" in sql_template:
-        return sql_template.replace("${TABLE}", table_alias)
+        # the same division as the engine's (true division, NULL on /0) — a
+        # filter on a dividing dimension means one thing on both paths
+        from app.services.semantic_arithmetic import normalize_division
+
+        return normalize_division(sql_template, dialect or "").replace("${TABLE}", table_alias)
     if _SIMPLE_SQL_IDENTIFIER_RE.fullmatch(sql_template):
         return f"{table_alias}.{sql_template}"
     return None
@@ -1240,17 +1371,34 @@ def _build_live_relation_for_semantic_view(
             if dataset_obj is None:
                 return None
             try:
-                _, live_proxy_table = build_live_proxy_table_for_dataset_table(
+                _proxy_ds, live_proxy_table = build_live_proxy_table_for_dataset_table(
                     db,
                     dataset_obj,
                     joined_table,
                 )
-                return getattr(live_proxy_table, "source_query", None)
             except DatasetTableSqlError:
                 pass
+            else:
+                if (is_derived_table(joined_table) and _proxy_ds is not None
+                        and getattr(_proxy_ds, "id", None) != getattr(datasource, "id", None)):
+                    # a calculated table reads its dependencies' datasource (the
+                    # generated calendar reads none — inline SQL)
+                    from app.services.execution_plan import refuse_foreign_live_sources
+
+                    refuse_foreign_live_sources(db, {_proxy_ds.id}, datasource,
+                                                {_proxy_ds.id: {str(joined_table.source_kind or "").lower()}})
+                return getattr(live_proxy_table, "source_query", None)
         else:
             joined_datasource = db.query(DataSource).filter(DataSource.id == joined_table.datasource_id).first()
-            if joined_datasource and joined_datasource.id == datasource.id:
+            if joined_datasource and joined_datasource.id != datasource.id:
+                # One live statement reads one connection: another datasource's
+                # table (and the stored relation below) is refused unless it is
+                # the same physical table on this connection (execution_plan).
+                from app.services.execution_plan import refuse_foreign_live_sources
+
+                refuse_foreign_live_sources(db, {joined_datasource.id}, datasource,
+                                            {joined_datasource.id: {str(joined_table.source_kind or "").lower()}})
+            if joined_datasource:
                 try:
                     # Specialty: semantic view definition is shared across
                     # consumers, so it must NOT bake in this dataset's casts.
@@ -1361,12 +1509,254 @@ def _render_step_join_condition(
     return None
 
 
+def _semantic_definition_signature(db: Session, model_id) -> str | None:
+    """Content hash of everything a semantic chart's SQL is generated from.
+
+    The model's views (name, table SQL, dimensions, measures, primary key) and
+    the dataset tables behind them (source, transformations, type overrides,
+    enabled). Joins are covered by `_model_join_sig`. Content-keyed, not
+    timestamp-keyed: equal definitions give an equal key, any edit gives a new
+    one. `None` only when there is no model — never on a lookup error, which
+    would silently collapse different definitions onto one key."""
+    if not model_id:
+        return None
+    import hashlib
+    import json
+
+    from app.models.dataset import DatasetTable
+    from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
+
+    model = db.query(SemanticModel).filter(SemanticModel.id == model_id).first()
+    if model is None:
+        return None
+    tables = []
+    if model.dataset_id is not None:
+        tables = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == model.dataset_id)
+            .order_by(DatasetTable.id)
+            .all()
+        )
+    table_ids = [t.id for t in tables]
+    names: set[str] = set()
+    for e in db.query(SemanticExplore).filter(SemanticExplore.model_id == model_id).all():
+        names.add(str(e.base_view_name or ""))
+        for j in e.joins or []:
+            if isinstance(j, dict) and j.get("view"):
+                names.add(str(j["view"]))
+    views_q = db.query(SemanticView)
+    if table_ids:
+        views = views_q.filter(
+            (SemanticView.dataset_table_id.in_(table_ids))
+            | ((SemanticView.dataset_table_id.is_(None)) & (SemanticView.name.in_(sorted(names))))
+        ).order_by(SemanticView.id).all()
+    else:
+        views = views_q.filter(SemanticView.name.in_(sorted(names))).order_by(SemanticView.id).all()
+    dataset_settings = None
+    if model.dataset_id is not None:
+        from app.models.dataset import Dataset
+
+        ds_row = db.query(Dataset).filter(Dataset.id == model.dataset_id).first()
+        # The calendar settings (timezone) change the generated SQL of every
+        # time grain and calendar join; the rest of Dataset.settings is inert
+        # here but hashing it all is cheaper than being wrong about which key.
+        dataset_settings = getattr(ds_row, "settings", None)
+    payload = {
+        "dataset_settings": dataset_settings,
+        "views": [
+            [v.id, v.name, v.sql_table_name, v.dataset_table_id, v.dimensions or [],
+             v.measures or [], getattr(v, "primary_key", None)]
+            for v in views
+        ],
+        # columns_cache carries the physical types the typed join coercion and
+        # the snapshot column renames read: a type change changes the SQL.
+        "tables": [
+            [t.id, t.source_kind, t.source_table_name, t.source_query, t.transformations,
+             t.type_overrides, t.enabled, t.datasource_id, getattr(t, "columns_cache", None)]
+            for t in tables
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+_FANNING_CARDINALITIES = {"one_to_many", "many_to_many"}
+_CANON_STEP_ON_RE = re.compile(r"^\s*\$\{TABLE\}\.(\w+)\s*=\s*\$\{(\w+)\}\.(\w+)\s*$")
+
+
+def _live_probe_for_step(probes: dict, edge, condition: str, *, from_alias: str, to_alias: str,
+                         relations: dict) -> None:
+    """Record the key probe(s) of a live LEFT JOIN — the same rule as the
+    engine: every ONE side of the walked cardinality, grouped by the
+    expressions the ON condition compares, on the relation that alias reads."""
+    from app.services.relationship_key_guard import one_side_probe
+    from app.services.semantic_join_resolver import canonical_cardinality
+
+    card = canonical_cardinality(getattr(edge, "cardinality", None))
+    sides = []
+    if card in ("many_to_one", "one_to_one"):
+        sides.append((to_alias, from_alias, edge.to_view))
+    if card in ("one_to_many", "one_to_one"):
+        sides.append((from_alias, to_alias, edge.from_node))
+    for one, other, view_name in sides:
+        probe = one_side_probe(condition, one_alias=one, other_alias=other, relation=relations[one],
+                               label=f"{edge.from_node} → {edge.to_node}", view=str(view_name))
+        probes.setdefault(probe["key"], probe)
+
+
+def _live_edge_fans_out(edge) -> bool:
+    """True when walking `edge` can match several rows per source row."""
+    return str(getattr(edge, "cardinality", "") or "").strip().lower() in _FANNING_CARDINALITIES
+
+
+def _live_edge_key_pair(edge) -> tuple[str, str] | None:
+    """(source column, target column) of a single-equality join, else None."""
+    sql_on = str(edge.sql_on or "").strip()
+    if not sql_on:
+        if edge.from_column and edge.to_column:
+            return edge.from_column, edge.to_column
+        return None
+    m = _CANON_STEP_ON_RE.match(sql_on)
+    if m and m.group(2) in {edge.to_node, edge.to_view}:
+        return m.group(1), m.group(3)
+    return None
+
+
+def _build_live_semi_join(
+    db: Session,
+    datasource,
+    tail_steps: list,
+    *,
+    from_alias: str,
+    semi_alias: str,
+    items: list,
+    get_view,
+    target_node: str,
+) -> str:
+    """`LEFT JOIN (SELECT DISTINCT key ... WHERE <filter>) ON from.col = key`.
+
+    The filter is evaluated on the related rows and only the set of matching
+    keys comes back, so one base row stays one row however many related rows
+    match: "the base row has a related row that passes the filter", the same
+    meaning as the engine's EXISTS filter. Non-correlated, so BigQuery accepts
+    it. Anything this cannot express exactly raises instead of guessing."""
+    from app.services.live_query_service import _build_where_clause, _dialect_for_ds_type
+
+    names = ", ".join(sorted({str(name) for _f, name, _flt in items}))
+
+    def _refuse(reason: str) -> ValueError:
+        return ValueError(
+            f"Filter trên '{target_node}' ({names}) đi qua quan hệ 1-nhiều và không "
+            f"áp được chính xác ({reason}) — truy vấn bị từ chối thay vì nhân bản dòng."
+        )
+
+    first_pair = _live_edge_key_pair(tail_steps[0].edge)
+    if not first_pair:
+        raise _refuse("quan hệ không phải một cặp cột bằng nhau")
+    relations: list[str] = []
+    for i, step in enumerate(tail_steps):
+        view = get_view(step.edge.to_view)
+        relation = _build_live_relation_for_semantic_view(db, datasource, view) if view else None
+        if not relation:
+            raise _refuse(f"không dựng được bảng '{step.edge.to_view}'")
+        alias = f"{semi_alias}_t{i}"
+        if i == 0:
+            relations.append(f"{_wrap_live_sql_relation(relation)} AS {alias}")
+            continue
+        cond = _render_step_join_condition(
+            step.edge, from_alias=f"{semi_alias}_t{i - 1}", to_alias=alias,
+        )
+        if not cond:
+            raise _refuse(f"thiếu điều kiện join tới '{step.edge.to_view}'")
+        relations.append(f"INNER JOIN {_wrap_live_sql_relation(relation)} AS {alias} ON {cond}")
+    last_alias = f"{semi_alias}_t{len(tail_steps) - 1}"
+    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+    dialect = _dialect_for_ds_type(ds_type)
+    projections: list[str] = []
+    preds: list[str] = []
+    for i, (field_def, semantic_name, filt) in enumerate(items):
+        field_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias, dialect)
+        if not field_expr:
+            raise _refuse(f"không dựng được biểu thức của field '{semantic_name}'")
+        value_col = f"__sem_semi_value_{i}"
+        projections.append(f"{field_expr} AS {value_col}")
+        pred = _build_where_clause([{**filt, "field": value_col}], dialect)
+        if not pred:
+            raise _refuse("filter không có điều kiện")
+        preds.append(pred)
+    src_col, key_col = first_pair
+    return (
+        f"LEFT JOIN (SELECT DISTINCT _q._k AS _k FROM ("
+        f"SELECT {semi_alias}_t0.{key_col} AS _k, {', '.join(projections)} "
+        f"FROM {' '.join(relations)}) AS _q WHERE {' AND '.join(preds)}) AS {semi_alias} "
+        f"ON {from_alias}.{src_col} = {semi_alias}._k"
+    )
+
+
+def _drop_unapplied_related_filters(filters: list, base_view_name: str) -> list:
+    """The filters a live chart can still apply itself: a filter on a RELATED
+    view the adapter could not route is not handed back — the base WHERE
+    builder would render it as a column the base does not have (an error on
+    Postgres; on DuckDB — Sheets / manual tables — an unknown double-quoted
+    name is a string literal: the predicate was FALSE and the chart came back
+    EMPTY, silently). An authoritative one is refused."""
+    kept = []
+    for f in filters or []:
+        ref = str((f or {}).get("semanticField") or (f or {}).get("fieldKey") or "").strip()
+        if ref and "." in ref and ref.split(".", 1)[0] != base_view_name:
+            refuse_unapplied_authoritative(f, "unreachable_view")
+            continue
+        kept.append(f)
+    return kept
+
+
+def _record_unapplied_live_filter(diagnostics, filt: dict, target_node: str, base_view_name: str) -> None:
+    """A related filter the model does not relate to this chart's table (no
+    filter path): not applied, and RECORDED — in the caller's dropped-filter
+    diagnostics (``_debug.dropped_filters``) and the log."""
+    logger.warning("[live-filter] %s ignored: no filter path from %r to %r (PowerBI parity)",
+                   filt.get("semanticField") or filt.get("field"), target_node, base_view_name)
+    _record_dropped_filter(
+        diagnostics, filt, "unreachable_view",
+        f"view {target_node!r} has no relationship path a filter may travel to {base_view_name!r}; ignored",
+    )
+
+
+def _record_unrenderable_live_filter(diagnostics, filt: dict, reason: str) -> None:
+    """A related filter the model relates to this chart's table, but whose
+    route the live adapter cannot render (the base or a joined relation, a
+    join condition): left out AND recorded (`no_join_path`) — the engine's
+    rule for the same case (the skip badge, `_debug.dropped_filters`), never
+    silent; an authoritative one is refused."""
+    refuse_unapplied_authoritative(filt, reason)
+    ref = filt.get("semanticField") or filt.get("fieldKey") or filt.get("field")
+    logger.warning("[live-filter] %s ignored: its relationship route cannot be rendered (%s)", ref, reason)
+    _record_dropped_filter(
+        diagnostics, filt, "no_join_path",
+        f"filter on {ref!r} ignored: its relationship route cannot be rendered ({reason}); check the "
+        "relationship in Data Model",
+    )
+
+
+def _refuse_unrenderable_live_filter(filt: dict, reason: str) -> None:
+    """A related filter on a FIELD the related view does not have or cannot
+    render: refused (as the engine refuses an unknown field)."""
+    refuse_unapplied_authoritative(filt, reason)
+    ref = filt.get("semanticField") or filt.get("fieldKey") or filt.get("field")
+    raise ValueError(
+        f"Filter '{ref}' không áp được cho chart này ({reason}) — từ chối trả kết quả thay vì ra số "
+        "chưa lọc. Kiểm tra field trong Data Model."
+    )
+
+
 def _adapt_live_sql_for_semantic_filters(
     db: Session,
     datasource,
     db_table,
     chart_config: dict | None,
     filters: list | None,
+    diagnostics: list | None = None,
 ) -> tuple[str | None, list[dict]]:
     """Wrap base SQL with multi-hop joins so dashboard filters that target
     fields on joined views can be applied.
@@ -1379,7 +1769,16 @@ def _adapt_live_sql_for_semantic_filters(
        deterministic SQL alias.
     3. Project the target field as `__sem_filter_N` on the wrapping SELECT
        and rewrite the filter to reference that projection alias.
+
+    Contract for a filter on a RELATED view (Pair #2): it is applied exactly;
+    or, when the model relates no filter path to the chart's table, it is
+    left out AND recorded in ``diagnostics`` (PowerBI parity, as the engine);
+    or — a path exists but cannot be rendered — the request is REFUSED. It is
+    never left out silently, and an authoritative one is never left out.
+    ``None`` SQL means no related filter needs a JOIN; the returned list is
+    the filters the caller still applies itself.
     """
+    # (the caller's own normalization already recorded input-level drops)
     normalized_filters = _normalize_runtime_filters_for_chart(
         chart_config,
         filters,
@@ -1397,7 +1796,7 @@ def _adapt_live_sql_for_semantic_filters(
     base_view_name = str(binding.get("baseViewName") or "").strip()
     model_id = binding.get("modelId")
     if not base_view_name:
-        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters, diagnostics=diagnostics)
 
     from app.models.semantic import SemanticModel, SemanticView
     from app.services.dataset_relation_service import resolve_dataset_table_relation
@@ -1418,12 +1817,28 @@ def _adapt_live_sql_for_semantic_filters(
     # bc_owner" symptom. The engine path (semantic_query_engine.py) already
     # uses bidirectional=True for the same reason.
     resolver = SemanticJoinResolver(db, model, base_view_name, bidirectional=True)
+    # Same refusal as the engine: a model carrying an invalid relationship is
+    # not answered on the live path either (its absence would silently change
+    # which filters reach the base).
+    from app.services.semantic_join_resolver import raise_for_invalid_relationships
+
+    raise_for_invalid_relationships(resolver)
 
     try:
         base_sql = resolve_dataset_table_relation(datasource, db_table).sql
     except Exception:
         logger.debug("Failed to build base live SQL for semantic runtime filters", exc_info=True)
-        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+        # No base relation to JOIN the related views to: a related filter
+        # cannot be applied here — recorded (never silent), an authoritative
+        # one refused.
+        kept = []
+        for f in normalized_filters:
+            ref = str((f or {}).get("semanticField") or (f or {}).get("fieldKey") or "").strip()
+            if ref and "." in ref and ref.split(".", 1)[0] != base_view_name:
+                _record_unrenderable_live_filter(diagnostics, f, "no_base_relation")
+                continue
+            kept.append(f)
+        return None, _normalize_runtime_filters_for_chart(chart_config, kept)
 
     # Track materialized join steps. Key = (from_alias_sql, to_node) so that
     # a path of length N spawns N JOINs but two filters that share a prefix
@@ -1433,6 +1848,11 @@ def _adapt_live_sql_for_semantic_filters(
     join_clauses: list[str] = []
     projected_fields: list[dict[str, str]] = []
     effective_filters: list[dict] = []
+    # (anchor alias, target node, route) -> {"steps", "from_alias", "items"}
+    semi_groups: dict = {}
+    live_probes: dict = {}
+    # alias -> the relation it reads (the key probes run on the same one)
+    live_relations: dict = {"_appbi_base": f"({base_sql})"}
     next_join_index = 0
     next_projection_index = 0
 
@@ -1492,17 +1912,74 @@ def _adapt_live_sql_for_semantic_filters(
             effective_filters.append(filt)
             continue
 
-        path = resolver.resolve_path(target_node)
-        if path is None:
-            # not reachable — skip this filter for this chart
+        # Route choice — the SAME rule as the engine's filter EXISTS builder:
+        #   * only routes a filter may travel: every hop toward a one side, or
+        #     toward a many side through a relationship that filters both ways
+        #     (the bidirectional walk is never a filter path — a single-direction
+        #     fact → dimension relationship does not filter the dimension);
+        #   * a forward to-one route (a dimension of the base) wins; two of them
+        #     (a diamond: two meanings) → refused;
+        #   * otherwise several routes that each cross a 1:N hop (a filter on
+        #     another fact reaching this one through shared conformed dims) →
+        #     every route is applied, AND-ed, each as its own semi-join.
+        from app.services.semantic_join_resolver import (
+            AmbiguousJoinPathError, RouteEnumerationIncomplete, _route_label, edge_propagates,
+        )
+        from app.services.semantic_query_engine import SemanticQueryEngine
+
+        forward = resolver.forward_routes(target_node)
+        if forward is None:
+            raise RouteEnumerationIncomplete(target_node)
+        forward = [r for r in forward if r.steps]
+        if forward:
+            # a dimension of the base: every forward chain is a meaning; two of
+            # them (the sale's own region vs the customer's) → refused
+            only, tied = SemanticQueryEngine._pick_route(forward, {base_view_name})
+            if only is None:
+                raise AmbiguousJoinPathError(target_node, [_route_label(r) for r in tied])
+            routes = [only]
+        else:
+            # the engine's propagation rule: every shortest route the filter may
+            # travel, AND-ed (enumerated completely: past the cap distinct_routes
+            # raises — never a partial set)
+            routes = [r for r in resolver.distinct_routes(target_node)
+                      if r.steps and all(edge_propagates(st.edge) for st in r.steps)]
+            if not routes:
+                # a shorter route a filter may not travel never hides a valid one
+                routes = resolver.shortest_propagation_routes(target_node, {base_view_name})
+                if routes is None:
+                    raise RouteEnumerationIncomplete(target_node)
+        if not routes:
+            # The model relates no filter path from this view to the chart's
+            # table: the filter does not apply to it (PowerBI parity — as the
+            # engine's drop gate) — recorded, never silent; an authoritative
+            # constraint is refused instead.
+            refuse_unapplied_authoritative(filt, "unreachable_view")
+            _record_unapplied_live_filter(diagnostics, filt, target_node, base_view_name)
             continue
+        if len(routes) > 1:
+            route_plans = [(r, 0) for r in routes]           # (route, fan_idx): whole route is a semi-join
+        else:
+            only = routes[0]
+            route_plans = [(only, next(
+                (i for i, st in enumerate(only.steps) if _live_edge_fans_out(st.edge)), None
+            ))]
+        path, fan_idx = route_plans[0]
+
+        # A LEFT JOIN is only safe while every step is to-one from the base's
+        # side. The first step that fans out (1:N, M:N, or an N:1 walked in
+        # reverse) would repeat base rows once per related row and inflate
+        # every aggregate — so from there on the filter becomes a semi-join on
+        # the DISTINCT matching keys instead of a join.
+        steps = list(path.steps)
+        prefix_steps = steps if fan_idx is None else steps[:fan_idx]
 
         # Materialize each step. Use stable alias based on path prefix so
         # shared prefixes reuse the same JOIN.
         prev_alias = "_appbi_base"
         last_alias = prev_alias
         path_failed = False
-        for step in path.steps:
+        for step in prefix_steps:
             cache_key = (prev_alias, step.edge.to_node)
             existing_alias = materialized_steps.get(cache_key)
             if existing_alias is not None:
@@ -1526,15 +2003,10 @@ def _adapt_live_sql_for_semantic_filters(
                 from_alias=prev_alias,
                 to_alias=new_alias,
             )
-            # Validate the to_column actually exists; rebuild if necessary.
-            to_col = step.edge.to_column
-            if condition and to_col and not _semantic_view_has_field(joined_view, to_col):
-                # try fallback: maybe to_column is misnamed but from_column exists
-                from_col = step.edge.from_column
-                if from_col and _semantic_view_has_field(joined_view, from_col):
-                    condition = f"{prev_alias}.{from_col} = {new_alias}.{from_col}"
-                else:
-                    condition = None
+            # The relationship's own condition, as stored — never a guessed
+            # `from_col = from_col` when the key is not a declared field (that
+            # rebuilt the JOIN on a different key, silently). A key column that
+            # does not exist fails loudly in the warehouse.
             if not condition:
                 path_failed = True
                 break
@@ -1544,17 +2016,23 @@ def _adapt_live_sql_for_semantic_filters(
                 f"{join_kw} JOIN {_wrap_live_sql_relation(relation)} AS {new_alias} "
                 f"ON {condition}"
             )
+            # A to-one LEFT JOIN trusts its key: probe it like the engine does.
+            live_relations[new_alias] = _wrap_live_sql_relation(relation)
+            _live_probe_for_step(live_probes, step.edge, condition, from_alias=prev_alias,
+                                 to_alias=new_alias, relations=live_relations)
             materialized_steps[cache_key] = new_alias
             prev_alias = new_alias
             last_alias = new_alias
 
         if path_failed:
+            _record_unrenderable_live_filter(diagnostics, filt, "no_join_path")
             continue
 
         # Resolve the field def on the target view
         target_view_name = resolver.view_for_node(target_node) or target_node
         target_view = _get_view(target_view_name)
         if target_view is None:
+            _record_unrenderable_live_filter(diagnostics, filt, "view_not_found")
             continue
         field_def = next(
             (
@@ -1568,19 +2046,65 @@ def _adapt_live_sql_for_semantic_filters(
             None,
         )
         if not field_def:
+            _refuse_unrenderable_live_filter(filt, "field_not_on_view")
+
+        if fan_idx is not None:
+            # Every filter on the same related view, through the same route,
+            # goes into ONE semi-join ("a related row passes ALL of them") —
+            # the engine folds a view's predicates into one EXISTS the same way.
+            # Two separate semi-joins would keep a base row whose related rows
+            # pass each filter on DIFFERENT rows.
+            from app.services.semantic_join_resolver import _edge_signature
+
+            for route, r_fan in route_plans:
+                r_steps = list(route.steps)
+                anchor = last_alias if route is path else "_appbi_base"
+                key = (anchor, target_node, tuple(_edge_signature(st.edge) for st in r_steps[r_fan:]))
+                group = semi_groups.setdefault(key, {
+                    "steps": r_steps[r_fan:], "from_alias": anchor, "items": [],
+                })
+                group["items"].append((field_def, semantic_name, filt))
             continue
 
-        rendered_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias)
+        from app.services.live_query_service import _dialect_for_ds_type as _live_dialect
+
+        rendered_expr = _render_live_semantic_field_sql(
+            field_def, semantic_name, last_alias,
+            _live_dialect(datasource.type if isinstance(datasource.type, str) else datasource.type.value),
+        )
         if not rendered_expr:
-            continue
+            _refuse_unrenderable_live_filter(filt, "field_not_renderable")
 
         projection_alias = f"__sem_filter_{next_projection_index}"
         next_projection_index += 1
         projected_fields.append({"expr": rendered_expr, "alias": projection_alias})
         effective_filters.append({**filt, "field": projection_alias})
 
+    for (_anchor, target_node, _sig), group in semi_groups.items():
+        semi_alias = f"_appbi_sem_semi_{next_join_index}"
+        next_join_index += 1
+        join_clauses.append(_build_live_semi_join(
+            db, datasource, group["steps"],
+            from_alias=group["from_alias"], semi_alias=semi_alias,
+            items=group["items"], get_view=_get_view, target_node=target_node,
+        ))
+        projection_alias = f"__sem_filter_{next_projection_index}"
+        next_projection_index += 1
+        projected_fields.append({"expr": f"{semi_alias}._k", "alias": projection_alias})
+        effective_filters.append({
+            "field": projection_alias, "operator": "is_not_null", "value": None,
+        })
+
     if not join_clauses or not projected_fields:
-        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+        return None, _normalize_runtime_filters_for_chart(
+            chart_config, _drop_unapplied_related_filters(normalized_filters, base_view_name))
+
+    if live_probes:
+        from app.services.relationship_key_guard import verify_key_probes
+
+        ds_type_v = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+        verify_key_probes(list(live_probes.values()), ds_type=ds_type_v, config=datasource.config,
+                          namespace=f"ds:{getattr(datasource, 'id', '')}")
 
     select_parts = ["_appbi_base.*"]
     select_parts.extend(
@@ -1592,6 +2116,14 @@ def _adapt_live_sql_for_semantic_filters(
         f'FROM ({base_sql}) AS _appbi_base '
         f'{" ".join(join_clauses)}'
     )
+    if live_probes:
+        # the same keys re-checked inside this statement (same snapshot as
+        # the JOINs): the probe above cannot see a writer in between
+        from app.services.relationship_key_guard import statement_key_guard
+
+        _key_guard = statement_key_guard(list(live_probes.values()))
+        if _key_guard:
+            enriched_sql += f" WHERE {_key_guard}"
     logger.debug("Semantic enriched SQL: %s", enriched_sql)
     return enriched_sql, effective_filters
 
@@ -1637,6 +2169,7 @@ def _build_row_filtered_live_relation_sql(
     filters: list[dict] | None,
     *,
     semantic_binding: dict[str, Any] | None = None,
+    diagnostics: list | None = None,
 ) -> str:
     from app.services.live_query_service import (
         _build_where_clause,
@@ -1666,6 +2199,8 @@ def _build_row_filtered_live_relation_sql(
         field_name = str(filt.get("field") or "").strip()
         if not available_fields or not field_name or field_name in available_fields:
             applicable_filters.append(filt)
+        else:
+            refuse_unapplied_authoritative(filt, "field_not_in_relation")
 
     relation_sql = base_sql
     effective_filters = applicable_filters
@@ -1676,6 +2211,7 @@ def _build_row_filtered_live_relation_sql(
             db_table,
             {"semanticBinding": semantic_binding},
             applicable_filters,
+            diagnostics=diagnostics,
         )
         if adapted_sql:
             relation_sql = adapted_sql
@@ -1697,6 +2233,7 @@ def _build_filtered_live_sql_for_dataset_table(
     *,
     visited_table_ids: list[int] | None = None,
     required_datasource_id: int | None = None,
+    diagnostics: list | None = None,
 ) -> tuple[Any, str]:
     from app.models.dataset import DatasetTable
     from app.models.models import DataSource
@@ -1733,6 +2270,7 @@ def _build_filtered_live_sql_for_dataset_table(
             proxy_table,
             normalized_filters,
             semantic_binding=_semantic_binding_for_runtime_table(db, table),
+            diagnostics=diagnostics,
         )
 
     if not is_derived_table(table):
@@ -1754,6 +2292,7 @@ def _build_filtered_live_sql_for_dataset_table(
             table,
             normalized_filters,
             semantic_binding=_semantic_binding_for_runtime_table(db, table),
+            diagnostics=diagnostics,
         )
 
     current_table_id = getattr(table, "id", None)
@@ -1824,6 +2363,7 @@ def _build_filtered_live_sql_for_dataset_table(
             dependency_table,
             normalized_filters,
             visited_table_ids=next_visited,
+            diagnostics=diagnostics,
             required_datasource_id=(
                 int(resolved_datasource.id)
                 if resolved_datasource is not None
@@ -1886,6 +2426,7 @@ def _build_filtered_live_sql_for_dataset_table(
         proxy_table,
         normalized_filters,
         semantic_binding=_semantic_binding_for_runtime_table(db, table),
+        diagnostics=diagnostics,
     )
 
 
@@ -1941,6 +2482,22 @@ def _detect_foreign_dialect_leak(sql: str, dialect: str) -> Optional[str]:
     if d == "duckdb" and re.search(r"`[^`\n]*\.[^`\n]*`", sql or ""):
         return "tham chiếu bảng kiểu BigQuery (dấu backtick `project.dataset.table`)"
     return None
+
+
+def _add_engine_predicate(bucket: list, predicate: dict, *, authoritative: bool) -> None:
+    """Add one engine predicate to a field's list: one entry per identity
+    (operator, value, calendar keys, fan id). The authority marker is not part
+    of the identity — it is OR-ed onto the stored entry, so an identical viewer
+    pick stored first can never leave a 🔒 copy unmarked (an engine drop of it
+    would then be a silent skip instead of a refusal)."""
+    identity = {k: v for k, v in predicate.items() if k != AUTHORITATIVE_KEY}
+    stored = next((e for e in bucket if {k: v for k, v in e.items() if k != AUTHORITATIVE_KEY} == identity), None)
+    if stored is None:
+        stored = dict(identity)
+        bucket.append(stored)
+    if authoritative:
+        # carried into the engine: every engine drop site refuses it
+        stored[AUTHORITATIVE_KEY] = True
 
 
 def _execute_semantic_chart_runtime(
@@ -2012,7 +2569,7 @@ def _execute_semantic_chart_runtime(
     semantic_measure_fields = _binding_semantic_measure_fields(binding)
     semantic_fields_all = _binding_semantic_fields(binding)
     # Bare-name view of declared measures → lets the shared classifier reclassify
-    # a BARE measure ref (e.g. an old / MCP / API chart that stored
+    # a BARE measure ref (e.g. an old / API-authored chart that stored
     # `scatterX: "total_revenue"` without a view prefix) into the measure tier
     # WITHOUT guessing the view (the engine resolves it). Passed to
     # `classify_semantic_roles` below — the role classification + the
@@ -2132,9 +2689,11 @@ def _execute_semantic_chart_runtime(
             or ""
         ).strip()
         if not target_field:
+            refuse_unapplied_authoritative(filt, "no_field")
             continue
         qualified = qualify(target_field)
         if not qualified:
+            refuse_unapplied_authoritative(filt, "no_field")
             continue
         operator = str(filt.get("operator") or "eq").strip().lower()
         operator = _OP_ALIAS.get(operator, operator)
@@ -2164,9 +2723,10 @@ def _execute_semantic_chart_runtime(
             cal_source = filt.get("calendarSourceField") or filt.get("calendar_source_field")
             if cal_source:
                 engine_filt["calendarSourceField"] = cal_source
-        engine_filters.setdefault(qualified, [])
-        if engine_filt not in engine_filters[qualified]:
-            engine_filters[qualified].append(engine_filt)
+        if filt.get("_calendar_fan"):
+            engine_filt["_calendar_fan"] = filt["_calendar_fan"]
+        _add_engine_predicate(engine_filters.setdefault(qualified, []), engine_filt,
+                              authoritative=bool(filt.get(AUTHORITATIVE_KEY)))
 
     # Phase-15.83 — DA decision: render every row. The previous code
     # capped chart queries at 1000 (default) / 5000 (with limit_override).
@@ -2285,6 +2845,15 @@ def _execute_semantic_chart_runtime(
                 _dir = "asc" if str(_style_cfg.get("dataLimitDirection") or "top").lower() == "bottom" else "desc"
             chart_sorts = [{"field": _rank_ref, "direction": _dir}]
         effective_limit = max(1, _data_limit_n)
+
+    # A time axis is ordered by time. Without an ORDER BY the engine returns the
+    # buckets in whatever order the database grouped them (Postgres hash
+    # aggregate: 2017-02, 2017-06, 2017-05 …), and a line drawn through that
+    # order zig-zags across the axis. Sorting in the SQL, not after the fetch,
+    # keeps it right under a LIMIT and on every dialect. An explicit sort
+    # (Top-N above) wins; this only fills the gap.
+    if not chart_sorts:
+        chart_sorts = default_time_axis_sort(time_grains, qualify(role_config.get("timeField")) if role_config.get("timeField") else None, dimension_refs)
 
     # ── Window functions (running total / cumulative / YTD) ─────────────
     # The engine renders running_sum/running_avg/rank/... but the chart
@@ -2428,10 +2997,20 @@ def _execute_semantic_chart_runtime(
             _model_join_sig = _hl.sha256(_join_sig_src.encode("utf-8")).hexdigest()[:16]
     except Exception:  # noqa: BLE001 — cache-key aug must never break a chart
         _model_join_sig = None
+        # Without the relationship identity a cached result could outlive a
+        # relationship edit: compute, do not cache.
+        cache_enabled = False
+    # The DEFINITIONS the SQL is generated from are part of the result's
+    # identity too: a measure edited from SUM to AVG, a dimension's SQL, a
+    # primary key, or a table transformation all change the number with the
+    # same chart config. Keyed on content, so an edit on any worker changes the
+    # key everywhere at once (the shared cache is cross-worker) — no TTL wait.
+    _model_def_sig = _semantic_definition_signature(db, model_id)
     cache_role_config = {
         "_semantic_chart_runtime": True,
         # Relationship-graph identity — busts the cache on any join edit.
         "_model_join_sig": _model_join_sig,
+        "_model_def_sig": _model_def_sig,
         "_dimensions": dimension_refs,
         "_measures": measure_refs,
         "_agg_overrides": agg_overrides,
@@ -2490,12 +3069,29 @@ def _execute_semantic_chart_runtime(
     # served for all filtered requests → "filter applied but chart shows
     # unfiltered total". Flatten each field's predicate list so the cache
     # key is distinct per filter set again.
+    # calendarField / calendarSourceField change the predicate the engine
+    # renders (a month=1 and a quarter=1 rewrite on the same date column are
+    # different queries) — they are part of the identity, as on the live path.
+    # `_calendar_fan` too: copies of ONE fanned Date filter collapse onto the main
+    # calendar, while look-alike role filters are AND-ed — different queries
+    # (the id is a deterministic hash of the fanned filter).
     cache_filters = [
-        {"field": field, "operator": cond.get("operator"), "value": cond.get("value")}
+        {"field": field, "operator": cond.get("operator"), "value": cond.get("value"),
+         **({"calendarField": cond["calendarField"]} if cond.get("calendarField") else {}),
+         **({"calendarSourceField": cond["calendarSourceField"]} if cond.get("calendarSourceField") else {}),
+         **({"_calendar_fan": cond["_calendar_fan"]} if cond.get("_calendar_fan") else {}),
+         **({"_authoritative": True} if cond.get("_authoritative") else {})}
         for field, conds in sorted(engine_filters.items())
         for cond in (conds if isinstance(conds, list) else [conds])
         if isinstance(cond, dict)
     ]
+    # Which constraints are AUTHORITATIVE changes what a soft drop means (an
+    # authoritative one refuses instead of being skipped): never share a slot.
+    cache_role_config["_authoritative"] = sorted(
+        field for field, conds in engine_filters.items()
+        for cond in (conds if isinstance(conds, list) else [conds])
+        if isinstance(cond, dict) and cond.get("_authoritative")
+    ) or None
 
     coalesce_leader = False
     if cache_enabled:
@@ -2525,9 +3121,27 @@ def _execute_semantic_chart_runtime(
             # the SECOND, lying about which filter was actually dropped.
             # Fix: rebuild the dropped log from this request's
             # `filter_diagnostics` before returning.
+            # Served from the result cache: the rows are those read at
+            # `result_as_of` (an entry cached before the stamp existed has none —
+            # still flagged cached, never presented as current). Stamped BEFORE
+            # the overlay below, which may fail and fall through.
+            cached_debug = dict((cached.get("_debug") if isinstance(cached, dict) else None) or {})
+            cached_debug["result_cached"] = True
+            cached_debug.setdefault("result_as_of", None)
+            if isinstance(cached, dict):
+                cached = {**cached, "_debug": cached_debug}
             try:
-                cached_debug = dict(cached.get("_debug") or {})
-                cached_debug["dropped_filters"] = list(filter_diagnostics)
+                # this request's pre-engine drops + the engine's own drops of the
+                # cached computation (deterministic for the key) — never lost on a hit
+                _hit_drops = list(filter_diagnostics)
+                _hit_seen = {(str(d.get("field") or d.get("semantic_field") or ""), str(d.get("reason") or ""))
+                             for d in _hit_drops if isinstance(d, dict)}
+                for _d in cached_debug.get("engine_dropped_filters") or []:
+                    _k = (str(_d.get("field") or _d.get("semantic_field") or ""), str(_d.get("reason") or ""))
+                    if isinstance(_d, dict) and _k not in _hit_seen:
+                        _hit_seen.add(_k)
+                        _hit_drops.append(dict(_d))
+                cached_debug["dropped_filters"] = _hit_drops
                 # snapshot_stale is time-dependent (age vs the per-request TTL),
                 # so it must reflect THIS request, not the value baked in when the
                 # slot was cached — else the "refreshing…" hint is wrong on a hit.
@@ -2648,6 +3262,12 @@ def _execute_semantic_chart_runtime(
         # Execution credential: snapshot-backed queries read the SA-only snapshot
         # dataset → run on the service-account config; else the datasource's own cred.
         _exec_config = _snap_exec_config if _snap_exec_config is not None else datasource.config
+        if _snap_exec_config is None:
+            # A live statement runs on ONE connection: every table it reads must be
+            # readable there as the same physical table (execution_plan).
+            from app.services.execution_plan import refuse_foreign_live_sources
+
+            refuse_foreign_live_sources(db, engine.live_source_ids, datasource, engine.live_source_kinds)
 
         # ── DB connection release (QueuePool exhaustion fix) ─────────────────────
         # The warehouse query below can run up to 60s. The request's ORM Session has
@@ -2679,7 +3299,13 @@ def _execute_semantic_chart_runtime(
                 )
 
         timeout = 60 if ds_type == "bigquery" else 30
-        start = time.time()
+        # Every to-one JOIN the query trusts is verified on the SAME relation and
+        # credential before the query runs (relationship_key_guard).
+        from app.services.relationship_key_guard import verify_key_probes
+
+        verify_key_probes(engine.key_probes, ds_type=ds_type, config=_exec_config,
+                          namespace=f"ds:{getattr(datasource, 'id', '')}")
+        start = time.perf_counter()
         # Phase-12.7: wrap execute so connection errors / dialect mismatch /
         # missing physical column at the datasource surface as a ValueError
         # with debugging context, not a generic 500. ValueError because the
@@ -2731,10 +3357,23 @@ def _execute_semantic_chart_runtime(
                 except Exception:  # noqa: BLE001 — rebuild is best-effort
                     logger.debug("[snapshot] rebuild trigger after missing table failed", exc_info=True)
                 # Regenerate the query WITHOUT snapshot overrides → live SQL on source.
+                # The SAME semantic spec, compiled for the SOURCE's dialect and
+                # executed as the source's engine: the snapshot plan had switched
+                # dialect / ds_type to the BigQuery host, and the live statement
+                # used to keep them (BigQuery SQL on a Postgres / MySQL / Sheets
+                # credential — the fallback could never run there).
                 import dataclasses as _dc
                 _live_spec = _dc.replace(_spec, snapshot_overrides={})
+                _src_ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+                _src_dialect = _dialect_for_ds_type(_src_ds_type)
+                if _src_dialect != dialect or _src_ds_type != ds_type:
+                    engine = SemanticQueryEngine(db, database_type=_src_dialect)
+                    dialect, ds_type = _src_dialect, _src_ds_type
+                    timeout = 60 if ds_type == "bigquery" else 30
                 try:
                     sql, _engine_columns, _pivot_metadata = engine.run(_live_spec)
+                except ValueError:
+                    raise   # a semantic refusal (category) or a friendly engine message, as is
                 except Exception:
                     logger.exception("Semantic chart LIVE regen failed after missing snapshot")
                     raise ValueError(
@@ -2742,7 +3381,17 @@ def _execute_semantic_chart_runtime(
                         "Snapshot đã hết hạn và không dựng lại được SQL trực tiếp — "
                         "thử bấm Refresh trên Dataset."
                     ) from exc
+                _leak = _detect_foreign_dialect_leak(sql, dialect)
+                if _leak:
+                    raise ValueError(
+                        "Biểu đồ này không chạy được trực tiếp (live) vì dataset trộn nhiều nguồn khác "
+                        f"engine (phát hiện {_leak} trong truy vấn chạy trên '{dialect}'). Bấm Refresh trên "
+                        "Dataset để dựng lại snapshot."
+                    ) from exc
                 _exec_config = datasource.config
+                from app.services.execution_plan import refuse_foreign_live_sources
+
+                refuse_foreign_live_sources(db, engine.live_source_ids, datasource, engine.live_source_kinds)
                 _snap_overrides = {}
                 _snap_mode = "live"
                 _snap_stale = False
@@ -2772,6 +3421,8 @@ def _execute_semantic_chart_runtime(
                             f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
                             f"Add filters (e.g. date range) to reduce the data scanned."
                         )
+                verify_key_probes(engine.key_probes, ds_type=ds_type, config=_exec_config,
+                                  namespace=f"ds:{getattr(datasource, 'id', '')}")
                 _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
                     ds_type,
                     _exec_config,
@@ -2839,6 +3490,8 @@ def _execute_semantic_chart_runtime(
                         db.commit()  # pool-release before the BQ wait (same guard as above)
                     except Exception:  # noqa: BLE001
                         db.rollback()
+                    verify_key_probes(engine.key_probes, ds_type=ds_type, config=_exec_config,
+                                      namespace=f"ds:{getattr(datasource, 'id', '')}")
                     _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
                         ds_type,
                         _exec_config,
@@ -2867,10 +3520,13 @@ def _execute_semantic_chart_runtime(
                     "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
                     "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
                 ) from exc
-        elapsed_ms = (time.time() - start) * 1000
+        elapsed_ms = (time.perf_counter() - start) * 1000
 
         alias_map = _spec.response_aliases  # computed once on the spec above
         rows = remap_semantic_engine_rows(rows, alias_map)
+        # Measures are numbers on the wire (Decimal would serialise as a string
+        # and the line renderer draws nothing). Dimensions are left alone.
+        rows = normalize_measure_values(rows, measure_refs)
 
         # PBI parity (2026-06) — harvest the engine's OWN structured filter drops.
         # `_build_where_clause` records two kinds of drop on the engine instance via
@@ -2910,6 +3566,15 @@ def _execute_semantic_chart_runtime(
             # Phase-3b: surface engine warnings (ambiguous join paths, etc.) so the
             # chart UI can banner them. List is empty in the happy path.
             "warnings": list(getattr(engine, "warnings", []) or []),
+            # Which buckets of a time axis are not whole periods (in progress, or
+            # a thin launch/cut-off edge). Nothing is dropped; readers and the
+            # report findings use this to avoid comparing a partial month.
+            "time_completeness": time_completeness(
+                rows,
+                next(iter(time_grains), None) if time_grains else None,
+                next(iter(time_grains.values()), None) if time_grains else None,
+                measure_refs[0] if measure_refs else None,
+            ),
             # Phase-15.9: debug payload for the Explore "Query" tab. The FE
             # inspector shows DA exactly what BE ran — picks up renamed
             # views, ambiguous joins, etc. without needing server logs.
@@ -2925,7 +3590,13 @@ def _execute_semantic_chart_runtime(
                 # label + a live/snapshot badge. Oldest built_at wins (never over-
                 # claims freshness); "live" when no snapshot was used.
                 "data_source_mode": _snap_mode,
-                "snapshot_as_of": (_snap_as_of.isoformat() if _snap_as_of else None),
+                "snapshot_as_of": _utc_iso_of(_snap_as_of),
+                # The freshness contract of a LIVE read (Pair #5): when the source
+                # was actually read. A cache hit re-serves this result — flagged
+                # `result_cached` below — so a surface can say "as of HH:MM"
+                # instead of presenting a cached number as the source right now.
+                "result_as_of": _utc_now_iso(),
+                "result_cached": False,
                 # Public per-link TTL: the served snapshot is older than the TTL and
                 # a background rebuild was kicked off; the FE shows "đang làm mới…".
                 "snapshot_stale": bool(_snap_stale),
@@ -2936,11 +3607,16 @@ def _execute_semantic_chart_runtime(
                 "execution_state": _exec_state,
                 "execution_reason": _exec_reason,
                 "snapshot_generation": _exec_generation,
+                "snapshot_dataset_id": _plan_dataset_id,
                 # Phase-15.78: structured record of every filter the BE dropped
                 # before generating SQL. Empty list = nothing dropped. FE can
                 # banner this so users discover when a slicer they applied
                 # didn't reach this chart.
                 "dropped_filters": list(filter_diagnostics),
+                # The ENGINE's own drops (single-direction gate, no_join_path, an
+                # isolated measure's unreachable filter) — part of THIS cached
+                # result (same key = same query = same drops), re-merged on a hit.
+                "engine_dropped_filters": [dict(d) for d in _engine_drops if isinstance(d, dict)],
             },
         }
 
@@ -3121,11 +3797,73 @@ def _apply_role_overrides(config: dict, role_overrides: dict | None) -> None:
         role_config["dimension"] = dimension.strip()
     metric = role_overrides.get("metric")
     if isinstance(metric, str) and metric.strip():
+        metric = metric.strip()
+        # A DECLARED semantic measure carries its own aggregation (count
+        # distinct, average, a formula, % of total, a filtered measure): it is
+        # swapped in with agg "auto" — the old metric's "sum" (or a default
+        # "sum") used to be carried onto it and re-aggregated it silently
+        # (a distinct count became the SUM of the ids). A plain column keeps
+        # the swapped metric's aggregation, as before.
+        binding = config.get("semanticBinding") if isinstance(config.get("semanticBinding"), dict) else {}
+        declared = set(_binding_semantic_measure_fields(binding)) | {
+            str(f) for f in (binding.get("reachableMeasureFields") or []) if f}
+        base = str(binding.get("baseViewName") or "").strip()
+        is_declared = metric in declared or (base and f"{base}.{metric}" in declared) or (
+            "." not in metric and any(f.rpartition(".")[2] == metric for f in declared))
         metrics = role_config.get("metrics")
         if isinstance(metrics, list) and metrics and isinstance(metrics[0], dict):
-            metrics[0] = {**metrics[0], "field": metric.strip()}
+            metrics[0] = {**metrics[0], "field": metric, **({"agg": "auto"} if is_declared else {})}
         else:
-            role_config["metrics"] = [{"field": metric.strip(), "agg": "sum"}]
+            role_config["metrics"] = [{"field": metric, "agg": "auto" if is_declared else "sum"}]
+
+
+def _rehydrate_binding_for_modeled_table(db: Session, db_table, chart_config) -> dict | None:
+    """The resolved binding of a dataset table that has a semantic view, else None."""
+    from app.models.dataset import DatasetTable
+    from app.models.semantic import SemanticModel, SemanticView
+    from app.services.chart_semantic_service import resolve_chart_semantic_binding
+
+    if not isinstance(db_table, DatasetTable) or getattr(db_table, "id", None) is None:
+        return None
+    if is_generated_calendar_table(db_table):
+        return None
+    has_view = (
+        db.query(SemanticView.id).filter(SemanticView.dataset_table_id == db_table.id).first()
+        is not None
+    )
+    has_model = (
+        db.query(SemanticModel.id).filter(SemanticModel.dataset_id == db_table.dataset_id).first()
+        is not None
+    )
+    if not (has_view and has_model):
+        return None
+    resolved = resolve_chart_semantic_binding(
+        db, int(db_table.id), chart_config if isinstance(chart_config, dict) else {},
+        auto_generate=False,
+    )
+    if isinstance(resolved, dict) and str(resolved.get("baseViewName") or "").strip():
+        logger.warning(
+            "[strict-semantic] chart_id=%s had an unresolved binding on modeled table %s — "
+            "re-hydrated to base=%s",
+            _pbi_current_chart_id(), db_table.id, resolved.get("baseViewName"),
+        )
+        return resolved
+    return None
+
+
+def _require_custom_sql_owner(db: Session, db_chart, effective_config, datasource) -> None:
+    """Custom SQL carries DATASOURCE authority: a saved custom-SQL chart runs
+    only while its owner still holds edit on that datasource (authed and public
+    viewers alike) - see services/chart_sql_authority.py."""
+    if not get_chart_custom_sql(effective_config):
+        return
+    from app.services.chart_sql_authority import owner_may_run_custom_sql
+
+    if not owner_may_run_custom_sql(db, db_chart, datasource):
+        raise ValueError(
+            "This chart's custom SQL is not authorized: its owner does not have "
+            "edit access to the datasource."
+        )
 
 
 def _execute_chart_runtime_for_table(
@@ -3237,6 +3975,18 @@ def _execute_chart_runtime_for_table(
         or _binding_semantic_fields(binding)
         or _binding_semantic_measure_fields(binding)
     )
+    if not custom_sql and not _model_backed:
+        # SEM-P2-008 — an empty/unresolved binding is not proof that the table
+        # has no semantic definitions: hydration upstream can fail and leave it
+        # blank. When the table DOES have a view in its dataset's model, resolve
+        # the binding here and take the semantic path; the single-table live
+        # builder would ignore every declared measure filter and relationship.
+        _rehydrated = _rehydrate_binding_for_modeled_table(db, db_table, chart_config)
+        if _rehydrated:
+            binding = _rehydrated
+            chart_config = {**(chart_config or {}), "semanticBinding": binding}
+            base_view_name_for_routing = str(binding.get("baseViewName") or "").strip()
+            _model_backed = True
     if not custom_sql and _model_backed and not needs_semantic_runtime:
         logger.info(
             "[strict-semantic] forcing semantic runtime chart_id=%s base=%s "
@@ -3370,6 +4120,7 @@ def _execute_chart_runtime_for_table(
                     dataset_obj,
                     db_table,
                     combined_runtime_filters,
+                    diagnostics=live_filter_diagnostics,
                 )
                 return LiveQueryService.execute_chart_query_from_sql(
                     live_datasource,
@@ -3387,6 +4138,7 @@ def _execute_chart_runtime_for_table(
             )
             live_sql, live_filters = _adapt_live_sql_for_semantic_filters(
                 db, live_datasource, live_proxy_table, chart_config, raw_extra_filters,
+                diagnostics=live_filter_diagnostics,
             )
             if live_sql:
                 return LiveQueryService.execute_chart_query_from_sql(
@@ -3452,11 +4204,12 @@ def _execute_chart_runtime_for_table(
     # ── Physical table / SQL query: live query with semantic filter adaptation ──
     live_sql, live_filters = _adapt_live_sql_for_semantic_filters(
         db, datasource, db_table, chart_config, raw_extra_filters,
+        diagnostics=live_filter_diagnostics,
     )
     if live_sql:
-        # Merge chart_base ⊕ runtime through the single fold so a dashboard
-        # filter OVERRIDES a chart base filter on the same semantic scope
-        # ("runtime value wins"), matching the calendar/derived/public paths.
+        # Merge chart_base ⊕ runtime through the single fold (base AND runtime —
+        # the chart's base filter is the author's hard constraint), matching the
+        # calendar/derived/public paths.
         # Previously base (`filters`) and `extra_filters` were passed
         # separately and AND-ed by LiveQueryService → two predicates on the
         # same field → empty result instead of the override the design intends.
@@ -3475,6 +4228,24 @@ def _execute_chart_runtime_for_table(
         limit_override=limit_override,
         dropped_filters_log=live_filter_diagnostics,
     )
+
+
+REFUSAL_HEADER = "X-AppBI-Refusal"
+
+
+def refusal_category(exc: BaseException) -> str | None:
+    """The machine-readable category of a refused chart request — a semantic
+    planner refusal (`SemanticRefusal.category`: AMBIGUOUS_ROUTE, ROUTE_LIMIT,
+    UNRELATED_GRAIN, FANOUT_RISK, …) or an authoritative constraint that could
+    not be applied (its reason only — never the constraint's field) — so upper
+    surfaces decide on it without parsing the localized message. None for any
+    other error."""
+    from app.services.chart_contracts import AuthoritativeFilterNotApplied
+
+    if isinstance(exc, AuthoritativeFilterNotApplied):
+        return "AUTHORITATIVE_NOT_APPLIED"
+    category = getattr(exc, "category", None)
+    return str(category) if isinstance(category, str) and category else None
 
 
 class ChartService:
@@ -3553,8 +4324,9 @@ class ChartService:
         return db.query(Chart).filter(Chart.name == name).first()
     
     @staticmethod
-    def create(db: Session, chart: ChartCreate, owner_id=None) -> Chart:
-        """Create a new chart."""
+    def create(db: Session, chart: ChartCreate, owner_id=None, *, commit: bool = True) -> Chart:
+        """Create a new chart. ``commit=False`` only flushes: the caller commits it
+        together with the rest of one change (a report-only copy and its swap)."""
         chart_name = chart.name.strip()
         if not chart_name:
             raise ValueError("Chart name cannot be empty")
@@ -3591,6 +4363,9 @@ class ChartService:
                 owner_id=owner_id,
             )
             db.add(db_chart)
+            if not commit:
+                db.flush()
+                return db_chart
             db.commit()
             db.refresh(db_chart)
             logger.info(f"Created chart: {chart_name}")
@@ -3624,6 +4399,11 @@ class ChartService:
         
         try:
             update_data = chart_update.model_dump(exclude_unset=True)
+            # A report-only copy stays one: Explore rebuilds the config from its
+            # own state, which does not carry this marker.
+            previous_copy = (db_chart.config or {}).get("reportCopy") if isinstance(db_chart.config, dict) else None
+            if previous_copy and isinstance(update_data.get("config"), dict) and "reportCopy" not in update_data["config"]:
+                update_data["config"] = {**update_data["config"], "reportCopy": previous_copy}
             for field, value in update_data.items():
                 if field == "chart_type" and value:
                     setattr(db_chart, field, ChartType(value.value))
@@ -3784,34 +4564,53 @@ class ChartService:
             return []
         from concurrent.futures import ThreadPoolExecutor
         from app.core.database import SessionLocal
+        from app.services.execution_plan import ReadScope, current_read_scope, read_scope
+        from app.services.time_contract import get_report_anchor, set_report_anchor, reset_report_anchor
+
+        # ONE batch = ONE logical read: every tile of a dataset is served the same
+        # snapshot generation (execution_plan.ReadScope) — a publish landing
+        # mid-batch never splits the page across N and N+1. Worker threads do not
+        # inherit context variables, so the scope is handed to each explicitly.
+        _scope = current_read_scope() or ReadScope()
+        # Same reason for the relative-date anchor: a batched page (e.g. the public
+        # report, or a PDF export) must resolve every tile's preset against the
+        # request's X-AppBI-As-Of, not each worker thread's own now(). Captured
+        # here on the request thread; re-applied inside each worker.
+        _anchor = get_report_anchor()
 
         def _one(item: dict) -> dict:
             cid = int(item["chart_id"])
             local_db = SessionLocal()
+            _anchor_tok = set_report_anchor(_anchor)
             try:
-                data = ChartService.get_chart_data(
-                    local_db,
-                    cid,
-                    extra_filters=item.get("extra_filters"),
-                    filter_context=item.get("filter_context"),
-                    granularity_override=item.get("granularity_override"),
-                    snapshot_ttl_minutes=item.get("snapshot_ttl_minutes"),
-                    role_overrides=item.get("role_overrides"),
-                )
+                with read_scope(_scope):
+                    data = ChartService.get_chart_data(
+                        local_db,
+                        cid,
+                        extra_filters=item.get("extra_filters"),
+                        filter_context=item.get("filter_context"),
+                        granularity_override=item.get("granularity_override"),
+                        snapshot_ttl_minutes=item.get("snapshot_ttl_minutes"),
+                        role_overrides=item.get("role_overrides"),
+                    )
                 if serialize is not None:
                     data = serialize(data)
                 return {"chart_id": cid, "ok": True, "data": data}
             except ValueError as exc:
                 # Invalid chart config for the current dataset state — the same
                 # case the single endpoint maps to 400 (Vietnamese-friendly msg).
-                return {"chart_id": cid, "ok": False, "status": 400, "error": str(exc)}
+                from app.services.chart_error_contract import user_safe_message
+                return {"chart_id": cid, "ok": False, "status": 400,
+                        "error": user_safe_message(exc, f"batch chart data chart_id={cid}"),
+                        "category": refusal_category(exc)}
             except Exception as exc:  # noqa: BLE001 — one tile must not sink the page
-                logger.exception("Batch chart-data failed for chart_id=%s", cid)
+                from app.services.chart_error_contract import failure_detail
                 return {
                     "chart_id": cid, "ok": False, "status": 500,
-                    "error": f"Failed to retrieve chart data: {exc}",
+                    "error": failure_detail(exc, f"batch chart data chart_id={cid}"),
                 }
             finally:
+                reset_report_anchor(_anchor_tok)
                 local_db.close()
 
         # Bound concurrency: a big page must not open dozens of warehouse
@@ -3841,6 +4640,17 @@ class ChartService:
         # same way — both mutate the ACTIVE role config on a deep copy so the
         # saved contract is untouched and the downstream cache keys differ.
         effective_config = db_chart.config or {}
+        _legacy_src = (effective_config.get("source") or {}) if isinstance(effective_config, dict) else {}
+        if db_chart.dataset_table_id is None and isinstance(_legacy_src, dict) \
+                and _legacy_src.get("kind") == "dataset_table" and _legacy_src.get("tableId"):
+            # A legacy chart names its table only in config.source: its binding
+            # is derived from the CURRENT model here, before anything reads it
+            # (the what-if swap's declared-measure check included).
+            try:
+                effective_config = with_chart_semantic_binding(
+                    db, int(_legacy_src["tableId"]), effective_config, auto_generate=True)
+            except (TypeError, ValueError):
+                pass
         if granularity_override or role_overrides:
             effective_config = deepcopy(effective_config)
             if granularity_override:
@@ -3863,6 +4673,8 @@ class ChartService:
                 if not datasource:
                     raise ValueError("Data source not found")
 
+            _require_custom_sql_owner(db, db_chart, effective_config, datasource)
+
             result = _execute_chart_runtime_for_table(
                 db,
                 datasource,
@@ -3881,6 +4693,7 @@ class ChartService:
             return {
                 "chart": db_chart,
                 "data": result["data"],
+                "time_completeness": result.get("time_completeness"),
                 "pre_aggregated": result["pre_aggregated"],
                 "debug": _build_debug_response(result),
             }
@@ -3900,12 +4713,16 @@ class ChartService:
             db_table = DatasetCRUDService.get_table_by_id(db, table_id)
             if not db_table or db_table.dataset_id != dataset_id:
                 raise ValueError("Table not found in dataset")
+            # (its binding was derived from the current model above, before the
+            # overrides — never the copy its config stored)
 
             datasource = None
             if not is_generated_calendar_table(db_table) and not is_derived_table(db_table) and getattr(db_table, "source_kind", None) != "dataset":
                 datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
                 if not datasource:
                     raise ValueError("Data source not found")
+
+            _require_custom_sql_owner(db, db_chart, effective_config, datasource)
 
             result = _execute_chart_runtime_for_table(
                 db,
@@ -3925,6 +4742,7 @@ class ChartService:
             return {
                 "chart": db_chart,
                 "data": result["data"],
+                "time_completeness": result.get("time_completeness"),
                 "pre_aggregated": result["pre_aggregated"],
                 "debug": _build_debug_response(result),
             }
@@ -3989,7 +4807,7 @@ class ChartService:
 
         # Hydrate semanticBinding so preview takes the same routing path as
         # `GET /charts/{id}/data` (which goes through `hydrate_runtime_config`).
-        # Without this, an MCP-saved or freshly-typed config carrying only the
+        # Without this, an API-saved or freshly-typed config carrying only the
         # minimal binding (baseViewName, exploreName, modelId, exploreId)
         # would skip the semantic engine for non-aggregating charts
         # (SCATTER / MAP_POINT) and the row keys come back bare instead of

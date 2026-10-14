@@ -228,7 +228,12 @@ export type DashboardWidgetType =
   | 'hero_strip'
   // A block of imported source markup AppBI has no native visual for, kept as
   // sanitized static HTML instead of dropped.
-  | 'html_fragment';
+  | 'html_fragment'
+  // Words bound to findings computed from the report's own tiles (no stored numbers).
+  | 'narrative'
+  // A slicer's control on the grid: {slicerId, treatment}. Presentation only —
+  // the filter lives in slicers_config / pages_config[].slicers.
+  | 'slicer';
 
 export interface DashboardThemeConfig {
   mode?: 'light' | 'dark';
@@ -297,8 +302,55 @@ export interface DataSource {
   owner_id?: string;
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
+  /** Bumped by the backend on every connection-affecting config change. */
+  config_version?: number;
+  /** What this provider can do — filter pickers by it, not by type names. */
+  capabilities?: DataSourceCapabilities;
+  /** What THIS CALLER may do with the source (authz core; see getResourcePermissions).
+   *  Not `capabilities`: on a data source that name is the provider's. */
+  access_capabilities?: Record<string, boolean> | null;
+  /** Latest persisted connection test (never a message). */
+  last_test_status?: DataSourceHealthStatus | null;
+  last_tested_at?: string | null;
+  last_error_code?: DataSourceErrorCode | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface DataSourceCapabilities {
+  tabular: boolean;
+  test: boolean;
+  discover: boolean;
+  query: boolean;
+  stream: boolean;
+  write: boolean;
+  oauth: boolean;
+}
+
+export type DataSourceHealthStatus = 'ok' | 'warning' | 'error';
+export type DataSourceCheckState = 'ok' | 'failed' | 'skipped' | 'warning';
+export type DataSourceErrorCode =
+  | 'auth' | 'network' | 'permission' | 'missing_resource' | 'invalid_config' | 'query'
+  | 'timeout' | 'quota' | 'unsupported' | 'internal' | 'policy_blocked';
+
+/** POST /datasources/{id}/test and /datasources/test-draft. */
+export interface DataSourceTestResult {
+  success: boolean;
+  message: string;
+  status: DataSourceHealthStatus;
+  provider?: string | null;
+  checks: { auth: DataSourceCheckState; reachable: DataSourceCheckState; queryable: DataSourceCheckState; discoverable: DataSourceCheckState };
+  error_code?: DataSourceErrorCode | null;
+  warnings: string[];
+  duration_ms: number;
+  tested_at?: string | null;
+}
+
+/** 409 body of DELETE /datasources/{id}. */
+export interface DataSourceDeleteBlocker {
+  kind: 'dataset' | 'dataset_snapshot' | 'knowledge_doc' | string;
+  id: number;
+  name: string;
 }
 
 export interface DataSourceCreate {
@@ -312,6 +364,9 @@ export interface DataSourceUpdate {
   name?: string;
   description?: string;
   config?: Record<string, any>;
+  // Optimistic concurrency: the config_version this edit started from. A stale
+  // value is refused with 409 {code: 'source_conflict'} — reload and retry.
+  config_version?: number;
 }
 
 // ── Schema Browser ─────────────────────────────────────────────────────────
@@ -375,6 +430,7 @@ export interface ColumnMetadata {
 export type TransformationType =
   // Column selection & rename
   | 'select_columns'
+  | 'hide_columns'
   | 'rename_columns'
   | 'remove_columns'
   | 'duplicate_column'
@@ -503,6 +559,8 @@ export interface Chart {
   owner_id?: string;
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
+  /** Backend-computed actions for the caller (see getResourcePermissions). */
+  capabilities?: Record<string, boolean> | null;
   is_owned_by_current_user?: boolean;
   is_shared?: boolean;
   created_at: string;
@@ -566,6 +624,8 @@ export interface ChartDryRunCreateResponse {
   validation_errors?: string[];
   semantic_warnings?: string[];
   runtime_errors?: string[];
+  /** Structured semantic refusal of the runtime preview (same shape as a 400 `refusal`). */
+  runtime_refusal?: { category: string; target?: string; routes?: string[] } | null;
   runtime_root_cause?: string | null;
   runtime_preview_sample?: Record<string, any>[] | null;
   fe_unrecognised_keys?: string[];
@@ -645,29 +705,54 @@ export interface DashboardFilterField {
   sharedAcrossDataset?: boolean;
 }
 
+/**
+ * Per-link presentation. PRESENTATION ONLY — no field here restricts data: what
+ * a link can read is decided by its locked/hidden filters (filters_config) on
+ * the server. `show_page_tabs`, `allow_viewer_filters` and `allow_data_export`
+ * choose which controls the viewer sees.
+ *
+ * Retired fields (marked @deprecated) are still read from stored configs so old
+ * links parse, but the runtime ignores them; the editor never writes new values.
+ */
 export interface PublicLinkAppearanceConfig {
+  /** @deprecated Retired — only a label in the link list; the report follows the dashboard theme. */
   preset?: 'briefing' | 'editorial' | 'minimal';
+  /** @deprecated Retired — the report accent follows the dashboard theme. */
   accent_preset?: 'sky' | 'teal' | 'amber' | 'rose' | 'slate';
+  /** @deprecated Retired — the report accent follows the dashboard theme. */
   accent_color?: string | null;
+  /** @deprecated Retired — ignored by the runtime. */
   density?: 'comfortable' | 'compact';
+  /** @deprecated Retired — ignored by the runtime. */
   canvas_style?: 'soft' | 'grid' | 'plain';
+  /** @deprecated Retired — ignored by the runtime (embed chrome is fixed). */
   embed_header_mode?: 'full' | 'compact' | 'hidden';
+  /** @deprecated Retired — ignored by the runtime. */
   hero_label?: string | null;
+  /** The report title viewers see (falls back to the link name). */
   headline?: string | null;
   /** Custom report logo shown in the public/embed header instead of the
    *  auto-generated brand mark. A URL or a data: URI (uploaded image). */
   logo_url?: string | null;
+  /** @deprecated Retired — ignored by the runtime. */
   summary?: string | null;
+  /** @deprecated Retired — ignored by the runtime. */
   footer_note?: string | null;
+  /** @deprecated Retired — ignored by the runtime. */
   show_summary?: boolean;
+  /** @deprecated Retired — ignored by the runtime. */
   show_stats?: boolean;
+  /** Show page tabs (presentation; other pages are not made private). */
   show_page_tabs?: boolean;
+  /** Show filter controls (presentation; link locks apply regardless). */
   allow_viewer_filters?: boolean;
   /** When true (default), viewers can download each chart's data as CSV on the
    *  public/embed report (only the chart's already-filtered/permission-scoped
    *  rows). Admins can turn it off per link. */
   allow_data_export?: boolean;
+  /** @deprecated Retired — ignored by the runtime. */
   show_footer?: boolean;
+  /** @deprecated Retired — ignored by the runtime. */
   show_chart_type_label?: boolean;
   /** Snapshot freshness for this public link (perf #5, Stage 2). Minutes past
    *  which a snapshot is served-stale then rebuilt in the background.
@@ -761,6 +846,8 @@ export interface Dashboard {
   owner_id?: string;
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
+  /** Backend-computed actions for the caller (see getResourcePermissions). */
+  capabilities?: Record<string, boolean> | null;
   share_token?: string | null;
   created_at: string;
   updated_at: string;
@@ -778,8 +865,13 @@ export interface Dashboard {
    *  FE merges them silently into every chart-data request alongside
    *  top-bar filters. */
   public_link_hidden_filters?: any[];
+  /** The link's LOCKED (🔒) filters that enforce a value — field, label, value
+   *  only — shown read-only so a reader knows the report is filtered. */
+  public_link_locked_filters?: Array<{ field: string; label?: string | null; value: unknown; operator?: string; semanticField?: string; datePreset?: string }>;
   pages_config?: DashboardPageConfig[];
   available_filter_fields?: DashboardFilterField[];
+  /** Server-resolved column of each field-bound parameter switcher (dashboard_parameters.resolve_switcher_fields). */
+  parameter_fields?: Record<string, { field: string; semanticField?: string; fieldKey?: string; datasetId?: number }> | null;
   public_link_name?: string | null;
   public_link_appearance?: PublicLinkAppearanceConfig | null;
   layout_mode?: DashboardLayoutMode;
@@ -791,6 +883,14 @@ export interface Dashboard {
   // these fields — public endpoint strips them.
   draft_layouts?: Record<number, Record<string, any>> | null;
   has_draft?: boolean;
+  /** Editor only: the shared filters/pages/theme draft — its revision and the
+   *  OTHER authors with unpublished edits in it (Publish/Discard ask first). */
+  shared_draft?: { rev: string; has_changes: boolean; other_authors: string[] } | null;
+  /** Published Tablet (md) / Phone (xs) layouts — absent = AUTO (derived).
+   *  docs/responsive-dashboard-layouts.md. */
+  responsive_layouts?: import('./responsive-layout').ResponsiveLayoutsDoc | null;
+  /** Editor only: THIS author's unpublished device layouts. */
+  draft_responsive_layouts?: Record<string, Partial<Record<'md' | 'xs', import('./responsive-layout').ProfileDraft>>> | null;
 }
 
 export interface DashboardCreate {
@@ -826,6 +926,9 @@ export interface QueryExecuteResponse {
   data: Record<string, any>[];
   row_count: number;
   execution_time_ms: number;
+  /** True when the server-side row cap (SOURCE_QUERY_MAX_ROWS) cut the result short. */
+  truncated?: boolean;
+  row_limit?: number | null;
 }
 
 export type ChartDataContext = 'default' | 'dashboard';
@@ -851,6 +954,22 @@ export interface ChartDebugInfo {
   warnings?: string[];
   /** Phase-15.78 — filters the BE dropped (e.g. field not in this chart's binding). */
   dropped_filters?: DroppedFilterInfo[];
+  /** Which snapshot this tile was served from (the dashboard generation contract). */
+  data_source_mode?: string | null;
+  snapshot_as_of?: string | null;
+  snapshot_stale?: boolean | null;
+  snapshot_generation?: number | null;
+  snapshot_dataset_id?: number | null;
+  /** A live read: when the source was read (UTC), and whether this response re-served it from the cache. */
+  result_as_of?: string | null;
+  result_cached?: boolean | null;
+}
+
+export interface TimeCompleteness {
+  field: string;
+  grain: string;
+  partial: { bucket: string; reason: 'in_progress' | 'edge_low_volume'; value?: number; median?: number }[];
+  rule?: { edge_low_volume_ratio?: number };
 }
 
 export interface ChartDataResponse {
@@ -861,6 +980,8 @@ export interface ChartDataResponse {
   warnings?: string[];
   /** Phase-15.9: debug payload, omitted on cache hits / older clients. */
   debug?: ChartDebugInfo;
+  /** Time-axis buckets that are not whole periods, with the rule that flagged them. */
+  time_completeness?: TimeCompleteness | null;
   meta?: {
     row_count?: number;
     execution_time_ms?: number;

@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { publicDashboardApi } from '@/lib/api/public';
-import { SLICER_DISTINCT_PREFETCH_LIMIT } from '@/hooks/use-dataset-model';
+import { SLICER_DISTINCT_PREFETCH_LIMIT } from '@/lib/slicer-limits';
 import {
   getColumnKey,
   getDistinctValueFilterContext,
@@ -27,6 +27,8 @@ export function usePublicFilterDistinctValues(
   // getDistinctValueFilterContext still self-strips, so a slicer that shares a
   // field with the page filter won't pin its own list.
   extraContextFilters: BaseFilter[] = [],
+  // The page being shown — the server bounds the values by that page's scope.
+  pageId?: string,
 ) {
   const activeSemanticDistinctTargets = useMemo(() => {
     if (!token || columns.length === 0 || filters.length === 0) {
@@ -67,7 +69,7 @@ export function usePublicFilterDistinctValues(
 
   const semanticDistinctQueries = useQueries({
     queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({
-      queryKey: ['public-filter-distinct', token, column.datasetId, column.semanticField, sessionToken ?? 'anon', filterContextKey],
+      queryKey: ['public-filter-distinct', token, column.datasetId, column.semanticField, sessionToken ?? 'anon', filterContextKey, pageId ?? ''],
       queryFn: () => publicDashboardApi.getFilterDistinctValues(
         token,
         column.datasetId!,
@@ -75,6 +77,9 @@ export function usePublicFilterDistinctValues(
         sessionToken,
         SLICER_DISTINCT_PREFETCH_LIMIT,
         filterContext,
+        undefined,
+        undefined,
+        pageId,
       ),
       enabled: Boolean(token && column.datasetId && column.semanticField),
       staleTime: 5 * 60 * 1000,
@@ -91,7 +96,7 @@ export function usePublicFilterDistinctValues(
     // was still in flight, then values appeared ("vàng xong lại ra data").
     // isLoading deliberately includes isFetching so a REFETCH (after Apply or a
     // cascade-filter change) also suppresses the banner, not just the first load.
-    const status: Record<string, { isLoading: boolean; isError: boolean; hasFilterContext: boolean; total?: number; hasMore?: boolean }> = {};
+    const status: Record<string, { isLoading: boolean; isError: boolean; isUnavailable?: boolean; isRestricted?: boolean; hasFilterContext: boolean; total?: number; hasMore?: boolean }> = {};
 
     activeSemanticDistinctTargets.forEach(({ column, filterContext }, index) => {
       const q = semanticDistinctQueries[index];
@@ -101,7 +106,13 @@ export function usePublicFilterDistinctValues(
       }
       status[getColumnKey(column)] = {
         isLoading: Boolean(q?.isLoading || q?.isFetching),
-        isError: Boolean(q?.isError),
+        // `unavailable`: the warehouse could not answer — an error, not "no values match".
+        isError: Boolean(q?.isError || q?.data?.unavailable),
+        // Three different empty lists, never one "no values": the warehouse did
+        // not answer (unavailable), the link's scope forbids answering
+        // (restricted), or the cascade genuinely matched nothing.
+        isUnavailable: Boolean(q?.data?.unavailable),
+        isRestricted: Boolean(q?.data?.restricted),
         hasFilterContext: Array.isArray(filterContext) && filterContext.length > 0,
         total: q?.data?.total,
         hasMore: q?.data?.has_more,

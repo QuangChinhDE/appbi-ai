@@ -3,16 +3,17 @@ SQLAlchemy models for the BI application.
 """
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean, Enum, Float,
-    UniqueConstraint,
+    UniqueConstraint, Index, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 from sqlalchemy.sql import func
 from datetime import datetime
 import enum
 import uuid
 
 from app.core.database import Base
+from app.models.grid_geometry import coerce_layout_mode, ensure_grid_cell
 
 
 class DataSourceType(str, enum.Enum):
@@ -73,7 +74,8 @@ class DataSource(Base):
     __tablename__ = "data_sources"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), unique=True, nullable=False, index=True)
+    # Unique per owner (uq_data_sources_owner_name / uq_data_sources_ownerless_name).
+    name = Column(String(255), nullable=False, index=True)
     type = Column(Enum(DataSourceType, values_callable=lambda obj: [e.value for e in obj]), nullable=False)
     description = Column(Text, nullable=True)
     
@@ -83,9 +85,13 @@ class DataSource(Base):
     # BigQuery: {project_id, credentials_json, dataset}
     config = Column(JSON, nullable=False)
 
-    # Sync configuration (schedule + per-table strategies + retry + notification)
-    # Format: {schedule: {...}, tables: {...}, retry: {...}, notification: {...}}
-    sync_config = Column(JSON, nullable=True)
+    # Bumped on every connection-affecting config change (source_lifecycle).
+    config_version = Column(Integer, nullable=False, default=1, server_default="1")
+
+    # Latest connection test (source_health.record_health). Never a message.
+    last_test_status = Column(String(16), nullable=True)   # ok | warning | error
+    last_tested_at = Column(DateTime(timezone=True), nullable=True)
+    last_error_code = Column(String(32), nullable=True)
 
     # Ownership
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -94,8 +100,14 @@ class DataSource(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    # Relationships
-    sync_jobs = relationship("SyncJob", back_populates="data_source", cascade="all, delete-orphan")
+    __table_args__ = (
+        Index("uq_data_sources_owner_name", "owner_id", "name", unique=True,
+              postgresql_where=text("owner_id IS NOT NULL"),
+              sqlite_where=text("owner_id IS NOT NULL")),
+        Index("uq_data_sources_ownerless_name", "name", unique=True,
+              postgresql_where=text("owner_id IS NULL"),
+              sqlite_where=text("owner_id IS NULL")),
+    )
 
 
 class Chart(Base):
@@ -179,35 +191,50 @@ class Dashboard(Base):
 
     pages_config = Column(JSON, nullable=True, default=list)
 
-    # Layout mode: "grid" (react-grid-layout, default) or "canvas" (free positioning)
+    # Layout mode. Always "grid": the grid is the only report layout. The
+    # column stays for old rows and old clients; `_only_grid` below coerces
+    # every write (see app/models/grid_geometry.py for why).
     layout_mode = Column(String(16), nullable=False, server_default="grid", default="grid")
     # Theme: {mode: "dark"|"light", accent: "#ffcc00", fontFamily: "...", cardStyle: "soft"|"sharp"}
     theme_config = Column(JSON, nullable=True, default=dict)
     # Canvas mode geometry: {width: 1440, height: 900, snap: 8, background: "#0b0f0b"}
     canvas_config = Column(JSON, nullable=True, default=dict)
+    # Authored Tablet (md) / Phone (xs) layouts, PUBLISHED state only. NULL, or
+    # a page/breakpoint absent from it, means AUTO (derived from the desktop
+    # layout at render time). A present entry is a complete CUSTOM page layout:
+    #   {"version": 1, "pages": {pageId: {"md"|"xs": {"mode": "custom",
+    #     "cols": 36, "rev", "generatorVersion", "baseFingerprint", "source",
+    #     "updatedAt", "updatedBy", "items": {tileId: {x, y, w, h}}}}}}
+    # Desktop geometry stays in DashboardChart.layout. Written ONLY by Publish
+    # (authors edit draft_snapshot.user_responsive_layouts) and by duplicate.
+    # docs/responsive-dashboard-layouts.md.
+    responsive_layouts = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
 
     # Ownership
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
-    # Public link sharing — null means not shared
+    # RETIRED legacy public token. Nothing reads or writes it: the public
+    # resolver's fallback to it was removed and migration 20261004_0001 nulled
+    # every value (each one had been copied into a DashboardPublicLink by 0019,
+    # and the surviving copy is what let a revoked link keep serving). Kept only
+    # so the schema change stays additive; drop it in a later migration.
     share_token = Column(String(64), nullable=True, unique=True, index=True)
     public_filters_config = Column(JSON, nullable=True, default=list)
 
-    # Phase-15.56 — draft snapshot. When set, editors see this overlay
-    # on top of the live columns; public viewers still read the live
-    # columns. Clicking "Lưu / Publish" applies the snapshot onto the
-    # live columns + dashboard_charts rows, then clears this field.
-    # Shape: {
-    #   name?, description?, filters_config?, slicers_config?,
-    #   pages_config?, layout_mode?, theme_config?, canvas_config?,
-    #   public_filters_config?, layouts?,
-    #   dashboard_charts?: [
-    #     {id?, chart_id?, widget_type, widget_config, layout, parameters}
-    #   ]
-    # }
-    # Phase-A (PBI rework): `slicers_config` was added so slicer-block
-    # edits share the same draft / publish lifecycle as filter-pane
-    # edits and layout edits.
+    # Draft snapshot. Editors see it over the live columns; public viewers read
+    # the live columns only. Publish applies the caller's part onto the live
+    # columns + dashboard_charts rows; Discard drops it. Shape:
+    #   per author:  user_layouts[uid][tileId] = layout
+    #                user_widget_configs[uid][tileId], user_parameters[uid][tileId]
+    #                user_responsive_layouts[uid][pageId]["md"|"xs"] = CUSTOM
+    #                  profile | {"mode": "auto"} (reset marker)
+    #                user_responsive_base_rev[uid]["pageId:bp"] = published rev
+    #                  the draft started from (Publish's conflict check)
+    #   shared:      filters_config, slicers_config, slicer_cluster_layout,
+    #                pages_config, theme_config + shared_draft_meta {rev, authors}
+    #   legacy:      layouts (pre-per-author map; read as a fallback)
+    # Draft-only / removed TILES are flagged on the rows themselves
+    # (layout.draftOnly / draftRemoved, see dashboard_service.DRAFT_ROW_KEYS).
     draft_snapshot = Column(JSON, nullable=True)
 
     # Timestamps
@@ -217,6 +244,10 @@ class Dashboard(Base):
     # optimistic-concurrency version so a second editor can't silently clobber
     # a publish made after they loaded.
     last_published_at = Column(DateTime(timezone=True), nullable=True)
+
+    @validates("layout_mode")
+    def _only_grid(self, _key, value):
+        return coerce_layout_mode(value)
 
     # Relationships
     # order_by id: dashboard_charts had NO deterministic order, so different
@@ -256,8 +287,15 @@ class DashboardPublicLink(Base):
     # Security & governance
     expires_at = Column(DateTime(timezone=True), nullable=True)  # null = never expires
     password_hash = Column(String(255), nullable=True)  # optional password protection
-    max_access_count = Column(Integer, nullable=True)  # null = unlimited
-    allowed_ips = Column(JSON, nullable=True, default=list)  # optional IP allowlist
+    # Security generation. Bumped by every security-changing edit (password
+    # set/changed/cleared, active toggled, expiry changed); a password session
+    # JWT carries the generation it was minted at and stops verifying once it
+    # moves. See public._create_public_session.
+    auth_version = Column(Integer, nullable=False, default=0, server_default="0")
+    # `max_access_count` and `allowed_ips` columns still exist in the table but
+    # are RETIRED (migration 20261004_0001): neither had a way to be set, the
+    # IP list was never enforced, and a page-load cap is not a meaningful limit
+    # on a bearer URL whose data endpoints it never counted.
 
     # Tracking
     access_count = Column(Integer, nullable=False, default=0)
@@ -309,6 +347,7 @@ class DashboardChart(Base):
 
     # Layout information for react-grid-layout
     # Format: {x: 0, y: 0, w: 6, h: 4, xPx?, yPx?, wPx?, hPx?, z?}
+    # (pixels are legacy Canvas boxes: kept, never rendered)
     layout = Column(JSON, nullable=False)
 
     # Runtime parameter values for this chart instance in this dashboard
@@ -318,6 +357,11 @@ class DashboardChart(Base):
     # Relationships
     dashboard = relationship("Dashboard", back_populates="dashboard_charts")
     chart = relationship("Chart", back_populates="dashboard_charts")
+
+    @validates("layout")
+    def _drawable_on_grid(self, _key, value):
+        # A tile that arrives with only a Canvas pixel box gets its grid cell.
+        return ensure_grid_cell(value)
 
 
 class ChartMetadata(Base):
@@ -403,40 +447,6 @@ class ChartParameter(Base):
     chart = relationship("Chart", back_populates="parameters")
 
 
-class SyncJob(Base):
-    """
-    Record of a single sync job execution for a data source.
-    Tracks status, timing, rows affected, and errors.
-    """
-    __tablename__ = "sync_jobs"
-
-    id = Column(Integer, primary_key=True, index=True)
-    data_source_id = Column(Integer, ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True)
-
-    # "running" | "success" | "failed" | "timeout"
-    status = Column(String(20), nullable=False, default="running")
-
-    # "full_refresh" | "incremental" | "append_only" | "manual"
-    mode = Column(String(30), nullable=False)
-
-    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    finished_at = Column(DateTime(timezone=True), nullable=True)
-
-    # Rows affected in this run
-    rows_synced = Column(Integer, nullable=True)
-    rows_failed = Column(Integer, nullable=True)
-
-    error_message = Column(Text, nullable=True)
-
-    # "schedule" | "manual"
-    triggered_by = Column(String(50), nullable=True, default="manual")
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    # Relationships
-    data_source = relationship("DataSource", back_populates="sync_jobs")
-
-
 # ---------------------------------------------------------------------------
 # Embedding integration (machine-to-machine) — see embed_link_service.py
 # ---------------------------------------------------------------------------
@@ -446,10 +456,10 @@ class EmbedGrant(Base):
     to a managed DashboardPublicLink without exposing that link's own token.
     Only the SHA-256 hash of the 256-char token is stored.
 
-    Minted by POST /api/v1/integrations/embed/resolve, authenticated with the
-    caller's Personal Access Token (PAT) — the same token the MCP uses. The
-    grant is scoped to whatever the PAT's user can access; `created_by` records
-    that user for audit.
+    Minted by POST /api/v1/integrations/embed/resolve, which accepts ONLY a
+    Personal Access Token carrying `dashboards: edit` whose owner may edit the
+    dashboard (the same bar as creating a public link). `created_by` and
+    `personal_access_token_id` record who/what minted it.
     """
     __tablename__ = "embed_grants"
 
@@ -457,6 +467,14 @@ class EmbedGrant(Base):
     link_id = Column(Integer, ForeignKey("dashboard_public_links.id", ondelete="CASCADE"), nullable=False, index=True)
     token_hash = Column(String(64), nullable=False, unique=True, index=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # The PAT that minted this grant. A grant is only as alive as its PAT:
+    # revoking (or deleting, CASCADE) the token kills every link it issued at
+    # once, instead of each living out its TTL. Null only on grants minted
+    # before migration 20261004_0001 — those are refused (fail closed).
+    personal_access_token_id = Column(
+        UUID(as_uuid=True), ForeignKey("personal_access_tokens.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
 
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     revoked_at = Column(DateTime(timezone=True), nullable=True)

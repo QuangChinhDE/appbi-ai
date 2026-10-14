@@ -153,6 +153,11 @@ def _to_openai_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
             entry["content"] = str(text) if text else ""
             tcs = msg.get("tool_calls") or []
             if tcs:
+                # A VENDOR'S OPAQUE PER-CALL STATE GOES BACK EXACTLY AS RECEIVED.
+                # Gemini 3 attaches `extra_content.google.thought_signature` to a
+                # tool call and rejects the next request without it; the runtime
+                # carries it as `provider_state.tool_extra` (keyed by call id).
+                extra = ((msg.get("provider_state") or {}).get("tool_extra") or {})
                 entry["tool_calls"] = [
                     {
                         "id": tc["id"],
@@ -161,6 +166,7 @@ def _to_openai_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
                             "name": tc["name"],
                             "arguments": json.dumps(_tool_args(tc), default=str),
                         },
+                        **({"extra_content": extra[tc["id"]]} if tc["id"] in extra else {}),
                     }
                     for tc in tcs
                 ]
@@ -198,7 +204,27 @@ async def stream_openai(
     tools: list[dict] | None = None,
     model: str = OPENAI_MODEL,
     max_tokens: int = 2048,
+    base_url: str | None = None,
+    vendor: str = "openai",
+    strict: bool = False,
 ) -> AsyncGenerator[AgentEvent, None]:
+    """Stream one Chat Completions call, with tool calling.
+
+    `strict` is the Agent Flow contract (default off, so every other caller keeps
+    its behaviour): the model asked for is the model called — no 429 downgrade and
+    no process-wide sticky switch; a response cut by the token limit is an error,
+    not an answer; errors carry a classified `code`; and a vendor's opaque per-call
+    state (Gemini thought signatures) is kept and emitted as `provider_state`.
+
+    `base_url` / `vendor` let another vendor's OpenAI-COMPATIBLE endpoint reuse this
+    adapter — Gemini's, which is how a Gemini Agent step gets tool calling (its
+    native single-shot adapter ignores tools). For any vendor but OpenAI the
+    rate-limit failover to `gpt-4o-mini` is off: that is an OpenAI model name, and
+    sending it to another vendor would fail the step with a confusing 404.
+    """
+    url = f"{base_url.rstrip('/')}/chat/completions" if base_url else OPENAI_URL
+    is_openai = vendor == "openai"
+    label = {"openai": "OpenAI", "gemini": "Gemini"}.get(vendor, vendor)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -255,7 +281,7 @@ async def stream_openai(
     # When a large model keeps 429-ing (org on a tight TPM tier), downgrade to
     # gpt-4o-mini rather than returning an empty answer. mini has a far higher
     # TPM ceiling and is still solid for BI Q&A. Never for mini/nano tier.
-    _can_downgrade = (
+    _can_downgrade = is_openai and not strict and (
         model_lc.startswith(("gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-5"))
         and "mini" not in model_lc
         and "nano" not in model_lc
@@ -292,14 +318,26 @@ async def stream_openai(
         async with httpx.AsyncClient(timeout=120.0) as client:
             attempt = 0
             while True:
-                async with client.stream("POST", OPENAI_URL, headers=headers, json=payload) as resp:
+                async with client.stream("POST", url, headers=headers, json=payload) as resp:
                     if resp.status_code != 200:
                         body = await resp.aread()
                         detail = _extract_error_detail(body)
                         logger.warning(
-                            "dashboard_ai_bot openai_error model=%s status=%s attempt=%d detail=%s",
-                            model, resp.status_code, attempt, detail,
+                            "dashboard_ai_bot %s_error model=%s status=%s attempt=%d detail=%s",
+                            vendor, model, resp.status_code, attempt, detail,
                         )
+                        if strict:
+                            from app.services.dashboard_ai_bot.providers.errors import classify
+
+                            perr = classify(resp.status_code, body)
+                            if perr.code == "rate_limited" and attempt < 2:
+                                wait_s = _retry_after_seconds(resp.headers, detail)
+                                attempt += 1
+                                await _asyncio.sleep(wait_s)
+                                continue
+                            yield AgentEvent(type="error", text=perr.text(label, model),
+                                             extra=perr.extra())
+                            return
                         if resp.status_code == 429 and _can_downgrade and not downgraded:
                             # First 429 on the big model → fail over to mini
                             # IMMEDIATELY (no wait). Mini's TPM pool is separate
@@ -357,19 +395,22 @@ async def stream_openai(
                                         f"OpenAI 429 trên {model}: bị rate-limit. "
                                         "Đợi vài chục giây rồi thử lại, hoặc dùng "
                                         f"{_FALLBACK_MODEL}."
+                                    ) if is_openai else (
+                                        f"{label} 429 trên {model}: key bị giới hạn tốc độ "
+                                        "hoặc hết hạn mức. Đợi vài chục giây rồi thử lại."
                                     ),
                                     extra={"http_status": 429},
                                 )
                         elif resp.status_code in (401, 403):
                             yield AgentEvent(
                                 type="error",
-                                text="OpenAI từ chối API key (401/403). Kiểm tra key hoặc model permission.",
+                                text=f"{label} từ chối API key (401/403). Kiểm tra key hoặc model permission.",
                                 extra={"http_status": resp.status_code},
                             )
                         else:
                             yield AgentEvent(
                                 type="error",
-                                text=f"OpenAI {resp.status_code}: {detail}",
+                                text=f"{label} {resp.status_code}: {detail}",
                                 extra={"http_status": resp.status_code},
                             )
                         return
@@ -393,7 +434,7 @@ async def stream_openai(
                             yield AgentEvent(
                                 type="usage",
                                 extra={
-                                    "provider": "openai",
+                                    "provider": vendor,
                                     "prompt_tokens": int(usage.get("prompt_tokens") or 0),
                                     "completion_tokens": int(usage.get("completion_tokens") or 0),
                                     "effective_prompt_tokens": int(usage.get("prompt_tokens") or 0),
@@ -415,18 +456,42 @@ async def stream_openai(
                             yield AgentEvent(type="text", text=text)
 
                         # Streaming tool calls (deltas)
-                        for tc_delta in delta.get("tool_calls") or []:
-                            idx = tc_delta.get("index", 0)
+                        for pos, tc_delta in enumerate(delta.get("tool_calls") or []):
+                            # OpenAI always sends `index`. A compatible endpoint may
+                            # not, and sends each call whole instead — so fall back
+                            # to the call's id (or its position), never to 0, which
+                            # would glue two parallel calls' arguments together.
+                            idx = tc_delta.get("index")
+                            if idx is None:
+                                idx = tc_delta.get("id") or f"_pos{pos}"
                             slot = pending_tools.setdefault(idx, {"id": "", "name": "", "args_buf": ""})
                             if tc_delta.get("id"):
                                 slot["id"] = tc_delta["id"]
+                            if strict and isinstance(tc_delta.get("extra_content"), dict):
+                                slot["extra"] = tc_delta["extra_content"]
                             fn = tc_delta.get("function") or {}
                             if fn.get("name"):
                                 slot["name"] = fn["name"]
                             if fn.get("arguments"):
                                 slot["args_buf"] += fn["arguments"]
 
+                        if finish == "length" and strict:
+                            # CUT BY THE TOKEN LIMIT IS NOT AN ANSWER. Treated as a
+                            # normal finish, a half sentence (or a thinking model's
+                            # empty reply) reached the reader as the answer.
+                            from app.services.dashboard_ai_bot.providers.errors import ProviderError
+
+                            perr = ProviderError("truncated", 200)
+                            pending_tools.clear()
+                            yield AgentEvent(type="error", text=perr.text(label, model), extra=perr.extra())
+                            return
                         if finish in ("tool_calls", "stop", "length"):
+                            if strict:
+                                extras = {sl["id"]: sl["extra"] for sl in pending_tools.values()
+                                          if sl.get("id") and sl.get("extra")}
+                                if extras:
+                                    yield AgentEvent(type="provider_state",
+                                                     extra={"state": {"tool_extra": extras}})
                             # Emit any accumulated tool calls
                             for slot in sorted(pending_tools.values(), key=lambda s: s.get("id") or ""):
                                 raw = slot.get("args_buf") or "{}"
@@ -462,11 +527,13 @@ async def stream_openai(
                     # never emitting `done` (agent loop stuck consuming round 1).
                     return
     except httpx.TimeoutException:
-        logger.warning("dashboard_ai_bot openai_timeout model=%s", model)
-        yield AgentEvent(type="error", text="OpenAI request timed out.", extra={"http_status": 408})
+        logger.warning("dashboard_ai_bot %s_timeout model=%s", vendor, model)
+        yield AgentEvent(type="error", text=f"{label} request timed out.",
+                         extra={"http_status": 408, "code": "timeout", "retryable": True})
     except Exception as exc:
-        logger.exception("OpenAI stream error")
-        yield AgentEvent(type="error", text=f"OpenAI transport error: {type(exc).__name__}", extra={"http_status": 503})
+        logger.exception("%s stream error", label)
+        yield AgentEvent(type="error", text=f"{label} transport error: {type(exc).__name__}",
+                         extra={"http_status": 503, "code": "stream_interrupted", "retryable": True})
 
 
 def _extract_error_detail(body: bytes) -> str:

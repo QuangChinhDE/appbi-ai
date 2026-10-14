@@ -106,8 +106,31 @@ export function AnswerBlocks({
               </div>
             );
 
-          default:
-            return null;
+          default: {
+            // A VARIANT THIS BUILD DOES NOT KNOW IS NOT NOTHING.
+            //
+            // `return null` meant a seventh block type added to the contract would
+            // be invisible on every surface at once — chat, the public bot and the
+            // Studio — with no error and no clue. That is the same silence that let
+            // the Studio print an em-dash for a valid `metric` answer.
+            //
+            // A server that is ahead of a deployed frontend is normal, so this says
+            // so rather than pretending the answer ended there. Text is used when
+            // the unknown block happens to carry some, because a degraded reading is
+            // better than a blank.
+            const unknown = block as { type?: string; markdown?: string; text?: string };
+            const salvaged = unknown.markdown || unknown.text || '';
+            return (
+              <div
+                key={i}
+                className="rounded-lg border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-tertiary"
+              >
+                {salvaged
+                  ? (renderMarkdown ? renderMarkdown(salvaged) : salvaged)
+                  : `Nội dung dạng “${unknown.type ?? '?'}” — bản giao diện này chưa hiển thị được.`}
+              </div>
+            );
+          }
         }
       })}
     </div>

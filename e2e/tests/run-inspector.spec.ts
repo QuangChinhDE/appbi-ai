@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { deleteFlow, sweepLeftovers } from './_helpers';
+import { deleteFlow, sweepLeftovers, withE2eKey } from './_helpers';
 
 /**
  * Gate 3 — the Run Inspector, on a run that actually happened.
@@ -23,7 +23,7 @@ type Step = {
 };
 
 async function saveDraft(request: any, key: string, name: string, body: unknown) {
-  const res = await request.put(BRAINS, { data: { brain_key: key, name, body } });
+  const res = await request.put(BRAINS, await withE2eKey(request, { data: { brain_key: key, name, body } }));
   expect(res.status(), await res.text()).toBeLessThan(400);
 }
 

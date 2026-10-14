@@ -149,7 +149,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
   // structural/field/settings edits funnel through ``setLayout`` — shadowing it
   // is a single choke-point; the only non-setLayout write (dataset change) and
   // the add/delete navigation side-effects are guarded explicitly below.
-  const canEdit = getResourcePermissions(workboard.user_permission ?? undefined).canEdit;
+  const canEdit = getResourcePermissions(workboard.user_permission ?? undefined, workboard.capabilities).canEdit;
 
   // ── Co-edit soft-lock ──
   // The screen the user currently has open in the editor (their "cursor").

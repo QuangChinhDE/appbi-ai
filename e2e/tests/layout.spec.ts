@@ -39,9 +39,11 @@ test.describe('builder layout', () => {
     // the 56px collapsed sidebar — a selector that made the test fail for a
     // reason that had nothing to do with the panel it was written for.
     //
-    // The inspector is the one whose width the author controls: `useInspectorWidth`
-    // writes it as an inline style, so that is what identifies it.
-    const aside = page.locator('aside[style*="width"]').first();
+    // The inspector is marked `data-inspector`. It used to be found by its inline
+    // `width` style; the responsive rework moved the width into a CSS variable
+    // (`--inspector-w`, applied from md up), and the style no longer says
+    // "width" — the element was fine, the selector was coupled to its styling.
+    const aside = page.locator('aside[data-inspector]').first();
     await expect(aside).toBeVisible({ timeout: 30_000 });
 
     const box = await aside.boundingBox();

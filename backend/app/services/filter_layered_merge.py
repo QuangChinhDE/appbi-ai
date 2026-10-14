@@ -7,15 +7,19 @@ diagnostics can trace where a filter came from.
 See `docs/filter-semantics.md` §3 for the spec.
 
 Order of precedence (later layers override earlier ones on the same
-dedupe key — `link_locked` wins everything):
+dedupe key — `link_locked` wins everything; `_LAYER_ORDER` below is the
+source of truth):
 
     chart_base
-    dashboard_filter        (public_mode != 'hidden')
+    dashboard_filter        (publicMode visible)
     dashboard_slicer
     viewer_slicer           (session, public mode)
     viewer_filter           (mini-pane overrides, public mode)
+    dashboard_filter_locked (publicMode locked/hidden, authoritative)
     link_locked             (DashboardPublicLink.filters_config, authoritative)
     link_hidden             (drops the field entirely — neither slicer nor banner)
+
+Hard bounds (link limit, page scope, author bounds) apply after the merge.
 
 `link_hidden` is special: it does not contribute a value; it removes
 all entries with the same dedupe key from the merged output. The viewer
@@ -47,6 +51,35 @@ LAYER_VIEWER_FILTER = "viewer_filter"                    # viewer mini-pane over
 LAYER_DASHBOARD_FILTER_LOCKED = "dashboard_filter_locked"  # publicMode=locked/hidden — authoritative
 LAYER_LINK_LOCKED = "link_locked"                        # per-link locked — most authoritative
 LAYER_LINK_HIDDEN = "link_hidden"                        # drop field entirely
+LAYER_PAGE_SCOPE = "page_scope"                          # pages_config[p].filters — hard bound, applied after the merge
+LAYER_LINK_SCOPE = "link_scope"                          # per-link 'limit' allow-list — hard bound
+
+# Layers a viewer can never relax. A hard bound on the same field ANDs with
+# these instead of intersecting-with-fallback (a fallback could widen a lock).
+_AUTHORITATIVE_SOURCES = frozenset({LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED, LAYER_LINK_SCOPE})
+#: Every layer whose entries are server-owned constraints (see
+#: chart_contracts.AUTHORITATIVE_KEY): applied, or the request is refused.
+AUTHORITATIVE_LAYERS = frozenset({
+    LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED, LAYER_PAGE_SCOPE, LAYER_LINK_SCOPE,
+})
+
+
+def mark_authoritative(filters: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Stamp the authoritative marker on every merged entry that came from a
+    server-owned layer, so every later drop site refuses instead of skipping."""
+    from app.services.chart_contracts import AUTHORITATIVE_KEY
+
+    return [
+        {**f, AUTHORITATIVE_KEY: True}
+        if isinstance(f, dict) and (f.get("_layer_source") in AUTHORITATIVE_LAYERS or f.get(HARD_BOUND_KEY))
+        else f
+        for f in filters
+    ]
+
+#: Marker on a merged entry whose field/value must never be shown to a public
+#: viewer or handed to a model that answers one (a 🚫 hidden constraint). The
+#: entry is still ENFORCED; only its disclosure is withheld.
+DISCLOSE_KEY = "_disclose"
 
 # Canonical priority order (Phase-H, PBI/RLS model). Walk this exact
 # list; later layers override earlier ones on the same field key.
@@ -129,7 +162,20 @@ def merge_layered_filters(
         )
         for entry in normalized:
             tagged = {**entry, "_layer_source": source}
-            merged[_filter_dedupe_key(entry)] = tagged
+            key = _filter_dedupe_key(entry)
+            prev = merged.get(key)
+            if (source in (LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED) and prev is not None
+                    and prev.get("_layer_source") == source
+                    and _predicate_identity(prev) != _predicate_identity(tagged)):
+                # Two server-owned constraints on ONE field in ONE layer (two
+                # embed claims, a role slot and a static lock): both apply —
+                # AND. Last-wins dropped one, so the result was wider.
+                n = 1
+                while (key, "and", n) in merged:
+                    n += 1
+                merged[(key, "and", n)] = tagged
+                continue
+            merged[key] = tagged
 
     # Apply link_hidden: drop any merged entry whose FIELD matches a
     # hidden marker. After Phase-B' the standard `_filter_dedupe_key`
@@ -144,7 +190,11 @@ def merge_layered_filters(
     if hidden_field_keys:
         survivors: Dict[tuple, Dict[str, Any]] = {}
         for key, entry in merged.items():
-            if _filter_dedupe_key(entry) in hidden_field_keys:
+            # A kill-marker removes a viewer/default filter on its field; it
+            # never removes a server-owned constraint (a lock and a kill on the
+            # same field is contradictory — the constraint stays: fail closed).
+            if (_filter_dedupe_key(entry) in hidden_field_keys
+                    and entry.get("_layer_source") not in (LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED)):
                 if diagnostics is not None:
                     _record_dropped_filter(
                         diagnostics,
@@ -331,21 +381,111 @@ def split_link_filters_locked_vs_hidden(
 # Keep this the ONLY implementation; callers must not re-derive it.
 # ---------------------------------------------------------------------------
 
-def link_entry_has_value(entry: Dict[str, Any]) -> bool:
-    """True when a public-link filter entry carries an enforceable value.
+LINK_ENTRY_ENFORCED = "enforced"
+LINK_ENTRY_EMPTY = "empty"
+LINK_ENTRY_MALFORMED = "malformed"
 
-    An ``in []`` / empty-list / empty-string / null value enforces nothing —
-    ``normalize_filter_conditions`` drops it with the ``empty_value`` diagnostic
-    inside ``merge_layered_filters``. Used to decide both (a) whether a hidden
-    entry should be promoted to the authoritative locked layer, and (b) whether
-    a locked field is "managed" (see ``link_managed_field_keys``).
+
+def _carries_a_constraint(entry: Dict[str, Any]) -> bool:
+    """The author put SOMETHING in this entry: a value, or a relative-date preset.
+
+    Item-wise: a cleared range ``["", ""]``, ``[""]`` or ``[None]`` holds nothing
+    — the "nothing picked" no-op, not a malformed lock. A whitespace-only string
+    was typed, so it counts (the engine rejects it: malformed, fail closed).
+    """
+    v = entry.get("value")
+    if isinstance(v, (list, tuple)):
+        has_value = any(x is not None and x != "" for x in v)
+    elif isinstance(v, dict):
+        has_value = len(v) > 0
+    else:
+        has_value = v not in (None, "")
+    preset = str(entry.get("datePreset") or entry.get("date_preset") or "").strip().lower()
+    return has_value or bool(preset and preset != "custom")
+
+
+def canonical_link_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """A link entry in the shape the chart engine reads.
+
+    The engine keys a condition on ``field`` (and infers ``semanticField`` from a
+    qualified ``field``, chart_service); the reverse was missing. A workboard-
+    managed link stores ``{datasetId, semanticField, operator, value}`` with no
+    ``field`` — so its role row-filter was dropped as ``no_field`` and every role
+    saw every row. Fill ``field`` from a qualified ``semanticField``.
+    """
+    if not isinstance(entry, dict) or entry.get("field"):
+        return entry
+    sem = entry.get("semanticField")
+    if isinstance(sem, str) and "." in sem.strip():
+        return {**entry, "field": sem.strip()}
+    return entry
+
+
+def link_entry_state(entry: Dict[str, Any]) -> str:
+    """What a public-link entry does, decided by the chart engine's own chokepoint.
+
+      - ``enforced``: ``normalize_filter_conditions`` keeps it — it constrains the
+        data exactly as the engine applies it (an ``is_null`` lock with no value,
+        a relative-date preset with no frozen value, a scalar ``in "SP"``).
+      - ``empty``: the author put nothing in it (no value, no preset). The
+        documented no-op: an empty lock behaves like no lock, and an empty
+        hidden entry is the field kill-marker (dashboard-53, 2026-06).
+      - ``malformed``: it carries a value or preset the engine cannot apply
+        (``between 5``, ``in 5``, an unknown preset). The author meant to
+        constrain and nothing would be applied, so the link must fail CLOSED
+        (see ``malformed_link_entries``) — never serve the unconstrained data.
+
+    A 'limit' scope entry is judged as the allow-list it is (``in`` over its
+    values, scalars accepted) — the operator the scope bound applies.
     """
     if not isinstance(entry, dict):
-        return False
-    v = entry.get("value")
-    if isinstance(v, (list, tuple, dict)):
-        return len(v) > 0
-    return v not in (None, "")
+        return LINK_ENTRY_EMPTY
+    entry = canonical_link_entry(entry)
+    if link_entry_is_scope(entry):
+        return LINK_ENTRY_ENFORCED if _to_allow_list(entry.get("value")) else LINK_ENTRY_EMPTY
+    op = str(entry.get("operator") or "").strip().lower()
+    if not _carries_a_constraint(entry) and op not in ("is_null", "is_not_null"):
+        # Nothing picked (``[]``, ``""``, ``{}``, no value): the no-op, however
+        # the engine would read the empty container.
+        return LINK_ENTRY_EMPTY
+    if normalize_filter_conditions([entry]):
+        return LINK_ENTRY_ENFORCED
+    return LINK_ENTRY_MALFORMED if _carries_a_constraint(entry) else LINK_ENTRY_EMPTY
+
+
+def link_entry_has_value(entry: Dict[str, Any]) -> bool:
+    """True when a public-link entry ENFORCES a constraint (``link_entry_state``).
+
+    The single rule shared by the structure strip (``link_managed_field_keys``),
+    the hidden→locked promotion and the scope bound — so what the page hides,
+    what the engine applies and what the reader is told can never disagree.
+    Before, this looked at the raw value only: a ``between 5`` lock stripped the
+    field's slicer and page filter while the engine dropped the lock itself
+    (wider data than the page scope), and an ``is_null`` lock kept an
+    interactive slicer that silently did nothing.
+    """
+    return link_entry_state(entry) == LINK_ENTRY_ENFORCED
+
+
+def malformed_link_entries(
+    link_filters_config: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Entries of a link that mean to constrain but cannot be applied.
+
+    A public request under such a link is refused (fail closed) and a link
+    carrying one cannot be saved — the alternative is serving data the author
+    meant to restrict.
+    """
+    return [
+        e for e in (link_filters_config or [])
+        if isinstance(e, dict) and link_entry_state(e) == LINK_ENTRY_MALFORMED
+    ]
+
+
+def _to_allow_list(value: Any) -> List[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(x) for x in value if x not in (None, "")]
+    return [str(value)] if value not in (None, "") else []
 
 
 def link_entry_is_scope(entry: Dict[str, Any]) -> bool:
@@ -390,10 +530,7 @@ def apply_link_scope_bounds(
     if not scopes:
         return list(merged)
 
-    def _to_list(value: Any) -> List[str]:
-        if isinstance(value, (list, tuple)):
-            return [str(x) for x in value if x not in (None, "")]
-        return [str(value)] if value not in (None, "") else []
+    _to_list = _to_allow_list
 
     out: List[Dict[str, Any]] = list(merged)
     out_by_key: Dict[tuple, Dict[str, Any]] = {}
@@ -413,10 +550,17 @@ def apply_link_scope_bounds(
                 **scope,
                 "operator": "in",
                 "value": allow,
-                "_layer_source": "link_scope",
+                "_layer_source": LAYER_LINK_SCOPE,
             }
             out.append(bounded)
             out_by_key[key] = bounded
+            continue
+        if existing.get("_layer_source") in (LAYER_DASHBOARD_FILTER_LOCKED, LAYER_LINK_LOCKED, LAYER_LINK_SCOPE):
+            # An author lock — or ANOTHER scope on the same field — is not a
+            # viewer choice: intersecting-with-fallback (an empty intersection
+            # fell back to the second allow-list) could widen it. AND the scope.
+            bounded = {**scope, "operator": "in", "value": allow, "_layer_source": LAYER_LINK_SCOPE}
+            out.append(bounded)
             continue
         op = str(existing.get("operator") or "").lower()
         if op == "in":
@@ -428,8 +572,382 @@ def apply_link_scope_bounds(
             # meaningfully — replace it with the allow-list bound.
             existing["operator"] = "in"
             existing["value"] = allow
-        existing["_layer_source"] = "link_scope"
+        existing["_layer_source"] = LAYER_LINK_SCOPE
     return out
+
+
+# ---------------------------------------------------------------------------
+# Page scope — enforced by the SERVER, not by what the client chose to send.
+# ---------------------------------------------------------------------------
+
+DEFAULT_PAGE_ID = "page-1"
+
+
+def _public_mode(entry: Dict[str, Any]) -> str:
+    return str(entry.get("publicMode") or entry.get("public_mode") or "visible").lower()
+
+
+def page_scope_bounds(
+    pages_config: Optional[Sequence[Dict[str, Any]]],
+    page_ids: Sequence[str],
+    *,
+    dataset_id: Any = None,
+    field_is_foreign=None,
+) -> List[Dict[str, Any]]:
+    """The hard bounds a page puts on the data of the charts drawn on it.
+
+    ``pages_config[p].filters`` ("filters on this page") are the author's
+    scope for that page. On a public link they used to reach the query only
+    because the viewer's page SENT them — a crafted request that left them out
+    got data beyond the page, and a page filter marked 🔒/🚫 was dropped by the
+    client and applied by nobody. They are now resolved here, from the stored
+    dashboard, for the page(s) the chart is on.
+
+    Every publicMode applies (visible/locked/hidden only decide disclosure; a
+    🚫 entry is tagged ``_disclose: False``). Entries the engine drops (empty,
+    invalid) are dropped here too — the builder drops them the same way.
+    A page filter is an author boundary: a public link's lock or kill-marker on
+    the same field never replaces it — they AND. With several page ids the
+    bounds of every page apply (AND).
+
+    A page filter naming ANOTHER dataset than the chart's (``dataset_id``) is
+    left out only when ``field_is_foreign`` proves it is that dataset's filter
+    (another tile's dataset, that dataset's view — :func:`foreign_field_check`).
+    Any other mismatch (a stale or deleted dataset id on the chart's own field,
+    or no proof available) is KEPT: the engine then refuses it as an unapplied
+    authoritative bound. Skipping it served the chart's unbounded data.
+    """
+    wanted = {str(p).strip() for p in page_ids}
+    raw: List[Dict[str, Any]] = []
+    for page in pages_config or []:
+        if not isinstance(page, dict) or str(page.get("id") or "").strip() not in wanted:
+            continue
+        for f in page.get("filters") or []:
+            if not isinstance(f, dict):
+                continue
+            if (dataset_id is not None and f.get("datasetId") not in (None, "")
+                    and str(f.get("datasetId")) != str(dataset_id) and field_is_foreign is not None):
+                try:
+                    if field_is_foreign(f):
+                        continue
+                except Exception:  # noqa: BLE001 — not provable → kept (fail closed)
+                    pass
+            raw.append({**f, "_layer_source": LAYER_PAGE_SCOPE, DISCLOSE_KEY: _public_mode(f) != "hidden"})
+    return normalize_filter_conditions(raw)
+
+
+def apply_page_scope_bounds(
+    merged: List[Dict[str, Any]],
+    bounds: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Bound merged filters by page scope — the server twin of the client's
+    ``applyScopeBound``.
+
+    Same field, both ``in`` lists, the existing one a viewer/default choice:
+    one filter = choice ∩ scope, an empty intersection falling back to the
+    scope (an out-of-scope pick is ignored, never escapes, never shows "all").
+    Anything else is ANDed (the engine keeps every runtime filter): never
+    wider than the scope. An authoritative lock on the same field is never
+    intersected-with-fallback (that could widen the lock) — it is ANDed.
+    """
+    out: List[Dict[str, Any]] = [dict(e) for e in merged]
+    for bound in bounds or []:
+        key = _filter_dedupe_key(bound)
+        idx = next(
+            (i for i, e in enumerate(out)
+             if _filter_dedupe_key(e) == key
+             and e.get("_layer_source") not in _AUTHORITATIVE_SOURCES
+             and e.get("_layer_source") != LAYER_PAGE_SCOPE),
+            None,
+        )
+        if (idx is not None and str(bound.get("operator")) == "in"
+                and str(out[idx].get("operator") or "").lower() == "in"):
+            allow = _to_allow_list(bound.get("value"))
+            picked = [v for v in (out[idx].get("value") or []) if str(v) in set(allow)]
+            out[idx] = {
+                **out[idx],
+                "value": picked if picked else list(bound.get("value") or []),
+                "_layer_source": LAYER_PAGE_SCOPE,
+                DISCLOSE_KEY: out[idx].get(DISCLOSE_KEY, True) is not False and bound.get(DISCLOSE_KEY) is not False,
+            }
+            continue
+        out.append(dict(bound))
+    return out
+
+
+def scope_filters_to_dataset(
+    filters: Sequence[Dict[str, Any]],
+    dataset_id: Any,
+    field_is_foreign=None,
+) -> List[Dict[str, Any]]:
+    """The filters that belong to a chart of ``dataset_id``: a filter of ANOTHER
+    dataset is that dataset's filter — a report over two datasets filters each
+    visual by its own model's filters (Power BI: a filter on a table of model A
+    never reaches a visual of model B). It does not apply here (neither applied
+    nor "dropped"); a lock is scoped the same way — it bounds ITS dataset's data.
+
+    A filter leaves only when it PROVABLY belongs elsewhere: its ``datasetId``
+    names another dataset AND ``field_is_foreign(filter)`` says its field is not
+    of this dataset. A mismatching id on a field of THIS dataset (a stale id) is
+    kept — the engine then refuses it as a dataset mismatch, loudly; dropping it
+    would widen a lock. Without ``field_is_foreign``, or with the chart's dataset
+    unknown, every filter stays."""
+    kept = [f for f in filters if isinstance(f, dict)]
+    if dataset_id in (None, "") or field_is_foreign is None:
+        return kept
+    want = str(dataset_id)
+    out: List[Dict[str, Any]] = []
+    for f in kept:
+        ds = f.get("datasetId")
+        if ds in (None, "") or str(ds) == want:
+            out.append(f)
+            continue
+        try:
+            foreign = bool(field_is_foreign(f))
+        except Exception:  # noqa: BLE001 — not provable → kept (fail closed)
+            foreign = False
+        if not foreign:
+            out.append(f)
+    return out
+
+
+def foreign_field_check(db: Any, dataset_id: Any, report_dataset_ids: Any = None):
+    """The ``field_is_foreign`` predicate for :func:`scope_filters_to_dataset`:
+    a filter is foreign to ``dataset_id`` when its field's view is a view of the
+    dataset the filter names AND not a view of ``dataset_id``. A view known to
+    neither (a calendar alias, a typo, a deleted table) is not provably foreign —
+    the filter is kept and the engine decides, loudly.
+
+    ``report_dataset_ids``: the datasets of the report's OTHER charts. Only a
+    filter of one of them is another chart's filter; a filter naming a dataset no
+    chart of the report reads (a lock left behind after the charts moved to a new
+    dataset) bounds nothing on the report — it is kept, so it refuses instead of
+    silently lifting. None = no report context (every chart of the dataset)."""
+    if db is None or dataset_id in (None, ""):
+        return None
+    report = None if report_dataset_ids is None else {str(d) for d in report_dataset_ids if d not in (None, "")}
+    from app.models.dataset import DatasetTable
+    from app.models.semantic import SemanticView
+
+    memo: Dict[str, frozenset] = {}
+
+    def views_of(ds: Any) -> frozenset:
+        key = str(ds)
+        if key not in memo:
+            try:
+                ds_int = int(ds)
+            except (TypeError, ValueError):
+                memo[key] = frozenset()
+                return memo[key]
+            rows = (
+                db.query(SemanticView.name)
+                .join(DatasetTable, SemanticView.dataset_table_id == DatasetTable.id)
+                .filter(DatasetTable.dataset_id == ds_int)
+                .all()
+            )
+            memo[key] = frozenset(str(r[0]) for r in rows if r[0])
+        return memo[key]
+
+    def is_foreign(f: Dict[str, Any]) -> bool:
+        ref = str(f.get("semanticField") or f.get("fieldKey") or f.get("field") or "").strip()
+        if "." not in ref:
+            return False
+        if report is not None and str(f.get("datasetId")) not in report:
+            return False
+        view = ref.split(".", 1)[0]
+        return view in views_of(f.get("datasetId")) and view not in views_of(dataset_id)
+
+    return is_foreign
+
+
+def _predicate_identity(entry: Dict[str, Any]) -> tuple:
+    return (_filter_dedupe_key(entry), str(entry.get("operator") or "").lower(), repr(entry.get("value")),
+            str(entry.get("datePreset") or entry.get("date_preset") or ""))
+
+
+def enforce_author_bounds(
+    merged: List[Dict[str, Any]],
+    author_filters: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """AND back every author-enforced dashboard filter (🔒/🚫) the merge lost.
+
+    In the layered merge a 🔒/🚫 dashboard filter sits above the viewer layers,
+    so no viewer choice relaxes it — but a public link's lock on the same field
+    REPLACED it (same dedupe key) and a link kill-marker REMOVED it. A link is a
+    per-audience selection, not a way around the report's own boundary: the
+    author's condition stays and the link's ANDs with it (never wider than
+    either). Runs after the link-scope and page-scope bounds.
+    """
+    out: List[Dict[str, Any]] = [dict(e) for e in merged]
+    present = {_predicate_identity(e) for e in out if e.get("_layer_source") == LAYER_DASHBOARD_FILTER_LOCKED}
+    for bound in normalize_filter_conditions(list(author_filters or [])):
+        if _predicate_identity(bound) in present:
+            continue
+        out.append({**bound, "_layer_source": LAYER_DASHBOARD_FILTER_LOCKED})
+        present.add(_predicate_identity(bound))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# What a public viewer (or the public AI) may filter BY: the fields the served
+# report exposes. `public._public_field_refs(..., exact=True)` computes the set;
+# this is the rule, shared by the viewer path and the AI's own tool filters.
+# ---------------------------------------------------------------------------
+
+#: Keys that pick the COLUMN a raw-table date filter reads: server-owned, never
+#: a public viewer's or a model's (no public control sends them).
+SERVER_OWNED_FILTER_KEYS = ("calendarField", "calendarSourceField", "calendar_field", "calendar_source_field")
+_EXPOSED_NAME_KEYS = ("semanticField", "fieldKey", "field")
+
+
+def _exposed_ref(ref: str, allowed: set, bare_allowed: set) -> bool:
+    if "." in ref:
+        if ref in allowed:
+            return True
+        # A calendar attribute ("<view>__date_dim.month") only of the calendar
+        # role of a date field the report USES: its view is one an exposed ref
+        # is on (a used field's fieldMap/calendar mapping), or the role view
+        # derived from a used field. Any other calendar view would rewrite onto
+        # a date column the report never shows. Calendar names are lowercase slugs.
+        view, attr = ref.split(".", 1)
+        return (view.endswith("__date_dim") and attr == attr.lower()
+                and (f"{view}.*" in allowed or any(a.startswith(f"{view}.") for a in allowed)))
+    return ref in bare_allowed or ref in allowed
+
+
+def filter_names_only_exposed_fields(entry: Any, allowed: set, bare_allowed: set) -> bool:
+    """True only if EVERY field name the filter carries is exposed — semanticField,
+    fieldKey, field and each linkedFields entry (the engine reads semanticField,
+    then fieldKey, then field, and the dropdown falls back to a linked field: a
+    harmless name beside a crafted one must not pass). Spellings are compared
+    EXACTLY, as the engine does. A name without a dot is judged as a bare name."""
+    if not isinstance(entry, dict):
+        return False
+    names = [str(entry.get(k)).strip() for k in _EXPOSED_NAME_KEYS if entry.get(k)]
+    names += [lf.strip() for lf in (entry.get("linkedFields") or []) if isinstance(lf, str) and lf.strip()]
+    # A bare name that is the column of a qualified name in the SAME entry (the
+    # distinct endpoint rewrites `field` to that tail) names that same column —
+    # and the qualified one must be exposed itself.
+    tails = {n.rsplit(".", 1)[-1] for n in names if "." in n}
+    return bool(names) and all(
+        _exposed_ref(n, allowed, bare_allowed) or ("." not in n and n in tails)
+        for n in names
+    )
+
+
+def without_server_owned_keys(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """A viewer's (or a model's) filter without the keys only the server sets:
+    the calendar column keys and every ``_``-marker (layer source, authority,
+    hard bound, fan id) — a request can neither claim nor shed them."""
+    return {k: v for k, v in entry.items()
+            if k not in SERVER_OWNED_FILTER_KEYS and not str(k).startswith("_")}
+
+
+#: Marker on a HARD bound handed to a distinct-values query: the dropdown's
+#: self-strip (which drops every condition on its own field so a slicer is not
+#: pinned to its current pick) must keep it.
+HARD_BOUND_KEY = "_hard_bound"
+
+
+def hard_bounds_on_field(
+    bounds: Optional[Sequence[Dict[str, Any]]],
+    dataset_id: Any,
+    field_ref: str,
+    field_is_foreign=None,
+) -> List[Dict[str, Any]]:
+    """The hard bounds (page scope, 🔒/🚫 dashboard filters, link locks and
+    scope) that constrain ``field_ref`` itself, marked to survive the dropdown's
+    self-strip — so a slicer never offers a value its own report forbids, for
+    EVERY operator (``not_in``, ``between``, ``is_null``, a date preset), not
+    only ``in`` lists. Pass the RAW bounds, never the merged list: there a
+    viewer's pick has been intersected into the bound and would pin the list.
+    """
+    ref = str(field_ref or "").strip().lower()
+    out: List[Dict[str, Any]] = []
+    for f in bounds or []:
+        if not isinstance(f, dict):
+            continue
+        if dataset_id is not None and f.get("datasetId") not in (None, "") and str(f.get("datasetId")) != str(dataset_id):
+            # Another dataset's bound only when PROVABLY so (field_is_foreign);
+            # otherwise (a stale / deleted id, no proof) it is kept authoritative
+            # under its own id, so the dropdown refuses (restricted) instead of
+            # offering the values the bound forbids.
+            try:
+                if field_is_foreign is not None and field_is_foreign(f):
+                    continue
+            except Exception:  # noqa: BLE001 — not provable → kept (fail closed)
+                pass
+            keys = {str(f.get(k) or "").strip().lower() for k in ("semanticField", "fieldKey", "field")}
+            linked = {str(x or "").strip().lower() for x in (f.get("linkedFields") or []) if isinstance(x, str)}
+            if ref and (ref in keys or ref in linked):
+                out.append({**f, HARD_BOUND_KEY: True, "_authoritative": True})
+            continue
+        keys = {str(f.get(k) or "").strip().lower() for k in ("semanticField", "fieldKey", "field")}
+        linked = {str(x or "").strip().lower() for x in (f.get("linkedFields") or []) if isinstance(x, str)}
+        if ref and ref in keys:
+            # Stamped with the queried dataset: the SQL builder skips a filter
+            # whose datasetId is not literally that id (a stored "1" would be
+            # dropped silently, and the bound with it).
+            out.append({**f, HARD_BOUND_KEY: True, **({"datasetId": dataset_id} if dataset_id is not None else {})})
+        elif ref and ref in linked:
+            # The bound reaches this field as a LINKED field (one control on two
+            # fields): the dropdown's self-strip removes the whole condition, so
+            # it comes back aimed at this field — its values stay inside it.
+            original = next(x for x in f.get("linkedFields") if str(x or "").strip().lower() == ref)
+            out.append({**{k: v for k, v in f.items() if k != "linkedFields"},
+                        "field": original, "semanticField": original, HARD_BOUND_KEY: True,
+                        **({"datasetId": dataset_id} if dataset_id is not None else {})})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Disclosure — what a public viewer (or a model answering one) may be told.
+# ---------------------------------------------------------------------------
+
+def filter_is_disclosable(entry: Dict[str, Any]) -> bool:
+    return isinstance(entry, dict) and entry.get(DISCLOSE_KEY) is not False
+
+
+def disclosable_filters(
+    filters: Optional[Sequence[Dict[str, Any]]],
+) -> tuple[List[Dict[str, Any]], int]:
+    """(entries that may be named, count of withheld ones).
+
+    Enforcement uses the full list; anything that SAYS which filters ran — a
+    tool result, a scope note, a banner — uses this projection, so a 🚫 hidden
+    constraint is applied and never named. The withheld count lets an answer
+    say "restricted by the report author" without saying how.
+    """
+    shown: List[Dict[str, Any]] = []
+    withheld = 0
+    for f in filters or []:
+        if not isinstance(f, dict):
+            continue
+        if filter_is_disclosable(f):
+            shown.append(f)
+        else:
+            withheld += 1
+    return shown, withheld
+
+
+def disclosed_applied_filters(filters: Any) -> tuple[List[Dict[str, Any]], int]:
+    """``disclosable_filters`` for a tool result: the nameable entries without
+    internal markers, and the withheld count. Takes the ENFORCED list of any
+    context (``getattr(ctx, "public_filters", None)``) — tools run on duck-typed
+    contexts too, so this is a function, not a method."""
+    shown, withheld = disclosable_filters(filters if isinstance(filters, list) else [])
+    return [{k: v for k, v in f.items() if not str(k).startswith("_")} for f in shown], withheld
+
+
+def public_viewer_visible_entries(
+    items: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Filter-pane entries a public viewer may be SERVED: every mode but 🚫.
+
+    A 🔒 entry is served (read-only, it is announced); a 🚫 entry is enforced
+    from the stored dashboard and never leaves the server.
+    """
+    return [e for e in (items or []) if isinstance(e, dict) and _public_mode(e) != "hidden"]
 
 
 def link_managed_field_keys(
@@ -471,3 +989,45 @@ def link_managed_field_keys(
         if link_entry_has_value(entry) or bool(entry.get("hidden")):
             keys.add(key)
     return keys
+
+
+def link_filters_a_viewer_may_see(
+    link_filters_config: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """The link's filters a public viewer is SHOWN (read-only): locked (🔒)
+    entries that enforce a value — field, label, value, semanticField, nothing
+    else — so the reader knows the report is filtered and by what.
+
+    Never included: a hidden (🚫) entry, with or without a value (the reader
+    must not learn the field or the value); a 'limit' scope entry (it bounds
+    the viewer's choices, it is not a filter to announce); an empty lock (it
+    enforces nothing); an entry its author set `showBanner: false` on.
+
+    What is served is decided by the engine's own chokepoint,
+    `normalize_filter_conditions`: an entry is served only if the engine keeps
+    it, with the operator and value the engine enforces. So an M2M claim stored
+    as `in "SP"` reads `in ["SP"]`; `ne` / `<>` read `neq` ("not RJ" is never
+    shown as "RJ"); an `is_null` lock is stated although it has no value; a
+    relative-date lock is stated by its preset (resolved per request); and a
+    lock the engine drops (`between 5`, `in 5`) is never announced. The data
+    merge is unaffected — the server applies the link's filters itself from
+    DashboardPublicLink.filters_config.
+    """
+    entries = [e for e in (link_filters_config or []) if isinstance(e, dict) and not link_entry_is_scope(e)]
+    locked, _hidden = split_link_filters_locked_vs_hidden(entries)
+    out: List[Dict[str, Any]] = []
+    for entry in locked:
+        if entry.get("showBanner") is False:
+            continue
+        enforced = normalize_filter_conditions([entry])
+        if not enforced:
+            continue
+        kept = enforced[0]
+        item = {"field": kept.get("field"), "label": entry.get("label"),
+                "value": kept.get("value"), "operator": kept.get("operator")}
+        if entry.get("semanticField"):
+            item["semanticField"] = entry["semanticField"]
+        if entry.get("datePreset"):
+            item["datePreset"] = entry["datePreset"]
+        out.append(item)
+    return out

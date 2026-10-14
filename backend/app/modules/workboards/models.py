@@ -308,6 +308,9 @@ class WorkboardAppUser(Base):
         server_default="true",
     )
     context = Column(JSONB, nullable=False, server_default="{}", default=dict)
+    #: Bumped to end every session of this app user (PIN/role/context/active
+    #: change, logout). Sessions carry it; a mismatch is a signed-out session.
+    session_epoch = Column(Integer, nullable=False, server_default="0", default=0)
 
     created_at = Column(
         DateTime(timezone=True),

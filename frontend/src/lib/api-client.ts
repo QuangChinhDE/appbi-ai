@@ -2,6 +2,7 @@
  * API client for making requests to the backend.
  */
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
+import { reportAnchor } from '@/lib/report-anchor';
 
 // NEXT_PUBLIC_API_URL is baked at build time as '/api/v1' (relative).
 // Next.js rewrites (localhost) or nginx (/api/ location) proxy it to the backend.
@@ -61,12 +62,35 @@ export async function refreshAuthSession(options?: { redirectOnFailure?: boolean
   return refreshed;
 }
 
+/**
+ * The Studio preview iframe (`?studio=preview`) is a verification surface, never
+ * an editor: whatever a component, shortcut or flush path tries, no write leaves
+ * it — every non-GET to /dashboards/* and every PUT/PATCH/DELETE is refused here,
+ * before the network, regardless of the viewer's permission.
+ */
+export function isStudioPreviewWrite(method: string | undefined, url: string | undefined): boolean {
+  if (typeof window === 'undefined') return false;
+  let preview = false;
+  try { preview = new URLSearchParams(window.location.search).get('studio') === 'preview'; } catch { preview = false; }
+  if (!preview) return false;
+  const m = String(method || 'get').toLowerCase();
+  if (m === 'get' || m === 'head' || m === 'options') return false;
+  if (m !== 'post') return true;
+  return /^\/?dashboards(\/|$)/.test(String(url || '').replace(/^https?:\/\/[^/]+/, '').replace(/^\/api\/v1/, ''));
+}
+
 // Request interceptor for logging
 apiClient.interceptors.request.use(
   (config) => {
+    if (isStudioPreviewWrite(config.method, config.url)) {
+      return Promise.reject(new Error(`Studio preview is read-only: ${String(config.method).toUpperCase()} ${config.url} refused`));
+    }
     if (API_DEBUG_LOGGING) {
       console.log(`[API ${API_CLIENT_BUILD_STAMP}] ${config.method?.toUpperCase()} ${config.url}`);
     }
+    // One relative-date anchor for all tiles of the current report read.
+    const a = reportAnchor();
+    if (a) { config.headers = config.headers || {} as any; (config.headers as any)['X-AppBI-As-Of'] = a; }
     return config;
   },
   (error) => {
@@ -137,7 +161,7 @@ export const dataSourcesApi = {
   },
   
   test: async (payload: { type: string; config: Record<string, any> }) => {
-    const response = await apiClient.post('/datasources/test', payload);
+    const response = await apiClient.post('/datasources/test-draft', payload);
     return response.data;
   },
   
@@ -232,11 +256,6 @@ export const personalAccessTokensApi = {
     await apiClient.delete(`/auth/personal-access-tokens/${tokenId}/permanent`);
   },
 
-  // Reveal the full secret again (owner). Only works for revealable tokens.
-  reveal: async (tokenId: string): Promise<{ token: string }> => {
-    const response = await apiClient.get(`/auth/personal-access-tokens/${tokenId}/reveal`);
-    return response.data;
-  },
 
   // Regenerate the secret (owner) — old secret stops working; new one shown once.
   rotate: async (tokenId: string): Promise<PersonalAccessTokenCreateResponse> => {
@@ -244,7 +263,7 @@ export const personalAccessTokensApi = {
     return response.data;
   },
 
-  // Admin oversight (settings=full): every user's tokens + revoke/reveal any.
+  // Admin oversight (settings=full): every user's tokens; revoke or force-invalidate (never reveal).
   adminList: async (): Promise<AdminPersonalAccessTokenRecord[]> => {
     const response = await apiClient.get('/auth/personal-access-tokens/admin');
     return response.data;
@@ -254,14 +273,11 @@ export const personalAccessTokensApi = {
     await apiClient.delete(`/auth/personal-access-tokens/admin/${tokenId}`);
   },
 
-  adminReveal: async (tokenId: string): Promise<{ token: string }> => {
-    const response = await apiClient.get(`/auth/personal-access-tokens/admin/${tokenId}/reveal`);
-    return response.data;
-  },
 
-  adminRotate: async (tokenId: string): Promise<PersonalAccessTokenCreateResponse> => {
-    const response = await apiClient.post(`/auth/personal-access-tokens/admin/${tokenId}/rotate`);
-    return response.data;
+  /** Force-invalidate a user's token. The admin never receives a usable token. */
+  adminInvalidate: async (tokenId: string): Promise<unknown> => {
+    const { data } = await apiClient.post(`/auth/personal-access-tokens/admin/${tokenId}/invalidate`);
+    return data;
   },
 };
 

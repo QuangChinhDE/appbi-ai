@@ -19,17 +19,26 @@ on:
       - "frontend/**"
       - "e2e/**"
       - ".github/workflows/e2e.yml"
-  pull_request:
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - "e2e/**"
-      - ".github/workflows/e2e.yml"
-
+  # CALLED BY `product-gate.yml` ON PULL REQUESTS.
+  #
+  # The `pull_request` trigger moved there. It is not a reorganisation for its
+  # own sake: the filter below lives at the WORKFLOW level, so on an irrelevant
+  # PR this produced no check run at all, and a branch-protection rule cannot
+  # require a check that may never appear. `product-gate` classifies the diff
+  # first and calls this when it is relevant, so there is one always-present
+  # status and the expensive suites still skip the diffs they do not concern.
+  #
+  # The push trigger and its paths are unchanged, so pushing to a branch still
+  # pays only for what it touched.
+  workflow_call:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # ~22 min before the device-layout journeys (public-closure-responsive,
+    # ~16 min, 15 serial journeys) were added; 30 cancelled the run mid-suite.
+    # ~39 min with them; the UI/UX acceptance suite (dashboard-responsive-uiux*,
+    # ~20 min of serial real-browser journeys) brings it to ~60.
+    timeout-minutes: 80
 
     services:
       postgres:
@@ -54,8 +63,54 @@ jobs:
       DB_NAME: appbi
       DB_USER: appbi
       DB_PASSWORD: appbi
-      DATASOURCE_ENCRYPTION_KEY: ""
+      # DATASOURCE_ENCRYPTION_KEY is generated per run by a step below (AI Keys).
       ENVIRONMENT: test
+      # The seeded data sources point at the job's own Postgres on localhost. The
+      # outbound source policy refuses loopback/private hosts by default, so the
+      # rig opens loopback explicitly (operator knob), never by weakening the default.
+      ALLOWED_PRIVATE_SOURCE_CIDRS: "127.0.0.0/8,::1/128"
+      # The observability specs assert detector states the seed writes. The 02:00
+      # UTC re-scan would overwrite them whenever a run straddles 02:00 (O08b/O25
+      # flaked that way), so the rig turns that one cron off. Alert dispatch stays.
+      ANOMALY_DAILY_SCAN_ENABLED: "false"
+
+      # ONE SECRET, OR THE FRONTEND CANNOT READ WHAT THE BACKEND SIGNED.
+      #
+      # `middleware.ts` does not merely look for the cookie, it VERIFIES the JWT
+      # (`jwtVerify`, jose). It falls back to 'change-this-in-production'; the
+      # backend falls back to 'dev-secret-key-change-in-production'. Two different
+      # literals for the same secret. With neither set — which is what this job
+      # did — the backend signed a perfectly good token and the Edge middleware
+      # rejected every one, so each authed page bounced to /login carrying only
+      # `refresh_token` (that cookie is scoped to the refresh endpoint, so it is
+      # never sent to a page route and cannot rescue the redirect either).
+      #
+      # 13 specs failed on that and reported it as "flow list did not render" and
+      # "Test button not found" — product symptoms for a configuration cause. The
+      # same suite passes locally in 11.6s because docker-compose hands all three
+      # services ONE `SECRET_KEY`.
+      #
+      # Job-level so it reaches all three: uvicorn, `next build` (the Edge bundle
+      # inlines it) and `next start`.
+      SECRET_KEY: e2e-secret-not-a-production-value
+
+      # THIS DEPLOYMENT CONFIGURES NO MODEL, AND SAYS SO RATHER THAN BEING GUESSED.
+      #
+      # A spec that needs a provider used to discover that by probing and reading a
+      # status code, which only worked while there was also no LINK to run against —
+      # once one is seeded the endpoint answers 200 with a failed run, and the guard
+      # stops firing. Declaring it here keeps the precondition where the decision is
+      # actually made. Spending on a vendor to turn a skip into a pass would buy a
+      # number, not coverage.
+      #
+      # WHAT THE NO-MODEL SKIPS ARE, AND ARE NOT. The four reader-golden tests
+      # that skip on this flag (agent-flow-v1-reader-golden.spec.ts) are EXTERNAL
+      # MODEL INTEGRATION evidence, not a security gate: the security invariant
+      # they touched ("an anonymous reader never receives internal execution /
+      # tool / system details") is enforced deterministically, without a model,
+      # by tests/security/public-reader.spec.ts (project `security`, retries 0,
+      # cannot skip) plus the backend reader-envelope contract tests.
+      E2E_NO_MODEL: "1"
 
       # THE MODULE UNDER TEST HAS TO BE MOUNTED.
       #
@@ -70,6 +125,10 @@ jobs:
       # deployment where Agent Flows was switched off. `.env.example` and
       # docker-compose both turn it on, so CI now matches what ships.
       METADATA_CATALOG_ENABLED: "true"
+      # The authorization gate (project `security`) exercises the public
+      # workspace routes, which are only mounted with Workboards on; without it
+      # every workspace assertion is a 404 before any auth check runs.
+      WORKBOARDS_ENABLED: "true"
       PYTHONPATH: ${{ github.workspace }}/backend
       E2E_BASE_URL: http://localhost:3000
       E2E_API_URL: http://localhost:8000
@@ -93,6 +152,11 @@ jobs:
       # `/api/v1/*` to BACKEND_URL and falls back to `http://backend:8000/api/v1`
       # — a docker-compose hostname that does not resolve on a GitHub runner.
       BACKEND_URL: http://localhost:8000/api/v1
+      # Final-release closure: full-stack Playwright includes one REAL
+      # multi-page worker export. API and worker share this local directory.
+      PDF_EXPORT_ENABLED: "true"
+      PDF_RENDER_BASE_URL: http://localhost:3000
+      DATA_DIR: ${{ github.workspace }}/.artifacts/e2e-pdf-data
 
     steps:
       - uses: actions/checkout@v4
@@ -101,7 +165,23 @@ jobs:
         with: { python-version: "3.11", cache: pip }
       - name: Install backend dependencies
         working-directory: backend
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          # The API image stays slim in production; CI opts into the same two
+          # packages Dockerfile.pdf installs for the real render worker.
+          pip install pymupdf==1.24.14 playwright==1.49.1
+
+      # AI KEYS ARE STORED ENCRYPTED, OR NOT AT ALL.
+      #
+      # Agent Flow steps run only on keys from the AI Keys store, and the store
+      # refuses to save one when DATASOURCE_ENCRYPTION_KEY is empty (it would
+      # otherwise hold the secret in plaintext). Specs that publish or test a flow
+      # therefore give its steps a FAKE key, which needs a working store. The key
+      # is generated per run, so no key material lives in this file.
+      - name: Generate a throwaway encryption key
+        working-directory: backend
+        run: |
+          echo "DATASOURCE_ENCRYPTION_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> "$GITHUB_ENV"
 
       - name: Build the schema
         working-directory: backend
@@ -110,6 +190,99 @@ jobs:
       - name: Seed the E2E account
         working-directory: backend
         run: python scripts/ci/seed_e2e_user.py
+
+      # A link with an ACTIVE binding, which `surfaces.spec.ts` needs and a
+      # freshly migrated database does not have. Without it that spec skipped
+      # itself on every run — and a skip that reports as a suite property rather
+      # than a missing fixture is how coverage quietly disappears. It seeds no
+      # model credential: the four provider-dependent specs stay skipped on
+      # purpose.
+      - name: Seed a bound public link
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_binding.py
+
+      # The dashboard the presentation gate measures (dashboard-presentation.spec
+      # .ts): real rows through the Excel-upload service, charts through
+      # ChartService, a section header, a slicer and a fixed public link. The spec
+      # FAILS on CI when this is missing — a presentation gate that skips would
+      # report a pass for a check that never ran.
+      - name: Seed the presentation fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_presentation.py
+
+      # The Pair #5 data-state contracts (data-state.spec.ts): a live source in
+      # its own schema of this database, a calculated column, a semantic model
+      # that names a missing column, a failed publish over a published
+      # generation, a relation that cannot be built. Without it the spec FAILS
+      # (it looks its fixtures up by name) rather than passing on nothing.
+      - name: Seed the data-state fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_data_state.py
+
+      # AUTHORIZATION RELEASE GATE fixture: isolated principals (owner, viewer,
+      # editor, builder, module admin, unrelated, team member, app user) with
+      # tokens minted by the product's own functions, read by
+      # e2e/tests/security/*.spec.ts (project `security`, retries 0). A missing
+      # fixture FAILS the spec, never skips it.
+      - name: Seed the security fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_security.py
+
+      # PUBLIC READER BOUNDARY (tests/security/public-reader.spec.ts) runs a real
+      # public AI turn with NO model: the bound flow is model-free. Readers are
+      # served only inside the pilot cohort (default AGENT_FLOW_READER_MODE=pilot,
+      # fail closed), so exactly the seeded reader link is enrolled - every other
+      # link keeps the default. Must run before the backend starts (the policy is
+      # read from settings).
+      - name: Enroll the security reader link in the reader pilot
+        run: echo "AGENT_FLOW_PILOT_LINK_IDS=$(cat e2e/.auth/pilot_link_ids)" >> "$GITHUB_ENV"
+      # The source-hardening journeys (source-hardening.spec.ts): a read-only
+      # role and two databases whose `public.sales` differ in shape (repointing a
+      # source must show B's columns, not A's cache), plus a google_sheets
+      # source with a FAKE service account for the view-only refusal checks.
+      # The spec FAILS when these are missing rather than skipping.
+      - name: Seed the source-hardening fixture
+        working-directory: backend
+        env:
+          CI_FIXTURE_SEED: "1"
+        run: python scripts/ci/seed_e2e_source_hardening.py
+      # Dataset lifecycle journeys (dataset-lifecycle*.spec.ts): a mutable source
+      # schema + a lifecycle dataset. CI has NO BigQuery snapshot host, so the
+      # Sync & Publish journeys skip themselves by name here; the authoring /
+      # settings / source-status journeys run.
+      - name: Seed the dataset-lifecycle fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_dataset_lifecycle.py
+
+      - name: Seed the dataset permission fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_dataset_authz.py
+
+      # Chart final hardening (chart-hardening.spec.ts, project `chart-hardening`,
+      # retries 0): fact → Date AND fact → owner → Date (the user-reported two-
+      # meaning route), a saved chart on a dashboard + public link, and a VIEW-only
+      # password reader. The spec FAILS when the fixture is missing.
+      - name: Seed the chart-hardening fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_chart_hardening.py
+
+      # Chart VISUAL certification (chart-visual.spec.ts, project `chart-visual`,
+      # retries 0): one deterministic table with categories, a monthly date,
+      # positive/negative values, coordinates, state codes, an all-zero and an
+      # all-NULL measure and declared measures — every Builder chart type must
+      # visibly draw its marks on it. The spec FAILS when the fixture is missing.
+      - name: Seed the chart-visual fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_chart_visual.py
+
+      # Observability journeys O01-O24 (observability.spec.ts, project
+      # `observability`, retries 0): a live Postgres source with fresh / stale /
+      # missing tables, anomaly alerts, a 260-incident backlog, a channel with
+      # failed deliveries and editor / viewer / outsider principals. Every check
+      # is RUN by the spec through the product. A missing fixture FAILS the spec.
+      - name: Seed the observability fixture
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_observability.py
 
       - name: Start the backend
         working-directory: backend
@@ -144,12 +317,45 @@ jobs:
         run: |
           npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
+          python -m playwright install chromium
+
+      - name: Start the real PDF worker
+        working-directory: backend
+        run: |
+          mkdir -p "$DATA_DIR"
+          python -m app.scripts.pdf_worker > ../.artifacts/e2e-pdf-worker.log 2>&1 &
+          echo $! > ../.artifacts/e2e-pdf-worker.pid
+          sleep 3
+          kill -0 "$(cat ../.artifacts/e2e-pdf-worker.pid)"
+
+      # The authorization release gate may not skip: a security journey that
+      # skips is reported as "not failed" and reads like coverage. No skip,
+      # fixme or only may be added to tests/security (a missing fixture already
+      # FAILS there instead of skipping).
+      - name: Security journeys cannot skip
+        working-directory: e2e
+        run: |
+          if grep -rnE "\.(skip|fixme|only)\(" tests/security; then
+            echo "::error::tests/security must not skip, fixme or only a journey"
+            exit 1
+          fi
 
       - name: Run the suite
         working-directory: e2e
         run: npx playwright test
 
       # A reviewer must be able to see what broke without reproducing it locally.
+      # One screenshot per chart type (+ BAR_LINE branches, tiles, transitions):
+      # the evidence a reviewer opens, kept on success too.
+      - name: Upload chart visual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chart-visual-evidence
+          path: .artifacts/chart-visual/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload traces and screenshots
         if: failure()
         uses: actions/upload-artifact@v4
@@ -158,4 +364,5 @@ jobs:
           path: |
             e2e/test-results/
             e2e/playwright-report/
+            .artifacts/e2e-pdf-worker.log
           retention-days: 14

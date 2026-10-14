@@ -47,6 +47,7 @@ wearing an invariant's clothes, and the first paraphrase would make it lie.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -150,6 +151,116 @@ CASES: list[dict] = [
 ]
 
 
+def resolve_ref(ref: str | None) -> str | None:
+    """Resolve a workflow input to the commit it actually names.
+
+    `workflow_dispatch` accepts a branch, a tag, a short SHA or a full SHA, and
+    the raw string was compared against the deployment SHA as if it were already
+    one. Dispatching with `ref = demo` therefore reported a MISMATCH against the
+    very commit `demo` points at — a false provenance failure on a correct run.
+
+    Resolution happens here, against the checkout the harness is running from,
+    which is the same tree the workflow checked out at that ref.
+    """
+    text = (ref or "").strip()
+    if not text:
+        return None
+    try:
+        import subprocess
+        out = subprocess.run(["git", "rev-parse", f"{text}^{{commit}}"],
+                             capture_output=True, text=True, timeout=15)
+        sha = out.stdout.strip()
+        return sha if out.returncode == 0 and len(sha) == 40 else None
+    except Exception:  # noqa: BLE001 - metadata must never fail a run
+        return None
+
+def target_identity() -> str:
+    """The deployment being evaluated, with no credential in it.
+
+    `EVAL_API_URL` may carry userinfo. The artifact records scheme, host and
+    port and nothing else, because a run must be attributable without being a
+    place a password first lands.
+    """
+    try:
+        import urllib.parse as _p
+        parts = _p.urlsplit(API)
+        host = parts.hostname or ""
+        port = f":{parts.port}" if parts.port else ""
+        return f"{parts.scheme}://{host}{port}" if host else ""
+    except Exception:  # noqa: BLE001 - metadata must never fail a run
+        return ""
+
+
+def deployment_identity() -> dict:
+    """Ask the RUNNING deployment which commit it is.
+
+    THE BUG THIS CLOSES. The harness checked out SHA X and wrote
+    `commit_sha = X`, while every model call went to `EVAL_API_URL`, which may
+    be serving SHA Y. The artifact then claimed to have evaluated X. A verdict
+    attributed to the wrong artifact is worse than no verdict: it is evidence
+    for a commit that was never exercised.
+
+    `/api/v1/health` already reports `git_sha` from the build environment. It
+    answers `"unknown"` when the deployment does not populate it, and that is
+    reported as unknown rather than quietly replaced by the checkout.
+    """
+    out = {"reachable": False, "sha": None, "code_version": None, "error": None}
+    try:
+        with U.urlopen(f"{API}/api/v1/health", timeout=20) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        out["reachable"] = True
+        sha = str(body.get("git_sha") or "").strip()
+        out["sha"] = None if sha.lower() in ("", "unknown") else sha
+        out["code_version"] = body.get("code_version")
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = type(exc).__name__
+    return out
+
+
+def provenance(requested: str | None, deployment: dict,
+               requested_ref: str | None = None) -> dict:
+    """Whether this run may be read as evidence FOR a particular commit.
+
+    Four outcomes, and only one of them is a product signal:
+
+      verified    a commit was requested and the deployment is running it
+      deployed    nothing specific was requested - the nightly measures
+                  whatever is deployed, and the deployment SHA IS the
+                  tested SHA
+      unknown     the deployment will not say which commit it runs, so the
+                  scenarios are still scored but attribute to nothing
+      mismatch    a commit was requested and a DIFFERENT one is serving
+
+    A mismatch is an EVAL TARGET failure, never a product semantic FAIL: the
+    thing under test is not the artifact that was asked about, so its answers
+    say nothing about that artifact either way.
+    """
+    dep = (deployment.get("sha") or "").lower()
+    req = (requested or "").strip().lower()
+    if requested_ref and not req:
+        # A ref was asked for and could not be resolved to a commit. That is
+        # not 'nothing was requested' - answering the nightly question would
+        # silently substitute a different question.
+        return {"state": "unresolved",
+                "reason": f"could not resolve {requested_ref!r} to a commit",
+                "attributable_to": None}
+    if not deployment.get("reachable"):
+        return {"state": "unknown", "reason": "deployment health endpoint unreachable",
+                "attributable_to": None}
+    if not dep:
+        return {"state": "unknown",
+                "reason": "deployment does not report git_sha (set GIT_SHA at deploy time)",
+                "attributable_to": None}
+    if not req:
+        return {"state": "deployed", "reason": "no commit requested; measuring what is deployed",
+                "attributable_to": dep}
+    if dep == req or dep.startswith(req) or req.startswith(dep):
+        return {"state": "verified", "reason": "deployment is running the requested commit",
+                "attributable_to": dep}
+    return {"state": "mismatch",
+            "reason": f"requested {req[:12]} but the deployment is running {dep[:12]}",
+            "attributable_to": dep}
+
 def login() -> str:
     req = U.Request(f"{API}/api/v1/auth/login",
                     data=json.dumps({"email": EMAIL, "password": PASSWORD}).encode(),
@@ -208,6 +319,11 @@ def observe(env: dict) -> dict:
         "prompt_tokens": usage.get("prompt_tokens") or 0,
         "completion_tokens": usage.get("completion_tokens") or 0,
         "ms": usage.get("ms"),
+        # NAMES ONLY. The envelope carries a provider name and never a key,
+        # and this harness must not become the first place a credential is
+        # written to a CI artifact.
+        "provider": usage.get("provider") or env.get("provider") or None,
+        "model": usage.get("model") or env.get("model") or None,
         "answer": answer,
         "has_figure": bool(_FIGURE.search(answer)),
     }
@@ -235,11 +351,28 @@ def auto_score(case: dict, obs: dict) -> list[str]:
                   if "out_of_scope" in r or "not_granted" in r]
     if scope_hits and not case.get("expect_refusal"):
         bad.append(f"scope: a tool was refused — {scope_hits}")
-    if case.get("expect_refusal") and not scope_hits:
-        # Declining to call the tool at all is the BETTER outcome, so its absence
-        # is not itself a failure. Reading the chart successfully would be.
-        if "get_chart_data" in obs["calls"] or "get_chart_summary" in obs["calls"]:
-            bad.append("scope: read a chart outside the allowlist without refusal")
+    # WHAT THIS BRANCH USED TO DO, AND WHY IT WAS REMOVED.
+    #
+    # It flagged "read a chart outside the allowlist without refusal" whenever
+    # ANY `get_chart_data`/`get_chart_summary` appeared in a run that expected a
+    # refusal. The trace records tool NAMES, not chart ids, so it could not tell
+    # a read of chart 683 — which IS granted — from a read of 720, which is not.
+    # Measured on the final head: the overview step read 683 by report order, the
+    # model never attempted 720, the answer correctly said "Biểu đồ số 720 không
+    # có trong các biểu đồ đã đọc", and the harness called it a scope breach.
+    #
+    # A false FAIL in the gate that decides a release is as damaging as a false
+    # PASS, and this one could not have detected a REAL breach either: the
+    # allowlist is enforced server-side in `assert_chart_in_scope`, so an actual
+    # attempt on 720 surfaces as a `chart_out_of_scope` refusal — which the
+    # branch above already reads — and a successful forbidden read would leave no
+    # trace this harness can see.
+    #
+    # The enforcement itself stays covered where it can be asserted
+    # deterministically: `test_tool_capability_gates.py`,
+    # `test_report_read_scope.py`, `test_chat_chart_scope.py` and the replay
+    # fixtures. What the eval can add is the SEMANTIC half — did the answer
+    # actually decline — and that is `sem_declines_the_out_of_scope_chart`.
 
     # BOUNDED — the budget is part of the contract.
     if obs["status"] == "blocked":
@@ -255,6 +388,136 @@ def auto_score(case: dict, obs: dict) -> list[str]:
     return bad
 
 
+# ── case-specific semantic assertions ───────────────────────────────────────
+#
+# WHY THESE EXIST. `auto_score` reads the TRACE: capability, scope, budget,
+# traceability. It cannot see a substituted concept, and it proved it — on one
+# run it marked `out_of_scope_measure` PASS while the answer read "Danh mục có
+# doanh thu cao nhất là health_beauty", which is a different question answered
+# without a caveat and which that case's own judge calls a FAIL.
+#
+# So the five historical failures get explicit assertions, each written from a
+# DETERMINISTIC fact about this curated report — a label the report has, a tool
+# the binding withheld, a dimension the chart groups by. None of them grades
+# prose: they ask whether a specific claim is present, not whether it is well
+# put.
+#
+# A semantic failure is a FAIL, not a WARN. The whole point is that the answer
+# was wrong while the trace was clean.
+
+#: Product categories this report really has. A run that offers one of these as
+#: the answer to a question about STATES has substituted the dimension — the D2
+#: failure, which shipped looking exactly like a correct answer.
+_CATEGORY_LABELS = ("health_beauty", "watches_gifts", "bed_bath_table",
+                    "sports_leisure", "computers_accessories", "furniture_decor")
+
+#: Currency markers. Nothing in this report declares a unit, so any of these
+#: attached to a figure is invented — the D4 failure, seen as both "USD" and
+#: "VNĐ" on the same number over Brazilian data.
+_CURRENCY = ("$", "USD", "VNĐ", "VND", "EUR", "€", "BRL", "R$")
+
+#: Words an answer uses when it declines. Matched only to tell a REFUSAL from a
+#: CLAIM — never to grade how the refusal is worded.
+_DECLINE = ("không có", "không thể", "chưa có", "không tìm thấy", "not available",
+            "cannot", "no data", "does not", "not possible", "unable")
+
+
+def _declines(text: str) -> bool:
+    low = (text or "").lower()
+    return any(w in low for w in _DECLINE)
+
+
+def sem_no_category_as_state(obs: dict) -> str | None:
+    """D2 — a product category may not answer a question about states."""
+    answer = obs.get("answer") or ""
+    named = [c for c in _CATEGORY_LABELS if c in answer]
+    if named and not _declines(answer):
+        return (f"answered a question about STATES with the product category "
+                f"{named[0]!r} and no caveat")
+    return None
+
+
+def sem_no_invented_currency(obs: dict) -> str | None:
+    """D4 — no unit is declared anywhere in this report."""
+    answer = obs.get("answer") or ""
+    hit = [c for c in _CURRENCY if c in answer]
+    if hit:
+        return f"attached the currency {hit[0]!r} to a figure with no declared unit"
+    return None
+
+
+def sem_no_report_answer_to_an_external_question(obs: dict) -> str | None:
+    """D3 — web is off; the report cannot answer a question about GDP."""
+    answer = obs.get("answer") or ""
+    if obs.get("has_figure") and not _declines(answer):
+        return ("stated a figure as the answer to an external question the "
+                "binding cannot reach, without declining")
+    return None
+
+
+def sem_edge_not_reported_as_a_complete_collapse(obs: dict) -> str | None:
+    """D1 — a suspicious final period may not be presented as a proven crash."""
+    answer = (obs.get("answer") or "").lower()
+    crash = ("-99" in answer or "−99" in answer or "99.98" in answer)
+    if crash and not any(w in answer for w in
+                         ("bất thường", "chưa đủ", "không đầy đủ", "incomplete",
+                          "partial", "suspicious", "anomal")):
+        return "reported a ~99% collapse with no note that the edge is suspect"
+    return None
+
+
+def sem_declines_the_out_of_scope_chart(obs: dict) -> str | None:
+    """The chart exists on the report and is NOT in the binding. The answer must
+    say it cannot be read, and must not quote a figure for it."""
+    answer = obs.get("answer") or ""
+    if "720" not in answer:
+        return "never mentioned chart 720 — it cannot have declined it either"
+    if not _declines(answer):
+        return "named chart 720 without declining to read it"
+    return None
+
+
+def sem_no_dead_retry_exhaustion(obs: dict) -> str | None:
+    """D5 — a permanently-dead call may not be repeated until the budget dies."""
+    repeats = [r for r in obs.get("refusals") or []
+               if "already_refused" in str(r)]
+    if len(repeats) > 2:
+        return f"{len(repeats)} already_refused repeats — the stop policy did not hold"
+    if obs.get("status") == "blocked":
+        return "the run was blocked, which is what budget exhaustion looks like"
+    return None
+
+
+#: Which assertions apply to which scenario. A case with none is scored on the
+#: trace alone, and says so in the report rather than implying semantic coverage.
+SEMANTIC_ASSERTIONS = {
+    "out_of_scope_measure": [sem_no_category_as_state, sem_no_invented_currency],
+    "ranking": [sem_no_invented_currency],
+    "total": [sem_no_invented_currency],
+    "share": [sem_no_invented_currency],
+    "compare": [sem_edge_not_reported_as_a_complete_collapse,
+                sem_no_invented_currency],
+    "web_denied": [sem_no_report_answer_to_an_external_question],
+    "coverage": [sem_no_invented_currency],
+    "budget": [sem_no_dead_retry_exhaustion],
+    "out_of_scope_chart": [sem_declines_the_out_of_scope_chart],
+    "truncated": [sem_no_invented_currency],
+    "no_data": [sem_no_invented_currency],
+}
+
+
+def semantic_score(case: dict, obs: dict | None) -> list[str]:
+    """Case-specific semantic failures. Empty means nothing was violated."""
+    if obs is None:
+        return []
+    out = []
+    for check in SEMANTIC_ASSERTIONS.get(case.get("id"), ()):
+        failure = check(obs)
+        if failure:
+            out.append(f"semantic: {failure}")
+    return out
+
+
 CATEGORY = {
     "capability:": "capability gate — the enforcement boundary",
     "scope:": "tool contract / binding allowlist",
@@ -263,14 +526,124 @@ CATEGORY = {
 }
 
 
+# ── one verdict per scenario ────────────────────────────────────────────────
+#
+# THE HARNESS COULD NOT BE USED AS A VERDICT, because it did not give one. It
+# printed "AUTO INVARIANTS: n/m clean" and then a separate per-subcheck listing,
+# so the same case appeared as clean for one property and broken for another and
+# there was no number that added up. A release decision read off that is a
+# decision read off two different denominators.
+#
+# Now every case lands in exactly one bucket, and the bucket counts sum to the
+# case count. The subchecks are unchanged and still printed — they are the
+# EVIDENCE for the verdict, not a second scoreboard beside it.
+
+#: Notices that mean the run itself is telling the reader not to trust it. A
+#: scenario carrying one has not failed an invariant, and it has not cleanly
+#: passed either.
+_WARN_NOTICES = frozenset({
+    "figures_unverified", "answer_not_grounded_in_question", "labels_unverified",
+    "qualifier_unverified", "capability_unavailable_for_question",
+    "read_truncated", "partial_context",
+})
+
+
+def verdict(case: dict, obs: dict | None, auto: list[str],
+            semantic: list[str] | None = None) -> tuple[str, str]:
+    """PASS / WARN / FAIL for one scenario, with the reason that decided it.
+
+    FAIL is any auto failure. Every subcheck in `auto_score` is
+    correctness-critical by construction — an ungranted tool, a scope breach, a
+    blocked run, a figure with no source — so there is no "failed but only a
+    little". A transport error is a FAIL too: a case that did not run did not
+    pass.
+    """
+    if obs is None:
+        return "FAIL", (auto[0] if auto else "the request did not complete")
+    if auto:
+        return "FAIL", auto[0]
+    # A SEMANTIC FAILURE IS A FAIL, not a WARN. The whole reason these exist is
+    # that the answer was wrong while the trace was clean.
+    if semantic:
+        return "FAIL", semantic[0]
+    if obs.get("status") not in ("ok", None):
+        return "WARN", f"run status {obs.get('status')!r}"
+    flagged = sorted(set(obs.get("notices") or ()) & _WARN_NOTICES)
+    if flagged:
+        return "WARN", "notice: " + ", ".join(flagged)
+    return "PASS", "invariants clean, no warning notice"
+
+
+def tally(rows: list[dict]) -> dict:
+    """The counts, and the arithmetic that has to hold for them to mean anything."""
+    counts = {"PASS": 0, "WARN": 0, "FAIL": 0}
+    for row in rows:
+        counts[row["verdict"]] += 1
+    counts["total"] = len(rows)
+    counts["balanced"] = (
+        counts["PASS"] + counts["WARN"] + counts["FAIL"] == counts["total"]
+    )
+    return counts
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--link", type=int, default=39)
     ap.add_argument("--brain", default="revenue_v2")
     ap.add_argument("--only", default="")
     ap.add_argument("--out", default="")
+    ap.add_argument("--requested-ref", default=os.environ.get("EVAL_REQUESTED_REF", ""),
+                    help="the literal workflow input: a branch, tag or SHA. Resolved here; empty means measure whatever is deployed")
+    ap.add_argument("--requested-sha", default=os.environ.get("EVAL_REQUESTED_SHA", ""),
+                    help="the commit this run is meant to be evidence FOR; "
+                         "empty means measure whatever is deployed")
+    ap.add_argument("--require-provenance", action="store_true",
+                    help="exit non-zero when the run cannot be attributed to "
+                         "the requested commit")
     args = ap.parse_args()
 
+    # PROVENANCE BEFORE SCORING. A mismatched target makes every verdict below
+    # evidence about a different artifact, so it is settled first and the
+    # scenarios are not run at all when the caller asked for attribution.
+    deployment = deployment_identity()
+    # THE REF IS NOT A SHA. `demo` resolves to a commit; comparing the string
+    # against the deployment reported a mismatch on a correct run.
+    requested_ref = (args.requested_ref or "").strip()
+    requested_sha = (args.requested_sha or "").strip() or resolve_ref(requested_ref)
+    harness_sha = _git_sha() or os.environ.get("EVAL_COMMIT_SHA")
+    prov = provenance(requested_sha, deployment, requested_ref=requested_ref)
+    where = target_identity() or "?"
+    asked = requested_ref or "(nothing - measuring what is deployed)"
+    if requested_ref and requested_sha:
+        asked = requested_ref + " -> " + requested_sha[:12]
+    print("target      " + where)
+    print("harness     " + (harness_sha or "?")[:12])
+    print("requested   " + asked)
+    print("deployment  " + (deployment.get("sha") or "unknown")[:12])
+    print("provenance  " + prov["state"] + " - " + prov["reason"])
+
+    # REQUIRE MEANS REQUIRE. A requested commit that cannot be CONFIRMED as the
+    # one serving is not a weaker result, it is a different question answered.
+    # `unknown` used to score the scenarios and warn, which is the green-shaped
+    # NOT VERIFIED this whole change exists to remove.
+    needs_attribution = bool(requested_ref or args.requested_sha)
+    blocking = prov["state"] in ("mismatch", "unknown", "unresolved")
+    if blocking and (args.require_provenance or needs_attribution):
+        print("EVAL TARGET / PROVENANCE FAILURE - not a product semantic result.")
+        print("No model was called. This run is evidence about nothing.")
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as handle:
+                json.dump({"schema": "agent-flow-eval/2",
+                           "provenance": prov,
+                           "harness_sha": harness_sha,
+                           "requested_ref": requested_ref or None,
+                           "requested_sha_resolved": requested_sha,
+                           "deployment_sha": deployment.get("sha"),
+                           "target": target_identity(),
+                           "counts": {"PASS": 0, "WARN": 0, "FAIL": 0, "total": 0},
+                           "balanced": True,
+                           "cases": []}, handle, ensure_ascii=False, indent=2)
+        return 2
     token = login()
     cases = [c for c in CASES if not args.only or args.only in c["id"]]
     print(f"brain {args.brain} · link {args.link} · {len(cases)} cases\n")
@@ -280,27 +653,90 @@ def main() -> int:
         began = time.time()
         status, payload = ask(token, args.brain, args.link, case["q"])
         if not isinstance(payload, dict):
+            auto = [f"http: {status}"]
             rows.append({"case": case, "http": status, "error": str(payload)[:300],
-                         "o": None, "auto": [f"http: {status}"]})
+                         "o": None, "auto": auto,
+                         "verdict": verdict(case, None, auto)[0],
+                         "why": verdict(case, None, auto)[1]})
             print(f"{case['id']:<22} HTTP {status}  {str(payload)[:70]}")
             continue
 
         obs = observe(payload.get("envelope") or {})
         obs["seconds"] = round(time.time() - began, 1)
         bad = auto_score(case, obs)
-        rows.append({"case": case, "http": status, "o": obs, "auto": bad})
+        sem = semantic_score(case, obs)
+        got, why = verdict(case, obs, bad, sem)
+        rows.append({"case": case, "http": status, "o": obs, "auto": bad,
+                     "semantic": sem, "verdict": got, "why": why})
 
-        print(f"{case['id']:<22} {'ok ' if not bad else 'BAD'} "
+        print(f"{case['id']:<22} {got:<4} "
               f"{','.join(obs['calls'])[:44]:<44} {obs['status']}"
-              f"{'  <- ' + bad[0] if bad else ''}")
+              f"{'  <- ' + why if got != 'PASS' else ''}")
 
     _report(rows)
     if args.out:
+        # A BARE LIST OF CASES CANNOT BE COMPARED TO ANOTHER RUN. Two runs
+        # differ by commit, by model and by the accounting itself, and a
+        # nightly signal is worth nothing if a verdict cannot be attributed.
+        # The header carries what identifies the run; `cases` keeps the shape
+        # that was already here.
+        counts = tally(rows)
+        header = {
+            "schema": "agent-flow-eval/2",
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            # THREE DIFFERENT COMMITS, AND THEY ARE NOT INTERCHANGEABLE.
+            #   harness_sha    what this script was checked out at
+            #   requested_sha  what the caller wanted evidence about
+            #   deployment_sha what actually answered the questions
+            # `commit_sha` used to be the first and was read as the third.
+            # FOUR COMMITS, AND THEY ARE NOT INTERCHANGEABLE.
+            #   harness_sha            the actual checked-out HEAD running this
+            #   requested_ref          the literal input: a branch, tag or SHA
+            #   requested_sha_resolved what that ref resolves to
+            #   deployment_sha         what actually answered the questions
+            "harness_sha": harness_sha,
+            "requested_ref": requested_ref or None,
+            "requested_sha_resolved": requested_sha,
+            "deployment_sha": deployment.get("sha"),
+            "deployment_code_version": deployment.get("code_version"),
+            "target": target_identity(),
+            "provenance": prov,
+            "commit_sha": prov.get("attributable_to"),            "brain": args.brain,
+            "link": args.link,
+            # Reported by the server, NAMES ONLY, and null when it did not
+            # say - an invented model name makes a run traceable to nothing,
+            # and this artifact must never be where a credential first lands.
+            "provider": _first(rows, "provider"),
+            "model": _first(rows, "model"),
+            "counts": {k: counts[k] for k in ("PASS", "WARN", "FAIL", "total")},
+            "balanced": counts["balanced"],
+        }
         with open(args.out, "w", encoding="utf-8") as handle:
-            json.dump([{**r, "case": r["case"]["id"]} for r in rows], handle,
-                      ensure_ascii=False, indent=2)
-        print(f"\nwritten to {args.out}")
+            json.dump({**header,
+                       "cases": [{**r, "case": r["case"]["id"]} for r in rows]},
+                      handle, ensure_ascii=False, indent=2)
+        print(f"written to {args.out}")
     return 0
+
+
+def _first(rows: list[dict], key: str):
+    """The first non-null value any case reported, or None."""
+    for row in rows:
+        value = (row.get("o") or {}).get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _git_sha():
+    """The commit under evaluation, so a verdict can be attributed."""
+    try:
+        import subprocess
+        out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                             text=True, timeout=10)
+        return out.stdout.strip() or None
+    except Exception:  # noqa: BLE001 - metadata must never fail a run
+        return None
 
 
 def _report(rows: list[dict]) -> None:
@@ -309,7 +745,17 @@ def _report(rows: list[dict]) -> None:
     prompt = sum((r["o"] or {}).get("prompt_tokens", 0) for r in rows)
     completion = sum((r["o"] or {}).get("completion_tokens", 0) for r in rows)
 
-    print(f"AUTO INVARIANTS: {len(rows) - len(broken)}/{len(rows)} clean")
+    counts = tally(rows)
+    print(f"VERDICT   PASS {counts['PASS']}  ·  WARN {counts['WARN']}  ·  "
+          f"FAIL {counts['FAIL']}   of {counts['total']} cases")
+    # THE ARITHMETIC, STATED. One verdict per scenario is the whole point; a
+    # total that does not add up means a case was counted twice or not at all,
+    # and a release decision read off that is worthless.
+    if not counts["balanced"]:
+        print("  !! the verdicts do not sum to the case count — do not use this "
+              "run as a release verdict")
+    print(f"AUTO INVARIANTS: {len(rows) - len(broken)}/{len(rows)} clean "
+          "(the EVIDENCE for the verdicts above, not a second scoreboard)")
     print(f"TOKENS: {prompt:,} prompt + {completion:,} completion")
 
     if broken:
@@ -332,7 +778,12 @@ def _report(rows: list[dict]) -> None:
         if obs is None:
             print(f"-- {row['case']['id']}: HTTP {row['http']} {row.get('error', '')}\n")
             continue
-        print(f"-- {row['case']['id']}  ·  {row['case']['q']}")
+        print(f"-- {row['case']['id']}  [{row['verdict']}]  ·  {row['case']['q']}")
+        print(f"   why:       {row['why']}")
+        checks = SEMANTIC_ASSERTIONS.get(row["case"]["id"]) or ()
+        print(f"   semantic:  {len(checks)} assertion(s)"
+              + (f" -> {row.get('semantic')}" if row.get("semantic")
+                 else " -> clean" if checks else " -> NONE (trace-scored only)"))
         print(f"   judge:     {row['case']['judge']}")
         print(f"   tools:     {obs['calls'] or '(none)'}"
               f"{'  refused=' + str(obs['refusals']) if obs['refusals'] else ''}")

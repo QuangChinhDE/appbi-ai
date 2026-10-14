@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 
 from app.models.agent_brain import AgentBrainVersion
 from app.models.agent_flow_chat_thread import AgentFlowChatThread
+from app.services.agent_flows.envelope import reader_notice_dict
 from app.services.agent_flows.contract import (
     _CHART_KEYED_TOOLS,
     Flow,
@@ -108,7 +109,6 @@ def published_chat_brains(db: Session, user: Any) -> list[tuple[AgentBrainVersio
     rows, and a flow on its ninth revision is nine rows there; handing that to a
     picker would list the same assistant nine times.
     """
-    from app.services.agent_flows import registry as reg
     from app.services.agent_flows.permissions import usable_brains
 
     rows = (
@@ -124,15 +124,39 @@ def published_chat_brains(db: Session, user: Any) -> list[tuple[AgentBrainVersio
     for row in rows:
         if row.brain_key in seen:
             continue
-        flow = reg.parse_flow(row)
-        # An unparseable or report-bound flow is dropped rather than listed as
-        # broken: the picker is a menu of things that work, and a flow that cannot
-        # answer here is not this user's problem to diagnose.
-        if flow is None or not is_eligible(flow):
+        # THE SAME RULE `resolve_for_chat` applies when the assistant is opened:
+        # an assistant listed here must never open as "no longer active". An
+        # unparseable or report-bound flow is dropped rather than listed as
+        # broken: the picker is a menu of things that work.
+        flow, problem = chat_row_availability(row)
+        if problem or flow is None:
             continue
         seen.add(row.brain_key)
         out.append((row, flow))
     return out
+
+
+def chat_row_availability(row: AgentBrainVersion) -> tuple[Flow | None, str]:
+    """Can this PUBLISHED version run in Chat? ``(flow, "")`` when it can, else the
+    reason code (a key of ``BLOCK_MESSAGES``).
+
+    The one availability predicate for the Chat module: the catalogue
+    (`published_chat_brains`) and opening / asking (`resolve_for_chat`) both use
+    it, so the list can never offer an assistant the conversation then refuses.
+    Who may use the flow is decided before this, by `usable_brains`.
+    """
+    from app.services.agent_flows import registry as reg
+
+    if str(getattr(row, "flow_type", "") or "") != "chat":
+        # Not "disabled" — it was never this kind of flow. A bot flow arriving at
+        # the chat door means a stale thread, or a type changed under it.
+        return None, "direct_chat_disabled"
+    flow = reg.parse_flow(row)
+    if flow is None:
+        return None, "not_published"
+    if not is_eligible(flow):
+        return flow, "direct_chat_ineligible"
+    return flow, ""
 
 
 def resolve_for_chat(
@@ -144,7 +168,6 @@ def resolve_for_chat(
     revoked, a flow unpublished, and an author can publish a revision that reads a
     report. Each of those must stop the next question rather than the next thread.
     """
-    from app.services.agent_flows import registry as reg
     from app.services.agent_flows.permissions import usable_brains
 
     row = (
@@ -157,17 +180,8 @@ def resolve_for_chat(
         # One code for "never yours", "no longer yours" and "no published version".
         # Telling them apart would tell a caller which flows exist.
         return None, None, "not_published"
-    if str(getattr(row, "flow_type", "") or "") != "chat":
-        # Not "disabled" — it was never this kind of flow. A bot flow arriving at
-        # the chat door means a stale thread, or a type changed under it.
-        return row, None, "direct_chat_disabled"
-
-    flow = reg.parse_flow(row)
-    if flow is None:
-        return row, None, "not_published"
-    if not is_eligible(flow):
-        return row, flow, "direct_chat_ineligible"
-    return row, flow, ""
+    flow, problem = chat_row_availability(row)
+    return row, flow, problem
 
 
 BLOCK_MESSAGES = {
@@ -288,6 +302,9 @@ def create_thread(db: Session, user: Any, brain_key: str) -> AgentFlowChatThread
 ThreadAccess = str
 
 
+from app.core.permissions import is_module_admin as _is_module_admin  # noqa: E402
+
+
 def _module_level(user: Any) -> str:
     """This person's `chat` level, read the same way every gate reads it."""
     from app.core.dependencies import _normalize_permissions, _sanitize_permission_level
@@ -312,7 +329,7 @@ def thread_access(db: Session, user: Any, thread: AgentFlowChatThread) -> Thread
     """
     if str(getattr(thread, "user_id", "")) == str(getattr(user, "id", "")):
         return "owner"
-    if _module_level(user) == "full":
+    if _is_module_admin(user, "chat"):
         return "full"
 
     from app.core.resource_shares import get_highest_share_for_resource
@@ -361,7 +378,7 @@ def list_threads(
     q = db.query(AgentFlowChatThread).filter(
         AgentFlowChatThread.deleted_at.is_(None)
     )
-    if _module_level(user) != "full":
+    if not _is_module_admin(user, "chat"):
         from app.core.resource_shares import get_shared_resource_ids_query
         from app.models.resource_share import ResourceType
 
@@ -433,7 +450,13 @@ def transcript(db: Session, thread: AgentFlowChatThread, limit: int = 50) -> lis
                 "role": "assistant",
                 "content": answer,
                 "status": run.status,
-                "notices": (content.notices if content else None) or [],
+                # Stored turns are replayed to a READER, including turns recorded
+                # before the audience boundary existed, so the filter runs here on
+                # plain dicts rather than trusting what was written.
+                "notices": [
+                    reader_notice_dict(n) for n in ((content.notices if content else None) or [])
+                    if (n or {}).get("audience", "reader") != "author"
+                ],
                 "citations": (content.citations if content else None) or [],
                 "run_id": run.id,
                 "rating": run.rating,

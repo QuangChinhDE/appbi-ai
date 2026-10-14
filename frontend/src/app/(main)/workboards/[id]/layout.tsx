@@ -107,7 +107,7 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
   const isSettings = pathname.startsWith(`${baseHref}/settings`);
   const isBuild = !isAccess && !isAutomations && !isSettings && !isPreview;
 
-  const canEdit = getResourcePermissions(workboard.user_permission ?? undefined).canEdit;
+  const canEdit = getResourcePermissions(workboard.user_permission ?? undefined, workboard.capabilities).canEdit;
   const liveish = workboard.publish_status !== 'draft';
 
   const doUnpublish = async () => {

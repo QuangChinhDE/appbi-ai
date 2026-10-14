@@ -1,0 +1,829 @@
+{
+ "direct": {
+  "revenue_by_team": {
+   "rows": [
+    [
+     "North",
+     "1200"
+    ],
+    [
+     "South",
+     "1200"
+    ]
+   ]
+  },
+  "revenue_by_team_north": {
+   "rows": [
+    [
+     "North",
+     "1200"
+    ]
+   ]
+  }
+ },
+ "engine": {
+  "alias_role_filter": {
+   "rows": [
+    [
+     700
+    ]
+   ]
+  },
+  "alias_role_group": {
+   "rows": [
+    [
+     2023,
+     100
+    ],
+    [
+     2024,
+     200
+    ],
+    [
+     2025,
+     700
+    ],
+    [
+     null,
+     50
+    ]
+   ]
+  },
+  "bidir_dim_base_sums_fact": {
+   "rows": [
+    [
+     1,
+     300
+    ],
+    [
+     2,
+     700
+    ]
+   ]
+  },
+  "bidir_fact_base": {
+   "rows": [
+    [
+     1,
+     300
+    ],
+    [
+     2,
+     700
+    ],
+    [
+     null,
+     50
+    ]
+   ]
+  },
+  "bridge_refused": {
+   "refused": "ValueError"
+  },
+  "chasm_refused": {
+   "refused": "ValueError"
+  },
+  "chasm_shared_dim_stitch": {
+   "rows": [
+    [
+     1,
+     300,
+     2
+    ],
+    [
+     2,
+     700,
+     1
+    ],
+    [
+     null,
+     50,
+     null
+    ]
+   ]
+  },
+  "composite_key": {
+   "rows": [
+    [
+     "N-one",
+     10
+    ],
+    [
+     "S-one",
+     25
+    ]
+   ]
+  },
+  "diamond_inactive_route": {
+   "rows": [
+    [
+     "North",
+     300
+    ],
+    [
+     "South",
+     700
+    ],
+    [
+     null,
+     50
+    ]
+   ]
+  },
+  "diamond_inactive_route_filter": {
+   "rows": [
+    [
+     700
+    ]
+   ]
+  },
+  "diamond_refused": {
+   "refused": "AmbiguousJoinPathError"
+  },
+  "galaxy_grain_month": {
+   "rows": [
+    [
+     "2023-01-01",
+     100,
+     null
+    ],
+    [
+     "2024-03-01",
+     200,
+     50
+    ],
+    [
+     "2024-06-01",
+     300,
+     130
+    ],
+    [
+     "2024-07-01",
+     50,
+     null
+    ],
+    [
+     "2024-12-01",
+     400,
+     null
+    ]
+   ]
+  },
+  "galaxy_shared_dim": {
+   "rows": [
+    [
+     "A",
+     300,
+     110
+    ],
+    [
+     "B",
+     750,
+     70
+    ]
+   ]
+  },
+  "galaxy_top_n": {
+   "rows": [
+    [
+     "B",
+     750,
+     70
+    ]
+   ]
+  },
+  "reverse_filter_from_dim": {
+   "rows": [
+    [
+     "A"
+    ],
+    [
+     "B"
+    ]
+   ]
+  },
+  "roles_delivery_year": {
+   "rows": [
+    [
+     2023,
+     100
+    ],
+    [
+     2025,
+     900
+    ],
+    [
+     null,
+     50
+    ]
+   ]
+  },
+  "roles_main_fanned_date": {
+   "rows": [
+    [
+     950
+    ]
+   ]
+  },
+  "roles_one_role_filtered": {
+   "rows": [
+    [
+     700
+    ]
+   ]
+  },
+  "roles_order_year": {
+   "rows": [
+    [
+     2023,
+     100
+    ],
+    [
+     2024,
+     950
+    ]
+   ]
+  },
+  "roles_ship_year": {
+   "rows": [
+    [
+     2023,
+     100
+    ],
+    [
+     2024,
+     200
+    ],
+    [
+     2025,
+     700
+    ],
+    [
+     null,
+     50
+    ]
+   ]
+  },
+  "sibling_from_dim": {
+   "rows": [
+    [
+     2023,
+     100
+    ],
+    [
+     2024,
+     950
+    ]
+   ]
+  },
+  "sibling_from_fact": {
+   "rows": [
+    [
+     2023,
+     100
+    ],
+    [
+     2024,
+     950
+    ]
+   ]
+  },
+  "star_by_dim": {
+   "rows": [
+    [
+     "A",
+     300
+    ],
+    [
+     "B",
+     750
+    ]
+   ]
+  },
+  "star_filter_eq": {
+   "rows": [
+    [
+     "A",
+     300
+    ]
+   ]
+  },
+  "star_filter_is_null": {
+   "rows": [
+    [
+     null
+    ]
+   ]
+  },
+  "star_filter_ne_null_contract": {
+   "rows": [
+    [
+     700
+    ]
+   ]
+  },
+  "star_filter_not_in": {
+   "rows": [
+    [
+     750
+    ]
+   ]
+  },
+  "star_grain_month": {
+   "rows": [
+    [
+     "2023-01-01",
+     100
+    ],
+    [
+     "2024-03-01",
+     200
+    ],
+    [
+     "2024-06-01",
+     300
+    ],
+    [
+     "2024-07-01",
+     50
+    ],
+    [
+     "2024-12-01",
+     400
+    ]
+   ]
+  },
+  "star_grain_week": {
+   "rows": [
+    [
+     "2023-01-09",
+     100
+    ],
+    [
+     "2024-03-11",
+     200
+    ],
+    [
+     "2024-05-27",
+     300
+    ],
+    [
+     "2024-07-01",
+     50
+    ],
+    [
+     "2024-12-30",
+     400
+    ]
+   ]
+  },
+  "star_measure_text_filters": {
+   "rows": [
+    [
+     700,
+     300,
+     null
+    ]
+   ]
+  },
+  "star_sort_desc": {
+   "rows": [
+    [
+     "B",
+     750
+    ],
+    [
+     "A",
+     300
+    ]
+   ]
+  },
+  "star_top_1": {
+   "rows": [
+    [
+     "B",
+     750
+    ]
+   ]
+  },
+  "star_total_base_products": {
+   "rows": [
+    [
+     1050
+    ]
+   ]
+  },
+  "star_total_base_sales": {
+   "rows": [
+    [
+     1050
+    ]
+   ]
+  },
+  "star_two_hop_null_member": {
+   "rows": [
+    [
+     "North",
+     300
+    ],
+    [
+     "South",
+     700
+    ],
+    [
+     null,
+     50
+    ]
+   ]
+  },
+  "tz_calendar_month": {
+   "rows": [
+    [
+     6,
+     7
+    ],
+    [
+     7,
+     5
+    ]
+   ]
+  },
+  "tz_grain_month": {
+   "rows": [
+    [
+     "2024-06-01",
+     7
+    ],
+    [
+     "2024-07-01",
+     5
+    ]
+   ]
+  }
+ },
+ "routes": {
+  "public:[snow] Deal amount total": {
+   "rows": [
+    [
+     8000
+    ]
+   ]
+  },
+  "public:[snow] M revenue (declared)": {
+   "rows": [
+    [
+     2400
+    ]
+   ]
+  },
+  "public:[snow] M revenue per owner (cross-table measure)": {
+   "rows": [
+    [
+     "An",
+     1200
+    ],
+    [
+     "Binh",
+     null
+    ],
+    [
+     "Cuong",
+     900
+    ],
+    [
+     "Dung",
+     300
+    ]
+   ]
+  },
+  "public:[snow] activity duration total": {
+   "rows": [
+    [
+     245
+    ]
+   ]
+  },
+  "public:[snow] grain rev by deal-title (chasm)": {
+   "status": 400
+  },
+  "public:[snow] revenue by owner": {
+   "rows": [
+    [
+     "An",
+     1200
+    ],
+    [
+     "Cuong",
+     900
+    ],
+    [
+     "Dung",
+     300
+    ]
+   ]
+  },
+  "public:[snow] revenue total": {
+   "rows": [
+    [
+     2400
+    ]
+   ]
+  },
+  "public:[snow] scatter rev-vs-kpi by owner": {
+   "rows": [
+    [
+     100,
+     "An",
+     1200
+    ],
+    [
+     150,
+     "Cuong",
+     900
+    ],
+    [
+     60,
+     "Dung",
+     300
+    ],
+    [
+     80,
+     "Binh",
+     null
+    ]
+   ]
+  },
+  "saved:[snow] Deal amount total": {
+   "rows": [
+    [
+     8000
+    ]
+   ]
+  },
+  "saved:[snow] M revenue (declared)": {
+   "rows": [
+    [
+     2400
+    ]
+   ]
+  },
+  "saved:[snow] M revenue per owner (cross-table measure)": {
+   "rows": [
+    [
+     "An",
+     1200
+    ],
+    [
+     "Binh",
+     null
+    ],
+    [
+     "Cuong",
+     900
+    ],
+    [
+     "Dung",
+     300
+    ]
+   ]
+  },
+  "saved:[snow] activity duration total": {
+   "rows": [
+    [
+     245
+    ]
+   ]
+  },
+  "saved:[snow] grain rev by deal-title (chasm)": {
+   "status": 400
+  },
+  "saved:[snow] revenue by owner": {
+   "rows": [
+    [
+     "An",
+     1200
+    ],
+    [
+     "Cuong",
+     900
+    ],
+    [
+     "Dung",
+     300
+    ]
+   ]
+  },
+  "saved:[snow] revenue total": {
+   "rows": [
+    [
+     2400
+    ]
+   ]
+  },
+  "saved:[snow] scatter rev-vs-kpi by owner": {
+   "rows": [
+    [
+     100,
+     "An",
+     1200
+    ],
+    [
+     150,
+     "Cuong",
+     900
+    ],
+    [
+     60,
+     "Dung",
+     300
+    ],
+    [
+     80,
+     "Binh",
+     null
+    ]
+   ]
+  },
+  "tile:[snow] Deal amount total": {
+   "rows": [
+    [
+     8000
+    ]
+   ]
+  },
+  "tile:[snow] M revenue (declared)": {
+   "rows": [
+    [
+     2400
+    ]
+   ]
+  },
+  "tile:[snow] M revenue per owner (cross-table measure)": {
+   "rows": [
+    [
+     "An",
+     1200
+    ],
+    [
+     "Binh",
+     null
+    ],
+    [
+     "Cuong",
+     900
+    ],
+    [
+     "Dung",
+     300
+    ]
+   ]
+  },
+  "tile:[snow] activity duration total": {
+   "rows": [
+    [
+     245
+    ]
+   ]
+  },
+  "tile:[snow] grain rev by deal-title (chasm)": {
+   "status": 400
+  },
+  "tile:[snow] revenue by owner": {
+   "rows": [
+    [
+     "An",
+     1200
+    ],
+    [
+     "Cuong",
+     900
+    ],
+    [
+     "Dung",
+     300
+    ]
+   ]
+  },
+  "tile:[snow] revenue total": {
+   "rows": [
+    [
+     2400
+    ]
+   ]
+  },
+  "tile:[snow] scatter rev-vs-kpi by owner": {
+   "rows": [
+    [
+     100,
+     "An",
+     1200
+    ],
+    [
+     150,
+     "Cuong",
+     900
+    ],
+    [
+     60,
+     "Dung",
+     300
+    ],
+    [
+     80,
+     "Binh",
+     null
+    ]
+   ]
+  },
+  "tile_filtered:[snow] Deal amount total": {
+   "rows": [
+    [
+     4500
+    ]
+   ]
+  },
+  "tile_filtered:[snow] M revenue (declared)": {
+   "rows": [
+    [
+     1200
+    ]
+   ]
+  },
+  "tile_filtered:[snow] M revenue per owner (cross-table measure)": {
+   "rows": [
+    [
+     "An",
+     1200
+    ],
+    [
+     "Binh",
+     null
+    ]
+   ]
+  },
+  "tile_filtered:[snow] activity duration total": {
+   "rows": [
+    [
+     135
+    ]
+   ]
+  },
+  "tile_filtered:[snow] grain rev by deal-title (chasm)": {
+   "status": 400
+  },
+  "tile_filtered:[snow] revenue by owner": {
+   "rows": [
+    [
+     "An",
+     1200
+    ]
+   ]
+  },
+  "tile_filtered:[snow] revenue total": {
+   "rows": [
+    [
+     1200
+    ]
+   ]
+  },
+  "tile_filtered:[snow] scatter rev-vs-kpi by owner": {
+   "rows": [
+    [
+     100,
+     "An",
+     1200
+    ],
+    [
+     80,
+     "Binh",
+     null
+    ]
+   ]
+  }
+ },
+ "snapshot": {
+  "snapshot_star_by_dim": {
+   "rows": [
+    [
+     "N",
+     150
+    ],
+    [
+     "S",
+     30
+    ],
+    [
+     null,
+     8
+    ]
+   ]
+  },
+  "snapshot_star_filter": {
+   "rows": [
+    [
+     150
+    ]
+   ]
+  }
+ }
+}

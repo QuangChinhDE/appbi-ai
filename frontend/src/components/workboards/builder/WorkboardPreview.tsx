@@ -93,7 +93,7 @@ export default function WorkboardPreview({ workboard }: Props) {
   }, [activeWorkspace, previewUsername, t, workboard.id]);
 
   const previewUrl = useMemo(() => {
-    if (!activeWorkspace) return null;
+    if (!activeWorkspace?.token) return null;
     return `/ws/${activeWorkspace.token}/workboards/${workboard.id}`;
   }, [activeWorkspace, workboard.id]);
 

@@ -475,7 +475,7 @@ export default function ExplorePage() {
                       const activeRoleConfig = getActiveChartRoleConfig(config);
                       const typeLabel = getChartTypeLabel(chart.chart_type, t);
                       const updatedAt = new Date(chart.updated_at).toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
-                      const itemPerms = getResourcePermissions(chart.user_permission);
+                      const itemPerms = getResourcePermissions(chart.user_permission, chart.capabilities);
                       const sourceLabel = buildChartSourceLabel(chart);
                       const scopeValue = chart.is_owned_by_current_user ? 'mine' : 'shared';
                       const ChartIcon = CHART_TYPE_ICONS[chart.chart_type] ?? BarChart3;
@@ -505,7 +505,14 @@ export default function ExplorePage() {
                                   <ChartIcon className="h-3.5 w-3.5" />
                                 </div>
                                 <div className="min-w-0 flex-1">
-                                  <div className="app-list-text-main text-caption font-emphasis text-text-primary transition-colors hover:text-brand">{chart.name}</div>
+                                  <div className="app-list-text-main text-caption font-emphasis text-text-primary transition-colors hover:text-brand">
+                                    {chart.name}
+                                    {(chart.config as any)?.reportCopy && (
+                                      <span className="ml-1.5 align-middle" title={t('explore.list.reportCopyHint')} data-testid="report-copy-badge">
+                                        <ExploreStaticTag tone="neutral">{t('explore.list.reportCopy')}</ExploreStaticTag>
+                                      </span>
+                                    )}
+                                  </div>
                                   {sourceLabel && (
                                     <div className="app-list-text-sub mt-0.5 text-tiny font-emphasis text-text-secondary">{sourceLabel}</div>
                                   )}
@@ -594,7 +601,7 @@ export default function ExplorePage() {
                     const activeRoleConfig = getActiveChartRoleConfig(config);
                     const typeLabel = getChartTypeLabel(chart.chart_type, t);
                     const createdAt = new Date(chart.created_at).toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
-                    const itemPerms = getResourcePermissions(chart.user_permission);
+                    const itemPerms = getResourcePermissions(chart.user_permission, chart.capabilities);
                     const sourceLabel = buildChartSourceLabel(chart);
                     const GridChartIcon = CHART_TYPE_ICONS[chart.chart_type] ?? BarChart3;
 
@@ -649,6 +656,11 @@ export default function ExplorePage() {
                           <div className="flex flex-wrap items-center gap-1.5">
                             <h3 className="truncate text-caption font-strong text-text-primary">{chart.name}</h3>
                             {chart.is_shared && <ExploreStaticTag tone="brand">{t('explore.list.shared')}</ExploreStaticTag>}
+                            {(chart.config as any)?.reportCopy && (
+                              <span title={t('explore.list.reportCopyHint')} data-testid="report-copy-badge">
+                                <ExploreStaticTag tone="neutral">{t('explore.list.reportCopy')}</ExploreStaticTag>
+                              </span>
+                            )}
                           </div>
                           <div className="mt-1">
                             <OwnerBadge email={chart.owner_email} />

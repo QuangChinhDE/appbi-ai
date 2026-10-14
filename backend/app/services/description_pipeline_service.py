@@ -193,7 +193,10 @@ class DescriptionPipelineService:
                 table.generation_error = None
                 table.generation_finished_at = _utcnow()
                 table.stale_reason = _table_stale_reason(trigger, schema_changed)
-                table.schema_change_pending = schema_changed
+                # Pending clears only when the description catches up — never
+                # because a stats run failed (`changed: False`, "live_query_failed")
+                # and so could not see the change an edit had just flagged.
+                table.schema_change_pending = bool(table.schema_change_pending) or schema_changed
                 db.commit()
                 EmbeddingService.embed_table(db, table_id)
                 return

@@ -8,6 +8,7 @@ from app.schemas.schemas import (
     DataSourceUpdate,
     DataSourceResponse,
     DataSourceTestRequest,
+    DataSourceDraftTestRequest,
     DataSourceTestResponse,
     
     # Chart
@@ -113,6 +114,7 @@ __all__ = [
     "DataSourceUpdate",
     "DataSourceResponse",
     "DataSourceTestRequest",
+    "DataSourceDraftTestRequest",
     "DataSourceTestResponse",
     
     # Chart

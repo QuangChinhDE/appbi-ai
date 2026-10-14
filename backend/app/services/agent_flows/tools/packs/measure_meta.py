@@ -275,7 +275,15 @@ def describe_measure(ctx: Any, chart_id: int, measure_name: str) -> dict[str, An
             or (kind in NON_ADDITIVE_KINDS)
             or divides
         )
+        # HOW IT AGGREGATES OVER TIME, when the semantic definition says.
+        # `time_aggregation: "last"` (a balance such as ARR) or any value other
+        # than sum/count means the measure must never be added across periods.
+        # Optional: the semantic layer has no editor for it yet, so an absent key
+        # leaves the measure's declared `type` to decide.
+        time_agg = str(m.get("time_aggregation") or "").strip().lower() or None
         return _remember(key, {
+            "semantic_measure": True,
+            "time_aggregation": time_agg,
             "measure": m.get("label") or m.get("name") or measure_name,
             "agg": agg,
             "format_kind": kind,

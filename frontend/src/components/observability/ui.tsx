@@ -7,7 +7,8 @@
 import { cn } from '@/lib/utils';
 import type { Pillar, Severity } from '@/lib/observability';
 import { useI18n } from '@/providers/LanguageProvider';
-import { Clock, Database, BarChart3, LayoutDashboard, GitBranch } from 'lucide-react';
+import { Clock, Database, BarChart3, LayoutDashboard, GitBranch, AlertOctagon, Lock, SearchX, RotateCcw } from 'lucide-react';
+import type { LoadError } from '@/lib/observability';
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string;
 
@@ -59,13 +60,13 @@ export function StatusPill({ status }: { status?: string | null }) {
 const PILLAR_TONE: Record<string, string> = {
   freshness: 'bg-info/10 text-info', volume: 'bg-brand/10 text-brand',
   schema: 'bg-warning/10 text-warning', distribution: 'bg-purple-500/10 text-purple-400',
-  quality: 'bg-success/10 text-success',
+  quality: 'bg-success/10 text-success', semantic: 'bg-danger/10 text-danger',
 };
 
 export function PillarBadge({ pillar }: { pillar: Pillar | string }) {
   const { t } = useI18n();
   const p = (pillar || '').toLowerCase();
-  const labelKey = ['freshness', 'volume', 'schema', 'distribution', 'quality'].includes(p) ? `observability.pillar.${p}` : null;
+  const labelKey = ['freshness', 'volume', 'schema', 'distribution', 'quality', 'semantic'].includes(p) ? `observability.pillar.${p}` : null;
   return (
     <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-tiny font-emphasis', PILLAR_TONE[p] ?? 'bg-surface-2 text-text-tertiary')}>
       {labelKey ? t(labelKey) : pillar}
@@ -159,3 +160,30 @@ export function fmtDuration(hours?: number | null, t?: TFunction, locale = 'vi-V
 }
 
 export const ClockIcon = Clock;
+
+/**
+ * A load that FAILED. Monitoring must never turn "could not load" into "nothing
+ * wrong": this is the only thing rendered in place of data that did not arrive.
+ */
+export function LoadErrorState({ error, onRetry, compact = false, testId }: {
+  error: LoadError; onRetry?: () => void; compact?: boolean; testId?: string;
+}) {
+  const { t } = useI18n();
+  const Icon = error === 'forbidden' ? Lock : error === 'not_found' ? SearchX : AlertOctagon;
+  return (
+    <div role="alert" data-testid={testId ?? 'obs-load-error'} data-error={error}
+      className={cn('rounded-xl border border-dashed text-center',
+        error === 'failed' ? 'border-danger/40 bg-danger/5' : 'border-[rgb(var(--border-strong))] bg-surface-1',
+        compact ? 'px-4 py-6' : 'px-6 py-12')}>
+      <Icon className={cn('mx-auto mb-3 h-8 w-8', error === 'failed' ? 'text-danger' : 'text-text-tertiary')} aria-hidden />
+      <p className="text-small font-emphasis text-text-primary">{t(`observability.loadError.${error}.title`)}</p>
+      <p className="mt-1 text-caption text-text-tertiary">{t(`observability.loadError.${error}.body`)}</p>
+      {onRetry && error === 'failed' && (
+        <button onClick={onRetry}
+          className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-caption text-text-secondary hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand">
+          <RotateCcw className="h-3.5 w-3.5" aria-hidden />{t('observability.action.retry')}
+        </button>
+      )}
+    </div>
+  );
+}

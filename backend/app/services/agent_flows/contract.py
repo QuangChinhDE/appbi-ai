@@ -53,7 +53,14 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.services.agent_flows.models_catalogue import INHERIT, MODELS, known_model
+from app.services.agent_flows.models_catalogue import (
+    DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
+    MODELS,
+    default_model,
+    known_model,
+    legacy_default_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +89,33 @@ KnowledgeSourceKind = Literal["document", "semantic", "metric", "term"]
 #: door — which meant the author found out their assistant was unusable after
 #: building it, and meant nothing at all on the link side, where a chat-shaped flow
 #: could be assigned to a report with no check whatsoever.
-FlowType = Literal["bot", "chat"]
+FlowType = Literal["bot", "chat", "skill"]
+
+#: A grant naming a published Skill rather than a registry tool: `skill:<brain_key>`.
+SKILL_GRANT_PREFIX = "skill:"
+
+#: How a Skill is named TO A MODEL. Provider function names allow `[A-Za-z0-9_-]`
+#: only, so `skill:<key>` cannot be sent as-is.
+SKILL_FUNCTION_PREFIX = "skill__"
+
+#: How deep Skills may call Skills — a RUNTIME call stack of child runs, which is
+#: a different thing from how deeply one flow's nodes nest (`MAX_DEPTH`).
+MAX_SKILL_DEPTH = 3
+
+
+def skill_key_of_grant(tool: str) -> str | None:
+    return tool[len(SKILL_GRANT_PREFIX):] if tool.startswith(SKILL_GRANT_PREFIX) else None
+
+
+def skill_function_name(skill_key: str) -> str:
+    return f"{SKILL_FUNCTION_PREFIX}{skill_key}"
+
+
+def skill_key_of_function(name: str) -> str | None:
+    return name[len(SKILL_FUNCTION_PREFIX):] if name.startswith(SKILL_FUNCTION_PREFIX) else None
+
+#: The reasoning strategies an Agent step may name (`runtime/strategies/STRATEGIES`).
+AgentStrategyName = Literal["tool_calling"]
 
 #: The default for anything that predates the type or arrives without one. Every
 #: flow written before this existed was seeded `report_read → agent`, so it was
@@ -133,6 +166,11 @@ class ToolGrant(_Model):
 
     tool: str
     note: str = ""
+    #: For a Skill grant (`skill:<key>`) only: the EXACT published Skill version
+    #: this flow runs. Written at publish, so a published flow never silently
+    #: follows a newer Skill; empty on a draft, which resolves the latest
+    #: published version and says so in the trace.
+    version: int | None = None
 
     @field_validator("tool")
     @classmethod
@@ -291,22 +329,30 @@ class AgentNode(BaseNode):
     #: and the analysis guardrails, and a chain of replacement prompts would drop all
     #: of them without a trace.
     prompt: str
-    provider: str = INHERIT
-    model: str = ""
-    #: THIS NODE'S OWN CREDENTIAL. Three fields for one secret, because a secret the
-    #: server never gives back needs more than one field to be editable at all.
-    #:
-    #:   api_key        WRITE-ONLY plaintext from the builder; encrypted on save.
-    #:   api_key_enc    What is persisted: Fernet ciphertext (`_enc:` prefix).
-    #:   api_key_clear  Remove the stored key — because "left empty" has to mean
-    #:                  KEEP (the builder cannot resend a value it was never shown),
-    #:                  so erasing needs a separate word.
-    api_key: str = ""
-    api_key_enc: str = ""
-    api_key_clear: bool = False
+    #: The vendor and model this step runs on — chosen by the author, always.
+    #: There is no "inherit": a step that ran on whatever its link or the server
+    #: happened to hold ran on something nobody chose for it.
+    provider: str = DEFAULT_PROVIDER
+    model: str = DEFAULT_MODEL
+    #: THE STEP'S KEY, BY REFERENCE. An `AiProviderCredential` id — never a secret.
+    #: Resolved at run time by `credentials.StoredCredentials`; no fallback exists.
+    credential_id: int | None = None
+    #: Who assigned `credential_id` — the person whose right to use the key every
+    #: run re-checks. Set by the server on save (`credentials.apply_assignments`);
+    #: a value sent by a client is discarded.
+    credential_granted_by: str = ""
     tools: list[ToolGrant] = Field(default_factory=list)
     knowledge: list[KnowledgeAttachment] = Field(default_factory=list)
     max_tool_calls: int = Field(default=8, ge=1, le=MAX_TOOL_CALLS)
+    #: HOW this step reasons — see `runtime/strategies/`. Strategy decides, runtime
+    #: executes and governs; a new reasoning style is a new strategy, not a new
+    #: node type. One value exists, and it is what every Agent step has always
+    #: done, so the default changes nothing.
+    strategy: AgentStrategyName = "tool_calling"
+    #: How many capabilities this step is SHOWN in full per round when it was
+    #: granted more. Empty = the runtime policy (`AGENT_FLOW_VISIBLE_CAPABILITIES`).
+    #: Visibility only; the grant is still what decides what may run.
+    visible_capabilities: int | None = Field(default=None, ge=1, le=40)
     #: `chat` streams prose (the default, and what keeps authoring simple).
     #: `json` asks the model for typed answer blocks — richer, but not streamable,
     #: because a half-written JSON object cannot be rendered.
@@ -337,6 +383,38 @@ class AgentNode(BaseNode):
     #: a step whose whole output is one token.
     choice_hints: dict[str, str] = Field(default_factory=dict)
     context_policy: ContextPolicy = "question"
+    #: A Specialized Agent role (`roles.ROLES`), or "" for a custom step — what
+    #: every step written before roles existed is, unchanged. A role BOUNDS the
+    #: grants (`tool_names`); it never adds one. Not validated here: a body
+    #: re-parsed on every run must still load if a role is later retired, and then
+    #: it fails closed (no tools) instead of failing to parse.
+    role: str = ""
+    #: The earlier steps whose results this step is handed, by node key. Empty =
+    #: the step before it (`previous`), as always. Each named step is projected
+    #: through the same `compile_context` the answering step uses, its failure or
+    #: absence is said out loud, and what was reduced is recorded on the trace.
+    reads_from: list[str] = Field(default_factory=list)
+    #: Whether the ANSWERING step ends with 2-3 `[FOLLOWUP]` suggestion lines (the
+    #: chips a reader can click). On by default — every flow written before this
+    #: field existed asked for them. Off: the prompt says not to, and any line the
+    #: model writes anyway is removed, so the setting and the answer cannot disagree.
+    #: Ignored on any other step, which never gets the follow-up contract.
+    followups: bool = True
+
+    @field_validator("reads_from")
+    @classmethod
+    def _reads_from_unique(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for k in v or []:
+            k = str(k or "").strip()
+            if k and k not in out:
+                out.append(k)
+        return out
+
+    @field_validator("role")
+    @classmethod
+    def _role_clean(cls, v: str) -> str:
+        return (v or "").strip()
 
     @model_validator(mode="after")
     def _choice_has_options(self) -> "AgentNode":
@@ -374,58 +452,37 @@ class AgentNode(BaseNode):
 
     @model_validator(mode="after")
     def _model_is_real(self) -> "AgentNode":
-        """A model no provider serves is a 404 on the first real question, and the
-        viewer sees a dead chat rather than an error. Refused at save time."""
-        if self.provider == INHERIT:
-            if self.model:
-                raise ValueError("bước theo cấu hình của link thì không đặt model riêng")
-            return self
-        if self.provider not in MODELS:
-            raise ValueError(f"nhà cung cấp không hỗ trợ: {self.provider}")
-        if not known_model(self.provider, self.model):
-            allowed = ", ".join(m["model"] for m in MODELS[self.provider])
-            raise ValueError(
-                f"model '{self.model}' không có trong danh sách của {self.provider}. "
-                f"Chọn một trong: {allowed}"
-            )
+        _check_model_choice(self)
         return self
-
-    @model_validator(mode="after")
-    def _credential_is_usable(self) -> "AgentNode":
-        """A node-level key with no provider named cannot be dispatched safely: the
-        link's vendor is unknown when the author pastes the token, and sending an
-        Anthropic key to whichever vendor a link happens to use fails in front of a
-        viewer. Refused at save time instead."""
-        if (self.api_key or self.api_key_enc) and self.provider == INHERIT:
-            raise ValueError(
-                "bước có token riêng thì phải chọn nhà cung cấp cụ thể "
-                "(token của OpenAI không dùng được trên link chạy Gemini)"
-            )
-        return self
-
-    def resolved_api_key(self) -> str:
-        """The node's own key in the clear, or "" when it has none.
-
-        Decryption failure returns "" rather than raising: a rotated ENCRYPTION_KEY
-        must degrade to "this node falls back to the link's key", not to a traceback
-        inside a streaming answer.
-        """
-        if not self.api_key_enc:
-            return ""
-        try:
-            from app.core.crypto import decrypt_value
-
-            return decrypt_value(self.api_key_enc) or ""
-        except Exception:  # noqa: BLE001
-            logger.warning("[flow] node '%s' credential will not decrypt", self.key)
-            return ""
 
     def tool_names(self) -> list[str]:
+        """What this step may CALL: its grants, bounded by its role.
+
+        The single choke point every runtime consumer reads (the capability view,
+        the schemas, `tool_registry.execute(allowed=...)`), so a grant outside the
+        role cannot reach the model or run even if a body bypassed the save check.
+        """
+        from app.services.agent_flows import roles
+
         out: list[str] = []
         for g in self.tools:
             if g.tool not in out:
                 out.append(g.tool)
+        out = roles.bounded(self.role, out)
+        r = roles.get(self.role)
+        # A KNOWLEDGE ROLE WITH NOTHING ATTACHED reads nothing. An empty scope is
+        # open (knowledge_scope_open_when_empty), so without this the "Docs
+        # expert" would search every document its owner can see.
+        if r is not None and r.needs_knowledge and not self.knowledge:
+            return []
         return out
+
+    def effective_grants(self) -> list[ToolGrant]:
+        """The grant objects (with their notes and pinned versions) that survive
+        `tool_names()`. Read wherever the runtime walks grants itself — a Skill
+        grant resolved from `self.tools` directly would slip past the role."""
+        keep = set(self.tool_names())
+        return [g for g in self.tools if g.tool in keep]
 
 
 class ReportReadNode(BaseNode):
@@ -756,11 +813,12 @@ class CoordinateNode(BaseNode):
     type: Literal["coordinate"] = "coordinate"
     #: What the planner is told it is choosing FOR. Appended to the planning prompt.
     prompt: str = ""
-    provider: str = INHERIT
-    model: str = ""
-    api_key: str = ""
-    api_key_enc: str = ""
-    api_key_clear: bool = False
+    #: The planner's vendor, model and key — the same choice an Agent step makes,
+    #: because the planning call is a model call like any other.
+    provider: str = DEFAULT_PROVIDER
+    model: str = DEFAULT_MODEL
+    credential_id: int | None = None
+    credential_granted_by: str = ""
     #: `validate_default=True` IS THE FIX, and the bug it closes was reachable.
     #:
     #: A pydantic field validator does NOT run when the field falls back to its
@@ -780,6 +838,11 @@ class CoordinateNode(BaseNode):
     #: Empty means the coordinator simply produces nothing and the flow continues,
     #: which is the honest outcome and lets the answering step say so.
     fallback: list["Node"] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _planner_model_is_real(self) -> "CoordinateNode":
+        _check_model_choice(self)
+        return self
 
     @field_validator("specialists")
     @classmethod
@@ -859,6 +922,10 @@ class ToolInput(_Model):
         return self
 
 
+#: Node types whose output is routing data, never an answer for a reader.
+_ROUTER_TYPES = frozenset({"if", "switch", "coordinate", "loop"})
+
+
 class ToolNode(BaseNode):
     """Call ONE tool with arguments the author decided. No model involved.
 
@@ -898,10 +965,35 @@ class ToolNode(BaseNode):
         return v.strip()
 
 
+class SkillNode(BaseNode):
+    """Run a published Skill — a governed child flow — with inputs the author bound.
+
+    Deterministic, like a Tool step: no model decides WHETHER it runs. The Skill's
+    own flow decides how. Same invocation primitive as an Agent calling the Skill
+    as a capability (`services/agent_flows/skills.invoke_skill`), so there is one
+    path through version pinning, authority intersection, budget and trace.
+    """
+
+    type: Literal["skill"] = "skill"
+    skill_key: str
+    #: The exact published Skill version, pinned at publish. Empty on a draft.
+    version: int | None = None
+    inputs: dict[str, ToolInput] = Field(default_factory=dict)
+
+    @field_validator("skill_key")
+    @classmethod
+    def _named(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not _KEY_RE.match(v):
+            raise ValueError("bước Skill phải chọn một Skill")
+        return v
+
+
 Node = Annotated[
     Union[
         AgentNode,
         ToolNode,
+        SkillNode,
         ReportReadNode,
         KnowledgeNode,
         WebNode,
@@ -966,6 +1058,11 @@ _CHART_KEYED_TOOLS = frozenset({
     "explain_change", "detect_anomaly", "smart_drilldown", "describe_distribution",
     "project_to_period_end", "detect_seasonality", "analyze_trend",
     "forecast_measure",
+    # Added after the drift lock in `test_grant_has_a_way_in.py` named it: it
+    # requires `chart_id` like the rest and was missing, so a grant containing
+    # only it was warned about by nothing. This is the failure mode a
+    # hand-written list has, which is why the lock exists.
+    "benchmark_compare",
 })
 
 #: The tools that hand OUT a chart_id. Their counterpart above is the list of tools
@@ -1007,7 +1104,190 @@ class FlowRequirements(_Model):
         return v
 
 
+# ═══ Where a container keeps its children ════════════════════════════════════
+#
+# ONE DECLARATION, AND EVERY TRAVERSAL READS IT.
+#
+# A node that holds other nodes used to be described by hand in every walker that
+# needed to know — `all_nodes()` here, and five more in `lib/agentFlows.ts`, plus
+# the canvas, the edge generator and the inspector. Each of those was a separate
+# chance to forget one, and forgetting one is not a cosmetic bug:
+#
+#   `coordinate` was added without being taught to `all_nodes()`. A specialist's
+#   lane became invisible to every authoring check at once — `warnings()`,
+#   `coverage.granted_tools()`, `node_count`, `unreachable_nodes()`,
+#   `produced_vars()`. A live run found the cost: the "số liệu" specialist held
+#   three tools that all need a `chart_id` and nothing that produces one; the
+#   check for exactly that case existed and simply never looked inside the lane.
+#   Asked which category earned the most, the flow answered "13,591,643.70" —
+#   the report's grand total, no category named, no notice raised.
+#
+# `register()` in runtime/nodes.py refuses a structural type that declares no
+# slots, so the rule that used to be a comment is now checked at import.
+
+#: `kind` says how to get from the attribute to a list of nodes.
+#:   "nodes"  the attribute IS a list of nodes            (loop.body, *.fallback)
+#:   "groups" a list of objects that each carry a `body`  (if.paths, switch.cases,
+#:                                                         coordinate.specialists)
+ChildSlot = tuple[str, str]
+
+CHILD_SLOTS: dict[str, tuple[ChildSlot, ...]] = {
+    "if": (("paths", "groups"),),
+    "switch": (("cases", "groups"), ("fallback", "nodes")),
+    "coordinate": (("specialists", "groups"), ("fallback", "nodes")),
+    "loop": (("body", "nodes"),),
+}
+
+
+# ── The same topology, for RAW (unvalidated) bodies ──────────────────────────
+#
+# `CHILD_SLOTS` above is keyed on node TYPE and needs parsed models. The save and
+# API paths walk raw dicts BEFORE validation — redaction, carry-forward, key
+# scans — and each one used to hardcode its own list of lanes. Every one of them
+# walked body/fallback/paths/cases and none walked `specialists`, so an Agent
+# inside a Coordinate specialist had its stored ciphertext emitted by the API and
+# its credential wiped on every ordinary save.
+#
+# Shape-driven rather than type-driven ON PURPOSE: a raw body may be legacy or
+# malformed, and a redactor that skips what it does not recognise fails open. A
+# list of node-shaped dicts is a child list whatever the parent calls itself.
+
+def _is_raw_node(v: Any) -> bool:
+    return isinstance(v, dict) and "type" in v and "key" in v
+
+
+def _is_raw_lane(v: Any) -> bool:
+    """A branch/case/specialist: named, and holding a body."""
+    return isinstance(v, dict) and "key" in v and isinstance(v.get("body"), list)
+
+
+def _raw_slots(node: dict) -> list[tuple[str, int | None]]:
+    """(field, lane index or None) for every child node-list on this raw node."""
+    slots: list[tuple[str, int | None]] = []
+    for field, value in node.items():
+        if not isinstance(value, list) or not value:
+            continue
+        if any(_is_raw_node(v) for v in value):
+            slots.append((field, None))
+        elif all(_is_raw_lane(v) for v in value):
+            slots.extend((field, i) for i in range(len(value)))
+    return slots
+
+
+def raw_child_groups(node: dict) -> list[list]:
+    """Every child node-list of a raw node dict. Read-only."""
+    if not isinstance(node, dict):
+        return []
+    groups = []
+    for field, lane in _raw_slots(node):
+        if lane is None:
+            groups.append(node.get(field) or [])
+        else:
+            entry = node[field][lane]
+            groups.append((entry or {}).get("body") or [])
+    return groups
+
+
+def map_raw_children(node: dict, fn) -> dict:
+    """A copy of `node` with every child node-list replaced by `fn(list)`."""
+    if not isinstance(node, dict):
+        return node
+    out = dict(node)
+    for field, lane in _raw_slots(node):
+        if lane is None:
+            out[field] = fn(out.get(field) or [])
+        else:
+            lanes = list(out.get(field) or [])
+            entry = lanes[lane]
+            if isinstance(entry, dict):
+                lanes[lane] = {**entry, "body": fn(entry.get("body") or [])}
+            out[field] = lanes
+    return out
+
+
+def child_node_lists(node: Any) -> list[list[Any]]:
+    """Every list of child nodes this node holds, in declaration order.
+
+    Returns lists rather than a flat sequence so a caller that cares WHICH lane a
+    child sits in — the canvas, the edge generator — can keep that grouping, and a
+    caller that does not can simply chain them.
+    """
+    slots = CHILD_SLOTS.get(getattr(node, "type", ""))
+    if not slots:
+        return []
+    out: list[list[Any]] = []
+    for field, kind in slots:
+        value = getattr(node, field, None) or []
+        if kind == "nodes":
+            out.append(list(value))
+        else:
+            for group in value:
+                out.append(list(getattr(group, "body", None) or []))
+    return out
+
+
 # ═══ The flow ═════════════════════════════════════════════════════════════════
+class SkillInput(_Model):
+    """One typed input a Skill declares. The ONLY way data enters a Skill: nothing
+    from the caller's context arrives unless it is passed as an input."""
+
+    name: str
+    type: Literal["text", "number", "date", "chart_ref"] = "text"
+    required: bool = True
+    description: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def _identifier(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", v):
+            raise ValueError("tên input của Skill phải là chữ thường/số/gạch dưới")
+        return v
+
+
+class SkillContract(_Model):
+    """What a flow promises when it is published as a Skill."""
+
+    inputs: list[SkillInput] = Field(default_factory=list)
+    #: What the Skill returns, in a sentence — shown to authors and to agents.
+    output: str = ""
+    #: When an Agent should reach for it. This is the Skill's description AS A
+    #: CAPABILITY, so it has to say something.
+    when_to_use: str = ""
+    #: WHAT CROSSES BACK, TYPED. `text`: the child's answer, as prose. `number`:
+    #: ONE figure the runtime reads from the result a named step of the Skill
+    #: produced (`value_step`, `value_path`) — never parsed out of the prose — with
+    #: its provenance, so a parent's `compute` can reference it and a figure the
+    #: Skill computed from a typed number stays uncertified across the boundary.
+    #: A Skill that cannot produce its declared type fails (`skill_output_invalid`).
+    returns: Literal["text", "number"] = "text"
+    value_step: str = ""
+    value_path: str = ""
+
+    @field_validator("when_to_use")
+    @classmethod
+    def _says_something(cls, v: str) -> str:
+        v = (v or "").strip()
+        if len(v) < 12:
+            raise ValueError("Skill cần mô tả khi nào nên dùng (ít nhất 12 ký tự)")
+        return v
+
+    @model_validator(mode="after")
+    def _typed_output_says_where(self) -> "SkillContract":
+        if self.returns == "number" and not self.value_step.strip():
+            raise ValueError("Skill trả về một con số phải nêu bước tạo ra con số đó (value_step)")
+        return self
+
+    @field_validator("inputs")
+    @classmethod
+    def _unique(cls, v: list[SkillInput]) -> list[SkillInput]:
+        names = [i.name for i in v]
+        dupes = {n for n in names if names.count(n) > 1}
+        if dupes:
+            raise ValueError(f"trùng tên input của Skill: {', '.join(sorted(dupes))}")
+        return v
+
+
 class Flow(_Model):
     """A tree of nodes. One node's text becomes the answer."""
 
@@ -1024,6 +1304,9 @@ class Flow(_Model):
     #: which is what a linear flow means anyway. Named rather than left implicit
     #: because with branches "the last one" stopped having an answer.
     answer_node: str = ""
+    #: Set when this flow is published as a Skill: its typed inputs, what it
+    #: returns, and when an Agent should use it. `{{input.<name>}}` reads an input.
+    skill: SkillContract | None = None
 
     @field_validator("key")
     @classmethod
@@ -1053,21 +1336,24 @@ class Flow(_Model):
                         f"bước “{n.name or n.key}” nằm trong Loop nên không dùng được "
                         "chế độ nhớ qua lượt"
                     )
-                if isinstance(n, IfNode):
-                    for p in n.paths:
-                        walk(p.body, depth + 1, in_loop)
-                elif isinstance(n, SwitchNode):
-                    for c in n.cases:
-                        walk(c.body, depth + 1, in_loop)
-                    walk(n.fallback, depth + 1, in_loop)
-                elif isinstance(n, LoopNode):
+                # DISCOVERY IS CANONICAL, SEMANTICS STAY EXPLICIT.
+                #
+                # This used to branch on If/Switch/Loop by hand, which made it a
+                # SECOND definition of "all descendants" next to `all_nodes()` —
+                # and it did not know about `coordinate`, so every node inside a
+                # coordinator escaped the node ceiling, the duplicate-key check,
+                # the depth limit and the rule below. Children now come from
+                # CHILD_SLOTS; only the Loop's own meaning is written out here.
+                is_loop = isinstance(n, LoopNode)
+                if is_loop:
                     loops_on_path.append(depth)
                     if in_loop:
                         raise ValueError(
                             "chưa hỗ trợ Loop lồng trong Loop — chi phí nhân lên "
                             "theo cấp số nhân"
                         )
-                    walk(n.body, depth + 1, True)
+                for group in child_node_lists(n):
+                    walk(group, depth + 1, in_loop or is_loop)
 
         walk(list(self.nodes), 1, False)
 
@@ -1117,19 +1403,8 @@ class Flow(_Model):
         def walk(nodes: list[Any]) -> None:
             for n in nodes:
                 out.append(n)
-                if isinstance(n, IfNode):
-                    for p in n.paths:
-                        walk(p.body)
-                elif isinstance(n, SwitchNode):
-                    for c in n.cases:
-                        walk(c.body)
-                    walk(n.fallback)
-                elif isinstance(n, LoopNode):
-                    walk(n.body)
-                elif isinstance(n, CoordinateNode):
-                    for s in n.specialists:
-                        walk(s.body)
-                    walk(n.fallback)
+                for group in child_node_lists(n):
+                    walk(group)
 
         walk(list(self.nodes))
         return out
@@ -1172,10 +1447,15 @@ class Flow(_Model):
         """
         return self.answer_node or (self.nodes[-1].key if self.nodes else "")
 
+    def model_steps(self) -> list[Any]:
+        """Every step, anywhere in the tree, that calls a model: Agent and the
+        Coordinate planner. The set that needs a key."""
+        return [n for n in self.all_nodes() if isinstance(n, (AgentNode, CoordinateNode))]
+
     def steps_missing_credentials(self) -> list[str]:
-        """Agent nodes that would have to borrow the link's token. Empty means this
-        flow is self-sufficient, which is what lets a link run it with no key."""
-        return [n.key for n in self.agent_nodes() if not n.api_key_enc]
+        """Model steps with no key assigned at all. Whether an assigned key is still
+        USABLE needs the database and is `credentials.StoredCredentials.problems`."""
+        return [n.key for n in self.model_steps() if not n.credential_id]
 
     def bound_sources(self) -> list[KnowledgeAttachment]:
         """Everything this flow may read, across its nodes, deduplicated.
@@ -1194,13 +1474,30 @@ class Flow(_Model):
                     out.append(k)
         return out
 
+    def granted_tool_names(self) -> set[str]:
+        """Every registry tool this flow can call: agent grants and Tool steps."""
+        names = {t.tool for n in self.agent_nodes() for t in n.tools}
+        names |= {n.tool for n in self.all_nodes() if isinstance(n, ToolNode)}
+        return names
+
     def uses_capability(self, name: str) -> bool:
+        """Does anything in this flow need the link capability `name`?
+
+        DERIVED FROM THE REGISTRY, not from a list written here. This used to name
+        `web_search`, `fetch_url` and `benchmark_compare` by hand, and the external
+        pack has five tools that leave AppBI: `research_web` and `browse_ai_answer`
+        were missing, so preflight never warned about a flow that needed them and
+        they were refused at run time with no word to the author. What a tool does
+        is declared once, on the tool (`reaches_outside`, `data_exposure`).
+        """
         if name == "web_search":
-            return any(isinstance(n, WebNode) for n in self.all_nodes()) or any(
-                t.tool in {"web_search", "fetch_url", "benchmark_compare"}
-                for n in self.agent_nodes()
-                for t in n.tools
-            )
+            if any(isinstance(n, WebNode) for n in self.all_nodes()):
+                return True
+            return any(getattr(s, "reaches_outside", False)
+                       for s in _tool_specs(self.granted_tool_names()))
+        if name == "read_rows":
+            return any(getattr(s, "data_exposure", "") == "raw_rows"
+                       for s in _tool_specs(self.granted_tool_names()))
         return name in (self.requirements.capabilities or [])
 
     def referenced_vars(self) -> set[str]:
@@ -1227,7 +1524,27 @@ class Flow(_Model):
                     out.add(n.collect_into)
             if isinstance(n, TransformNode) and n.target:
                 out.add(n.target.replace("[]", "").strip())
+        # A Skill's inputs are supplied by the CALLER at run time, the way a
+        # binding supplies requirements — produced, just not by a node.
+        if self.skill is not None:
+            out.add("input")
         return out
+
+    def skill_refs(self) -> list[tuple[str, int | None, str]]:
+        """Every Skill this flow can invoke: (skill_key, pinned version, node key).
+
+        From Agent grants (`skill:<key>`) and Skill steps, anywhere in the tree.
+        """
+        refs: list[tuple[str, int | None, str]] = []
+        for n in self.all_nodes():
+            if isinstance(n, SkillNode):
+                refs.append((n.skill_key, n.version, n.key))
+            elif isinstance(n, AgentNode):
+                for t in n.tools:
+                    key = skill_key_of_grant(t.tool)
+                    if key:
+                        refs.append((key, t.version, n.key))
+        return refs
 
     def warnings(self, flow_type: str = DEFAULT_FLOW_TYPE) -> list[str]:
         """What this flow gives up, said plainly rather than prevented.
@@ -1244,6 +1561,7 @@ class Flow(_Model):
         `bot`, which is what every flow written before the type existed is.
         """
         out: list[str] = []
+
         if not self.bound_sources():
             out.append(
                 "Flow này không gắn tri thức nào — nó chỉ đọc báo cáo đang mở. "
@@ -1319,6 +1637,7 @@ class Flow(_Model):
             n.output_var for n in self.all_nodes()
             if isinstance(n, ReportReadNode) and n.output_var
         }
+        by_key = {x.key: x for x in self.all_nodes()}
         for n in self.agent_nodes():
             granted = {t.tool for t in n.tools}
             keyed = sorted(granted & _CHART_KEYED_TOOLS)
@@ -1327,6 +1646,13 @@ class Flow(_Model):
             if granted & _CHART_LOOKUP_TOOLS:
                 continue
             if read_vars and (node_referenced_vars(n) & read_vars):
+                continue
+            # A THIRD WAY: an explicit input from a step that reads the report or
+            # can look charts up hands this one the ids (`AgentNode.reads_from`).
+            if any(isinstance(src, ReportReadNode)
+                   or (isinstance(src, AgentNode)
+                       and set(src.tool_names()) & _CHART_LOOKUP_TOOLS)
+                   for src in (by_key.get(k) for k in n.reads_from)):
                 continue
             handed = (
                 "prompt không đọc "
@@ -1380,6 +1706,12 @@ class Flow(_Model):
             )
         # Named even when it is not the answering step: a node parked below a Stop
         # is invisible on the canvas — it looks exactly like a node that runs.
+        out.extend(self.unknown_capability_problems())
+        out.extend(self.nested_coordinator_problems())
+        out.extend(self.role_grant_errors())
+        out.extend(self.role_dependency_problems())
+        out.extend(self.input_problems())
+        out.extend(self.incomplete_config_problems())
         dead = self.unreachable_nodes()
         if dead:
             out.append(
@@ -1417,6 +1749,160 @@ class Flow(_Model):
                 stopped_by = node.key
         return out
 
+    def nested_coordinator_problems(self) -> list[str]:
+        """Coordinators anywhere below another coordinator's lane.
+
+        BOUNDED MULTI-AGENT. A coordinator picks specialists from a roster the
+        author wrote; one inside a lane lets a plan spawn another plan, and the
+        cost of a question stops being readable off `max_specialists`.
+
+        A PUBLISH rule, not a parse rule. It started in the tree validator, which
+        would have made any stored flow of this shape fail to LOAD — its links
+        dead, its builder unopenable — for a shape the previous release accepted.
+        Refusing it at publish (not acknowledgeable) stops new ones and leaves
+        existing ones running, and the builder names it.
+        """
+        out: list[str] = []
+
+        def walk(nodes: list[Any], in_coord: bool) -> None:
+            for n in nodes:
+                is_coord = isinstance(n, CoordinateNode)
+                if is_coord and in_coord:
+                    out.append(
+                        f"Bước điều phối “{n.name or n.key}” nằm trong một bước điều "
+                        "phối khác — chưa hỗ trợ điều phối lồng nhau."
+                    )
+                for group in child_node_lists(n):
+                    walk(group, in_coord or is_coord)
+
+        walk(list(self.nodes), False)
+        return out
+
+    def unknown_capability_problems(self) -> list[str]:
+        """Steps naming a tool the registry does not have. A defect, not a choice.
+
+        The step fails with `unknown_tool` on the first question. `ToolNode.tool`
+        said it was "validated against the registry at publish time" and nothing
+        did. Resolved through the registry itself, so there is no second list of
+        tool names to fall out of date. Skill grants are resolved by the Skill
+        resolver, not here.
+        """
+        from app.services.agent_flows.tools import registry as tool_registry
+
+        known = set(tool_registry.all_tools())
+        out: list[str] = []
+        for n in self.all_nodes():
+            names = ([n.tool] if isinstance(n, ToolNode)
+                     else [t.tool for t in n.tools] if isinstance(n, AgentNode) else [])
+            for t in names:
+                if t not in known and not t.startswith(SKILL_GRANT_PREFIX):
+                    out.append(
+                        f"Bước “{n.name or n.key}” dùng công cụ “{t}” — hệ thống không "
+                        "có công cụ này, bước đó sẽ lỗi ngay lần chạy đầu."
+                    )
+        return out
+
+    def role_grant_errors(self) -> list[str]:
+        """Steps whose role is unknown or whose grants leave the role's boundary.
+
+        Refused at SAVE (422) and at publish — never acknowledgeable: a role is a
+        promise about what a step can do, and a body that breaks it is a forged or
+        stale payload, not an author's trade-off. (`tool_names()` would drop the
+        extra grant at run time anyway; refusing it here means the stored flow
+        never claims an ability it does not have.)
+        """
+        from app.services.agent_flows import roles
+
+        out: list[str] = []
+        for n in self.agent_nodes():
+            if not n.role:
+                continue
+            if not roles.is_known(n.role):
+                out.append(f"Bước “{n.name or n.key}”: vai trò “{n.role}” không tồn tại.")
+                continue
+            outside = roles.grant_problems(n.role, [g.tool for g in n.tools])
+            if outside:
+                label = roles.get(n.role).label_vi
+                out.append(
+                    f"Bước “{n.name or n.key}” ({label}) được cấp công cụ ngoài phạm vi "
+                    f"vai trò: {', '.join(outside)}. Bỏ các công cụ này, hoặc chuyển "
+                    "bước sang Agent tùy chỉnh."
+                )
+        return out
+
+    def role_dependency_problems(self) -> list[str]:
+        """A role's setup it cannot work without — checked at publish."""
+        from app.services.agent_flows import roles
+
+        out: list[str] = []
+        for n in self.agent_nodes():
+            r = roles.get(n.role)
+            if r is None:
+                continue
+            if r.needs_knowledge and not n.knowledge:
+                out.append(
+                    f"Bước “{n.name or n.key}” ({r.label_vi}) chưa đính kèm nguồn tri "
+                    "thức nào — vai trò này chỉ tra trong nguồn được đính kèm, nên "
+                    "sẽ không đọc được gì."
+                )
+            if r.allowed_tools and not n.tools:
+                out.append(
+                    f"Bước “{n.name or n.key}” ({r.label_vi}) chưa được cấp công cụ nào "
+                    "— vai trò này cần công cụ để làm việc."
+                )
+        return out
+
+    def input_problems(self) -> list[str]:
+        """`reads_from` naming a step that does not exist, is itself, a router, or
+        cannot have run before it. Order is document order (`all_nodes`), which is
+        execution order for every container this engine has."""
+        order = [n.key for n in self.all_nodes()]
+        by_key = {n.key: n for n in self.all_nodes()}
+        out: list[str] = []
+        for n in self.agent_nodes():
+            here = order.index(n.key) if n.key in order else -1
+            for k in n.reads_from:
+                src = by_key.get(k)
+                who = f"Bước “{n.name or n.key}”"
+                if src is None:
+                    out.append(f"{who} nhận đầu vào từ “{k}” nhưng không có bước đó.")
+                elif k == n.key:
+                    out.append(f"{who} không thể nhận đầu vào từ chính nó.")
+                elif getattr(src, "type", "") in ROUTING_NODE_TYPES:
+                    out.append(
+                        f"{who} nhận đầu vào từ bước rẽ nhánh/điều phối “{src.name or k}” "
+                        "— bước đó chỉ ghi đường đi, không có kết quả. Chọn bước bên trong nó."
+                    )
+                elif order.index(k) > here:
+                    out.append(
+                        f"{who} nhận đầu vào từ “{src.name or k}” — bước đó chạy SAU, "
+                        "nên lúc này chưa có kết quả."
+                    )
+        return out
+
+    def incomplete_config_problems(self) -> list[str]:
+        """Required expressions left blank — what a freshly added step looks like.
+
+        The builder used to seed Switch, Loop and Filter with `{{}}`. That is not a
+        template (the variable pattern needs a name), so no check saw it: it
+        resolved to the literal text "{{}}", a Switch matched nothing and ran its
+        fallback, a Loop ran ONCE over the string "{{}}", and a Filter's
+        `is_not_empty` was always true — while validation said the flow was fine.
+        A draft may be incomplete; a flow that runs or publishes may not.
+        """
+        out: list[str] = []
+        for n in self.all_nodes():
+            who = f"Bước “{n.name or n.key}”"
+            if any(_EMPTY_TEMPLATE_RE.search(t or "") for t in _templated_strings(n)):
+                out.append(f"{who} có biểu thức trống {{{{}}}} — chọn biến hoặc nhập giá trị.")
+            if isinstance(n, SwitchNode) and not (n.value or "").strip():
+                out.append(f"{who} (Switch) chưa có giá trị để rẽ nhánh.")
+            if isinstance(n, LoopNode) and not (n.over or "").strip():
+                out.append(f"{who} (Loop) chưa chọn danh sách để lặp.")
+            if isinstance(n, FilterNode) and not (n.conditions or []):
+                out.append(f"{who} (Filter) chưa có điều kiện nào.")
+        return list(dict.fromkeys(out))
+
     def blocking_problems(self) -> list[str]:
         """The subset of `warnings()` that is a DEFECT rather than a trade-off.
 
@@ -1447,8 +1933,32 @@ class Flow(_Model):
         # ends, `_final_answer` falls back to whatever an intermediate step left
         # behind, and the viewer is handed working notes. Blocking, so it is caught
         # at save time rather than by a reader.
+        out.extend(self.unknown_capability_problems())
+        out.extend(self.nested_coordinator_problems())
+        out.extend(self.role_grant_errors())
+        out.extend(self.role_dependency_problems())
+        out.extend(self.input_problems())
+        out.extend(self.incomplete_config_problems())
         dead = self.unreachable_nodes()
         answer_key = self.answer_node or (self.nodes[-1].key if self.nodes else "")
+        # A ROUTER IS NOT AN ANSWER. Found by the acceptance journeys: an If at the
+        # root with no answering step after it handed the viewer
+        # {'matched': 'dm', 'label': 'danh mục'} while the branch agent's real
+        # answer was discarded — and validation said ok.
+        answer_node = next((n for n in self.all_nodes() if n.key == answer_key), None)
+        def stops_everywhere(n: Any) -> bool:
+            paths = getattr(n, "paths", None) or getattr(n, "cases", None) or []
+            return bool(paths) and all(
+                (getattr(p, "body", None) or []) and getattr(p.body[-1], "type", "") == "stop"
+                for p in paths)
+
+        if answer_node is not None and getattr(answer_node, "type", "") in _ROUTER_TYPES \
+                and not stops_everywhere(answer_node):
+            out.append(
+                f"Bước trả lời “{answer_node.name or answer_key}” là bước rẽ nhánh/điều phối — "
+                "người xem sẽ nhận dữ liệu định tuyến thay vì câu trả lời. Thêm một bước Agent "
+                "trả lời sau nó (hoặc chọn một bước Agent làm bước trả lời)."
+            )
         if answer_key and answer_key in dead:
             out.append(
                 f"Bước trả lời “{answer_key}” nằm sau một bước Stop nên không bao "
@@ -1492,12 +2002,92 @@ def upgrade_body(body: dict[str, Any], *, key: str = "", name: str = "") -> dict
         out["nodes"] = nodes
     out.pop("steps", None)
     out.pop("schema", None)
+    out["nodes"] = _upgrade_model_steps(out.get("nodes"))
     out["schema_version"] = 2
     if key:
         out["key"] = key
     if name:
         out["name"] = name
     return out
+
+
+#: Fields a model step carried before keys became stored credentials. Dropped on
+#: read: none held a key in any stored flow when they were retired (measured), and a
+#: field the contract no longer knows must not be written back.
+_RETIRED_CREDENTIAL_FIELDS = ("api_key", "api_key_enc", "api_key_clear", "has_api_key")
+
+
+def _upgrade_model_steps(nodes: Any) -> Any:
+    """Bring every Agent / Coordinate step, at any depth, to "provider + model + key id".
+
+    A step written as `provider: "inherit"` ran on whatever the link or the server
+    held — in practice OpenAI `gpt-4o-mini`. It is brought forward to exactly that,
+    WITHOUT a key: the author assigns one, and until then the step says so instead
+    of quietly spending a key nobody chose for it.
+    """
+    if not isinstance(nodes, list):
+        return nodes
+    out: list[Any] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            out.append(node)
+            continue
+        n = dict(node)
+        if str(n.get("type") or "agent") in ("agent", "coordinate"):
+            for f in _RETIRED_CREDENTIAL_FIELDS:
+                n.pop(f, None)
+            provider = str(n.get("provider") or "").strip().lower()
+            if provider in ("", "inherit"):
+                n["provider"] = DEFAULT_PROVIDER
+                if not str(n.get("model") or "").strip():
+                    n["model"] = legacy_default_model()
+        out.append(map_raw_children(n, _upgrade_model_steps))
+    return out
+
+
+def _check_model_choice(node: Any) -> None:
+    """A model no provider serves is a 404 on the first real question, and the
+    viewer sees a dead chat rather than an error. Refused at save time.
+
+    An empty model means the provider's first catalogued one — so a body written
+    by hand or by an outside model that names only a vendor still saves, on the
+    cheapest model of that vendor, rather than failing on a field it never set.
+    """
+    provider = str(node.provider or "").strip().lower()
+    if provider not in MODELS:
+        raise ValueError(
+            f"nhà cung cấp không hỗ trợ: {node.provider or '(trống)'}. "
+            f"Chọn một trong: {', '.join(MODELS)}"
+        )
+    object.__setattr__(node, "provider", provider)
+    model = str(node.model or "").strip() or default_model(provider)
+    if not known_model(provider, model):
+        allowed = ", ".join(m["model"] for m in MODELS[provider])
+        raise ValueError(
+            f"model '{model}' không có trong danh sách của {provider}. "
+            f"Chọn một trong: {allowed}"
+        )
+    object.__setattr__(node, "model", model)
+    # A STEP THAT CALLS TOOLS NEEDS A MODEL THAT CAN. A text-only model would
+    # ignore the grants and answer from nothing — refused, not run.
+    from app.services.agent_flows.models_catalogue import spec as _model_spec
+
+    if (getattr(node, "tools", None) and (_model_spec(provider, model) or {}).get("tools") is False):
+        raise ValueError(
+            f"model '{model}' không hỗ trợ gọi công cụ, nhưng bước này được cấp công cụ. "
+            "Chọn model có hỗ trợ công cụ, hoặc bỏ công cụ khỏi bước."
+        )
+
+
+def _tool_specs(names: set[str]) -> list[Any]:
+    """Registry specs for `names`; unknown names are skipped (reported elsewhere).
+
+    Imported lazily: the contract must stay importable without the tool package.
+    """
+    from app.services.agent_flows.tools import registry as tool_registry
+
+    tools = tool_registry.all_tools()
+    return [tools[n] for n in sorted(names) if n in tools]
 
 
 _TEMPLATE_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.\[\]]+)\s*\}\}")
@@ -1524,7 +2114,19 @@ def node_referenced_vars(node: Any) -> set[str]:
     for text in _templated_strings(node):
         for m in _TEMPLATE_RE.finditer(text or ""):
             found.add(m.group(1).split(".")[0].strip())
+    # TYPED BINDINGS READ VARIABLES TOO. A Tool or Skill step binding
+    # `chart_id → {{sales_chart}}` depends on that variable exactly as a prompt
+    # does; left out, a binding to a variable no step writes was found only when a
+    # viewer's run raised "chưa bước nào tạo ra biến đó".
+    for binding in (getattr(node, "inputs", None) or {}).values():
+        if getattr(binding, "source", "") == "variable" and getattr(binding, "ref", ""):
+            found.add(re.split(r"[.\[]", binding.ref, maxsplit=1)[0].strip())
     return found
+
+
+#: `{{}}` / `{{ }}` — a placeholder nobody filled in. Not a template: the variable
+#: pattern needs a name, which is exactly why nothing else catches it.
+_EMPTY_TEMPLATE_RE = re.compile(r"\{\{\s*\}\}")
 
 
 def _templated_strings(node: Any) -> list[str]:
@@ -1556,3 +2158,95 @@ _REPORT_NAME_RE = re.compile(
     r"(?:báo cáo|report|dashboard)\s+[\"“']?"
     r"([A-Z0-9][\w-]*(?:\s+[A-Z0-9][\w-]*){0,2})"
 )
+
+
+# ── Strict authoring boundary ────────────────────────────────────────────────
+#
+# Every model here is `extra="ignore"`, which is correct for READING a stored
+# body: a flow saved by an older build, carrying a field this one has retired,
+# must still load. It is wrong for AUTHORING. An author — or an AI writing a flow
+# through the API — can misspell `temperature`, and validation passes, the field
+# is dropped, the default runs, and what executes is not what was written.
+#
+# So the tolerance stays on the read path and the authoring path gets this check.
+# It runs on the RAW body, before validation, which is the only place the unknown
+# field still exists.
+
+#: Emitted by the API in a redacted body and round-tripped by the builder.
+#: Rejecting what we ourselves produced would make saving impossible.
+_AUTHORING_PASSTHROUGH: set[str] = set()
+
+
+def _node_classes() -> dict[str, Any]:
+    """type string -> model class, from the discriminated union itself."""
+    import typing
+    out: dict[str, Any] = {}
+    args = typing.get_args(Node)
+    union = args[0] if args else Node
+    for cls in typing.get_args(union):
+        field = getattr(cls, "model_fields", {}).get("type")
+        default = getattr(field, "default", None)
+        if isinstance(default, str):
+            out[default] = cls
+    return out
+
+
+def _lane_class(parent: Any, field: str) -> Any:
+    """The model behind `specialists` / `paths` / `cases` on this parent."""
+    import typing
+    ann = getattr(parent, "model_fields", {}).get(field)
+    for candidate in typing.get_args(getattr(ann, "annotation", None) or None):
+        if hasattr(candidate, "model_fields"):
+            return candidate
+    return None
+
+
+def strict_authoring_errors(raw: dict) -> list[str]:
+    """Unknown fields anywhere in a raw body, as messages an author can act on.
+
+    Reports the node key and the field; suggests nothing and corrects nothing —
+    a guessed correction is how intent gets rewritten silently.
+    """
+    if not isinstance(raw, dict):
+        return ["Body phải là một object"]
+
+    classes = _node_classes()
+    errors: list[str] = []
+
+    unknown_top = set(raw) - set(Flow.model_fields) - _AUTHORING_PASSTHROUGH
+    for field in sorted(unknown_top):
+        errors.append(f"Flow: trường không hợp lệ “{field}”")
+
+    def check_lane(parent_cls: Any, field: str, lane: Any) -> None:
+        cls = _lane_class(parent_cls, field)
+        if cls is None or not isinstance(lane, dict):
+            return
+        for bad in sorted(set(lane) - set(cls.model_fields) - _AUTHORING_PASSTHROUGH):
+            where = lane.get("key") or field
+            errors.append(f"“{where}” ({field}): trường không hợp lệ “{bad}”")
+
+    def check_nodes(nodes: Any) -> None:
+        if not isinstance(nodes, list):
+            return
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            kind = n.get("type")
+            cls = classes.get(kind) if isinstance(kind, str) else None
+            if cls is None:
+                errors.append(f"“{n.get('key') or '?'}”: loại bước không hợp lệ “{kind}”")
+                continue
+            for bad in sorted(set(n) - set(cls.model_fields) - _AUTHORING_PASSTHROUGH):
+                errors.append(
+                    f"“{n.get('key') or '?'}” ({kind}): trường không hợp lệ “{bad}”"
+                )
+            for field, lane_index in _raw_slots(n):
+                if lane_index is None:
+                    check_nodes(n.get(field))
+                else:
+                    lane = (n.get(field) or [])[lane_index]
+                    check_lane(cls, field, lane)
+                    check_nodes(lane.get("body") if isinstance(lane, dict) else None)
+
+    check_nodes(raw.get("nodes"))
+    return errors

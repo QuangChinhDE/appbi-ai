@@ -63,6 +63,14 @@ done
 
 echo "==> PostgreSQL is up"
 
+# Read-only pre-deployment check (scripts/deploy/prod-upgrade.sh): evaluate every
+# database source against the outbound source policy of THIS image, with the
+# DATABASE_URL derived above. Touches no schema; exits before any migration.
+if [ "${1:-}" = "source-inventory" ]; then
+  shift
+  exec python -m app.services.source_inventory "$@"
+fi
+
 # ── Check the pgvector extension before migrations (check-only) ─────────────
 # The application DB account is USE-ONLY — it must never create extensions. We
 # only VERIFY that 'vector' (pgvector) is present. If it is missing, stop with a
@@ -96,8 +104,29 @@ sys.stderr.write(
 sys.exit(1)
 PYEOF
 
+# ── Migration gate (fail-closed on an existing database) ────────────────────
+#
+# A fresh database (no alembic_version) is initialised automatically — that is a
+# first install, there is nothing to lose. An EXISTING database with pending
+# revisions is upgraded only when the operator approved this exact target:
+#
+#     APPBI_MIGRATE_APPROVED=<target head revision>   (what the release runbook
+#                                                      sets after a verified backup)
+#     APPBI_MIGRATE_APPROVED=auto                     (dev/one-command: run.sh --migrate,
+#                                                      docker-compose.dev.yml)
+#
+# Otherwise the container stops here, before uvicorn, and the schema is untouched.
+# A start with nothing pending is never gated, so restarts are unaffected.
+echo "==> Checking migration state..."
+python -m app.core.migration_gate || exit $?
+
 echo "==> Running Alembic migrations..."
 alembic upgrade head
+
+if [ "${1:-}" = "migrate" ]; then
+  echo "==> migrate-only run complete; not starting the server."
+  exit 0
+fi
 
 # ── Least-privilege runtime role, so row-level security actually runs ─────────
 #
@@ -185,66 +214,42 @@ fi
 echo "==> Starting FastAPI application..."
 
 # ── Seed admin user on first boot ──────────────────────────────────────────
-# Reads ADMIN_EMAIL / ADMIN_PASSWORD / ADMIN_NAME from env.
-# Only inserts if the users table has 0 rows (idempotent).
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@appbi.io}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-123456}"
-ADMIN_NAME="${ADMIN_NAME:-Admin}"
-
-python - <<'PYEOF'
-import os, sys, json
+# Only while the users table is empty. There is NO default password: in
+# production a missing/placeholder/weak ADMIN_PASSWORD stops startup here
+# (app/core/bootstrap_admin.py); in development a random one-time password is
+# printed once. The legacy "workspaces" -> "datasets" permission key fix runs
+# for existing users as before.
+python - <<'PYEOF' || { echo "==> FATAL: bootstrap administrator refused (see above)."; exit 1; }
+import os, sys
 from sqlalchemy import create_engine, text
-from passlib.context import CryptContext
+from app.core.bootstrap_admin import BootstrapRefused, seed_first_admin
 
-db_url = os.environ["DATABASE_URL"]
-engine = create_engine(db_url)
-pwd = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
-
-email    = os.environ.get("ADMIN_EMAIL", "admin@appbi.io")
-password = os.environ.get("ADMIN_PASSWORD", "123456")
-name     = os.environ.get("ADMIN_NAME", "Admin")
-
-# EVERY key in core.dependencies.MODULE_KEYS. A module missing here is a module
-# the first admin does not hold — survivable only because `_get_user_permissions`
-# back-fills a missing key for settings:full accounts, which is a safety net, not
-# a reason to leave the seed incomplete. `agent_flows` was already missing.
-full_perms = json.dumps({
-    "data_sources": "full", "datasets": "full",
-    "govern": "full", "agent_flows": "full", "chat": "view",
-    "observability": "full",
-    "explore_charts": "full", "dashboards": "full",
-    "workboards": "full", "settings": "full"
-})
-
+engine = create_engine(os.environ["DATABASE_URL"])
+try:
+    print("==> " + seed_first_admin(engine))
+except BootstrapRefused as exc:
+    print("==> " + str(exc), file=sys.stderr)
+    sys.exit(1)
 with engine.connect() as conn:
-    count = conn.execute(text("SELECT COUNT(*) FROM users")).scalar()
-    if count == 0:
-        hashed = pwd.hash(password)
-        conn.execute(text(
-            "INSERT INTO users (email, password_hash, full_name, status, permissions) "
-            "VALUES (:email, :pw, :name, 'active', cast(:perms AS jsonb))"
-        ), {"email": email, "pw": hashed, "name": name, "perms": full_perms})
-        conn.commit()
-        print(f"==> Admin user created: {email}")
-    else:
-        # Fix legacy "workspaces" key → "datasets" in existing users' permissions
-        fixed = conn.execute(text(
-            "UPDATE users SET permissions = permissions - 'workspaces' "
-            "|| jsonb_build_object('datasets', permissions->'workspaces') "
-            "WHERE permissions ? 'workspaces'"
-        )).rowcount
-        conn.commit()
-        if fixed:
-            print(f"==> Fixed permissions key 'workspaces' → 'datasets' for {fixed} user(s).")
-        print(f"==> Users table already has rows — skipping admin seed.")
+    fixed = conn.execute(text(
+        "UPDATE users SET permissions = permissions - 'workspaces' "
+        "|| jsonb_build_object('datasets', permissions->'workspaces') "
+        "WHERE permissions ? 'workspaces'"
+    )).rowcount
+    conn.commit()
+    if fixed:
+        print(f"==> Fixed permissions key 'workspaces' -> 'datasets' for {fixed} user(s).")
 PYEOF
 
-# --proxy-headers + --forwarded-allow-ips="*" lets Uvicorn honour
-# X-Forwarded-For / X-Real-IP from nginx so request.client.host reflects
-# the real viewer IP. Without this, slowapi's get_remote_address() sees
-# every public-link request as coming from 127.0.0.1 on prod, and one
-# busy dashboard (e.g. an HTML-imported one with many tiles) exhausts
-# the shared rate-limit bucket, making chart data silently fail to load.
+# Client address: uvicorn's own proxy-header handling is OFF. With
+# `--forwarded-allow-ips="*"` it took the LEFTMOST X-Forwarded-For entry — the
+# one the client writes — so rotating that header defeated every per-IP rate
+# limit (password guessing included). The app's TrustedProxyMiddleware
+# (app/core/trusted_proxy.py) resolves the real viewer address instead: it
+# honours forwarded headers only from TRUSTED_PROXY_CIDRS and takes the entry
+# TRUSTED_PROXY_HOPS from the right (what nginx appended). Viewers still get
+# separate buckets (one busy report does not exhaust a shared one); they can no
+# longer choose theirs.
 # Multiple workers so one slow/heavy request (or a background snapshot rebuild)
 # can't block the whole app (single process = one GIL). Cross-worker request
 # coalescing + the shared sqlite cache (query_cache) keep concurrent identical
@@ -252,4 +257,4 @@ PYEOF
 # behaviour) — set it (e.g. 4) on the VM to scale concurrent report viewing.
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000 \
     --workers "${WEB_CONCURRENCY:-1}" \
-    --proxy-headers --forwarded-allow-ips="*"
+    --no-proxy-headers

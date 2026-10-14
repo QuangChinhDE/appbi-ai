@@ -26,7 +26,8 @@ export interface WorkspaceAdmin {
   name: string;
   description: string | null;
   icon: string | null;
-  token: string;
+  /** Null unless the caller manages the workspace (or it is internal-mode). */
+  token: string | null;
   is_active: boolean;
   session_ttl_seconds: number;
   access_mode: 'internal' | 'public_app_users';

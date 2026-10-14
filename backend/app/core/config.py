@@ -101,6 +101,19 @@ class Settings(BaseSettings):
         """Resolved absolute path for data storage."""
         return _resolve_data_dir(self.DATA_DIR)
 
+    # Manual file sources (CSV / XLSX upload) — hard ingestion limits.
+    # Files are stored as Parquet assets under DATA_DIR/manual_assets.
+    MANUAL_UPLOAD_MAX_BYTES: int = 50 * 1024 * 1024
+    MANUAL_UPLOAD_MAX_ROWS: int = 1_000_000          # data rows per sheet
+    MANUAL_UPLOAD_MAX_COLUMNS: int = 500             # columns per sheet
+    MANUAL_UPLOAD_MAX_CELL_CHARS: int = 32_767       # Excel's own cell limit
+    MANUAL_UPLOAD_MAX_SHEETS: int = 50
+    MANUAL_UPLOAD_MAX_TOTAL_CELLS: int = 10_000_000  # rows x columns, whole file
+    MANUAL_UPLOAD_MAX_UNCOMPRESSED_BYTES: int = 500 * 1024 * 1024  # xlsx zip members, summed
+    MANUAL_UPLOAD_MAX_COMPRESSION_RATIO: int = 200   # per xlsx zip member (zip-bomb guard)
+    MANUAL_UPLOAD_PREVIEW_ROWS: int = 50
+    MANUAL_STAGED_ASSET_TTL_HOURS: int = 24
+
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002"
     
@@ -145,6 +158,56 @@ class Settings(BaseSettings):
     # Govern = Metrics/Glossary/Classification; Observability = Data Quality/Incidents/Alerts.
     GOVERN_ENABLED: bool = True
     OBSERVABILITY_ENABLED: bool = True
+    # The 02:00 UTC anomaly re-scan (anomaly_scheduler). Off only where detector
+    # state must stay as seeded (the e2e rig); alert dispatch is unaffected.
+    ANOMALY_DAILY_SCAN_ENABLED: bool = True
+    # Wall-clock budget of ONE scan's monitor phase. Each monitor query is
+    # already bounded (60 s timeout; BigQuery: dry-run + billing cap); this bounds
+    # their sum, so a slow source cannot keep the scan (and its lock) for hours.
+    # Monitors not reached are reported as not run and the scan is partial.
+    OBSERVABILITY_SCAN_BUDGET_SECONDS: int = 1800
+    # ── Agent Flow capability discovery ─────────────────────────────────
+    # How many capabilities an Agent step is SHOWN in full per reasoning round
+    # when it was granted more (runtime/capabilities.py). Visibility only — what
+    # may run is still decided by the registry and the grant. A node can set its
+    # own `visible_capabilities` to opt in to a tighter shortlist.
+    #
+    # 40 — ABOVE TODAY'S WHOLE CATALOGUE (36 tools), set by measurement. Three live
+    # A/B runs on one 32-capability grant (scripts/agent_flow_v3_eval.py):
+    # shortlisted at 12 answered 3, 5, 4 of 6; shown in full 6, 6, 5 of 6, for a
+    # 10-25% token saving. A shortlist that costs answers is not worth it while
+    # the full list still fits, so by default it engages only once a grant
+    # outgrows what can sensibly be sent in full — Skills and future packs.
+    AGENT_FLOW_VISIBLE_CAPABILITIES: int = 40
+    # AGENT FLOW READER ROLLOUT (services/agent_flows/pilot.py). Every reader path
+    # — public-link chat and Direct Chat — asks this ONE policy; Studio Test does not.
+    #   off    kill switch: no reader is answered
+    #   pilot  only the cohort below (default; an empty cohort serves nobody)
+    #   all    every reader
+    # An unknown value fails closed (off). Refusals are recorded as blocked runs.
+    AGENT_FLOW_READER_MODE: str = "pilot"
+    AGENT_FLOW_PILOT_LINK_IDS: str = ""   # comma-separated public-link ids
+    AGENT_FLOW_PILOT_USERS: str = ""      # comma-separated Direct Chat emails
+    # The OpenAI model a stored Agent Flow step written BEFORE steps chose their own
+    # model is brought forward to (contract.upgrade_body). Must name a catalogued
+    # OpenAI model, else `gpt-4o-mini`. The pilot sets the model it was certified
+    # on. Every other step names its own model; this is never a run-time fallback.
+    AGENT_FLOW_DEFAULT_MODEL: str = ""
+    # How many CHARACTERS of capability schema a routed step is shown per round
+    # (runtime/capabilities.py). A grant whose schemas fit is shown whole — the V1
+    # starter's ten tools are ~8.5k. A larger grant is shown the core (every way in
+    # to a chart id, and compute), what the question ranks highest, and whatever
+    # it has loaded, up to this; the rest is one line each inside find_capability.
+    #
+    # 10500, set by measurement on the labelled intents (tests/fixtures/
+    # capability_routing): 10000 loaded the right capability on round one for 47
+    # of 48 (42 at 8000); the core then gained its chart READER (get_chart_summary,
+    # ~460 chars — see runtime/capabilities._core) and the budget grew by the same
+    # amount so the share left for question-ranked capabilities is unchanged:
+    # 51 of 52 intents, ~11.3k characters per round against 24.2k shown in full,
+    # and flat as the catalogue grows. A per-node `visible_capabilities` count
+    # replaces it.
+    AGENT_FLOW_CAPABILITY_SCHEMA_BUDGET: int = 10500
 
     # ── AI Intelligence (docs/Intelligence/appbi_intelligence_backend_redesign_v2.md) ──
     # Every switch below defaults to the pre-v2 behaviour, so a deployment that
@@ -181,8 +244,8 @@ class Settings(BaseSettings):
     # ── Filter-system migration toggles (PBI-parity migration) ──────────
     # Default OFF — legacy code path unchanged. Phase 0/1 ship the foundations;
     # callers begin opting-in once golden-harness + production smoke-tests pass.
-    # Documented in docs/filter-migration-pbi-parity.md and per-phase files
-    # under docs/phases/.
+    # (The migration plan doc was not retained; the current filter contract is
+    # docs/filter-semantics.md.)
     #
     # ── DECISION (2026-06-02): these three flags STAY OFF permanently. ──
     # The always-on **measure-isolation engine** (base-invariance: each measure
@@ -267,10 +330,30 @@ class Settings(BaseSettings):
     LARGE_TABLE_ROW_THRESHOLD: int = 50_000_000         # 50M rows
     LARGE_TABLE_SIZE_THRESHOLD_GB: float = 5.0          # 5 GB
     BQ_MAX_BYTES_SCANNED: int = 60 * 1024**3            # 60 GB dry-run guard
+    # Hard cap BigQuery enforces on the job itself (QueryJobConfig.maximum_bytes_billed)
+    # for user-submitted Query Runner SQL — bounds cost even when the dry run fails.
+    BQ_MAX_BYTES_BILLED: int = 60 * 1024**3
+
+    # ── Source hardening (docs/features/source-core-hardening/spec.md) ──────────
+    # Outbound policy for PostgreSQL/MySQL sources. Private addresses are refused
+    # unless listed here (comma-separated CIDRs). Loopback opens ONLY via an
+    # explicit loopback CIDR; link-local / metadata / multicast never open.
+    SOURCE_ALLOW_PRIVATE_NETWORK: bool = False
+    ALLOWED_PRIVATE_SOURCE_CIDRS: str = ""
+    # Server-side row cap for the ad-hoc Query Runner (/datasources/query).
+    SOURCE_QUERY_MAX_ROWS: int = 10_000
+    # Platform GCP_SERVICE_ACCOUNT_JSON may only be used for these GCP projects
+    # (comma-separated). Empty = only a source an administrator approved may use it.
+    PLATFORM_GCP_ALLOWED_PROJECTS: str = ""
     BQ_PREVIEW_PARTITION_MAX_LOOKBACK_DAYS: int = 365   # fallback when partition metadata is unavailable
     # Dashboard perf #5 — snapshot materialization. Global default dataset where
     # flat snapshot tables are written; a per-datasource `materialization_dataset`
     # config value overrides it, this is the .env-configurable fallback.
+    # The timezone in which relative-date presets ("today", "last 30 days") are
+    # resolved for every report read. Explicit and product-owned — NOT the server
+    # process's local clock. Defaults to UTC, matching the UTC instants the rest
+    # of the stack emits (time_contract.utc_iso). See time_contract.current_report_date.
+    APP_TIMEZONE: str = "UTC"
     MATERIALIZATION_DATASET: str = "appbi_snapshots"
     MATERIALIZATION_DEFAULT_TTL_MINUTES: int = 30       # freshness TTL fallback (public links / builder)
     # Global AppBI write service account for snapshot CREATE+LOAD (never reads
@@ -495,6 +578,14 @@ def validate_security_settings() -> None:
             "DATASOURCE_ENCRYPTION_KEY is empty — datasource credentials will be stored in plaintext. "
             "Generate a key: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
         )
+    else:
+        try:
+            from cryptography.fernet import Fernet
+            Fernet(settings.DATASOURCE_ENCRYPTION_KEY.strip().encode())
+        except Exception:
+            errors.append(
+                "DATASOURCE_ENCRYPTION_KEY is not a valid Fernet key (32 url-safe base64-encoded bytes)."
+            )
     if errors:
         msg = "FATAL — Insecure configuration detected:\n" + "\n".join(f"  • {e}" for e in errors)
         raise RuntimeError(msg)

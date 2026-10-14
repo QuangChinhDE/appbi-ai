@@ -65,7 +65,34 @@ def _humanize_field(field_ref: str) -> str:
     return name[:1].upper() + name[1:]
 
 
-def extract_chart_field_semantics(config: Any) -> dict[str, Any]:
+#: Physical types that hold a number a tool can measure.
+_NUMERIC_TYPES = ("int", "numeric", "decimal", "float", "double", "real", "number", "money", "bignumeric")
+#: Physical types that are time.
+_TIME_TYPES = ("date", "time", "timestamp")
+#: Names that say "this number labels a thing" — an id, a code, a postcode — or a
+#: calendar part. Summing either is meaningless, so they stay dimensions.
+_IDENTIFIER_RE = re.compile(
+    r"(^|_)(id|ids|key|code|codes|zip|zipcode|postcode|postal|prefix|phone|no|number|sku|ean|"
+    r"year|month|quarter|week|day|hour|yyyymm|year_month)$")
+
+
+def _column_kind(name: str, column_types: dict[str, str] | None) -> str:
+    """`measure` / `time` / `dimension` for one TABLE column, from its PHYSICAL
+    type and name. Unknown type → `dimension`, the behaviour before types were read."""
+    leaf = str(name).split(".")[-1].strip().lower()
+    t = str((column_types or {}).get(leaf) or "").lower()
+    if not t:
+        return "dimension"
+    if any(k in t for k in _TIME_TYPES):
+        return "time"
+    if any(k in t for k in _NUMERIC_TYPES):
+        return "dimension" if _IDENTIFIER_RE.search(leaf) else "measure"
+    return "dimension"
+
+
+def extract_chart_field_semantics(
+    config: Any, column_types: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Derive the chart's on-screen measure/dimension vocabulary from its config.
 
     Returns ``{"measures": [{field,label,agg}], "dimensions": [{field,label}],
@@ -114,20 +141,53 @@ def extract_chart_field_semantics(config: Any) -> dict[str, Any]:
     for d in (role.get("dimensions") or []):
         if isinstance(d, str) and d and d not in dim_refs:
             dim_refs.append(d)
-    # Standard-table mode carries dimensions in selectedColumns, not metrics.
+    # A STANDARD TABLE carries its columns in `selectedColumns`, with no metrics.
+    #
+    # They used to be read as dimensions, every one — so a monthly table of
+    # `year_month, mrr_active, arr_active, cus_churned` told discovery it had NO
+    # measures: it never matched "ARR", the measuring tools fell back to a column
+    # by position, and a KPI elsewhere answered a monthly question. The chart
+    # engine itself keeps these as row values (it groups by them unless the
+    # semantic layer declares a measure); for the AGENT what matters is that a
+    # numeric, non-identifier column is something it can measure. Its aggregation
+    # stays UNDECLARED (`agg: None`, `kind: "column"`), so nothing downstream
+    # assumes it sums across time.
+    time_dims: list[str] = []
     if not measures and not dim_refs:
         for col in (role.get("selectedColumns") or []):
             ref = col.get("field") if isinstance(col, dict) else col
-            if isinstance(ref, str) and ref and ref not in dim_refs:
+            if not (isinstance(ref, str) and ref) or ref in dim_refs:
+                continue
+            kind = _column_kind(ref, column_types)
+            if kind == "measure":
+                lbl = _label(ref)
+                label_by_field.setdefault(ref, lbl)
+                measures.append({"field": ref, "label": lbl, "agg": None, "kind": "column"})
+            else:
                 dim_refs.append(ref)
+                if kind == "time":
+                    time_dims.append(ref)
 
     dimensions: list[dict[str, Any]] = []
     for field_ref in dim_refs:
         lbl = _label(field_ref)
         label_by_field.setdefault(field_ref, lbl)
-        dimensions.append({"field": field_ref, "label": lbl})
+        dimensions.append({"field": field_ref, "label": lbl,
+                           **({"time": True} if field_ref in time_dims else {})})
 
     return {"measures": measures, "dimensions": dimensions, "label_by_field": label_by_field}
+
+
+def column_types_of(chart: Any) -> dict[str, str]:
+    """{bare column name: physical type} from the chart's dataset table cache."""
+    dt = getattr(chart, "dataset_table", None)
+    cache = getattr(dt, "columns_cache", None) if dt is not None else None
+    cols = cache.get("columns") if isinstance(cache, dict) else None
+    out: dict[str, str] = {}
+    for c in cols or []:
+        if isinstance(c, dict) and c.get("name"):
+            out[str(c["name"]).split(".")[-1].lower()] = str(c.get("type") or "")
+    return out
 
 
 def fields_block(meta: dict) -> dict:
@@ -262,6 +322,29 @@ class ToolContext:
     # column never reaches ANY tool — filtering only the prompt's field list
     # (the pre-P0-05 behaviour) left the raw values readable via get_chart_data.
     excluded_columns: set[str] = field(default_factory=set)
+    #: The surface's snapshot freshness (a public link's ``cache_ttl_minutes``:
+    #: None = current snapshot, 0 = realtime) — the AI reads a chart exactly as
+    #: the viewer's tile does, never a different execution state.
+    snapshot_ttl_minutes: int | None = None
+    #: ONE turn = ONE logical read: every chart of a dataset this context reads
+    #: is served the same snapshot generation (execution_plan.ReadScope), so an
+    #: answer never combines a tile read before a publish with one read after.
+    #: Created on the first chart read; worker copies of the context share it.
+    read_scope: Any = None
+    #: dataset_table_ids of the tiles this context was built from, recorded once
+    #: by `from_dashboard`. A public token is served published tiles only, and a
+    #: commit during the turn (retrieval logging commits the request session)
+    #: expires the dashboard — re-reading `dashboard.dashboard_charts` then
+    #: reloads every raw row, draft tiles included. None: not built from tiles.
+    served_table_ids: set[int] | None = None
+    #: Per chart, the page-scope hard bounds of the page(s) it is drawn on
+    #: (public links: `public._public_page_scope_by_chart`). Applied at the one
+    #: fetch boundary below, so no tool reads a chart wider than its page.
+    page_scope_by_chart: dict[int, list[dict]] = field(default_factory=dict)
+    #: Public links: ``(exposed qualified refs, bare control fields)`` — the
+    #: fields the served report exposes (`public._viewer_allowed`). A filter the
+    #: MODEL adds may name only those; None = not a public context (no rule).
+    exposed_fields: tuple | None = None
     #: The CURRENT step's knowledge scope, set per step by the flow engine:
     #: ``{"doc_ids": [...], "metric_names": [...]}``. Empty/absent means the step
     #: may reach everything the report is entitled to.
@@ -278,6 +361,34 @@ class ToolContext:
     #: has no way to know what "còn" refers to. Set per run by the executor;
     #: empty on turn one and on every path that has no conversation.
     prior_question: str = ""
+    #: THIS turn's question, set per run by `executor.run_flow`.
+    #:
+    #: It exists so the tool boundary can tell a grouped call that answers the
+    #: question from one that answers a different question. Measured: asked which
+    #: STATE had the highest revenue, the answering Agent called `rank_values` on
+    #: the revenue-by-CATEGORY chart and the ranking of categories became the
+    #: answer about states. Nothing at the tool boundary could see what had been
+    #: asked, so nothing could tell the two apart.
+    #:
+    #: Empty on any path that never set it, and empty means the dimension gate
+    #: stays silent — a scheduled digest or a replay must not start refusing
+    #: tools because it has no question to check against.
+    question: str = ""
+    #: The run's evidence store (`RunState.evidence_store`), set per run by
+    #: `executor.run_flow`. `compute` resolves `{ref, path}` variables here, so the
+    #: value in a formula is the value the runtime produced, not one the model typed.
+    evidence_store: dict[str, Any] = field(default_factory=dict)
+    #: Set only on a SKILL child run: the caller's knowledge scope at the moment it
+    #: invoked the Skill. Every step inside the child narrows within it
+    #: (`handlers/data.bounded_scope`), so a Skill's own attachments cannot widen
+    #: what the caller was allowed to read.
+    knowledge_ceiling: dict[str, Any] | None = None
+    #: THE RUN'S OWN SCOPE (`permissions.run_scope`: owner's current rights ∩ what
+    #: the flow attached ∩ the link ∩ the caller), recorded by dispatch when it is
+    #: computed. A step's attachments REPLACE `knowledge_scope`; without this, a
+    #: document the caller may not read — removed by `run_scope` — came straight
+    #: back through the step that attached it. `bounded_scope` intersects with it.
+    run_scope_ceiling: dict[str, Any] | None = None
     #: The most rows a single read may return, set per run from the binding's
     #: `capabilities.max_rows_per_call`. None means fall back to `MAX_TOP_N`.
     #:
@@ -302,8 +413,12 @@ class ToolContext:
         *,
         actor_type: str = "public_session",
         actor_ref: str | None = None,
+        page_scope_by_chart: dict[int, list[dict]] | None = None,
+        exposed_fields: tuple | None = None,
+        snapshot_ttl_minutes: int | None = None,
     ) -> "ToolContext":
         allowed: set[int] = set()
+        served_tables: set[int] = set()
         meta: dict[int, dict[str, Any]] = {}
         # chart_id → ordered list of page ids it appears on (from tile layout).
         page_charts: dict[str, list[int]] = {}
@@ -311,6 +426,8 @@ class ToolContext:
             if not dc.chart_id or not dc.chart:
                 continue
             allowed.add(dc.chart_id)
+            if getattr(dc.chart, "dataset_table_id", None) is not None:
+                served_tables.add(dc.chart.dataset_table_id)
             layout = dc.layout if isinstance(dc.layout, dict) else {}
             _pid = layout.get("page") or layout.get("pageId")
             if _pid:
@@ -319,7 +436,8 @@ class ToolContext:
                     page_charts[str(_pid)].append(dc.chart_id)
             custom_title = layout.get("custom_title") if isinstance(layout, dict) else None
             try:
-                fields = extract_chart_field_semantics(getattr(dc.chart, "config", None))
+                fields = extract_chart_field_semantics(
+                    getattr(dc.chart, "config", None), column_types_of(dc.chart))
             except Exception:
                 logger.warning(
                     "dashboard_ai_bot field-semantics extract failed chart_id=%s",
@@ -367,7 +485,22 @@ class ToolContext:
             actor_type=actor_type,
             actor_ref=actor_ref,
             excluded_columns=_resolve_excluded_columns(db, dashboard),
+            served_table_ids=served_tables,
+            page_scope_by_chart=dict(page_scope_by_chart or {}),
+            exposed_fields=exposed_fields,
+            snapshot_ttl_minutes=snapshot_ttl_minutes,
         )
+
+    def disclosed_filters(self) -> tuple[list[dict], int]:
+        """The applied filters a tool may NAME, and how many are withheld.
+
+        `public_filters` is what is ENFORCED; this is what may be SAID. A 🚫
+        hidden constraint (dashboard, page or link) is applied and only counted.
+        Every tool that tells the model which filters ran reads this — the list
+        used to go out whole, hidden field and value included.
+        """
+        from app.services.filter_layered_merge import disclosed_applied_filters
+        return disclosed_applied_filters(self.public_filters)
 
     def adopt_scope(self, chart_ids: set[int], dataset_ids: list[int]) -> None:
         """Give a context its charts when there is no report to read them off.
@@ -417,7 +550,8 @@ class ToolContext:
             if chart.id in self.chart_meta:
                 continue
             try:
-                fields = extract_chart_field_semantics(getattr(chart, "config", None))
+                fields = extract_chart_field_semantics(
+                    getattr(chart, "config", None), column_types_of(chart))
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "chat field-semantics extract failed chart_id=%s", chart.id
@@ -457,6 +591,66 @@ def fold_column(name: Any) -> str:
     from app.core.text_fold import fold_text
 
     return fold_text(name)
+
+
+def resolve_column(name: Any, columns: list[str]) -> str | None:
+    """The chart column a caller means, or None.
+
+    A chart's columns are qualified (`dataset_table_445.product_category_name_english`)
+    while every other surface — the semantic model, the intent, the glossary — names
+    the field bare. A bare name that matches exactly one column's last segment IS that
+    column; an ambiguous one is not guessed. Exact spelling always wins.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return None
+    if name in columns:
+        return name
+    want = fold_column(name.strip())
+    hits = [c for c in columns if fold_column(c) == want]
+    if len(hits) == 1:
+        return hits[0]
+    tail = want.rsplit(".", 1)[-1]
+    hits = [c for c in columns if fold_column(str(c)).rsplit(".", 1)[-1] == tail]
+    return hits[0] if len(hits) == 1 else None
+
+
+def value_key(x: Any) -> str:
+    """How two spellings of one value compare: case, accents and `_` aside."""
+    return fold_column(str(x)).replace("_", " ").strip()
+
+
+def resolve_value(ctx: Any, value: Any, values: list[Any]) -> Any:
+    """The column value a caller means when filtering on `value`.
+
+    Smoke run at e98d1b8d: the intent had resolved "Rio de Janeiro" to RJ and
+    "sports leisure" to sports_leisure, but the drilldown filtered on the words the
+    reader used, matched nothing, and the reader was told the revenue was 0. Exact
+    value first; then the one value equal up to case, accents and `_`; then the
+    member the runtime resolved for this turn (`ctx.member_aliases`). Never guessed.
+    """
+    if value is None or not isinstance(value, (str, int, float)):
+        return value
+    present = {str(v) for v in values if v is not None}
+    if str(value) in present:
+        return value
+    import re
+
+    # "Rio de Janeiro (RJ)" names the member twice: try each spelling (smoke 6041).
+    text = str(value)
+    inner = re.findall(r"\(([^()]+)\)", text)
+    outer = re.sub(r"\([^()]*\)", " ", text).strip()
+    aliases = getattr(ctx, "member_aliases", None) or {}
+    for candidate in [text, *inner, outer]:
+        if candidate in present:
+            return candidate
+        want = value_key(candidate)
+        hits = [v for v in present if value_key(v) == want]
+        if len(hits) == 1:
+            return hits[0]
+        code = aliases.get(want)
+        if code is not None and str(code) in present:
+            return code
+    return value
 
 
 def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:
@@ -591,14 +785,62 @@ def _fetch_chart_data(
     for f in ctx.public_filters:
         if isinstance(f, dict):
             merged.append(dict(f))
+    # On a public link a filter the MODEL adds is held to the viewer's rule: only
+    # fields the served report exposes. Refused LOUDLY — a silently dropped
+    # filter would present the unfiltered number as the filtered answer.
+    if ctx.exposed_fields and extra_filters:
+        from app.services.filter_layered_merge import filter_names_only_exposed_fields
+        refused = [f for f in extra_filters if isinstance(f, dict)
+                   and not filter_names_only_exposed_fields(f, *ctx.exposed_fields)]
+        if refused:
+            names = ", ".join(sorted({str(f.get("semanticField") or f.get("field") or "?") for f in refused}))
+            raise ToolError(
+                f"Báo cáo này không cho lọc theo: {names}. Chỉ lọc được theo các trường báo cáo đang hiển thị "
+                f"(This report cannot be filtered by {names}; only by the fields it shows)."
+            )
     for f in extra_filters or []:
         if isinstance(f, dict):
-            merged.append(dict(f))
+            from app.services.filter_layered_merge import without_server_owned_keys
+            merged.append(without_server_owned_keys(dict(f)) if ctx.exposed_fields else dict(f))
+    # A report over several datasets: the chart takes ITS dataset's filters, as
+    # its public tile does (filter_layered_merge.scope_filters_to_dataset) — and
+    # a filter left out that way is told to the model as NOT applied.
+    scoped_out: list[dict] = []
+    try:
+        from app.models.dataset import DatasetTable as _DT
+        from app.models.models import Chart as _Chart
+        from app.services.filter_layered_merge import foreign_field_check, scope_filters_to_dataset
+
+        def _dataset_of(cid) -> Any:
+            row = ctx.db.get(_Chart, int(cid))
+            # The chart's TABLE is the truth; the stored binding is the fallback.
+            ds = None
+            if getattr(row, "dataset_table_id", None):
+                ds = getattr(ctx.db.get(_DT, row.dataset_table_id), "dataset_id", None)
+            if ds is None:
+                cfg = getattr(row, "config", None) or {}
+                ds = ((cfg.get("semanticBinding") or {}).get("datasetId") if isinstance(cfg, dict) else None)
+            return ds
+
+        _ds_id = _dataset_of(chart_id)
+        _report = {d for d in (_dataset_of(dc.chart_id) for dc in (
+            getattr(getattr(ctx, "dashboard", None), "dashboard_charts", None) or []) if dc.chart_id) if d is not None}
+        _kept = scope_filters_to_dataset(merged, _ds_id, foreign_field_check(ctx.db, _ds_id, _report))
+        scoped_out = [f for f in merged if not any(f is k for k in _kept)]
+        merged = _kept
+    except Exception:  # noqa: BLE001 — unknown dataset → every filter stays (no scoping)
+        logger.debug("chart dataset scoping skipped for chart %s", chart_id, exc_info=True)
+    # The chart's page scope — a model-added filter can narrow it, never undo it.
+    bounds = ctx.page_scope_by_chart.get(chart_id) if ctx.page_scope_by_chart else None
+    if bounds:
+        from app.services.filter_layered_merge import apply_page_scope_bounds, mark_authoritative
+        merged = mark_authoritative(apply_page_scope_bounds(merged, bounds))
 
     # The AI-scope exclusion set is part of the cache identity: flipping a
     # column's visibility must not be served a pre-exclusion payload.
     cache_key = (
         chart_id,
+        getattr(ctx, "snapshot_ttl_minutes", None),
         _hash_filters(merged),
         ",".join(sorted(ctx.excluded_columns)) if ctx.excluded_columns else "",
     )
@@ -606,12 +848,21 @@ def _fetch_chart_data(
     if cached is not None:
         return cached
 
-    result = ChartService.get_chart_data(
-        ctx.db,
-        chart_id,
-        extra_filters=merged or None,
-        filter_context="dashboard",
-    )
+    from app.services.execution_plan import ReadScope, read_scope
+
+    if getattr(ctx, "read_scope", None) is None:
+        try:
+            ctx.read_scope = ReadScope()
+        except Exception:  # noqa: BLE001 — a frozen context: one scope per call
+            pass
+    with read_scope(getattr(ctx, "read_scope", None)):
+        result = ChartService.get_chart_data(
+            ctx.db,
+            chart_id,
+            extra_filters=merged or None,
+            filter_context="dashboard",
+            snapshot_ttl_minutes=getattr(ctx, "snapshot_ttl_minutes", None),
+        )
     raw = result.get("data") if isinstance(result, dict) else None
 
     columns: list[str] = []
@@ -673,11 +924,62 @@ def _fetch_chart_data(
             columns = [columns[i] for i in keep_idx]
             rows = [[r[i] if i < len(r) else None for i in keep_idx] for r in rows]
 
+    # What the model is TOLD ran: a 🚫 hidden constraint is applied above and
+    # never named here — only counted, so the answer can say the report author
+    # restricts the data without saying how (this list reached the model whole,
+    # hidden field and value included).
+    from app.services.filter_layered_merge import disclosable_filters
+    shown, withheld = disclosable_filters(merged)
+    # A filter the chart could NOT apply (a declared soft drop, e.g. a field
+    # unrelated to this chart's table) is never told to the model as applied —
+    # it would summarise the unfiltered number as the filtered answer.
+    _debug = result.get("debug") if isinstance(result, dict) else None
+    _dropped_refs = {
+        str(d.get("semantic_field") or d.get("field") or "").strip()
+        for d in ((_debug or {}).get("dropped_filters") or []) if isinstance(d, dict)
+    } - {""}
+
+    def _refs_of(f: dict) -> set[str]:
+        return {str(f.get(k) or "").strip() for k in ("semanticField", "field")} - {""}
+
+    applied_shown = [f for f in shown if not (_refs_of(f) & _dropped_refs)]
+    not_applied_shown = [f for f in shown if _refs_of(f) & _dropped_refs]
+    if scoped_out:  # another chart's filter — never this chart's answer
+        not_applied_shown += disclosable_filters(scoped_out)[0]
     payload = {
         "columns": columns,
         "rows": rows,
-        "filters_applied": merged,
+        "filters_applied": [
+            {k: v for k, v in f.items() if not str(k).startswith("_")} for f in applied_shown
+        ],
     }
+    if not_applied_shown:
+        payload["filters_not_applied"] = [
+            {k: v for k, v in f.items() if not str(k).startswith("_")} for f in not_applied_shown
+        ]
+    # A Top-N chart's rows are its top N, not the population: a total over them
+    # is the total of the top N (the tools must say so, never call it "all").
+    try:
+        from app.models.models import Chart as _Chart
+
+        _cfg = getattr(ctx.db.get(_Chart, int(chart_id)), "config", None) or {}
+        _limit = int(((_cfg.get("styleConfig") or {}).get("dataLimit") or 0)) if isinstance(_cfg, dict) else 0
+    except Exception:  # noqa: BLE001 — unknown → not claimed
+        _limit = 0
+    if _limit and len(rows) >= _limit:
+        payload["source_top_n"] = _limit
+    if withheld:
+        payload["restricted_by_author"] = withheld
+    # Freshness, as the chart's own surfaces show it: a snapshot's build time,
+    # or — for a live read served from the result cache — when the source was
+    # read. The answer can then say "tính đến HH:MM" instead of presenting a
+    # cached number as the source right now.
+    _dbg = _debug if isinstance(_debug, dict) else {}
+    if _dbg.get("snapshot_as_of"):
+        payload["data_as_of"] = _dbg.get("snapshot_as_of")
+    elif _dbg.get("result_cached"):
+        payload["data_as_of"] = _dbg.get("result_as_of")
+        payload["data_cached"] = True
     if dropped:
         # Tell the caller (and through it the LLM) that something was withheld,
         # so it says "không được phép xem" instead of inventing a reason.

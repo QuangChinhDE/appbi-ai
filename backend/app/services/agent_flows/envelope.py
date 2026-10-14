@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 #: Bumped only for a breaking change (field removed, or its type changed).
 SCHEMA_VERSION = 1
@@ -55,7 +55,9 @@ class _Model(BaseModel):
 # INPUT
 # ═══════════════════════════════════════════════════════════════════════════════
 Trigger = Literal[
-    "public_chat", "direct_chat", "studio_test", "node_test", "replay", "scheduled"
+    "public_chat", "direct_chat", "studio_test", "node_test", "replay", "scheduled",
+    # A Skill run invoked by another run (its parent is on the run row).
+    "skill",
 ]
 
 
@@ -257,10 +259,14 @@ class Budget(_Model):
 
 
 class RuntimeInfo(_Model):
-    """What a step that inherits its model falls back to. Never a credential (L4)."""
+    """The run's ceilings. Never a credential (L4).
 
-    provider: str = ""
-    model: str = ""
+    It used to carry a provider and model for steps that "inherited" the link's.
+    Steps now name their own provider, model and stored key, so there is nothing
+    to inherit and nothing here for a step to fall back to. An older envelope that
+    still carries those fields is read fine — unknown fields are dropped (L2).
+    """
+
     budget: Budget = Field(default_factory=Budget)
 
 
@@ -446,6 +452,37 @@ class Notice(_Model):
     code: str
     text: str = ""
 
+    # STRUCTURED, AND ADDRESSED. Two additions, both optional so every existing
+    # producer and consumer is unchanged:
+    #
+    # `audience` separates what a READER is told about an answer from what an
+    # AUTHOR is told about their flow's configuration — they were one list, so
+    # maintenance advice could reach a viewer.
+    #
+    # `remedies` carries the suggested actions as data instead of welding them
+    # into a Vietnamese sentence, so a UI does not have to parse prose to know
+    # what to offer, and so a remedy can be omitted when it does not apply.
+    audience: Literal["reader", "author"] = "reader"
+    severity: Literal["info", "warning", "error"] = "info"
+    node_key: str = ""
+    facts: dict[str, Any] = Field(default_factory=dict)
+    remedies: list[str] = Field(default_factory=list)
+
+
+def reader_notices(notices: list["Notice"]) -> list["Notice"]:
+    """Only what a READER may be told.
+
+    `audience` is part of the runtime contract, not a rendering hint. Author
+    diagnostics name node keys, configuration and remedies — maintenance detail a
+    viewer cannot act on and should not see. Filtering only in the frontend would
+    leave it in the response body, so it is dropped at the reader boundary and
+    refused again at render: neither layer is trusted alone.
+
+    Author surfaces (Studio Test, Runs) call nothing here — they receive both and
+    present them apart.
+    """
+    return [n for n in notices if getattr(n, "audience", "reader") != "author"]
+
 
 class MemoryDelta(_Model):
     """What the run wants remembered for the next turn. Applied by the runtime to
@@ -479,6 +516,14 @@ class TraceStep(_Model):
     #: one node pasting a large context it did not need.
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    #: An Agent step's capability view: granted, eligible (and why the rest were
+    #: not), visible per round, discovered, invoked, rejected. The data behind
+    #: "What the AI sees" for a run that already happened.
+    capabilities: dict[str, Any] | None = None
+    #: Where the budget went: model/tool calls this step spent (children included
+    #: for a container), what it had available when it started, and what it was
+    #: made to leave for the steps after it.
+    budget: dict[str, Any] | None = None
 
 
 class Trace(_Model):
@@ -497,6 +542,33 @@ class Usage(_Model):
 class Answer(_Model):
     blocks: list[Block] = Field(default_factory=list)
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def text(self) -> str:
+        """`plain_text()`, PUBLISHED — because the client was re-deriving it.
+
+        THE BUG THIS CLOSES. A reader's thumb is attached to a run by matching the
+        answer TEXT within their own session (`runs.apply_rating`), which is what
+        stops a public page rating words the server never said. The server stored
+        `plain_text()`; the browser, having only `blocks`, built its own text with
+        `blocksToText` — a second implementation of the same rendering, and not
+        the same function. `plain_text` includes a metric block as
+        `label: value`; the client dropped metric blocks entirely.
+
+        So every KPI-shaped answer — the common case, and the one with numbers in
+        it — produced two different strings, the match found nothing, and the
+        rating was recorded in the session blob and silently absent from
+        `agent_flow_runs.rating`: the column the Runs tab, the operator and the
+        pilot funnel all read. Reproduced on a public link before this was
+        written: the answer rated, the run row unrated.
+
+        Publishing it is the fix at the layer that owns the rendering. The
+        client now quotes what the server said instead of guessing at it, and
+        there is one implementation again. Additive: `blocks` is unchanged and
+        every existing consumer keeps working.
+        """
+        return self.plain_text()
+
     def plain_text(self) -> str:
         """The answer as text, for logs and for clients that cannot render blocks."""
         out: list[str] = []
@@ -511,6 +583,18 @@ class Answer(_Model):
 
 
 RunStatus = Literal["ok", "partial", "blocked", "failed"]
+
+#: Notice facts that name the figures a check withheld or could not verify. They
+#: stay on the recorded run (the author's Runs tab); a reader never receives them.
+_AUTHOR_ONLY_FACTS = frozenset({"flagged", "unmatched", "values", "draft"})
+
+
+def reader_notice_dict(n: dict) -> dict:
+    """One notice as a reader may receive it — live or replayed from a stored turn."""
+    facts = n.get("facts") if isinstance(n, dict) else None
+    if not isinstance(facts, dict):
+        return n
+    return {**n, "facts": {k: v for k, v in facts.items() if k not in _AUTHOR_ONLY_FACTS}}
 
 
 class FlowOutput(_Model):
@@ -531,8 +615,38 @@ class FlowOutput(_Model):
     trace: Trace = Field(default_factory=Trace)
     usage: Usage = Field(default_factory=Usage)
 
-    def to_dict(self) -> dict[str, Any]:
-        return self.model_dump(mode="json")
+    def to_dict(self, *, notices: list["Notice"] | None = None) -> dict[str, Any]:
+        """The envelope as JSON.
+
+        `notices` overrides what is SENT without touching what is recorded: a
+        reader surface passes `reader_notices(...)`, and the run row keeps the
+        full set so the author can still read their diagnostics in Runs.
+        """
+        out = self.model_dump(mode="json")
+        if notices is not None:
+            out["notices"] = [n.model_dump(mode="json") for n in notices]
+        return out
+
+    def to_reader_dict(self) -> dict[str, Any]:
+        """The envelope as a READER receives it: the answer, its citations and the
+        reader's notices — never the author's trace, usage or session state.
+
+        Security acceptance F1 (run at 422b8fd2): a public link sent the whole
+        `trace`, and a withheld figure's draft rode in it
+        (`trace.steps[].capabilities.claims.draft`) while the answer showed it
+        hidden. What the claim check withholds from the answer is withheld from the
+        wire; the recorded run keeps every field for the author's Runs tab.
+        """
+        out = self.to_dict(notices=reader_notices(self.notices))
+        # A WITHHELD FIGURE IS WITHHELD FROM THE NOTICE TOO. Security re-test at
+        # ce6d6313: the answer showed "[đã ẩn]" while the reader notice
+        # `claims_unverified` carried `facts.flagged[].value` = 41746 (link 171),
+        # 987654321 (a chat thread). Readers use `facts.candidates` only.
+        out["notices"] = [reader_notice_dict(n) for n in out.get("notices") or []]
+        out["trace"] = Trace().model_dump(mode="json")
+        out["usage"] = Usage().model_dump(mode="json")
+        out["memory_delta"] = MemoryDelta().model_dump(mode="json")
+        return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

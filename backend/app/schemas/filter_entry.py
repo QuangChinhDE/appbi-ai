@@ -139,8 +139,9 @@ class SlicerEntry(BaseModel):
 class PublicLinkFilterEntry(BaseModel):
     """One entry inside `DashboardPublicLink.filters_config`.
 
-    Acts as either a hard value override (locked) or a "drop this field
-    entirely" marker (hidden). When `hidden=True`, `value` is ignored.
+    Acts as a hard value override (locked), or with `hidden=True` either an
+    undisclosed value override (a value is given — enforced, never named) or a
+    "drop this field entirely" marker (no value). See docs/filter-semantics.md §2.3.
     """
 
     id: Optional[str] = None

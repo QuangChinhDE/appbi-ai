@@ -1,0 +1,140 @@
+{
+ "note": "COPY of the rig database (appbi_a7, CREATE DATABASE ... TEMPLATE appbi). head -> downgrade 20260914_0002 (the head before the stacked PRs) -> upgrade head. Read-only SELECT snapshots.",
+ "versions": [
+  "20260929_0001",
+  "20260914_0002",
+  "20260929_0001"
+ ],
+ "counts": {
+  "dashboards": [
+   58,
+   58,
+   58
+  ],
+  "tiles": [
+   709,
+   692,
+   709
+  ]
+ },
+ "downgrade": {
+  "reports_with_grid_marker": 38,
+  "controls_created_by_migration": 38,
+  "migration_controls_left_after_downgrade": [],
+  "slicer_tiles_after_downgrade": [
+   4551,
+   6437,
+   6449,
+   6450,
+   6797,
+   6948,
+   6949,
+   7231,
+   7915,
+   8980,
+   9301,
+   9310,
+   9323,
+   9348,
+   9364,
+   9366,
+   9367,
+   9379,
+   9388,
+   9397,
+   9410,
+   9424,
+   9440,
+   9457,
+   9478,
+   9493,
+   9506,
+   9515,
+   9524,
+   9537,
+   9552,
+   9568,
+   9585,
+   9606
+  ],
+  "slicer_tiles_after_downgrade_count": 34,
+  "canvas_reports": [
+   445
+  ],
+  "canvas_reports_layout_mode_after_downgrade": {
+   "445": "canvas"
+  },
+  "enum_values_removed_by_downgrade": []
+ },
+ "ends": {
+  "tiles_only_before": [
+   "[574, \"chart\", 4776, 0, 3, 12, 6, \"page-1\", null]",
+   "[574, \"chart\", 4777, 12, 3, 12, 6, \"page-1\", null]",
+   "[574, \"chart\", 4779, 0, 12, 24, 16, \"page-1\", null]",
+   "[574, \"chart\", 4780, 24, 12, 12, 16, \"page-1\", null]",
+   "[574, \"chart\", 4781, 0, 28, 18, 14, \"page-1\", null]",
+   "[574, \"chart\", 4782, 18, 28, 18, 14, \"page-1\", null]",
+   "[574, \"section_header\", null, 0, 9, 36, 3, \"page-1\", {\"subtitle\": \"Revenue and orders\", \"title\": \"Performance\"}]",
+   "[574, \"slicer\", null, 8, 0, 8, 3, \"page-1\", {\"origin\": \"author\", \"slicerId\": \"gf-1790579968327\", \"treatment\": \"auto\"}]"
+  ],
+  "tiles_only_before_count": 8,
+  "tiles_only_after": [
+   "[574, \"chart\", 4776, 0, 6, 12, 6, \"page-1\", null]",
+   "[574, \"chart\", 4777, 12, 6, 12, 6, \"page-1\", null]",
+   "[574, \"chart\", 4779, 0, 15, 24, 16, \"page-1\", null]",
+   "[574, \"chart\", 4780, 24, 15, 12, 16, \"page-1\", null]",
+   "[574, \"chart\", 4781, 0, 31, 18, 14, \"page-1\", null]",
+   "[574, \"chart\", 4782, 18, 31, 18, 14, \"page-1\", null]",
+   "[574, \"section_header\", null, 0, 12, 36, 3, \"page-1\", {\"subtitle\": \"Revenue and orders\", \"title\": \"Performance\"}]",
+   "[574, \"slicer\", null, 8, 3, 8, 3, \"page-1\", {\"origin\": \"author\", \"slicerId\": \"gf-1790579968327\", \"treatment\": \"auto\"}]"
+  ],
+  "tiles_only_after_count": 8,
+  "dashboards_differing_outside_markers": [
+   628,
+   639,
+   659,
+   725,
+   813,
+   839,
+   841,
+   842,
+   845,
+   846,
+   847,
+   848,
+   849,
+   850,
+   851,
+   854,
+   855,
+   856,
+   857,
+   858,
+   859
+  ],
+  "dashboards_differing_count": 21,
+  "enums_equal": true
+ },
+ "alembic_log": {
+  "downgrade": [
+   "INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.",
+   "INFO  [alembic.runtime.migration] Will assume transactional DDL.",
+   "INFO  [alembic.runtime.migration] Running downgrade 20260929_0001 -> 20260928_0001, The slicer bar becomes controls on the grid.",
+   "INFO  [alembic.runtime.migration] Running downgrade 20260928_0001 -> 20260926_0001, Canvas dashboards become Grid dashboards.",
+   "INFO  [alembic.runtime.migration] Running downgrade 20260926_0001 -> 20260914_0002, Audit values for AI Design content proposals."
+  ],
+  "upgrade": [
+   "INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.",
+   "INFO  [alembic.runtime.migration] Will assume transactional DDL.",
+   "INFO  [alembic.runtime.migration] Running upgrade 20260914_0002 -> 20260926_0001, Audit values for AI Design content proposals.",
+   "INFO  [alembic.runtime.migration] Running upgrade 20260926_0001 -> 20260928_0001, Canvas dashboards become Grid dashboards.",
+   "INFO  [alembic.runtime.migration] Running upgrade 20260928_0001 -> 20260929_0001, The slicer bar becomes controls on the grid."
+  ]
+ },
+ "findings": {
+  "copies": "21 reports copied after the upgrade carried their source's migratedToGrid marker (ids of the source's rows). The scoped downgrade leaves the source's rows alone and drops the inherited marker; the re-upgrade creates nothing for them. No tile of any copy changed.",
+  "report_574": "An author placed a control (6437, Channel) at x=8,y=0 after the upgrade. The downgrade deleted only the migration's control (6720) and moved back only the tiles whose destination was free (6116); 6114/6115 stayed (destination taken: a gap, never an overlap). The re-upgrade then made a new control band and shifted the page by 3 rows. Net: 574 ends 3 rows lower with 6116 one band above its row; nothing overlaps, no filter changed.",
+  "overlaps": "32 stored overlaps exist at head before the round trip (settled at render by settleStoredLayout, as viewers see them); the same 32 after it. The round trip adds none.",
+  "enum": "20260926_0001 adds enum values; its downgrade is a no-op by design (Postgres cannot drop enum values); enums identical at both ends."
+ }
+}

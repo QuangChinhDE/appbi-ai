@@ -43,7 +43,7 @@ from typing import Any
 #: keys; a model asked for one produces a plausible integer, and a plausible
 #: integer is indistinguishable from a real one until a viewer reads the wrong
 #: document.
-_AUTHOR_SUPPLIED = ("knowledge", "datasets", "metrics", "chart_ids")
+_AUTHOR_SUPPLIED = ("knowledge", "datasets", "metrics", "chart_ids", "credential_id")
 
 
 def _nodes_section(web_enabled: bool) -> str:
@@ -81,9 +81,9 @@ def _tools_section(web_enabled: bool) -> str:
 
 
 def _models_section() -> str:
-    from app.services.agent_flows.models_catalogue import INHERIT, MODELS
+    from app.services.agent_flows.models_catalogue import MODELS
 
-    out = [f'  - "{INHERIT}" (recommended) — use whatever the link is configured with']
+    out = []
     for prov, models in MODELS.items():
         names = ", ".join(m["model"] for m in models)
         out.append(f'  - provider "{prov}" with model one of: {names}')
@@ -119,7 +119,8 @@ def _example_flow() -> str:
                     "key": "tra_loi",
                     "type": "agent",
                     "name": "Trả lời người xem",
-                    "provider": "inherit",
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
                     "prompt": (
                         "Trả lời câu hỏi bằng đúng ngôn ngữ người dùng dùng. "
                         "Chỉ dùng số có trong dữ liệu đã đọc. Nêu rõ biểu đồ nguồn."
@@ -199,7 +200,9 @@ prompt space and a step holding thirty of them chooses badly.
 
 ═══ MODEL ═══
 {_models_section()}
-Prefer "inherit" unless I ask for a specific model.
+Use provider "openai" with model "gpt-4o-mini" unless I ask for a specific one.
+NEVER emit `credential_id` or any API key: I pick the key for each step in the
+builder after importing.
 
 ═══ RULES YOU MUST FOLLOW ═══
 1. `key` for each step: short, lowercase, a-z 0-9 and underscore only, unique.

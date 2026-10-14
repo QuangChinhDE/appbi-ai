@@ -18,13 +18,20 @@
  */
 import type { Dashboard, DashboardChart, DashboardChartLayout, DashboardThemeConfig } from '@/types/api';
 import { COLORWAYS, COLORWAY_KEYS, TEMPLATES, TEMPLATE_KEYS } from '@/lib/dashboard-theme-catalog';
+import { GRID_VERSION, scaleGridLayoutForRender } from '@/lib/dashboard-pages';
 import { compilePresentationPlan } from './compiler';
-import { isAllowedChartStyleKey, isAllowedThemeKey, isAllowedFont, KPI_ONLY_STYLE_KEYS } from './capabilities';
+import { blockWidgetConfig, blockWidgetType } from './blocks';
+import { isAllowedChartStyleKey, isAllowedThemeKey, isAllowedFont, isValidStyleValue, KPI_ONLY_STYLE_KEYS } from './capabilities';
 import { buildPresentationFingerprint } from './snapshot';
-import { validatePresentationMutation, validatePresentationPlan } from './validator';
+import { applyStructureOperations, avoidFixed } from './structure';
+import { resolveStructure } from '@/lib/report-structure';
+import type { Rect } from './structure';
+import { STRUCTURAL_THEME_KEYS, validatePresentationMutation, validatePresentationPlan } from './validator';
 import type { ValidationResult } from './validator';
 import type {
+  CreatedBlock,
   DashboardPresentationSnapshot,
+  DesignLayer,
   PresentationMutation,
   PresentationPlan,
   VisualId,
@@ -63,9 +70,9 @@ export interface BuildMutationInput {
   /** The theme's inter-tile gap. It sets the grid's row pitch, so the compiler
    *  needs it to turn a height in pixels into a number of rows. */
   gridGapPx?: number;
-  /** When set, ONE chart is being restyled: skip the layout compile entirely and
-   *  emit only that tile's style override, so nothing else moves or changes. */
-  focusedChartId?: number | null;
+  /** The visuals the user selected. When non-empty, nothing outside them may
+   *  change — not their geometry, not their style, not the report theme. */
+  targets?: VisualId[] | null;
 }
 
 export interface BuildMutationResult {
@@ -148,19 +155,16 @@ export function resolveThemePatch(
   return filtered as Partial<DashboardThemeConfig>;
 }
 
-/** Slicer presentation → the fields the renderer actually reads. `slicer_cluster
- *  _layout.position` outranks the theme's `filterDock`, so a dock change has to
- *  write the cluster field or it looks like it did nothing. */
+/** Slicer presentation → the fields the renderer actually reads: how controls
+ *  look (variant, style). There is no filter area to dock any more — a control
+ *  is a grid element, and a plan's `dock` says where a DIRECTION puts the
+ *  controls on the grid (see directions.ts), so nothing here writes a position. */
 export function resolveSlicerPatch(
   intent: PresentationPlan['slicerPresentation'],
 ): { cluster: Record<string, unknown>; theme: Record<string, unknown> } {
   if (!intent) return { cluster: {}, theme: {} };
   const cluster: Record<string, unknown> = {};
   const theme: Record<string, unknown> = {};
-  if (intent.dock) {
-    cluster.position = intent.dock;
-    theme.filterDock = intent.dock;
-  }
   if (intent.variant) theme.slicerVariant = intent.variant;
   if (intent.style) theme.slicerStyle = intent.style;
   return { cluster, theme };
@@ -187,6 +191,7 @@ function resolveTileStyles(
     const safe: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(intent ?? {})) {
       if (!isAllowedChartStyleKey(key)) continue;
+      if (!isValidStyleValue(key, value)) continue;
       if (!isKpi && KPI_ONLY_STYLE_KEYS.has(key)) continue;
       safe[key] = value;
     }
@@ -195,66 +200,58 @@ function resolveTileStyles(
   return out;
 }
 
+/** Where each tile is drawn right now, in finer-grid coordinates. */
+export function rectsOf(tiles: DashboardChart[]): Map<VisualId, Rect> {
+  const out = new Map<VisualId, Rect>();
+  for (const tile of tiles) {
+    const layout = (scaleGridLayoutForRender(tile.layout as any) ?? {}) as Record<string, any>;
+    out.set(tile.id, {
+      x: Number(layout.x) || 0,
+      y: Number(layout.y) || 0,
+      w: Number(layout.w) || 0,
+      h: Number(layout.h) || 0,
+    });
+  }
+  return out;
+}
+
+export function lockedIdsOf(tiles: DashboardChart[]): Set<VisualId> {
+  return new Set(tiles.filter((t) => (t.layout as any)?.locked === true).map((t) => t.id));
+}
+
 /**
  * Plan → validated mutation. The single entry point; nothing else in the app
  * should call the compiler directly.
+ *
+ * The layer on the plan decides how much of the page may be rewritten, and it
+ * is enforced twice: here, by construction (a style plan has no code path that
+ * writes a coordinate), and in the validator, by comparison (every tile's final
+ * rectangle against the one it had). Locked tiles and — under a selection —
+ * unselected tiles are FIXED: no branch writes them, and a mutation that did
+ * would be refused.
  */
 export function buildPresentationMutation(input: BuildMutationInput): BuildMutationResult {
   const { plan, snapshot, tiles, pageId, currentTheme, gridGapPx } = input;
+  const layer: DesignLayer = plan.layer ?? 'style';
+  const targets = (input.targets ?? []).filter((id) => tiles.some((t) => t.id === id));
+  const targetSet = new Set(targets);
+  const locked = lockedIdsOf(tiles);
+  const fixed = new Set<VisualId>(locked);
+  if (targets.length > 0) {
+    for (const tile of tiles) if (!targetSet.has(tile.id)) fixed.add(tile.id);
+  }
+  const beforeRects = rectsOf(tiles);
 
   const emptyMutation: PresentationMutation = {
-    layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [],
+    layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, notes: [], layer,
   };
 
-  // ── Focused single-chart restyle ──────────────────────────────────────────
-  // The user clicked one tile: change ONLY its appearance. There is no compile
-  // (nothing moves), no theme, no slicer — just that tile's styleConfigOverride,
-  // merged over what it already carries so a hand-set Top-N survives. The same
-  // fingerprint check runs, so the restyle still cannot touch what the chart
-  // shows, and every OTHER tile is provably identical.
-  //
-  // Runs BEFORE the whole-plan gate on purpose: `resolveTileStyles` already
-  // drops any key outside the allow-list, and the fingerprint proves no data
-  // moved, so a focused restyle is safe by construction. A model that also
-  // filled in `direction`/`sections` (which we never apply here) must not sink
-  // the one tile the user asked to restyle — so those parts of the plan are not
-  // validated in this path. The pass is the focused tileStyle + the fingerprint.
-  if (input.focusedChartId != null) {
-    const id = input.focusedChartId;
-    const target = tiles.find((t) => t.id === id);
-    const style = resolveTileStyles(plan, tiles)[id] ?? {};
-    if (!target || Object.keys(style).length === 0) {
-      // Nothing survived the allow-list (or the tile is gone): a no-op, not a
-      // refusal. Returning ok with an empty mutation lets the caller's
-      // empty-diff path render it as "already matches / nothing to do".
-      return {
-        ok: true,
-        mutation: emptyMutation,
-        planValidation: { ok: true, repairable: false, violations: [] },
-        mutationValidation: { ok: true, repairable: false, violations: [] },
-        orphanIds: [],
-      };
-    }
-    const previous = ((target.layout as any)?.styleConfigOverride ?? {}) as Record<string, unknown>;
-    const mutation: PresentationMutation = {
-      layoutOverrides: {
-        [id]: { styleConfigOverride: { ...previous, ...style } } as Partial<DashboardChartLayout>,
-      },
-      themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [],
-    };
-    const before = buildPresentationFingerprint(tiles);
-    const after = buildPresentationFingerprint(applyMutationToTiles(tiles, mutation));
-    const mutationValidation = validatePresentationMutation({ before, after, mutation, pageId });
-    return {
-      ok: mutationValidation.ok,
-      mutation,
-      planValidation: { ok: true, repairable: false, violations: [] },
-      mutationValidation,
-      orphanIds: [],
-    };
-  }
-
-  const planValidation = validatePresentationPlan(plan, tiles.map((t) => t.id));
+  const planValidation = validatePresentationPlan(
+    plan,
+    [...tiles.map((t) => t.id), ...(layer === 'redesign'
+      ? [...(plan.blocks ?? []).map((b) => b.id), ...(plan.slicerControls ?? []).map((c) => c.id)]
+      : [])],
+  );
   if (!planValidation.ok && !planValidation.repairable) {
     return {
       ok: false,
@@ -265,47 +262,152 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
     };
   }
 
-  const { mutation, orphanIds } = compilePresentationPlan({ plan, snapshot, pageId, gridGapPx });
+  // ── Geometry, by layer ───────────────────────────────────────────────────
+  const mutation: PresentationMutation = { ...emptyMutation, layoutOverrides: {}, notes: [] };
+  let orphanIds: VisualId[] = [];
+  const writeRects = (next: Map<VisualId, Rect>) => {
+    for (const [id, rect] of next) {
+      const prev = beforeRects.get(id);
+      if (prev && prev.x === rect.x && prev.y === rect.y && prev.w === rect.w && prev.h === rect.h) continue;
+      if (fixed.has(id)) continue; // belt: a fixed tile is never written
+      mutation.layoutOverrides[id] = { x: rect.x, y: rect.y, w: rect.w, h: rect.h, gv: GRID_VERSION, pageId };
+    }
+  };
 
-  // Per-tile style rides along on the same layout write, because that is where
-  // `styleConfigOverride` already lives — one field, one save, one undo.
+  if (layer === 'structure') {
+    const result = applyStructureOperations(beforeRects, plan.structure?.operations ?? [], fixed);
+    writeRects(result.rects);
+    mutation.notes.push(...result.notes);
+  } else if (layer === 'redesign' && (plan.sections ?? []).length === 0) {
+    // A redesign with no composition (an echoed prompt, a model that answered
+    // with theme only) is NOT an instruction to re-pack the page. Appending
+    // every visual two-per-row is what the old compiler did with it, and that
+    // rearranged a whole dashboard for "make it prettier".
+    if ((plan.structure?.operations ?? []).length > 0) {
+      const result = applyStructureOperations(beforeRects, plan.structure!.operations, fixed);
+      writeRects(result.rects);
+      mutation.notes.push(...result.notes);
+    }
+  } else if (layer === 'redesign') {
+    const compiled = compilePresentationPlan({ plan, snapshot, pageId, gridGapPx, fixed });
+    orphanIds = compiled.orphanIds;
+    mutation.notes.push(...compiled.mutation.notes);
+    const next = new Map(beforeRects);
+    for (const [rawId, layout] of Object.entries(compiled.mutation.layoutOverrides)) {
+      const id = Number(rawId);
+      next.set(id, { x: Number(layout.x), y: Number(layout.y), w: Number(layout.w), h: Number(layout.h) });
+    }
+    const routed = fixed.size > 0 ? avoidFixed(next, fixed) : next;
+    if (fixed.size > 0 && locked.size > 0) mutation.notes.push(`${locked.size} locked visual(s) kept their place.`);
+    // Blocks (negative ids) leave the tile geometry here and become rows to
+    // create; the validator below only ever sees tiles that exist.
+    const blocks = new Map((plan.blocks ?? []).map((b) => [b.id, b]));
+    const controls = new Map((plan.slicerControls ?? []).map((c) => [c.id, c]));
+    const created: CreatedBlock[] = [];
+    const tileRects = new Map<VisualId, Rect>();
+    for (const [id, rect] of routed) {
+      const block = blocks.get(id);
+      const control = controls.get(id);
+      if (control) {
+        // A control is presentation of a slicer that already exists: it names
+        // the slicer and a look (see lib/slicer-placement), nothing else.
+        created.push({
+          tempId: id,
+          widgetType: 'slicer',
+          widgetConfig: { slicerId: control.slicerId, treatment: control.treatment, origin: 'ai' },
+          layout: { x: rect.x, y: rect.y, w: rect.w, h: rect.h, gv: GRID_VERSION, pageId },
+        });
+      } else if (block) {
+        created.push({
+          tempId: id,
+          widgetType: blockWidgetType(block),
+          widgetConfig: blockWidgetConfig(block),
+          layout: { x: rect.x, y: rect.y, w: rect.w, h: rect.h, gv: GRID_VERSION, pageId },
+        });
+      } else if (id >= 0) {
+        tileRects.set(id, rect);
+      }
+    }
+    writeRects(tileRects);
+    if (created.length) mutation.createdBlocks = created;
+  }
+  // layer === 'style': no branch writes a coordinate.
+
+  // ── Section membership ───────────────────────────────────────────────────
+  // A design that moves things states where they now belong, the way a person's
+  // drag does (lib/report-structure): every heading introduces what sits under
+  // it in the new arrangement. Without this, membership an author had stated
+  // before the redesign would keep a moved chart in its old section. A tile the
+  // design may not move (fixed) keeps what the author stated. A heading the
+  // design creates is referred to by its temporary id; the page swaps it for
+  // the real one when it creates the row.
+  if (layer !== 'style' && (Object.keys(mutation.layoutOverrides).length > 0 || (mutation.createdBlocks?.length ?? 0) > 0)) {
+    const kindOf = (widgetType: string | null | undefined) => (widgetType === 'section_header' ? 'section' as const
+      : widgetType === 'hero_strip' ? 'header' as const
+        : widgetType === 'narrative' ? 'narrative' as const : 'content' as const);
+    const storedSection = (layout: unknown): number | null | undefined => {
+      const raw = (layout as { sectionId?: unknown } | null | undefined)?.sectionId;
+      if (raw === null) return null;
+      const n = Number(raw);
+      return raw !== undefined && raw !== '' && Number.isFinite(n) ? n : undefined;
+    };
+    const finalTiles = [
+      ...tiles.filter((tile) => beforeRects.has(tile.id)).map((tile) => {
+        const o = mutation.layoutOverrides[tile.id] as Record<string, any> | undefined;
+        const r = beforeRects.get(tile.id)!;
+        return {
+          id: tile.id,
+          x: o?.x ?? r.x, y: o?.y ?? r.y, w: o?.w ?? r.w, h: o?.h ?? r.h,
+          kind: kindOf(tile.widget_type),
+          // Fixed tiles keep the author's statement; everything the design
+          // arranged is read from where it now sits.
+          sectionId: fixed.has(tile.id) ? storedSection(tile.layout) : undefined,
+        };
+      }),
+      ...(mutation.createdBlocks ?? []).map((b) => ({
+        id: b.tempId, x: b.layout.x, y: b.layout.y, w: b.layout.w, h: b.layout.h, kind: kindOf(b.widgetType), sectionId: undefined,
+      })),
+    ];
+    const membership = resolveStructure(finalTiles).sectionOf;
+    for (const tile of finalTiles) {
+      if (tile.kind === 'section' || tile.kind === 'header' || fixed.has(tile.id)) continue;
+      const next = membership.get(tile.id) ?? null;
+      const created = mutation.createdBlocks?.find((b) => b.tempId === tile.id);
+      if (created) { created.layout = { ...created.layout, sectionId: next } as any; continue; }
+      // Only what the design moved is restated: a tile it left in place keeps
+      // the author's statement (and a selection-scoped change touches nothing
+      // outside the selection).
+      const o = mutation.layoutOverrides[tile.id] as Record<string, any> | undefined;
+      if (!o || o.x == null) continue;
+      const existing = tiles.find((x) => x.id === tile.id);
+      if (storedSection(existing?.layout) === next) continue;
+      mutation.layoutOverrides[tile.id] = { ...o, sectionId: next } as Partial<DashboardChartLayout>;
+    }
+  }
+
+  // ── Per-tile style ───────────────────────────────────────────────────────
+  // Rides on the same layout write, because that is where `styleConfigOverride`
+  // already lives — one field, one save, one undo.
   const tileStyles = resolveTileStyles(plan, tiles);
   const existingById = new Map(tiles.map((t) => [t.id, t]));
 
-  // Theme authority: a report-scoped theme change makes the report the source of
-  // truth for COLOUR. Per-tile colour exceptions left by an earlier design
-  // (kpiAccentColor, chartSurface, palette, …) would otherwise mask the new
-  // theme — "change the report to deep blue" would leave the KPIs their old
-  // colours. So those keys are reset here; non-colour per-tile styles (lineWidth,
-  // showDataLabels, a hand-set Top-N) are kept. A focused restyle after this
-  // still layers a per-tile exception on top — render-time specificity is
-  // unchanged; this only clears STALE exceptions at the moment the theme is
-  // deliberately reset.
-  // Theme is a REPORT-level property by nature (theme_config is shared by every
-  // page), so a colour/theme request applies report-wide the moment it is made —
-  // there is no "page-scoped theme". The scope selector governs LAYOUT reach,
-  // not this. Whenever the plan carries a themeIntent the theme is applied and
-  // becomes authoritative over stale per-tile colour; a layout-only redesign
-  // (no themeIntent) never touches the theme.
-  const themeRequested = !!plan.themeIntent && Object.keys(plan.themeIntent).length > 0;
-  const themeAuthoritative = themeRequested;
-  // The colour the report is being set to (custom hex, else the colorway's own
-  // accent). Per-tile colour keys are re-pointed to it, not blanked — clearing
-  // `kpiAccentColor` alone would drop the number back to plain text, not the new
-  // theme colour, so the change would still look like it did nothing.
-  const resolvedThemePatch = themeRequested
-    ? resolveThemePatch(plan.themeIntent, currentTheme)
+  // Theme authority: a report theme change makes the report the source of truth
+  // for COLOUR, so stale per-tile colour exceptions are reset (non-colour
+  // styles — lineWidth, a Top-N — are kept). Theme is report-level by storage;
+  // a request scoped to selected visuals never carries one (see coerce).
+  const themeRequested = !!plan.themeIntent && Object.keys(plan.themeIntent).length > 0 && targets.length === 0;
+  const resolvedThemePatch: Record<string, unknown> = themeRequested
+    ? { ...(resolveThemePatch(plan.themeIntent, currentTheme) as Record<string, unknown>) }
     : {};
-  const themeAccent = themeAuthoritative
-    ? ((resolvedThemePatch as Record<string, unknown>).accent as string | undefined)
-    : undefined;
+  // A template carries a default filter dock. Choosing a LOOK must not move the
+  // filters, so under style the dock stays whatever it is.
+  if (layer === 'style') {
+    for (const key of STRUCTURAL_THEME_KEYS) delete resolvedThemePatch[key];
+  }
+  const themeAccent = themeRequested ? (resolvedThemePatch.accent as string | undefined) : undefined;
   const clearColour = (prev: Record<string, unknown>): Record<string, unknown> => {
     const next = { ...prev };
-    // Mode/surface/palette keys fall back to the theme.
     for (const key of THEME_RESET_COLOUR_KEYS) delete next[key];
-    // A direct colour a KPI/icon carried follows the new theme colour instead of
-    // vanishing to plain text — so "make the report deep blue" turns the numbers
-    // deep blue, not black.
     if (themeAccent) {
       for (const key of THEME_REPOINT_COLOUR_KEYS) {
         if (key in next) next[key] = themeAccent;
@@ -318,26 +420,20 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
 
   for (const [rawId, style] of Object.entries(tileStyles)) {
     const id = Number(rawId);
+    if (targets.length > 0 && !targetSet.has(id)) continue;
     const layout = mutation.layoutOverrides[id] ?? {};
     let previous = ((existingById.get(id)?.layout as any)?.styleConfigOverride ?? {}) as Record<string, unknown>;
-    if (themeAuthoritative) previous = clearColour(previous);
-    // Merge over what the tile already carries: a redesign that set
-    // `legendPosition` must not wipe a Top-N the author configured by hand.
+    if (themeRequested) previous = clearColour(previous);
     mutation.layoutOverrides[id] = {
       ...layout,
       styleConfigOverride: { ...previous, ...style },
     } as Partial<DashboardChartLayout>;
   }
 
-  // Tiles the plan gave no explicit style still need their stale colour cleared
-  // when the theme is now authoritative — including tiles the compiler only
-  // MOVED (they have a geometry override but no styleConfigOverride yet).
-  // Otherwise a KPI with a leftover accent keeps it and the theme change looks
-  // like it did nothing. Geometry already written is preserved.
-  if (themeAuthoritative) {
+  if (themeRequested) {
     const styledByPlan = new Set(Object.keys(tileStyles).map(Number));
     for (const tile of tiles) {
-      if (styledByPlan.has(tile.id)) continue; // already cleared + merged above
+      if (styledByPlan.has(tile.id)) continue;
       const prev = ((tile.layout as any)?.styleConfigOverride ?? {}) as Record<string, unknown>;
       if (!THEME_OVERRIDABLE_COLOUR_KEYS.some((key) => key in prev)) continue;
       mutation.layoutOverrides[tile.id] = {
@@ -347,21 +443,26 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
     }
   }
 
-  const slicer = resolveSlicerPatch(plan.slicerPresentation);
-  mutation.slicerClusterPatch = slicer.cluster;
+  const slicer = resolveSlicerPatch(targets.length > 0 ? undefined : plan.slicerPresentation);
+  mutation.slicerClusterPatch = layer === 'style' ? {} : slicer.cluster;
+  const slicerTheme = { ...slicer.theme };
+  if (layer === 'style') for (const key of STRUCTURAL_THEME_KEYS) delete slicerTheme[key];
 
-  // Theme applies whenever it was asked for — no scope gate, no deferral — and
-  // the slicer's LOOK (dock/variant/style) rides in the same patch whenever a
-  // slicerPresentation was given, independent of any colour change. An empty
-  // patch (neither asked for) stays empty and commits nothing.
   mutation.themePatch = {
     ...(resolvedThemePatch as Partial<DashboardThemeConfig>),
-    ...(slicer.theme as Partial<DashboardThemeConfig>),
+    ...(slicerTheme as Partial<DashboardThemeConfig>),
   };
 
   const before = buildPresentationFingerprint(tiles);
   const after = buildPresentationFingerprint(applyMutationToTiles(tiles, mutation));
-  const mutationValidation = validatePresentationMutation({ before, after, mutation, pageId });
+  const beforeRecord: Record<string, Rect> = {};
+  for (const [id, rect] of beforeRects) beforeRecord[String(id)] = rect;
+  const mutationValidation = validatePresentationMutation({
+    before, after, mutation, pageId,
+    beforeRects: beforeRecord,
+    lockedIds: locked,
+    targetIds: targets,
+  });
 
   return {
     ok: mutationValidation.ok && (planValidation.ok || planValidation.repairable),
@@ -413,5 +514,62 @@ export function tilesWithLocalEdits(
   return pageTiles.map((tile) => {
     const override = localOverrides?.[tile.id];
     return override ? ({ ...tile, layout: { ...(tile.layout as any), ...override } } as DashboardChart) : tile;
+  });
+}
+
+/**
+ * Stack a follow-up change on top of a preview that has not been applied.
+ *
+ * "Now make it darker" is planned against the preview on screen, so its
+ * mutation is relative to that preview. Applying it alone would silently drop
+ * the first change; applying the two composed is what the user is looking at.
+ * Style overrides merge per key, geometry and theme take the later value, and
+ * the layer is the wider of the two — the composite is then re-validated
+ * against the real baseline, never trusted because its halves passed.
+ */
+export function composeMutations(first: PresentationMutation, second: PresentationMutation): PresentationMutation {
+  const layoutOverrides: PresentationMutation['layoutOverrides'] = { ...first.layoutOverrides };
+  for (const [rawId, next] of Object.entries(second.layoutOverrides)) {
+    const id = Number(rawId);
+    const prev = (layoutOverrides[id] ?? {}) as Record<string, any>;
+    // The second mutation was BUILT on the preview, so a styleConfigOverride it
+    // carries is already the tile's complete style after both turns (it merged
+    // over the previewed style itself). Merging it again key-by-key would bring
+    // back a key the second turn removed — a theme reset that clears a per-tile
+    // surface, say — so it REPLACES. Geometry keys likewise take the later value.
+    layoutOverrides[id] = { ...prev, ...(next as Record<string, any>) } as Partial<DashboardChartLayout>;
+  }
+  const rank: Record<DesignLayer, number> = { style: 0, structure: 1, redesign: 2 };
+  // The blocks on screen are the later turn's when it laid the page out again,
+  // otherwise the earlier turn's — never both (that would stack two headlines).
+  const createdBlocks = second.createdBlocks ?? (second.layer === 'redesign' ? undefined : first.createdBlocks);
+  return {
+    layoutOverrides,
+    themePatch: { ...first.themePatch, ...second.themePatch },
+    slicerClusterPatch: { ...first.slicerClusterPatch, ...second.slicerClusterPatch },
+    notes: [...second.notes],
+    layer: rank[second.layer] >= rank[first.layer] ? second.layer : first.layer,
+    ...(createdBlocks?.length ? { createdBlocks } : {}),
+  };
+}
+
+/** Re-run the identity, semantics and permission gate for a mutation against
+ *  the tiles it will actually be applied to. */
+export function validateMutationAgainst(input: {
+  tiles: DashboardChart[];
+  mutation: PresentationMutation;
+  pageId: string;
+  targets?: VisualId[] | null;
+}): ValidationResult {
+  const beforeRects: Record<string, Rect> = {};
+  for (const [id, rect] of rectsOf(input.tiles)) beforeRects[String(id)] = rect;
+  return validatePresentationMutation({
+    before: buildPresentationFingerprint(input.tiles),
+    after: buildPresentationFingerprint(applyMutationToTiles(input.tiles, input.mutation)),
+    mutation: input.mutation,
+    pageId: input.pageId,
+    beforeRects,
+    lockedIds: lockedIdsOf(input.tiles),
+    targetIds: input.targets ?? [],
   });
 }

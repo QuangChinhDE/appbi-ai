@@ -29,19 +29,45 @@ import { GripVertical, Plus } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import type { FlowNode, InsertTarget, NodeSpec } from '@/lib/agentFlows';
+import { isBranching, isContainer, type AgentNode, type FlowNode, type InsertTarget, type NodeSpec, type ToolSpec } from '@/lib/agentFlows';
+import { toolLabel } from './inspector/ToolPicker';
 import { idBox, idInsert, idNode, idRule, useFlowEdges } from './useFlowEdges';
 import type { MiniRect } from './Minimap';
 
 export interface CanvasProps {
   nodes: FlowNode[];
   specs: Record<string, NodeSpec>;
+  /** Tool name → its catalogue entry, for Tool steps.
+   *
+   *  `specs` is keyed by NODE TYPE, so every Tool step on the canvas resolved to
+   *  the same three words — `Call a tool` as the title and `Call a tool` again as
+   *  the subtitle — no matter which of the thirty-odd tools was selected. A flow
+   *  with four Tool steps drew four identical cards.
+   *
+   *  This is the SAME catalogue the inspector's picker reads, passed down rather
+   *  than re-fetched, and rendered through the same `toolLabel`. A second label
+   *  map in here would drift from the registry the moment a tool was renamed, and
+   *  the canvas would then disagree with the panel sitting beside it. */
+  toolSpecs?: Record<string, ToolSpec>;
   selectedKey: string | null;
   answerKey: string;
+  /** A Skill's canvas says what a Skill receives and returns, not "viewer". */
+  flowType?: string;
   onSelect: (key: string) => void;
   onInsert: (target: InsertTarget) => void;
-  /** node key → runs in the coverage window. `0` marks a branch nobody reaches. */
-  coverage?: Record<string, number>;
+  /** The step that is the canvas's single tab stop when NOTHING is selected.
+   *
+   *  Roving focus needs a door. Without this every card was `tabindex="-1"` on a
+   *  freshly loaded flow, so Tab walked past the drag handles and insert points
+   *  and never reached a step — the arrows worked, but only for someone who had
+   *  already clicked. A keyboard-only author could not enter the list at all. */
+  focusKey?: string | null;
+
+  /** node key → how many times it RAN in the window. `0` marks a branch nobody
+   *  reaches. Named for what it counts: `coverage` also means "which question
+   *  classes can this flow answer" on the Test tab, and one word for two
+   *  product concepts made both of them ambiguous. */
+  runCounts?: Record<string, number>;
   running?: Record<string, 'running' | 'done' | 'error' | 'skipped' | 'reused'>;
   zoom?: number;
   /** Dragging is owned by the parent so undo can capture the move as one step. */
@@ -131,7 +157,12 @@ export function FlowCanvas(props: CanvasProps) {
       ref={stageRef}
       style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
       className={cn(
-        'relative flex min-w-[860px] flex-col items-center px-10 pb-24 pt-6',
+        // 640, not 860. The old floor was set when the inspector was a fixed
+        // 400px; at the declared 1280px minimum with the inspector widened it
+        // forced horizontal scrolling on a canvas that had room. The container
+        // scrolls internally, so a floor only decides when that starts — and a
+        // single column of cards is comfortable well below 860.
+        'relative flex min-w-[640px] flex-col items-center px-10 pb-24 pt-6',
         drag.key && 'select-none',
       )}
     >
@@ -165,7 +196,7 @@ export function FlowCanvas(props: CanvasProps) {
 
       <SystemBand
         id="input" register={register}
-        title="INPUT" hint={t('agentFlows.canvas.inputHint')}
+        title="INPUT" hint={t(props.flowType === 'skill' ? 'agentFlows.canvas.inputHintSkill' : 'agentFlows.canvas.inputHint')}
       />
       <Gap />
       <Body nodes={nodes} containerPath="" {...shared} />
@@ -173,7 +204,7 @@ export function FlowCanvas(props: CanvasProps) {
       <Gap />
       <SystemBand
         id="output" register={register}
-        title="OUTPUT" hint={t('agentFlows.canvas.outputHint')}
+        title="OUTPUT" hint={t(props.flowType === 'skill' ? 'agentFlows.canvas.outputHintSkill' : 'agentFlows.canvas.outputHint')}
       />
 
       {drag.key && (
@@ -243,18 +274,23 @@ function InsertPoint({
 }
 
 function NodeCard({
-  node, spec, selected, isAnswer, onSelect, width, coverage, runState, register, drag, setDrag,
+  node, spec, toolSpec, selected, isTabStop, isAnswer, onSelect, width, runCount, runState, register, drag, setDrag,
   draggable,
 }: {
-  node: FlowNode; spec?: NodeSpec; selected: boolean; isAnswer: boolean;
-  onSelect: () => void; width: string; coverage?: number; runState?: string;
+  node: FlowNode; spec?: NodeSpec; toolSpec?: ToolSpec;
+  selected: boolean; isTabStop?: boolean; isAnswer: boolean;
+  onSelect: () => void; width: string; runCount?: number; runState?: string;
   register: SharedProps['register']; drag: DragState;
   setDrag: (d: DragState) => void; draggable: boolean;
 }) {
   const { t, language } = useI18n();
   const specLabel = spec ? specText(spec, 'label', language) : '';
-  const title = node.name || specLabel || node.type;
-  const never = coverage === 0;
+  // WHAT THIS STEP IS, most specific first: what the author called it, then what
+  // it was configured to do, then what kind of step it is. The middle rung only
+  // exists for Tool steps and is exactly why they all read alike before.
+  const title = node.name || (toolSpec ? toolLabel(toolSpec, language) : '') || specLabel || node.type;
+  const never = runCount === 0;
+  const readsFrom = node.type === 'agent' ? ((node as AgentNode).reads_from || []) : [];
   return (
     <div
       ref={register(idNode(node.key))}
@@ -274,6 +310,12 @@ function NodeCard({
         <button
           type="button"
           aria-label={t('agentFlows.canvas.dragHandle')}
+          // NOT A TAB STOP. It only responds to a pointer, and Tab landing on it
+          // ahead of the step card is what made the canvas look keyboard-hostile:
+          // the author arrived somewhere that does nothing and had no way
+          // forward. Alt+Arrow on the card is the keyboard equivalent of this
+          // control.
+          tabIndex={-1}
           onPointerDown={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -284,7 +326,23 @@ function NodeCard({
           <GripVertical className="h-3.5 w-3.5" />
         </button>
       )}
-      <button type="button" onClick={onSelect} className="w-full text-left">
+      {/* NAMED AND STATEFUL. It used to be an unlabelled button wrapping a div,
+          so a screen reader read the card's text with no indication of what
+          activating it does or whether this is the step currently open in the
+          inspector. `aria-pressed` is the honest role here: selecting a node is a
+          toggle-like state, not navigation. */}
+      <button type="button" onClick={onSelect} className="w-full text-left"
+        aria-pressed={selected}
+        // A screen reader gets the tool as well as the step kind. Without it, an
+        // author who named two Tool steps would hear the same words for both —
+        // and one who named neither heard "Call a tool" for every one of them.
+        aria-label={[
+          title,
+          toolSpec && toolLabel(toolSpec, language) !== title ? toolLabel(toolSpec, language) : '',
+          specLabel || node.type,
+        ].filter(Boolean).join(' — ')}
+        tabIndex={selected || isTabStop ? 0 : -1}
+        data-node-button={node.key}>
         <div className="flex min-h-[44px] items-center gap-2 border-b border-[rgb(var(--border-line))] px-2.5 py-1.5">
           <span className={cn(
             'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-small',
@@ -313,6 +371,13 @@ function NodeCard({
                 : t('agentFlows.canvas.runPolicy.oncePerSession')}
             </span>
           )}
+          {node.type === 'agent' && (node as AgentNode).role && (
+            <span data-testid={`canvas-role-${node.key}`}
+              title={t('agentFlows.roles.badgeTitle', { n: String(((node as AgentNode).tools || []).length) })}
+              className="rounded-full border border-brand/25 bg-brand/10 px-1.5 py-px text-tiny text-brand">
+              {roleBadge(t, (node as AgentNode).role || '')}
+            </span>
+          )}
           {spec?.costs_llm && (
             <span title={t('agentFlows.canvas.llmTitle')}
               className="rounded-full border border-brand/20 bg-brand/5 px-1.5 py-px text-tiny text-brand">
@@ -321,9 +386,15 @@ function NodeCard({
           )}
         </div>
         <div className="px-2.5 py-2">
-          <p className="line-clamp-2 text-tiny leading-snug text-text-secondary">{describe(node, t)}</p>
-          {(never || node.output_var) && (
+          <p className="line-clamp-2 text-tiny leading-snug text-text-secondary">{describe(node, t, toolSpec, language)}</p>
+          {(never || node.output_var || readsFrom.length > 0) && (
             <div className="mt-1.5 flex flex-wrap gap-1">
+              {readsFrom.length > 0 && (
+                <span data-testid={`canvas-reads-${node.key}`}
+                  className="rounded border border-brand/20 bg-brand/5 px-1.5 py-px text-tiny text-brand">
+                  {`← ${readsFrom.join(', ')}`}
+                </span>
+              )}
               {node.output_var && (
                 <span className="rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1.5 py-px text-tiny text-text-tertiary">
                   {`→ {{${node.output_var}}}`}
@@ -345,8 +416,31 @@ function NodeCard({
 
 /** One line saying what this node does, from its own configuration.
  *  Generated rather than authored so it cannot go stale when a setting changes. */
-function describe(node: FlowNode, t: (key: string, values?: Record<string, string | number>) => string): string {
+function describe(
+  node: FlowNode,
+  t: (key: string, values?: Record<string, string | number>) => string,
+  toolSpec?: ToolSpec,
+  language: 'en' | 'vi' = 'vi',
+): string {
   switch (node.type) {
+    // A Tool step used to fall through to `default` and render nothing at all,
+    // which is why the card had no second line to distinguish it by either.
+    case 'tool':
+      if (!node.tool) return t('agentFlows.canvas.describe.noTool');
+      // The registry writes descriptions in Vietnamese only, and the picker shows
+      // nothing rather than Vietnamese prose to an English reader. Same rule here:
+      // the tool's own name is already on the card, so an empty line is honest.
+      if (language === 'vi' && toolSpec?.description_vi) return toolSpec.description_vi;
+      // Unknown tool name, or a catalogue that has not arrived yet: say which
+      // tool was configured rather than pretend the step is unconfigured.
+      return toolSpec ? '' : node.tool;
+    case 'skill':
+      // Which Skill, and which version runs — the two facts that decide what
+      // this step does. The Skill's own name is on its card in the picker.
+      if (!node.skill_key) return t('agentFlows.canvas.describe.noSkill');
+      return node.version
+        ? t('agentFlows.canvas.describe.skillPinned', { key: node.skill_key, version: node.version })
+        : t('agentFlows.canvas.describe.skillLatest', { key: node.skill_key });
     case 'agent':
       return node.prompt?.slice(0, 140) || t('agentFlows.canvas.describe.noPrompt');
     case 'report_read': {
@@ -412,8 +506,15 @@ function RuleCard({
       ref={register(id)}
       data-edge-id={id}
       onClick={onClick}
+      // A lane header is the same kind of control as a node card: activating it
+      // opens that branch in the inspector. Same state, said the same way.
+      aria-pressed={selected}
+      aria-label={`${label} — ${title}`}
       className={cn(
-        'relative z-10 w-[280px] overflow-hidden rounded-lg border bg-surface-1 text-left transition',
+        // `w-[280px]` was a fixed width inside a grid column that can now be as
+        // narrow as 220px; `max-w-full` keeps the card inside its lane instead of
+        // overhanging the one beside it.
+        'relative z-10 w-[280px] max-w-full overflow-hidden rounded-lg border bg-surface-1 text-left transition',
         selected ? 'border-brand ring-[3px] ring-brand/10'
           : 'border-[rgb(var(--border-strong))] hover:border-brand/40',
       )}
@@ -485,25 +586,33 @@ function Body({
 function NodeBlock({
   node, containerPath, ...rest
 }: SharedProps & { node: FlowNode; containerPath: string }) {
-  const { specs, selectedKey, answerKey, onSelect, onInsert, coverage, running, register, drag, setDrag } = rest;
+  const { specs, toolSpecs, selectedKey, answerKey, onSelect, onInsert, runCounts, running, register, drag, setDrag } = rest;
+  void onInsert;
   const spec = specs[node.type];
+  const toolSpec = node.type === 'tool' && node.tool ? toolSpecs?.[node.tool] : undefined;
   const width = containerPath ? '280px' : '360px';
 
   const card = (
     <NodeCard
-      node={node} spec={spec}
+      node={node} spec={spec} toolSpec={toolSpec}
       selected={selectedKey === node.key}
+      isTabStop={(selectedKey || rest.focusKey) === node.key}
       isAnswer={node.key === answerKey}
       onSelect={() => onSelect(node.key)}
       width={width}
-      coverage={coverage?.[node.key]}
+      runCount={runCounts?.[node.key]}
       runState={running?.[node.key]}
       register={register} drag={drag} setDrag={setDrag}
       draggable={!!rest.onMove}
     />
   );
 
-  if (node.type === 'if' || node.type === 'switch' || node.type === 'coordinate') {
+  // WHICH NODES HAVE LANES is topology and comes from the declaration; WHAT EACH
+  // LANE SAYS is per-type and stays here — a specialist shows its `when`, an if
+  // path shows how many conditions it matches. Only the first of those was a
+  // duplicate of the backend's model, and only the first is what went missing when
+  // `coordinate` was added.
+  if (isBranching(node)) {
     const lanes = node.type === 'coordinate'
       // Drawn as lanes like a Switch, because that is what it is on the canvas:
       // parallel bodies, one per specialist. What differs is who chooses — a
@@ -569,7 +678,11 @@ function NodeBlock({
         <Gap short />
         <div
           className="relative grid w-full gap-8 pt-6"
-          style={{ gridTemplateColumns: `repeat(${Math.max(lanes.length, 1)}, minmax(0, 1fr))` }}
+          // `minmax(220px, 1fr)`, not `minmax(0, 1fr)`. Three specialists at
+          // 1280px with the inspector open divided the row into ~150px lanes and
+          // the cards inside them clipped. A floor turns that into the canvas's
+          // own horizontal scroll, which is the intentional kind.
+          style={{ gridTemplateColumns: `repeat(${Math.max(lanes.length, 1)}, minmax(220px, 1fr))` }}
         >
           {lanes.map((lane) => (
             <div key={lane.key} className="relative flex min-w-0 flex-col items-center">
@@ -597,7 +710,8 @@ function NodeBlock({
     );
   }
 
-  if (node.type === 'loop') {
+  if (isContainer(node)) {
+    // The non-branching container: one body, drawn as a box.
     return (
       <>
         {card}
@@ -639,4 +753,14 @@ function MergeLabel() {
       </span>
     </div>
   );
+}
+
+
+/** A role's short name on the card. The labels live in the i18n catalogue for
+ *  the roles that ship; an unknown key is shown as itself rather than hidden, so a
+ *  retired role is visible on the canvas. */
+function roleBadge(t: (k: string) => string, role: string): string {
+  const key = `agentFlows.roles.badge.${role}`;
+  const got = t(key);
+  return got === key ? role : got;
 }

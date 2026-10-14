@@ -31,6 +31,7 @@ import json
 import logging
 import threading
 import time
+import weakref
 from collections import OrderedDict
 from typing import Any
 
@@ -55,6 +56,61 @@ def scope_hash(excluded_columns) -> str:
     return hashlib.sha1(
         ",".join(sorted(str(c) for c in excluded_columns)).encode("utf-8")
     ).hexdigest()[:8]
+
+
+_SNAPSHOT_TABLE_BY_ENGINE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _has_snapshot_table(db) -> bool:
+    """Whether this database carries the snapshot registry (every migrated
+    database does; a minimal test schema may not) — read once per engine."""
+    bind = db.get_bind()
+    engine = getattr(bind, "engine", bind)
+    known = _SNAPSHOT_TABLE_BY_ENGINE.get(engine)
+    if known is None:
+        from sqlalchemy import inspect as _inspect
+
+        known = bool(_inspect(bind).has_table("dataset_table_snapshots"))
+        _SNAPSHOT_TABLE_BY_ENGINE[engine] = known
+    return known
+
+
+def semantic_epoch(db) -> str:
+    """The semantic definitions a cached AI pack/recon was computed under: the
+    contract version plus every explore (relationships), view, model, dataset
+    (settings, published generation) and dataset table (source,
+    transformations, type overrides, columns) row's (id, updated_at) — what the
+    chart result cache keys on, too. Any edit or delete — on any worker —
+    changes it. Not
+    max(updated_at): PostgreSQL's now() is the TRANSACTION start, so a writer
+    that waited on the model lock commits an OLDER stamp than the write before
+    it, and a delete moves the max back to an earlier epoch."""
+    from app.models.dataset import Dataset, DatasetTable
+    from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
+    from app.services.query_cache import SEMANTIC_RESULT_CACHE_VERSION
+
+    h = hashlib.sha256(SEMANTIC_RESULT_CACHE_VERSION.encode("utf-8"))
+    try:
+        for m in (SemanticExplore, SemanticView, SemanticModel, Dataset, DatasetTable):
+            for rid, stamp in db.query(m.id, m.updated_at).order_by(m.id).all():
+                h.update(f"{m.__tablename__}:{rid}:{stamp};".encode("utf-8"))
+        # Snapshot generations (a legacy dataset's refresh builds new snapshot
+        # rows without touching the dataset row): a new or retired generation
+        # changes what the same chart reads, so it changes the epoch too.
+        from sqlalchemy import func
+
+        from app.models.dataset import DatasetTableSnapshot
+
+        if _has_snapshot_table(db):
+            snap = db.query(func.count(DatasetTableSnapshot.id), func.max(DatasetTableSnapshot.id),
+                            func.max(DatasetTableSnapshot.updated_at),
+                            func.count(DatasetTableSnapshot.retired_at)).one()
+            h.update(f"snapshots:{snap[0]}:{snap[1]}:{snap[2]}:{snap[3]};".encode("utf-8"))
+    except Exception:  # noqa: BLE001 — no identity → no reuse (a unique epoch)
+        import uuid
+
+        return uuid.uuid4().hex
+    return h.hexdigest()[:24]
 
 
 def _filters_hash(filters: list[dict] | None) -> str:

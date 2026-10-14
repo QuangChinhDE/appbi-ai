@@ -130,7 +130,7 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
   const id = workboard.id;
   const update = useUpdateWorkboard();
   const { data: datasets = [] } = useDatasets();
-  const canEdit = getResourcePermissions(workboard.user_permission ?? undefined).canEdit;
+  const canEdit = getResourcePermissions(workboard.user_permission ?? undefined, workboard.capabilities).canEdit;
 
   const [section, setSection] = useState<SectionKey>('general');
   const sections = getSections(t);

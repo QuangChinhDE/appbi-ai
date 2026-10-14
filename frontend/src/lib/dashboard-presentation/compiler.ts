@@ -12,15 +12,18 @@
  * honest: what the diff showed is exactly what Apply writes.
  */
 import { DASHBOARD_GRID_COLS, GRID_VERSION, dashboardRowHeight } from '@/lib/dashboard-pages';
+import { resolveStructure } from '@/lib/report-structure';
 import { MIN_TILE_H, MIN_TILE_W, MAX_TILE_H } from './capabilities';
 import type {
+  BlockVariant,
+  PlanBlock,
   DashboardPresentationSnapshot,
   LayoutPrimitive,
   PresentationDensity,
   PresentationMutation,
   PresentationPlan,
+  PresentationEmphasis,
   PresentationSection,
-  PresentationSpan,
   SnapshotVisual,
   VisualId,
 } from './types';
@@ -71,10 +74,31 @@ const DENSITY_HEIGHT_SCALE: Record<PresentationDensity, number> = {
  */
 const MIN_DATA_VISUAL_PX = 150;
 const MIN_DECORATIVE_PX = 56;
+/** A slicer control's card: a label and a value, one band. In a row beside a
+ *  chart it takes the row's height instead (and then shows its values). */
+const SLICER_CONTROL_PX = 72;
+/** Width of one control in a `filter_bar`: room for a label and a value, not a
+ *  share of the page. Four fit a row; the rest of the band stays empty. */
+const FILTER_BAR_SPAN = 9;
+const FILTER_BAR_PER_ROW = 4;
 /** A KPI is a number and a label, not an axis — it reads fine well below the
  *  chart floor, and holding it to the chart floor left a strip of tall cards
  *  with a lot of empty space under each number (§ KPI-too-tall). */
 const MIN_KPI_PX = 95;
+/** A table is read row by row; below ~8 rows plus a header it stops being the
+ *  detail people open it for. Low emphasis may quiet it, not truncate it. */
+const MIN_TABLE_PX = 380;
+// A table whose rows are known is sized to them: its title and header, then
+// one row each (up to what a tile shows before it scrolls). A 6-row table got
+// a 540px tile with half of it empty.
+const TABLE_CHROME_PX = 96;
+const TABLE_ROW_PX = 36;
+const TABLE_ROWS_SHOWN = 12;
+const MIN_FITTED_TABLE_PX = 200;
+function fittedTablePx(rowCount: number): number {
+  return Math.max(MIN_FITTED_TABLE_PX, TABLE_CHROME_PX + Math.min(rowCount, TABLE_ROWS_SHOWN) * TABLE_ROW_PX);
+}
+const TABLE_TYPES_FOR_FLOOR: ReadonlySet<string> = new Set(['TABLE', 'MATRIX', 'PIVOT', 'PIVOT_TABLE']);
 const KPI_ROLES: ReadonlySet<string> = new Set(['kpi', 'headline']);
 
 /**
@@ -91,6 +115,20 @@ const CHART_TYPE_MIN_PX: Record<string, number> = {
   GAUGE: 220, FUNNEL: 240, PIE: 210, DONUT: 210, RADAR: 240,
   WATERFALL: 240, SANKEY: 260, TREEMAP: 210, RADIAL_BAR: 220, PODIUM: 210,
 };
+
+/** Target height of a block by what it is: a headline is a band, a summary
+ *  sits beside a chart, a chapter introduces the chart below it. */
+const BLOCK_TARGET_PX: Record<BlockVariant, number> = {
+  headline: 150,
+  summary: 260,
+  callout: 120,
+  chapter: 130,
+  takeaway: 170,
+};
+
+/** A section heading is a thin band; a narrative block sizes by its variant. */
+const HEADING_TARGET_PX = 64;
+const blockTargetPx = (block: PlanBlock) => (block.heading ? HEADING_TARGET_PX : BLOCK_TARGET_PX[block.variant]);
 
 /** How a primitive divides a row. `null` means "share equally between however
  *  many visuals the section holds", which is what the KPI strip needs. */
@@ -109,7 +147,8 @@ const PRIMITIVE_SPANS: Record<LayoutPrimitive, number[] | null> = {
   // Self-sizing, like the KPI strip: the hero and the rail do not share a row,
   // so a single span table cannot describe them. `placeRail` owns the geometry.
   hero_with_rail: null,
-  section_break: [COLS],
+  // Self-sizing too: each control is FILTER_BAR_SPAN wide, whatever the count.
+  filter_bar: null,
 };
 
 /** The hero/rail split, in columns. A rail tile at 12 of 36 sits exactly on the
@@ -211,8 +250,11 @@ function spansForSection(section: PresentationSection): number[] {
   return declared;
 }
 
-const SPAN_WEIGHT: Record<PresentationSpan, number> = {
-  small: 0.6, medium: 1, large: 1.4, full: 2,
+/** Height multiplier per emphasis. This is what makes "make this one stand
+ *  out" read as bigger — a high-emphasis visual is taller than its role's
+ *  default, a low-emphasis one shorter (the floors below still hold). */
+const EMPHASIS_HEIGHT: Record<PresentationEmphasis, number> = {
+  low: 0.88, normal: 1, high: 1.15,
 };
 
 export interface CompileInput {
@@ -226,6 +268,9 @@ export interface CompileInput {
    *  default rather than being required, so a caller that does not care still
    *  gets sensible sizes. */
   gridGapPx?: number;
+  /** Tiles the recomposition must not place — locked visuals. They keep their
+   *  own rectangles and the executor routes the compiled tiles around them. */
+  fixed?: ReadonlySet<VisualId>;
 }
 
 const DEFAULT_GRID_GAP_PX = 8;
@@ -311,11 +356,86 @@ function normalizeSections(
   return { sections: out, notes };
 }
 
+/**
+ * A section heading introduces the tiles under it — that is what a reader takes
+ * it to mean, and what SectionBands draws. Nothing stores that membership, so a
+ * redesign that regrouped the content used to leave the heading wherever the
+ * plan (or the fallback) put it: "Performance" alone at the end of the page,
+ * introducing nothing, and the band before it stretched over unrelated tiles.
+ *
+ * Membership is read here the way the renderer draws it — from a heading down
+ * to the next heading, on the snapshot's current layout — and each anchored
+ * heading is placed, full width, directly above the first section that holds
+ * any of its tiles. Anchored: every heading an author wrote, and an AI heading
+ * the plan did not place (one the plan did place is the plan's own structure).
+ * A heading whose tiles are all gone from the plan (locked, or it introduced
+ * nothing) keeps the position the plan gave it, or goes last if it had none.
+ * Pure.
+ */
+export function anchorSectionHeadings(
+  sections: PresentationSection[],
+  snapshot: DashboardPresentationSnapshot,
+  fixed: ReadonlySet<VisualId> = new Set(),
+): { sections: PresentationSection[]; notes: string[] } {
+  const visuals = snapshot.visuals;
+  const planned = new Set(sections.flatMap((s) => s.visuals ?? []));
+  const anchored = visuals.filter((v) => v.widgetType === 'section_header' && !fixed.has(v.dashboardChartId)
+    && (v.heading?.origin !== 'ai' || !planned.has(v.dashboardChartId)));
+  if (!anchored.length) return { sections, notes: [] };
+  // Membership as the report states it (lib/report-structure): a stored
+  // sectionId wins, an unstated one is read by position — the rule the bands,
+  // the phone order and the Inspector's outline use.
+  const structure = resolveStructure(visuals.map((v) => ({
+    id: v.dashboardChartId,
+    ...v.currentLayout,
+    kind: v.widgetType === 'section_header' ? 'section' as const
+      : v.widgetType === 'hero_strip' ? 'header' as const
+        : v.widgetType === 'narrative' ? 'narrative' as const : 'content' as const,
+    sectionId: v.sectionId,
+  })));
+  const membersOf = new Map<VisualId, Set<VisualId>>(
+    structure.sections.map((s) => [s.headerId, new Set(s.members)]),
+  );
+  const anchoredIds = new Set(anchored.map((h) => h.dashboardChartId));
+  const planIndex = new Map<VisualId, number>();
+  sections.forEach((s, i) => (s.visuals ?? []).forEach((id) => {
+    if (anchoredIds.has(id) && !planIndex.has(id)) planIndex.set(id, i);
+  }));
+  const out = sections
+    .map((s) => ({ ...s, visuals: (s.visuals ?? []).filter((id) => !anchoredIds.has(id)) }))
+    .filter((s) => s.visuals.length > 0);
+  let kept = 0;
+  for (const h of [...anchored].sort((a, b) => a.readingOrder - b.readingOrder)) {
+    const members = membersOf.get(h.dashboardChartId) ?? new Set<VisualId>();
+    let at = out.findIndex((s) => s.visuals.some((id) => members.has(id)));
+    if (at < 0) at = planIndex.has(h.dashboardChartId) ? Math.min(planIndex.get(h.dashboardChartId)!, out.length) : out.length;
+    else kept += 1;
+    out.splice(at, 0, { primitive: 'full_width', visuals: [h.dashboardChartId] });
+  }
+  return {
+    sections: out,
+    notes: kept ? ['Kept each section heading above the content it introduces.'] : [],
+  };
+}
+
 export function compilePresentationPlan(input: CompileInput): CompileResult {
   const { plan, snapshot, pageId } = input;
   const notes: string[] = [];
+  const fixed = input.fixed ?? new Set<VisualId>();
   const byId = new Map<VisualId, SnapshotVisual>();
-  for (const visual of snapshot.visuals) byId.set(visual.dashboardChartId, visual);
+  for (const visual of snapshot.visuals) {
+    if (!fixed.has(visual.dashboardChartId)) byId.set(visual.dashboardChartId, visual);
+  }
+
+  // Blocks the plan adds are placed like visuals (negative ids) so a section
+  // can put a headline above the numbers or a summary beside the hero. Their
+  // height comes from what they are, not from a chart role.
+  const blockById = new Map<VisualId, PlanBlock>();
+  for (const block of plan.blocks ?? []) blockById.set(block.id, block);
+  // Slicer controls the plan creates (negative ids), and those already on the
+  // page, are sized as controls — never as a 'supporting' chart.
+  const controlIds = new Set<VisualId>((plan.slicerControls ?? []).map((c) => c.id));
+  const isControl = (id: VisualId) => controlIds.has(id) || byId.get(id)?.widgetType === 'slicer';
 
   const density = plan.direction?.density ?? 'balanced';
   const heightScale = DENSITY_HEIGHT_SCALE[density] ?? 1;
@@ -331,15 +451,26 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
     // 109px / 109px / 51px, which reads as a rendering fault rather than a
     // design. A row is a band; the tallest thing in it sets the band.
     const heights = ids.map((id) => {
+      if (isControl(id)) return rowsAtLeast(SLICER_CONTROL_PX, gapPx);
+      const block = blockById.get(id);
+      if (block) return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, blockTargetPx(block) * heightScale), gapPx);
       const visual = byId.get(id);
+      // A heading is a thin band, never a chart-height block (it was sized as a
+      // 260px "supporting" tile, leaving a large empty card).
+      if (visual?.widgetType === 'section_header') {
+        return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, TARGET_HEIGHT_PX.section_header), gapPx);
+      }
+      // A text block already on the page (a headline an earlier design wrote,
+      // reused by this one) is sized as that block, like a new one — not as a
+      // 260px "supporting" chart: a reused headline came out twice as tall.
+      if (visual?.block) {
+        return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, BLOCK_TARGET_PX[visual.block.variant] * heightScale), gapPx);
+      }
       const pref = plan.visualPreferences?.[String(id)];
       const role = pref?.role ?? visual?.displayRoleHint ?? 'supporting';
-      const weight = SPAN_WEIGHT[pref?.span ?? 'medium'] ?? 1;
       const scaled = (TARGET_HEIGHT_PX[role] ?? TARGET_HEIGHT_PX.supporting)
         * heightScale
-        // An emphasised visual earns a little more height, so "make this one
-        // bigger" reads as bigger and not merely wider.
-        * (weight > 1 ? 1.12 : 1);
+        * (EMPHASIS_HEIGHT[pref?.emphasis ?? 'normal'] ?? 1);
       // A section header is meant to be a thin band; a chart is not. Only a
       // real widget gets the low floor — an unknown tile is treated as a chart,
       // because being too tall is a nuisance and being too short hides data.
@@ -349,7 +480,15 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
       // A gauge/funnel/donut keeps the height its shape needs even when the role
       // would make it a compact card.
       const chartFloorPx = CHART_TYPE_MIN_PX[String(visual?.chartType ?? '').toUpperCase()] ?? 0;
-      const floorPx = Math.max(roleFloorPx, chartFloorPx);
+      const isTable = role === 'table' || TABLE_TYPES_FOR_FLOOR.has(String(visual?.chartType ?? '').toUpperCase());
+      if (isTable && typeof visual?.rowCount === 'number') {
+        // Same px→rows conversion as every other tile: never taller than the
+        // role's own height, only shorter when the rows need less.
+        const fitted = Math.min(scaled, fittedTablePx(visual.rowCount));
+        return Math.max(rowsForHeight(fitted, gapPx), rowsAtLeast(MIN_FITTED_TABLE_PX, gapPx));
+      }
+      const tableFloorPx = isTable ? MIN_TABLE_PX : 0;
+      const floorPx = Math.max(roleFloorPx, chartFloorPx, tableFloorPx);
       return Math.max(rowsForHeight(scaled, gapPx), rowsAtLeast(floorPx, gapPx));
     });
     const rowH = heights.length > 0 ? Math.max(...heights) : MIN_TILE_H;
@@ -369,12 +508,14 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
   // deliberately gives every tile in its row the SAME height — the rail is the
   // one place tiles that are NOT in a shared row get sized individually.
   const rowsForRole = (id: VisualId, extraScale: number): number => {
+    if (isControl(id)) return rowsAtLeast(SLICER_CONTROL_PX, gapPx);
+    const block = blockById.get(id);
+    if (block) return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, blockTargetPx(block) * heightScale * extraScale), gapPx);
     const visual = byId.get(id);
     const pref = plan.visualPreferences?.[String(id)];
     const role = pref?.role ?? visual?.displayRoleHint ?? 'supporting';
-    const weight = SPAN_WEIGHT[pref?.span ?? 'medium'] ?? 1;
     const scaled = (TARGET_HEIGHT_PX[role] ?? TARGET_HEIGHT_PX.supporting)
-      * heightScale * extraScale * (weight > 1 ? 1.12 : 1);
+      * heightScale * extraScale * (EMPHASIS_HEIGHT[pref?.emphasis ?? 'normal'] ?? 1);
     const floorPx = visual?.isWidget ? MIN_DECORATIVE_PX : MIN_DATA_VISUAL_PX;
     return Math.max(rowsForHeight(scaled, gapPx), rowsAtLeast(floorPx, gapPx));
   };
@@ -426,6 +567,19 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
     plan.visualPreferences?.[String(id)]?.role ?? byId.get(id)?.displayRoleHint ?? 'supporting';
   const normalized = normalizeSections(plan.sections ?? [], roleOf);
   notes.push(...normalized.notes);
+  const withHeadings = anchorSectionHeadings(normalized.sections, snapshot, fixed);
+  normalized.sections = withHeadings.sections;
+  notes.push(...withHeadings.notes);
+
+  // A report's opening headline the plan forgot is not an orphan to append at
+  // the END: it is the page's first line. Everything the plan did place follows.
+  const planned = new Set<VisualId>(normalized.sections.flatMap((s) => s.visuals ?? []));
+  const openingIds = snapshot.visuals
+    .filter((v) => v.block?.variant === 'headline' && !planned.has(v.dashboardChartId) && !fixed.has(v.dashboardChartId))
+    .sort((a, b) => a.readingOrder - b.readingOrder)
+    .map((v) => v.dashboardChartId);
+  for (const id of openingIds) placeRow([id], [COLS]);
+  if (openingIds.length) notes.push('The report headline the plan did not place was kept at the top of the page.');
 
   for (const section of normalized.sections) {
     // De-duplicate defensively: a plan that lists the same visual in two
@@ -436,9 +590,17 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
         notes.push(`Visual ${id} appeared more than once in the plan; kept the first placement.`);
         return false;
       }
-      return byId.has(id);
+      return byId.has(id) || blockById.has(id) || controlIds.has(id);
     });
     if (ids.length === 0) continue;
+
+    if (section.primitive === 'filter_bar') {
+      for (let i = 0; i < ids.length; i += FILTER_BAR_PER_ROW) {
+        const slice = ids.slice(i, i + FILTER_BAR_PER_ROW);
+        placeRow(slice, slice.map(() => FILTER_BAR_SPAN));
+      }
+      continue;
+    }
 
     if (section.primitive === 'kpi_strip') {
       const perRow = spansForSection({ ...section, visuals: ids }).length;
@@ -491,8 +653,8 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
   // be exhaustive — and says so, because a silently appended chart is a plan
   // the user should know was incomplete.
   const orphanIds: VisualId[] = [];
-  for (const visual of snapshot.visuals) {
-    if (placed.has(visual.dashboardChartId)) continue;
+  for (const visual of [...snapshot.visuals].sort((a, b) => a.readingOrder - b.readingOrder)) {
+    if (placed.has(visual.dashboardChartId) || fixed.has(visual.dashboardChartId)) continue;
     orphanIds.push(visual.dashboardChartId);
   }
   if (orphanIds.length > 0) {
@@ -507,8 +669,8 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
       layoutOverrides,
       themePatch: {},
       slicerClusterPatch: {},
-      createdWidgets: [],
       notes,
+      layer: 'redesign',
     },
     orphanIds,
   };

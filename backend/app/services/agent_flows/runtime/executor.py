@@ -35,6 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
 
+from app.services.agent_flows import reader_text as _reader_text
 from app.services.agent_flows.contract import (
     ROUTING_NODE_TYPES,
     CoordinateNode,
@@ -56,10 +57,14 @@ from app.services.agent_flows.envelope import (
     text_answer,
 )
 from app.services.agent_flows.runtime import nodes as node_registry
+from app.services.agent_flows.runtime.handlers.data import (
+    restore_report_read_provenance,
+)
 from app.services.agent_flows.runtime.state import (
     Budget,
     BudgetExhausted,
     RunState,
+    StepBudgetExhausted,
     as_list,
     evaluate,
     evaluate_all,
@@ -72,7 +77,8 @@ logger = logging.getLogger(__name__)
 #: that ran, ran without error. They downgrade `ok` to `partial`, because a run
 #: whose branches all missed is not a success — it is a question the flow was not
 #: shaped to answer, and the operator has to be able to see that in the numbers.
-DEGRADING_NOTICES = frozenset({"branch_unmatched"})
+DEGRADING_NOTICES = frozenset({"branch_unmatched", "steps_skipped_for_budget",
+                               "handoff_input_missing", "claims_unchecked"})
 
 
 
@@ -94,13 +100,52 @@ class RunContext:
     #: `ToolContext`, already narrowed to the binding's allowed charts and scope by
     #: the caller. Handlers read it; nothing here writes to it.
     ctx: Any
-    #: Fallback credential for nodes that carry none of their own.
-    api_key: str = ""
+    #: Where every model step gets its key: `credentials.StoredCredentials` in a
+    #: real run. `for_node(node)` returns the step's own provider, model and key,
+    #: or raises `CredentialUnavailable`. There is no run-wide fallback key.
+    credentials: Any = None
     base_system_prompt: str = ""
     #: Key of the node whose text streams to the viewer.
     answer_key: str = ""
     db: Any = None
     events: list[AgentEvent] = field(default_factory=list)
+    #: The Skill call stack this run sits in: `(skill_key, version)` of every Skill
+    #: between the top-level run and this one. Empty for a top-level run. Checked
+    #: on flow-VERSION identity, so A@v7 → B@v3 → A@v7 is a cycle.
+    skill_stack: tuple = ()
+    #: Whether this run's question and answer may be stored. The CALLER's setting
+    #: (a link's `store_question_content`), carried so a Skill child run obeys the
+    #: same choice instead of defaulting to storing.
+    store_content: bool = True
+    #: Minimum-need memo for the budget reservation, by node identity: a body is
+    #: walked once per node it contains, and a Skill's pinned flow is resolved once.
+    minimum_cache: dict = field(default_factory=dict)
+    skill_lookup: Any = None
+
+
+def _intent_credential(flow: Flow, credentials: Any) -> tuple[str, str, str]:
+    """The key the turn's intent pass runs on: the ANSWERING step's, else the first
+    model step's that resolves. `("", "", "")` when none does — then the heuristics
+    decide, exactly as when the model call fails.
+
+    The model is that provider's fast one, not the step's: intent is a short
+    classification, and it ran on `gpt-4o-mini` before steps chose their own model.
+    Putting it on a step's reasoning model would spend its whole timeout thinking.
+    """
+    from app.services.agent_flows.models_catalogue import intent_model
+
+    if credentials is None:
+        return "", "", ""
+    steps = flow.model_steps()
+    answer = flow.answering_key()
+    steps.sort(key=lambda n: n.key != answer)
+    for node in steps:
+        try:
+            got = credentials.for_node(node)
+        except Exception:                                       # noqa: BLE001
+            continue
+        return got.provider, got.api_key, intent_model(got.provider) or got.model
+    return "", "", ""
 
 
 async def run_flow(
@@ -108,29 +153,116 @@ async def run_flow(
     *,
     flow: Flow,
     ctx: Any,
-    api_key: str = "",
+    credentials: Any = None,
     base_system_prompt: str = "",
     db: Any = None,
+    budget: Any = None,
+    skill_stack: tuple = (),
+    on_state: Any = None,
+    store_content: bool = True,
 ) -> AsyncGenerator[AgentEvent, None]:
-    """Run `flow` against `inp`. The last event is always `result`."""
+    """Run `flow` against `inp`. The last event is always `result`.
+
+    `budget`, `skill_stack` and `on_state` exist for a Skill child run only
+    (`services/agent_flows/skills.py`): the child spends the PARENT's budget, knows
+    the call stack it sits in, and hands its state back so the parent can take its
+    trusted evidence. Every other caller leaves them unset.
+    """
     started = time.monotonic()
+    # THE QUESTION HAS TO REACH THE TOOL BOUNDARY.
+    #
+    # Set on the ONE backbone every dispatch site goes through, rather than in
+    # each of `run_for_link`, `run_preview` and `run_for_chat_thread` — three
+    # copies is three chances for a surface to be silently ungated. The
+    # dimension gate in `tools/registry.execute` reads it to tell a grouped call
+    # that answers the question from one that answers a different one.
+    try:
+        ctx.question = inp.question.text()
+    except Exception:                                           # noqa: BLE001
+        pass
     state = RunState(
         vars=inp.seed_vars(),
-        budget=Budget(
+        budget=budget if budget is not None else Budget(
             max_llm_calls=inp.runtime.budget.max_llm_calls,
             max_tool_calls=inp.runtime.budget.max_tool_calls,
             max_seconds=inp.runtime.budget.max_seconds,
         ),
     )
+    # Each chart's grouping, so a result naming only its chart can be placed.
+    try:
+        for cid, meta in (getattr(ctx, "chart_meta", None) or {}).items():
+            dims = ((meta or {}).get("fields") or {}).get("dimensions") or []
+            state.chart_dims[int(cid)] = [str(d.get("field") if isinstance(d, dict) else d)
+                                          for d in dims if d]
+    except Exception:                                           # noqa: BLE001
+        pass
+    if on_state is not None:
+        on_state(state)
+    # THE EVIDENCE STORE REACHES THE TOOL BOUNDARY the same way the question does:
+    # `compute` resolves `{ref, path}` variables against the results THIS run
+    # produced, and a tool body can only see the context.
+    try:
+        ctx.evidence_store = state.evidence_store
+    except Exception:                                           # noqa: BLE001
+        pass
     rctx = RunContext(
         inp=inp,
         flow=flow,
         ctx=ctx,
-        api_key=api_key,
+        credentials=credentials,
         base_system_prompt=base_system_prompt,
         answer_key=flow.answering_key(),
         db=db,
+        skill_stack=tuple(skill_stack or ()),
+        store_content=bool(store_content),
     )
+
+    # THE QUESTION INTENT CONTRACT — what this turn asks for, resolved ONCE, before
+    # any node runs (docs/features/agent-flow-v3-pilot/intent-contract.md). Not for
+    # a Skill's child run: it answers the Skill's typed inputs, not the reader.
+    if not skill_stack:
+        from app.services.agent_flows.runtime import intent as intent_mod
+        from app.services.dashboard_ai_bot.govern_doc_followup import prior_user_question
+
+        try:
+            previous = prior_user_question(list(inp.conversation.history or []))
+        except Exception:                                       # noqa: BLE001
+            previous = ""
+        try:
+            provider, key, model = _intent_credential(flow, credentials)
+            state.intent = await intent_mod.resolve(
+                state, ctx, question=inp.question.text(), previous=previous or "",
+                provider=provider, api_key=key, model=model)
+        except Exception:                                       # noqa: BLE001
+            logger.warning("[flow] intent resolution failed", exc_info=True)
+        try:
+            # THE TOOLS FILTER BY WHAT WAS RESOLVED, not by the reader's words: a
+            # drilldown on "Rio de Janeiro" over rows that say "RJ" matched nothing
+            # and was published as a revenue of 0 (smoke run at e98d1b8d).
+            from app.services.agent_flows.tools.context import value_key
+
+            ctx.asked_measures = list((getattr(state, "intent", None) or {}).get("measures") or [])
+            ctx.asked_periods = [tuple(p) for p in ((getattr(state, "intent", None) or {}).get("periods") or [])]
+            ctx.member_aliases = {
+                value_key(m["said"]): m["code"]
+                for m in ((getattr(state, "intent", None) or {}).get("members") or [])
+                if m.get("said") and m.get("code")
+            }
+        except Exception:                                       # noqa: BLE001
+            pass
+        if getattr(state, "intent", None):
+            # On the ANSWERING step's trace — the one the Runs inspector shows the
+            # author next to the claim verdict it drives.
+            state.capability_trace.setdefault(rctx.answer_key, {})["intent"] = dict(state.intent)
+            # THE BREAKDOWN THE LINK CANNOT DELIVER FOR THIS MEASURE is known before any
+            # tool runs (live 3bf8e3f3 P0 g2): the gap opens here and closes only on a
+            # result grouped by it that carries the asked measure.
+            try:
+                gap = intent_mod.breakdown_gap(state.intent, intent_mod.vocabulary(ctx))
+                if gap and not state.dimension_gap:
+                    state.dimension_gap = {**gap, "label": "", "satisfied": False}
+            except Exception:                                   # noqa: BLE001
+                logger.warning("[flow] breakdown gap check failed", exc_info=True)
 
     status = "ok"
     streamed_text = False
@@ -138,6 +270,9 @@ async def run_flow(
         async for ev in _run_body(list(flow.nodes), state, rctx):
             if ev.type == "text" and ev.text:
                 streamed_text = True
+                # Reader prose carries no internal execution details, whoever wrote
+                # it (services/agent_flows/reader_text.py).
+                ev.text = _reader_text.scrub(ev.text)
             yield ev
     except BudgetExhausted as exc:
         status = "partial"
@@ -154,7 +289,10 @@ async def run_flow(
             Notice(code="run_failed", text="Có lỗi khi chạy trợ lý cho câu hỏi này.")
         )
 
-    answer = _final_answer(state, rctx)
+    # Scrubbed BEFORE the envelope: what is stored for the run, what is published
+    # and what a reader rates stay byte-identical (runs.apply_rating), and none of
+    # it carries a tool id, raw id, error code, traceback or internal URL.
+    answer = _reader_text.scrub_answer(_final_answer(state, rctx))
     if _answer_is_fallback(state, rctx):
         # The designated answering node never ran — the budget ran out, or a Stop
         # ended the run early — so what reaches the viewer is an INTERMEDIATE node's
@@ -247,6 +385,27 @@ async def run_flow(
     # is what survived that — an answer whose figures the model was given a chance
     # to fix and did not, which is worth saying out loud.
     verification = _verify_figures(state, answer)
+    # A FIGURE WITH THE WRONG MEANING IS NOT A VERIFIED ONE (`claim_check`): the
+    # answering step already marked it for the reader; the verdict says so too.
+    if getattr(state, "unverified_claims", None):
+        verification = {**(verification or {}), "claims_unverified": list(state.unverified_claims)}
+        state.notices.append(Notice(
+            code="claims_unverified", audience="reader", severity="warning",
+            text=(f"{len(state.unverified_claims)} con số trong câu trả lời không có nguồn phù "
+                  "hợp với điều được hỏi (sai đại lượng, sai kỳ, sai chiều/đối tượng, hoặc tự tính) "
+                  "— chúng đã bị ẩn khỏi câu trả lời."),
+            facts={"flagged": [{k: f.get(k) for k in ("value", "pct", "why")}
+                               for f in state.unverified_claims[:8]]},
+        ))
+    if getattr(state, "tool_budget_reached", False):
+        verification = {**(verification or {}), "tool_budget_reached": True}
+        state.notices.append(Notice(
+            code="tool_budget_reached", audience="reader", severity="warning",
+            text=("Bước trả lời đã dùng hết số lượt gọi công cụ được cấp nên phải trả lời bằng những gì "
+                  "đã đọc — câu trả lời có thể chưa đầy đủ, và \"không có dữ liệu\" có thể là do hết "
+                  "lượt chứ không phải do báo cáo không có."),
+        ))
+    status = _status_after_verification(status, verification)
     if verification:
         yield AgentEvent(type="verification", extra={"verification": verification})
         if verification.get("unknown_labels"):
@@ -262,18 +421,95 @@ async def run_flow(
                          "các mục này — có thể báo cáo đang giới hạn số dòng.",
                 )
             )
+        # GROUNDING CHANGES THE VERDICT, not just the record. A figure that exists
+        # in the evidence is verified; an answer whose ENTIRE evidence came from a
+        # step whose question never resolved is not grounded, and saying nothing
+        # lets it ship looking healthy.
+        if (verification.get("grounding") or {}).get("all_evidence_unresolved"):
+            state.notices.append(
+                Notice(
+                    code="answer_not_grounded_in_question",
+                    audience="reader",
+                    severity="warning",
+                    text="Các số trong câu trả lời có trong dữ liệu đã đọc, nhưng phần "
+                         "dữ liệu đó không được chọn theo câu hỏi của bạn — hãy đối "
+                         "chiếu lại trước khi dùng.",
+                )
+            )
+
+        # THE CAPABILITY THE QUESTION NEEDED WAS NOT AVAILABLE, and nothing else
+        # demonstrably answered it. The reader is told which, because "the web
+        # step was skipped" is actionable and "these numbers may be unrelated" on
+        # its own is not.
+        _gap = (verification.get("grounding") or {})
+        if _gap.get("dimension_gap"):
+            # A READER IS NOT SHOWN A COLUMN PATH.
+            #
+            # The first version printed the raw field, so a viewer on the public
+            # link read "Câu hỏi của bạn hỏi theo 'customer_state'" — an internal
+            # identifier on a business surface, which is the reader-vocabulary
+            # leak this project already tracks. Seen in the browser on the very
+            # run that proved the rest of this notice works.
+            #
+            # `dimension_label` is the chart's own on-screen label where the
+            # runtime has one; the raw field stays in `grounding` for the trace,
+            # where an author is the reader and the identifier is the useful
+            # thing.
+            _want = (str(_gap.get("dimension_label") or "").strip()
+                     or str(_gap.get("dimension_requested") or "")
+                     .rsplit(".", 1)[-1].replace("_", " ").strip())
+            state.notices.append(
+                Notice(
+                    code="requested_breakdown_unavailable",
+                    audience="reader",
+                    severity="warning",
+                    text=(
+                        f"Câu hỏi của bạn hỏi theo “{_want}”, nhưng báo cáo này "
+                        "không có biểu đồ nào tách số liệu theo chiều đó — phần "
+                        "trả lời bên dưới KHÔNG phải câu trả lời cho chiều bạn hỏi."
+                    ),
+                )
+            )
+        if _gap.get("capability_gap"):
+            state.notices.append(
+                Notice(
+                    code="capability_unavailable_for_question",
+                    audience="reader",
+                    severity="warning",
+                    text="Bước cần cho câu hỏi này không chạy được (tìm kiếm web "
+                         "đang tắt), và không bước nào khớp câu hỏi của bạn với báo "
+                         "cáo. Các số dưới đây lấy từ báo cáo theo cấu hình sẵn — "
+                         "chúng có thể không trả lời điều bạn hỏi.",
+                )
+            )
+
         if verification.get("unmatched"):
             logger.warning(
                 "[flow] %s: %s figure(s) in the answer are not in the evidence: %s",
                 flow.key, len(verification["unmatched"]), verification["unmatched"][:6],
             )
-            state.notices.append(
-                Notice(
-                    code="figures_unverified",
-                    text=f"{len(verification['unmatched'])} con số trong câu trả lời "
-                         "không khớp với dữ liệu đã đọc — hãy đối chiếu lại trước khi dùng.",
+            # TWO DIFFERENT FAULTS, TWO DIFFERENT SENTENCES. "Does not match the
+            # data read" is wrong when NOTHING was read — that reads as a
+            # reconciliation problem when the real one is that the answer has no
+            # source at all.
+            if verification.get("no_evidence"):
+                state.notices.append(
+                    Notice(
+                        code="figures_without_evidence",
+                        severity="error",
+                        text=f"Câu trả lời đưa ra {len(verification['unmatched'])} con "
+                             "số nhưng lượt này KHÔNG đọc được dữ liệu nào — các số này "
+                             "không có nguồn, đừng dùng để ra quyết định.",
+                    )
                 )
-            )
+            else:
+                state.notices.append(
+                    Notice(
+                        code="figures_unverified",
+                        text=f"{len(verification['unmatched'])} con số trong câu trả lời "
+                             "không khớp với dữ liệu đã đọc — hãy đối chiếu lại trước khi dùng.",
+                    )
+                )
 
     # THE OTHER HALF OF THE SAME CHECK.
     #
@@ -327,14 +563,34 @@ async def run_flow(
 
 
 # ═══ Walking ══════════════════════════════════════════════════════════════════
+def _minimum(node: Any, rctx: RunContext) -> tuple[int, int]:
+    from app.services.agent_flows.runtime.reserve import node_minimum, skill_lookup_for
+
+    key = id(node)
+    if key not in rctx.minimum_cache:
+        if rctx.skill_lookup is None:
+            rctx.skill_lookup = skill_lookup_for(rctx.db) or (lambda k, v: None)
+        rctx.minimum_cache[key] = node_minimum(
+            node, skill_lookup=rctx.skill_lookup, depth=len(rctx.skill_stack))
+    return rctx.minimum_cache[key]
+
+
 async def _run_body(
     body: list[Any], state: RunState, rctx: RunContext
 ) -> AsyncGenerator[AgentEvent, None]:
-    for node in body:
+    for i, node in enumerate(body):
         if state.stopped:
             return
-        async for ev in _run_node(node, state, rctx):
-            yield ev
+        # THE REST OF THIS BODY IS GUARANTEED WHAT IT NEEDS TO RUN AT ALL.
+        #
+        # Held back for the duration of this node, at every level of nesting
+        # (a lane's body reserves for the lane's later steps; the coordinator's
+        # own body reserves for the steps after the coordinator). Budget is a
+        # runtime rule: no prompt tells a step to leave something for the answer.
+        rest = [_minimum(n, rctx) for n in body[i + 1:]]
+        with state.budget.reserve(llm=sum(r[0] for r in rest), tools=sum(r[1] for r in rest)):
+            async for ev in _run_node(node, state, rctx):
+                yield ev
 
 
 async def _run_node(
@@ -342,6 +598,15 @@ async def _run_node(
 ) -> AsyncGenerator[AgentEvent, None]:
     label = node.name or node.key
     state.budget.check()
+    # WHERE THE BUDGET WENT, per step — what it had, what it was made to leave for
+    # the steps after it, and what it spent. Stamped on every row this node records.
+    before = state.budget.ledger()
+    state.step_budget[node.key] = {
+        "llm_available_at_start": state.budget.llm_available(),
+        "llm_reserved_for_later": before["llm_reserved"],
+        "tools_reserved_for_later": before["tools_reserved"],
+        "_llm0": before["llm_calls"], "_tools0": before["tool_calls"],
+    }
 
     reused = _reuse(node, state, rctx)
     if reused is not None:
@@ -406,6 +671,7 @@ async def _run_node(
     input_before = _vars_preview(state)
     attempts = node.retry.max_attempts if node.retry else 1
     last_error = ""
+    budget_refused = False
 
     for attempt in range(1, attempts + 1):
         try:
@@ -424,6 +690,11 @@ async def _run_node(
             elif isinstance(node, FilterNode):
                 _run_filter(node, state)
             else:
+                # WHOSE EVIDENCE THIS IS, set once for every leaf handler. A Tool
+                # step used to record its result under whichever step ran before
+                # it — so `{step: "tong"}` found nothing and a lineage named the
+                # wrong step. Agent steps set it again per call; same key.
+                state.evidence_source = node.key
                 handler = node_registry.handler_for(node.type)
                 if handler is None:
                     # Unreachable through the API — the contract only accepts types
@@ -456,6 +727,23 @@ async def _run_node(
             )
             raise
         except BudgetExhausted as exc:
+            # ONE SPENT CEILING ENDS ONLY THE STEPS THAT NEED IT. A data step that
+            # hit the TOOL ceiling fails as a step; the run walks on while the model
+            # can still be asked, so the answering step says what was gathered.
+            # Found by review: a loop of Tool steps funded at its minimum died on
+            # iteration 2 and the answer never ran.
+            if getattr(exc, "resource", "all") == "tools" \
+                    and state.budget.llm_calls < state.budget.max_llm_calls:
+                budget_refused = True
+                last_error = str(exc)
+                if not any(n.code == "steps_skipped_for_budget" for n in state.notices):
+                    state.notices.append(Notice(
+                        code="steps_skipped_for_budget", severity="warning", node_key=node.key,
+                        text=("Một số bước không chạy hết vì đã dùng hết số lượt gọi công cụ — "
+                              "câu trả lời có thể chưa đầy đủ."),
+                        facts=state.budget.ledger(),
+                    ))
+                break
             # Same reasoning as BranchStopped above, and the same failure when it
             # was missing: raising straight through left the trace EMPTY, so a run
             # that spent its whole budget on one node reported "no answer" with
@@ -495,6 +783,26 @@ async def _run_node(
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)[:300]
             logger.warning("[flow] node '%s' attempt %s failed: %s", node.key, attempt, exc)
+            from app.services.agent_flows.credentials import CredentialUnavailable
+
+            if isinstance(exc, CredentialUnavailable):
+                # A missing or revoked key does not appear by asking again: no
+                # retry, and the error already names the step and the reason.
+                break
+            if isinstance(exc, StepBudgetExhausted):
+                budget_refused = True
+                # Retrying cannot conjure calls the rest of the flow is owed. Said
+                # once, to the reader: the answer exists but did not get every step.
+                if not any(n.code == "steps_skipped_for_budget" for n in state.notices):
+                    state.notices.append(Notice(
+                        code="steps_skipped_for_budget", severity="warning",
+                        node_key=node.key,
+                        text=("Một số bước không chạy vì số lượt gọi mô hình còn lại được "
+                              "giữ cho các bước bắt buộc phía sau — câu trả lời có thể "
+                              "chưa đầy đủ."),
+                        facts=state.budget.ledger(),
+                    ))
+                break
             if node.retry and attempt < attempts:
                 import asyncio
 
@@ -522,7 +830,12 @@ async def _run_node(
             text=f"Bước “{label}” gặp lỗi và bị bỏ qua.",
             extra={"step": node.key},
         )
-        if node.on_error == "stop":
+        # A BUDGET REFUSAL IS NOT THE STEP FAILING. The step was never allowed to
+        # start, so that the steps after it could run; honouring `on_error="stop"`
+        # here would stop the very steps the refusal exists to protect. Found by
+        # review: a loop body with on_error=stop, refused budget on iteration 2,
+        # ended the run before its answer.
+        if node.on_error == "stop" and not budget_refused:
             state.stopped = True
         return
 
@@ -563,6 +876,20 @@ def _reuse(node: Any, state: RunState, rctx: RunContext) -> Any:
     state.outputs[node.key] = value
     state.set_var(node.output_var, value)
     state.memory_set[node.output_var] = value
+    # AND ITS PROVENANCE, NOT ONLY ITS VALUE.
+    #
+    # Hydrating the variable puts last turn's data in front of the model; leaving
+    # the ledger empty meant the verifier judged the answer against nothing and
+    # told the viewer their figures had no source — about data it had just been
+    # shown. Live runs 471, 472 and 475 carried exactly that notice while their
+    # read step read `reused`.
+    #
+    # The restore itself lives beside the read handler, because it has to mirror
+    # what that handler counts as evidence: the same sub-payloads, and none of the
+    # routing metadata `_route_call` keeps out. Done here, out of sight of the
+    # producer, it drifted twice.
+    if getattr(node, "type", "") == "report_read":
+        restore_report_read_provenance(value, state, node_key=node.key)
     return value
 
 
@@ -762,7 +1089,10 @@ async def _run_coordinate(
         ),
         provider=node.provider,
         model=node.model,
-        api_key_enc=node.api_key_enc,
+        # The planner is the coordinator's own model call, on the coordinator's
+        # own key — carried with its grantor, so the run re-checks the same person.
+        credential_id=node.credential_id,
+        credential_granted_by=node.credential_granted_by,
         context_policy="question",
     )
 
@@ -805,6 +1135,13 @@ async def _run_coordinate(
     state.outputs[node.key] = {
         "picked": [s.key for s in picked],
         "considered": [s.key for s in roster],
+        # WHY, not only WHO: the author's `when` for each chosen specialist is the
+        # ground the planner chose on, and what it actually said is what the
+        # choice was parsed from. Bounded by `max_specialists`, recorded so a
+        # reader can see the ceiling that applied.
+        "why": {s.key: s.when for s in picked},
+        "max_specialists": node.max_specialists,
+        "planner_said": str(plan if isinstance(plan, str) else (plan or {}).get("choice") or plan or "")[:200],
     }
     yield AgentEvent(
         type="branch_taken",
@@ -829,7 +1166,15 @@ async def _run_coordinate(
                     pass
         return
 
+    # EVERY CHOSEN SPECIALIST GETS TO RUN. The planner picked them for this
+    # question; a greedy first lane spending what the next one needs would turn
+    # a decomposition into "whoever went first". Each lane runs with the minimum
+    # of the lanes after it reserved (the steps after the coordinator are already
+    # reserved by the enclosing body).
+    lane_minimum = [sum(_minimum(n, rctx)[0] for n in s.body) for s in picked]
+    lane_tools = [sum(_minimum(n, rctx)[1] for n in s.body) for s in picked]
     for specialist in picked:
+        index = picked.index(specialist)
         # LANES ARE SIBLINGS, NOT A CHAIN.
         #
         # Each specialist starts from what the coordinator was handed. Without
@@ -857,8 +1202,12 @@ async def _run_coordinate(
         # to the planner. Shown to the specialist too, it becomes the assignment,
         # which is the half of "coordination" that is not routing.
         state.set_var(_BRIEF_VAR, _specialist_brief(specialist))
+        # Inside a lane, so a Skill a specialist runs is recorded as that lane's
+        # work (`invoked_as="coordinator_lane"`).
+        state.lane_depth += 1
         try:
-            with state.in_branch(specialist.name or specialist.key):
+            with state.in_branch(specialist.name or specialist.key), state.budget.reserve(
+                    llm=sum(lane_minimum[index + 1:]), tools=sum(lane_tools[index + 1:])):
                 try:
                     async for ev in _run_body(specialist.body, state, rctx):
                         yield ev
@@ -867,12 +1216,14 @@ async def _run_coordinate(
                     # cancel the others — being independent lanes is the point.
                     continue
         finally:
+            state.lane_depth -= 1
             state.set_var(_BRIEF_VAR, "")
 
 
 async def _run_switch(
     node: SwitchNode, state: RunState, rctx: RunContext
 ) -> AsyncGenerator[AgentEvent, None]:
+    _require_expression(node, node.value, "giá trị để rẽ nhánh")
     value = state.resolve(node.value)
     matched: list[Any] = []
     for case in node.cases:
@@ -956,6 +1307,7 @@ async def _run_loop(
     comma-separated line, and a loop that iterates the CHARACTERS of a string is
     both wrong and, at one model call per character, expensive.
     """
+    _require_expression(node, node.over, "danh sách để lặp")
     items = as_list(state.resolve(node.over), limit=node.max_iterations)
     collected: list[Any] = []
     outer_item = state.vars.get(node.item_var)
@@ -995,6 +1347,13 @@ async def _run_loop(
                 type="loop_iteration",
                 extra={"step": node.key, "index": index, "total": len(items)},
             )
+            # AN ITERATION THAT PRODUCED NOTHING COLLECTS NOTHING. The body's last
+            # output survives from the previous iteration, so an iteration whose
+            # step failed (or was refused budget) used to be collected as a copy of
+            # the one before — five "results" from one run. Found when the budget
+            # reservation made later iterations decline: the loop reported 5 of 5.
+            if node.body:
+                state.outputs.pop(node.body[-1].key, None)
             try:
                 async for ev in _run_body(node.body, state, rctx):
                     yield ev
@@ -1018,7 +1377,22 @@ async def _run_loop(
         state.set_var(node.collect_into, collected)
 
 
+def _require_expression(node: Any, text: Any, what: str) -> None:
+    """A routing step with no expression fails as a CONFIGURATION error, by name —
+    never runs a fallback or a single bogus iteration as if it had decided."""
+    from app.services.agent_flows.contract import _EMPTY_TEMPLATE_RE
+
+    raw = str(text or "")
+    if not raw.strip() or _EMPTY_TEMPLATE_RE.search(raw):
+        raise ValueError(
+            f"Bước “{getattr(node, 'name', '') or node.key}” chưa được cấu hình: thiếu {what}.")
+
+
 def _run_filter(node: FilterNode, state: RunState) -> None:
+    if not node.conditions:
+        _require_expression(node, "", "điều kiện lọc")
+    for cond in node.conditions:
+        _require_expression(node, cond.left, "vế trái của điều kiện lọc")
     if not evaluate_all(state, node.conditions, node.match):
         state.outputs[node.key] = {"passed": False}
         raise BranchStopped(node.key)
@@ -1063,9 +1437,153 @@ def _final_answer(state: RunState, rctx: RunContext) -> Answer:
                 continue
             candidate = state.outputs.get(step.key)
             if isinstance(candidate, str) and candidate.strip():
-                return text_answer(candidate)
+                return text_answer(_published_fallback(state, rctx, candidate))
         return Answer()
     return text_answer(str(value))
+
+
+def _published_fallback(state: RunState, rctx: RunContext, text: str) -> str:
+    """An intermediate step's prose, made publishable. Intermediate steps are
+    never claim-checked — only the answering step is — so publishing one when
+    the answering step failed was a way AROUND the publication boundary (pilot
+    review). Checked and redacted the same way; its flags make the run partial."""
+    from app.services.agent_flows.runtime import claim_check
+
+    try:
+        final = claim_check.check(state, getattr(rctx, "ctx", None), text)
+    except Exception:                                           # noqa: BLE001
+        final = {}
+    if not (final or {}).get("flagged"):
+        return text
+    state.unverified_claims = [*(state.unverified_claims or []), *final["flagged"]]
+    locale = getattr(getattr(getattr(rctx, "inp", None), "request", None), "locale", "vi") or "vi"
+    return claim_check.with_reader_note(claim_check.redact(text, final["flagged"], locale),
+                                        claim_check.reader_note(final["flagged"], locale))
+
+
+def _status_after_verification(status: str, verification: dict | None) -> str:
+    """`ok` must mean the designed path ran AND the numbers are grounded.
+
+    Status was final before `_verify_figures` ran, and nothing afterwards touched
+    it — so an answer stating a figure whose every contributing source resolved to
+    nothing was stored `ok`, and an operator reading the flow's success rate
+    counted it as a working answer.
+
+    Not driven by "a notice exists": `all_evidence_unresolved` already requires
+    the answer to CITE figures and EVERY contributing step to be unresolved, so a
+    flow whose other capability genuinely answered is untouched. A run that is
+    already `partial` or `failed` is never promoted.
+    """
+    if status != "ok" or not verification:
+        return status
+    if verification.get("claims_unverified") or verification.get("tool_budget_reached"):
+        return "partial"
+    grounding = verification.get("grounding") or {}
+    if grounding.get("all_evidence_unresolved"):
+        return "partial"
+    # A CAPABILITY THE RUN NEEDED WAS OFF AND NOTHING ELSE ANSWERED THE QUESTION.
+    # The figures are real; what is missing is any evidence that they are about
+    # what was asked. `ok` would report this run as a working answer.
+    if grounding.get("capability_gap"):
+        return "partial"
+    # THE BREAKDOWN THAT WAS ASKED FOR NEVER ARRIVED. `ok` would record this run
+    # as a working answer to a question it did not answer.
+    if grounding.get("dimension_gap"):
+        return "partial"
+    # AND THE WORSE CASE, WHICH THE RULE ABOVE COULD NOT SEE. `_verify_figures`
+    # returns early on an empty ledger, and that branch reports `no_evidence`
+    # rather than `all_evidence_unresolved` — so a run that read NOTHING and
+    # stated figures anyway fell straight through. Found on the running stack:
+    # three turns shipped 7, 3 and 9 sourceless numbers under a Runs header
+    # reading "100% answered, 0 errors".
+    #
+    # Bounded to runs that ATTEMPTED a read. A flow with no read step promised no
+    # data, and downgrading it over an incidental number would empty `partial` of
+    # meaning — `test_a_matching_branch_stays_a_clean_success` says so, and it is
+    # right. `unmatched` is required too: the same branch returns None when a
+    # sourceless answer states no numbers, because a clean refusal is healthy.
+    if grounding.get("no_evidence_after_read") and verification.get("unmatched"):
+        return "partial"
+    return status
+
+
+#: Reasons a node was skipped because a CAPABILITY was not available, as opposed
+#: to a branch that simply did not run. Only `web_disabled` is written today; the
+#: set is named so the next one is added here rather than matched by string.
+_CAPABILITY_SKIPS = frozenset({"web_disabled"})
+
+
+def _note_capability_gap(state: RunState, out: dict, *, cites_numbers: bool) -> None:
+    """Did a capability the run needed go missing, and did anything else answer?
+
+    THE FAILURE. Web search disabled, the viewer asks for Vietnam's GDP, and the
+    flow has a report read that succeeded at reading the report. Every figure in
+    the answer is verifiable against the evidence, `all_evidence_unresolved` does
+    not fire because nothing RESOLVED to nothing, and the viewer gets an Olist
+    summary as the answer to a question about GDP.
+
+    Existing provenance answers "where did this number come from?". Nothing
+    answered "did any capability actually service what was asked?", and those are
+    different questions — the first is about the figure, the second about the run.
+
+    WHAT COUNTS AS SERVICING, and why it is not an inference from prose: a
+    report-read step in `question` mode RESOLVED the viewer's question to charts.
+    That is a decision the resolver already made and already recorded, on the way
+    in, before it knew what it would find. Any other mode — `explicit`,
+    `report_order`, `report_index` — is the AUTHOR having chosen the charts, which
+    says nothing about this particular question.
+
+    THE COST OF THAT, STATED. A pure overview flow ("tóm tắt báo cáo") that also
+    carries a Web node will be marked `partial` when the web capability is off,
+    because its read never matched the question either. The notice it produces is
+    true — the external step did not run, and the figures come from charts chosen
+    in advance — so the trade is a caveat on an overview against silence on the
+    GDP answer. If that proves noisy, the fix is a viewer-side overview signal,
+    not a looser rule here.
+    """
+    skipped = sorted(
+        key for key, why in (getattr(state, "skipped", None) or {}).items()
+        if str(why) in _CAPABILITY_SKIPS
+    )
+    if not skipped:
+        return
+    serviced = any(
+        g.get("mode") == "question"
+        and not (g.get("unsupported") or g.get("needs_clarification")
+                 or g.get("resolution_unavailable"))
+        for g in (state.question_grounding or {}).values()
+        if isinstance(g, dict)
+    )
+    out.setdefault("grounding", {}).update({
+        "capability_unavailable": skipped,
+        "capability_serviced_intent": serviced,
+        "capability_gap": bool(cites_numbers and not serviced),
+    })
+
+
+def _note_dimension_gap(state: RunState, out: dict) -> None:
+    """The question asked for a breakdown this report never delivered.
+
+    THE HALF THE TOOL GATE COULD NOT REACH. Refusing the wrong chart stopped the
+    substitution — "Bang nào có doanh thu cao nhất?" no longer came back as a
+    product category — and two of three live runs then answered about monthly GMV
+    instead, which is neither the answer nor an admission that the report cannot
+    give it. A refusal at the tool boundary cannot make the answer honest; it can
+    only stop one dishonest route.
+
+    So the gap travels to the verdict. `state.dimension_gap` is written from two
+    structured facts — the refusal's `requested_dimension` and the `dimension` a
+    successful grouped result states — and never from the answer's prose. This
+    does not re-resolve anything; it reports what the run already decided.
+    """
+    gap = getattr(state, "dimension_gap", None) or {}
+    if not gap or gap.get("satisfied"):
+        return
+    out.setdefault("grounding", {}).update({
+        "dimension_requested": gap.get("requested"),
+        "dimension_label": gap.get("label") or "",
+        "dimension_gap": True,
+    })
 
 
 def _verify_figures(state: RunState, answer: Answer) -> dict | None:
@@ -1075,10 +1593,11 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
     knows how to read `1.258.681,34`, `8,4%` and `1,2 tỷ`, and a second parser
     would disagree with the first on exactly the cases that matter.
     """
-    if not state.evidence:
-        return None
     try:
-        from app.services.dashboard_ai_bot.verifier import verify_answer
+        from app.services.dashboard_ai_bot.verifier import (
+            extract_answer_numbers,
+            verify_answer,
+        )
 
         # Every figure the viewer will SEE, not just the prose. `plain_text()`
         # drops table cells, and a fabricated number is just as wrong in a table
@@ -1093,8 +1612,87 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
                 parts.append(str(data.get("value")))
                 if data.get("delta"):
                     parts.append(str((data["delta"] or {}).get("value")))
-        out = verify_answer(" ".join(p for p in parts if p), state.evidence).to_dict()
+        text = " ".join(p for p in parts if p)
+        if not state.evidence:
+            # ABSENCE OF EVIDENCE IS NOT EVIDENCE OF SUPPORT.
+            #
+            # This used to `return None` here, so the numeric check switched
+            # itself off in the one case it exists for: the read failed, nothing
+            # reached the model, the model answered from its own memory of the
+            # domain — and with no ledger to contradict it, nothing was flagged
+            # and the run presented as healthy. A figure with an empty ledger
+            # behind it is unsupported by definition.
+            #
+            # `extract_answer_numbers` is the verifier's own parser, reused rather
+            # than reimplemented: it already knows `1.258.681,34`, `8,4%` and
+            # `1,2 tỷ`, and a second parser would disagree on the cases that matter.
+            figures = extract_answer_numbers(text)
+            if not figures:
+                return None  # an honest refusal has nothing to verify
+            return {"matched": 0, "unmatched": figures,
+                    "unknown_labels": _unknown_labels(state, answer),
+                    "no_evidence": True,
+                    # DID THIS RUN TRY TO READ, OR DOES IT SIMPLY NOT READ?
+                    #
+                    # Both arrive here with an empty ledger and they are not the
+                    # same fault. A flow that read a report and got nothing, then
+                    # stated figures anyway, has numbers with no source. A flow
+                    # with no read step at all never promised any — punishing an
+                    # incidental "0" in its answer would make `partial` mean
+                    # nothing, which a golden case already guards.
+                    #
+                    # `question_grounding` is written by every report-read step at
+                    # entry, before it knows what it will find, so its emptiness
+                    # is exactly "no read was attempted". Existing provenance,
+                    # used as designed — no new heuristic.
+                    "grounding": {
+                        "no_evidence_after_read": bool(state.question_grounding),
+                    }}
+        out = verify_answer(text, state.evidence).to_dict()
         out["unknown_labels"] = _unknown_labels(state, answer)
+        # EVIDENCE TRUTH IS NOT QUESTION RELEVANCE.
+        #
+        # `verify_answer` asks whether a figure exists in the evidence. It cannot
+        # ask whether that evidence answers the question, and unrelated figures
+        # exist too — an Olist assistant asked about the weather returned GMV and
+        # orders, every number verifiable, the whole answer wrong. The read step
+        # already recorded WHY its evidence is there; carrying that here is what
+        # stops "the numbers check out" from meaning "the answer is sound".
+        unresolved = sorted(
+            key for key, g in (state.question_grounding or {}).items()
+            if g.get("unsupported") or g.get("needs_clarification")
+            or g.get("resolution_unavailable")
+        )
+        # AND THE ANSWER MUST ACTUALLY CITE NUMBERS — hoisted, because the
+        # capability rule below needs the same test. A clean refusal that states
+        # no figure is healthy and must not be flagged by either rule.
+        cites_numbers = bool(out.get("matched") or out.get("unmatched"))
+        _note_capability_gap(state, out, cites_numbers=cites_numbers)
+        _note_dimension_gap(state, out)
+        if unresolved:
+            # THE SMALLEST RULE THE PROVENANCE SUPPORTS.
+            #
+            # Recording `unresolved_steps` changed nothing on its own. The useful
+            # question is whether the answer's numbers COULD have come from a
+            # source that genuinely answered — and that needs to know which steps
+            # produced evidence, which `evidence` (a flat list of floats) cannot
+            # say. `evidence_sources` can.
+            #
+            # Flagged only when EVERY contributor is unresolved. A flow whose web
+            # or knowledge step answered is not punished for a read step that
+            # resolved to nothing, which is the explicit guard on this rule.
+            sources = set(getattr(state, "evidence_sources", None) or set())
+            # `cites_numbers` is computed above. Without it this flag fired on a
+            # correct refusal — zero charts read, no figure in the answer — and
+            # told the viewer to cross-check figures that did not exist, stacked
+            # on top of the honest "this report cannot answer that". Two
+            # contradictory warnings, one of them false on its face.
+            out.setdefault("grounding", {}).update({
+                "unresolved_steps": unresolved,
+                "all_evidence_unresolved": (
+                    cites_numbers and bool(sources) and sources <= set(unresolved)
+                ),
+            })
         return out
     except Exception:  # noqa: BLE001
         logger.debug("[flow] figure verification failed", exc_info=True)

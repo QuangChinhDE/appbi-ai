@@ -167,7 +167,16 @@ def get_column_summary(
     dialect = _dialect_for_ds_type(ds_type)
     table_identifier = build_dataset_table_cache_identifier(db_table)
 
-    cache_payload = {"column": column, "top_limit": top_limit}
+    # The relation summarised is the table's LOGICAL relation: its shaping is
+    # part of the identity (as the preview's), or a summary of the pre-edit rows
+    # answers after a transformation / type-override edit.
+    from app.services.type_override_service import normalize_type_overrides
+
+    cache_payload = {
+        "column": column, "top_limit": top_limit,
+        "transformations": getattr(db_table, "transformations", None) or [],
+        "type_overrides": normalize_type_overrides(getattr(db_table, "type_overrides", None)),
+    }
     cached = query_cache.get_cached(
         datasource.id, table_identifier, "column_summary", cache_payload, []
     )

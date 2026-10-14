@@ -131,6 +131,10 @@ export interface JoinDefinition {
   is_active?: boolean;
   /** Phase-3b: 'both' adds a reverse edge in the resolver. */
   cross_filter?: 'single' | 'both';
+  /** Reasons the relationship contract refuses this stored row (empty = valid). */
+  contract_invalid?: string[];
+  /** Invalid but definitively switched off: outside every query. */
+  contract_dormant?: boolean;
 }
 
 export interface DatasetModelView {
@@ -273,7 +277,7 @@ export async function fetchDatasetModel(datasetId: number) {
 // (get_distinct_field_values with `search=`) covers the rest of the dimension
 // from the cache. Must stay ≤ the BE page cap (datasets.py distinct le=1000);
 // raising it above 1000 requires bumping that `le` in lock-step.
-export const SLICER_DISTINCT_PREFETCH_LIMIT = 1000;
+export { SLICER_DISTINCT_PREFETCH_LIMIT } from '@/lib/slicer-limits';
 
 export async function fetchDatasetModelDistinctValues(
   datasetId: number,
@@ -574,6 +578,19 @@ export interface AddJoinParams {
    * with force=true to proceed (charts then need re-binding).
    */
   force?: boolean;
+  /**
+   * EDIT of an existing relationship: its identity AS STORED. When the edit
+   * changes that identity (other key columns, alias or tables) the server
+   * removes the old row in the same transaction — without it an edit added a
+   * second relationship next to the old one.
+   */
+  replaces?: {
+    fromView: string;
+    view: string;
+    alias?: string | null;
+    fromColumns: string[];
+    toColumns: string[];
+  } | null;
 }
 
 export function useAddJoin() {
@@ -588,7 +605,9 @@ export function useAddJoin() {
           to_view_id: params.toViewId,
           ...payload,
           join_type: params.joinType ?? 'left',
-          relationship: params.relationship ?? 'many_to_one',
+          // no default: the caller states the cardinality (an omitted one is
+          // refused by the server, never guessed as many_to_one)
+          relationship: params.relationship,
           ...(params.alias ? { alias: params.alias } : {}),
           // Phase-3b extras — server defaults preserve old behaviour if omitted.
           ...(params.isActive !== undefined ? { is_active: params.isActive } : {}),
@@ -601,6 +620,17 @@ export function useAddJoin() {
           // Cascade override: re-submit with force after the user confirms the
           // JOIN_INACTIVE_CASCADE warning (charts referencing the disabled join).
           ...(params.force ? { force: true } : {}),
+          ...(params.replaces
+            ? {
+              replaces: {
+                from_view: params.replaces.fromView,
+                view: params.replaces.view,
+                alias: params.replaces.alias ?? null,
+                from_columns: params.replaces.fromColumns,
+                to_columns: params.replaces.toColumns,
+              },
+            }
+            : {}),
         }
       );
       return response.data;
@@ -619,6 +649,9 @@ export interface RemoveJoinParams {
   toColumn?: string;
   fromColumns?: string[];
   toColumns?: string[];
+  /** Part of the identity: role-played joins to one table differ only by
+   *  alias. '' = the un-aliased relationship. */
+  alias?: string | null;
 }
 
 export function useRemoveJoin() {
@@ -636,6 +669,7 @@ export function useRemoveJoin() {
             to_column: payload.to_column,
             from_columns: fromColumns.length ? fromColumns.join(',') : undefined,
             to_columns: toColumns.length ? toColumns.join(',') : undefined,
+            alias: params.alias ?? '',
           },
         }
       );

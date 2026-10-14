@@ -19,7 +19,14 @@
  */
 import { apiClient } from './api-client';
 
-export type Provider = 'inherit' | 'openai' | 'anthropic' | 'gemini';
+/** The vendor a model step runs on. Chosen by the author, always — there is no
+ *  "inherit the link's model" and no key from the server's environment. */
+export type Provider = 'openai' | 'anthropic' | 'gemini';
+
+/** What a new step starts on: the cheapest OpenAI model, as every step did before
+ *  steps chose their own. Mirrors `models_catalogue.DEFAULT_*`. */
+export const DEFAULT_PROVIDER: Provider = 'openai';
+export const DEFAULT_MODEL = 'gpt-4o-mini';
 
 // ── Node library (server-generated) ─────────────────────────────────────────
 export type NodeCategory = 'ai' | 'data' | 'logic' | 'flow' | 'utility';
@@ -45,7 +52,7 @@ export interface NodeSpec {
 export type NodeType =
   | 'agent' | 'coordinate' | 'report_read' | 'knowledge' | 'web' | 'tool'
   | 'if' | 'switch' | 'loop' | 'filter'
-  | 'set_var' | 'transform' | 'stop' | 'delay';
+  | 'set_var' | 'transform' | 'stop' | 'delay' | 'skill';
 
 // ── Tools & models ──────────────────────────────────────────────────────────
 
@@ -88,6 +95,10 @@ export interface ToolSpec {
   /** One row per argument, FOR RENDERING A FORM. Not a schema to validate
    *  against: the backend is the only place an argument is judged. */
   inputs?: Record<string, { type: string; required: boolean; description: string }>;
+  /** Everything the tool can be FOUND by. The same text the runtime's capability
+   *  discovery ranks it on, so what an author can search for and what an Agent
+   *  can discover never disagree. */
+  search_text?: string;
 }
 
 export interface ToolPack {
@@ -103,11 +114,75 @@ export interface ToolPack {
   tools: ToolSpec[];
 }
 
+/** One catalogued model and what is actually known about it (see the backend's
+ *  `models_catalogue.py`): the vendor's lifecycle, the protocol AppBI uses, and
+ *  what AppBI itself certified against the real API. */
+export interface ModelInfo {
+  model: string;
+  label: string;
+  tier_hint: string;
+  purpose?: string;
+  lifecycle?: 'active' | 'legacy' | 'deprecated' | 'retired';
+  retire_after?: string;
+  replacement?: string;
+  endpoint?: string;
+  tools?: boolean;
+  reasoning?: string;
+  recommended?: boolean;
+  selectable?: boolean;
+  lifecycle_warning?: string;
+  price?: { input_per_mtok: number | null; output_per_mtok: number | null; source: string; as_of: string; note?: string };
+  certification?: { status: 'certified' | 'legacy_verified' | 'unverified'; as_of: string; evidence?: string; reason?: string };
+}
+
 export interface ProviderGroup {
   provider: Provider;
   label: string;
-  models: { model: string; label: string; tier_hint: string }[];
-  note: string;
+  models: ModelInfo[];
+}
+
+export interface ModelCheckLevel {
+  level: 'credential' | 'availability' | 'compatibility' | 'smoke';
+  status: 'pass' | 'fail' | 'not_run';
+  message: string;
+  code: string | null;
+}
+
+export interface ModelCheck {
+  provider: Provider;
+  model: string;
+  verdict: 'ready' | 'available_untested' | 'not_ready';
+  levels: ModelCheckLevel[];
+}
+
+/** A stored AI key, as any client may see it. There is no field for the secret —
+ *  the server never returns it; `key_hint` is its last four characters. */
+export interface AiCredential {
+  id: number;
+  name: string;
+  provider: Provider;
+  provider_label: string;
+  key_hint: string;
+  is_default: boolean;
+  mine: boolean;
+  owner: { id: string; email: string; name: string } | null;
+  permission: 'view' | 'edit' | 'full';
+  /** Backend-computed actions for the caller; the UI reads these, never `permission`. */
+  capabilities?: Record<string, boolean> | null;
+  created_at: string | null;
+  updated_at: string | null;
+  last_used_at: string | null;
+  last_test_at: string | null;
+  last_test_ok: boolean | null;
+  last_test_error: string | null;
+  usage_count: number | null;
+}
+
+export interface AiCredentialUsage {
+  brain_key: string;
+  flow_name: string;
+  step_key: string;
+  step_name: string;
 }
 
 export interface AttachableItem {
@@ -129,8 +204,32 @@ export interface Attachable {
   terms: AttachableItem[];
 }
 
+// ── Notices ─────────────────────────────────────────────────────────────────
+//
+// Defined in `./notices` and re-exported here. It is a separate module because
+// this one imports `apiClient`, and a VALUE import of these helpers from a
+// component reachable by the public dashboard page would drag the authed client
+// into the public bundle. See the note in `notices.ts`.
+import type { FlowNotice } from './notices';
+
+export type { FlowNotice, NoticeAudience } from './notices';
+export { authorNotices, isAuthorNotice, readerNotices } from './notices';
+
 // ── The flow tree ───────────────────────────────────────────────────────────
-export interface ToolGrant { tool: string; note?: string }
+export interface ToolGrant {
+  tool: string;
+  note?: string;
+  /** Skill grants (`skill:<key>`) only: the exact Skill version a PUBLISHED flow
+   *  runs. Written by the server at publish; empty on a draft, which uses the
+   *  latest published version. */
+  version?: number | null;
+}
+
+/** A grant naming a published Skill rather than a registry tool. */
+export const SKILL_GRANT_PREFIX = 'skill:';
+export const skillGrant = (key: string) => `${SKILL_GRANT_PREFIX}${key}`;
+export const skillKeyOfGrant = (tool: string) =>
+  tool.startsWith(SKILL_GRANT_PREFIX) ? tool.slice(SKILL_GRANT_PREFIX.length) : null;
 export interface KnowledgeAttachment {
   source: 'document' | 'semantic' | 'metric' | 'term';
   ref: string;
@@ -167,6 +266,14 @@ export interface BaseNode {
 export interface AgentNode extends BaseNode {
   type: 'agent';
   prompt: string;
+  /** A Specialized Agent role key (`AgentRole.key`), or empty for a custom
+   *  agent. The server BOUNDS the grants by it on save, publish and run. */
+  role?: string;
+  /** Earlier steps whose results this step is handed, by key. Empty = the step
+   *  before it, as always. */
+  reads_from?: string[];
+  /** Answering step only: end with [FOLLOWUP] suggestion lines. Default true. */
+  followups?: boolean;
   provider?: Provider;
   model?: string;
   tools?: ToolGrant[];
@@ -185,12 +292,11 @@ export interface AgentNode extends BaseNode {
    *  measured on a coverage harness it sent a plain lookup down the forecast
    *  branch. */
   choice_hints?: Record<string, string>;
-  /** Read-only, from the server: is a token stored for this node. The value itself
-   *  is never returned, so `api_key` empty means KEEP and erasing needs its own
-   *  flag. */
-  has_api_key?: boolean;
-  api_key?: string;
-  api_key_clear?: boolean;
+  /** The step's key, BY REFERENCE: an AI Keys id. Never a secret. */
+  credential_id?: number | null;
+  /** Server-set on save: who assigned the key. Sent back unchanged; the server
+   *  ignores whatever a client puts here. */
+  credential_granted_by?: string;
 }
 
 export interface ReportReadNode extends BaseNode {
@@ -312,10 +418,11 @@ export interface Specialist {
 export interface CoordinateNode extends BaseNode {
   type: 'coordinate';
   prompt?: string;
-  provider?: string;
+  /** The planner's vendor, model and key — the same choice an Agent step makes. */
+  provider?: Provider;
   model?: string;
-  api_key?: string;
-  api_key_clear?: boolean;
+  credential_id?: number | null;
+  credential_granted_by?: string;
   specialists: Specialist[];
   /** Ceiling on ONE plan. Each extra specialist is another model call for the
    *  same question, so this is a cost control, not a preference. */
@@ -347,10 +454,61 @@ export interface ToolNode extends BaseNode {
   inputs?: Record<string, ToolInput>;
 }
 
+/** Run a published Skill — a governed child flow — with inputs the author bound.
+ *  Deterministic: no model decides whether it runs. */
+export interface SkillNode extends BaseNode {
+  type: 'skill';
+  skill_key: string;
+  /** Pinned at publish; empty on a draft. */
+  version?: number | null;
+  inputs?: Record<string, ToolInput>;
+}
+
 export type FlowNode =
-  | AgentNode | ReportReadNode | KnowledgeNode | WebNode | ToolNode
+  | AgentNode | ReportReadNode | KnowledgeNode | WebNode | ToolNode | SkillNode
   | SetVarNode | TransformNode | StopNode | DelayNode
   | FilterNode | IfNode | SwitchNode | LoopNode | CoordinateNode;
+
+/** One typed input a Skill declares — the only data that enters a Skill. */
+export interface SkillInput {
+  name: string;
+  type: 'text' | 'number' | 'date' | 'chart_ref';
+  required: boolean;
+  description?: string;
+}
+
+/** What a flow promises when it is published as a Skill. */
+export interface SkillContract {
+  inputs: SkillInput[];
+  output: string;
+  when_to_use: string;
+  /** What crosses back to the caller, typed: prose, or ONE number the runtime
+   *  reads from `value_step`'s result (never parsed out of prose). */
+  returns?: 'text' | 'number';
+  value_step?: string;
+  value_path?: string;
+}
+
+/** Whether one exact Skill version may still be INVOKED — separate from which
+ *  version is live. A pin decides WHICH version runs; this decides WHETHER. */
+export interface SkillLifecycle {
+  version: number;
+  lifecycle: 'active' | 'deprecated' | 'disabled';
+  reason: string;
+  by: string;
+  at: string | null;
+}
+
+/** A published Skill this user may attach (from `/skills`). */
+export interface SkillSummary {
+  key: string;
+  name: string;
+  version: number;
+  description: string;
+  grant: string;
+  contract: SkillContract;
+  lifecycle?: SkillLifecycle;
+}
 
 /** What a flow needs from whichever link runs it.
  *  Prefer `metric`: a governed metric name is unique and resolves on every
@@ -374,6 +532,8 @@ export interface FlowBody {
    *  named explicitly because under branching "the last one" stopped meaning
    *  anything. */
   answer_node?: string;
+  /** Set when the flow is published as a Skill. */
+  skill?: SkillContract | null;
 }
 
 export type BrainStatus = 'draft' | 'published' | 'archived';
@@ -422,6 +582,8 @@ export interface BrainVersionRow {
   created_by: string | null;
   updated_at?: string | null;
   published_at: string | null;
+  flow_type?: string;
+  lifecycle?: SkillLifecycle;
 }
 
 export interface ValidateResult {
@@ -577,6 +739,93 @@ export interface RunStep {
    *  not. */
   unresolved_refs: string[];
   error: string | null;
+  /** An Agent step's capability view — what it was granted, what was eligible,
+   *  what it was shown each round, what it discovered, invoked and had refused. */
+  capabilities?: CapabilityTrace | null;
+  /** Where the budget went: what the step spent, had at the start, and was made
+   *  to leave for the steps after it. `null` on runs before ledgers existed. */
+  budget?: StepBudget | null;
+  /** Skill runs this step created. */
+  children?: ChildRun[];
+}
+
+export interface StepBudget {
+  llm_calls: number;
+  tool_calls: number;
+  llm_available_at_start: number;
+  llm_reserved_for_later: number;
+  tools_reserved_for_later: number;
+}
+
+/** What a step was HANDED (`capabilities.handoff`): which earlier results it read,
+ *  which were reduced to fit, which never arrived. */
+export interface HandoffTrace {
+  mode: 'inputs' | 'previous' | 'all_steps';
+  included?: string[];
+  reduced?: string[];
+  omitted?: string[];
+  budget_chars?: number;
+  missing?: { key: string; status: string; error?: string }[];
+}
+
+export interface CapabilityTrace {
+  handoff?: HandoffTrace;
+  granted: string[];
+  eligible: string[];
+  excluded: Record<string, string>;
+  limit: number;
+  /** Characters of schema a routed round may carry (0 = the author set a count). */
+  schema_budget?: number;
+  shortlisted: boolean;
+  initially_visible?: string[];
+  visible_per_round?: string[][];
+  schema_chars_per_round?: number[];
+  visible?: string[];
+  /** Listed one line each inside find_capability — loadable on demand (preview). */
+  catalogue?: string[];
+  schema_chars?: number | null;
+  discovered?: string[];
+  discoveries?: {
+    round: number; need: string; names: string[];
+    loaded: string[]; already_loaded: string[]; not_available: string[];
+  }[];
+  auto_loaded?: { round: number; name: string }[];
+  invoked?: string[];
+  rejected?: { name: string; code: string; round?: number }[];
+  /** Rounds the step was offered no tools because its budget or round ceiling
+   *  made them its last — it answered with what it had. */
+  final_rounds?: number;
+  /** Evidence references this step created (what a formula can name). */
+  evidence?: { ref: string; tool: string }[];
+  /** Why each shown capability is there: "core", "loaded", "all", "question:<score>". */
+  why_shown?: Record<string, string>;
+  /** The answer draft the runtime sent back: figures whose meaning did not
+   *  match the question, or percentages no tool produced. */
+  claim_review?: { flagged: ClaimFlag[] };
+  /** The final check of the answer's figures (what is still unverified). */
+  claims?: { flagged: ClaimFlag[]; draft?: string };
+}
+
+export interface ClaimFlag {
+  value: number;
+  pct?: boolean;
+  why: string;
+  of?: { measure?: string | null; dimension?: string | null; member?: string | null };
+}
+
+/** A Skill run created by another run. */
+export interface ChildRun {
+  id: number;
+  run_key: string;
+  brain_key: string;
+  version: number | null;
+  status: string;
+  invoked_as: 'agent_capability' | 'skill_node' | 'coordinator_lane' | null;
+  parent_step_key: string | null;
+  latency_ms: number | null;
+  tokens: number;
+  llm_calls: number;
+  tool_calls: number;
 }
 
 export interface RunDetail {
@@ -620,10 +869,17 @@ export interface RunDetail {
    *  is skipping steps in silence. */
   not_executed?: { key: string; name: string; type: string; on_branch: boolean }[];
   rating: 'up' | 'down' | null;
+  /** Set when this run is a Skill another run invoked. */
+  parent?: {
+    run_key: string; step_key: string | null; invoked_as: string | null;
+    id: number | null; brain_key: string | null; version: number | null;
+  } | null;
+  /** Skill runs this run created. */
+  children?: ChildRun[];
   question: string | null;
   answer: string | null;
   citations: unknown[];
-  notices: { code: string; text: string }[];
+  notices: FlowNotice[];
   replayable: boolean;
   steps: RunStep[];
 }
@@ -678,9 +934,12 @@ export interface FlowOutputEnvelope {
   schema_version: number;
   run_id: string;
   status: 'ok' | 'partial' | 'blocked' | 'failed';
-  answer: { blocks: AnswerBlock[] };
+  /** `text` is the SERVER's rendering of `blocks`, and is what a rating is
+   *  matched against. Optional so a frontend deployed ahead of the backend falls
+   *  back to rendering it locally rather than to `undefined`. */
+  answer: { blocks: AnswerBlock[]; text?: string };
   citations: { kind: string; ref: string; label?: string; url?: string; quote?: string }[];
-  notices: { code: string; text: string }[];
+  notices: FlowNotice[];
   trace: { path: string; steps: RunStep[] };
   usage: { llm_calls: number; tool_calls: number; prompt_tokens: number; completion_tokens: number; ms: number };
 }
@@ -708,9 +967,143 @@ export async function listToolPacks(webEnabled = false): Promise<ToolPack[]> {
   return data.packs || [];
 }
 
+/** A Specialized Agent role, as the server defines it (`roles.py`). The builder
+ *  only displays these; the boundary is enforced server-side. */
+export interface AgentRole {
+  key: string;
+  label_vi: string; label_en: string;
+  purpose_vi: string; purpose_en: string;
+  instead_vi: string; instead_en: string;
+  consumes_vi: string; consumes_en: string;
+  produces_vi: string; produces_en: string;
+  default_tools: string[];
+  allowed_tools: string[];
+  prompt_vi: string; prompt_en: string;
+  needs_knowledge: boolean;
+  allows_skills: boolean;
+  allows_external: boolean;
+}
+
+export async function listAgentRoles(webEnabled = false): Promise<AgentRole[]> {
+  return (await listToolCatalogue(webEnabled)).roles;
+}
+
+/** Packs AND roles from ONE request — the builder needs both, and the roles
+ *  bound exactly the tools in the packs, so they must come from the same answer. */
+export async function listToolCatalogue(
+  webEnabled = false,
+): Promise<{ packs: ToolPack[]; roles: AgentRole[] }> {
+  const { data } = await apiClient.get<{ packs: ToolPack[]; roles?: AgentRole[] }>(
+    `${BASE}/tools`, { params: { web_enabled: webEnabled } });
+  return { packs: data.packs || [], roles: data.roles || [] };
+}
+
+export function roleText(
+  role: AgentRole, field: 'label' | 'purpose' | 'instead' | 'consumes' | 'produces' | 'prompt',
+  language: 'en' | 'vi',
+): string {
+  const r = role as unknown as Record<string, string>;
+  return (language === 'vi' ? r[`${field}_vi`] : r[`${field}_en`]) || r[`${field}_vi`] || '';
+}
+
+/** Switch an agent step to `role` (or to custom with `null`).
+ *
+ *  Grants outside the new role are REMOVED and returned, so the inspector can say
+ *  what was dropped — the server would refuse to save them anyway. Switching to a
+ *  role on a step with no grants starts it on the role's defaults; the prompt is
+ *  replaced only while it is still a default (empty, the generic placeholder, or
+ *  another role's default), never once the author has written their own. */
+export function applyRole(
+  node: AgentNode, role: AgentRole | null, all: AgentRole[], language: 'en' | 'vi',
+  genericPrompt: string,
+): { patch: Partial<AgentNode>; removed: string[] } {
+  const current = node.tools || [];
+  if (!role) return { patch: { role: '' }, removed: [] };
+  const allowed = new Set(role.allowed_tools);
+  const kept = current.filter((g) => allowed.has(g.tool));
+  const removed = current.filter((g) => !allowed.has(g.tool)).map((g) => g.tool);
+  const tools = kept.length ? kept : role.default_tools.map((tool) => ({ tool }));
+  const defaults = new Set<string>([
+    '', genericPrompt.trim(),
+    ...all.flatMap((r) => [r.prompt_vi.trim(), r.prompt_en.trim()]),
+  ]);
+  const patch: Partial<AgentNode> = { role: role.key, tools };
+  if (defaults.has((node.prompt || '').trim())) patch.prompt = roleText(role, 'prompt', language);
+  return { patch, removed };
+}
+
+/** Published Skills this user may attach. Server-side, like `/attachable`. */
+export async function listSkills(): Promise<SkillSummary[]> {
+  const { data } = await apiClient.get<{ skills: SkillSummary[] }>(`${BASE}/skills`);
+  return data.skills || [];
+}
+
 export async function listProviders(): Promise<ProviderGroup[]> {
   const { data } = await apiClient.get<{ providers: ProviderGroup[] }>(`${BASE}/models`);
   return data.providers || [];
+}
+
+// ── AI Keys ─────────────────────────────────────────────────────────────────
+// Stored, encrypted provider keys that model steps reference by id. The secret is
+// write-only: it goes up on create / replace and never comes back.
+export async function listCredentials(provider?: Provider): Promise<AiCredential[]> {
+  const { data } = await apiClient.get<{ credentials: AiCredential[] }>(
+    `${BASE}/credentials`, { params: provider ? { provider } : {} });
+  return data.credentials || [];
+}
+
+export async function createCredential(body: {
+  name: string; provider: Provider; secret: string; is_default?: boolean;
+}): Promise<AiCredential> {
+  const { data } = await apiClient.post<AiCredential>(`${BASE}/credentials`, body);
+  return data;
+}
+
+/** `secret` blank or absent = keep the stored one. */
+export async function updateCredential(id: number, body: {
+  name?: string; secret?: string; is_default?: boolean;
+}): Promise<AiCredential> {
+  const { data } = await apiClient.patch<AiCredential>(`${BASE}/credentials/${id}`, body);
+  return data;
+}
+
+export async function credentialUsage(id: number): Promise<AiCredentialUsage[]> {
+  const { data } = await apiClient.get<{ affected: AiCredentialUsage[] }>(`${BASE}/credentials/${id}/usage`);
+  return data.affected || [];
+}
+
+export async function deleteCredential(id: number): Promise<AiCredentialUsage[]> {
+  const { data } = await apiClient.delete<{ affected: AiCredentialUsage[] }>(`${BASE}/credentials/${id}`);
+  return data.affected || [];
+}
+
+export async function testCredential(id: number): Promise<{ ok: boolean; error: string | null; latency_ms: number }> {
+  const { data } = await apiClient.post<{ ok: boolean; error: string | null; latency_ms: number }>(
+    `${BASE}/credentials/${id}/test`);
+  return data;
+}
+
+/** Credential → model available → supported → (smoke) one real tool call. */
+export async function checkModel(credentialId: number, model: string, smoke = true): Promise<ModelCheck> {
+  const { data } = await apiClient.post<ModelCheck>(`${BASE}/credentials/${credentialId}/check-model`,
+    { model, smoke });
+  return data;
+}
+
+/** The key a NEW step of `provider` starts on: the author's own default for it,
+ *  else the only usable key of that provider, else none. A picker convenience —
+ *  the runtime never falls back to a default. */
+export function defaultCredentialFor(provider: Provider, credentials: AiCredential[]): number | null {
+  const mine = credentials.filter((c) => c.provider === provider && c.mine);
+  const own = mine.find((c) => c.is_default) || (mine.length === 1 ? mine[0] : undefined);
+  if (own) return own.id;
+  const any = credentials.filter((c) => c.provider === provider);
+  return any.length === 1 ? any[0].id : null;
+}
+
+/** Steps that call a model and therefore need a key. */
+export function isModelStep(n: FlowNode): n is AgentNode | CoordinateNode {
+  return n.type === 'agent' || n.type === 'coordinate';
 }
 
 export async function listAttachable(): Promise<Attachable> {
@@ -778,7 +1171,7 @@ export async function getBrain(key: string, version?: number): Promise<BrainDeta
   return data;
 }
 
-export type FlowType = 'bot' | 'chat';
+export type FlowType = 'bot' | 'chat' | 'skill';
 
 export async function saveBrain(body: {
   brain_key: string; name: string; description: string; body: FlowBody;
@@ -913,6 +1306,15 @@ export async function deleteBrainVersion(key: string, version: number): Promise<
   await apiClient.delete(`${BASE}/brains/${encodeURIComponent(key)}/${version}`);
 }
 
+/** Stop, deprecate or re-activate Skill versions (none listed = all). */
+export async function setSkillLifecycle(
+  key: string, state: SkillLifecycle['lifecycle'], reason: string, versions: number[] = [],
+): Promise<SkillLifecycle[]> {
+  const { data } = await apiClient.post<{ versions: SkillLifecycle[] }>(
+    `${BASE}/brains/${encodeURIComponent(key)}/lifecycle`, { state, reason, versions });
+  return data.versions || [];
+}
+
 export async function listVersions(key: string): Promise<BrainVersionRow[]> {
   const { data } = await apiClient.get<{ versions: BrainVersionRow[] }>(
     `${BASE}/brains/${encodeURIComponent(key)}/versions`);
@@ -1010,6 +1412,9 @@ export interface StepPreview {
   };
   messages: { role: string; content: string; chars: number }[];
   tools: { name: string; description: string; arguments: string[]; required: string[] }[];
+  /** Granted vs eligible vs shown on round one, and why anything granted was left
+   *  out. `tools` is what the model receives; this is how it got there. */
+  capabilities?: CapabilityTrace;
   knowledge_scope: Record<string, unknown>;
   budget: { max_tool_calls: number; max_llm_calls: number; max_seconds: number };
   totals: { system_chars: number; message_chars: number; tool_count: number };
@@ -1093,6 +1498,165 @@ export async function deleteBinding(linkId: number): Promise<void> {
   await apiClient.delete(`${BASE}/bindings/link/${linkId}`);
 }
 
+// ── Where a container keeps its children ────────────────────────────────────
+//
+// ONE DECLARATION, READ BY EVERY WALKER.
+//
+// This used to be written out by hand in five functions in this file and seven
+// more across the canvas, the edge generator, the inspector and the test panel —
+// forty-seven branches, each a separate chance to teach eleven systems about a new
+// node type and forget the twelfth. That is not hypothetical: `coordinate` was
+// added without being taught to the backend's `all_nodes()`, a specialist's lane
+// became invisible to every authoring check at once, and asked which product
+// category earned the most the flow answered "13,591,643.70" — the report's grand
+// total, no category named, no notice raised.
+//
+// The backend declares the same topology in `contract.CHILD_SLOTS` and serves it
+// on `/nodes` as `child_slots`. `npm run qa:node-topology` asserts the two agree,
+// so this table cannot quietly drift from the models it describes.
+
+/** How to get from a container's field to a list of nodes. */
+export type ChildSlot = {
+  /** The property on the node. */
+  field: 'paths' | 'cases' | 'specialists' | 'fallback' | 'body';
+  /** `nodes` — the field IS a list of nodes.
+   *  `groups` — a list of lanes that each carry a `body`. */
+  kind: 'nodes' | 'groups';
+  /** The token this lane uses inside a `containerPath` (`<key>:<token>:<laneKey>`),
+   *  which is how an insert point on the canvas names its own destination. FE-only:
+   *  the backend has no notion of canvas routing. */
+  token: 'path' | 'case' | 'specialist' | 'fallback' | 'body';
+  /** Draw this lane even when it is empty, so an author can drop a step into it.
+   *
+   *  A switch RESERVES its fallback — an empty "everything else" lane is still a
+   *  branch of the flow, and `has_fallback: false` is how an author says they do
+   *  not want one. A coordinator has no such switch, so its fallback appears only
+   *  once it holds something. Declared rather than inferred from the value, because
+   *  `has_fallback === undefined` means "reserved" on a switch and has no meaning
+   *  at all elsewhere. */
+  reserveWhenEmpty?: boolean;
+};
+
+export const CHILD_SLOTS: Partial<Record<NodeType, ChildSlot[]>> = {
+  if: [{ field: 'paths', kind: 'groups', token: 'path' }],
+  switch: [
+    { field: 'cases', kind: 'groups', token: 'case' },
+    { field: 'fallback', kind: 'nodes', token: 'fallback', reserveWhenEmpty: true },
+  ],
+  coordinate: [
+    { field: 'specialists', kind: 'groups', token: 'specialist' },
+    { field: 'fallback', kind: 'nodes', token: 'fallback' },
+  ],
+  loop: [{ field: 'body', kind: 'nodes', token: 'body' }],
+};
+
+/** One lane of children, with enough context to rebuild the node around it. */
+export type ChildLane = {
+  slot: ChildSlot;
+  /** The lane's own key — a path/case/specialist key, or '' for `fallback`/`body`. */
+  laneKey: string;
+  nodes: FlowNode[];
+};
+
+/** The node types that hold other nodes. A TYPE-level convenience only — the
+ *  runtime answer always comes from `CHILD_SLOTS`, which is the declaration a new
+ *  container has to join to be walked at all. */
+export type ContainerNode = IfNode | SwitchNode | CoordinateNode | LoopNode;
+export type BranchingNode = IfNode | SwitchNode | CoordinateNode;
+
+export function isContainer(node: FlowNode): node is ContainerNode {
+  return !!CHILD_SLOTS[node.type];
+}
+
+/** A container whose lanes are ALTERNATIVES — one of them runs.
+ *
+ *  The distinction is in the declaration rather than a list of type names: a
+ *  branching container has a `groups` slot (named lanes to choose between), a loop
+ *  has only `nodes` (one body, run repeatedly). `coordinate` counts, and leaving it
+ *  out is how the chip under the title said "1 branch" for a flow with three. */
+export function isBranching(node: FlowNode): node is BranchingNode {
+  return (CHILD_SLOTS[node.type] || []).some((s) => s.kind === 'groups');
+}
+
+/** Every lane of child nodes this node holds, in declaration order. */
+export function childLanes(node: FlowNode): ChildLane[] {
+  const slots = CHILD_SLOTS[node.type];
+  if (!slots) return [];
+  const out: ChildLane[] = [];
+  for (const slot of slots) {
+    const value = (node as unknown as Record<string, unknown>)[slot.field];
+    if (slot.kind === 'nodes') {
+      out.push({ slot, laneKey: '', nodes: (value as FlowNode[]) || [] });
+    } else {
+      for (const lane of (value as { key: string; body?: FlowNode[] }[]) || []) {
+        out.push({ slot, laneKey: lane.key, nodes: lane.body || [] });
+      }
+    }
+  }
+  return out;
+}
+
+/** A lane as the canvas and the edge generator want it: a key, its body, and the
+ *  `containerPath` an insert point inside it would use.
+ *
+ *  BOTH OF THEM USED TO BUILD THIS THEMSELVES, and `useFlowEdges` still carries the
+ *  note about what that cost: "`FlowCanvas` learned to DRAW the lanes and this did
+ *  not learn to CONNECT them, so the specialists rendered as two cards floating
+ *  either side of a line that ran straight past them — the picture said the flow
+ *  ignores them, which is the opposite of what the node does."
+ *
+ *  A `fallback` lane is shown when it has content, or when the node carries
+ *  `has_fallback` and has not turned it off — a switch reserves its fallback lane
+ *  even while empty, so an author can drop a step into it. */
+export function laneViews(
+  node: FlowNode,
+): { key: string; body: FlowNode[]; path: string }[] {
+  return childLanes(node).flatMap((lane) => {
+    if (lane.slot.reserveWhenEmpty) {
+      // Reserved unless the author turned it off.
+      const off = (node as unknown as { has_fallback?: boolean }).has_fallback === false;
+      if (off && lane.nodes.length === 0) return [];
+    } else if (lane.slot.kind === 'nodes' && lane.nodes.length === 0) {
+      // Not reserved: an empty lane is not a lane.
+      return [];
+    }
+    return [{
+      key: lane.slot.kind === 'groups' ? lane.laneKey : lane.slot.token,
+      body: lane.nodes,
+      path: `${node.key}:${lane.slot.token}:${lane.laneKey}`,
+    }];
+  });
+}
+
+/** Rebuild a node with each of its lanes passed through `fn`.
+ *
+ *  Immutable, because React state updates and the undo stack both hold snapshots.
+ *  The shape-preserving part is the point: a caller says what to do to a list of
+ *  nodes and never has to know that `if` keeps them under `paths[].body` while
+ *  `loop` keeps them under `body`. */
+export function mapChildLanes(
+  node: FlowNode, fn: (nodes: FlowNode[], lane: ChildLane) => FlowNode[],
+): FlowNode {
+  const slots = CHILD_SLOTS[node.type];
+  if (!slots) return node;
+  const next: Record<string, unknown> = { ...(node as unknown as Record<string, unknown>) };
+  for (const slot of slots) {
+    const value = next[slot.field];
+    if (slot.kind === 'nodes') {
+      const nodes = (value as FlowNode[]) || [];
+      next[slot.field] = fn(nodes, { slot, laneKey: '', nodes });
+    } else {
+      next[slot.field] = ((value as { key: string; body?: FlowNode[] }[]) || []).map(
+        (lane) => ({
+          ...lane,
+          body: fn(lane.body || [], { slot, laneKey: lane.key, nodes: lane.body || [] }),
+        }),
+      );
+    }
+  }
+  return next as unknown as FlowNode;
+}
+
 // ── Tree helpers ────────────────────────────────────────────────────────────
 /** Every node in the tree, in document order. The canvas, the validity badge and
  *  the key-uniqueness check all need this and must not each walk it differently. */
@@ -1101,14 +1665,7 @@ export function walkNodes(nodes: FlowNode[]): FlowNode[] {
   const visit = (list: FlowNode[]) => {
     for (const n of list) {
       out.push(n);
-      if (n.type === 'if') n.paths.forEach((p) => visit(p.body || []));
-      else if (n.type === 'switch') {
-        n.cases.forEach((c) => visit(c.body || []));
-        visit(n.fallback || []);
-      } else if (n.type === 'coordinate') {
-        (n.specialists || []).forEach((sp) => visit(sp.body || []));
-        visit(n.fallback || []);
-      } else if (n.type === 'loop') visit(n.body || []);
+      for (const lane of childLanes(n)) visit(lane.nodes);
     }
   };
   visit(nodes || []);
@@ -1124,56 +1681,14 @@ export function findNode(nodes: FlowNode[], key: string): FlowNode | null {
 export function replaceNode(nodes: FlowNode[], key: string, next: FlowNode): FlowNode[] {
   return (nodes || []).map((n) => {
     if (n.key === key) return next;
-    if (n.type === 'if') {
-      return { ...n, paths: n.paths.map((p) => ({ ...p, body: replaceNode(p.body || [], key, next) })) };
-    }
-    if (n.type === 'switch') {
-      return {
-        ...n,
-        cases: n.cases.map((c) => ({ ...c, body: replaceNode(c.body || [], key, next) })),
-        fallback: replaceNode(n.fallback || [], key, next),
-      };
-    }
-    if (n.type === 'coordinate') {
-      return {
-        ...n,
-        specialists: (n.specialists || []).map((sp) => ({
-          ...sp, body: replaceNode(sp.body || [], key, next),
-        })),
-        fallback: replaceNode(n.fallback || [], key, next),
-      };
-    }
-    if (n.type === 'loop') return { ...n, body: replaceNode(n.body || [], key, next) };
-    return n;
+    return mapChildLanes(n, (lane) => replaceNode(lane, key, next));
   });
 }
 
 export function removeNode(nodes: FlowNode[], key: string): FlowNode[] {
   return (nodes || [])
     .filter((n) => n.key !== key)
-    .map((n) => {
-      if (n.type === 'if') {
-        return { ...n, paths: n.paths.map((p) => ({ ...p, body: removeNode(p.body || [], key) })) };
-      }
-      if (n.type === 'switch') {
-        return {
-          ...n,
-          cases: n.cases.map((c) => ({ ...c, body: removeNode(c.body || [], key) })),
-          fallback: removeNode(n.fallback || [], key),
-        };
-      }
-      if (n.type === 'coordinate') {
-        return {
-          ...n,
-          specialists: (n.specialists || []).map((sp) => ({
-            ...sp, body: removeNode(sp.body || [], key),
-          })),
-          fallback: removeNode(n.fallback || [], key),
-        };
-      }
-      if (n.type === 'loop') return { ...n, body: removeNode(n.body || [], key) };
-      return n;
-    });
+    .map((n) => mapChildLanes(n, (lane) => removeNode(lane, key)));
 }
 
 /** Where a new node goes. A container path is `<nodeKey>:<group>:<index>` — e.g.
@@ -1190,75 +1705,20 @@ export function insertNode(
     next.splice(Math.min(index, next.length), 0, node);
     return next;
   }
-  const [ownerKey, group, groupKey] = containerPath.split(':');
+  const [ownerKey, token, laneKey] = containerPath.split(':');
   return (nodes || []).map((n) => {
+    // Not the owner: keep descending, every lane, without naming any of them.
     if (n.key !== ownerKey) {
-      if (n.type === 'if') {
-        return { ...n, paths: n.paths.map((p) => ({ ...p, body: insertNode(p.body || [], target, node) })) };
-      }
-      if (n.type === 'switch') {
-        return {
-          ...n,
-          cases: n.cases.map((c) => ({ ...c, body: insertNode(c.body || [], target, node) })),
-          fallback: insertNode(n.fallback || [], target, node),
-        };
-      }
-      if (n.type === 'coordinate') {
-        return {
-          ...n,
-          specialists: (n.specialists || []).map((sp) => ({
-            ...sp, body: insertNode(sp.body || [], target, node),
-          })),
-          fallback: insertNode(n.fallback || [], target, node),
-        };
-      }
-      if (n.type === 'loop') return { ...n, body: insertNode(n.body || [], target, node) };
-      return n;
+      return mapChildLanes(n, (lane) => insertNode(lane, target, node));
     }
-    if (n.type === 'if' && group === 'path') {
-      return {
-        ...n,
-        paths: n.paths.map((p) => {
-          if (p.key !== groupKey) return p;
-          const body = [...(p.body || [])];
-          body.splice(Math.min(index, body.length), 0, node);
-          return { ...p, body };
-        }),
-      };
-    }
-    if (n.type === 'switch' && group === 'case') {
-      return {
-        ...n,
-        cases: n.cases.map((c) => {
-          if (c.key !== groupKey) return c;
-          const body = [...(c.body || [])];
-          body.splice(Math.min(index, body.length), 0, node);
-          return { ...c, body };
-        }),
-      };
-    }
-    if (n.type === 'switch' && group === 'fallback') {
-      const body = [...(n.fallback || [])];
+    // The owner: splice into the ONE lane the path names.
+    return mapChildLanes(n, (lane, ctx) => {
+      if (ctx.slot.token !== token) return lane;
+      if (ctx.slot.kind === 'groups' && ctx.laneKey !== laneKey) return lane;
+      const body = [...lane];
       body.splice(Math.min(index, body.length), 0, node);
-      return { ...n, fallback: body };
-    }
-    if (n.type === 'coordinate' && group === 'specialist') {
-      return {
-        ...n,
-        specialists: (n.specialists || []).map((sp) => {
-          if (sp.key !== groupKey) return sp;
-          const body = [...(sp.body || [])];
-          body.splice(Math.min(index, body.length), 0, node);
-          return { ...sp, body };
-        }),
-      };
-    }
-    if (n.type === 'loop' && group === 'body') {
-      const body = [...(n.body || [])];
-      body.splice(Math.min(index, body.length), 0, node);
-      return { ...n, body };
-    }
-    return n;
+      return body;
+    });
   });
 }
 
@@ -1269,27 +1729,8 @@ export function locateNode(
   for (let i = 0; i < (nodes || []).length; i += 1) {
     const n = nodes[i];
     if (n.key === key) return { containerPath, index: i };
-    if (n.type === 'if') {
-      for (const p of n.paths) {
-        const hit = locateNode(p.body || [], key, `${n.key}:path:${p.key}`);
-        if (hit) return hit;
-      }
-    } else if (n.type === 'switch') {
-      for (const c of n.cases) {
-        const hit = locateNode(c.body || [], key, `${n.key}:case:${c.key}`);
-        if (hit) return hit;
-      }
-      const fb = locateNode(n.fallback || [], key, `${n.key}:fallback:`);
-      if (fb) return fb;
-    } else if (n.type === 'coordinate') {
-      for (const sp of n.specialists || []) {
-        const hit = locateNode(sp.body || [], key, `${n.key}:specialist:${sp.key}`);
-        if (hit) return hit;
-      }
-      const fb = locateNode(n.fallback || [], key, `${n.key}:fallback:`);
-      if (fb) return fb;
-    } else if (n.type === 'loop') {
-      const hit = locateNode(n.body || [], key, `${n.key}:body:`);
+    for (const lane of childLanes(n)) {
+      const hit = locateNode(lane.nodes, key, `${n.key}:${lane.slot.token}:${lane.laneKey}`);
       if (hit) return hit;
     }
   }
@@ -1366,6 +1807,8 @@ export interface BlankNodeLabels {
   agentPrompt?: string;
   pathA?: string;
   pathB?: string;
+  /** The key a new model step starts on (`defaultCredentialFor`), or none. */
+  credentialId?: number | null;
 }
 
 export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLabels = {}): FlowNode {
@@ -1373,11 +1816,15 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
   const base = { key, name: '' };
   switch (type) {
     case 'agent':
-      return { ...base, type, prompt: labels.agentPrompt || 'Describe what this step should do.', provider: 'inherit',
+      return { ...base, type, prompt: labels.agentPrompt || 'Describe what this step should do.',
+        provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL, credential_id: labels.credentialId ?? null,
         max_tool_calls: 8, output_format: 'chat', context_policy: 'question', tools: [], knowledge: [] };
     case 'tool':
       return { ...base, type: 'tool', tool: '', inputs: {},
         run_policy: 'every_turn' };
+    case 'skill':
+      return { ...base, type: 'skill', skill_key: '', inputs: {},
+        output_var: uniqueKey(nodes, 'ket_qua_skill'), run_policy: 'every_turn' };
     case 'report_read':
       return { ...base, type, output_var: uniqueKey(nodes, 'dashboard_context'),
         include_summary: true, include_data: true, include_filters: true,
@@ -1396,22 +1843,23 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
         { key: 'no', name: labels.pathB || 'Branch B', kind: 'fallback', body: [] },
       ] };
     case 'switch':
-      return { ...base, type, value: '{{}}', mode: 'first_match', has_fallback: true,
+      return { ...base, type, value: '', mode: 'first_match', has_fallback: true,
         cases: [{ key: 'case_1', label: 'CASE 1', op: 'equals', value: '', body: [] }], fallback: [] };
     case 'coordinate':
       // Two lanes, because one specialist is not a coordination problem and the
       // contract refuses it. Each starts with a blank `when` the author must fill:
       // the planner reads that line and nothing else to choose.
-      return { ...base, type, prompt: '', provider: 'inherit', max_specialists: 3,
+      return { ...base, type, prompt: '', provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL,
+        credential_id: labels.credentialId ?? null, max_specialists: 3,
         specialists: [
           { key: 'chuyen_gia_1', name: '', when: '', body: [] },
           { key: 'chuyen_gia_2', name: '', when: '', body: [] },
         ], fallback: [] };
     case 'loop':
-      return { ...base, type, over: '{{}}', item_var: 'item', max_iterations: 10, body: [],
+      return { ...base, type, over: '', item_var: 'item', max_iterations: 10, body: [],
         collect_into: uniqueKey(nodes, 'all_findings') };
     case 'filter':
-      return { ...base, type, match: 'all', conditions: [{ left: '{{}}', op: 'is_not_empty' }] };
+      return { ...base, type, match: 'all', conditions: [] };
     case 'set_var':
       return { ...base, type, var: uniqueKey(nodes, 'my_var'), value: '', value_type: 'text' };
     case 'transform':
@@ -1424,6 +1872,122 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
     default:
       return { ...base, type: 'set_var', var: 'my_var', value: '' } as FlowNode;
   }
+}
+
+// ── The V1 starter ──────────────────────────────────────────────────────────
+
+/** The tools a report assistant needs, and deliberately no more.
+ *
+ *  WHY A FIXED LIST AND NOT A PACK. Granting `measure` whole would also hand over
+ *  `list_charts`, whose result scales with the report — measured at ~15,600 tokens
+ *  on a seventy-chart report, paid on every model round. Granting `diagnose` or
+ *  `project` would add `explain_change` and `forecast_measure`, both `expensive`,
+ *  to a flow whose author has not yet asked a single question. So the starter
+ *  grants the ten calls that answer "how much / which is biggest / what share /
+ *  versus last period", plus the three that establish what the numbers MEAN
+ *  before they are quoted.
+ *
+ *  `external` is gated per link and is never granted here; `knowledge` is not a V1
+ *  promise and would make the starter depend on an attachment the author has not
+ *  made. Both remain one click away in the inspector.
+ */
+const STARTER_TOOLS: string[] = [
+  // Find the right chart before measuring it.
+  'search_business_assets', 'resolve_chart_candidates',
+  // Establish scope BEFORE quoting a figure. These three are what stop an answer
+  // inventing a currency, a date range or a filter the report does not carry.
+  'inspect_filters', 'describe_time_coverage', 'get_chart_glossary',
+  // Answer "how much", "which is biggest", "what share", "versus when".
+  'total_measure', 'rank_values', 'share_of', 'get_chart_data', 'compare_periods',
+];
+
+/** The first flow a pilot author should ever see: a BI assistant for a report.
+ *
+ *  WHAT THIS IS NOT. Not a template system, not a second runtime, not a second way
+ *  for a flow to enter the product. It returns an ordinary `FlowBody` that goes
+ *  through the same `saveBrain` the blank path uses and is editable from the first
+ *  second. Delete a node and it is simply a flow.
+ *
+ *  WHY THREE STEPS AND NOT TWO. The obvious shape — read the report, then one
+ *  agent that both fetches and answers — is refused by the product's own review:
+ *  *“Bước viết câu trả lời mà còn gọi được công cụ thì dễ đưa ra số chưa qua các
+ *  bước trước.”* Shipping the recommended starting shape with a standing review
+ *  note is how authors learn that notes are noise. Splitting gather from answer
+ *  costs one model call per question and is the architecture the note is asking
+ *  for: figures pass through a step where they can be checked before anything is
+ *  written. Measured against the contract, this shape raises one note (no
+ *  knowledge attached) against the two-step shape's two.
+ *
+ *  WHY `detail: 'index'`. The contract documents the pairing: an index when the
+ *  next step has computing tools, because `rank_values`/`total_measure` reach
+ *  exact figures over every row on demand, so pasting a data sample into the
+ *  prompt buys nothing and is paid on every round.
+ *
+ *  WHY NOT `match_question`. It was the obvious choice and it is wrong here,
+ *  which a real run showed: on a sales report, "tổng doanh thu" matched no chart
+ *  at all, so the read step handed over nothing and the author was shown a
+ *  confident answer next to the diagnosis *"báo cáo này không có dữ liệu cho câu
+ *  hỏi đó"*. Question matching narrows to charts it can tie to the question; an
+ *  index of everything costs about the same and is what the gathering step needs
+ *  to choose from. The dimension truth that question mode was protecting is not
+ *  lost — it lives in `resolve_chart_candidates` and in the dimension gate on
+ *  `get_chart_data`, which this step is granted and which run per tool call.
+ *
+ *  NOTHING HERE IS SPECIFIC TO ONE CUSTOMER. No dashboard id, no report name, no
+ *  measure name, no account: a bot flow is handed whichever report the link it is
+ *  bound to is showing.
+ */
+export function starterFlow(
+  t: (key: string, values?: Record<string, string | number>) => string,
+  /** The author's OpenAI key to start both model steps on, or none. */
+  credentialId: number | null = null,
+): FlowBody {
+  const read: FlowNode = {
+    key: 'doc_bao_cao',
+    type: 'report_read',
+    name: t('agentFlows.list.starter.readName'),
+    output_var: 'bao_cao',
+    match_question: false,
+    max_charts: 20,
+    detail: 'index',
+    include_summary: true,
+    include_data: true,
+    include_filters: true,
+    max_rows: 200,
+    run_policy: 'when_stale',
+  };
+  const gather: FlowNode = {
+    key: 'tim_so_lieu',
+    type: 'agent',
+    name: t('agentFlows.list.starter.gatherName'),
+    prompt: t('agentFlows.list.starter.gatherPrompt'),
+    provider: DEFAULT_PROVIDER,
+    model: DEFAULT_MODEL,
+    credential_id: credentialId,
+    max_tool_calls: 8,
+    output_format: 'chat',
+    context_policy: 'question',
+    tools: STARTER_TOOLS.map((tool) => ({ tool })),
+    knowledge: [],
+  };
+  const answer: FlowNode = {
+    key: 'tra_loi',
+    type: 'agent',
+    name: t('agentFlows.list.starter.answerName'),
+    prompt: t('agentFlows.list.starter.answerPrompt'),
+    provider: DEFAULT_PROVIDER,
+    model: DEFAULT_MODEL,
+    credential_id: credentialId,
+    // Not zero: the contract's lower bound is 1. The step is given no tools, so
+    // the budget is unreachable either way — this is the schema's floor, not a
+    // quiet allowance.
+    max_tool_calls: 1,
+    output_format: 'chat',
+    context_policy: 'question',
+    tools: [],
+    knowledge: [],
+  };
+  return { schema_version: 2, nodes: [read, gather, answer], answer_node: answer.key };
 }
 
 // ── Conversations & feedback ────────────────────────────────────────────────
@@ -1446,7 +2010,7 @@ export interface ConversationTurn {
   question: string | null;
   answer: string | null;
   citations: unknown[];
-  notices: { code: string; text: string }[];
+  notices: FlowNotice[];
   execution_path: string | null;
   blocked_reason: string | null;
   missing_requirements: unknown[];

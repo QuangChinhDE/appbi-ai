@@ -18,6 +18,9 @@ class ResourceType(str, enum.Enum):
     DATASOURCE = "datasource"
     CHAT_SESSION = "chat_session"
     WORKBOARD = "workboard"
+    #: A delivery workspace (portal) - a resource with an owner and shares
+    #: (decision Q5). A share on a workspace NEVER grants workboard data.
+    WORKSPACE = "workspace"
     KNOWLEDGE_DOC = "knowledge_doc"
     #: An AI Agent brain. Shared like every other first-class resource, because
     #: sharing one DELEGATES its author's reading rights — and a bespoke mechanism
@@ -32,6 +35,9 @@ class ResourceType(str, enum.Enum):
     #: goes through the flow's own share. `CHAT_SESSION` above is an older, unused
     #: value and is not this — it was never wired to anything.
     CHAT_THREAD = "chat_thread"
+    #: A stored AI provider key (`ai_provider_credentials`). A share lets the
+    #: recipient USE the key in their own Agent Flow steps; no share ever reveals it.
+    AI_CREDENTIAL = "ai_credential"
 
 
 class SharePermission(str, enum.Enum):

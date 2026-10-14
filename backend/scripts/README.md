@@ -37,8 +37,8 @@ environments. Never `git add` these. (If a script becomes needed by CI, add a
 
 ### Purpose
 
-Phase 0 of the PBI-parity filter migration
-([docs/filter-migration-pbi-parity.md](../../docs/filter-migration-pbi-parity.md)).
+Phase 0 of the PBI-parity filter migration (plan doc not retained; the current
+filter contract is [docs/filter-semantics.md](../../docs/filter-semantics.md)).
 Locks the BEHAVIOR (data + drop reasons + routing + SQL pattern) of representative
 filter scenarios so any migration phase that diverges is caught immediately —
 either accepted (with explicit golden recapture + rationale) or reverted as

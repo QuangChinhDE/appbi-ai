@@ -33,6 +33,7 @@ from app.services.agent_flows import registry as reg
 from app.services.agent_flows import runs as runs_service
 from app.services.agent_flows.contract import Flow
 from app.services.agent_flows.envelope import (
+    reader_notices,
     ChartInfo,
     ConversationInfo,
     FieldRef,
@@ -261,7 +262,13 @@ def save_memory(
         # memory every turn. But the token still has to be checked, just afterwards:
         # a browser tab keeps one session key while moving between links, and two
         # links have two different data contracts. Memory from one must never be
-        # read on the other, so a token change RESETS the row rather than joining it.
+        # read on the other.
+        #
+        # A ROW OWNED BY ANOTHER LINK IS NOT THIS LINK'S TO CHANGE. Re-pointing its
+        # token (security acceptance F2, 422b8fd2) carried link A's stored
+        # transcript to link B — readable there through `GET /ai/session/<key>` —
+        # and took it away from A. Resetting it instead would let anyone who knows
+        # a key erase A's conversation. So this turn's memory is simply not kept.
         row = (
             db.query(AiChatSession)
             .filter(AiChatSession.session_key == session_key)
@@ -276,7 +283,8 @@ def save_memory(
             row = AiChatSession(token=token, session_key=session_key)
             db.add(row)
         elif row.token != token:
-            row.token = token
+            logger.info("[flow] session key belongs to another link; memory not kept")
+            return
 
         remembered = out.memory_delta.set
         # Which NODES may be skipped next turn, derived from the flow rather than
@@ -349,18 +357,20 @@ def resolve_for_link(
 
 
 def flow_supplies_credentials(db: Session, *, token: str) -> bool:
-    """Does the flow on this link bring its own API keys?
+    """Does this link run an Agent Flow — so its viewer never brings an API key?
 
-    Asked in TWO places — the endpoint that 400s on "no key", and the public payload
-    flag that decides whether the viewer is shown a "paste your API key" panel — and
-    they must agree. A per-node token that the runtime honours but the panel does not
-    know about leaves the viewer stuck at a gate in front of a working bot.
+    The public payload flag that decides whether a viewer is shown a "paste your API
+    key" panel reads this. A flow NEVER takes a viewer's key: each of its steps runs
+    on its own stored key, and a flow without usable keys is refused with a sentence
+    ("chưa được cấu hình AI key"). So a bound flow is answer enough — asking the
+    viewer for a key the run would ignore is the gate-in-front-of-a-working-bot
+    failure this function was first written to remove.
 
     Resolved through the BINDING, so a link pinned to an older version is judged on
     the version it actually runs.
 
-    Fails CLOSED: anything unexpected means the viewer is asked for a key rather than
-    dropped into a chat that cannot call anything.
+    False when there is no binding or its flow cannot be resolved: then nothing on
+    this link runs a flow, and the panel is the link's own business.
     """
     try:
         from app.models.models import DashboardPublicLink
@@ -376,7 +386,7 @@ def flow_supplies_credentials(db: Session, *, token: str) -> bool:
         if bind is None:
             return False
         resolved = reg.resolve_version(db, bind.brain_key, bind.pinned_version)
-        return bool(resolved and not resolved[1].steps_missing_credentials())
+        return bool(resolved)
     except Exception:  # noqa: BLE001
         logger.warning("[flow] credential self-sufficiency check failed", exc_info=True)
         return False
@@ -389,7 +399,43 @@ BLOCK_MESSAGES = {
     ),
     "binding_broken": "Trợ lý đang được cấu hình lại cho báo cáo này.",
     "not_published": "Trợ lý của link này chưa có bản phát hành nào.",
+    #: What a VIEWER is told. The step-by-step reason is recorded in Runs for the
+    #: author; a viewer can do nothing with a step name.
+    "missing_credential": (
+        "Trợ lý của báo cáo này chưa được cấu hình AI key. "
+        "Vui lòng liên hệ người quản lý báo cáo."
+    ),
 }
+
+
+def _disclosed(filters):
+    from app.services.filter_layered_merge import disclosed_applied_filters
+    return disclosed_applied_filters(filters or [])[0]
+
+
+def _reader_gate(*, link_id: Any = None, user_email: Any = None) -> str | None:
+    """The reader rollout policy (services/agent_flows/pilot.py) for this turn."""
+    from app.services.agent_flows import pilot
+
+    return pilot.reader_decision(link_id=link_id, user_email=user_email)
+
+
+def _credential_block(db: Session, flow: Flow) -> tuple[Any, list[dict]]:
+    """The run's key resolver, and every model step whose key cannot be used.
+
+    Asked BEFORE the run starts, so a flow with one keyless step is refused with a
+    sentence instead of running up to that step and failing in front of a reader.
+    """
+    from app.services.agent_flows.credentials import StoredCredentials
+
+    credentials = StoredCredentials(db)
+    return credentials, credentials.problems(flow)
+
+
+def _block_message(code: str) -> str:
+    from app.services.agent_flows import pilot
+
+    return pilot.BLOCK_MESSAGES.get(code) or BLOCK_MESSAGES.get(code) or BLOCK_MESSAGES["not_configured"]
 
 
 async def run_for_link(
@@ -402,21 +448,32 @@ async def run_for_link(
     history: list[dict] | None = None,
     session_key: str = "",
     filters: list[dict] | None = None,
-    api_key: str = "",
-    provider: str = "",
-    model: str = "",
     base_system_prompt: str = "",
     locale: str = "vi",
 ) -> AsyncGenerator[AgentEvent, None]:
-    """One turn on a public link. Always ends with `result`, even when blocked."""
+    """One turn on a public link. Always ends with `result`, even when blocked.
+
+    Every model step runs on its OWN stored key. The link's `ai_bot_key`, a key the
+    viewer pasted and the server's environment are not consulted — a flow without
+    usable keys is refused with `missing_credential`.
+    """
     run_id = new_run_id()
     binding, row, flow, problem = resolve_for_link(db, link=link, dashboard=dashboard)
 
+    # THE READER ROLLOUT POLICY — for every flow, not only those with a Skill.
+    if not problem and flow is not None:
+        problem = _reader_gate(link_id=getattr(link, "id", None)) or problem
+    credentials = None
+    if not problem and flow is not None:
+        credentials, missing = _credential_block(db, flow)
+        if missing:
+            problem = "missing_credential"
+            logger.info("[flow] link run refused: %s", "; ".join(m["message"] for m in missing))
     if problem or flow is None or row is None:
-        out = blocked(run_id, BLOCK_MESSAGES.get(problem, BLOCK_MESSAGES["not_configured"]), problem or "not_configured")
+        out = blocked(run_id, _block_message(problem or "not_configured"), problem or "not_configured")
         _record_blocked(db, out, binding, question, session_key, link, dashboard)
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -445,11 +502,14 @@ async def run_for_link(
     # gate by the same route as the two above.
     ctx.read_rows = binding_info.capabilities.read_rows
     ctx.web_search = binding_info.capabilities.web_search
-    from app.services.agent_flows.permissions import chart_scope, run_scope
+    from app.services.agent_flows.permissions import chart_scope, public_run_scope
 
-    ctx.knowledge_scope = run_scope(
-        db, row, flow, binding_info.knowledge.model_dump()
+    # Bounded by the ASSIGNER's current rights too: whoever put this flow on the
+    # link lends no reading right they do not hold themselves.
+    ctx.knowledge_scope = public_run_scope(
+        db, row, flow, binding_info.knowledge.model_dump(), getattr(binding, "created_by", None)
     )
+    ctx.run_scope_ceiling = dict(ctx.knowledge_scope)
     # AND ALSO THESE. The line above is the report the viewer is on; this one is
     # what its author attached on top of it — the only way a bot flow reaches past
     # a single report, and the thing that lets `search_business_assets` answer
@@ -491,6 +551,9 @@ async def run_for_link(
         ),
         report=report,
         filters=FiltersInfo(
+            # What the run is TOLD ran — a 🚫 hidden constraint is enforced by the
+            # tool context and never listed here (the fingerprint above still
+            # hashes the full set, so memory stays keyed on what was applied).
             applied=[
                 AppliedFilter(
                     field=str(f.get("field") or f.get("column") or ""),
@@ -498,35 +561,37 @@ async def run_for_link(
                     values=list(f.get("values") or ([f.get("value")] if f.get("value") is not None else [])),
                     scope=str(f.get("scope") or ""),
                 )
-                for f in (filters or [])
+                for f in _disclosed(filters)
                 if isinstance(f, dict)
             ],
             fingerprint=fp,
         ),
         binding=binding_info,
         memory=memory,
-        runtime=RuntimeInfo(
-            # Coerced at the boundary. The link's stored model is nullable and the
-            # envelope's types are fixed by design (L1: a field that is present
-            # always has the same type) — so the None-to-"" translation belongs
-            # here, once, rather than loosening the contract for every consumer.
-            provider=provider or "",
-            model=model or "",
-            budget=BudgetEnvelope(**contract.budget.model_dump()),
-        ),
+        runtime=RuntimeInfo(budget=BudgetEnvelope(**contract.budget.model_dump())),
     )
 
     recorded = False
     started = datetime.now(timezone.utc)
     try:
         async for ev in executor.run_flow(
-            inp, flow=flow, ctx=ctx, api_key=api_key,
+            inp, flow=flow, ctx=ctx, credentials=credentials,
             base_system_prompt=base_system_prompt, db=db,
+            # The link's privacy choice binds every run this turn creates —
+            # including a Skill's child run.
+            store_content=bool(binding.store_question_content),
         ):
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
                 out.notices = [*memory_notices, *out.notices]
-                ev.extra["envelope"] = out.to_dict()
+                # READER BOUNDARY — ON THE WAY OUT ONLY.
+                #
+                # What is SENT drops author diagnostics; what is RECORDED keeps
+                # them. Filtering before `record` stored the reader's copy, so a
+                # flow's real viewer traffic left no diagnostics in Runs at all —
+                # an author saw them only for questions they asked themselves,
+                # which is the opposite of where they are needed.
+                ev.extra["envelope"] = out.to_reader_dict()
                 save_memory(
                     db, session_key=session_key, token=getattr(link, "token", ""),
                     fp=fp, out=out, flow=flow,
@@ -610,8 +675,6 @@ def _studio_input(
     binding_info: Any,
     memory: Any,
     contract: Any,
-    provider: str,
-    model: str,
 ) -> FlowInput:
     """The ENVELOPE a studio turn runs on — one definition, two callers.
 
@@ -643,14 +706,7 @@ def _studio_input(
         report=report,
         binding=binding_info,
         memory=memory or MemoryInfo(),
-        runtime=RuntimeInfo(
-            # Coerced at the boundary. The link's stored model is nullable and the
-            # envelope's types are fixed by design (L1: a field that is present
-            # always has the same type) — so the None-to-"" translation belongs
-            # here, once, rather than loosening the contract for every consumer.
-            provider=provider or "", model=model or "",
-            budget=BudgetEnvelope(**contract.budget.model_dump()),
-        ),
+        runtime=RuntimeInfo(budget=BudgetEnvelope(**contract.budget.model_dump())),
     )
 
 
@@ -667,9 +723,8 @@ def preview_step(
     ctx: Any,
     question: str,
     history: list[dict] | None = None,
-    provider: str = "",
-    model: str = "",
     base_system_prompt: str = "",
+    db: Any = None,
 ) -> dict:
     """What ONE step will hand the model, for a question the author types.
 
@@ -709,7 +764,6 @@ def preview_step(
         run_id=new_run_id(), question=question, history=history, session_key="",
         report=report, binding_info=binding_info, memory=None,
         contract=binding_service.contract_of(binding),
-        provider=provider, model=model,
     )
     state = RunState(
         vars=inp.seed_vars(),
@@ -720,9 +774,14 @@ def preview_step(
         ),
     )
     rctx = executor.RunContext(
-        inp=inp, flow=flow, ctx=ctx, api_key="",
+        # No resolver: a preview calls no model, so it needs no key.
+        inp=inp, flow=flow, ctx=ctx, credentials=None,
         base_system_prompt=base_system_prompt,
-        answer_key=flow.answering_key(), db=None,
+        # THE DATABASE, for reads only: a granted Skill is resolved (and its
+        # lifecycle and sharing checked) exactly as a run resolves it. With
+        # `db=None` every Skill read as `skill_not_found` — found in the browser,
+        # on a flow whose real runs discover and call that Skill.
+        answer_key=flow.answering_key(), db=db,
     )
     out = agent_handler.preview(node, state, rctx)
     # EARLIER STEPS HAVE NOT RUN, and the preview must not imply they have. A step
@@ -758,12 +817,13 @@ async def run_preview(
     question: str,
     session_key: str = "",
     history: list[dict] | None = None,
-    api_key: str = "",
-    provider: str = "",
-    model: str = "",
     base_system_prompt: str = "",
 ) -> AsyncGenerator[AgentEvent, None]:
     """Test the DRAFT against a real binding, as the author.
+
+    Runs on each step's stored key, like a real run. The endpoints refuse with
+    `missing_credential` before calling this, so an author learns which step lacks
+    a key without spending a partial run to find out.
 
     Against a binding rather than a bare dashboard, because "does this flow work" is
     not a question about a flow — it is a question about a flow ON A LINK, and the
@@ -798,6 +858,7 @@ async def run_preview(
         ctx.knowledge_scope = _run_scope(
             db, brain_row, flow, binding_info.knowledge.model_dump()
         )
+        ctx.run_scope_ceiling = dict(ctx.knowledge_scope)
 
     ctx.allowed_chart_ids = set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
     # THE SAME ADDON THE LIVE LINK GETS, so the Test button answers the question an
@@ -835,10 +896,11 @@ async def run_preview(
     inp = _studio_input(
         run_id=run_id, question=question, history=history, session_key=session_key,
         report=report, binding_info=binding_info, memory=memory, contract=contract,
-        provider=provider, model=model,
     )
+    from app.services.agent_flows.credentials import StoredCredentials
+
     async for ev in executor.run_flow(
-        inp, flow=flow, ctx=ctx, api_key=api_key,
+        inp, flow=flow, ctx=ctx, credentials=StoredCredentials(db),
         base_system_prompt=base_system_prompt, db=db,
     ):
         if ev.type == "result":
@@ -911,9 +973,6 @@ async def run_for_chat_thread(
     ctx: Any,
     question: str,
     history: list[dict] | None = None,
-    api_key: str = "",
-    provider: str = "",
-    model: str = "",
     base_system_prompt: str = "",
     locale: str = "vi",
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -961,7 +1020,7 @@ async def run_for_chat_thread(
         # the stream starting. Nothing to record it against, so it is said and dropped.
         out = blocked(run_id, direct_chat.BLOCK_MESSAGES["not_published"], "not_published")
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -975,7 +1034,7 @@ async def run_for_chat_thread(
             "thread_read_only",
         )
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -995,7 +1054,26 @@ async def run_for_chat_thread(
         )
         _record_chat_blocked(db, out, thread, question)
         yield AgentEvent(type="text", text=out.answer.plain_text())
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
+        yield AgentEvent(type="done")
+        return
+
+    gate = _reader_gate(user_email=getattr(user, "email", None))
+    credentials = None
+    if not gate:
+        credentials, missing = _credential_block(db, flow)
+        if missing:
+            gate = "missing_credential"
+            logger.info("[flow] chat run refused: %s", "; ".join(m["message"] for m in missing))
+    if gate:
+        message = (
+            "Trợ lý này chưa được cấu hình AI key. Vui lòng liên hệ tác giả của trợ lý."
+            if gate == "missing_credential" else _block_message(gate)
+        )
+        out = blocked(run_id, message, gate)
+        _record_chat_blocked(db, out, thread, question)
+        yield AgentEvent(type="text", text=out.answer.plain_text())
+        yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
         return
 
@@ -1010,7 +1088,16 @@ async def run_for_chat_thread(
     # The chat surface declares `read_rows=False`, and until now nothing read it.
     ctx.read_rows = binding_info.capabilities.read_rows
     ctx.web_search = binding_info.capabilities.web_search
-    ctx.knowledge_scope = run_scope(db, row, flow, binding_info.knowledge.model_dump())
+    # The signed-in person asking is a term of the scope (decision Q2): their own
+    # authority plus what the owner explicitly delegated to them for this flow.
+    from app.models.user import User as _User
+
+    _caller = db.query(_User).filter(_User.id == user_id).first()
+    if _caller is None:
+        ctx.knowledge_scope = {"doc_ids": [], "dataset_ids": [], "metric_names": []}
+    else:
+        ctx.knowledge_scope = run_scope(db, row, flow, binding_info.knowledge.model_dump(), caller=_caller)
+    ctx.run_scope_ceiling = dict(ctx.knowledge_scope)
     # THE CHARTS THIS ASSISTANT WAS GRANTED — derived from the knowledge scope, not
     # from a link. A chat flow that attached no dataset still measures nothing, so
     # attaching remains the gate; what changed is that attaching now opens it.
@@ -1053,24 +1140,27 @@ async def run_for_chat_thread(
         filters=FiltersInfo(fingerprint=fp),
         binding=binding_info,
         memory=memory,
-        runtime=RuntimeInfo(
-            provider=provider or "",
-            model=model or "",
-            budget=BudgetEnvelope(**contract.budget.model_dump()),
-        ),
+        runtime=RuntimeInfo(budget=BudgetEnvelope(**contract.budget.model_dump())),
     )
 
     recorded = False
     started = datetime.now(timezone.utc)
     try:
         async for ev in executor.run_flow(
-            inp, flow=flow, ctx=ctx, api_key=api_key,
+            inp, flow=flow, ctx=ctx, credentials=credentials,
             base_system_prompt=base_system_prompt, db=db,
         ):
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
                 out.notices = [*memory_notices, *out.notices]
-                ev.extra["envelope"] = out.to_dict()
+                # READER BOUNDARY — ON THE WAY OUT ONLY.
+                #
+                # What is SENT drops author diagnostics; what is RECORDED keeps
+                # them. Filtering before `record` stored the reader's copy, so a
+                # flow's real viewer traffic left no diagnostics in Runs at all —
+                # an author saw them only for questions they asked themselves,
+                # which is the opposite of where they are needed.
+                ev.extra["envelope"] = out.to_reader_dict()
                 save_memory(
                     db, session_key=thread.session_key, token=token,
                     fp=fp, out=out, flow=flow,

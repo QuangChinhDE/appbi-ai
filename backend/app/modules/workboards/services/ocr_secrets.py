@@ -63,7 +63,11 @@ def encrypt_layout_ocr_keys(
             else:
                 ocr["api_key"] = None
         elif _is_encrypted(str(raw)):
-            ocr["api_key"] = raw  # already ciphertext
+            # Ciphertext is accepted ONLY when it is this screen's own stored
+            # key. Otherwise a ciphertext copied from another workboard (an
+            # export, a template) would be decrypted for whoever saved it via
+            # GET /{id}/ocr-key.
+            ocr["api_key"] = raw if previous.get(sid) == raw else None
         else:
             ocr["api_key"] = encrypt_value(str(raw))
     return result

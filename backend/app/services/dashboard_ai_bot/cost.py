@@ -111,6 +111,11 @@ def _gemini(
 
 
 _PRICES: dict[str, ModelPricing] = {
+    # OpenAI GPT-6 — Standard tier, read 2026-10-12 from
+    # https://developers.openai.com/api/docs/pricing (input / cached / output).
+    "gpt-6-astra": _openai(10.0, 1.00, 50.0),
+    "gpt-6.1-sol": _openai(2.0, 0.10, 10.0),
+    "gpt-6-luna": _openai(0.10, 0.01, 0.50),
     # OpenAI
     "gpt-5": _openai(1.25, 0.125, 10.0),
     "gpt-5-mini": _openai(0.25, 0.025, 2.0),
@@ -126,6 +131,13 @@ _PRICES: dict[str, ModelPricing] = {
     # Anthropic — refreshed 2026-07 against the live price sheet. The old
     # table priced opus-4-7 at legacy 15/75 (wrong: Opus 4.6+ is 5/25) and
     # still carried the RETIRED claude-3-5-* family (404 since 2026-02-19).
+    # Claude 5.5 / Fable 5.1 — read 2026-10-12 from
+    # https://platform.claude.com/docs/en/models/overview. Exact entries matter:
+    # by prefix, `claude-sonnet-5-5` used to resolve to Sonnet 5's 3/15.
+    "claude-fable-5-1": _anthropic(10.0, 50.0),
+    "claude-opus-5-5": _anthropic(4.0, 20.0),
+    "claude-sonnet-5-5": _anthropic(2.0, 10.0),
+    "claude-haiku-5-5": _anthropic(0.10, 0.50),
     "claude-fable-5": _anthropic(10.0, 50.0),
     "claude-opus-4-8": _anthropic(5.0, 25.0),
     "claude-opus-4-7": _anthropic(5.0, 25.0),
@@ -136,6 +148,15 @@ _PRICES: dict[str, ModelPricing] = {
     "claude-sonnet-4": _anthropic(3.0, 15.0),
     "claude-haiku-4-5-20251001": _anthropic(1.0, 5.0),
     "claude-haiku-4-5": _anthropic(1.0, 5.0),
+    # Gemini 3.x — paid Standard tier, read 2026-10-12 from
+    # https://ai.google.dev/gemini-api/docs/pricing. The page gives no cached
+    # rate, so cached input is priced at the full input rate (over-estimates;
+    # never invents a discount). 3.8 Flash: this price holds to 2026-12-31 and
+    # doubles on 2027-01-01 per the same page.
+    "gemini-3.8-flash": _gemini(short_input_per_1m=0.75, short_cached_input_per_1m=0.75,
+                                short_output_per_1m=3.75),
+    "gemini-3.5-flash-lite": _gemini(short_input_per_1m=0.30, short_cached_input_per_1m=0.30,
+                                     short_output_per_1m=2.50),
     # Gemini — 1.5 family is EOL; 2.x is the live generation.
     "gemini-2.5-pro": _gemini(
         short_input_per_1m=1.25,

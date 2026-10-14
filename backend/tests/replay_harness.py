@@ -163,8 +163,15 @@ def _scripted_tools(script: dict, *, real: bool):
         "ok": True, "kind": "table",
         "data": {"columns": ["category", "revenue"], "rows": [["moveis", 1200]]},
     }
+    # TOOLS THAT RUN FOR REAL beside scripted ones: a pure tool (`compute`) whose
+    # behaviour over the scripted results IS what the fixture pins. Captured
+    # before the harness replaces `execute`, so it is the genuine registry.
+    real_tools = set(script.get("real_tools") or [])
+    genuine = tool_registry.execute
 
     def fake(ctx, name, args, allowed=None, use_cache=True):
+        if name in real_tools:
+            return genuine(ctx, name, args, allowed=allowed, use_cache=False)
         return by_name.get(name, default)
 
     return fake
@@ -240,7 +247,7 @@ def run_fixture(fixture: dict, monkeypatch) -> dict:
         out = None
         async for ev in executor.run_flow(
             FlowInput.model_validate(env), flow=flow, ctx=ctx,
-            api_key="k", base_system_prompt="BASE",
+            credentials=fixed_credentials("k"), base_system_prompt="BASE",
         ):
             if ev.type == "result":
                 out = ev.extra.get("envelope")
@@ -398,3 +405,28 @@ def diff(expected: dict, actual: dict, path: str = "") -> list[str]:
     if expected != actual:
         out.append(f"{path or '<root>'}: {expected!r} → {actual!r}")
     return out
+
+
+class FixedCredentials:
+    """Gives every model step the same fake key — for driving the engine in tests.
+
+    A real run resolves each step's own stored key (`credentials.StoredCredentials`);
+    the engine takes a resolver, not a key, so a test supplies this one. Provider and
+    model are the STEP's own, exactly as the real resolver returns them.
+    """
+
+    def __init__(self, key: str = "k") -> None:
+        self.key = key
+
+    def for_node(self, node):
+        from app.services.agent_flows.credentials import ResolvedCredential
+
+        return ResolvedCredential(
+            provider=str(getattr(node, "provider", "") or "openai"),
+            model=str(getattr(node, "model", "") or ""),
+            api_key=self.key,
+        )
+
+
+def fixed_credentials(key: str = "k") -> FixedCredentials:
+    return FixedCredentials(key)
