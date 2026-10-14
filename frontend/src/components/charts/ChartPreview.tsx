@@ -1073,6 +1073,7 @@ function PodiumDisplay({
         return (
           <div
             key={i}
+            data-chart-mark=""
             className="flex flex-col items-center rounded-2xl border p-4 transition"
             style={{
               borderColor: color,
