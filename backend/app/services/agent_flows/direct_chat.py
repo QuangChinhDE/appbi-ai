@@ -110,7 +110,7 @@ def published_chat_brains(db: Session, user: Any) -> list[tuple[AgentBrainVersio
     picker would list the same assistant nine times.
     """
     from app.services.agent_flows import registry as reg
-    from app.services.agent_flows.permissions import usable_brains
+    from app.services.agent_flows.permissions import chat_usable_brains as usable_brains
 
     rows = (
         usable_brains(db, user)
@@ -146,7 +146,7 @@ def resolve_for_chat(
     report. Each of those must stop the next question rather than the next thread.
     """
     from app.services.agent_flows import registry as reg
-    from app.services.agent_flows.permissions import usable_brains
+    from app.services.agent_flows.permissions import chat_usable_brains as usable_brains
 
     row = (
         usable_brains(db, user)
@@ -187,10 +187,102 @@ BLOCK_MESSAGES = {
         "hình chat."
     ),
     "permission_revoked": "Bạn không còn quyền dùng trợ lý này.",
+    "thread_read_only": "Cuộc trò chuyện này được chia sẻ cho bạn ở mức chỉ đọc.",
+    "missing_credential": (
+        "Trợ lý này chưa được cấu hình AI key. Vui lòng liên hệ tác giả của trợ lý."
+    ),
+}
+
+#: The same refusals for a reader on the English UI. The turn used to run with a
+#: hardcoded `"vi"` locale, so these could never be reached.
+BLOCK_MESSAGES_EN = {
+    "not_published": (
+        "This assistant is no longer available — it has no published version, or "
+        "you no longer have access to it."
+    ),
+    "direct_chat_disabled": (
+        "This assistant was built for the bot on a report, so it cannot be used in Chat."
+    ),
+    "direct_chat_ineligible": (
+        "The latest version of this assistant needs a report to read, so it cannot "
+        "run in Chat."
+    ),
+    "permission_revoked": "You no longer have access to this assistant.",
+    "thread_read_only": "This conversation was shared with you to read only.",
+    "missing_credential": (
+        "This assistant has no AI key configured. Please contact its author."
+    ),
 }
 
 
+def block_message(code: str, locale: str = "vi") -> str:
+    """A refusal sentence in the reader's language; `not_published` when unknown."""
+    table = BLOCK_MESSAGES_EN if str(locale or "").lower().startswith("en") else BLOCK_MESSAGES
+    return table.get(code) or table["not_published"]
+
+
 # ═══ The contract a direct chat runs under ════════════════════════════════════
+#: Question shapes a reader can ask about ONE chart they can actually reach — so a
+#: suggestion names this assistant's data, not another report's ("GMV toàn kỳ" on
+#: a SaaS assistant is a suggestion that can only be refused).
+_GROUNDED = {
+    "lookup": ("{name}: số kỳ gần nhất là bao nhiêu?", "{name}: what is the latest figure?"),
+    "trend": ("{name} mấy kỳ gần đây đang tăng hay giảm?", "Is {name} going up or down lately?"),
+    "comparison": ("{name} kỳ gần nhất so với kỳ trước thế nào?", "{name}: latest period versus the one before?"),
+    "ranking": ("Trong {name}, nhóm nào cao nhất?", "In {name}, which group is highest?"),
+    "freshness": ("{name} có số liệu đến kỳ nào?", "How recent is the data in {name}?"),
+}
+
+
+def reader_reach(db: Session, user: Any, row: AgentBrainVersion, flow: Flow, *, lang: str = "vi") -> dict[str, Any]:
+    """What THIS reader can reach of what the assistant attached — reader-safe.
+
+    Sharing an assistant does not lend its author's reading rights (`run_scope`,
+    caller term): a reader reaches an attached dataset or document only if they
+    may read it themselves or the author delegated it to them. Found in the
+    browser: a reader the assistant was shared with asked "ARR tháng 8?" and was
+    told the data did not exist — while the catalogue showed "1 source" and a
+    list of things it "can answer". Counts and flags only; no ids, no names of
+    anything the reader may not read.
+    """
+    from app.models.models import Chart
+    from app.services.agent_flows.permissions import chart_scope, run_scope, unreadable_attachments
+
+    withheld = unreadable_attachments(db, row, flow, user)
+    mine = run_scope(db, row, flow, caller=user)
+    data_attached = sum(1 for s in flow.bound_sources() if s.source == "semantic")
+    names: list[str] = []
+    ids = sorted(chart_scope(db, mine))[:40]
+    if ids:
+        for c in db.query(Chart).filter(Chart.id.in_(ids)).order_by(Chart.id.asc()).all():
+            n = str(getattr(c, "name", "") or "").strip()
+            if n and n not in names:
+                names.append(n)
+    return {
+        "attached_count": len(flow.bound_sources()),
+        "reachable_count": len(mine["dataset_ids"]) + len(mine["doc_ids"]) + len(mine["metric_names"]),
+        "withheld_data": bool(withheld.get("dataset_ids")),
+        "withheld_documents": bool(withheld.get("doc_ids")),
+        "data_attached": data_attached > 0,
+        "chart_names": names[:3],
+        "en": str(lang or "").lower().startswith("en"),
+    }
+
+
+def grounded_suggestions(can: list[dict], reach: dict[str, Any]) -> list[str]:
+    """Up to three example questions about charts this reader can reach."""
+    names = reach.get("chart_names") or []
+    if not names:
+        return []
+    out: list[str] = []
+    for i, entry in enumerate(c for c in can if c.get("key") in _GROUNDED):
+        vi, en = _GROUNDED[entry["key"]]
+        out.append((en if reach.get("en") else vi).format(name=names[i % len(names)]))
+        if len(out) == 3:
+            break
+    return out
+
+
 def chat_contract(flow: Flow) -> Any:
     """The data contract for a turn with no report.
 
@@ -331,6 +423,18 @@ def thread_access(db: Session, user: Any, thread: AgentFlowChatThread) -> Thread
     return "edit" if str(level) == "edit" else "view"
 
 
+#: The levels that may ADD to a conversation. `full` is deliberately absent: it is
+#: the oversight level, and the thread view tells that person the conversation is
+#: read-only — a turn path that let them append anyway wrote into somebody else's
+#: record while the screen said it could not (Chat hardening H1, 2026-10-12).
+WRITE_ACCESS = ("owner", "edit")
+
+
+def may_write(access: ThreadAccess) -> bool:
+    """May this person ask the next question, or judge an answer, in this thread."""
+    return access in WRITE_ACCESS
+
+
 def get_thread(db: Session, user: Any, thread_id: int) -> AgentFlowChatThread | None:
     """The conversation, if this person may READ it at all.
 
@@ -406,10 +510,10 @@ def transcript(db: Session, thread: AgentFlowChatThread, limit: int = 50) -> lis
     whatever a client last posted; `agent_flow_run_content` is written by the runtime
     from the envelope it actually produced.
 
-    The cost of that choice, stated: content rows are pruned on a retention window
-    (180 days by default), so a thread older than that keeps its runs — and its
-    metrics — but loses its words. A dedicated message table is what buys longer,
-    and it is not worth a second write path until somebody needs it.
+    RETENTION. The run-content prune (`runs.prune`) skips rows that belong to a
+    conversation that still exists, so a live thread keeps its words for as long as
+    it is kept. Deleting the thread is what releases them to the normal window —
+    one store, two lifetimes, decided by the thread rather than by a copy.
     """
     from app.models.agent_flow_run import AgentFlowRun, AgentFlowRunContent
 
@@ -432,7 +536,11 @@ def transcript(db: Session, thread: AgentFlowChatThread, limit: int = 50) -> lis
         if question:
             out.append({"role": "user", "content": question})
         answer = (content.answer if content else None) or ""
-        if answer or run.status in ("blocked", "failed"):
+        blocks = _reader_blocks(content.output_envelope if content else None)
+        # A turn whose answer is ONLY blocks (one metric, one table) has no prose,
+        # and testing `answer` alone dropped it from the restored conversation
+        # entirely — the reader watched a figure arrive and found it gone on reload.
+        if answer or blocks or run.status in ("blocked", "failed"):
             out.append({
                 "role": "assistant",
                 "content": answer,
@@ -445,17 +553,64 @@ def transcript(db: Session, thread: AgentFlowChatThread, limit: int = 50) -> lis
                     if (n or {}).get("audience", "reader") != "author"
                 ],
                 "citations": (content.citations if content else None) or [],
+                "blocks": blocks,
                 "run_id": run.id,
                 "rating": run.rating,
             })
     return out
 
 
+def _reader_blocks(envelope: Any) -> list[dict]:
+    """The typed answer a reader saw live, rebuilt from the RECORDED envelope.
+
+    The recorded envelope is the author's copy (it keeps diagnostics for Runs), so
+    it is passed through the same `to_reader_dict` boundary the live stream uses —
+    one reader projection, not a second hand-written filter that could drift from
+    it. An envelope this build cannot parse yields no blocks; the prose still shows.
+    """
+    if not isinstance(envelope, dict):
+        return []
+    from app.services.agent_flows.envelope import FlowOutput
+
+    try:
+        reader = FlowOutput.model_validate(envelope).to_reader_dict()
+    except Exception:  # noqa: BLE001 — an old or foreign shape is not a crash
+        logger.info("[chat] stored envelope not replayable as blocks", exc_info=True)
+        return []
+    return list(((reader.get("answer") or {}).get("blocks")) or [])
+
+
 def history_turns(db: Session, thread: AgentFlowChatThread, limit: int = 12) -> list[dict]:
-    """The last few turns, in the `{role, content}` shape the envelope wants."""
+    """The last few turns, in the `{role, content}` shape the envelope wants.
+
+    A blocks-only answer contributes a plain rendering of its figures: dropping it
+    meant "so sánh với tháng trước" arrived with no record of what this month was.
+    """
     rows = transcript(db, thread, limit=limit)
-    return [
-        {"role": r["role"], "content": r["content"]}
-        for r in rows
-        if r.get("content")
-    ]
+    out = []
+    for r in rows:
+        content = r.get("content") or blocks_as_text(r.get("blocks") or [])
+        if content:
+            out.append({"role": r["role"], "content": content})
+    return out
+
+
+def blocks_as_text(blocks: list[dict], max_rows: int = 20) -> str:
+    """A compact plain-text reading of answer blocks, for conversation memory."""
+    lines: list[str] = []
+    for b in blocks or []:
+        kind = (b or {}).get("type")
+        if kind == "text":
+            lines.append(str(b.get("markdown") or ""))
+        elif kind == "metric":
+            lines.append(f"{b.get('label') or ''}: {b.get('value')}".strip())
+        elif kind == "table":
+            cols = [c.get("key") for c in b.get("columns") or [] if isinstance(c, dict)]
+            labels = [c.get("label") or c.get("key") for c in b.get("columns") or [] if isinstance(c, dict)]
+            if labels:
+                lines.append(" | ".join(str(x) for x in labels))
+            for row in (b.get("rows") or [])[:max_rows]:
+                lines.append(" | ".join(str((row or {}).get(k, "")) for k in cols))
+        elif kind == "callout":
+            lines.append(str(b.get("text") or ""))
+    return "\n".join(x for x in lines if x).strip()

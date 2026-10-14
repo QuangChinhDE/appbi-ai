@@ -44,6 +44,22 @@ export interface ChatBrain {
    *  must degrade to name + purpose rather than render an assistant as
    *  capability-less. */
   capability?: ReaderCapability | null;
+  /** False when this reader would be refused every question right now — the
+   *  rollout policy does not include them, or a step has no AI key. Listed
+   *  anyway, so "where did my assistant go" has an answer. Optional: an older
+   *  backend omits it, and absent means available. */
+  available?: boolean;
+  unavailable_reason?: string;
+  /** What of the author's attached sources THIS reader can reach (counts only).
+   *  Optional and additive — supplied by Agent Flow's reader-scope work; absent
+   *  on a backend without it, which renders nothing. */
+  reader_access?: {
+    attached_count?: number;
+    reachable_count?: number;
+    withheld_data?: number;
+    withheld_documents?: number;
+    data_attached?: boolean;
+  } | null;
 }
 
 export interface ChatThread {
@@ -52,6 +68,12 @@ export interface ChatThread {
   title: string;
   created_at: string | null;
   last_active_at: string | null;
+  /** Rename and delete are the owner's. Absent on an older backend, which is
+   *  treated as "mine" — the behaviour this field replaced. */
+  is_owner?: boolean;
+  /** Rename and delete: the owner, or `chat: full` (module management). Absent
+   *  on an older backend, which falls back to `is_owner`. */
+  can_manage?: boolean;
 }
 
 export interface ChatCitation {
@@ -70,8 +92,8 @@ export interface ChatMessage {
   citations?: ChatCitation[];
   run_id?: number;
   rating?: string | null;
-  /** Typed blocks from the terminal `result` envelope. Only ever set on a live
-   *  turn — a restored transcript keeps the prose, which is what was recorded. */
+  /** Typed blocks from the terminal `result` envelope — on a live turn, and on a
+   *  restored one, rebuilt server-side through the same reader boundary. */
   blocks?: AnswerBlock[];
 }
 
@@ -117,6 +139,21 @@ export type ChatEvent =
   | { type: 'result'; envelope: FlowOutputEnvelope }
   | { type: 'done' };
 
+/** How many of the assistant's sources THIS reader can use. The author may have
+ *  attached sources the reader was never given; counting those overstated what
+ *  the reader would get ("3 sources" when none were readable to them). Falls back
+ *  to the attached count on a backend without `reader_access`. */
+export function readerSourceCount(b: ChatBrain): number {
+  const n = b.reader_access?.reachable_count;
+  return typeof n === 'number' ? n : b.knowledge_count;
+}
+
+/** True when some attached data or documents are not shared with this reader. */
+export function readerSourcesWithheld(b: ChatBrain): boolean {
+  const a = b.reader_access;
+  return Boolean(a && ((a.withheld_data || 0) + (a.withheld_documents || 0)) > 0);
+}
+
 export async function listChatBrains(lang?: string): Promise<ChatBrain[]> {
   // `lang` reaches the capability labels, which are the only reader-facing
   // strings the backend produces here — the question classes were written for
@@ -140,9 +177,29 @@ export async function createThread(brainKey: string): Promise<ChatThread> {
   return data;
 }
 
-export async function readThread(threadId: number): Promise<ChatThreadDetail> {
-  const { data } = await apiClient.get(`${BASE}/threads/${threadId}`);
+export async function readThread(threadId: number, lang?: string): Promise<ChatThreadDetail> {
+  const { data } = await apiClient.get(`${BASE}/threads/${threadId}`, {
+    params: lang ? { lang } : undefined,
+  });
   return data;
+}
+
+/** Thumbs up / down on one answer; `null` clears it. Scoped by the conversation:
+ *  the server refuses a run that is not in this thread, and a reader who may
+ *  only read it. */
+export async function rateAnswer(
+  threadId: number, runId: number, rating: 'up' | 'down' | null,
+): Promise<void> {
+  await apiClient.post(`${BASE}/threads/${threadId}/runs/${runId}/rating`, { rating });
+}
+
+/** An HTTP refusal decided before the stream opened, with its status kept so the
+ *  caller can word it in the reader's language instead of echoing the server. */
+export class ChatHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'ChatHttpError';
+  }
 }
 
 export async function renameThread(threadId: number, title: string): Promise<ChatThread> {
@@ -171,6 +228,7 @@ export async function deleteThread(threadId: number): Promise<void> {
 export async function* streamChatTurn(
   threadId: number,
   question: string,
+  lang: string,
   signal?: AbortSignal,
 ): AsyncGenerator<ChatEvent, void, unknown> {
   const base = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
@@ -178,7 +236,9 @@ export async function* streamChatTurn(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ question }),
+    // `lang` is the UI language ('vi' | 'en'). The server used to run every turn
+    // as Vietnamese, whatever the reader had chosen.
+    body: JSON.stringify({ question, lang: lang === 'en' ? 'en' : 'vi' }),
     signal,
   });
 
@@ -190,7 +250,7 @@ export async function* streamChatTurn(
     } catch {
       /* a non-JSON error body is still an error */
     }
-    throw new Error(detail);
+    throw new ChatHttpError(String(detail), response.status);
   }
 
   // 180s: the server's own idle watchdog is 180s and its keepalive is every 8s, so

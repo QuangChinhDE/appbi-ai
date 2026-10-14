@@ -9,9 +9,14 @@
  * asked anything. Now the composer is live the moment an assistant is open, and
  * the thread is created by the act of sending. Nothing is stored for someone who
  * changed their mind.
+ *
+ * THE CONVERSATION LIST EXISTS ON EVERY SCREEN SIZE. It is a sidebar from `lg`
+ * up and a drawer below that — before, it was simply `hidden` on a phone, which
+ * left a mobile reader with no way back to yesterday's conversation.
  */
 import {
-  ArrowLeft, Bot, Check, FileText, Loader2, MessageSquarePlus, Pencil, Send, Share2, Trash2, X,
+  ArrowLeft, Bot, Check, Copy, FileText, Loader2, MessageSquarePlus, MessagesSquare, Pencil,
+  Search, Send, Share2, ThumbsDown, ThumbsUp, Trash2, X,
 } from 'lucide-react';
 import React from 'react';
 
@@ -22,7 +27,10 @@ import { AnswerBlocks } from '@/components/dashboards/AnswerBlocks';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { cn } from '@/lib/utils';
+import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
+import type { AnswerBlock } from '@/lib/agentFlows';
+import { readerSourceCount, readerSourcesWithheld } from '@/lib/directChat';
 import type { ChatBrain, ChatMessage, ChatThread, ChatThreadDetail } from '@/lib/directChat';
 import { readerNotices } from '@/lib/notices';
 
@@ -42,14 +50,40 @@ const NOTICE_KEYS: Record<string, string> = {
   partial_rows: 'chat.notice.partialRows',
   read_truncated: 'chat.notice.truncated',
   web_disabled: 'chat.notice.webOff',
+  sources_withheld: 'chat.notice.sourcesWithheld',
 };
 
+/** Answer-integrity notices the ENGINE words in Vietnamese. On the Vietnamese UI
+ *  its own sentence is the better one (it names the counts and items); on the
+ *  English UI it would be the only Vietnamese on the screen, so the reader gets
+ *  this sentence instead. Integrity first: these are the ones that say "do not
+ *  trust this figure yet". */
+const EN_NOTICE_KEYS: Record<string, string> = {
+  figures_without_evidence: 'chat.notice.figuresWithoutEvidence',
+  figures_unverified: 'chat.notice.figuresUnverified',
+  claims_unverified: 'chat.notice.claimsUnverified',
+  labels_unverified: 'chat.notice.labelsUnverified',
+  requested_breakdown_unavailable: 'chat.notice.breakdownUnavailable',
+  tool_budget_reached: 'chat.notice.toolBudget',
+  steps_skipped_for_budget: 'chat.notice.stepsSkipped',
+  run_failed: 'chat.notice.runFailed',
+};
+
+/** Read-only reasons the client words itself, so the sentence follows the UI
+ *  language. Anything else falls back to the server's own sentence. */
+const READONLY_KEYS = new Set([
+  'assistant_not_shared', 'shared_read_only', 'oversight_read_only', 'not_published',
+  'direct_chat_disabled', 'direct_chat_ineligible', 'pilot_not_enrolled',
+  'reader_mode_off', 'missing_credential',
+]);
+
 export function ConversationView({
-  brain, threads, detail, threadId, messages, loadingThread, streaming, status,
+  brain, brainsLoaded, threads, detail, threadId, messages, loadingThread, streaming, status,
   input, onInputChange, onSend, onStop, onBack, onNewThread, onOpenThread,
-  onRename, onDelete,
+  onRename, onDelete, onRate,
 }: {
   brain: ChatBrain | null;
+  brainsLoaded: boolean;
   threads: ChatThread[];
   detail: ChatThreadDetail | null;
   threadId: number;
@@ -66,17 +100,38 @@ export function ConversationView({
   onOpenThread: (id: number) => void;
   onRename: (id: number, title: string) => void;
   onDelete: (thread: ChatThread) => void;
+  onRate: (runId: number, rating: 'up' | 'down' | null) => void;
 }) {
   const { t } = useI18n();
-  const [renaming, setRenaming] = React.useState<number | null>(null);
-  const [renameText, setRenameText] = React.useState('');
   const endRef = React.useRef<HTMLDivElement | null>(null);
+  const [listOpen, setListOpen] = React.useState(false);
 
   React.useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, status]);
 
-  const readonly = Boolean(detail?.readonly_reason);
+  // The drawer closes on its own once a choice is made — a phone reader who
+  // tapped a conversation wants to read it, not dismiss a panel first.
+  React.useEffect(() => { setListOpen(false); }, [threadId]);
+
+  // WHY THE BOX IS CLOSED, in one place. The thread's own reason when one is
+  // open; otherwise (a new conversation) the assistant's availability — an
+  // assistant the rollout does not open to this reader, or with no key, would
+  // refuse every question, so it is said before one is typed. And an assistant
+  // that is not in the reader's list at all cannot be started.
+  const brainGone = brainsLoaded && !brain && !threadId;
+  const reason = detail?.readonly_reason
+    || (!threadId && brain && brain.available === false ? brain.unavailable_reason || 'not_published' : '')
+    || (brainGone ? 'not_published' : '');
+  const readonly = Boolean(reason);
+  const readonlyText = reason && READONLY_KEYS.has(reason)
+    ? t(`chat.readonly.${reason}`)
+    : (detail?.readonly_message || t('chat.readonlyFallback'));
+  // ONE verdict per answer, held by the conversation's owner — an `edit` sharee
+  // may continue the conversation but not overwrite the owner's rating. A brand
+  // new conversation (no detail yet) is the reader's own. Server enforces it.
+  const canRate = !detail || detail.access === 'owner';
+
   const [sharing, setSharing] = React.useState(false);
   //: Somebody else's conversation, open because they shared it (or because this
   //: account holds `chat: full`). Worth saying out loud: without it a reader can
@@ -84,118 +139,51 @@ export function ConversationView({
   //: renamed.
   const notMine = detail != null && detail.access !== 'owner';
 
+  const list = (
+    <ThreadList
+      brain={brain}
+      detail={detail}
+      threads={threads}
+      threadId={threadId}
+      onBack={onBack}
+      onNewThread={onNewThread}
+      onOpenThread={onOpenThread}
+      onRename={onRename}
+      onDelete={onDelete}
+    />
+  );
+
   return (
     <div className="flex h-full min-h-0">
-      {/* ── This assistant's conversations ── */}
+      {/* ── This assistant's conversations: a sidebar on large screens ── */}
       <aside className="hidden w-64 shrink-0 flex-col border-r border-[rgb(var(--border-line))] bg-surface-1 lg:flex">
-        <div className="border-b border-[rgb(var(--border-line))] px-3 py-2.5">
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex items-center gap-1.5 text-tiny text-text-tertiary transition-colors hover:text-text-secondary"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            {t('chat.backToList')}
-          </button>
-        </div>
-
-        <div className="px-3 py-3">
-          <div className="flex items-center gap-2">
-            <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
-              <Bot className="h-4 w-4" />
-            </span>
-            <span className="min-w-0">
-              <span className="block truncate text-caption font-strong text-text-primary">
-                {brain?.name || detail?.brain_name || ''}
-              </span>
-              {brain ? (
-                <span className="flex items-center gap-1 text-tiny text-text-quaternary">
-                  <FileText className="h-3 w-3" />
-                  {t('chat.card.sources', { n: brain.knowledge_count })}
-                </span>
-              ) : null}
-            </span>
-          </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            className="mt-3 w-full"
-            leadingIcon={<MessageSquarePlus className="h-3.5 w-3.5" />}
-            onClick={onNewThread}
-          >
-            {t('chat.newConversation')}
-          </Button>
-        </div>
-
-        <p className="px-3 pb-1 text-micro uppercase tracking-wide text-text-quaternary">
-          {t('chat.conversations')}
-        </p>
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-          {threads.map((th) => (
-            <div
-              key={th.id}
-              className={cn(
-                'group flex items-center gap-1 rounded px-2 py-1.5',
-                th.id === threadId ? 'bg-surface-3' : 'hover:bg-surface-2',
-              )}
-            >
-              {renaming === th.id ? (
-                <>
-                  <Input
-                    value={renameText}
-                    onChange={(e) => setRenameText(e.target.value)}
-                    className="h-7 text-xs"
-                    autoFocus
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') { onRename(th.id, renameText.trim()); setRenaming(null); }
-                      if (e.key === 'Escape') setRenaming(null);
-                    }}
-                  />
-                  <IconButton
-                    aria-label={t('chat.save')}
-                    onClick={() => { onRename(th.id, renameText.trim()); setRenaming(null); }}
-                  >
-                    <Check className="h-3.5 w-3.5" />
-                  </IconButton>
-                  <IconButton aria-label={t('chat.cancel')} onClick={() => setRenaming(null)}>
-                    <X className="h-3.5 w-3.5" />
-                  </IconButton>
-                </>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => onOpenThread(th.id)}
-                    className="min-w-0 flex-1 truncate text-left text-caption text-text-secondary"
-                    title={th.title || t('chat.untitled')}
-                  >
-                    {th.title || t('chat.untitled')}
-                  </button>
-                  <span className="hidden shrink-0 gap-0.5 group-hover:flex">
-                    <IconButton
-                      aria-label={t('chat.rename')}
-                      onClick={() => { setRenaming(th.id); setRenameText(th.title || ''); }}
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </IconButton>
-                    <IconButton aria-label={t('chat.delete')} onClick={() => onDelete(th)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </IconButton>
-                  </span>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
+        {list}
       </aside>
+
+      {/* ── …and a drawer below `lg` ── */}
+      {listOpen ? (
+        <div className="fixed inset-0 z-40 flex lg:hidden" role="dialog" aria-modal="true"
+          aria-label={t('chat.conversations')}>
+          <button type="button" aria-label={t('chat.closeConversations')}
+            className="absolute inset-0 bg-black/40" onClick={() => setListOpen(false)} />
+          <div className="relative flex h-full w-[85%] max-w-xs flex-col bg-surface-1 shadow-xl">
+            <div className="flex justify-end px-2 pt-2">
+              <IconButton aria-label={t('chat.closeConversations')} onClick={() => setListOpen(false)}>
+                <X className="h-4 w-4" />
+              </IconButton>
+            </div>
+            {list}
+          </div>
+        </div>
+      ) : null}
 
       {/* ── The conversation ── */}
       <section className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] px-4 py-3">
+        <header className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] px-3 py-3 sm:px-4">
           <IconButton aria-label={t('chat.backToList')} className="lg:hidden" onClick={onBack}>
             <ArrowLeft className="h-4 w-4" />
           </IconButton>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             {/* The thread LIST is the one source of truth for a title: the server
                 names a conversation from its first question, and that name reaches
                 this screen through the refreshed list. Reading it off `detail`
@@ -212,6 +200,18 @@ export function ConversationView({
             </p>
           </div>
 
+          <Button
+            variant="secondary"
+            size="sm"
+            className="lg:hidden"
+            onClick={() => setListOpen(true)}
+            aria-label={t('chat.showConversations')}
+            data-testid="chat-open-conversations"
+          >
+            <MessagesSquare className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">{t('chat.showConversations')}</span>
+          </Button>
+
           {/* SHARING A CONVERSATION IS NOT SHARING THE ASSISTANT.
               This hands somebody THIS transcript. Whether they can then ask a
               question in it is still decided by the flow's own share — which is
@@ -227,7 +227,8 @@ export function ConversationView({
               onClick={() => setSharing(true)}
               aria-label={t('chat.share')}
             >
-              <Share2 className="h-3.5 w-3.5" /> {t('chat.share')}
+              <Share2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">{t('chat.share')}</span>
             </Button>
           )}
         </header>
@@ -253,12 +254,13 @@ export function ConversationView({
         ) : null}
 
         {readonly ? (
-          <div className="border-b border-warning/30 bg-warning/10 px-4 py-2 text-caption text-warning">
-            {detail?.readonly_message || t('chat.readonlyFallback')}
+          <div role="status" data-testid="chat-readonly"
+            className="border-b border-warning/30 bg-warning/10 px-4 py-2 text-caption text-warning">
+            {readonlyText}
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-4">
           {loadingThread ? (
             <div className="flex justify-center py-10">
               <Loader2 className="h-5 w-5 animate-spin text-text-tertiary" />
@@ -266,95 +268,38 @@ export function ConversationView({
           ) : (
             <ChartNamesContext.Provider value={EMPTY_CHART_NAMES}>
               <div className="mx-auto max-w-3xl space-y-4">
-                {!messages.length && brain ? (
+                {brainGone ? (
                   <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5">
-                    <div className="mb-2 flex items-center gap-2.5">
-                      <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 text-brand">
-                        <Bot className="h-4 w-4" />
-                      </span>
-                      <span className="text-small font-strong text-text-primary">{brain.name}</span>
-                    </div>
-                    {brain.description ? (
-                      <p className="mb-2 text-caption leading-relaxed text-text-secondary">
-                        {brain.description}
-                      </p>
-                    ) : null}
-                    <p className="text-caption text-text-tertiary">{t('chat.welcome.hint')}</p>
-
-                    {/* BEFORE THE FIRST QUESTION, not after it comes back
-                        unanswered. An assistant with no anomaly tool should say
-                        so here rather than let a reader spend a turn finding
-                        out. Absent capability degrades to the line above; it is
-                        never rendered as "can answer nothing". */}
-                    {brain.capability?.can?.length ? (
-                      <div className="mt-3">
-                        <p className="text-tiny font-strong uppercase tracking-wider text-text-quaternary">
-                          {t('chat.welcome.canTitle')}
-                        </p>
-                        <div className="mt-1.5 flex flex-wrap gap-1.5">
-                          {brain.capability.can.map((c) => (
-                            <span key={c.key}
-                              className="rounded-md bg-surface-2 px-1.5 py-0.5 text-tiny text-text-secondary">
-                              {c.label}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {brain.capability?.cannot?.length ? (
-                      <div className="mt-3">
-                        <p className="text-tiny font-strong uppercase tracking-wider text-text-quaternary">
-                          {t('chat.welcome.cannotTitle')}
-                        </p>
-                        <div className="mt-1.5 flex flex-wrap gap-1.5">
-                          {brain.capability.cannot.map((c) => (
-                            <span key={c.key}
-                              className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-1.5 py-0.5 text-tiny text-text-quaternary">
-                              {c.label}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {/* Derived from `can`, never authored, so a suggestion can
-                        never propose something the assistant cannot do. */}
-                    {!readonly && brain.capability?.suggested_questions?.length ? (
-                      <div className="mt-3.5 flex flex-wrap gap-1.5">
-                        {brain.capability.suggested_questions.map((q) => (
-                          // FILLS THE BOX, does not send. `onSend` takes no
-                          // argument, and handing it one is exactly the defect
-                          // `qa:handler-arity` exists to catch. It also reads
-                          // better: a suggestion the reader can edit before
-                          // asking is a prompt, not a decision made for them.
-                          <button key={q} type="button"
-                            onClick={() => {
-                              onInputChange(q);
-                              // FOCUS FOLLOWS, or the reader has to click twice:
-                              // once to choose the question and once to reach the
-                              // box they were just handed.
-                              document.querySelector<HTMLTextAreaElement>(
-                                '[data-chat-input]')?.focus();
-                            }}
-                            className="rounded-full border border-[rgb(var(--border-line))] px-2.5 py-1 text-tiny text-text-secondary transition hover:border-brand/40 hover:text-brand">
-                            {q}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-
-                    <p className="mt-3 flex items-center gap-1 text-tiny text-text-quaternary">
-                      <FileText className="h-3 w-3" />
-                      {t('chat.welcome.sources', { n: brain.knowledge_count })}
-                    </p>
+                    <p className="text-small font-strong text-text-primary">{t('chat.assistantGone.title')}</p>
+                    <p className="mt-1 text-caption text-text-tertiary">{t('chat.assistantGone.description')}</p>
+                    <Button className="mt-3" size="sm" variant="secondary" onClick={onBack}>
+                      {t('chat.backToList')}
+                    </Button>
                   </div>
                 ) : null}
 
-                {messages.map((m, i) => <Bubble key={i} message={m} />)}
+                {!messages.length && brain ? (
+                  <Welcome brain={brain} readonly={readonly} onPick={onInputChange} />
+                ) : null}
+
+                {messages.map((m, i) => (
+                  <Bubble
+                    key={m.run_id ? `r${m.run_id}-${m.role}` : `i${i}`}
+                    message={m}
+                    live={streaming && i === messages.length - 1}
+                    canRate={canRate}
+                    onRate={onRate}
+                    // A suggested follow-up FILLS the box, the same as a suggested
+                    // first question: the reader can edit it before asking.
+                    onFollowup={readonly || streaming ? undefined : (q) => {
+                      onInputChange(q);
+                      document.querySelector<HTMLTextAreaElement>('[data-chat-input]')?.focus();
+                    }}
+                  />
+                ))}
 
                 {streaming && status ? (
-                  <p className="flex items-center gap-2 text-caption text-text-tertiary">
+                  <p className="flex items-center gap-2 text-caption text-text-tertiary" aria-live="polite">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     {status}
                   </p>
@@ -371,11 +316,17 @@ export function ConversationView({
               value={input}
               onChange={(e) => onInputChange(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); }
+                // `isComposing`: Enter that CONFIRMS an IME candidate (Vietnamese
+                // Telex on some keyboards) is not Enter that sends.
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  onSend();
+                }
               }}
               disabled={readonly || streaming}
               rows={1}
               data-chat-input
+              aria-label={t('chat.placeholder')}
               placeholder={readonly ? t('chat.placeholderReadonly') : t('chat.placeholder')}
               className={cn(
                 'min-h-[42px] max-h-40 flex-1 resize-y rounded-lg border border-[rgb(var(--border-line))]',
@@ -385,7 +336,7 @@ export function ConversationView({
               )}
             />
             {streaming ? (
-              <Button variant="secondary" onClick={onStop}>{t('chat.stop')}</Button>
+              <Button variant="secondary" onClick={onStop} data-testid="chat-stop">{t('chat.stop')}</Button>
             ) : (
               <Button onClick={onSend} disabled={readonly || !input.trim()} aria-label={t('chat.send')}>
                 <Send className="h-4 w-4" />
@@ -398,13 +349,282 @@ export function ConversationView({
   );
 }
 
-function Bubble({ message }: { message: ChatMessage }) {
+function ThreadList({
+  brain, detail, threads, threadId, onBack, onNewThread, onOpenThread, onRename, onDelete,
+}: {
+  brain: ChatBrain | null;
+  detail: ChatThreadDetail | null;
+  threads: ChatThread[];
+  threadId: number;
+  onBack: () => void;
+  onNewThread: () => void;
+  onOpenThread: (id: number) => void;
+  onRename: (id: number, title: string) => void;
+  onDelete: (thread: ChatThread) => void;
+}) {
   const { t } = useI18n();
+  const [renaming, setRenaming] = React.useState<number | null>(null);
+  const [renameText, setRenameText] = React.useState('');
+  const [query, setQuery] = React.useState('');
+
+  const shown = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return threads;
+    return threads.filter((th) => (th.title || t('chat.untitledRow')).toLowerCase().includes(q));
+  }, [threads, query, t]);
+
+  return (
+    <>
+      <div className="border-b border-[rgb(var(--border-line))] px-3 py-2.5">
+        <button
+          type="button"
+          onClick={onBack}
+          className="flex items-center gap-1.5 text-tiny text-text-tertiary transition-colors hover:text-text-secondary"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          {t('chat.backToList')}
+        </button>
+      </div>
+
+      <div className="px-3 py-3">
+        <div className="flex items-center gap-2">
+          <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
+            <Bot className="h-4 w-4" />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-caption font-strong text-text-primary">
+              {brain?.name || detail?.brain_name || ''}
+            </span>
+            {brain ? (
+              <span className="flex items-center gap-1 text-tiny text-text-quaternary">
+                <FileText className="h-3 w-3" />
+                {t('chat.card.sources', { n: readerSourceCount(brain) })}
+              </span>
+            ) : null}
+          </span>
+        </div>
+        <Button
+          size="sm"
+          variant="secondary"
+          className="mt-3 w-full"
+          leadingIcon={<MessageSquarePlus className="h-3.5 w-3.5" />}
+          onClick={onNewThread}
+          data-testid="chat-new-conversation"
+        >
+          {t('chat.newConversation')}
+        </Button>
+      </div>
+
+      <p className="px-3 pb-1 text-micro uppercase tracking-wide text-text-quaternary">
+        {t('chat.conversations')}
+      </p>
+      {threads.length > 5 ? (
+        <div className="relative px-3 pb-2">
+          <Search className="pointer-events-none absolute left-5 top-2 h-3.5 w-3.5 text-text-quaternary" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('chat.searchConversations')}
+            aria-label={t('chat.searchConversations')}
+            className="h-8 pl-7 text-xs"
+          />
+        </div>
+      ) : null}
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+        {!threads.length ? (
+          <p className="px-2 py-2 text-tiny text-text-quaternary">{t('chat.noConversationsYet')}</p>
+        ) : !shown.length ? (
+          <p className="px-2 py-2 text-tiny text-text-quaternary">{t('chat.noConversationMatch')}</p>
+        ) : null}
+        {shown.map((th) => {
+          // Owner, or `chat: full` managing the module. Absent on an older
+          // backend means "mine" — the behaviour before.
+          const mine = th.can_manage ?? (th.is_owner !== false);
+          return (
+            <div
+              key={th.id}
+              className={cn(
+                'group flex items-center gap-1 rounded px-2 py-1.5',
+                th.id === threadId ? 'bg-surface-3' : 'hover:bg-surface-2',
+              )}
+            >
+              {renaming === th.id ? (
+                <>
+                  <Input
+                    value={renameText}
+                    onChange={(e) => setRenameText(e.target.value)}
+                    aria-label={t('chat.rename')}
+                    className="h-7 text-xs"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { onRename(th.id, renameText.trim()); setRenaming(null); }
+                      if (e.key === 'Escape') setRenaming(null);
+                    }}
+                  />
+                  <IconButton
+                    aria-label={t('chat.save')}
+                    onClick={() => { onRename(th.id, renameText.trim()); setRenaming(null); }}
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                  </IconButton>
+                  <IconButton aria-label={t('chat.cancel')} onClick={() => setRenaming(null)}>
+                    <X className="h-3.5 w-3.5" />
+                  </IconButton>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onOpenThread(th.id)}
+                    aria-current={th.id === threadId ? 'page' : undefined}
+                    className="min-w-0 flex-1 truncate text-left text-caption text-text-secondary"
+                    title={th.title || t('chat.untitledRow')}
+                  >
+                    {/* NOT "New conversation": that is the button above, and a row
+                        reading the same as the action was two things with one name. */}
+                    {th.title || t('chat.untitledRow')}
+                  </button>
+                  {/* Owner only — the server refuses anyone else. Always visible
+                      below `lg` (a touch screen has no hover), on hover or
+                      keyboard focus above it. */}
+                  {mine ? (
+                    <span className="flex shrink-0 gap-0.5 lg:hidden lg:group-focus-within:flex lg:group-hover:flex">
+                      <IconButton
+                        aria-label={t('chat.rename')}
+                        onClick={() => { setRenaming(th.id); setRenameText(th.title || ''); }}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </IconButton>
+                      <IconButton aria-label={t('chat.delete')} onClick={() => onDelete(th)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </IconButton>
+                    </span>
+                  ) : null}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+function Welcome({
+  brain, readonly, onPick,
+}: { brain: ChatBrain; readonly: boolean; onPick: (q: string) => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5">
+      <div className="mb-2 flex items-center gap-2.5">
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 text-brand">
+          <Bot className="h-4 w-4" />
+        </span>
+        <span className="text-small font-strong text-text-primary">{brain.name}</span>
+      </div>
+      {brain.description ? (
+        <p className="mb-2 text-caption leading-relaxed text-text-secondary">
+          {brain.description}
+        </p>
+      ) : null}
+      <p className="text-caption text-text-tertiary">{t('chat.welcome.hint')}</p>
+      {/* The assistant was shared, but data or documents its author attached
+          were not shared with THIS reader — so those questions will come back
+          unanswered. Said before the first question. Absent field: nothing. */}
+      {readerSourcesWithheld(brain) ? (
+        <p className="mt-2 rounded-md border border-warning/30 bg-warning/10 px-2 py-1.5 text-caption text-warning"
+          data-testid="chat-data-withheld">
+          {t('chat.dataWithheld')}
+        </p>
+      ) : null}
+
+      {/* BEFORE THE FIRST QUESTION, not after it comes back
+          unanswered. An assistant with no anomaly tool should say
+          so here rather than let a reader spend a turn finding
+          out. Absent capability degrades to the line above; it is
+          never rendered as "can answer nothing". */}
+      {brain.capability?.can?.length ? (
+        <div className="mt-3">
+          <p className="text-tiny font-strong uppercase tracking-wider text-text-quaternary">
+            {t('chat.welcome.canTitle')}
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {brain.capability.can.map((c) => (
+              <span key={c.key}
+                className="rounded-md bg-surface-2 px-1.5 py-0.5 text-tiny text-text-secondary">
+                {c.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {brain.capability?.cannot?.length ? (
+        <div className="mt-3">
+          <p className="text-tiny font-strong uppercase tracking-wider text-text-quaternary">
+            {t('chat.welcome.cannotTitle')}
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {brain.capability.cannot.map((c) => (
+              <span key={c.key}
+                className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-1.5 py-0.5 text-tiny text-text-quaternary">
+                {c.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Derived from `can`, never authored, so a suggestion can
+          never propose something the assistant cannot do. */}
+      {!readonly && brain.capability?.suggested_questions?.length ? (
+        <div className="mt-3.5 flex flex-wrap gap-1.5">
+          {brain.capability.suggested_questions.map((q) => (
+            // FILLS THE BOX, does not send. `onSend` takes no
+            // argument, and handing it one is exactly the defect
+            // `qa:handler-arity` exists to catch. It also reads
+            // better: a suggestion the reader can edit before
+            // asking is a prompt, not a decision made for them.
+            <button key={q} type="button"
+              onClick={() => {
+                onPick(q);
+                // FOCUS FOLLOWS, or the reader has to click twice:
+                // once to choose the question and once to reach the
+                // box they were just handed.
+                document.querySelector<HTMLTextAreaElement>(
+                  '[data-chat-input]')?.focus();
+              }}
+              className="rounded-full border border-[rgb(var(--border-line))] px-2.5 py-1 text-tiny text-text-secondary transition hover:border-brand/40 hover:text-brand">
+              {q}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <p className="mt-3 flex items-center gap-1 text-tiny text-text-quaternary">
+        <FileText className="h-3 w-3" />
+        {t('chat.welcome.sources', { n: readerSourceCount(brain) })}
+      </p>
+    </div>
+  );
+}
+
+function Bubble({
+  message, live, canRate, onRate, onFollowup,
+}: {
+  message: ChatMessage;
+  live: boolean;
+  canRate: boolean;
+  onRate: (runId: number, rating: 'up' | 'down' | null) => void;
+  onFollowup?: (q: string) => void;
+}) {
+  const { t, language } = useI18n();
+  const [copied, setCopied] = React.useState(false);
 
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-lg bg-surface-3 px-3 py-2 text-small text-text-primary">
+        <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-lg bg-surface-3 px-3 py-2 text-small text-text-primary">
           {message.content}
         </div>
       </div>
@@ -415,30 +635,172 @@ function Bubble({ message }: { message: ChatMessage }) {
   // READER SURFACE. The server already drops author diagnostics at its own
   // boundary; refusing them here too means neither layer is trusted alone.
   const notices = readerNotices(message.notices).filter((n) => NOTICE_KEYS[n.code] || n.text);
+  const noticeKey = (code: string) => NOTICE_KEYS[code] || (language === 'en' ? EN_NOTICE_KEYS[code] : undefined);
+  // WHAT HAPPENED TO THIS TURN, said in words. A failed, refused or stopped turn
+  // must not look like a finished answer that happens to be short.
+  const statusKey = live ? '' : (
+    message.status === 'stopped' ? 'chat.status.stopped'
+      : message.status === 'failed' && !notices.some((n) => n.code === 'turn_abandoned') ? 'chat.status.failed'
+        : message.status === 'blocked' && !(message.content || '').trim() ? 'chat.status.blocked'
+          : ''
+  );
+  const copyText = (message.content || '').trim() || blocksAsText(message.blocks);
+  // Plain, not a hook: this runs after the early return for user messages.
+  const chartNames = new Map<number, string>();
+  for (const c of message.citations || []) {
+    const id = Number(c.ref);
+    if (c.kind === 'chart' && Number.isFinite(id) && c.label) chartNames.set(id, c.label);
+  }
+  const done = !live && Boolean(copyText);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(copyText);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error(t('chat.error.send'));
+    }
+  };
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2" data-testid="chat-answer" data-status={message.status || ''}>
       {notices.length ? (
         <div className="space-y-1">
           {notices.map((n, i) => (
             <p key={i} className="text-caption text-text-tertiary">
-              ⓘ {NOTICE_KEYS[n.code] ? t(NOTICE_KEYS[n.code]) : n.text}
+              ⓘ {noticeKey(n.code) ? t(noticeKey(n.code)!) : n.text}
             </p>
           ))}
         </div>
       ) : null}
 
-      <div className="text-small text-text-primary">
+      {/* A wide table scrolls inside the answer rather than widening the page.
+          CHART NAMES COME FROM THIS ANSWER'S OWN CITATIONS. There is no report
+          on screen to name a chart, so the outer map is empty and every chip
+          read "chart:1219"; the answer already carries each chart's label. */}
+      <ChartNamesContext.Provider value={chartNames}>
+      <div className="min-w-0 overflow-x-auto text-small text-text-primary">
         {message.blocks?.length ? (
-          <AnswerBlocks blocks={message.blocks} renderMarkdown={(md) => <RichMarkdown text={md} />} />
+          <AnswerBlocks
+            blocks={message.blocks}
+            renderMarkdown={(md) => <RichMarkdown text={md} />}
+            onAskFollowup={onFollowup}
+            labels={{
+              chartRef: t('chat.chartRef.default'),
+              highlight: (values) => t('chat.chartRef.highlight', { values }),
+            }}
+          />
         ) : (
           <RichMarkdown text={body} />
         )}
       </div>
+      </ChartNamesContext.Provider>
+
+      {statusKey ? (
+        <p className="text-caption text-warning" data-testid="chat-turn-status">{t(statusKey)}</p>
+      ) : null}
 
       {message.citations?.length ? (
         <CitationCards citations={message.citations as never} collapsible />
       ) : null}
+      {message.citations?.length ? <DataSources citations={message.citations} /> : null}
+
+      {done ? (
+        <div className="flex items-center gap-0.5 text-text-quaternary">
+          <IconButton aria-label={copied ? t('chat.copied') : t('chat.copy')} onClick={copy}>
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          </IconButton>
+          {/* Only a RECORDED answer can be judged: the rating lands on its run. */}
+          {canRate && message.run_id ? (
+            <>
+              <IconButton
+                aria-label={t('chat.rate.up')}
+                aria-pressed={message.rating === 'up'}
+                className={cn(message.rating === 'up' && 'text-brand')}
+                onClick={() => onRate(message.run_id!, message.rating === 'up' ? null : 'up')}
+              >
+                <ThumbsUp className="h-3.5 w-3.5" />
+              </IconButton>
+              <IconButton
+                aria-label={t('chat.rate.down')}
+                aria-pressed={message.rating === 'down'}
+                className={cn(message.rating === 'down' && 'text-danger')}
+                onClick={() => onRate(message.run_id!, message.rating === 'down' ? null : 'down')}
+              >
+                <ThumbsDown className="h-3.5 w-3.5" />
+              </IconButton>
+            </>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+const SOURCE_KINDS = new Set(['chart', 'metric', 'dataset', 'term', 'web']);
+
+/** The NON-document sources behind an answer — the chart, metric or dataset a
+ *  figure was read from. `CitationCards` renders documents only, so in Chat an
+ *  answer grounded in data showed its number with no source at all.
+ *
+ *  Labels only, never a link to a chart: the reader may not hold access to the
+ *  chart itself, and a link that answers 403 is worse than a name. A `web`
+ *  source is the one exception, opening outside the app. */
+function DataSources({ citations }: { citations: NonNullable<ChatMessage['citations']> }) {
+  const { t } = useI18n();
+  const [open, setOpen] = React.useState(false);
+  const seen = new Set<string>();
+  const rows = citations.filter((c) => {
+    if (!SOURCE_KINDS.has(c.kind)) return false;
+    const k = `${c.kind}:${c.ref}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  if (!rows.length) return null;
+  return (
+    <div data-testid="chat-data-sources" className="text-micro text-text-quaternary">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 transition-colors hover:text-text-secondary">
+        <FileText className="h-3 w-3" />
+        {t('chat.sources.title', { n: rows.length })}
+      </button>
+      {open ? (
+        <ul className="mt-1.5 space-y-1">
+          {rows.map((c) => (
+            <li key={`${c.kind}:${c.ref}`} className="flex min-w-0 gap-1.5 text-tiny text-text-tertiary">
+              <span className="shrink-0 rounded bg-surface-2 px-1 text-text-quaternary">
+                {t(`chat.sourceKind.${c.kind}`)}
+              </span>
+              {c.kind === 'web' && c.url && /^https?:\/\//i.test(c.url) ? (
+                <a href={c.url} target="_blank" rel="noopener noreferrer" className="truncate underline">
+                  {c.label || c.url}
+                </a>
+              ) : (
+                <span className="truncate">{c.label || c.ref}</span>
+              )}
+              {c.quote ? <span className="truncate italic">— {c.quote}</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/** A plain reading of answer blocks, for Copy. Mirrors the server's
+ *  `direct_chat.blocks_as_text`: figures and table rows, never dropped. */
+function blocksAsText(blocks: AnswerBlock[] | undefined): string {
+  const lines: string[] = [];
+  for (const b of blocks || []) {
+    if (b.type === 'text') lines.push(b.markdown || '');
+    else if (b.type === 'metric') lines.push(`${b.label || ''}: ${String(b.value ?? '')}`.trim());
+    else if (b.type === 'table') {
+      const cols = (b.columns || []).map((c) => c.key);
+      lines.push((b.columns || []).map((c) => c.label || c.key).join('\t'));
+      for (const row of b.rows || []) lines.push(cols.map((k) => String((row as Record<string, unknown>)?.[k] ?? '')).join('\t'));
+    } else if (b.type === 'callout') lines.push(b.text || '');
+  }
+  return lines.filter(Boolean).join('\n').trim();
 }

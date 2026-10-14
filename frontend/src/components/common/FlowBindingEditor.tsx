@@ -92,8 +92,13 @@ export function FlowBindingEditor({ linkId, registerFlush }: FlowBindingEditorPr
       .then(([list, b]) => {
         if (!alive) return;
         // Only published flows can be assigned: a link pointing at a draft would be
-        // running something nobody approved.
-        setFlows(list.filter((f) => f.status === 'published'));
+        // running something nobody approved. And only report (`bot`) flows — the
+        // server refuses a Chat or Skill flow with a 409, which the author used to
+        // meet only after completing all three steps (product acceptance, P01).
+        // The flow already on this link stays listed whatever its type, so the
+        // panel can still show and replace it.
+        setFlows(list.filter((f) => f.status === 'published'
+          && ((f.flow_type ?? 'bot') === 'bot' || f.brain_key === b?.brain_key)));
         setBinding(b);
         if (b) {
           setBrainKey(b.brain_key);

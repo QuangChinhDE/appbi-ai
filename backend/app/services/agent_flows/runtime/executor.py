@@ -388,12 +388,12 @@ async def run_flow(
     # A FIGURE WITH THE WRONG MEANING IS NOT A VERIFIED ONE (`claim_check`): the
     # answering step already marked it for the reader; the verdict says so too.
     if getattr(state, "unverified_claims", None):
+        from app.services.agent_flows.runtime import claim_check
+
         verification = {**(verification or {}), "claims_unverified": list(state.unverified_claims)}
         state.notices.append(Notice(
             code="claims_unverified", audience="reader", severity="warning",
-            text=(f"{len(state.unverified_claims)} con số trong câu trả lời không có nguồn phù "
-                  "hợp với điều được hỏi (sai đại lượng, sai kỳ, sai chiều/đối tượng, hoặc tự tính) "
-                  "— chúng đã bị ẩn khỏi câu trả lời."),
+            text=claim_check.claims_unverified_text(state.unverified_claims),
             facts={"flagged": [{k: f.get(k) for k in ("value", "pct", "why")}
                                for f in state.unverified_claims[:8]]},
         ))
@@ -1613,6 +1613,13 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
                 if data.get("delta"):
                     parts.append(str((data["delta"] or {}).get("value")))
         text = " ".join(p for p in parts if p)
+        # A BRACKETED SPAN IS A LABEL, NOT A FIGURE — "[Nguồn: tài liệu 26]", "[chart:3]",
+        # "[1]". Chat C03 (product acceptance): a correct, cited document answer carried
+        # "1 con số … không khớp với dữ liệu đã đọc" — the 26 of its own citation. The
+        # same rule redaction already follows (claim_check._PROTECTED).
+        import re as _re
+
+        text = _re.sub(r"\[[^\]\n]*\]", " ", text)
         if not state.evidence:
             # ABSENCE OF EVIDENCE IS NOT EVIDENCE OF SUPPORT.
             #

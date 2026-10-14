@@ -47,7 +47,9 @@ export function extractFollowups(text: string): { body: string; suggestions: str
     // Tolerate leading markdown list markers ("- ", "* ", "1. ", "•") the
     // model sometimes prepends to [FOLLOWUP] lines — else the chips leak as
     // raw text instead of rendering as clickable suggestions.
-    const m = /^[\s>*•.)\-\d]*\[FOLLOWUP\]\s*[:：\-–]?\s*(.+?)\s*$/i.exec(line);
+    // `[ FOLLOWUP]` / `[FOLLOW UP]`: the marker with stray spaces is still the
+    // marker (live Public Report, product acceptance — rendered as raw text).
+    const m = /^[\s>*•.)\-\d]*\[\s*FOLLOW\s*UP\s*\]\s*[:：\-–]?\s*(.+?)\s*$/i.exec(line);
     if (m && m[1]) {
       const q = m[1].trim();
       if (q && suggestions.length < 5) suggestions.push(q);
@@ -322,6 +324,9 @@ const _CONFIDENCE_TOOLTIPS: Record<'HIGH' | 'MED' | 'LOW', string> = {
 
 
 export function ConfidenceBadge({ level }: { level: 'HIGH' | 'MED' | 'LOW' }) {
+  // A WORD, NOT A CODE. Readers saw "HIGH" in English capitals inside a
+  // Vietnamese answer (product acceptance, Chat) — a marker meant for the renderer.
+  const { t } = useI18n();
   const cls =
     level === 'HIGH' ? 'bg-success/15 text-success'
     : level === 'MED' ? 'bg-warning/15 text-warning'
@@ -330,8 +335,9 @@ export function ConfidenceBadge({ level }: { level: 'HIGH' | 'MED' | 'LOW' }) {
     <span
       className={`mx-0.5 inline-flex cursor-help items-center rounded px-1 py-0 text-[0.65em] font-strong ${cls}`}
       title={_CONFIDENCE_TOOLTIPS[level]}
+      data-confidence={level}
     >
-      {level}
+      {t(`dashboards.aiBot.confidence.${level}`)}
     </span>
   );
 }

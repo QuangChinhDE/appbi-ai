@@ -789,6 +789,8 @@ export interface PublicLinkAppearanceConfig {
    * API key for this link so public viewers don't need to enter one.
    */
   ai_bot_key_configured?: boolean;
+  /** Server-set: whether "Phân tích toàn diện" is offered on public links (off for the pilot). */
+  ai_explore_enabled?: boolean;
 }
 
 // --- Chart Metadata (semantic/business layer) ---

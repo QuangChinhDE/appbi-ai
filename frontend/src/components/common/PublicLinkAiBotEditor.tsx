@@ -202,8 +202,9 @@ export function PublicLinkAiBotEditor({
                 </label>
                 <p className="mb-1.5 flex items-center gap-1.5 text-tiny text-warning">
                   <span className="inline-block h-1.5 w-1.5 rounded-full bg-warning" />
-                  Link này đang dùng key riêng, đè lên token của máy chủ. Xoá ô này
-                  rồi lưu để quay về dùng token chung.
+                  Key riêng này chỉ dùng cho Brief và Phân tích toàn diện, thay cho
+                  token chung của máy chủ. Câu trả lời chat luôn dùng key của các bước
+                  trong flow đã gán. Xoá ô này rồi lưu để quay về token chung.
                 </p>
                 <Input
                   type="password"
@@ -215,7 +216,11 @@ export function PublicLinkAiBotEditor({
             ) : (
               <p className="flex items-center gap-1.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-2 text-tiny text-text-tertiary">
                 <span className="inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-success" />
-                Token OpenAI lấy từ cấu hình máy chủ — không cần nhập ở đây.
+                {/* Who pays for what, said per operation (product acceptance, F03):
+                    "Token OpenAI lấy từ cấu hình máy chủ" was untrue for chat, which
+                    runs every step on the flow's own stored key. */}
+                Câu trả lời chat dùng key AI của các bước trong flow đã gán. Brief và
+                Phân tích toàn diện dùng token chung của máy chủ — không cần nhập ở đây.
               </p>
             )}
 

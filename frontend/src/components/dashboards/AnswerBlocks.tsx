@@ -24,7 +24,7 @@ import { cn } from '@/lib/utils';
 import type { AnswerBlock } from '@/lib/agentFlows';
 
 export function AnswerBlocks({
-  blocks, onOpenChart, onAskFollowup, renderMarkdown,
+  blocks, onOpenChart, onAskFollowup, renderMarkdown, labels,
 }: {
   blocks: AnswerBlock[];
   onOpenChart?: (chartId: number, highlight?: { field: string; values: unknown[] } | null) => void;
@@ -32,6 +32,10 @@ export function AnswerBlocks({
   /** The host's own markdown renderer, so an answer looks identical whether it
    *  arrived as prose or as a text block. */
   renderMarkdown?: (md: string) => React.ReactNode;
+  /** Host-translated wording for the few strings this renderer owns. A prop, not
+   *  `useI18n`, because public link pages render this too. Absent = Vietnamese,
+   *  the behaviour before. */
+  labels?: { chartRef?: string; highlight?: (values: string) => string };
 }) {
   if (!blocks?.length) return null;
   return (
@@ -51,28 +55,44 @@ export function AnswerBlocks({
           case 'table':
             return <MiniTable key={i} block={block} />;
 
-          case 'chart_ref':
-            return (
-              <button
-                key={i}
-                type="button"
-                onClick={() => onOpenChart?.(block.chart_id, block.highlight)}
-                disabled={!onOpenChart}
-                className="flex w-full items-center gap-2 rounded-lg border border-brand/25 bg-brand/[0.04] px-2.5 py-2 text-left transition hover:bg-brand/[0.08] disabled:cursor-default"
-              >
+          case 'chart_ref': {
+            const inner = (
+              <>
                 <BarChart3 className="h-4 w-4 flex-shrink-0 text-brand" />
                 <span className="min-w-0 flex-1">
                   <b className="block text-caption font-medium text-text-primary">
-                    {block.caption || 'Xem biểu đồ liên quan'}
+                    {block.caption || labels?.chartRef || 'Xem biểu đồ liên quan'}
                   </b>
                   {block.highlight?.values?.length ? (
                     <span className="block text-tiny text-text-tertiary">
-                      Tô sáng: {block.highlight.values.map(String).join(', ')}
+                      {labels?.highlight
+                        ? labels.highlight(block.highlight.values.map(String).join(', '))
+                        : `Tô sáng: ${block.highlight.values.map(String).join(', ')}`}
                     </span>
                   ) : null}
                 </span>
-              </button>
+              </>
             );
+            // NO HANDLER, NO BUTTON. A surface with no chart on screen (Chat) used
+            // to render a disabled button that looked clickable and did nothing.
+            return onOpenChart ? (
+              <button
+                key={i}
+                type="button"
+                onClick={() => onOpenChart(block.chart_id, block.highlight)}
+                className="flex w-full items-center gap-2 rounded-lg border border-brand/25 bg-brand/[0.04] px-2.5 py-2 text-left transition hover:bg-brand/[0.08]"
+              >
+                {inner}
+              </button>
+            ) : (
+              <div
+                key={i}
+                className="flex w-full items-center gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-2 text-left"
+              >
+                {inner}
+              </div>
+            );
+          }
 
           case 'callout': {
             const tone = block.level === 'danger'
@@ -91,18 +111,25 @@ export function AnswerBlocks({
 
           case 'followups':
             return (
-              <div key={i} className="flex flex-wrap gap-1.5 pt-0.5">
-                {block.items.map((q, k) => (
+              <div key={i} className="flex flex-wrap gap-1.5 pt-0.5" data-testid="answer-followups">
+                {block.items.map((q, k) => (onAskFollowup ? (
                   <button
                     key={k}
                     type="button"
-                    onClick={() => onAskFollowup?.(q)}
-                    disabled={!onAskFollowup}
-                    className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-tiny text-text-secondary transition hover:border-brand/40 hover:text-brand disabled:cursor-default"
+                    onClick={() => onAskFollowup(q)}
+                    className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-tiny text-text-secondary transition hover:border-brand/40 hover:text-brand"
                   >
                     {q}
                   </button>
-                ))}
+                ) : (
+                  // Shown as a suggestion, not offered as an action nobody wired.
+                  <span
+                    key={k}
+                    className="rounded-full border border-dashed border-[rgb(var(--border-line))] px-2.5 py-1 text-tiny text-text-tertiary"
+                  >
+                    {q}
+                  </span>
+                )))}
               </div>
             );
 

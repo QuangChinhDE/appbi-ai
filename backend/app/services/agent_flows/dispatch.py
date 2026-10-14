@@ -392,15 +392,22 @@ def flow_supplies_credentials(db: Session, *, token: str) -> bool:
         return False
 
 
+#: Every sentence here is shown to the VIEWER of a public link — often anonymous,
+#: never the person who can fix it. "Vào phần ChatBot của link, chọn một Agent
+#: Flow…" was author instructions printed to a reader (product acceptance, P08).
+#: The author learns the reason from the link's ChatBot panel and from Runs.
 BLOCK_MESSAGES = {
     "not_configured": (
-        "Link này chưa gán trợ lý. Vào phần ChatBot của link, chọn một Agent Flow và "
-        "định nghĩa phạm vi dữ liệu trước khi gán."
+        "Trợ lý AI của báo cáo này chưa được thiết lập. "
+        "Vui lòng liên hệ người chia sẻ báo cáo."
     ),
     "binding_broken": "Trợ lý đang được cấu hình lại cho báo cáo này.",
-    "not_published": "Trợ lý của link này chưa có bản phát hành nào.",
-    #: What a VIEWER is told. The step-by-step reason is recorded in Runs for the
-    #: author; a viewer can do nothing with a step name.
+    "not_published": (
+        "Trợ lý AI của báo cáo này chưa sẵn sàng. "
+        "Vui lòng liên hệ người chia sẻ báo cáo."
+    ),
+    #: The step-by-step reason is recorded in Runs for the author; a viewer can do
+    #: nothing with a step name.
     "missing_credential": (
         "Trợ lý của báo cáo này chưa được cấu hình AI key. "
         "Vui lòng liên hệ người quản lý báo cáo."
@@ -436,6 +443,73 @@ def _block_message(code: str) -> str:
     from app.services.agent_flows import pilot
 
     return pilot.BLOCK_MESSAGES.get(code) or BLOCK_MESSAGES.get(code) or BLOCK_MESSAGES["not_configured"]
+
+
+def _stopped_output(run_id: str, streamed: str, box: dict, notices: list, locale: str,
+                    elapsed_ms: int) -> FlowOutput:
+    """The record of a turn that ended before its `result` — the reader pressed Stop,
+    left, or the model was too slow.
+
+    Product acceptance (P07): run 8684 was recorded 75 s after Stop with 0 calls and 0
+    tokens and an empty answer, though the model had already been paid for and the
+    reader had seen part of the answer. Now the record carries what was spent so far
+    (the executor's live state, via `on_state`) and what the reader saw, as `partial`.
+    """
+    en = str(locale or "").lower().startswith("en")
+    text = (streamed or "").strip()
+    if text:
+        status, notice = "partial", Notice(
+            code="turn_stopped", audience="reader", severity="info",
+            text=("Stopped before the answer was complete — the text above may be incomplete."
+                  if en else "Câu trả lời đã dừng trước khi hoàn tất — nội dung trên có thể chưa đầy đủ."),
+        )
+    else:
+        status, notice = "failed", Notice(
+            code="turn_abandoned",
+            text=("The turn ended before an answer arrived — you left the page or stopped it, "
+                  "or the model was too slow." if en else
+                  "Lượt hỏi kết thúc trước khi có câu trả lời — bạn đã rời trang hoặc dừng lại, "
+                  "hoặc mô hình trả lời quá chậm."),
+        )
+    from app.services.agent_flows.envelope import text_answer
+
+    out = FlowOutput(
+        run_id=run_id, status=status,
+        answer=text_answer(text) if text else blocked(run_id, "").answer,
+        notices=[*notices, notice],
+    )
+    state = box.get("state")
+    if state is not None:
+        out.usage.llm_calls = int(getattr(state.budget, "llm_calls", 0) or 0)
+        out.usage.tool_calls = int(getattr(state.budget, "tool_calls", 0) or 0)
+        out.usage.prompt_tokens = int(getattr(state, "prompt_tokens", 0) or 0)
+        out.usage.completion_tokens = int(getattr(state, "completion_tokens", 0) or 0)
+    out.usage.ms = elapsed_ms
+    return out
+
+
+def explore_gate(db: Session, *, link: Any, dashboard: Any, ctx: Any) -> str | None:
+    """May "Phân tích toàn diện" run on this link? None = yes (ctx narrowed); else the viewer's sentence.
+
+    Explore is NOT an Agent Flow run: it is the Dashboard AI exploration engine, on
+    the viewer's, the link's or the deployment's key. It still answers to the same
+    LINK policy as chat (product acceptance, P08): a link whose assistant is not
+    assigned, not published or outside the reader rollout used to refuse every chat
+    turn while this button kept running — on the server's key, outside every Flow
+    budget. And it reads no chart the link's assignment left out: the ceiling is the
+    one `build_binding_info` computes for chat.
+    """
+    binding, row, flow, problem = resolve_for_link(db, link=link, dashboard=dashboard)
+    if not problem and flow is not None:
+        problem = _reader_gate(link_id=getattr(link, "id", None)) or problem
+    if problem or flow is None or row is None or binding is None:
+        return _block_message(problem or "not_configured")
+    info = binding_service.build_binding_info(
+        binding, flow=flow, report=build_report_info(dashboard, ctx),
+        link_token=getattr(link, "token", ""), version=row.version,
+    )
+    ctx.allowed_chart_ids = set(ctx.allowed_chart_ids or set()) & set(info.allowed_chart_ids)
+    return None
 
 
 async def run_for_link(
@@ -573,6 +647,7 @@ async def run_for_link(
 
     recorded = False
     started = datetime.now(timezone.utc)
+    streamed, box = [], {}
     try:
         async for ev in executor.run_flow(
             inp, flow=flow, ctx=ctx, credentials=credentials,
@@ -580,7 +655,10 @@ async def run_for_link(
             # The link's privacy choice binds every run this turn creates —
             # including a Skill's child run.
             store_content=bool(binding.store_question_content),
+            on_state=lambda st: box.__setitem__("state", st),
         ):
+            if ev.type == "text" and ev.text:
+                streamed.append(ev.text)
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
                 out.notices = [*memory_notices, *out.notices]
@@ -613,20 +691,7 @@ async def run_for_link(
         # answers" report take an hour to diagnose.
         if not recorded:
             elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
-            aborted = FlowOutput(
-                run_id=run_id,
-                status="failed",
-                answer=blocked(run_id, "").answer,
-                notices=[
-                    *memory_notices,
-                    Notice(
-                        code="turn_abandoned",
-                        text="Lượt hỏi kết thúc trước khi có câu trả lời — "
-                             "người xem đóng trang, hoặc mô hình trả lời quá chậm.",
-                    ),
-                ],
-            )
-            aborted.usage.ms = elapsed
+            aborted = _stopped_output(run_id, "".join(streamed), box, memory_notices, locale, elapsed)
             runs_service.record(
                 db, inp=inp, out=aborted, brain_key=flow.key, version=row.version,
                 binding_id=binding.id,
@@ -1018,7 +1083,7 @@ async def run_for_chat_thread(
     if user is None or thread is None:
         # Deleted, or the account went away, between the request being accepted and
         # the stream starting. Nothing to record it against, so it is said and dropped.
-        out = blocked(run_id, direct_chat.BLOCK_MESSAGES["not_published"], "not_published")
+        out = blocked(run_id, direct_chat.block_message("not_published", locale), "not_published")
         yield AgentEvent(type="text", text=out.answer.plain_text())
         yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
@@ -1027,11 +1092,11 @@ async def run_for_chat_thread(
     # MAY THIS PERSON ADD TO THIS CONVERSATION? Separate from whether they may
     # read it: a conversation shared at `view` is a transcript to look at, and a
     # reader typing into it would be writing in somebody else's record.
-    if direct_chat.thread_access(db, user, thread) not in ("owner", "edit", "full"):
+    # `full` is oversight and READS; it is refused here exactly as `view` is, so
+    # the stream and the thread view agree (`direct_chat.WRITE_ACCESS`).
+    if not direct_chat.may_write(direct_chat.thread_access(db, user, thread)):
         out = blocked(
-            run_id,
-            "Cuộc trò chuyện này được chia sẻ cho bạn ở mức chỉ đọc.",
-            "thread_read_only",
+            run_id, direct_chat.block_message("thread_read_only", locale), "thread_read_only",
         )
         yield AgentEvent(type="text", text=out.answer.plain_text())
         yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
@@ -1047,9 +1112,7 @@ async def run_for_chat_thread(
     if problem or flow is None or row is None:
         out = blocked(
             run_id,
-            direct_chat.BLOCK_MESSAGES.get(
-                problem, direct_chat.BLOCK_MESSAGES["not_published"]
-            ),
+            direct_chat.block_message(problem or "not_published", locale),
             problem or "not_published",
         )
         _record_chat_blocked(db, out, thread, question)
@@ -1067,7 +1130,7 @@ async def run_for_chat_thread(
             logger.info("[flow] chat run refused: %s", "; ".join(m["message"] for m in missing))
     if gate:
         message = (
-            "Trợ lý này chưa được cấu hình AI key. Vui lòng liên hệ tác giả của trợ lý."
+            direct_chat.block_message("missing_credential", locale)
             if gate == "missing_credential" else _block_message(gate)
         )
         out = blocked(run_id, message, gate)
@@ -1112,6 +1175,25 @@ async def run_for_chat_thread(
     # Built HERE, not by the caller, because it needs the chart count and the scope
     # is only known once `adopt_scope` has run. A caller may still override it.
     base_system_prompt = base_system_prompt or chat_base_prompt(ctx)
+    # SAY WHY, WHEN A SOURCE IS WITHHELD FROM THIS READER. Without it the answer
+    # was "dữ liệu hiện có không cho biết…" — true of the reader's scope, false of
+    # the assistant, and not actionable (live Chat, product acceptance).
+    from app.services.agent_flows.permissions import unreadable_attachments as _unreadable
+
+    _withheld = _unreadable(db, row, flow, _caller) if _caller is not None else {}
+    scope_notices: list = []
+    if _withheld.get("dataset_ids") or _withheld.get("doc_ids"):
+        base_system_prompt += (
+            "\n\nPERMISSION NOTE: some sources attached to this assistant are not shared with the "
+            "person asking. If the question needs data you cannot find, say that the data has not "
+            "been shared with them and that they can ask the assistant's author for access — never "
+            "say the data does not exist."
+        )
+        scope_notices.append(Notice(
+            code="sources_withheld", audience="reader", severity="info",
+            text="Một số nguồn dữ liệu của trợ lý này chưa được chia sẻ cho bạn, nên câu trả lời "
+                 "chỉ dùng phần bạn được đọc. Hãy nhờ tác giả trợ lý cấp quyền nếu cần.",
+        ))
 
     fp = fingerprint(
         binding_id=0, version=row.version, filters=[], charts=[], locale=locale,
@@ -1145,14 +1227,18 @@ async def run_for_chat_thread(
 
     recorded = False
     started = datetime.now(timezone.utc)
+    streamed, box = [], {}
     try:
         async for ev in executor.run_flow(
             inp, flow=flow, ctx=ctx, credentials=credentials,
             base_system_prompt=base_system_prompt, db=db,
+            on_state=lambda st: box.__setitem__("state", st),
         ):
+            if ev.type == "text" and ev.text:
+                streamed.append(ev.text)
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
-                out.notices = [*memory_notices, *out.notices]
+                out.notices = [*scope_notices, *memory_notices, *out.notices]
                 # READER BOUNDARY — ON THE WAY OUT ONLY.
                 #
                 # What is SENT drops author diagnostics; what is RECORDED keeps
@@ -1178,20 +1264,7 @@ async def run_for_chat_thread(
         # and then found the thread empty.
         if not recorded:
             elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
-            aborted = FlowOutput(
-                run_id=run_id,
-                status="failed",
-                answer=blocked(run_id, "").answer,
-                notices=[
-                    *memory_notices,
-                    Notice(
-                        code="turn_abandoned",
-                        text="Lượt hỏi kết thúc trước khi có câu trả lời — "
-                             "bạn đã rời trang, hoặc mô hình trả lời quá chậm.",
-                    ),
-                ],
-            )
-            aborted.usage.ms = elapsed
+            aborted = _stopped_output(run_id, "".join(streamed), box, memory_notices, locale, elapsed)
             runs_service.record(
                 db, inp=inp, out=aborted, brain_key=flow.key, version=row.version,
                 binding_id=None, chat_thread_id=thread.id, store_content=True,

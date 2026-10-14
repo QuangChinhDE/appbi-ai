@@ -267,10 +267,16 @@ def _format_filters(filters: list[dict]) -> str:
     for f in filters:
         if not isinstance(f, dict):
             continue
+        if f.get("restricted_by_author"):
+            parts.append(f"{f['restricted_by_author']} more restriction(s) set by the report author also apply "
+                         "and are not disclosed — say the data is limited by the report's settings, never that "
+                         "no filter applies")
+            continue
         field = f.get("field") or f.get("column") or "?"
         op = f.get("op") or f.get("operator") or "="
         val = f.get("value") if "value" in f else f.get("values")
-        parts.append(f"{field} {op} {val!r}")
+        lock = " (locked by the report author — the viewer cannot remove or change it)" if f.get("locked") else ""
+        parts.append(f"{field} {op} {val!r}{lock}")
     return "; ".join(parts) if parts else "(none)"
 
 

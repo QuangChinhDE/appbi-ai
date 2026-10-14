@@ -28,6 +28,7 @@ import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useI18n } from '@/providers/LanguageProvider';
+import { readerSourceCount } from '@/lib/directChat';
 import type { ChatBrain, ChatThread } from '@/lib/directChat';
 
 import { formatWhen } from '@/components/agent-flows/shared';
@@ -205,7 +206,7 @@ function AssistantRow({
           </span>
         </button>
       </td>
-      <td className="app-list-cell text-caption text-text-secondary">{brain.knowledge_count}</td>
+      <td className="app-list-cell text-caption text-text-secondary">{readerSourceCount(brain)}</td>
       <td className="app-list-cell text-caption text-text-secondary">
         {conversations || <span className="text-text-quaternary">—</span>}
       </td>
@@ -273,7 +274,7 @@ function AssistantCard({
         <div className="flex flex-wrap items-center gap-3 text-tiny text-text-quaternary">
           <span className="flex items-center gap-1">
             <FileText className="h-3 w-3" />
-            {t('chat.card.sources', { n: brain.knowledge_count })}
+            {t('chat.card.sources', { n: readerSourceCount(brain) })}
           </span>
           <span className="flex items-center gap-1">
             <MessageSquare className="h-3 w-3" />

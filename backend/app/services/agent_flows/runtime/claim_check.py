@@ -297,7 +297,12 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
             asked = {*asked, base}
     if changes:
         # A change between periods: right when it is between the periods asked.
-        for e in changes:
+        # WRONG ONLY WHEN EVERY READING IS. The verdict used to be the FIRST
+        # reading's: live Chat (product acceptance, run 8642) — the model called
+        # compare_periods twice, once with the periods swapped; the same 792 came
+        # back from both, the swapped reading was listed first, and the correct
+        # "giảm 792 (91,7%) so với tháng 7" was hidden as the wrong period.
+        def _wrong_change(e: dict) -> bool:
             between: set[tuple] = set()
             for label in e.get("periods") or []:
                 between |= _periods(str(label).replace("Q", " q")) or _periods("nam " + str(label))
@@ -316,7 +321,9 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, questio
                     if current[0] == baseline[0] and current < baseline:
                         return True
                 return False
-        return True
+            return True
+
+        return all(_wrong_change(e) for e in changes)
     whole = [e for e in support if not e.get("dimension") and not e.get("member")]
     # A RANGE TOTAL THAT COVERS THE ASKED PERIODS answers them (claim_scope
     # `period_range`): "Jan–Aug" is the range 2026-01..2026-08, not a whole.
@@ -734,6 +741,38 @@ def _has_words(text: str, words) -> bool:
     return any(re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", folded) for w in words)
 
 
+def _filter_value_numbers(ctx: Any, text: str) -> set[float]:
+    """Numbers that are the VALUE of a filter the reader can see, written beside that
+    filter's name ("bộ lọc Gói = 104") — labels, never figures.
+
+    Product acceptance, public link 177: after the viewer picked Gói 104 in the
+    report's slicer, the correct answer read "với bộ lọc Gói = [đã ẩn: chưa kiểm
+    chứng]" — the reader's own choice withheld as a figure from another measure.
+    Only DISCLOSED filters count: a 🚫 hidden constraint's value stays a figure, so
+    an answer that somehow names it is still withheld.
+    """
+    import re
+
+    from app.services.filter_layered_merge import disclosed_applied_filters
+
+    out: set[float] = set()
+    shown, _ = disclosed_applied_filters(getattr(ctx, "public_filters", None) or [])
+    for f in shown:
+        raw = f.get("value")
+        values = raw if isinstance(raw, list) else [raw]
+        names = {str(f.get("label") or "").strip(), str(f.get("field") or "").split(".")[-1].strip()}
+        for v in values:
+            try:
+                num = float(str(v).strip())
+            except (TypeError, ValueError):
+                continue
+            clause = _clause_of(text, num)
+            if clause and any(n and re.search(rf"(?<![^\W_]){re.escape(_fold(n))}(?![^\W_])", _fold(clause))
+                              for n in names):
+                out.add(num)
+    return out
+
+
 def _clause_of(text: str, value: float) -> str:
     """The clause (split on . ; , and line breaks) that carries `value`."""
     import re
@@ -793,6 +832,8 @@ def _false_equality(ctx: Any, clause: str, ledger: list[dict]) -> str | None:
 
 
 #: Words that say a period may not be complete (folded).
+_COMPARISON_WORDS = ("so voi", "so sanh", "doi chieu", "compared", "compare", "versus", "vs")
+
 _EDGE_CAVEAT_WORDS = ("chua day du", "khong day du", "chua hoan chinh", "chua tron", "khong tron",
                       "mot phan", "chua ket thuc", "bat thuong", "thieu du lieu", "co the chua",
                       "incomplete", "partial", "not complete", "unusually low", "may not be complete")
@@ -1050,7 +1091,7 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                         if _squash(w) not in vocab}
     intent_periods = {tuple(p) for p in (intent.get("periods") or [])} \
         if intent.get("source") == "model" else set()
-    labels = _qualifier_numbers(asked_member, text, question)
+    labels = _qualifier_numbers(asked_member, text, question) | _filter_value_numbers(ctx, text)
     # A BREAKDOWN ASKED, NONE DELIVERED. Live a2d2e68b: "điểm đánh giá trung bình
     # theo từng tháng là 4.0864" (the all-time average) and "tổng doanh thu của người
     # bán theo bang là 13,591,643.7" (the report total) — one whole figure given as
@@ -1130,6 +1171,16 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                                    "member": support[0].get("member")}})
             continue
         asked_periods = _periods(question) or intent_periods
+        # A COMPARISON ASKS ABOUT ITS BASELINE TOO. "Tháng 8 so với tháng trước?"
+        # names one month and asks about two: the previous month's own value is
+        # part of the answer, not a figure from an unasked period (live Chat:
+        # July's 864, stated beside August, was judged the wrong period).
+        if len(asked_periods) == 1 and _has_words(question, _COMPARISON_WORDS):
+            from app.services.time_semantics import comparison_baseline
+
+            base = comparison_baseline(question, next(iter(asked_periods)))
+            if base:
+                asked_periods = {*asked_periods, base}
         if not asked_periods and support and all(
                 _is_time(e.get("dimension")) and e.get("member") for e in support):
             asked_periods = _periods(_sentence_of(text, value))
@@ -1383,13 +1434,59 @@ def reader_note(flagged: list[dict], locale: str = "vi") -> str:
     lines: list[str] = []
     if not flagged:
         return ""
-    if str(locale or "").lower().startswith("en"):
+    en = str(locale or "").lower().startswith("en")
+    reasons = reader_reasons(flagged, locale)
+    if reasons:
+        lines.append(("⚠️ Withheld: " if en else "⚠️ Đã ẩn số chưa kiểm chứng: ") + "; ".join(reasons) + ".")
+    elif en:
         lines.append("⚠️ Withheld: the data this answer read does not produce these figures "
                      "for what was asked, so they are not shown.")
     else:
         lines.append("⚠️ Đã ẩn số chưa kiểm chứng: dữ liệu mà câu trả lời đã đọc không cho ra các "
                      "con số này cho đúng điều được hỏi, nên chúng không được hiển thị.")
     return "\n".join(lines)
+
+
+#: WHY A FIGURE WAS WITHHELD, in words a reader can act on (product acceptance,
+#: public link 177): "Tổng ARR cộng dồn của tất cả các tháng?" hid 5244 with "sai đại
+#: lượng, sai kỳ, sai chiều/đối tượng, hoặc tự tính" — four guesses, none of them the
+#: reason (ARR is a balance; its sum over months means nothing), so the reader could
+#: not rephrase. Reasons without reader wording keep the generic sentence.
+_READER_WHY = {
+    "aggregation_unsafe": (
+        "chỉ số này là số dư tại từng thời điểm, nên cộng dồn qua nhiều kỳ không cho ra con số "
+        "có nghĩa — hãy hỏi theo một kỳ cụ thể",
+        "this metric is a balance at a point in time, so adding it up across periods gives no "
+        "meaningful figure — ask about one period"),
+    "wrong_period": ("con số thuộc một kỳ khác với kỳ được hỏi",
+                     "the figure belongs to a different period than the one asked about"),
+    "other_measure": ("con số là của một chỉ số khác với chỉ số được hỏi",
+                      "the figure is for a different metric than the one asked about"),
+    "whole_as_member": ("con số là tổng chung, không riêng cho nhóm được hỏi",
+                        "the figure is an overall total, not the group asked about"),
+}
+_READER_WHY.update({"period_absent": _READER_WHY["wrong_period"],
+                    "measure_absent": _READER_WHY["other_measure"],
+                    "whole_as_breakdown": _READER_WHY["whole_as_member"],
+                    "edge_unqualified": _READER_WHY["whole_as_member"]})
+
+
+def reader_reasons(flagged: list[dict], locale: str = "vi") -> list[str]:
+    """Plain reasons for every withheld figure, or [] when any reason has no reader wording."""
+    if not flagged or any(f.get("why") not in _READER_WHY for f in flagged):
+        return []
+    i = 1 if str(locale or "").lower().startswith("en") else 0
+    return list(dict.fromkeys(_READER_WHY[f["why"]][i] for f in flagged))
+
+
+def claims_unverified_text(flagged: list[dict], locale: str = "vi") -> str:
+    """The reader notice for figures withheld from an answer — never the figures."""
+    reasons = reader_reasons(flagged, locale)
+    if reasons:
+        return f"{len(flagged)} con số đã bị ẩn khỏi câu trả lời: " + "; ".join(reasons) + "."
+    return (f"{len(flagged)} con số trong câu trả lời không có nguồn phù "
+            "hợp với điều được hỏi (sai đại lượng, sai kỳ, sai chiều/đối tượng, hoặc tự tính) "
+            "— chúng đã bị ẩn khỏi câu trả lời.")
 
 
 def with_reader_note(text: str, note: str) -> str:

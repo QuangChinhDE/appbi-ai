@@ -1958,6 +1958,9 @@ def get_public_dashboard(
     else:
         safe_appearance.pop("ai_bot_key_configured", None)
     safe_appearance.pop("ai_bot_report_context_note", None)
+    # Whether the viewer is offered "Phân tích toàn diện" — the deployment's switch,
+    # never a link's own setting (the endpoint enforces the same switch).
+    safe_appearance["ai_explore_enabled"] = bool(settings.PUBLIC_AI_EXPLORE_ENABLED)
     dash.public_link_appearance = safe_appearance
     # Published device layouts as a viewer gets them: the served pages, published
     # tiles only, no author identity or revision. Shaped on the served copy only
@@ -3605,6 +3608,23 @@ def _resolve_public_snapshot_ttl(appearance_config: dict | None) -> int | None:
     return None if v == -1 else v
 
 
+def _filters_told_to_ai(filters: list | None) -> list[dict]:
+    """The disclosed filters (``disclosed_applied_filters`` — never a 🚫 one), each
+    server-owned entry marked ``locked``: the viewer cannot lift it, so the answer
+    must not advise them to."""
+    from app.services.chart_contracts import AUTHORITATIVE_KEY
+
+    out: list[dict] = []
+    for f in filters or []:
+        for shown in disclosed_applied_filters([f])[0]:
+            out.append({**shown, "locked": True} if isinstance(f, dict) and f.get(AUTHORITATIVE_KEY) else shown)
+    # 🚫 constraints are COUNTED, never named: told "(none)", the answer on link 182
+    # said "Báo cáo không có bộ lọc nào đang áp dụng" over data it had just called
+    # restricted by the report's settings.
+    withheld = disclosed_applied_filters(filters or [])[1]
+    return [*out, {"restricted_by_author": withheld}] if withheld else out
+
+
 def _public_link_tool_context(
     db: Session,
     dash: Dashboard,
@@ -4827,6 +4847,9 @@ async def save_ai_chat_session(
             # Likewise a bubble the page wrote itself (the welcome) — no run.
             if msg.get("local") is True and role == "assistant":
                 entry["local"] = True
+            # A turn the reader stopped: its partial text stays labelled on reload.
+            if msg.get("stopped") is True and role == "assistant":
+                entry["stopped"] = True
             safe_messages.append(entry)
 
     # THE THUMB HAS TO REACH THE RUN, NOT ONLY THE TRANSCRIPT.
@@ -5196,8 +5219,11 @@ async def chat_dashboard_ai_agent(
             dashboard_description=getattr(dash, "description", None),
             chart_count=len(getattr(ctx, "charts", []) or []),
             # What the model is TOLD: a 🚫 hidden constraint is applied through
-            # ctx.public_filters and never printed into the prompt.
-            filters_applied=disclosed_applied_filters(combined_filters)[0],
+            # ctx.public_filters and never printed into the prompt. A server-owned
+            # (🔒) one is told AS locked: on link 181 the answer twice advised the
+            # viewer to "bỏ bộ lọc Gói = 103" — a lock the viewer cannot lift and
+            # is already shown in its banner (product acceptance, P05).
+            filters_applied=_filters_told_to_ai(combined_filters),
             max_tool_calls=8,
             report_context_note=report_note,
             # A FLOW DOES NOT NEED THE TOOL NARRATION.
@@ -5258,8 +5284,8 @@ async def chat_dashboard_ai_agent(
         # Idle is measured from the LAST REAL EVENT, not from the start of the
         # turn: a long but healthy run must not be cut off just for being long.
         _last_event = loop.time()
+        _pending: asyncio.Future | None = None
         try:
-            _pending: asyncio.Future | None = None
             while True:
                 # `asyncio.wait_for` CANCELS what it is waiting on when it times
                 # out. Using it for the keepalive tick therefore killed the very
@@ -5291,6 +5317,9 @@ async def chat_dashboard_ai_agent(
                     # and every proxy counts as traffic.
                     if loop.time() - _last_event > IDLE_TIMEOUT:
                         timed_out = True
+                        break
+                    # The viewer pressed Stop or left: stop paying for the turn.
+                    if await request.is_disconnected():
                         break
                     yield ": keepalive\n\n"
                     continue
@@ -5331,7 +5360,20 @@ async def chat_dashboard_ai_agent(
                 if loop.time() - started > HARD_TIMEOUT:
                     timed_out = True
                     break
+                if await request.is_disconnected():
+                    break
         finally:
+            # STOP MEANS STOP. With a step still in flight, `aclose()` raised "already
+            # running" — swallowed below — so the flow ran on, unseen and still paid
+            # for: run 8684 closed 75 s after the viewer pressed Stop, with nothing
+            # recorded (product acceptance, P07). Cancel the step first; the flow's
+            # own `finally` then records what was spent and streamed.
+            if _pending is not None and not _pending.done():
+                _pending.cancel()
+                try:
+                    await _pending
+                except BaseException:  # noqa: BLE001 — the cancellation we asked for
+                    pass
             try:
                 await agen.aclose()
             except Exception:
@@ -5466,6 +5508,14 @@ async def explore_dashboard_ai_agent(
     from fastapi.responses import StreamingResponse
     from app.services.dashboard_ai_bot.thinking.briefing import Briefing as _Briefing
     from app.services.dashboard_ai_bot.thinking.explorer import run_exploration_stream
+
+    # OFF FOR THE PILOT (product decision): refused before the link, a key or the
+    # engine is touched, so a direct request cannot spend either. The engine stays.
+    if not settings.PUBLIC_AI_EXPLORE_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Phân tích toàn diện đang tạm ngừng trên báo cáo công khai.",
+        )
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(
@@ -5477,17 +5527,6 @@ async def explore_dashboard_ai_agent(
             detail="AI bot is not enabled for this shared link.",
         )
 
-    effective_key, provider, model = resolve_public_ai_credentials(
-        appearance_config,
-        x_user_ai_key=x_user_ai_key,
-        x_user_ai_provider=x_user_ai_provider,
-        x_user_ai_model=x_user_ai_model,
-        missing_key_detail="X-User-Ai-Key header is required for AI explore.",
-    )
-    report_note = sanitize_report_context_note(
-        (appearance_config or {}).get("ai_bot_report_context_note"),
-    )
-
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
     ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
                                     [item for item in viewer_filters_body if isinstance(item, dict)],
@@ -5498,6 +5537,41 @@ async def explore_dashboard_ai_agent(
     # not read once — it is carried into every question the run generates.
     _guard_viewer_text(token, briefing=body.briefing or {})
     briefing_obj = _Briefing.from_dict(body.briefing or {}) if body.briefing else None
+
+    # THE SAME LINK POLICY AS CHAT. This is not an Agent Flow run, but a link whose
+    # assistant chat refuses (not assigned, not published, outside the reader
+    # rollout) must not keep spending through this button; and it reads only the
+    # charts the link's assignment allows. Told as a sentence, like a chat refusal.
+    from app.services.agent_flows.dispatch import explore_gate
+
+    _link_row = db.query(DashboardPublicLink).filter(
+        DashboardPublicLink.token == token,
+        DashboardPublicLink.is_active.is_(True),
+    ).first()
+    _refusal = (
+        explore_gate(db, link=_link_row, dashboard=dash, ctx=ctx)
+        if _link_row is not None else "Không xác định được link công khai của báo cáo này."
+    )
+    if _refusal:
+        from app.services.dashboard_ai_bot.events import AgentEvent as _Ev
+
+        async def _refused():
+            for ev in (_Ev(type="text", text=_refusal), _Ev(type="done")):
+                yield f"data: {_json.dumps(_event_to_envelope(ev), ensure_ascii=False, default=str)}\n\n"
+
+        return StreamingResponse(_refused(), media_type="text/event-stream")
+
+    # After the policy: a refused link is told why, not asked for a key it cannot use.
+    effective_key, provider, model = resolve_public_ai_credentials(
+        appearance_config,
+        x_user_ai_key=x_user_ai_key,
+        x_user_ai_provider=x_user_ai_provider,
+        x_user_ai_model=x_user_ai_model,
+        missing_key_detail="X-User-Ai-Key header is required for AI explore.",
+    )
+    report_note = sanitize_report_context_note(
+        (appearance_config or {}).get("ai_bot_report_context_note"),
+    )
 
     captured_key = effective_key
 

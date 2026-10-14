@@ -151,6 +151,7 @@ jobs:
             tests/test_analytics_meaning.py \
             tests/test_correctness_closure.py \
             tests/test_model_compatibility.py \
+            tests/test_product_acceptance.py \
             tests/test_flow_type.py \
             tests/test_followup_and_freshness.py \
             tests/test_govern_doc_citation.py \
@@ -717,6 +718,7 @@ jobs:
             tests/test_authz_dashboard_viewer_live_http_pg.py \
             tests/test_authz_workboard_credentials_http_pg.py \
             tests/test_authz_chat_thread_owner_http_pg.py \
+            tests/test_chat_conversation_integrity_http_pg.py \
             tests/test_authz_govern_http_pg.py \
             tests/test_authz_agent_flow_delegation_http_pg.py \
             tests/test_authz_capabilities_http_pg.py \

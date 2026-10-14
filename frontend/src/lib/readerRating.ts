@@ -47,13 +47,14 @@ export function revertReaderRating<M extends { rating?: ReaderRating }>(
  * an error bubble or the page's own welcome stays unratable after a reload.
  */
 export function toSnapshotMessage<R extends string>(m: {
-  role: R; content: string; rating?: ReaderRating; failed?: true; local?: true;
-}): { role: R; content: string; rating?: ReaderRating; failed?: true; local?: true } {
+  role: R; content: string; rating?: ReaderRating; failed?: true; local?: true; stopped?: true;
+}): { role: R; content: string; rating?: ReaderRating; failed?: true; local?: true; stopped?: true } {
   return {
     role: m.role,
     content: m.content,
     ...(m.rating ? { rating: m.rating } : {}),
     ...(m.failed ? { failed: true as const } : {}),
     ...(m.local ? { local: true as const } : {}),
+    ...(m.stopped ? { stopped: true as const } : {}),
   };
 }
