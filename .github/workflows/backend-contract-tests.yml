@@ -558,6 +558,14 @@ jobs:
           python -m pytest -q -p no:cacheprovider \
             tests/test_semantic_foundation_pg.py
 
+      # Saving a measure whose filter targets a RELATED view: the save path
+      # checks the column on THAT view (routes stay the engine's job) instead
+      # of refusing every cross-view measure filter the engine can compute.
+      - name: "GATE — Cross-view measure filter save (Postgres)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_semantic_cross_view_measure_filter_save_pg.py
+
       # ChartService ↔ every consuming surface (Pair #4): the Kernel's answer
       # asked THROUGH the authenticated tile, the public single chart (/d,
       # /embed, the PDF worker), the public batch, the public slicer and the AI
