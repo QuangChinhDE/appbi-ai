@@ -130,6 +130,7 @@ jobs:
             tests/test_tool_result_ceiling.py \
             tests/test_report_read_scope.py \
             tests/test_chart_read_failure_reason.py \
+            tests/test_chart_dryrun_style_keys.py \
             tests/test_agent_flow_answer_contract.py \
             tests/test_builder_error_messages.py \
             tests/test_partial_context_admits_it.py \
