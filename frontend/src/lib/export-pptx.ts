@@ -254,9 +254,14 @@ export async function exportDashboardPptx(opts: PptxExportOptions): Promise<void
       }
       // The tile AS RENDERED (px, relative to the page): the slide keeps its
       // shape with one uniform scale, so pictures fill their blocks.
+      // Tile and page measured in the SAME instant: a tile below that was still
+      // loading is scrolled into view (and the retry scrolls again), so a page
+      // rect read once before the loop is stale for every tile measured after a
+      // scroll — one row came out 104px apart and KPIs at y=-88 (server 422).
       const r = el.getBoundingClientRect();
       if (r.width < 2 || r.height < 2) continue;
-      const geom = { x: r.left - rootRect.left, y: r.top - rootRect.top, w: r.width, h: r.height };
+      const pageRect = root.getBoundingClientRect();
+      const geom = { x: r.left - pageRect.left, y: r.top - pageRect.top, w: r.width, h: r.height };
       if (isExportControl(t)) { controls.push(geom); continue; }
       const title = textOf(el.querySelector('[data-pdf-tile-title]')) || t.title || null;
       const type = String(t.chartType ?? '');
