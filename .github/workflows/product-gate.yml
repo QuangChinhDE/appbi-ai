@@ -99,7 +99,10 @@ jobs:
           echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
           {
             echo "changed<<EOF"
-            echo "$files" | head -n 60
+            # NOT `echo | head`: runners ignore SIGPIPE, so once head exits the
+            # builtin echo fails with EPIPE (exit 1) and pipefail fails the whole
+            # classification on any large diff. sed reads all of its input.
+            printf '%s\n' "$files" | sed -n '1,60p'
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
           {
@@ -113,7 +116,7 @@ jobs:
             echo "<details><summary>changed paths</summary>"
             echo ""
             echo '```'
-            echo "$files" | head -n 60
+            printf '%s\n' "$files" | sed -n '1,60p'
             echo '```'
             echo ""
             echo "</details>"
