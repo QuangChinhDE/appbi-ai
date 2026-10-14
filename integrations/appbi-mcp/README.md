@@ -115,6 +115,41 @@ The connector URL is `https://<your AppBI host>/mcp`.
 - **Disconnecting:** revoke the "Claude MCP · …" token in **AppBI → Settings → API
   tokens**. The connection stops on its next call.
 
+### Claude Desktop against a local, plain-HTTP AppBI
+
+Claude's built-in connectors need HTTPS. For a local AppBI (for example
+`http://localhost:3000`), Claude Desktop reaches the MCP through a local bridge.
+The user never sees or copies a token: the connection is still AppBI sign-in plus
+consent, and AppBI creates and stores the PAT itself.
+
+1. **One entry point.** The browser address users already use must also serve
+   `/mcp`, `/mcp-oauth/*` and `/.well-known/oauth-*`. Put a reverse proxy on that
+   address with the same `location`s as `nginx.conf`, and set
+   `MCP_PUBLIC_URL = APPBI_PUBLIC_URL = <that address>`. Do not give MCP a second,
+   user-facing port: the connect page posts to a relative `/mcp-oauth/…` path.
+2. **Add the bridge** (pinned) to `claude_desktop_config.json` under `mcpServers`:
+   ```json
+   "appbi": {
+     "command": "node",
+     "args": ["<path>/node_modules/mcp-remote/dist/proxy.js", "http://localhost:3000/mcp",
+              "--transport", "http-only", "--allow-http", "--auth-timeout", "1800"]
+   }
+   ```
+   Install it with `npm install --ignore-scripts mcp-remote@0.1.38`. A long
+   `--auth-timeout` matters: with the 300 s default, the bridge gave up before people
+   had finished signing in.
+3. **Restart Claude Desktop.** A browser tab opens on the AppBI sign-in page. Sign in
+   as **yourself**, choose read-only (forced for view-only accounts) and an expiry
+   (7 days for trials), then click **Allow**.
+4. **Disconnect.** Revoke the token in AppBI → Settings → API tokens. Claude reports
+   that the connection is no longer accepted. To reconnect, restart Claude Desktop
+   and sign in again.
+
+Known with this bridge: AppBI lists the connection as "MCP CLI Client", because that
+is the name the bridge registers under. On a read-only connection, a write call is
+refused with HTTP 403 (`insufficient_scope`). The bridge treats that as a step-up
+sign-in and waits, so Claude reports a timeout instead of "read only".
+
 ## Operate
 
 - **Health:**
