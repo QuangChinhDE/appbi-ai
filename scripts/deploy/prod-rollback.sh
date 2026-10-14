@@ -60,7 +60,7 @@ fi
 PG_CLIENT_IMAGE="pgvector/pgvector:pg16"
 dbx(){
   if [ "$LOCAL_DB" = "1" ]; then "${COMPOSE[@]}" exec -T -e PGUSER="$PGUSER" -e PGDATABASE="$PGDATABASE" db "$@"
-  else docker run --rm -i --network host -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE "$PG_CLIENT_IMAGE" "$@"; fi
+  else docker run --rm -i --network "${APPBI_DB_CLIENT_NETWORK:-host}" -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE "$PG_CLIENT_IMAGE" "$@"; fi
 }
 dbrev(){ dbx psql -Atc "SELECT string_agg(version_num, ',' ORDER BY version_num) FROM alembic_version" | tr -d '\r'; }
 if [ "$LOCAL_DB" = "0" ]; then

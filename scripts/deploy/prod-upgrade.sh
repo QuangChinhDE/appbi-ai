@@ -27,6 +27,7 @@
 #                              from .env, else the checkout directory name)
 #   APPBI_COMPOSE_FILES        extra -f files, space separated
 #   APPBI_BACKUP_DIR           default ../appbi-backups
+#   APPBI_DB_CLIENT_NETWORK    docker network for the managed-DB client (default: host)
 #   APPBI_PROVIDER_SNAPSHOT    managed Postgres only: the provider snapshot/backup id
 #                              taken during the freeze (REQUIRED unless the next is set)
 #   APPBI_ACCEPT_NO_PROVIDER_SNAPSHOT=yes   proceed on pg_dump alone
@@ -78,7 +79,7 @@ fi
 PG_CLIENT_IMAGE="pgvector/pgvector:pg16"
 dbx(){  # dbx <client cmd...>   stdin passed through
   if [ "$LOCAL_DB" = "1" ]; then "${COMPOSE[@]}" exec -T -e PGUSER="$PGUSER" -e PGDATABASE="$PGDATABASE" db "$@"
-  else docker run --rm -i --network host -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE "$PG_CLIENT_IMAGE" "$@"; fi
+  else docker run --rm -i --network "${APPBI_DB_CLIENT_NETWORK:-host}" -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE "$PG_CLIENT_IMAGE" "$@"; fi
 }
 dbrev(){ dbx psql -Atc "SELECT string_agg(version_num, ',' ORDER BY version_num) FROM alembic_version" 2>/dev/null | tr -d '\r'; }
 
