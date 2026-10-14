@@ -426,6 +426,7 @@ backend/_verify_gate.db
 !backend/tests/test_publish_candidate_generation.py
 !backend/tests/test_gc_fails_closed.py
 !backend/tests/test_calendar_removal_cleans_the_model.py
+!backend/tests/test_semantic_view_version.py
 !backend/tests/test_delete_drops_physical_snapshots.py
 !backend/tests/test_publish_lease_renewal.py
 !backend/tests/test_every_refresh_path_is_recorded.py
@@ -498,3 +499,12 @@ backend/ci_security.db
 !backend/tests/test_source_google_identity.py
 !backend/tests/test_source_provider_contracts.py
 !backend/tests/test_source_concurrency_pg.py
+
+# External MCP integration (integrations/appbi-mcp): its tests live in its own
+# tree and run in its own venv (scripts/run_offline_tests.py, mcp-integration.yml).
+# `tests/` and `test_*.py` are ignored repo-wide above, so re-include them here.
+!integrations/appbi-mcp/tests/
+!integrations/appbi-mcp/tests/**/
+!integrations/appbi-mcp/tests/**/*.py
+!integrations/appbi-mcp/tests/live/rig/*
+integrations/appbi-mcp/.venv/

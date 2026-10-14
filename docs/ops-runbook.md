@@ -232,6 +232,24 @@ regenerable output, not source of truth.
 
 ---
 
+## Claude connector (MCP integration) — optional
+
+The Claude connector is a separate container. Everything about it is in
+`integrations/appbi-mcp/README.md`; the short version:
+
+- **Stop it:** `docker compose -p appbi-mcp -f docker-compose.mcp.yml down`.
+  AppBI keeps running. `/mcp` answers 502 and nothing else changes.
+- **Is it healthy?** Check `curl -s https://<host>/mcp-oauth/readyz`. A 503 with
+  `"appbi": "unavailable…"` means the AppBI backend is down, not the connector.
+- **A user says Claude cannot connect:** check the connector's logs
+  (`docker logs appbi-mcp-appbi-mcp-1`), and that Anthropic's egress range
+  `160.79.104.0/21` can reach the host.
+- **Cut off one user's Claude access:** revoke their "Claude MCP · …" token in
+  Settings → API tokens (admins: *All tokens*). It takes effect on the next call.
+- **Cut off everyone:** stop the container. To also forget the stored
+  connections, remove its `appbi_mcp_state` volume, then revoke the "Claude MCP"
+  tokens.
+
 ## Emergency stop
 
 ```bash
