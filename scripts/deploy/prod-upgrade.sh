@@ -204,6 +204,8 @@ say "GATE: database-source inventory under the NEW image's outbound policy"
 set +e
 INV="$("${COMPOSE[@]}" run --rm --no-deps -T backend source-inventory --probe --json 2>"$BK/source-inventory.err")"; inv_rc=$?
 set -e
+# The entrypoint prints its own "==>" banner lines first; the inventory is the JSON line.
+INV="$(printf '%s\n' "$INV" | grep -E '^\[' | tail -n1 || true)"
 printf '%s\n' "$INV" > "$BK/source-inventory.json"
 [ "$inv_rc" = "0" ] || [ "$inv_rc" = "4" ] || { cat "$BK/source-inventory.err" >&2; die "source inventory could not run (exit $inv_rc)"; }
 NOT_OK="$(printf '%s' "$INV" | "$PY_BIN" -c "
