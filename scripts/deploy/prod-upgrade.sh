@@ -81,16 +81,19 @@ ok "required secrets present; fingerprints recorded"
 # ── PRE 3: schema state ──────────────────────────────────────────────────────
 say "PRE: schema state"
 OLD_REV="$(dbrev)"; [ -n "$OLD_REV" ] || die "cannot read alembic_version — is the database up?"
-TARGET_HEAD="$(python3 - "$TAG_SHA" <<'PY'
+PY_BIN="$(command -v python3 || command -v python)" || die "need python3 (or python) on PATH"
+TARGET_HEAD="$("$PY_BIN" - "$TAG_SHA" <<'PY'
 import re, subprocess, sys
 sha = sys.argv[1]
-names = subprocess.run(["git", "ls-tree", "--name-only", sha, "backend/alembic/versions/"], capture_output=True, text=True, check=True).stdout.split()
+names = subprocess.run(["git", "ls-tree", "--name-only", sha, "backend/alembic/versions/"], capture_output=True, text=True, encoding="utf-8", check=True).stdout.split()
 revs, downs = set(), set()
 for n in names:
     if not n.endswith(".py"): continue
-    src = subprocess.run(["git", "show", f"{sha}:{n}"], capture_output=True, text=True, check=True).stdout
-    m = re.search(r'^revision\s*(?::\s*str)?\s*=\s*["\']([^"\']+)', src, re.M)
-    d = re.search(r'^down_revision\s*(?:[:][^=]+)?=\s*(.+)$', src, re.M)
+    src = subprocess.run(["git", "show", f"{sha}:{n}"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout
+    # Line-bound: a docstring line such as "down_revision: X" has no "=" and must
+    # not let the pattern run on into the next lines.
+    m = re.search(r'^revision[ \t]*(?::[^=\n]*)?=[ \t]*["\']([^"\']+)', src, re.M)
+    d = re.search(r'^down_revision[ \t]*(?::[^=\n]*)?=[ \t]*(.+)$', src, re.M)
     if m: revs.add(m.group(1))
     if d: downs.update(re.findall(r'["\']([^"\']+)["\']', d.group(1)))
 heads = sorted(revs - downs)
@@ -146,6 +149,8 @@ export GIT_SHA="$TAG_SHA"
 "${COMPOSE[@]}" build backend frontend || die "build failed — old images still tagged; run prod-rollback.sh $BK"
 
 say "DEPLOY: migrate (single runner, approved for $TARGET_HEAD only)"
+IMG_HEADS="$("${COMPOSE[@]}" run --rm --no-deps --entrypoint alembic backend heads 2>/dev/null | grep -oE '^[0-9A-Za-z_]+' | sort | paste -sd, -)"
+[ "$IMG_HEADS" = "$TARGET_HEAD" ] || die "built image reports alembic heads '$IMG_HEADS', expected $TARGET_HEAD"
 "${COMPOSE[@]}" run --rm --no-deps -e APPBI_MIGRATE_APPROVED="$TARGET_HEAD" backend migrate \
   || die "migration failed — services stay down; restore with: scripts/deploy/prod-rollback.sh $BK"
 [ "$(dbrev)" = "$TARGET_HEAD" ] || die "alembic_version is $(dbrev), expected $TARGET_HEAD"
