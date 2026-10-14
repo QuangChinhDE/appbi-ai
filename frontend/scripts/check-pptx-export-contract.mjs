@@ -168,6 +168,59 @@ check('both tile renderers publish their export state; the capture hides export-
   assert(/loading > 0/.test(rr) && /tileReadiness\(t\)/.test(rr), 'page readiness no longer waits for every tile');
 });
 
+// ── Bounded total wait: an export ends (deck or loud error) within its cap ──
+async function checkAsync(name, fn) {
+  try { await fn(); passed += 1; } catch (error) { failures.push({ name, error }); }
+}
+
+await checkAsync('the e2e download wait is derived from the export cap (same value, mirrored)', async () => {
+  const spec = readFileSync(resolve(HERE, '..', '..', 'e2e', 'tests', 'dashboard-pptx-export.spec.ts'), 'utf8');
+  const m = spec.match(/const PPTX_EXPORT_MAX_MS = ([\d_]+);/);
+  assert(m, 'the spec no longer mirrors PPTX_EXPORT_MAX_MS');
+  const mirrored = Number(m[1].replace(/_/g, ''));
+  assert(mirrored === pptx.PPTX_EXPORT_MAX_MS, `spec mirrors ${mirrored}, export cap is ${pptx.PPTX_EXPORT_MAX_MS}`);
+  assert(pptx.PPTX_EXPORT_MAX_MS === pptx.PPTX_CAPTURE_BUDGET_MS + pptx.PPTX_SEND_TIMEOUT_MS, 'cap is not capture + send');
+  assert(/waitForEvent\('download', \{ timeout: DOWNLOAD_WAIT_MS \}\)/.test(spec), 'a download wait is not the derived one');
+  assert(/const DOWNLOAD_WAIT_MS = PPTX_EXPORT_MAX_MS \+/.test(spec), 'DOWNLOAD_WAIT_MS does not exceed the cap');
+});
+
+/** Pages whose chart tiles never finish loading (every lookup finds no tile). */
+function stuckPages(nPages, nCharts) {
+  const root = { querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }) };
+  return Array.from({ length: nPages }, (_, p) => ({
+    name: `P${p}`,
+    getRoot: async () => root,
+    tiles: Array.from({ length: nCharts }, (_, c) => ({ id: p * 100 + c, layout: { x: 0, y: 0, w: 4, h: 4 }, chartType: 'BAR', widgetType: 'chart', title: `C${p}.${c}` })),
+  }));
+}
+
+await checkAsync('a stuck export stops at its capture budget and names every chart; no deck is sent', async () => {
+  let sent = 0;
+  const started = Date.now();
+  let err = null;
+  try {
+    await pptx.exportDashboardPptx({ title: 't', gridCols: 12, filename: 'x.pptx', pages: stuckPages(3, 5),
+      budget: { captureMs: 400, sendMs: 400 }, send: async () => { sent += 1; return new Blob([]); } });
+  } catch (e) { err = e; }
+  const took = Date.now() - started;
+  // Without the overall deadline this run waits 3 x 15 s for tiles to mount.
+  assert(took < 3_000, `export took ${took} ms past a 400 ms budget`);
+  assert(err instanceof pptx.PptxIncompleteError, `expected PptxIncompleteError, got ${err}`);
+  assert(err.charts.length === 15, `named ${err.charts.length} of 15 charts`);
+  assert(sent === 0, 'a deck was requested for an incomplete export');
+});
+
+await checkAsync('a server that never answers fails the export at the send timeout, nothing downloads', async () => {
+  const started = Date.now();
+  let err = null;
+  try {
+    await pptx.exportDashboardPptx({ title: 't', gridCols: 12, filename: 'x.pptx', pages: [],
+      budget: { captureMs: 400, sendMs: 300 }, send: () => new Promise(() => {}) });
+  } catch (e) { err = e; }
+  assert(err instanceof pptx.PptxTimeoutError, `expected PptxTimeoutError, got ${err}`);
+  assert(Date.now() - started < 2_000, 'the send wait is unbounded');
+});
+
 if (failures.length) {
   for (const f of failures) console.error(`FAIL  ${f.name}\n      ${f.error.message}`);
   console.error(`\n${failures.length} failed, ${passed} passed`);
