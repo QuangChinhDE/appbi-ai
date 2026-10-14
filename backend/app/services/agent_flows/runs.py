@@ -62,12 +62,22 @@ def record(
     store_content: bool = True,
     usd: float | None = None,
     chat_thread_id: int | None = None,
+    parent_run_key: str | None = None,
+    parent_step_key: str | None = None,
+    invoked_as: str | None = None,
 ) -> int | None:
     """Write one run across the three tables. Never raises into the caller.
 
     A failure to record must not fail the answer that was already delivered — the
     viewer has their reply, and losing a log row is the cheaper loss.
+
+    A CHILD RUN (a Skill invoked by another run) names its parent and carries no
+    reader identity: no `session_key` and no `link_token`. The public rating
+    endpoint matches a reader's thumb by session + link + exact answer text, and
+    a Skill's answer can be word-for-word what the parent then published — the
+    thumb belongs to the run the reader actually talked to.
     """
+    child = bool(parent_run_key)
     try:
         run = AgentFlowRun(
             run_key=inp.request.id,
@@ -75,14 +85,14 @@ def record(
             version=version,
             binding_id=binding_id,
             chat_thread_id=chat_thread_id,
-            link_token=inp.binding.link_token or None,
+            link_token=None if child else (inp.binding.link_token or None),
             # `or None`, for the reason `binding_id` already has one: `ReportInfo.
             # dashboard_id` is a plain int whose "no report" value is the sentinel 0,
             # and a run row storing 0 reads as a dashboard that exists. The column is
             # nullable so "no report" can be said honestly. Every real dashboard id is
             # non-zero, so the public path is unaffected.
             dashboard_id=inp.report.dashboard_id or None,
-            session_key=inp.conversation.session_key or None,
+            session_key=None if child else (inp.conversation.session_key or None),
             status=out.status,
             execution_path=(out.trace.path or "")[:255],
             trigger=inp.request.trigger,
@@ -96,6 +106,9 @@ def record(
             blocked_reason=_blocked_reason(out),
             missing_requirements=(inp.binding.unresolved or None),
             question_norm=normalise_question(inp.question.raw),
+            parent_run_key=parent_run_key,
+            parent_step_key=parent_step_key,
+            invoked_as=invoked_as,
         )
         db.add(run)
         db.flush()
@@ -134,6 +147,8 @@ def record(
                     prompt_tokens=step.prompt_tokens or None,
                     completion_tokens=step.completion_tokens or None,
                     error=step.error or None,
+                    capability_trace=step.capabilities or None,
+                    budget=step.budget or None,
                 )
             )
         db.commit()
@@ -188,32 +203,54 @@ def rate_run(db: Session, *, brain_key: str, run_id: int, rating: str | None) ->
     return True
 
 
-def apply_rating(db: Session, *, session_key: str, answer_text: str, rating: str) -> None:
+def apply_rating(
+    db: Session, *, session_key: str, link_token: str, answer_text: str, rating: str,
+) -> bool:
     """Attach the viewer's thumb to the run that produced that answer.
 
-    Matched on the answer text because the public chat client does not know run ids.
-    It rates text the SERVER produced, so — unlike anything else posted from a public
-    page — it cannot smuggle in a claim of its own.
+    Returns True only when a run was found and rated — the ONE verified result a
+    caller may act on. A public endpoint must never infer "this rating was
+    genuine" from the client payload itself.
+
+    WHAT MUST ALL HOLD, because this is written from an anonymous endpoint:
+
+      * `session_key` — the caller's own conversation;
+      * `link_token`  — the public link the caller is on. Session keys are
+        chosen by the client, so without this a caller on link X could target a
+        run served on link Y merely by reusing a session key;
+      * `answer_text` — byte-equal to the answer the SERVER stored for that run.
+        Matching exactly, never fuzzily, is what stops a page rating words the
+        server never said.
+
+    REPLAY-SAFE BY CONSTRUCTION. The session is saved as a whole snapshot after
+    every turn, so a rated message is re-sent on every later save. This writes a
+    VALUE, never increments anything: re-saving the same transcript leaves the
+    run exactly as it was, and a changed verdict overwrites the old one.
     """
-    if rating not in {"up", "down"} or not session_key:
-        return
+    if rating not in {"up", "down"} or not session_key or not link_token:
+        return False
     try:
         row = (
             db.query(AgentFlowRun)
             .join(AgentFlowRunContent, AgentFlowRunContent.run_id == AgentFlowRun.id)
             .filter(
                 AgentFlowRun.session_key == session_key,
+                AgentFlowRun.link_token == link_token,
                 AgentFlowRunContent.answer == answer_text,
             )
             .order_by(AgentFlowRun.created_at.desc())
             .first()
         )
-        if row is not None:
+        if row is None:
+            return False
+        if row.rating != rating:
             row.rating = rating
             db.commit()
+        return True
     except Exception:  # noqa: BLE001
         logger.warning("[flow] rating not applied", exc_info=True)
         db.rollback()
+        return False
 
 
 # ═══ Reading ══════════════════════════════════════════════════════════════════
@@ -229,7 +266,11 @@ def list_runs(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    q = db.query(AgentFlowRun).filter(AgentFlowRun.brain_key == brain_key)
+    # TOP-LEVEL RUNS ONLY. A Skill's invocations by other flows carry THOSE
+    # flows' data; they are opened from the parent run, whose readers own it —
+    # not listed to everyone the Skill is shared with.
+    q = db.query(AgentFlowRun).filter(
+        AgentFlowRun.brain_key == brain_key, AgentFlowRun.parent_run_key.is_(None))
     if not include_tests:
         # The author's own trials are excluded by default: without this the first
         # week of every flow's numbers is mostly its author.
@@ -270,6 +311,10 @@ def list_runs(
                 "rating": r.rating,
                 "is_test": r.is_test,
                 "blocked_reason": r.blocked_reason,
+                # A Skill's own Runs tab lists its runs, including the ones another
+                # flow invoked; this says which those are.
+                "parent_run_key": r.parent_run_key,
+                "invoked_as": r.invoked_as,
             }
             for r in rows
         ],
@@ -293,6 +338,31 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
     )
     node_configs = _configs_for_version(db, brain_key=brain_key, version=row.version)
     flow_warnings, unresolved = _version_diagnosis(db, brain_key=brain_key, version=row.version)
+    # THE CHILD RUNS THIS RUN CREATED — Skills it invoked — keyed by the step
+    # that invoked them, so "this step ran Skill X; open what X did" is one click.
+    children = (
+        db.query(AgentFlowRun)
+        .filter(AgentFlowRun.parent_run_key == row.run_key)
+        .order_by(AgentFlowRun.id)
+        .all()
+    )
+    child_rows = [{
+        "id": c.id, "run_key": c.run_key, "brain_key": c.brain_key,
+        "version": c.version, "status": c.status, "invoked_as": c.invoked_as,
+        "parent_step_key": c.parent_step_key, "latency_ms": c.latency_ms,
+        "tokens": (c.prompt_tokens or 0) + (c.completion_tokens or 0),
+        "llm_calls": c.llm_calls, "tool_calls": c.tool_calls,
+    } for c in children]
+    parent = None
+    if row.parent_run_key:
+        p_row = db.query(AgentFlowRun).filter(AgentFlowRun.run_key == row.parent_run_key).first()
+        parent = {
+            "run_key": row.parent_run_key, "step_key": row.parent_step_key,
+            "invoked_as": row.invoked_as,
+            "id": p_row.id if p_row else None,
+            "brain_key": p_row.brain_key if p_row else None,
+            "version": p_row.version if p_row else None,
+        }
     return {
         "id": row.id,
         "run_key": row.run_key,
@@ -324,6 +394,8 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
             "usd": float(row.usd) if row.usd is not None else None,
         },
         "rating": row.rating,
+        "parent": parent,
+        "children": child_rows,
         "question": content.question if content else None,
         "answer": content.answer if content else None,
         "citations": (content.citations if content else None) or [],
@@ -359,6 +431,11 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
                 # another screen from the one somebody opens when an answer looks
                 # wrong.
                 "unresolved_refs": unresolved.get(s.node_key, []),
+                # What an Agent step could see and what it tried — granted,
+                # eligible, shown per round, discovered, invoked, rejected.
+                "capabilities": s.capability_trace,
+                "budget": getattr(s, "budget", None),
+                "children": [c for c in child_rows if c["parent_step_key"] == s.node_key],
             }
             for s in steps
         ],

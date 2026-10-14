@@ -17,6 +17,15 @@ All tools share the ``ToolContext`` defined in ``tools.py`` and reuse
 """
 from __future__ import annotations
 
+from app.services.time_semantics import (
+    classify_time_values,
+    looks_like_period_value,
+    looks_like_time_name,
+    may_do_time_maths,
+    values_look_like_time,
+)
+
+import datetime as _dt
 import logging
 import math
 import re
@@ -33,6 +42,7 @@ from app.services.dashboard_ai_bot.thinking.tools import (
     _err,
     _round,
 )
+from app.services.dashboard_ai_bot.tool_context import resolve_column, resolve_value
 
 logger = logging.getLogger(__name__)
 
@@ -52,31 +62,185 @@ def _to_number(value: Any) -> float | None:
         return None
 
 
-_DATETIME_HINTS = ("date", "time", "month", "week", "year", "day", "ngay", "thang", "tuan", "quy")
-
-
 def _looks_like_datetime(name: str) -> bool:
-    n = (name or "").lower()
-    return any(h in n for h in _DATETIME_HINTS)
+    """Delegates to the ONE name-level time semantic.
+
+    This used to be a substring test over its own token list, and it disagreed
+    with `coverage`/`project_ahead` in both directions: it fired on `holiday_flag`
+    and `payday` because `day` is a substring of both, and it did not recognise
+    `created_at`, `dt`, `period`, `quarter` or `ky_*` at all. `compare_periods`,
+    `analyze_trend`, forecast and seasonality all gate on this, so a column one
+    tool charted as an axis another had already called categorical.
+
+    Its two genuinely useful tokens — `tuan` and `quy` — moved INTO the canonical
+    list rather than being dropped. The VALUE-level checks in this module
+    (`_looks_like_period_label` and the calendar validation each tool does) are
+    strictly stronger and stay exactly where they are.
+    """
+    return looks_like_time_name(name)
 
 
 # A date/period VALUE: 2024, 2024-06, 2024-06-15, 2024/06, Q1 2024, etc.
-_PERIOD_VALUE_RX = re.compile(
-    r"^\s*(?:Q[1-4][\s\-/]?\d{4}|\d{4}(?:[\-/](?:0?[1-9]|1[0-2]))?(?:[\-/]\d{1,2})?|\d{4})\s*$",
-    re.IGNORECASE,
-)
-
-
 def _looks_like_period_label(value: str) -> bool:
-    """True if a dimension VALUE looks like a calendar period label."""
-    return bool(_PERIOD_VALUE_RX.match(str(value or "")))
+    """Delegates to the ONE period-value semantic.
+
+    This carried its own regex, narrower than the canonical one: it did not
+    accept a bare `Q1` or `quy 2`. So the NAME question was unified while the
+    VALUE question still had two answers, and two tools could disagree about the
+    same column for the opposite reason to before.
+
+    The STRONGER parsers below — `_LBL_*` and `_period_end`, which resolve a
+    label to an actual calendar date — stay exactly where they are. They are not
+    a second definition of "does this look like a period"; they are an operation
+    that needs more than the answer to that question.
+    """
+    return looks_like_period_value(value)
+
+
+#: The last calendar day of each month, indexed 1..12. February is handled by the
+#: leap rule below rather than by a table with two Februaries in it.
+_MONTH_LEN = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+#: `2024-06`, `2024-06-15`, `2024`, `Q2 2024`/`2024-Q2`. The forms
+#: `_looks_like_period_label` already accepts, parsed rather than merely matched.
+_LBL_YMD = re.compile(r"^\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s*$")
+_LBL_YM = re.compile(r"^\s*(\d{4})[-/](\d{1,2})\s*$")
+_LBL_Y = re.compile(r"^\s*(\d{4})\s*$")
+_LBL_Q = re.compile(r"^\s*(?:Q([1-4])[\s\-/]?(\d{4})|(\d{4})[\s\-/]?Q([1-4]))\s*$",
+                    re.IGNORECASE)
+
+
+def _month_end(year: int, month: int) -> _dt.date:
+    last = _MONTH_LEN[month - 1]
+    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
+        last = 29
+    return _dt.date(year, month, last)
+
+
+def _period_end(label: str) -> _dt.date | None:
+    """The LAST calendar day the bucket named by this label covers.
+
+    `2018-09` ends 2018-09-30 whatever the chart holds for it. This is the fact
+    an incompleteness claim has to be measured against: a bucket is incomplete
+    when the data stops before its period does, not when its value is small.
+    """
+    text = str(label or "")
+    m = _LBL_YMD.match(text)
+    if m:
+        try:
+            return _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    m = _LBL_YM.match(text)
+    if m:
+        year, month = int(m.group(1)), int(m.group(2))
+        return _month_end(year, month) if 1 <= month <= 12 else None
+    m = _LBL_Q.match(text)
+    if m:
+        quarter = int(m.group(1) or m.group(4))
+        year = int(m.group(2) or m.group(3))
+        return _month_end(year, quarter * 3)
+    m = _LBL_Y.match(text)
+    if m:
+        return _dt.date(int(m.group(1)), 12, 31)
+    return None
+
+
+def _as_bound_date(value: Any) -> _dt.date | None:
+    """A date from a filter value, or None. Filters carry strings far more often
+    than dates, and a bound we cannot read must not become a bound we invent."""
+    if isinstance(value, _dt.datetime):
+        return value.date()
+    if isinstance(value, _dt.date):
+        return value
+    if not isinstance(value, str):
+        return None
+    head = value.strip().split("T")[0].split(" ")[0]
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y"):
+        try:
+            return _dt.datetime.strptime(head, fmt).date()
+        except ValueError:
+            continue
+    m = _LBL_YM.match(head)
+    if m:
+        year, month = int(m.group(1)), int(m.group(2))
+        return _month_end(year, month) if 1 <= month <= 12 else None
+    return None
+
+
+#: Filter operators that declare "the data stops here".
+_UPPER_OPS = {"<=", "<", "lte", "lt", "before", "until", "to", "max"}
+_RANGE_OPS = {"between", "range", "in_range", "date_between"}
+
+
+def _declared_data_ceiling(filters: Sequence[Any] | None) -> _dt.date | None:
+    """The latest date the APPLIED FILTERS admit, if they declare one.
+
+    THE ONLY COMPLETENESS FACT THIS TOOL CAN ACTUALLY REACH. The series it is
+    handed is already aggregated by period, so nothing in it can distinguish a
+    month that ended early from a month that went badly. `ToolContext` carries no
+    data-cutoff, and the authoritative last raw event date lives in a different
+    tool (`describe_time_coverage`) behind extra queries.
+
+    What IS here, free and structured, is the filter set every read was made
+    under. A filter saying `order_date <= 2018-09-04` on a `2018-09` bucket is a
+    DECLARATION that the bucket holds four days of a thirty-day month. That is
+    proof, and it is the only proof available at this cost.
+
+    The narrowest bound wins, and a bound we cannot parse is not a bound.
+    """
+    ceiling: _dt.date | None = None
+    for entry in filters or []:
+        if not isinstance(entry, dict):
+            continue
+        field = str(entry.get("field") or entry.get("column") or "")
+        if not _looks_like_datetime(field):
+            continue
+        op = str(entry.get("op") or entry.get("operator") or "=").strip().lower()
+        candidates: list[Any] = []
+        if op in _UPPER_OPS:
+            candidates.append(entry.get("value") if "value" in entry else entry.get("values"))
+        elif op in _RANGE_OPS:
+            values = entry.get("values") if entry.get("values") is not None else entry.get("value")
+            if isinstance(values, (list, tuple)) and len(values) >= 2:
+                candidates.append(values[1])
+        if op in ("<", "lt", "before"):
+            # `< X` admits up to the day before X; `<= X` admits X itself.
+            for raw in candidates:
+                bound = _as_bound_date(raw)
+                if bound is not None:
+                    bound -= _dt.timedelta(days=1)
+                    ceiling = bound if ceiling is None else min(ceiling, bound)
+            continue
+        for raw in candidates:
+            bound = _as_bound_date(raw)
+            if bound is not None:
+                ceiling = bound if ceiling is None else min(ceiling, bound)
+    return ceiling
+
+
+def _edge_is_proven_incomplete(label: str, filters: Sequence[Any] | None) -> bool:
+    """True only when the applied filters stop BEFORE this bucket's period does."""
+    end = _period_end(label)
+    if end is None:
+        return False
+    ceiling = _declared_data_ceiling(filters)
+    return ceiling is not None and ceiling < end
 
 
 def _trim_partial_edges(series: Sequence[tuple[str, float]], frac: float = 0.15):
     """Drop contiguous leading/trailing buckets whose value is a severe low
-    outlier vs the median — they are almost always INCOMPLETE periods (launch
-    month, data cutoff) that would distort a trend/forecast. Returns
-    ``(core, excluded, partial_first, partial_last)``."""
+    outlier vs the median.
+
+    A SEVERE LOW EDGE OUTLIER IS NOT A PROVEN INCOMPLETE PERIOD, and the version
+    of this docstring that said these are "almost always INCOMPLETE periods" was
+    the whole bug: a launch month, a data cutoff and a business that collapsed
+    produce the SAME value series, and this function sees nothing but values. It
+    is a trim for fitting a trend, which is a modelling choice and a defensible
+    one. It is not evidence about the calendar, and callers must not report it as
+    such — see `_edge_is_proven_incomplete` for the fact that can be proven.
+
+    Returns ``(core, excluded, low_edge_first, low_edge_last)``."""
     ys = [y for _, y in series]
     if len(ys) < 3:
         return list(series), [], False, False
@@ -123,6 +287,48 @@ def _detect_measure_idx(columns: Sequence[str], rows: Sequence[Sequence[Any]]) -
     return numeric_indices[-1] if numeric_indices else None
 
 
+def _measure_idx(ctx: Any, args: dict, columns: Sequence[str], rows: Sequence[Sequence[Any]]) -> int | None:
+    """Which numeric column a tool measures.
+
+    Holdout 6044: chart 692 carries total_revenue AND orders_with_items; asked for
+    revenue, compare_periods took the LAST numeric column and reported the order
+    count's -24.52% (the claim check withheld it as another measure's). In order:
+    the caller's `measure` argument; the ONE numeric column naming a measure the
+    turn resolved (`ctx.asked_measures`); the last numeric column, as before.
+    """
+    measured = []
+    for i in range(len(columns)):
+        nums = [n for n in (_to_number(r[i]) for r in rows if i < len(r)) if n is not None]
+        if nums and len(nums) >= max(1, int(0.6 * len(rows))):
+            measured.append(i)
+    named = (args or {}).get("measure")
+    wanted = resolve_column(named, list(columns))
+    if wanted is not None and columns.index(wanted) in measured:
+        return columns.index(wanted)
+    # A NAMED MEASURE THAT DOES NOT RESOLVE IS AN ERROR, NOT A HINT. It used to
+    # fall through to "the last numeric column": asked for arr_active, the tool
+    # measured cus_churned and the answer quoted it as ARR.
+    if named:
+        return _err(
+            f"measure '{named}' is not a numeric column of this chart. Pass one of: "
+            + ", ".join(str(columns[i]) for i in measured),
+            code="bad_argument",
+        )
+    asked = {str(m).lower() for m in (getattr(ctx, "asked_measures", None) or [])}
+    hits = [i for i in measured if str(columns[i]).rsplit(".", 1)[-1].lower() in asked]
+    if len(hits) == 1:
+        return hits[0]
+    if len(measured) == 1:
+        return measured[0]
+    if len(measured) > 1:
+        return _err(
+            "this chart has more than one measure — call again with `measure` set to one of: "
+            + ", ".join(str(columns[i]) for i in measured),
+            code="measure_ambiguous",
+        )
+    return None
+
+
 def _detect_dim_idx(
     columns: Sequence[str],
     rows: Sequence[Sequence[Any]],
@@ -156,6 +362,26 @@ def _detect_dim_idx(
 # worsening / flat) and a one-line narrative the LLM can lift verbatim.
 
 
+def _period_label(asked: str, points: list[tuple[str, float]]) -> str:
+    """The chart's own label for the period `asked` names.
+
+    Exact spelling first. Otherwise the ONE label denoting the same period
+    ("12/2017", "tháng 12/2017" → "2017-12"): holdout run 5663 compared December
+    with November by writing the month the way the question did, and every call
+    was refused — as `chart_not_found`, a code that sent the model looking for a
+    different chart. A label that is not unique (a daily axis) is never guessed.
+    """
+    if any(x == asked for x, _ in points):
+        return asked
+    from app.services.time_semantics import named_periods
+
+    want = named_periods(asked)
+    if len(want) != 1:
+        return asked
+    hits = [x for x, _ in points if named_periods(x) == want]
+    return hits[0] if len(hits) == 1 else asked
+
+
 def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     chart_id = args.get("chart_id")
     if not isinstance(chart_id, int):
@@ -179,11 +405,13 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     if not rows or not columns:
         return _err("chart has no data to compare")
 
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
-        return _err("need at least one dimension and one numeric column")
-    if not _looks_like_datetime(columns[dim_idx]) and mode != "custom":
+        return _err("need at least one dimension and one numeric column", code="not_applicable")
+    if mode != "custom":
         # Peek at the actual dimension labels. If none look date-like, period
         # comparison simply doesn't apply to this chart — say so definitively
         # instead of pushing the model toward mode='custom', which sends it
@@ -194,18 +422,25 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                 sample_labels.append(str(r[dim_idx]))
             if len(sample_labels) >= 8:
                 break
-        any_date_like = any(_looks_like_period_label(s) for s in sample_labels)
-        if not any_date_like:
+        # VALUES ARE CONSULTED EVEN UNDER A STRONG NAME. A column called
+        # `order_date` holding department names is a broken chart, not a
+        # calendar, and `custom` periods cannot rescue it either.
+        if classify_time_values(sample_labels) == "contradicts":
             return _err(
                 f"chart's dimension '{columns[dim_idx]}' is categorical "
                 f"(e.g. {', '.join(sample_labels[:5]) or 'n/a'}), not a time "
                 "axis — period-over-period comparison is not applicable to this "
-                "chart. Do not retry with custom periods."
+                "chart. Do not retry with custom periods.",
+                code="not_applicable",
             )
-        return _err(
+        if looks_like_time_name(columns[dim_idx]):
+            pass  # the name settles the GRAIN; automatic modes may proceed
+        else:
+            return _err(
             f"chart's dimension '{columns[dim_idx]}' does not look like a "
             "time series; use mode='custom' with explicit period_a/period_b "
-            f"chosen from the available labels: {', '.join(sample_labels)}"
+            f"chosen from the available labels: {', '.join(sample_labels)}",
+            code="not_applicable",
         )
 
     # Sort by dim ascending (assumes ISO-ish labels)
@@ -221,13 +456,39 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
             continue
         points.append((str(x), y))
     if len(points) < 2:
-        return _err("need at least 2 time points to compare")
+        return _err("need at least 2 time points to compare", code="not_applicable")
+
+    # A SEVERE LOW EDGE IS A QUESTION, NOT AN ANSWER.
+    #
+    # Measured on the Olist report, this tool compared a data-cutoff stub as the
+    # latest real period — 2018-09 = 166.46 against 2018-08 = 1,003,308.47,
+    # reported as "-99.98%, worsening" in every mode. The first fix excluded the
+    # edge and called it `partial_last`, which traded one confident wrong answer
+    # for another: a business that genuinely collapsed to 166.46 produces the
+    # IDENTICAL value series, and the tool would have hidden the collapse and
+    # reported a calm -5% between the two months before it.
+    #
+    # So the magnitude test below decides only what the COMPARISON stands on. The
+    # claim about the calendar is made separately, from the applied filters, and
+    # only when they prove it. Everything else is reported as suspected.
+    #
+    # `custom` is deliberately above this: a caller who names both periods has
+    # said which ones they mean.
+    core, excluded, low_edge_first, low_edge_last = _trim_partial_edges(points)
+    filters_applied = data.get("filters_applied") or []
+    proven_first = bool(
+        low_edge_first and _edge_is_proven_incomplete(points[0][0], filters_applied))
+    proven_last = bool(
+        low_edge_last and _edge_is_proven_incomplete(points[-1][0], filters_applied))
+    observed_latest = {"label": points[-1][0], "value": _round(points[-1][1])}
 
     if mode == "custom":
         period_a = str(args.get("period_a") or "")
         period_b = str(args.get("period_b") or "")
         if not period_a or not period_b:
             return _err("mode=custom requires period_a and period_b")
+        period_a = _period_label(period_a, points)
+        period_b = _period_label(period_b, points)
         a_val = next((y for x, y in points if x == period_a), None)
         b_val = next((y for x, y in points if x == period_b), None)
         if a_val is None or b_val is None:
@@ -238,11 +499,86 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                 f"period not found in chart: a={period_a!r}, b={period_b!r}. "
                 f"Available labels are: {', '.join(shown)}{more}. "
                 "Pick period_a/period_b from this exact list, or if none are "
-                "time periods this chart has no time axis — stop and tell the user."
+                "time periods this chart has no time axis — stop and tell the user.",
+                code="period_not_in_chart",
             )
-        return _ok(_attach_delta_unit(
-            ctx, chart_id, columns[measure_idx],
-            _compare_pair(a_val, b_val, period_a, period_b, columns[measure_idx])))
+        pair = _compare_pair(a_val, b_val, period_a, period_b, columns[measure_idx])
+        # NAMING A PERIOD DOES NOT MAKE IT COMPLETE. `custom` keeps the caller's two
+        # periods — but the facts about the edge are facts about the data, not about
+        # the mode. Live 3bf8e3f3 (P0 g6, run 8117): asked "tháng gần nhất", the flow
+        # resolved it to 2018-09 itself and called the Skill with both periods named;
+        # custom skipped the edge check and "-99.98%" was published as a business
+        # fact over a month holding 16 orders, none delivered. The value is kept;
+        # what is known about the edge is said beside it, as in every other mode.
+        edge = points[-1][0] if low_edge_last else (points[0][0] if low_edge_first else None)
+        if edge in (period_a, period_b):
+            proven = proven_last if edge == points[-1][0] else proven_first
+            pair["observed_latest"] = observed_latest
+            pair["edge_period"] = edge
+            pair["edge_completeness"] = "proven_incomplete" if proven else "suspected_incomplete"
+            pair["edge_completeness_basis"] = (
+                "declared_filter_upper_bound" if proven else "low_outlier_vs_median")
+            pair["note_partial"] = (
+                f"Kỳ {edge} thấp bất thường so với các kỳ khác. "
+                + ("Bộ lọc đang áp cắt kỳ này trước khi nó kết thúc, nên đây KHÔNG phải kết quả cả kỳ. "
+                   if proven else
+                   "Không có bằng chứng nào ở đây nói kỳ này thiếu dữ liệu — một kỳ chưa đầy đủ "
+                   "và một sụt giảm thật cho ra cùng con số. ")
+                + "Nếu nêu mức thay đổi này, phải nói rõ kỳ đó có thể chưa đầy đủ; hoặc so sánh "
+                  "hai kỳ trước đó (mode=mom).")
+        return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], pair))
+
+    # A NAMED PERIOD IS THE PERIOD ANSWERED.
+    #
+    # Asked about ARR in August 2026 (72, after 864 in July), the automatic mode
+    # treated the low last month as a probable stub and compared July instead —
+    # consistent, disclosed in the payload, and the wrong question. Without a named
+    # period that choice is defensible (comparing a stub to a full month invents a
+    # -99%, see below). WITH one it is substitution: the asked period is the
+    # headline `current`, whatever its value, and a period the data does not hold
+    # is an error, never a neighbour.
+    asked = str((args or {}).get("period") or "").strip()
+    if asked and mode != "custom":
+        hits = [i for i, (label, _) in enumerate(points) if str(label).startswith(asked[:10])]
+        if not hits:
+            return _err(
+                f"period '{asked}' is not in this chart (it covers {points[0][0]} … "
+                f"{points[-1][0]}). Use one of its periods; do not answer with a different one.",
+                code="period_not_found",
+            )
+        upto = points[: hits[-1] + 1]
+        offset_for = {"auto": 1, "mom": 1, "qoq": 3, "yoy": 12}.get(mode, 1)
+        if len(upto) <= offset_for:
+            return _err(
+                f"period '{asked}' has no period {offset_for} step(s) before it in this chart — "
+                "there is nothing to compare it with in this mode",
+                code="not_applicable",
+            )
+        a, b = upto[-1], upto[-1 - offset_for]
+        pair = _compare_pair(a[1], b[1], a[0], b[0], columns[measure_idx])
+        pair.update({"mode": mode, "chart_id": chart_id, "requested_period": asked,
+                     "narrative_label": f"{b[0]} → {a[0]} ({mode.upper()}, kỳ được hỏi)",
+                     "observed_latest": observed_latest})
+        is_edge = hits[-1] == len(points) - 1
+        if is_edge and proven_last:
+            pair["edge_completeness"] = "proven_incomplete"
+            pair["note_partial"] = (
+                f"Kỳ {a[0]} được hỏi nhưng bị cắt bởi bộ lọc đang áp (dữ liệu dừng trước khi "
+                "kỳ kết thúc) — giá trị này KHÔNG phải kết quả cả kỳ; nói rõ điều đó.")
+        elif is_edge and low_edge_last:
+            pair["edge_completeness"] = "suspected_incomplete"
+            pair["note_partial"] = (
+                f"Kỳ {a[0]} thấp bất thường so với các kỳ trước. Không có bằng chứng kỳ này "
+                "thiếu dữ liệu — có thể là sụt giảm thật. Báo đúng giá trị của kỳ được hỏi và "
+                "nói rõ chưa xác định được kỳ này đã đầy đủ hay chưa.")
+        else:
+            pair["edge_completeness"] = "not_suspected"
+        return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], pair))
+
+    # COMPLETE PERIODS from here on. The partial edge is not hidden — it is
+    # named in the payload below — but it is not the headline `current` either.
+    if len(core) >= 2:
+        points = core
 
     # AUTO / MoM / QoQ / YoY all reduce to "compare last with N steps back".
     if mode in ("auto", "mom"):
@@ -272,6 +608,53 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     recent_avg = statistics.fmean(y for _, y in points[-recent_n:])
     base_payload["recent_avg_last_3"] = _round(recent_avg)
     base_payload["points_used"] = len(points)
+    # SAID, NOT SWALLOWED — AND NOT OVERSTATED EITHER.
+    #
+    # `observed_latest` is unconditional: it is the real last point of the real
+    # series, present whether or not the comparison used it, whether or not it is
+    # low, and whether or not anything about it is suspected. A genuine collapse
+    # cannot fall out of this payload merely by being small, which is exactly how
+    # the first version of this fix would have lost it.
+    base_payload["excluded_periods"] = excluded
+    base_payload["observed_latest"] = observed_latest
+    base_payload["edge_completeness"] = (
+        "proven_incomplete" if proven_last
+        else "suspected_incomplete" if low_edge_last
+        else "not_suspected"
+    )
+    base_payload["edge_completeness_basis"] = (
+        "declared_filter_upper_bound" if proven_last
+        else "low_outlier_vs_median" if low_edge_last
+        else None
+    )
+    # `partial_*` keep their names and lose their guesswork: they now mean PROVEN,
+    # because a field a reader treats as a fact has to be one.
+    base_payload["partial_first"] = proven_first
+    base_payload["partial_last"] = proven_last
+    if low_edge_last and len(core) >= 2:
+        last = next((e for e in excluded if e.get("edge") == "last"), None)
+        label = (last or {}).get("label", observed_latest["label"])
+        value = (last or {}).get("value", observed_latest["value"])
+        if proven_last:
+            base_payload["note_partial"] = (
+                f"Kỳ {label} bị cắt bởi bộ lọc đang áp (dữ liệu dừng trước khi kỳ "
+                f"này kết thúc), nên giá trị {value} KHÔNG phải kết quả cả kỳ và "
+                "không được dùng làm kỳ hiện tại. So sánh này dùng các kỳ đã trọn."
+            )
+        else:
+            # THE HONEST STATE. Two readings fit the same numbers and nothing
+            # available here separates them, so both are handed over instead of
+            # one being chosen silently.
+            base_payload["note_partial"] = (
+                f"Kỳ {label} có giá trị {value}, thấp bất thường so với các kỳ "
+                "trước. KHÔNG có bằng chứng nào ở đây nói kỳ này thiếu dữ liệu — "
+                "một kỳ chưa kết thúc và một kỳ sụt giảm thật cho ra cùng con số. "
+                "So sánh dưới đây dùng các kỳ trước đó để tránh khẳng định sai; "
+                "hãy nêu cả giá trị quan sát được của kỳ cuối và nói rõ là chưa "
+                "xác định được nguyên nhân. NẾU NGƯỜI DÙNG HỎI ĐÚNG KỲ NÀY, gọi lại "
+                "với `period` là kỳ đó — không trả lời bằng kỳ khác. Muốn chắc chắn, gọi "
+                "describe_time_coverage để biết dữ liệu thực sự dừng ở đâu."
+            )
     return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], base_payload))
 
 
@@ -345,7 +728,9 @@ def tool_describe_distribution(ctx: ToolContext, args: dict) -> dict:
     if not rows or not columns:
         return _err("chart has no data")
 
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     if measure_idx is None:
         return _err("no numeric measure column found")
 
@@ -533,8 +918,11 @@ def tool_correlate_charts(ctx: ToolContext, args: dict) -> dict:
         )
     dim_a = cols_a.index(on)
     dim_b = cols_b.index(on)
-    measure_a = _detect_measure_idx(cols_a, data_a["rows"])
-    measure_b = _detect_measure_idx(cols_b, data_b["rows"])
+    measure_a = _measure_idx(ctx, {"measure": args.get("measure_a")}, cols_a, data_a["rows"])
+    measure_b = _measure_idx(ctx, {"measure": args.get("measure_b")}, cols_b, data_b["rows"])
+    for got in (measure_a, measure_b):
+        if isinstance(got, dict):
+            return got
     if measure_a is None or measure_b is None:
         return _err("could not detect a numeric measure in one of the charts")
 
@@ -704,14 +1092,32 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
     if not rows:
         return _err("chart has no data")
 
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     if measure_idx is None:
         return _err("no numeric measure detected")
 
     if method in ("rolling", "changepoint"):
         dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
-        if dim_idx is None or not _looks_like_datetime(columns[dim_idx]):
+        # NAME, THEN VALUES - the same two-step the other three tools use.
+        # The name hint is STRONG-only, so `ky_bao_cao` would be refused on the
+        # name alone; that is a real axis and the labels can prove it. Without
+        # this fallback, tightening the name rule would have cost capability here
+        # rather than only removing the `ky_thuat` false positive.
+        if dim_idx is None:
             return _err(f"{method} requires a time dimension")
+        # THE VALUES ARE READ WHATEVER THE NAME SAYS. A strong name settles an
+        # unparsed label like `FY24 P3`; it does not settle a column of
+        # department names.
+        labels = [str(r[dim_idx]) for r in rows
+                  if dim_idx < len(r) and r[dim_idx] is not None][:12]
+        if not may_do_time_maths(columns[dim_idx], labels):
+            return _err(
+                f"chart's dimension '{columns[dim_idx]}' is not a time axis "
+                f"(e.g. {', '.join(labels[:5]) or 'n/a'}) - {method} needs a "
+                "time series."
+            )
         sorted_rows = sorted(rows, key=lambda r: str(r[dim_idx]) if dim_idx < len(r) and r[dim_idx] is not None else "")
         points = [
             (str(r[dim_idx]), _to_number(r[measure_idx]))
@@ -914,6 +1320,19 @@ def _changepoint(points: list[tuple[str, float]], measure: str, chart_id: int) -
 # layered on top of the existing chart filters.
 
 
+def _no_match_note(column: str, match: Any, values: list[Any]) -> str:
+    """What a filter that matched nothing means — NOT that the value is zero."""
+    shown: list[str] = []
+    for v in values:
+        if v is not None and str(v) not in shown:
+            shown.append(str(v))
+        if len(shown) >= 30:
+            break
+    return (f"No row has {column} = {match!r}. This is NOT a zero value: the data "
+            f"writes this column as {', '.join(shown)}. Retry with one of these values, "
+            "or say the report has no row for it — never report 0.")
+
+
 def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
     chart_id = args.get("chart_id")
     column = args.get("column")
@@ -948,9 +1367,12 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
 
     columns = data["columns"]
     rows = data["rows"]
+    column = resolve_column(column, columns) or column
     if column not in columns:
-        return _err(f"column '{column}' not in chart columns {columns}")
+        return _err(f"column '{column}' not in chart columns {columns}", code="bad_argument")
     col_idx = columns.index(column)
+    if op in ("eq", "ne"):
+        match = resolve_value(ctx, match, [r[col_idx] for r in rows if col_idx < len(r)])
 
     def _matches(v: Any) -> bool:
         if v is None:
@@ -982,9 +1404,14 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
             "n_rows_matching": 0,
             "rows": [],
             "totals": None,
+            "note": _no_match_note(column, match, [r[col_idx] for r in rows if col_idx < len(r)]),
         })
 
-    measure_idx = _detect_measure_idx(columns, filtered)
+    measure_idx = _measure_idx(ctx, args, columns, filtered)
+    if isinstance(measure_idx, dict):
+        # Drilldown's rows are the answer; a total of an unchosen measure is
+        # not, so it is left out rather than guessed.
+        measure_idx = None
     totals: dict[str, Any] | None = None
     if measure_idx is not None:
         nums = [_to_number(r[measure_idx]) for r in filtered if measure_idx < len(r)]
@@ -1089,8 +1516,8 @@ def _is_truthy(v: Any) -> bool | None:
 
 
 def _row_passes_filter(row: list, columns: list[str], flt: dict) -> bool:
-    col = flt.get("column")
-    if not isinstance(col, str) or col not in columns:
+    col = resolve_column(flt.get("column"), columns)
+    if col is None:
         return True  # unknown column → no-op, do not silently drop rows
     idx = columns.index(col)
     val = row[idx] if idx < len(row) else None
@@ -1220,9 +1647,10 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
     rows: list[list] = data["rows"]
 
     # Validate group_by columns exist
+    group_by = [resolve_column(g, columns) or g for g in group_by]
     for g in group_by:
         if g not in columns:
-            return _err(f"group_by column {g!r} not in chart columns {columns}")
+            return _err(f"group_by column {g!r} not in chart columns {columns}", code="bad_argument")
     group_indices = [columns.index(g) for g in group_by]
 
     # Validate aggregations
@@ -1240,27 +1668,45 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
                 return _err(f"column='*' only valid with op='count' (got {op!r})")
         elif not isinstance(col, str):
             return _err("aggregation.column must be a string")
-        elif col not in columns:
-            return _err(f"aggregation column {col!r} not in chart columns {columns}")
+        elif (resolve_column(col, columns) or col) not in columns:
+            return _err(f"aggregation column {col!r} not in chart columns {columns}", code="bad_argument")
         else:
-            col_idx = columns.index(col)
+            col_idx = columns.index(resolve_column(col, columns) or col)
         out_name = str(a.get("as") or "").strip() or (
             f"{op}_*" if col_idx is None else f"{op}_{columns[col_idx]}"
         )
         parsed_aggs.append({"op": op, "col_idx": col_idx, "out": out_name, "src": col})
 
     # Apply pre-filters (the agent can reuse the same filter dict shape)
+    no_match = ""
     pre_filters = args.get("filters") or []
     if not isinstance(pre_filters, list):
         return _err("filters must be a list of {column, op, value} dicts")
     if pre_filters:
-        rows = [
+        resolved = []
+        for f in pre_filters:
+            if isinstance(f, dict) and str(f.get("op") or "eq").lower() in ("eq", "neq", "ne"):
+                c = resolve_column(f.get("column"), columns)
+                if c is not None:
+                    i = columns.index(c)
+                    f = {**f, "value": resolve_value(ctx, f.get("value"), [r[i] for r in rows if i < len(r)])}
+            resolved.append(f)
+        pre_filters = resolved
+        kept = [
             r for r in rows
             if all(_row_passes_filter(r, columns, f) for f in pre_filters if isinstance(f, dict))
         ]
+        if not kept:
+            first = next((f for f in pre_filters if isinstance(f, dict)), {})
+            c = resolve_column(first.get("column"), columns)
+            if c is not None:
+                i = columns.index(c)
+                no_match = _no_match_note(c, first.get("value"), [r[i] for r in rows if i < len(r)])
+        rows = kept
 
     if not rows:
         return _ok({
+            **({"note": no_match} if no_match else {}),
             "chart_id": chart_id,
             "group_by": group_by,
             "aggregations": [{"op": a["op"], "column": a["src"], "as": a["out"]} for a in parsed_aggs],
@@ -1282,6 +1728,45 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
         buckets.setdefault(key, []).append(r)
 
     # Compute aggregations per group
+    # A SUM ACROSS PERIODS OF A MEASURE NOT DECLARED ADDITIVE OVER TIME.
+    #
+    # `aggregate_chart_data(sum arr_active, group_by plan_code)` on a monthly
+    # table added ARR across months inside each group — the same unsupported sum
+    # total_measure refuses, reached through another tool. Grouping by something
+    # other than the time axis is refused for such a measure; grouping BY the
+    # time axis keeps the per-period values and withholds only the cross-period
+    # total (see `time_unsafe` below).
+    time_unsafe: set[str] = set()
+    try:
+        from app.services.agent_flows.tools.packs import derived as _D
+        from app.services.agent_flows.tools.packs import measure_meta as _MM
+
+        t_idx = _D._time_column(ctx, chart_id, columns, rows, -1)
+        n_periods = len({_D._period_key(r[t_idx]) for r in rows
+                         if t_idx is not None and t_idx < len(r) and r[t_idx] not in (None, "")}) \
+            if t_idx is not None else 0
+        if n_periods > 1:
+            for a in parsed_aggs:
+                if a["op"] != "sum" or a["col_idx"] is None or a["col_idx"] == t_idx:
+                    continue
+                info = _MM.describe_measure(ctx, chart_id, columns[a["col_idx"]])
+                safe = (bool(info.get("semantic_measure"))
+                        and str(info.get("agg") or "").lower() in ("sum", "count")
+                        and info.get("time_aggregation") in (None, "sum", "count"))
+                if safe:
+                    continue
+                if t_idx not in group_indices:
+                    return _err(
+                        f"sum of '{columns[a['col_idx']]}' would add it across {n_periods} periods, and "
+                        "the semantic model does not declare it additive over time (it may be a "
+                        f"balance such as ARR). Group by '{columns[t_idx]}' to see each period, or "
+                        "use total_measure with `period` for one period.",
+                        code="time_aggregation_ambiguous",
+                    )
+                time_unsafe.add(a["out"])
+    except Exception:                                           # noqa: BLE001
+        pass
+
     out_rows: list[dict] = []
     for key, group_rows in buckets.items():
         out: dict[str, Any] = {}
@@ -1325,6 +1810,10 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
     totals: dict[str, Any] = {"n_rows": len(rows)}
     # Per agg, compute the total over ALL filtered rows (single bucket = all)
     for agg in parsed_aggs:
+        if agg["out"] in time_unsafe:
+            totals[agg["out"]] = None    # a cross-period sum of a possible balance
+            totals.setdefault("withheld", []).append(agg["out"])
+            continue
         v = _apply_agg(agg["op"], agg["col_idx"], rows)
         if isinstance(v, float):
             v = _round(v)
@@ -1350,16 +1839,31 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
 
     warnings_out: list[str] = []
     for a in parsed_aggs:
-        if a["op"] != "sum":
+        if a["op"] not in ("sum", "avg"):
             continue
         info = measure_meta.describe_measure(ctx, chart_id, a["src"])
-        if not info["additive"] and n_groups > 1:
+        if info["additive"]:
+            continue
+        # A non-additive measure (an average, a ratio, a percentage) is a value
+        # at ITS grain: neither the sum nor the unweighted average of its row
+        # values across groups is that measure at the coarser grain (the average
+        # of per-product averages is not the region's average). Refused — the
+        # number would be arithmetically valid and semantically wrong.
+        if a["op"] == "sum" and n_groups > 1:
             return _err(
                 f"cannot sum '{a['src']}': it is "
                 f"{info['agg'] or info['format_kind'] or 'non-additive'}, and a "
                 f"total of that across {n_groups} groups is arithmetically valid "
-                "and semantically meaningless. Use op='avg' for the average, or "
-                "sum the underlying additive measure instead."
+                "and semantically meaningless. Sum the underlying additive measure "
+                "instead, or read the measure at the coarser grain from a chart."
+            )
+        if a["op"] == "avg" and len(rows) > 1:
+            return _err(
+                f"cannot average '{a['src']}': it is "
+                f"{info['agg'] or info['format_kind'] or 'non-additive'}, and the "
+                "unweighted average of its values across rows is not that measure "
+                "at the coarser grain. Read the measure at the coarser grain from a "
+                "chart, or average an additive measure instead."
             )
 
     coverage: dict[str, Any] = {
@@ -1375,6 +1879,14 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
             f"{coverage.get('ordered_by') or 'the grouping order'}. `totals` below "
             "covers ALL rows — use it for population figures, not the sum of what "
             "is listed here."
+        )
+    if data.get("source_top_n"):
+        # The chart itself returns only its top N rows: `totals` covers THOSE,
+        # not the population — never a figure to quote as "the total".
+        coverage["source_top_n"] = data["source_top_n"]
+        warnings_out.append(
+            f"the chart is limited to its top {data['source_top_n']} rows: `totals` is the total of "
+            "those rows only, not of every member"
         )
     if warnings_out:
         coverage["warnings"] = warnings_out
@@ -1425,11 +1937,15 @@ def tool_explain_change(ctx: ToolContext, args: dict) -> dict:
 
     columns: list[str] = data["columns"]
     rows: list[list] = data["rows"]
+    breakdown = resolve_column(breakdown, columns) or breakdown
+    split_column = resolve_column(split_column, columns) or split_column
     if breakdown not in columns:
-        return _err(f"breakdown '{breakdown}' is not a column. Available: {columns}")
+        return _err(f"breakdown '{breakdown}' is not a column. Available: {columns}", code="bad_argument")
     if split_column not in columns:
-        return _err(f"split_column '{split_column}' is not a column. Available: {columns}")
-    measure_idx = _detect_measure_idx(columns, rows)
+        return _err(f"split_column '{split_column}' is not a column. Available: {columns}", code="bad_argument")
+    measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     if measure_idx is None:
         return _err("no numeric measure column detected in this chart")
     b_idx = columns.index(breakdown)
@@ -1542,23 +2058,26 @@ def tool_forecast_measure(ctx: ToolContext, args: dict) -> dict:
 
     columns: list[str] = data["columns"]
     rows: list[list] = data["rows"]
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need at least one dimension and one numeric column")
-    if not _looks_like_datetime(columns[dim_idx]):
-        labels = []
-        for r in rows:
-            if dim_idx < len(r) and r[dim_idx] is not None:
-                labels.append(str(r[dim_idx]))
-            if len(labels) >= 8:
-                break
-        if not any(_looks_like_period_label(s) for s in labels):
-            return _err(
-                f"chart's dimension '{columns[dim_idx]}' is not a time axis "
-                f"(e.g. {', '.join(labels[:5]) or 'n/a'}) — forecasting needs a "
-                "time series. Do not retry; tell the user this chart can't be projected."
-            )
+    labels = []
+    for r in rows:
+        if dim_idx < len(r) and r[dim_idx] is not None:
+            labels.append(str(r[dim_idx]))
+        if len(labels) >= 12:
+            break
+    # Same rule as the others: a strong name carries an unparsed period label,
+    # and nothing carries a column with no numbers in it at all.
+    if not may_do_time_maths(columns[dim_idx], labels):
+        return _err(
+            f"chart's dimension '{columns[dim_idx]}' is not a time axis "
+            f"(e.g. {', '.join(labels[:5]) or 'n/a'}) — forecasting needs a "
+            "time series. Do not retry; tell the user this chart can't be projected."
+        )
 
     sorted_rows = sorted(
         rows,
@@ -1653,12 +2172,14 @@ def tool_analyze_trend(ctx: ToolContext, args: dict) -> dict:
         return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
     columns, rows = data["columns"], data["rows"]
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need a numeric measure and a dimension")
-    labels = [str(r[dim_idx]) for r in rows if dim_idx < len(r) and r[dim_idx] is not None][:8]
-    if not _looks_like_datetime(columns[dim_idx]) and not any(_looks_like_period_label(s) for s in labels):
+    labels = [str(r[dim_idx]) for r in rows if dim_idx < len(r) and r[dim_idx] is not None][:12]
+    if not may_do_time_maths(columns[dim_idx], labels):
         return _err(f"dimension '{columns[dim_idx]}' is not a time axis — trend analysis needs a time series.")
 
     srt = sorted(rows, key=lambda r: ("" if dim_idx >= len(r) or r[dim_idx] is None else str(r[dim_idx])))
@@ -1748,9 +2269,12 @@ def tool_segment_compare(ctx: ToolContext, args: dict) -> dict:
         return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
     columns, rows = data["columns"], data["rows"]
-    measure_idx = _detect_measure_idx(columns, rows)
+    measure_idx = _measure_idx(ctx, args, columns, rows)
+    if isinstance(measure_idx, dict):
+        return measure_idx
     if measure_idx is None:
         return _err("no numeric measure detected in this chart")
+    dimension = resolve_column(dimension, columns) or dimension
     if dimension and dimension in columns:
         dim_idx = columns.index(dimension)
     else:
@@ -1820,7 +2344,8 @@ def tool_inspect_filters(ctx: ToolContext, args: dict) -> dict:
     khoảng date >= 2024-01-01 …") and let the user decide whether to
     relax them. No data is read; no scope is bypassed.
     """
-    filters = list(ctx.public_filters or [])
+    from app.services.filter_layered_merge import disclosed_applied_filters
+    filters, withheld = disclosed_applied_filters(getattr(ctx, "public_filters", None))
     formatted: list[dict] = []
     for f in filters:
         if not isinstance(f, dict):
@@ -1834,6 +2359,7 @@ def tool_inspect_filters(ctx: ToolContext, args: dict) -> dict:
         "filter_count": len(formatted),
         "has_filters": bool(formatted),
         "active_filters": formatted,
+        **({"restricted_by_author": withheld} if withheld else {}),
         "note": (
             "These filters are merged from the dashboard public link's "
             "saved filters and any slicer values the viewer applied. "

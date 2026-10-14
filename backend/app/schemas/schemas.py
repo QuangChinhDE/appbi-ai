@@ -2,7 +2,7 @@
 Pydantic schemas for request/response validation.
 """
 from pydantic import BaseModel, Field, ConfigDict, model_validator, field_serializer, field_validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from enum import Enum
 from uuid import UUID
@@ -84,13 +84,14 @@ class DataSourceUpdate(BaseModel):
     description: Optional[str] = None
     config: Optional[Dict[str, Any]] = None
     type: Optional[DataSourceTypeSchema] = None
-    
-    @model_validator(mode='after')
-    def validate_config(self):
-        """Validate config if both type and config are provided."""
-        if self.config is not None and self.type is not None:
-            self.config = validate_datasource_config(self.type.value, self.config)
-        return self
+    # Optimistic concurrency (If-Match style): the config_version the client
+    # loaded. When sent and stale, the update is refused with 409 source_conflict.
+    config_version: Optional[int] = None
+
+    # `type` is accepted only to REFUSE a change (immutable after create — the
+    # service raises source_type_immutable). `config` may be partial: the
+    # service merges it with the stored config and validates the FINAL result
+    # with the provider schema (DataSourceCRUDService.update).
 
 
 class DataSourceResponse(DataSourceBase):
@@ -99,10 +100,22 @@ class DataSourceResponse(DataSourceBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    config_version: int = 1
+    last_test_status: Optional[str] = None
+    last_tested_at: Optional[datetime] = None
+    last_error_code: Optional[str] = None
+    # What THIS CALLER may do with this source, {action: bool} (authz core; UX
+    # only - every mutation is re-checked). Named `access_capabilities` on a data
+    # source because `capabilities` below is the PROVIDER's (Source module).
+    access_capabilities: Optional[Dict[str, bool]] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    # What this provider can do (services/source_capabilities, stamped by the
+    # router like user_permission) — the frontend filters pickers by it.
+    capabilities: Optional[Dict[str, bool]] = None
 
     @field_serializer('config')
     def mask_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -141,10 +154,38 @@ class DataSourceTestRequest(BaseModel):
     data_source_id: int | None = None
 
 
+class DataSourceDraftTestRequest(BaseModel):
+    """POST /datasources/test-draft — test a config that is not saved (yet).
+
+    ``data_source_id`` only lets a blank/masked secret reuse THAT source's stored
+    secret, and only when type and every destination field equal the persisted ones."""
+    type: DataSourceTypeSchema
+    config: Dict[str, Any]
+    data_source_id: int | None = None
+
+
+class DataSourceTestChecks(BaseModel):
+    auth: Literal["ok", "failed", "skipped", "warning"] = "skipped"
+    reachable: Literal["ok", "failed", "skipped", "warning"] = "skipped"
+    queryable: Literal["ok", "failed", "skipped", "warning"] = "skipped"
+    discoverable: Literal["ok", "failed", "skipped", "warning"] = "skipped"
+
+
 class DataSourceTestResponse(BaseModel):
-    """Schema for data source test result."""
+    """Structured connection test (F16). `success`/`message` kept for older
+    clients; `message` and `warnings` are always redacted."""
     success: bool
     message: str
+    status: Literal["ok", "warning", "error"] = "ok"
+    provider: Optional[str] = None
+    checks: DataSourceTestChecks = Field(default_factory=DataSourceTestChecks)
+    error_code: Optional[Literal[
+        "auth", "network", "permission", "missing_resource", "invalid_config", "query",
+        "timeout", "quota", "unsupported", "internal", "policy_blocked",
+    ]] = None
+    warnings: List[str] = Field(default_factory=list)
+    duration_ms: int = 0
+    tested_at: Optional[datetime] = None
 
 
 # Chart Schemas
@@ -185,7 +226,7 @@ class ChartCreate(ChartBase):
            names, OR ``"auto"`` for measures whose aggregation is part of
            the semantic definition (Phase-3). The Explore renderer crashes
            on unknown ``agg`` strings (``m.agg.toUpperCase()`` etc.), so
-           we reject them here instead of letting MCP-authored configs
+           we reject them here instead of letting API-authored configs
            slip past validation and brick the chart at view time.
         """
         if not isinstance(self.config, dict):
@@ -200,9 +241,7 @@ class ChartCreate(ChartBase):
                 "customRoleConfig, customSql, semanticBinding"
             )
 
-        allowed_aggs = {
-            "sum", "avg", "count", "min", "max", "count_distinct", "auto",
-        }
+        from app.schemas.chart_config import CHART_METRIC_AGGS as allowed_aggs
 
         def _check_metric(metric, where: str) -> None:
             # Phase-15.41: previously `if not isinstance(metric, dict): return`
@@ -265,19 +304,16 @@ class ChartCreate(ChartBase):
         # actually populated) against the chart_type's contract.
         from app.schemas.chart_config import check_chart_required_role_keys, check_role_config_shape
 
-        # Pick the populated container — generatedRoleConfig and
-        # roleConfig are usually mirrors; customRoleConfig is the
-        # advanced opt-out. Validate against the first non-empty one.
-        role_to_check: Optional[Dict[str, Any]] = None
-        for container_key in ("generatedRoleConfig", "roleConfig", "customRoleConfig"):
-            container = self.config.get(container_key)
-            if isinstance(container, dict) and container:
-                role_to_check = container
-                break
-        # Skip when caller chose customSql or semanticBinding instead of
-        # the role-config path — those are explicit raw-SQL paths and
-        # don't have role-config requirements.
-        if role_to_check is not None and not self.config.get("customSql"):
+        # Validate the role config the RUNTIME will use, decided by the same
+        # resolver (chart_contracts.get_chart_query_mode): custom only when
+        # queryMode is custom AND customSql is set. Deciding on "customSql is
+        # present" let a generated-mode chart carrying a leftover SQL draft
+        # skip every required-role check and save a config that cannot run.
+        from app.schemas.chart_config import (
+            CHART_QUERY_MODE_CUSTOM, get_chart_active_role_config, get_chart_query_mode,
+        )
+        role_to_check = get_chart_active_role_config(self.config) or None
+        if role_to_check is not None and get_chart_query_mode(self.config) != CHART_QUERY_MODE_CUSTOM:
             # Phase-15.82 — structural shape check fires BEFORE required-key
             # check so a malformed `metrics: "foo"` doesn't masquerade as
             # missing role keys (more helpful error).
@@ -286,12 +322,11 @@ class ChartCreate(ChartBase):
                 raise ValueError(
                     f"role_config shape errors: {'; '.join(shape_errors)}"
                 )
-            missing = check_chart_required_role_keys(
-                str(self.chart_type), role_to_check
-            )
+            _type = getattr(self.chart_type, "value", self.chart_type)
+            missing = check_chart_required_role_keys(_type, role_to_check)
             if missing:
                 raise ValueError(
-                    f"chart_type={self.chart_type!r} is missing required "
+                    f"chart_type={_type!r} is missing required "
                     f"role_config: {'; '.join(missing)}"
                 )
         return self
@@ -307,16 +342,14 @@ class ChartUpdate(BaseModel):
 
     @model_validator(mode='after')
     def validate_config_shape(self):
-        """Mirror ChartCreate's metric.agg guard on updates so an MCP-
+        """Mirror ChartCreate's metric.agg guard on updates so an API-
         authored PATCH cannot put the chart into the same un-renderable
         state Phase-12 audit caught for fresh creates."""
         if self.config is None:
             return self
         if not isinstance(self.config, dict):
             raise ValueError("config must be an object")
-        allowed_aggs = {
-            "sum", "avg", "count", "min", "max", "count_distinct", "auto",
-        }
+        from app.schemas.chart_config import CHART_METRIC_AGGS as allowed_aggs
 
         def _check_metric(metric, where: str) -> None:
             # Phase-15.41: same hardening as ChartCreate — reject non-dict
@@ -363,33 +396,11 @@ class ChartUpdate(BaseModel):
                 if metric is not None:
                     _check_metric(metric, f"{container_key}.{solo_key}")
 
-        # Phase-15.39: enforce per-chart-type required role_config keys on
-        # updates too. Only when the caller actually passed a chart_type;
-        # a config-only PATCH can't be checked without knowing the type
-        # (route handler should disallow that anyway).
-        if self.chart_type is not None:
-            from app.schemas.chart_config import check_chart_required_role_keys, check_role_config_shape
-
-            role_to_check: Optional[Dict[str, Any]] = None
-            for container_key in ("generatedRoleConfig", "roleConfig", "customRoleConfig"):
-                container = self.config.get(container_key)
-                if isinstance(container, dict) and container:
-                    role_to_check = container
-                    break
-            if role_to_check is not None and not self.config.get("customSql"):
-                shape_errors = check_role_config_shape(role_to_check)
-                if shape_errors:
-                    raise ValueError(
-                        f"role_config shape errors: {'; '.join(shape_errors)}"
-                    )
-                missing = check_chart_required_role_keys(
-                    str(self.chart_type), role_to_check
-                )
-                if missing:
-                    raise ValueError(
-                        f"chart_type={self.chart_type!r} is missing required "
-                        f"role_config: {'; '.join(missing)}"
-                    )
+        # The per-chart-type required-role check needs the FINAL chart state
+        # (stored chart_type/config merged with this fragment), which only the
+        # route knows: `PUT /charts/{id}` re-validates the merged state through
+        # ChartCreate (see `validate_chart_final_state`). Checking the fragment
+        # here skipped it for every config-only or type-only update.
         return self
 
 
@@ -408,6 +419,10 @@ class ChartMetadataResponse(ChartMetadataUpsert):
     """Schema for chart metadata response."""
     id: int
     chart_id: int
+    # The chart's written business description (AI-generated or user-edited).
+    # Read-only here; it is what the AI Design context uses to understand what
+    # a visual is FOR. Already stored — this only stops dropping it on the way out.
+    auto_description: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -452,6 +467,9 @@ class ChartResponse(ChartBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    # Backend-computed {action: bool} for THIS caller (UX only; every
+    # mutation is re-checked). The frontend reads this, not owner/share/level.
+    capabilities: Optional[Dict[str, bool]] = None
     dataset_id: Optional[int] = None
     dataset_name: Optional[str] = None
     dataset_table_name: Optional[str] = None
@@ -514,6 +532,16 @@ class ChartDebugInfo(BaseModel):
     # Public per-link TTL (Stage 2): served snapshot is older than the link TTL
     # and a background rebuild was kicked off — FE shows a "refreshing…" hint.
     snapshot_stale: Optional[bool] = None
+    # The generation this tile was served from, and its dataset: a page whose
+    # tiles of one dataset disagree is not one snapshot (the FE says so and
+    # re-reads) — never one "data as of" label over two generations.
+    snapshot_generation: Optional[int] = None
+    snapshot_dataset_id: Optional[int] = None
+    # A LIVE read's freshness: when the source was read (UTC), and whether this
+    # response re-served it from the result cache (then the surface says "as
+    # of HH:MM" — a cached number is never presented as the source right now).
+    result_as_of: Optional[str] = None
+    result_cached: Optional[bool] = None
 
 
 class ChartDataResponse(BaseModel):
@@ -526,6 +554,10 @@ class ChartDataResponse(BaseModel):
     # ignore the field, new clients display it. Never contains the raw
     # rows (those live in `data`); only metadata + the rendered SQL.
     debug: Optional[ChartDebugInfo] = None
+    # Time-axis buckets that are not whole periods (in progress / thin launch or
+    # cut-off edge). Only restates buckets already in `data`, with the rule that
+    # flagged them; None when the chart has no time grain.
+    time_completeness: Optional[Dict[str, Any]] = None
 
 
 # Dashboard Schemas
@@ -592,6 +624,8 @@ class PublicLinkCreate(BaseModel):
     filters_config: Optional[List[Dict[str, Any]]] = None
     appearance_config: Optional[Dict[str, Any]] = None
     password: Optional[str] = Field(None, min_length=1, max_length=128)
+    # Absolute expiry. None = never expires.
+    expires_at: Optional[datetime] = None
 
 
 class PublicLinkUpdate(BaseModel):
@@ -602,6 +636,9 @@ class PublicLinkUpdate(BaseModel):
     is_active: Optional[bool] = None
     # None = no change; empty string = clear password; non-empty = new password
     password: Optional[str] = Field(None, max_length=128)
+    # Expiry: omitted = no change; null = never expires; a datetime = expires then.
+    # (Distinguished through `model_fields_set`.)
+    expires_at: Optional[datetime] = None
 
 
 class PublicLinkResponse(BaseModel):
@@ -609,15 +646,21 @@ class PublicLinkResponse(BaseModel):
     id: int
     dashboard_id: int
     name: str
-    token: str
+    # The anonymous bearer capability. Null unless the caller may PUBLISH the
+    # dashboard (owner / module admin); viewers used to receive every token.
+    token: Optional[str] = None
     filters_config: Optional[List[Dict[str, Any]]] = None
     appearance_config: Optional[Dict[str, Any]] = None
     is_active: bool
     has_password: bool = False
+    expires_at: Optional[datetime] = None
     access_count: int
     last_accessed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    # Backend-computed: what THIS caller may do with the link (UX only; every
+    # mutation is re-checked server-side).
+    capabilities: Optional[Dict[str, bool]] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -641,6 +684,9 @@ class DashboardResponse(DashboardBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    # Backend-computed {action: bool} for THIS caller (UX only; every
+    # mutation is re-checked). The frontend reads this, not owner/share/level.
+    capabilities: Optional[Dict[str, bool]] = None
     share_token: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -658,7 +704,19 @@ class DashboardResponse(DashboardBase):
     # filters_config here). FE merges them silently into chart-data
     # requests but never renders them in the top-bar slicer.
     public_link_hidden_filters: Optional[List[Dict[str, Any]]] = None
+    # The link's LOCKED (🔒) filters that enforce a value — field, label, value
+    # only — so a reader is told the report is filtered and by what. Read-only;
+    # the server applies them. Hidden (🚫) link filters are never listed.
+    public_link_locked_filters: Optional[List[Dict[str, Any]]] = None
+    # Editor only: the shared filters/pages/theme draft — its revision and who
+    # has unpublished edits in it (see dashboards._shared_draft_state).
+    shared_draft: Optional[Dict[str, Any]] = None
     available_filter_fields: Optional[List[Dict[str, Any]]] = None
+    # The column each field-bound parameter switcher filters, resolved ONCE by
+    # the server (dashboard_parameters.resolve_switcher_fields) and used as is by
+    # the Builder and every public surface: {paramName: {field, semanticField?,
+    # fieldKey?, datasetId?}}.
+    parameter_fields: Optional[Dict[str, Dict[str, Any]]] = None
     public_link_name: Optional[str] = None
     public_link_appearance: Optional[Dict[str, Any]] = None
     # Phase-15.56 — draft layout overlay. Set when the editor has
@@ -668,6 +726,14 @@ class DashboardResponse(DashboardBase):
     # live rows and clears the field.
     draft_layouts: Optional[Dict[int, Dict[str, Any]]] = None
     has_draft: bool = False
+    # Authored Tablet (md) / Phone (xs) layouts. Editors: the PUBLISHED document
+    # ({version, pages: {pageId: {md|xs: profile}}}); public/embed: its viewer
+    # projection (served pages, published tiles, no provenance). Absent = AUTO.
+    # Changed only by Publish (never by DashboardUpdate).
+    responsive_layouts: Optional[Dict[str, Any]] = None
+    # Editor only: THIS author's unpublished device layouts,
+    # {pageId: {md|xs: profile | {"mode": "auto"}}}.
+    draft_responsive_layouts: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -718,14 +784,22 @@ class PresentationPlanRequest(BaseModel):
             "returns still cannot change any chart's data."
         ),
     )
-    focused_chart_id: Optional[int] = Field(
-        None,
+    granted_layer: Literal["style", "structure", "redesign"] = Field(
+        "style",
         description=(
-            "When set, the user clicked ONE visual and is restyling only it. The "
-            "plan must touch that visual's appearance and nothing else — no layout "
-            "move, no other tile, no theme."
+            "How much of the page the user's words handed over, inferred by the "
+            "client (style unless they asked to rearrange). Advisory for the "
+            "model; the client clamps the returned plan to it and enforces it."
         ),
     )
+    target_ids: Optional[List[int]] = Field(
+        None,
+        max_length=200,
+        description="The visuals the user selected. Empty/None = the whole page.",
+    )
+    # Accepted for older clients and ignored: a single focused chart is now a
+    # one-element `target_ids`.
+    focused_chart_id: Optional[int] = Field(None, exclude=True)
 
     @field_validator("images")
     @classmethod
@@ -802,7 +876,22 @@ class DashboardUpdateDraftFiltersRequest(BaseModel):
     filters_config: Optional[List[Dict[str, Any]]] = None
     slicers_config: Optional[List[Dict[str, Any]]] = None
     slicer_cluster_layout: Optional[Dict[str, Any]] = None
+    # The report theme, staged like the rest of the presentation: the editor
+    # sees it (overlaid on GET), public/embed keep the published theme, and
+    # POST /publish applies it in the SAME transaction as the layouts — so a
+    # dashboard is never published half-old, half-new.
+    theme_config: Optional[Dict[str, Any]] = None
     pages_config: Optional[List[Dict[str, Any]]] = None
+    # Tiles removed in the SAME draft change and the same transaction — the
+    # controls of a filter being deleted. A published tile is marked removed in
+    # the caller's draft (it stays live until Publish); a tile only in the
+    # caller's draft is deleted. Nothing is applied if any id is refused.
+    remove_tile_ids: Optional[List[int]] = None
+    # The shared-draft revision this edit was made on (`shared_draft.rev` of
+    # the dashboard the editor loaded). A stale revision is refused (409): the
+    # filters/pages/theme draft is shared by every author, and replacing it
+    # from an old copy would silently drop a colleague's edit.
+    base_rev: Optional[str] = None
 
 
 # Query Execution Schemas
@@ -810,9 +899,9 @@ class QueryExecuteRequest(BaseModel):
     """Schema for executing an ad-hoc query."""
     data_source_id: int
     sql_query: str = Field(..., min_length=1)
-    # Phase-15.83 — ad-hoc query LIMIT cap bumped from 10000 to 10M
-    # sentinel so the Explore custom-SQL path doesn't 422 when sending the
-    # NO_LIMIT_SENTINEL chosen by the FE row-cap-removal change.
+    # Accepted up to the FE NO_LIMIT_SENTINEL (10M) so the request never 422s,
+    # but CLAMPED server-side to settings.SOURCE_QUERY_MAX_ROWS — the response
+    # says `truncated` when more rows existed. The request cannot lift the cap.
     limit: Optional[int] = Field(None, ge=1, le=10_000_000)
     timeout_seconds: Optional[int] = Field(30, ge=1, le=300, description="Query timeout in seconds")
 
@@ -823,6 +912,9 @@ class QueryExecuteResponse(BaseModel):
     data: List[Dict[str, Any]]
     row_count: int
     execution_time_ms: float
+    # True when the server-side row cap cut the result short.
+    truncated: bool = False
+    row_limit: Optional[int] = None
 
 
 class SqlValidateRequest(BaseModel):

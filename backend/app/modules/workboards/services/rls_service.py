@@ -39,7 +39,7 @@ class CallerIdentity:
     """Light wrapper around the caller's identity, abstracting over
     AppBI users and workspace app users."""
 
-    __slots__ = ("appbi_user_id", "app_user")
+    __slots__ = ("appbi_user_id", "app_user", "staff_level")
 
     def __init__(
         self,
@@ -47,6 +47,7 @@ class CallerIdentity:
         appbi_user_id: Optional[str] = None,
         app_user: Optional[Dict[str, Any]] = None,
     ) -> None:
+        self.staff_level: Optional[str] = None
         self.appbi_user_id = appbi_user_id
         self.app_user = app_user or None
 
@@ -62,6 +63,19 @@ class CallerIdentity:
         return str(role) if role is not None else None
 
 
+_STAFF_LEVELS = {"none": 0, "view": 1, "edit": 2, "full": 3}
+
+
+def _staff_may(op: str, identity: "CallerIdentity") -> bool:
+    """AppBI staff authority. ``staff_level`` is None only for the authenticated
+    Workboard API (identity_from_appbi), whose routes already enforce object
+    access; a workspace-runtime staff identity always carries a resolved level."""
+    if identity.staff_level is None:
+        return True
+    need = 2 if op == "write" else 1
+    return _STAFF_LEVELS.get(identity.staff_level, 0) >= need
+
+
 def identity_from_appbi(user) -> CallerIdentity:
     return CallerIdentity(appbi_user_id=str(getattr(user, "id", "")) or None)
 
@@ -69,9 +83,12 @@ def identity_from_appbi(user) -> CallerIdentity:
 def identity_from_app_user(app_user_payload: Dict[str, Any]) -> CallerIdentity:
     payload = dict(app_user_payload or {})
     if payload.get("_internal"):
-        return CallerIdentity(
-            appbi_user_id=str(payload.get("username") or "internal-preview")
-        )
+        ident = CallerIdentity(appbi_user_id=str(payload.get("_appbi_user_id") or "") or None)
+        # Staff reached the runtime through a workspace: their authority is the
+        # object level resolved for the workboard (see
+        # app_user_service.can_app_user_access_workboard). Unresolved = none.
+        ident.staff_level = str(payload.get("_staff_level") or "none")
+        return ident
     return CallerIdentity(app_user=payload)
 
 
@@ -143,9 +160,9 @@ def build_rls_filter(
     When no rules exist (empty list and no default), normal app users are
     denied until the builder adds a rule or an explicit default.
     """
-    # AppBI staff opening the builder/preview bypass app-user row filters.
+    # AppBI staff: object-level authority on the workboard, not app-user rows.
     if not identity.is_app_user:
-        return [], True
+        return [], _staff_may("read", identity)
 
     if is_privileged_role(identity.role):
         return [], True
@@ -220,7 +237,7 @@ def role_has_screen_grant(
     display concern; per-screen RLS is the real access boundary.
     """
     if not identity.is_app_user:
-        return True
+        return _staff_may("read", identity)
     if is_privileged_role(identity.role):
         return True
     if not rules and default is None:
@@ -243,8 +260,10 @@ def enforce_write_access(
     Returns a sanitised copy of ``row_values`` with any read-only columns
     stripped out. Raises :class:`RlsDenied` if the caller is forbidden.
     """
-    # AppBI staff are gated by the authenticated Workboard API.
+    # AppBI staff: writing through a workspace needs EDIT on the workboard.
     if not identity.is_app_user:
+        if not _staff_may("write", identity):
+            raise RlsDenied("Editing this workboard requires edit access.")
         return dict(row_values or {})
 
     if is_privileged_role(identity.role):

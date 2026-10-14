@@ -35,6 +35,7 @@ from app.services.agent_flows import permissions as perms
 from app.services.agent_flows import registry as reg
 from app.services.agent_flows import history as history_service
 from app.services.agent_flows import runs as runs_service
+from app.services.agent_flows.contract import strict_authoring_errors  # noqa: F401
 from app.services.agent_flows.contract import Flow, upgrade_body
 from app.services.agent_flows.models_catalogue import catalogue as model_catalogue
 from app.services.agent_flows.runtime.nodes import catalogue as node_catalogue
@@ -149,12 +150,40 @@ def list_tools(web_enabled: bool = False, _: User = Depends(can_view)) -> dict[s
     """The tool picker, grouped by pack. Withheld packs come back flagged rather than
     omitted: an author who cannot find web search should learn the deployment has it
     off, not conclude it never existed."""
-    return {"packs": tool_catalogue(web_enabled=web_enabled)}
+    from app.services.agent_flows import roles
+
+    # ROLES RIDE WITH THE TOOLS they bound, so the picker can never show a role
+    # whose boundary names a tool it was not also sent.
+    return {"packs": tool_catalogue(web_enabled=web_enabled), "roles": roles.catalogue()}
+
+
+@router.get("/skills")
+def list_skills(
+    db: Session = Depends(get_db), user: User = Depends(can_view)
+) -> dict[str, Any]:
+    """Published Skills THIS user may attach to an Agent step or a Skill step.
+
+    Server-side, like `/attachable`: sharing decides who may build on a Skill, and
+    the picker only shows what save will accept. Attaching grants no data access —
+    a Skill always runs on the caller's authority.
+    """
+    from app.services.agent_flows import skills
+
+    return {"skills": skills.list_attachable(db, user)}
 
 
 @router.get("/models")
 def list_models(_: User = Depends(can_view)) -> dict[str, Any]:
     return {"providers": model_catalogue()}
+
+
+@router.get("/models/usage")
+def list_model_usage(db: Session = Depends(get_db), user: User = Depends(can_view)) -> dict[str, Any]:
+    """Flows this user may use, grouped by the model each step runs on — with
+    the vendor lifecycle and the recommended replacement. Read-only."""
+    from app.services.agent_flows.credentials import model_usage
+
+    return {"models": model_usage(db, user)}
 
 
 @router.get("/authoring-prompt")
@@ -258,11 +287,17 @@ def import_draft(
     if not name:
         raise HTTPException(status_code=400, detail="Bản nháp thiếu 'name'")
 
+    _authoring = {**upgrade_body(data, key=key or "draft", name=name),
+                  "key": key or "draft", "name": name}
+    _unknown = strict_authoring_errors(_authoring)
+    if _unknown:
+        return {
+            "ok": False,
+            "errors": _unknown[:5],
+            "warnings": [],
+        }
     try:
-        flow = Flow.model_validate(
-            {**upgrade_body(data, key=key or "draft", name=name),
-             "key": key or "draft", "name": name}
-        )
+        flow = Flow.model_validate(_authoring)
     except Exception as exc:  # noqa: BLE001
         return {
             "ok": False,
@@ -435,7 +470,10 @@ class ValidateBody(BaseModel):
     #: consequence that only holds on a report, so checking a chat flow against the
     #: bot reading tells its author the opposite of the truth. Defaults to `bot`, so
     #: a caller that has not been updated behaves exactly as before.
-    flow_type: Literal["bot", "chat"] = "bot"
+    #: `skill` too: the Skill builder sends its own type, and refusing it (422)
+    #: meant a Skill never showed "Flow valid" — found in the browser. The saved-
+    #: flow view already reads a Skill's warnings as `skill` (registry).
+    flow_type: Literal["bot", "chat", "skill"] = "bot"
 
 
 @router.post("/validate")
@@ -446,11 +484,13 @@ def validate_flow(body: ValidateBody, _: User = Depends(can_view)) -> dict[str, 
     the author types. Without it the only way to see a warning was to SAVE, which
     used to mint a version — so the act of checking changed the thing being checked.
     """
+    _authoring = {**upgrade_body(body.body, key=body.brain_key, name=body.name),
+                  "key": body.brain_key, "name": body.name}
+    _unknown = strict_authoring_errors(_authoring)
+    if _unknown:
+        return {"ok": False, "errors": _unknown[:5], "warnings": []}
     try:
-        flow = Flow.model_validate(
-            {**upgrade_body(body.body, key=body.brain_key, name=body.name),
-             "key": body.brain_key, "name": body.name}
-        )
+        flow = Flow.model_validate(_authoring)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "errors": [reg._first_message(exc)], "warnings": []}
 
@@ -487,7 +527,7 @@ class BrainWrite(BaseModel):
     #: Only read when this save CREATES the flow. Every later save carries the
     #: type forward; changing it goes through `PUT /brains/{key}/type`, which can
     #: refuse.
-    flow_type: Literal["bot", "chat"] | None = None
+    flow_type: Literal["bot", "chat", "skill"] | None = None
 
 
 @router.get("/brains")
@@ -543,6 +583,8 @@ def brain_versions(
         .order_by(AgentBrainVersion.version.desc())
         .all()
     )
+    from app.services.agent_flows import skills as skills_service
+
     return {
         "versions": [
             {
@@ -550,10 +592,42 @@ def brain_versions(
                 "created_by": r.created_by,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
                 "published_at": r.published_at.isoformat() if r.published_at else None,
+                # Whether this exact version may still be INVOKED — separate from
+                # which version is live (`status`). Always present; `active` for
+                # every non-Skill flow and every version never stopped.
+                "lifecycle": skills_service.lifecycle_dict(r),
+                "flow_type": str(getattr(r, "flow_type", "") or "bot"),
             }
             for r in rows
         ]
     }
+
+
+class SkillLifecycleBody(BaseModel):
+    """Stop, deprecate or re-activate Skill versions. `versions` empty = all."""
+
+    state: Literal["active", "deprecated", "disabled"]
+    reason: str = Field(default="", max_length=500)
+    versions: list[int] = Field(default_factory=list)
+
+
+@router.post("/brains/{brain_key}/lifecycle")
+def set_skill_lifecycle(
+    brain_key: str, body: SkillLifecycleBody,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    """The operator's stop switch for a Skill version.
+
+    A pin decides WHICH version a parent runs; this decides WHETHER it may. Same
+    gate as unpublish — whoever may manage the Skill may stop it — and audited.
+    """
+    from app.services.agent_flows import skills as skills_service
+
+    _may_manage_flow(db, user, brain_key)
+    return {"versions": _run(lambda: skills_service.set_lifecycle(
+        db, key=brain_key, versions=list(body.versions) or None, state=body.state,
+        reason=body.reason, actor_email=_actor(user),
+    ))}
 
 
 @router.get("/brains/{brain_key}/activity")
@@ -706,6 +780,14 @@ def brain_run_detail(
     out = runs_service.run_detail(db, brain_key=brain_key, run_id=run_id)
     if out is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy run")
+    # A CHILD RUN CARRIES ITS PARENT'S DATA. Reading the Skill is not enough:
+    # the reader must also be allowed to read the flow that invoked it. Found by
+    # review — the Skill's sharees could otherwise read its callers' answers.
+    parent = out.get("parent") or {}
+    if out.get("parent") is not None:
+        if not parent.get("brain_key"):
+            raise HTTPException(status_code=404, detail="Không tìm thấy run")
+        _may_read_flow(db, user, parent["brain_key"])
     return out
 
 
@@ -796,7 +878,7 @@ def unpublish_brain_version(
 
 
 class FlowTypeBody(BaseModel):
-    flow_type: Literal["bot", "chat"]
+    flow_type: Literal["bot", "chat", "skill"]
 
 
 @router.put("/brains/{brain_key}/type")
@@ -829,6 +911,25 @@ def set_flow_type(
         raise HTTPException(status_code=404, detail="Không tìm thấy flow")
 
     reasons: list[str] = []
+    if body.flow_type == "skill":
+        # A SKILL NEEDS A CONTRACT, and it does not serve report links: it is
+        # invoked by other flows, never by a viewer directly.
+        flow = reg.parse_flow(row)
+        if flow is None:
+            raise HTTPException(status_code=422, detail="Flow không hợp lệ")
+        if flow.skill is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Khai báo đầu vào, kết quả và khi nào nên dùng của Skill trước "
+                       "(mục “Dùng như Skill”), rồi mới đổi loại.",
+            )
+        serving = reg.impact(db, brain_key).get("links") or []
+        if serving:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Flow này đang phục vụ {len(serving)} link báo cáo — gỡ khỏi "
+                       "các link đó trước, rồi mới đổi thành Skill.",
+            )
     if body.flow_type == "chat":
         flow = reg.parse_flow(row)
         if flow is None:
@@ -901,7 +1002,7 @@ class BindingWrite(BaseModel):
     store_question_content: bool = True
 
 
-def _link_and_dashboard(db: Session, link_id: int, user: User):
+def _link_and_dashboard(db: Session, link_id: int, user: User, *, publish: bool = False):
     """The link and its report — only if the caller may see that report.
 
     THE REPORT IS CHECKED, NOT JUST THE MODULE. A link id is an integer chosen
@@ -926,6 +1027,13 @@ def _link_and_dashboard(db: Session, link_id: int, user: User):
     if dashboard is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo của link")
     require_view_access(db, user, dashboard, "dashboards")
+    if publish:
+        # Choosing which assistant answers ANONYMOUS viewers of a public link
+        # changes what the public surface does: it is a publish action on the
+        # dashboard (decision Q3), not something a viewer may do.
+        from app.core.dependencies import require_publish_access
+
+        require_publish_access(db, user, dashboard, "dashboards")
     return link, dashboard
 
 
@@ -954,19 +1062,57 @@ def _usable_flow(db: Session, user: User, brain_key: str) -> Flow:
             status_code=409, detail="Flow này chưa có bản phát hành nào để gán"
         )
     row = resolved[0]
-    if str(getattr(row, "flow_type", "") or "bot") != "bot":
+    kind = str(getattr(row, "flow_type", "") or "bot")
+    if kind != "bot":
         raise HTTPException(
             status_code=409,
-            detail="Flow này được tạo cho AI Chat, không gán được vào báo cáo. "
-                   "Hãy chọn một flow loại Bot, hoặc đổi loại của flow này.",
+            detail=(
+                "Flow này là một Skill — nó được các flow khác gọi, không gán thẳng "
+                "vào báo cáo. Hãy chọn một flow loại Bot."
+                if kind == "skill" else
+                "Flow này được tạo cho AI Chat, không gán được vào báo cáo. "
+                "Hãy chọn một flow loại Bot, hoặc đổi loại của flow này."
+            ),
         )
     return resolved[1]
 
 
+def _require_assigner_reads_flow(db: Session, user: User, brain_key: str) -> None:
+    """A public link hands the flow's reading rights to anonymous visitors, so the
+    person assigning it must be able to read everything it attaches (or hold an
+    explicit delegation for it) - publish on the dashboard is not enough."""
+    resolved = reg.resolve_published(db, brain_key)
+    if resolved is None:
+        return
+    missing = perms.unreadable_attachments(db, resolved[0], resolved[1], user)
+    if missing["dataset_ids"] or missing["doc_ids"]:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Bạn chưa có quyền đọc {len(missing['dataset_ids'])} dataset và "
+                f"{len(missing['doc_ids'])} tài liệu mà flow này gắn — không thể đưa nó lên link công khai."
+            ),
+        )
+
+
+@router.get("/pilot")
+def reader_pilot_policy(user: User = Depends(can_assign)) -> dict[str, Any]:
+    """The reader rollout policy in force (services/agent_flows/pilot.py): mode,
+    enrolled links, cohort size. Read-only — the policy is deployment configuration,
+    so turning the pilot on or off is a deploy, recorded where deploys are."""
+    from app.services.agent_flows import pilot
+
+    return pilot.describe(getattr(user, "email", None))
+
+
 @router.get("/bindings/link/{link_id}")
 def get_binding(
-    link_id: int, db: Session = Depends(get_db), _: User = Depends(can_assign)
+    link_id: int, db: Session = Depends(get_db), user: User = Depends(can_assign)
 ) -> dict[str, Any]:
+    # The report, not just the module (security acceptance F3, 422b8fd2): a user
+    # refused `GET /dashboards/67` read link 38/39's flow, chart allowlist and
+    # capability flags here. The sibling endpoints already check it.
+    _link_and_dashboard(db, link_id, user)
     binding = binding_service.get_for_link(db, link_id)
     if binding is None:
         return {"binding": None}
@@ -1033,6 +1179,7 @@ def preflight_binding(
     """
     link, dashboard = _link_and_dashboard(db, body.link_id, user)
     flow = _usable_flow(db, user, body.brain_key)
+    _require_assigner_reads_flow(db, user, body.brain_key)
     contract = binding_service.DataContract.model_validate(body.data_contract or {})
     return binding_service.preflight(
         db, flow=flow, contract=contract, dashboard=dashboard, link=link
@@ -1044,8 +1191,9 @@ def save_binding(
     body: BindingWrite, db: Session = Depends(get_db), user: User = Depends(can_assign)
 ) -> dict[str, Any]:
     """Assign. Refused while anything required is unresolved."""
-    link, dashboard = _link_and_dashboard(db, body.link_id, user)
+    link, dashboard = _link_and_dashboard(db, body.link_id, user, publish=True)
     flow = _usable_flow(db, user, body.brain_key)
+    _require_assigner_reads_flow(db, user, body.brain_key)
     contract = binding_service.DataContract.model_validate(body.data_contract or {})
 
     def _save():
@@ -1067,15 +1215,15 @@ def save_binding(
 def delete_binding(
     link_id: int, db: Session = Depends(get_db), user: User = Depends(can_assign)
 ) -> dict[str, str]:
+    # Authorize FIRST: whether a link has an assistant is not something to tell
+    # a caller who may not change it, and nothing is touched before the check.
+    _link_and_dashboard(db, link_id, user, publish=True)
     binding = binding_service.get_for_link(db, link_id)
     if binding is None:
         raise HTTPException(status_code=404, detail="Link này chưa gán flow nào")
     brain_key = binding.brain_key
+    # Deleting the binding IS unassigning the flow.
     db.delete(binding)
-    # Deleting the binding IS unassigning the flow — there is no longer a copy of
-    # the flow key on the link to clear as well. Kept as a permission check on the
-    # link, which unassigning still requires.
-    _link_and_dashboard(db, link_id, user)
     db.commit()
     reg._audit(db, "AGENT_FLOW_UNASSIGNED", brain_key, _actor(user), {"link_id": link_id})
     return {"status": "deleted"}
@@ -1172,14 +1320,25 @@ async def test_flow(
         raise HTTPException(status_code=422, detail="Flow không hợp lệ, chưa test được")
 
     from app.services.agent_flows.dispatch import run_preview
-    from app.services.dashboard_ai_bot.tool_context import ToolContext
+    from app.services.public_link_scope import LinkScopeUnavailable, link_tool_context
 
-    ctx = ToolContext.from_dashboard(
-        db=db, dashboard=dashboard, public_filters=[],
-        actor_type="user", actor_ref=_actor(user),
-    )
-    cfg = link.appearance_config or {}
-    api_key, provider, model = _link_credentials(cfg)
+    # THE LINK'S DATA CONTRACT, NOT THE AUTHOR'S. This button tests the flow ON
+    # this link: the run reads what the link's viewers read — its filters, 🔒 /
+    # 🚫 locks, page bounds, exposed fields and snapshot freshness — built by
+    # the same function the live link's chatbot uses. It ran with no link filter
+    # at all, so an author testing a North-only link was shown every region.
+    # (test-on-report and test-as-chat are the author's own read, by contract.)
+    try:
+        ctx = link_tool_context(
+            db, dashboard=dashboard, filters_config=getattr(link, "filters_config", None),
+            appearance_config=getattr(link, "appearance_config", None),
+            context_for_log=f"flow_test:{link.id}",
+            actor_type="user", actor_ref=_actor(user),
+        )
+    except LinkScopeUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Không dựng được phạm vi dữ liệu của link để test") from exc
+    # Every step runs on its own stored key; the link's key is not consulted.
+    _require_keys(db, flow)
 
     envelope: dict | None = None
     run_row_id: int | None = None
@@ -1188,7 +1347,6 @@ async def test_flow(
         dashboard=dashboard, ctx=ctx, question=body.question,
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
-        api_key=api_key, provider=provider, model=model,
         brain_row=row,
     ):
         if ev.type == "result":
@@ -1269,23 +1427,15 @@ async def test_flow_on_report(
     binding = binding_service.ephemeral_binding(flow, dashboard)
 
     from app.services.agent_flows.dispatch import run_preview
-    from app.services.dashboard_ai_bot.public_link_config import deployment_key
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     ctx = ToolContext.from_dashboard(
         db=db, dashboard=dashboard, public_filters=[],
         actor_type="user", actor_ref=_actor(user),
     )
-    # The deployment's own token, resolved by the same helper the public bot uses.
-    # There is no link here to carry a key, and asking an author to paste one to
-    # test their own flow is the friction this endpoint removes.
-    api_key, provider = deployment_key()
-    if not api_key:
-        raise HTTPException(
-            status_code=409,
-            detail="Máy chủ chưa có API key cho AI — chưa test được. "
-                   "Đặt OPENAI_API_KEY rồi thử lại.",
-        )
+    # Every step runs on its own stored key — refused here, naming each step that
+    # has none, rather than run until the first keyless step fails.
+    _require_keys(db, flow)
 
     envelope: dict | None = None
     run_row_id: int | None = None
@@ -1295,7 +1445,6 @@ async def test_flow_on_report(
         dashboard=dashboard, ctx=ctx, question=body.question,
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
-        api_key=api_key, provider=provider, model="",
         brain_row=row,
     ):
         if ev.type == "result":
@@ -1377,7 +1526,6 @@ async def test_flow_as_chat(
     from app.services.agent_flows import direct_chat
     from app.services.agent_flows.dispatch import chat_base_prompt, run_preview
     from app.services.agent_flows.permissions import chart_scope, run_scope
-    from app.services.dashboard_ai_bot.public_link_config import deployment_key
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     # SHAPE FIRST, and reported rather than refused. A flow mid-build usually has
@@ -1390,16 +1538,10 @@ async def test_flow_as_chat(
         actor_type="user", actor_ref=_actor(user),
     )
     binding = direct_chat.ephemeral_chat_binding(flow)
-    scope = run_scope(db, row, flow, None)
+    scope = run_scope(db, row, flow, None, caller=user)
     ctx.adopt_scope(chart_scope(db, scope), scope.get("dataset_ids") or [])
 
-    api_key, provider = deployment_key()
-    if not api_key:
-        raise HTTPException(
-            status_code=409,
-            detail="Máy chủ chưa có API key cho AI — chưa test được. "
-                   "Đặt OPENAI_API_KEY rồi thử lại.",
-        )
+    _require_keys(db, flow)
 
     envelope: dict | None = None
     run_row_id: int | None = None
@@ -1409,7 +1551,6 @@ async def test_flow_as_chat(
         dashboard=None, ctx=ctx, question=body.question,
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
-        api_key=api_key, provider=provider, model="",
         base_system_prompt=chat_base_prompt(ctx),
         brain_row=row,
     ):
@@ -1499,7 +1640,6 @@ def preview_step(
     from app.services.agent_flows import direct_chat
     from app.services.agent_flows.dispatch import preview_step as _preview
     from app.services.agent_flows.permissions import chart_scope, run_scope
-    from app.services.dashboard_ai_bot.public_link_config import deployment_key
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     # WHICH SURFACE THIS PREVIEW IS FOR — the flow's own declaration, not the
@@ -1525,7 +1665,7 @@ def preview_step(
         binding = direct_chat.ephemeral_chat_binding(flow)
         # The same scope a real chat turn gets, derived the same way, so the panel
         # and the run cannot disagree about what the step can reach.
-        scope = run_scope(db, row, flow, None)
+        scope = run_scope(db, row, flow, None, caller=user)
         ctx.knowledge_scope = scope
         ctx.adopt_scope(chart_scope(db, scope), scope.get("dataset_ids") or [])
     else:
@@ -1534,9 +1674,8 @@ def preview_step(
             actor_type="user", actor_ref=_actor(user),
         )
         binding = binding_service.ephemeral_binding(flow, dashboard)
-    # The model NAMES only — no key is needed and none is read: this endpoint
-    # assembles inputs and never calls a provider.
-    _key, provider = deployment_key()
+    # No key is needed and none is read: this endpoint assembles inputs and never
+    # calls a provider. The step names its own provider and model.
     # THE SAME BASE PROMPT THE VIEWER PATH BUILDS. A preview showing a different
     # base would be describing a run that does not happen, and the base is most of
     # what the model reads — the citation contract, the language rule, the report's
@@ -1571,7 +1710,7 @@ def preview_step(
             flow=flow, version=detail["version"], node_key=node_key,
             binding=binding, dashboard=dashboard, ctx=ctx,
             question=body.question or "", history=body.history,
-            provider=provider, model="", base_system_prompt=base_prompt,
+            base_system_prompt=base_prompt, db=db,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1666,34 +1805,174 @@ def test_node(
     return preview
 
 
-def _link_credentials(cfg: dict) -> tuple[str, str, str]:
-    """The credential a link runs on: its own if it has one, else the deployment's.
+def _require_keys(db: Session, flow: Flow) -> None:
+    """409 before a test starts, naming each model step with no usable key.
 
-    THE FALLBACK IS THE POINT. Per-link keys came first; the deployment key came
-    later and is now how this install is configured — one token in the environment,
-    every link using it. Nothing updated this resolver, so testing a flow ON A LINK
-    failed with "chưa có token để gọi openai" while the same flow tested on a bare
-    report answered fine. Same deployment, same model, same question: the only
-    difference was which of two code paths resolved the key.
-
-    A link's own key still wins where one is set, because a deployment may
-    deliberately bill one link separately. Never returned to any client either way.
+    THE ONE WAY A TEST GETS ITS KEYS. There used to be three: the link's key with a
+    fallback to the server's, the server's alone, and "the server's if a step lacks
+    its own". Each step now runs on its own stored key, and nothing else.
     """
-    provider = str((cfg or {}).get("ai_bot_provider") or "").strip().lower()
-    model = str((cfg or {}).get("ai_bot_model") or "")
-    raw = str((cfg or {}).get("ai_bot_key") or "")
-    key = raw
-    if raw.startswith("_enc:"):
+    from app.services.agent_flows import credentials as credentials_service
+
+    try:
+        credentials_service.require_usable(db, flow, action="test")
+    except credentials_service.CredentialError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+
+# ═══ Explicit delegation of the owner's data authority (decision Q2) ══════════
+# A run uses the CALLER's authority ∩ what the flow attached. The only way a
+# caller gets answers from data they cannot read themselves is a row here,
+# created by the flow's OWNER for a resource the owner can read and the flow
+# attaches. Revocable; audited; consulted on every turn.
+
+class DelegationBody(BaseModel):
+    grantee_user_id: str | None = None
+    grantee_team_id: str | None = None
+    resource_type: str  # dataset | document
+    resource_id: int
+
+
+def _delegation_out(d) -> dict[str, Any]:
+    return {
+        "id": d.id, "brain_key": d.brain_key,
+        "grantee_user_id": str(d.grantee_user_id) if d.grantee_user_id else None,
+        "grantee_team_id": str(d.grantee_team_id) if d.grantee_team_id else None,
+        "resource_type": d.resource_type, "resource_id": d.resource_id, "action": d.action,
+        "created_at": d.created_at.isoformat() if d.created_at else None,
+        "revoked_at": d.revoked_at.isoformat() if d.revoked_at else None,
+    }
+
+
+def _require_flow_owner(db: Session, user: User, brain_key: str):
+    from app.services.agent_flows.permissions import _resolve_owner
+
+    row = _may_read_flow(db, user, brain_key)
+    owner = _resolve_owner(db, row)
+    if owner is None or owner.id != user.id:
+        raise HTTPException(status_code=403, detail="Only the flow's owner can delegate its data.")
+    return row
+
+
+@router.get("/brains/{brain_key}/delegations")
+def list_delegations(brain_key: str, db: Session = Depends(get_db), user: User = Depends(can_view)) -> dict[str, Any]:
+    from app.models.agent_flow_delegation import AgentFlowDelegation
+
+    row = _may_read_flow(db, user, brain_key)
+    require_full_access(db, user, row, "agent_flows")  # owner or module admin
+    rows = db.query(AgentFlowDelegation).filter(AgentFlowDelegation.brain_key == brain_key).all()
+    return {"delegations": [_delegation_out(d) for d in rows]}
+
+
+@router.post("/brains/{brain_key}/delegations", status_code=201)
+def create_delegation(brain_key: str, body: DelegationBody, db: Session = Depends(get_db),
+                      user: User = Depends(can_edit)) -> dict[str, Any]:
+    import uuid as _uuid
+
+    from app.models.agent_flow_delegation import AgentFlowDelegation
+    from app.models.team import Team
+    from app.services.agent_flows.permissions import attachable_documents, readable_datasets
+
+    row = _require_flow_owner(db, user, brain_key)
+    if body.resource_type not in ("dataset", "document"):
+        raise HTTPException(status_code=400, detail="resource_type must be dataset or document")
+    if (body.grantee_user_id is None) == (body.grantee_team_id is None):
+        raise HTTPException(status_code=400, detail="Exactly one grantee (user or team)")
+    try:
+        gu = _uuid.UUID(body.grantee_user_id) if body.grantee_user_id else None
+        gt = _uuid.UUID(body.grantee_team_id) if body.grantee_team_id else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid grantee id") from None
+    if gu is not None and db.get(User, gu) is None:
+        raise HTTPException(status_code=400, detail="Unknown user")
+    if gt is not None and db.get(Team, gt) is None:
+        raise HTTPException(status_code=400, detail="Unknown team")
+    # Only what the owner can read NOW, and only what this flow attaches.
+    owner_can = (readable_datasets(db, user) if body.resource_type == "dataset"
+                 else attachable_documents(db, user))
+    if body.resource_id not in owner_can:
+        raise HTTPException(status_code=403, detail="You cannot delegate a resource you cannot read.")
+    flow = reg.parse_flow(row)
+    if flow is None:
+        raise HTTPException(status_code=409, detail="The flow cannot be parsed; fix it before delegating.")
+    kind = "semantic" if body.resource_type == "dataset" else "document"
+    attached = {int(s.ref) for s in flow.bound_sources() if s.source == kind and str(s.ref).isdigit()}
+    if body.resource_id not in attached:
+        raise HTTPException(status_code=400, detail="The flow does not attach this resource.")
+    d = AgentFlowDelegation(brain_key=brain_key, grantee_user_id=gu, grantee_team_id=gt,
+                            resource_type=body.resource_type, resource_id=body.resource_id,
+                            action="read", created_by=user.id)
+    db.add(d)
+    db.commit()
+    db.refresh(d)
+    reg._audit(db, "AGENT_FLOW_DELEGATED", brain_key, _actor(user), _delegation_out(d))
+    return _delegation_out(d)
+
+
+@router.delete("/brains/{brain_key}/delegations/{delegation_id}")
+def revoke_delegation(brain_key: str, delegation_id: int, db: Session = Depends(get_db),
+                      user: User = Depends(can_edit)) -> dict[str, Any]:
+    from datetime import datetime, timezone
+
+    from app.models.agent_flow_delegation import AgentFlowDelegation
+
+    row = _may_read_flow(db, user, brain_key)
+    require_full_access(db, user, row, "agent_flows")  # owner or module admin may revoke
+    d = db.query(AgentFlowDelegation).filter(AgentFlowDelegation.id == delegation_id,
+                                             AgentFlowDelegation.brain_key == brain_key).first()
+    if d is None:
+        raise HTTPException(status_code=404, detail="Delegation not found")
+    if d.revoked_at is None:
+        d.revoked_at = datetime.now(timezone.utc)
+        d.revoked_by = user.id
+        db.commit()
+        reg._audit(db, "AGENT_FLOW_DELEGATION_REVOKED", brain_key, _actor(user), _delegation_out(d))
+    return _delegation_out(d)
+
+
+@router.get("/admin/delegation-impact")
+def delegation_impact(db: Session = Depends(get_db), user: User = Depends(require_permission("agent_flows", "full"))) -> dict[str, Any]:
+    """Flows shared with people who cannot read some of what the flow attaches.
+    Before decision Q2 those people got answers from that data on the owner's
+    authority; now they do not unless the owner delegates it explicitly. This is
+    the review list - nothing was delegated automatically."""
+    from app.models.resource_share import ResourceShare, ResourceType
+    from app.models.team import TeamMembership
+    from app.services.agent_flows.permissions import active_delegations, attachable_documents, readable_datasets
+
+    keys = sorted({r[0] for r in db.query(ResourceShare.resource_id)
+                   .filter(ResourceShare.resource_type == ResourceType.AGENT_BRAIN)})
+    report = []
+    for key in keys:
+        row = _brain_row(db, key)
+        if row is None:
+            continue
         try:
-            from app.core.crypto import decrypt_value
-
-            key = decrypt_value(raw) or ""
-        except Exception:  # noqa: BLE001
-            logger.warning("[flow] link credential will not decrypt")
-            key = ""
-    if not key:
-        from app.services.dashboard_ai_bot.public_link_config import deployment_key
-
-        key, dep_provider = deployment_key()
-        provider = provider or dep_provider
-    return key, provider, model
+            flow = reg.parse_flow(row)
+        except Exception:  # noqa: BLE001 - an unparsable flow is reported, not skipped silently
+            report.append({"brain_key": key, "error": "flow could not be parsed"})
+            continue
+        ds = {int(x.ref) for x in flow.bound_sources() if x.source == "semantic" and str(x.ref).isdigit()}
+        docs = {int(x.ref) for x in flow.bound_sources() if x.source == "document" and str(x.ref).isdigit()}
+        if not ds and not docs:
+            continue
+        shares = db.query(ResourceShare).filter(ResourceShare.resource_type == ResourceType.AGENT_BRAIN,
+                                                ResourceShare.resource_id == key).all()
+        grantees = set()
+        for sh in shares:
+            if sh.user_id is not None:
+                grantees.add(sh.user_id)
+            elif sh.team_id is not None:
+                grantees |= {m.user_id for m in db.query(TeamMembership).filter(TeamMembership.team_id == sh.team_id)}
+        for uid in sorted(grantees, key=str):
+            person = db.get(User, uid)
+            if person is None:
+                continue
+            delegated = active_delegations(db, key, person)
+            lost_ds = sorted(ds - readable_datasets(db, person) - delegated.get("dataset", set()))
+            lost_docs = sorted(docs - attachable_documents(db, person) - delegated.get("document", set()))
+            if lost_ds or lost_docs:
+                report.append({"brain_key": key, "user_id": str(uid), "email": person.email,
+                               "datasets_no_longer_answered": lost_ds,
+                               "documents_no_longer_answered": lost_docs})
+    return {"flows_needing_review": report}

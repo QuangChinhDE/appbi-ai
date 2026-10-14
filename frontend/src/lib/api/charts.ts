@@ -40,6 +40,12 @@ export const chartApi = {
     return response.data;
   },
 
+  /** The reports that show this chart — what saving it would change, live. */
+  getUsage: async (id: number): Promise<{ chart_id: number; reports: Array<{ id: number; name: string; tiles: number; published: boolean }>; other_reports: number }> => {
+    const response = await apiClient.get(`/charts/${id}/usage`);
+    return response.data;
+  },
+
   update: async (id: number, data: ChartUpdate): Promise<Chart> => {
     const response = await apiClient.put(`/charts/${id}`, data);
     return response.data;
@@ -55,6 +61,7 @@ export const chartApi = {
     context: ChartDataContext = 'default',
     granularity?: string,
     roleOverrides?: Record<string, string> | null,
+    tileId?: number,
   ): Promise<ChartDataResponse> => {
     const params: Record<string, string> = {};
     if (filters && filters.length > 0) {
@@ -73,6 +80,9 @@ export const chartApi = {
     if (roleOverrides && Object.keys(roleOverrides).length > 0) {
       params.overrides = JSON.stringify(roleOverrides);
     }
+    // The dashboard tile this request is for (observability only — the server
+    // ignores it; public requests carry `tile_id` too).
+    if (tileId != null) params.tile_id = String(tileId);
     const response = await apiClient.get(`/charts/${id}/data`, { params });
     return response.data;
   },

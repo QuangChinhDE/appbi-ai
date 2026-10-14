@@ -10,7 +10,7 @@ from slowapi.util import get_remote_address
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.crypto import decrypt_value, encrypt_value, is_encrypted, is_encryption_configured
+from app.core.crypto import is_encrypted
 from app.core.database import get_db
 from app.core.dependencies import (
     AUTH_TOKEN_KIND_ATTR,
@@ -115,25 +115,14 @@ def _build_token_expiry(expires_in_days: int | None) -> datetime | None:
     return datetime.now(timezone.utc) + timedelta(days=expires_in_days)
 
 
-def _reveal_full_token(token: PersonalAccessToken) -> str:
-    """Decrypt and rebuild the full token string, or 409 if it isn't revealable."""
-    if not token.secret_enc or not is_encrypted(token.secret_enc):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This token can't be revealed (created before reveal was enabled). Create a new token instead.",
-        )
-    secret = decrypt_value(token.secret_enc)
-    return build_personal_access_token(token.id, secret)
-
-
 def _apply_new_secret(token: PersonalAccessToken) -> str:
     """Issue a fresh secret on an existing token (same id/name/scopes) — the old
     secret stops working. Returns the plaintext to show once. Caller commits."""
     secret = create_personal_access_token_secret()
     token.secret_hash = hash_personal_access_token_secret(secret)
     token.secret_suffix = secret[-6:]
-    encrypted = encrypt_value(secret) if is_encryption_configured() else None
-    token.secret_enc = encrypted if (encrypted and is_encrypted(encrypted)) else None
+    encrypted = None  # no reversible copy (decision Q4)
+    token.secret_enc = None  # no reversible copy (decision Q4)
     return secret
 
 
@@ -168,7 +157,7 @@ def create_personal_access_token(
     # Store the secret reversibly-encrypted so it can be revealed again. Fail
     # closed: if no encryption key is configured, leave it null (reveal disabled)
     # rather than persist a plaintext secret a DB leak could expose.
-    encrypted = encrypt_value(secret) if is_encryption_configured() else None
+    encrypted = None  # no reversible copy (decision Q4)
     token = PersonalAccessToken(
         owner_id=current_user.id,
         name=body.name,
@@ -211,21 +200,24 @@ def _serialize_admin_token(item: PersonalAccessToken, owner: User) -> AdminPerso
     )
 
 
-@router.post("/admin/{token_id}/rotate", response_model=PersonalAccessTokenCreateResponse)
+@router.post("/admin/{token_id}/invalidate", response_model=PersonalAccessTokenResponse)
 @_limiter.limit("20/minute")
-def admin_rotate_personal_access_token(
+def admin_invalidate_personal_access_token(
     token_id: uuid.UUID,
     request: Request,
     db: Session = Depends(get_db),
     admin: User = Depends(_require_admin_session),
 ):
-    """Issue a fresh secret for any user's token (admin-only)."""
+    """Force-invalidate any user's token (admin-only, audited): the current
+    secret stops working at once. The admin NEVER receives a usable token
+    (decision Q4) - receiving one would let an admin act as that user; the
+    owner gets a new secret by rotating it themselves."""
     token = db.query(PersonalAccessToken).filter(PersonalAccessToken.id == token_id).first()
     if not token:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personal access token not found")
     if token.revoked_at is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Revoked tokens can't be regenerated")
-    secret = _apply_new_secret(token)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Revoked tokens can't be invalidated")
+    _apply_new_secret(token)  # replaced and discarded: nobody holds it
     db.commit()
     db.refresh(token)
     audit(
@@ -235,38 +227,9 @@ def admin_rotate_personal_access_token(
         user_id=admin.id,
         resource_type="personal_access_token",
         resource_id=str(token.id),
-        details={"name": token.name, "action": "rotated", "owner_id": str(token.owner_id), "admin_rotated": True},
+        details={"name": token.name, "action": "admin_invalidated", "owner_id": str(token.owner_id)},
     )
-    return PersonalAccessTokenCreateResponse(
-        token=build_personal_access_token(token.id, secret),
-        item=_serialize_token(token),
-    )
-
-
-@router.get("/admin/{token_id}/reveal", response_model=PersonalAccessTokenRevealResponse)
-@_limiter.limit("30/minute")
-def admin_reveal_personal_access_token(
-    token_id: uuid.UUID,
-    request: Request,
-    db: Session = Depends(get_db),
-    admin: User = Depends(_require_admin_session),
-):
-    """Reveal any user's full token (admin-only). Audited."""
-    token = db.query(PersonalAccessToken).filter(PersonalAccessToken.id == token_id).first()
-    if not token:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personal access token not found")
-    full = _reveal_full_token(token)
-    audit(
-        db,
-        AuditAction.PERSONAL_ACCESS_TOKEN_UPDATED,
-        request=request,
-        user_id=admin.id,
-        resource_type="personal_access_token",
-        resource_id=str(token.id),
-        details={"name": token.name, "action": "revealed", "owner_id": str(token.owner_id), "admin_revealed": True},
-    )
-    return PersonalAccessTokenRevealResponse(token=full)
-
+    return _serialize_token(token)
 
 @router.get("/admin", response_model=list[AdminPersonalAccessTokenResponse])
 def list_all_personal_access_tokens(
@@ -400,29 +363,6 @@ def rotate_personal_access_token(
         token=build_personal_access_token(token.id, secret),
         item=_serialize_token(token),
     )
-
-
-@router.get("/{token_id}/reveal", response_model=PersonalAccessTokenRevealResponse)
-@_limiter.limit("20/minute")
-def reveal_personal_access_token(
-    token_id: uuid.UUID,
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_require_session_user),
-):
-    """Reveal the full secret of a token you own. Audited."""
-    token = _get_owned_personal_access_token(db, current_user, token_id)
-    full = _reveal_full_token(token)
-    audit(
-        db,
-        AuditAction.PERSONAL_ACCESS_TOKEN_UPDATED,
-        request=request,
-        user_id=current_user.id,
-        resource_type="personal_access_token",
-        resource_id=str(token.id),
-        details={"name": token.name, "action": "revealed"},
-    )
-    return PersonalAccessTokenRevealResponse(token=full)
 
 
 @router.put("/{token_id}", response_model=PersonalAccessTokenResponse)

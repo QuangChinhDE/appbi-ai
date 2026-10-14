@@ -12,12 +12,29 @@ The rules this encodes are unchanged from the public bot:
   something to show a viewer mid-flight.
 * `tool_result` carries ok/error only. The payload can be enormous and is already
   reflected in the answer.
+* The tool NAME and the error TEXT are the reader's, not the model's. Both
+  surfaces below stream to a person - one of them an anonymous viewer on a public
+  link - so `reader_diagnostics` builds them from the registry label and the
+  structured `error_code`/`detail`. The technical message that names the tool id,
+  the chart id and the raw field keeps going to the author's trace untouched.
 * `verification` publishes coverage and unknown LABELS, never the unmatched VALUES:
   echoing an invented figure would show it to the reader a second time.
 """
 from __future__ import annotations
 
 from typing import Any
+
+from app.services.agent_flows.reader_diagnostics import (
+    reader_error,
+    reader_outcome,
+    tool_label,
+)
+
+
+#: Lifecycle fields a reader may see (node_started / node_completed /
+#: branch_taken / loop_iteration). Never `step` or `path`: those are node and
+#: case KEYS, internal identifiers of the flow.
+_READER_LIFECYCLE_FIELDS = ("name", "label", "status", "ms", "index", "total")
 
 
 def event_to_envelope(ev: Any) -> dict | None:
@@ -42,16 +59,25 @@ def event_to_envelope(ev: Any) -> dict | None:
             "reasons": info.get("reasons") or [],
         }
     if et == "status":
-        return {"type": "status", "text": ev.text, "tool": ev.tool_name}
+        return {"type": "status", "text": ev.text, "tool": tool_label(ev.tool_name)}
     if et == "tool_result":
         # Send only ok/error so the FE can flag failures without leaking the
         # full payload (which can be large).
+        #
+        # `outcome` IS THE CLASSIFICATION, and `ok` is only the transport fact.
+        # Every reader surface used to count `ok == False` as an error, so a link
+        # correctly withholding an out-of-scope chart was reported to a viewer as
+        # a failure — "3 errors" printed above a correct answer. The distinction
+        # was already made upstream in `error_code`; it died here, one layer
+        # before the only consumer that needed it. `ok` stays exactly as it was
+        # so nothing that reads it breaks.
         result = ev.tool_result or {}
         return {
             "type": "tool_result",
-            "tool": ev.tool_name,
+            "tool": tool_label(ev.tool_name),
             "ok": bool(result.get("ok")),
-            "error": result.get("error") if not result.get("ok") else None,
+            "outcome": reader_outcome(result),
+            "error": reader_error(result) or None,
         }
     if et == "reading_plan":
         # Phase-15.71 — forward the analyst-style reading plan to the
@@ -118,11 +144,17 @@ def event_to_envelope(ev: Any) -> dict | None:
         # actually taking, and the chat shows "đang chạy bước X" instead of a spinner
         # with nothing behind it.
         #
-        # `type` is written AFTER the spread on purpose: the payload carries the
-        # NODE's type, and spreading it last overwrote the EVENT's type — the wire
-        # then announced events called "report_read" and "if", which no client
-        # handles.
-        return {**(ev.extra or {}), "type": et}
+        # AN ALLOWLIST, NOT A SPREAD. The payload carries the flow's INTERNAL
+        # identifiers - `step` (the node key) and, on a branch, `path` (the case
+        # key) - and both surfaces here stream to a reader, one of them an
+        # anonymous visitor of a public link. Only what a reader is shown leaves:
+        # the step's display name/label, its status, its timing, loop counters.
+        # The keys stay on the author's trace (authz review: the public-reader
+        # journey found `step` on the wire although no reader UI uses it).
+        extra = ev.extra or {}
+        out = {k: extra[k] for k in _READER_LIFECYCLE_FIELDS if k in extra}
+        out["type"] = et
+        return out
     if et == "result":
         # THE TERMINATOR: the complete `FlowOutput` envelope.
         #

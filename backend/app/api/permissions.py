@@ -35,29 +35,10 @@ router = APIRouter(prefix="/permissions", tags=["permissions"])
 
 # ── Module definitions ────────────────────────────────────────────────────────
 
-# Optional / feature-flagged modules: included only when the corresponding
-# overlay is active. Keeps the FE sidebar and admin matrix in sync with what
-# the API actually serves.
-_OPTIONAL_MODULES = {
-    "workboards": settings.WORKBOARDS_ENABLED,
-    # Catalog surfaces: each module its own flag, but both need the /catalog
-    # backend deployed (METADATA_CATALOG_ENABLED) — so a stray module flag can't
-    # produce dead-nav pointing at an unregistered router.
-    "govern": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
-    "agent_flows": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
-    # Same backend, same enablement: AI Chat runs the flows Agent Flows authors,
-    # so a deployment cannot have one without the other.
-    "chat": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
-    # Intelligence group — same enablement as govern (same catalog backend).
-    # Flow Studio — same catalog backend, but its OWN key: publishing a flow
-    # changes AI behaviour on a live published report (deploy-sized blast
-    # radius), so it must not inherit an authoring-level grant.
-    "observability": settings.METADATA_CATALOG_ENABLED and settings.OBSERVABILITY_ENABLED,
-}
-
-
-def _module_enabled(name: str) -> bool:
-    return _OPTIONAL_MODULES.get(name, True)
+# Feature-flagged modules: enablement is declared in the authz registry
+# (core/authz/registry.py, ModuleSpec.enabled) - the same declaration the route
+# mounting and the frontend schema read.
+from app.core.authz.registry import module_enabled as _module_enabled  # noqa: E402
 
 
 # DERIVED, never re-typed. core.dependencies.MODULE_KEYS is the single source of
@@ -69,38 +50,14 @@ _ALL_MODULES = list(MODULE_KEYS)
 MODULES = [m for m in _ALL_MODULES if _module_enabled(m)]
 
 # Per-module allowed levels (enforces business rules)
-_ALL_MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
-    "data_sources":      ["none", "view", "edit", "full"],
-    "datasets":          ["none", "view", "edit", "full"],
-    "govern":            ["none", "view", "edit", "full"],
-    "agent_flows":            ["none", "view", "edit", "full"],
-    # FOUR LEVELS, and each one now buys something. This was `["none", "view"]`
-    # for exactly as long as a conversation was private and unshareable; once a
-    # person can hand their own conversation to a colleague, the generic ladder
-    # fits it without being bent:
-    #
-    #   view   open AI Chat, talk to assistants shared with you, keep your own
-    #          conversations, and READ conversations others shared with you
-    #   edit   the above, plus SHARE your own conversations — which is not a
-    #          style choice: `get_effective_permission` only lets an owner reach
-    #          `full` on their own row when the module level is `edit` or above,
-    #          and `require_share_access` demands `full`. At `view` a person
-    #          could not share the conversation they are holding.
-    #   full   read and manage EVERY conversation in the workspace — the
-    #          oversight level, the same thing `full` means everywhere else
-    "chat":              ["none", "view", "edit", "full"],
-    "observability":     ["none", "view", "edit", "full"],
-    "explore_charts":    ["none", "view", "edit", "full"],
-    "dashboards":        ["none", "view", "edit", "full"],
-    "workboards":        ["none", "view", "edit", "full"],
-    "settings":          ["none", "full"],
-}
+# Per-module allowed levels: the authz registry's (core/authz/registry.py).
+from app.core.authz.registry import ALL_MODULE_ALLOWED_LEVELS as _ALL_MODULE_ALLOWED_LEVELS  # noqa: E402
 
 MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
     k: v for k, v in _ALL_MODULE_ALLOWED_LEVELS.items() if _module_enabled(k)
 }
 
-LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
+from app.core.authz.registry import LEVEL_ORDER  # noqa: E402  (single ladder)
 
 # ── Presets ───────────────────────────────────────────────────────────────────
 
@@ -604,3 +561,30 @@ def update_user_permissions(
     return {"status": "ok", "updated": len(body.permissions), "permissions": _get_user_permissions(target)}
 
 
+
+
+@router.get("/schema")
+def get_permission_schema(_: User = Depends(get_current_user)) -> dict:
+    """The authorization manifest the frontend renders from, GENERATED from the
+    authz registry (core/authz/registry.py): module keys, their levels and
+    labels-free metadata, which are enabled in this deployment and PAT-eligible,
+    and every resource type with its module and the business actions its policy
+    defines. The frontend never hand-maintains these facts; resource-level
+    decisions come per resource as `capabilities`."""
+    from app.core.authz import registry
+    from app.core.authz.decision import _DATASET_NEEDS, _GENERIC_NEEDS
+
+    return {
+        "levels": list(registry.LEVEL_ORDER),
+        "module_admin_level": registry.MODULE_ADMIN_LEVEL,
+        "modules": [
+            {"key": m.key, "levels": list(m.levels), "enabled": registry.module_enabled(m.key),
+             "pat_eligible": m.pat_eligible}
+            for m in registry.MODULES
+        ],
+        "resources": [
+            {"type": r.resource_type, "module": r.module, "shareable": r.shareable,
+             "actions": sorted(a.value for a in (_DATASET_NEEDS if r.policy == "dataset" else _GENERIC_NEEDS))}
+            for r in registry.RESOURCES
+        ],
+    }

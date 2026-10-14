@@ -6,10 +6,13 @@ import re
 from types import SimpleNamespace
 from datetime import datetime, date
 from urllib.parse import quote
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
+from app.services.audit_service import audit
+from app.models.audit_log import AuditAction
+from app.services.time_contract import utc_iso
 from app.core.database import get_db
 from app.core.dependencies import (
     module_floor,
@@ -19,9 +22,12 @@ from app.core.dependencies import (
     require_edit_access,
     require_full_access,
     get_effective_permission,
+    batch_effective_permissions,
 )
+from app.core.authz import decision as _authz
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models import DataSource, Chart, Dashboard, DashboardChart, Dataset, DatasetTable
+from app.services import dataset_grants_service
 from app.models.models import DashboardPublicLink
 from app.models.resource_share import ResourceType
 from app.models.user import User
@@ -330,6 +336,43 @@ def _validate_measure_dependencies(
                 known_join_aliases.add(alias)
 
     current_view_dims = dim_names_by_view.get(current_view_name, set())
+
+    # Context modifiers are not supported by the engine (it refuses a measure
+    # carrying them: they rendered as if absent). A save may keep a legacy
+    # measure's modifiers UNCHANGED — so the DA can still edit other fields or
+    # delete it — but may not add or change them.
+    def _mods_key(raw) -> str:
+        items = []
+        for mod in raw or []:
+            d = mod.model_dump() if hasattr(mod, "model_dump") else dict(mod or {})
+            items.append({k: v for k, v in d.items() if v not in (None, [], "")})
+        return json.dumps(items, sort_keys=True, default=str)
+
+    # `views` is this dataset's persisted views (loaded above); a view being
+    # created has none, so any modifier on it is new.
+    _persisted_view = next((v for v in views if v.name == current_view_name), None)
+    _persisted_mods = {
+        str((m or {}).get("name") or ""): _mods_key((m or {}).get("context_modifiers"))
+        for m in ((_persisted_view.measures if _persisted_view is not None else None) or [])
+        if isinstance(m, dict)
+    }
+    for measure in measures:
+        raw_mods = (
+            measure.context_modifiers
+            if hasattr(measure, "context_modifiers")
+            else measure.get("context_modifiers", [])
+        ) or []
+        if raw_mods and _mods_key(raw_mods) != _persisted_mods.get(measure_name(measure) or "", _mods_key([])):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Measure '{measure_name(measure) or '<unnamed>'}': ngữ cảnh lọc "
+                    "(ALL / ALLEXCEPT / USERELATIONSHIP) chưa được hỗ trợ — engine từ chối "
+                    "measure này khi chạy chart. Dùng measure kiểu percent_of_total cho % "
+                    "trên tổng, hoặc join có alias cho vai trò ngày khác."
+                ),
+            )
+
     for measure in measures:
         modifiers = (
             measure.context_modifiers
@@ -1149,8 +1192,9 @@ def _execute_semantic_dataset_query(
         .all()
     }
     for join in (explore.joins or []):
-        raw_active = join.get("is_active") if isinstance(join, dict) else None
-        if raw_active is not None and not bool(raw_active):
+        from app.services.semantic_join_resolver import join_is_usable
+
+        if not join_is_usable(explore.base_view_name, join):  # contract: invalid/"false" → absent
             continue
         join_view_name = str(join.get("view") or "").strip() if isinstance(join, dict) else ""
         join_node_name = str(join.get("alias") or "").strip() if isinstance(join, dict) else ""
@@ -1228,14 +1272,15 @@ def _execute_semantic_dataset_query(
         "neq": "ne",
         "startswith": "starts_with",
     }
-    filters = {
-        qualify(item.field): {
-            "operator": _OP_ALIAS.get(item.operator, item.operator),
-            "value": item.value,
-        }
-        for item in (execute_request.filters or [])
-        if item.field
-    }
+    # Several predicates on ONE field (amount >= 10 AND amount <= 100) are a list
+    # the engine AND-s — a dict keyed by field kept only the last, silently.
+    filters: dict[str, list] = {}
+    for item in (execute_request.filters or []):
+        if item.field:
+            filters.setdefault(qualify(item.field), []).append({
+                "operator": _OP_ALIAS.get(item.operator, item.operator),
+                "value": item.value,
+            })
     sorts = [
         {
             "field": qualify(item.field),
@@ -1316,13 +1361,20 @@ def _execute_semantic_dataset_query(
         model_id=model.id,
         explore_id=explore.id,
     )
+    from app.services.chart_service import REFUSAL_HEADER, refusal_category
+    from app.services.execution_plan import refuse_foreign_live_sources
+
     try:
         sql, _columns, _pivot_metadata = engine.run(_spec)
+        refuse_foreign_live_sources(db, engine.live_source_ids, datasource, engine.live_source_kinds)
     except ValueError as exc:
         # ValueError = expected semantic engine domain errors (unreachable
         # view, missing field, circular dependency, ambiguous path). Phase
-        # 11 ensures these carry Vietnamese-friendly messages.
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # 11 ensures these carry Vietnamese-friendly messages; a semantic
+        # refusal keeps its category in the header (as /charts/{id}/data).
+        _cat = refusal_category(exc)
+        raise HTTPException(status_code=400, detail=str(exc),
+                            headers={REFUSAL_HEADER: _cat} if _cat else None) from exc
     except Exception as exc:
         logger.exception(
             "Semantic SQL generation failed for dataset=%s table=%s explore=%s",
@@ -1336,6 +1388,17 @@ def _execute_semantic_dataset_query(
             ),
         ) from exc
 
+    # Trusted to-one JOINs are verified first (relationship_key_guard); a
+    # duplicate or unverifiable key is a 400 with the relationship named.
+    from app.services.relationship_key_guard import verify_key_probes
+
+    try:
+        verify_key_probes(engine.key_probes, ds_type=ds_type, config=datasource.config,
+                          namespace=f"ds:{getattr(datasource, 'id', '')}")
+    except ValueError as exc:
+        _cat = refusal_category(exc)
+        raise HTTPException(status_code=400, detail=str(exc),
+                            headers={REFUSAL_HEADER: _cat} if _cat else None) from exc
     try:
         _cols, rows, _elapsed = DataSourceConnectionService.execute_query(
             ds_type,
@@ -1380,7 +1443,10 @@ def _execute_semantic_dataset_query(
         )
         for idx, col in enumerate(columns)
     ]
-    return ExecuteQueryResponse(columns=column_metadata, rows=rows)
+    return ExecuteQueryResponse(
+        columns=column_metadata, rows=rows,
+        dropped_filters=[dict(d) for d in (getattr(engine, "_propagation_drops", None) or []) if isinstance(d, dict)],
+    )
 
 
 def _stamp_dataset_catalog_fields(items: list[Dataset]) -> None:
@@ -1987,6 +2053,10 @@ def _cleanup_semantic_view_for_table(db: Session, table_id: int) -> None:
 
     view_name = view.name
     if view_name and model is not None:
+        # the same model write lock as every relationship writer
+        from app.services.dataset_model_service import lock_dataset_model_for_write
+
+        lock_dataset_model_for_write(db, table.dataset_id)
         model_explores = db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
         for explore in model_explores:
             old_joins = explore.joins or []
@@ -2063,7 +2133,14 @@ def _enqueue_auto_type_detection_if_needed(
     if table_id is None:
         return
     ds_type = None
+    # DatasetTable has no `datasource` relationship — reading it always gave None,
+    # so Sheets/Manual tables were never queued for the full-scan type check.
     datasource = getattr(db_table, "datasource", None)
+    if datasource is None:
+        from sqlalchemy.orm import object_session
+        _sess = object_session(db_table)
+        if _sess is not None:
+            datasource = _sess.query(DataSource).filter(DataSource.id == datasource_id).first()
     if datasource is not None:
         ds_type = datasource.type if isinstance(datasource.type, str) else getattr(datasource.type, "value", None)
 
@@ -2356,8 +2433,11 @@ def list_datasets(
         .limit(limit)
         .all()
     )
+    # One batched Dataset-policy decision for the whole page (was one per row).
+    perm_map = batch_effective_permissions(db, current_user, items, "datasets")
     for item in items:
-        item.user_permission = get_effective_permission(db, current_user, item, "datasets")
+        item.user_permission = perm_map.get(item.id, "none")
+    _authz.attach_capabilities(db, current_user, items)
     _stamp_dataset_catalog_fields(items)
     stamp_owner_emails(db, items)
     return items
@@ -2397,13 +2477,27 @@ def refresh_dataset_snapshots(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.TRIGGER_COMPUTE, dataset_obj)
 
     # ASYNC: kick a background rebuild and return immediately (see
     # snapshot_service.start_manual_refresh) so a large extract-load never blocks
     # the request past nginx's 120s API timeout. Client polls freshness/building.
+    # A lifecycle-managed dataset refreshes THROUGH Sync & Publish (same gate,
+    # same history, readers move to the new generation) — or says why it can't.
+    routed = snapshot_service.route_lifecycle_refresh([dataset_id], triggered_by_id=str(current_user.id))
+    if dataset_id in routed:
+        verdict = routed[dataset_id]
+        if verdict == "changes_pending":
+            raise HTTPException(status_code=409, detail=(
+                "Dataset có thay đổi thiết kế chưa publish — Làm mới sẽ publish luôn các thay đổi đó. "
+                "Dùng “Sync & Publish” trên Dataset."))
+        if verdict == "never_published":
+            raise HTTPException(status_code=409, detail=(
+                "Dataset chưa được publish lần nào — dùng “Sync & Publish” trên Dataset."))
+        return {"ok": True, "status": "started" if verdict == "started" else verdict,
+                "started": [dataset_id] if verdict == "started" else [],
+                "lifecycle": "sync_and_publish", "building": verdict in ("started", "already_syncing"),
+                "as_of": None}
     started = snapshot_service.start_manual_refresh([dataset_id])
     # Pull the LATEST FROM SOURCE for every source type (not just BQ snapshots):
     # bust the live query-result cache for this dataset's datasources so the next
@@ -2420,7 +2514,7 @@ def refresh_dataset_snapshots(
         "status": "started",
         "started": started,
         "building": snapshot_service.datasets_rebuilding([dataset_id]),
-        "as_of": ts.isoformat() if ts else None,
+        "as_of": utc_iso(ts),
     }
 
 
@@ -2441,9 +2535,7 @@ def stop_dataset_snapshot_sync(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm in ("none", "view"):
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.TRIGGER_COMPUTE, dataset_obj)
 
     sync_control.request_stop(dataset_id)
     # Reflect intent immediately so the UI can show "Đang dừng…" before the loop
@@ -2746,14 +2838,14 @@ def list_dataset_grants(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    from app.models.dataset import Dataset, DatasetGrant
+    from app.models.dataset import Dataset
     from app.services import dataset_grants_service
 
     ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
     require_view_access(db, current_user, ds, "datasets")
-    rows = db.query(DatasetGrant).filter(DatasetGrant.dataset_id == dataset_id).all()
+    rows = dataset_grants_service.list_grants(db, dataset_id)
     return {
         "my_capabilities": sorted(dataset_grants_service.dataset_capabilities(db, current_user, ds)),
         "grants": [
@@ -2768,6 +2860,7 @@ def list_dataset_grants(
 def set_dataset_grant(
     dataset_id: int,
     body: dict,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -2779,21 +2872,23 @@ def set_dataset_grant(
     ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    dataset_grants_service.require_capability(db, current_user, ds, "reshare")
     try:
-        g = dataset_grants_service.set_grant(
-            db, dataset_id, verb=body.get("verb"),
+        g = dataset_grants_service.grant_as(
+            db, current_user, ds, verb=body.get("verb"),
             user_id=body.get("user_id"), team_id=body.get("team_id"),
-            granted_by=current_user.id,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except dataset_grants_service.GrantError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    audit(db, AuditAction.DATASET_GRANT_CREATED, request=request, user_id=current_user.id,
+          resource_type="dataset", resource_id=str(ds.id),
+          details={"verb": g.verb, "user_id": body.get("user_id"), "team_id": body.get("team_id")})
     return {"ok": True, "id": g.id, "verb": g.verb}
 
 
 @router.delete("/{dataset_id}/grants")
 def revoke_dataset_grant(
     dataset_id: int,
+    request: Request,
     user_id: str | None = None,
     team_id: str | None = None,
     db: Session = Depends(get_db),
@@ -2806,7 +2901,13 @@ def revoke_dataset_grant(
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
     dataset_grants_service.require_capability(db, current_user, ds, "reshare")
-    n = dataset_grants_service.revoke_grant(db, dataset_id, user_id=user_id, team_id=team_id)
+    try:
+        n = dataset_grants_service.revoke_as(db, current_user, ds, user_id=user_id, team_id=team_id)
+    except dataset_grants_service.GrantError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    audit(db, AuditAction.DATASET_GRANT_REVOKED, request=request, user_id=current_user.id,
+          resource_type="dataset", resource_id=str(ds.id),
+          details={"user_id": user_id, "team_id": team_id, "revoked": n})
     return {"ok": True, "revoked": n}
 
 
@@ -2924,6 +3025,7 @@ def get_dataset(
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     dataset_obj.user_permission = require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.attach_capabilities(db, current_user, [dataset_obj])
     return dataset_obj
 
 
@@ -3178,7 +3280,8 @@ def get_dataset_table_source_status(
         if datasource.id in live_table_errors:
             statuses.append({
                 **base,
-                "status": "ok",
+                # NOT "ok": a source that cannot be reached was shown as healthy.
+                "status": "unknown",
                 "code": "SOURCE_STATUS_UNVERIFIED",
                 "message": "Could not verify this table against the connected datasource.",
                 "verified": False,
@@ -3190,7 +3293,19 @@ def get_dataset_table_source_status(
             _source_table_name_matches(table.source_table_name, live_table.get("name"))
             for live_table in live_tables
         )
-        if exists:
+        added = (table.columns_cache or {}).get("source_added_columns") if isinstance(
+            table.columns_cache, dict) else None
+        if exists and added:
+            # The table exists but its columns changed since the dataset cached
+            # them (a Sync found new source columns): the author must review.
+            statuses.append({
+                **base,
+                "status": "ok",
+                "code": "SOURCE_SCHEMA_CHANGED",
+                "message": "The source table has columns this dataset does not know yet — refresh its schema.",
+                "added_columns": list(added),
+            })
+        elif exists:
             statuses.append({**base, "status": "ok", "code": None, "message": None})
         else:
             statuses.append({
@@ -3308,7 +3423,14 @@ def add_table_to_dataset(
             datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
             if not datasource:
                 raise HTTPException(status_code=404, detail="Datasource not found")
-            require_view_access(db, current_user, datasource, "data_sources")
+            # S2: picking a physical table is a read of the source (view); a
+            # sql_query table runs ARBITRARY SQL with the stored credential, so
+            # it needs edit on the datasource object.
+            if table.source_kind == "sql_query":
+                require_edit_access(db, current_user, datasource, "data_sources")
+            else:
+                require_view_access(db, current_user, datasource, "data_sources")
+            _require_tabular_source(datasource)
 
         # Validate SQL query if source_kind is datasource-backed 'sql_query'
         if table.source_kind == "sql_query":
@@ -3481,6 +3603,20 @@ def update_dataset_table(
             detail="Standard Date table is managed by dataset calendar settings and cannot be edited here.",
         )
 
+    # A composed table (a pointer to another dataset's published table) carries
+    # no shaping of its own: it would show in the preview and never reach a
+    # chart (the published read swaps in the parent's snapshot). Refused.
+    if db_table.source_kind == "dataset" and (
+        table_update.transformations is not None or table_update.type_overrides is not None
+    ):
+        from app.services.dataset_model_service import refuse_composed_table_shaping
+
+        try:
+            refuse_composed_table_shaping(db_table, db, transformations=table_update.transformations,
+                                          type_overrides=table_update.type_overrides)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     # Reject source_query updates on unsupported table kinds
     if table_update.source_query is not None and db_table.source_kind not in {"sql_query", "derived_table"}:
         raise HTTPException(
@@ -3532,11 +3668,15 @@ def update_dataset_table(
                 raise HTTPException(status_code=400, detail=str(exc))
         else:
             from app.services.query_validator import QueryValidator, QueryValidationError
+            # S3: changing the SQL of a sql_query table runs new arbitrary SQL
+            # with the stored credential → edit on the datasource object, checked
+            # before the SQL is validated or previewed.
+            datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+            if not datasource:
+                raise HTTPException(status_code=404, detail="Datasource not found")
+            require_edit_access(db, current_user, datasource, "data_sources")
             try:
                 table_update.source_query = QueryValidator.validate_and_clean(table_update.source_query)
-                datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-                if not datasource:
-                    raise HTTPException(status_code=404, detail="Datasource not found")
 
                 table_draft = _build_table_draft(db_table, table_update)
                 preview_metadata, preview_rows = _preview_live_table_draft(
@@ -3545,6 +3685,8 @@ def update_dataset_table(
                 )
             except QueryValidationError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid SQL query: {str(e)}")
+            except HTTPException:
+                raise
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except Exception as exc:
@@ -4230,6 +4372,14 @@ def remove_table_from_dataset(
         raise HTTPException(status_code=404, detail="Table not found")
 
 
+def _preview_may_seed_cache(db_table, *, offset: int, filtered: bool) -> bool:
+    """True only when Preview is the FIRST read of a table (no cache yet) and it
+    is looking at the unfiltered first page."""
+    if offset or filtered:
+        return False
+    return not getattr(db_table, "columns_cache", None) or not getattr(db_table, "sample_cache", None)
+
+
 @router.post(
     "/{dataset_id}/tables/{table_id}/preview",
     response_model=TablePreviewResponse
@@ -4245,9 +4395,10 @@ def preview_dataset_table(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -4270,6 +4421,12 @@ def preview_dataset_table(
                 raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
             raise HTTPException(status_code=400, detail=str(exc))
     elif db_table.source_kind == "dataset":
+        from app.services.dataset_model_service import refuse_composed_table_shaping
+
+        try:
+            refuse_composed_table_shaping(db_table, db)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         # Composition parent-ref: preview the parent's CURRENT published snapshot
         # (the design-time source). Reuse the standard preview path via a proxy
         # sql_query table pointed at the parent snapshot ref on the host BQ.
@@ -4351,12 +4508,21 @@ def preview_dataset_table(
                 source_columns=result.get("source_columns") or [],
             )
         )
-        DatasetCRUDService.update_table_cache(
-            db, table_id,
-            columns_cache=columns_cache_payload,
-            sample_cache=serializable_rows,
-        )
-        _sync_dataset_model_safely(db, dataset_id)
+        # Preview is a READ. It may only SEED an empty cache, from the unfiltered
+        # first page: a filtered or paginated page rewrote the shared columns
+        # cache (20-row type guesses, all-string on an empty page) and the
+        # sample that LOOKUP formulas, Table Stats and AI descriptions read, then
+        # resynced the semantic model from it — for any viewer.
+        refresh = bool(preview_request.refresh_schema) and not offset and not preview_request.filters
+        if refresh and not dataset_grants_service.can(db, current_user, dataset_obj, "edit"):
+            raise HTTPException(status_code=403, detail="Cần quyền chỉnh sửa để cập nhật schema của bảng.")
+        if refresh or _preview_may_seed_cache(db_table, offset=offset, filtered=bool(preview_request.filters)):
+            DatasetCRUDService.update_table_cache(
+                db, table_id,
+                columns_cache=columns_cache_payload,
+                sample_cache=serializable_rows,
+            )
+            _sync_dataset_model_safely(db, dataset_id)
 
         total = len(rows)
         has_more = len(rows) >= limit
@@ -4405,9 +4571,10 @@ def export_dataset_table_excel(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -4488,9 +4655,10 @@ def execute_dataset_table_query(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
@@ -4746,6 +4914,16 @@ def regenerate_table_description(
     return {"status": "queued", "generation_status": "queued"}
 
 
+def _require_tabular_source(datasource) -> None:
+    """F15: a provider without tables (google_docs) is refused by every tabular
+    path with 400 {code: source_not_tabular}."""
+    from app.services.source_capabilities import SourceNotTabularError, require_capability
+    try:
+        require_capability(datasource.type, "tabular")
+    except SourceNotTabularError as exc:
+        raise HTTPException(status_code=400, detail={"code": exc.code, "message": str(exc)})
+
+
 # ===== Datasource Table List Endpoint =====
 
 @router.get(
@@ -4765,6 +4943,7 @@ def list_datasource_tables(
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
     require_view_access(db, current_user, datasource, "data_sources")
+    _require_tabular_source(datasource)
     
     try:
         tables = DataSourceConnectionService.list_tables(
@@ -4783,10 +4962,18 @@ def list_datasource_tables(
         ]
     
     except Exception as e:
-        logger.error(f"Failed to list tables: {e}")
+        from app.services.source_errors import describe_source_error
+        # Log the SCRUBBED reason too — the raw driver error can echo a secret
+        # (a DSN with an inline password, a token in a URL). Never log the raw e.
+        logger.error("Failed to list tables (ds=%s): %s", datasource.id, describe_source_error(e, datasource.config))
+        # The source's own reason (credential / permission / network / config),
+        # as the create form shows it — never a bare 500 the picker reads as
+        # "No tables found".
+        from app.services.source_errors import describe_source_error
+
         raise HTTPException(
-            status_code=500,
-            detail="Failed to list tables."
+            status_code=400,
+            detail=f"Không đọc được danh sách bảng từ nguồn: {describe_source_error(e, datasource.config)}"
         )
 
 
@@ -4810,6 +4997,7 @@ def list_datasource_table_columns(
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
     require_view_access(db, current_user, datasource, "data_sources")
+    _require_tabular_source(datasource)
     try:
         columns = DataSourceConnectionService.list_columns(
             ds_id=datasource.id,
@@ -4930,7 +5118,10 @@ def get_dataset_model_distinct_values(
     ).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)  # raw values
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     filter_context: list[dict] = []
     if filters:
@@ -5553,13 +5744,19 @@ def dry_run_dataset_view_measure(
             model_id=model.id,
             explore_id=explore.id,
         )
+        from app.services.chart_service import refusal_category
+        from app.services.execution_plan import refuse_foreign_live_sources
+
         try:
             sql, _columns, _pivot = engine.run(spec)
+            refuse_foreign_live_sources(db, engine.live_source_ids, datasource, engine.live_source_kinds)
         except ValueError as exc:
             # Expected engine domain error — carries a VN-friendly message
             # (missing field, dialect-incompatible expression, ambiguous path,
             # double-aggregation, …). Caught at SQL-GEN time (before the DB).
-            return {"ok": False, "error": str(exc), "compiled_sql": None}
+            # A semantic refusal keeps its category (as the chart runtime).
+            return {"ok": False, "error": str(exc), "compiled_sql": None,
+                    "category": refusal_category(exc)}
         except Exception as exc:  # pragma: no cover — unexpected compile crash
             logger.exception(
                 "Measure dry-run compile crashed: dataset=%s view=%s measure=%s",
@@ -5577,6 +5774,15 @@ def dry_run_dataset_view_measure(
         # zero-row bound (no data returned; on BigQuery a cheap parse/validate)
         # and a short timeout, exactly like /datasources/validate-sql. The real
         # dialect error message is what we return to the DA.
+        # The same key guard as every executor: a dry-run must not report ok
+        # for a measure whose trusted join the real runtime would refuse.
+        from app.services.relationship_key_guard import verify_key_probes
+
+        try:
+            verify_key_probes(engine.key_probes, ds_type=ds_type, config=datasource.config,
+                              namespace=f"ds:{getattr(datasource, 'id', '')}")
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "compiled_sql": sql, "category": refusal_category(exc)}
         try:
             # limit=1 (not 0): some dialect executors treat 0 as falsy → "no
             # limit" (full scan). limit=1 is what /datasources/validate-sql
@@ -5726,11 +5932,23 @@ def preview_dataset_view_measure(
             model_id=model.id,
             explore_id=explore.id,
         )
+        from app.services.chart_service import refusal_category
+        from app.services.execution_plan import refuse_foreign_live_sources
+
         try:
             sql, _columns, _pivot = engine.run(spec)
+            refuse_foreign_live_sources(db, engine.live_source_ids, datasource, engine.live_source_kinds)
         except ValueError as exc:
-            return {"ok": False, "error": str(exc), "rows": []}
+            # a semantic refusal keeps its category (as the chart runtime)
+            return {"ok": False, "error": str(exc), "rows": [], "category": refusal_category(exc)}
 
+        from app.services.relationship_key_guard import verify_key_probes
+
+        try:
+            verify_key_probes(engine.key_probes, ds_type=ds_type, config=datasource.config,
+                              namespace=f"ds:{getattr(datasource, 'id', '')}")
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "rows": [], "category": refusal_category(exc)}
         try:
             _cols, rows, _ms = DataSourceConnectionService.execute_query(
                 ds_type, datasource.config, sql, limit=100, timeout_seconds=15,
@@ -5909,15 +6127,25 @@ def update_dataset_explore(
         if key not in allowed_fields:
             continue
         if key == "joins" and isinstance(value, list):
-            managed_joins = [
-                join for join in (explore.joins or [])
-                if join.get("managed") and join.get("origin") not in {"auto_fk", "auto_calendar"}
-            ]
-            editable_joins = [
-                join for join in value
-                if not (join.get("managed") and join.get("origin") not in {"auto_fk", "auto_calendar"})
-            ]
-            setattr(explore, key, [*managed_joins, *editable_joins])
+            # The one whole-list writer: lock, required version, contract
+            # validation, stored provenance, tombstones; system-managed rows
+            # the caller may not edit are kept.
+            from app.services.dataset_model_service import (
+                RelationshipWriteConflict, RelationshipWritePreconditionRequired, replace_explore_joins,
+            )
+            try:
+                new_joins = replace_explore_joins(
+                    db, explore, dataset_id, [dict(j) for j in value if isinstance(j, dict)],
+                    expected_joins_version=update_data.get("expected_joins_version"),
+                    keep_system_managed=True,
+                )
+            except RelationshipWritePreconditionRequired as exc:
+                raise HTTPException(status_code=428, detail=str(exc))
+            except RelationshipWriteConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            setattr(explore, key, new_joins)
             continue
         setattr(explore, key, value)
 
@@ -5930,6 +6158,7 @@ def update_dataset_explore(
         "base_view_name": explore.base_view_name,
         "base_view_id": explore.base_view_id,
         "joins": explore.joins or [],
+        "joins_version": explore.joins_version,
         "description": explore.description,
     }
 
@@ -6100,6 +6329,35 @@ def suggest_model_join(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _replaces_payload(raw) -> dict | None:
+    """The stored identity of the relationship an edit replaces, or None."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("replaces phải là object {from_view, view, alias, from_columns, to_columns}")
+    return {
+        "from_view": raw.get("from_view"),
+        "view": raw.get("view"),
+        "alias": raw.get("alias"),
+        "from_columns": list(raw.get("from_columns") or []),
+        "to_columns": list(raw.get("to_columns") or []),
+    }
+
+
+def _strict_optional_bool(raw, field: str, *, default: bool) -> bool:
+    """A JSON boolean, or its exact text form. Absent → ``default``.
+
+    Anything else is refused: ``bool("false")`` is True, so a lenient cast
+    turned an explicit "inactive" into an ACTIVE relationship."""
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and raw.strip().lower() in ("true", "false"):
+        return raw.strip().lower() == "true"
+    raise ValueError(f"{field} phải là true/false (nhận {raw!r})")
+
+
 @router.post(
     "/{dataset_id}/model/joins",
     summary="Add or update a relationship between two tables",
@@ -6132,14 +6390,19 @@ def add_model_join(
         alias_value = payload.get("alias")
         if alias_value is not None:
             alias_value = str(alias_value).strip() or None
-        # Phase-3b: optional is_active + cross_filter. Defaults preserved on
-        # service side so callers from older clients keep working.
-        raw_active = payload.get("is_active")
-        is_active = True if raw_active is None else bool(raw_active)
-        cross_filter = str(payload.get("cross_filter") or "single").strip().lower()
-        if cross_filter not in ("single", "both"):
-            cross_filter = "single"
-        force = bool(payload.get("force", False))
+        # Phase-3b: optional is_active + cross_filter. Absent → the documented
+        # defaults (active, single). PRESENT but malformed → rejected: `bool("false")`
+        # is True and an unknown cross_filter used to be rewritten to "single",
+        # so a caller's intent was silently replaced by a different relationship.
+        is_active = _strict_optional_bool(payload.get("is_active"), "is_active", default=True)
+        raw_cf = payload.get("cross_filter")
+        cross_filter = "single" if raw_cf is None else str(raw_cf)
+        force = _strict_optional_bool(payload.get("force"), "force", default=False)
+        raw_pk = payload.get("primary_key_on_to_view")
+        if raw_pk is not None and not (
+            isinstance(raw_pk, list) and all(isinstance(c, str) for c in raw_pk)
+        ):
+            raise ValueError("primary_key_on_to_view phải là danh sách tên cột")
         result = add_join(
             db,
             dataset_id=dataset_id,
@@ -6150,11 +6413,14 @@ def add_model_join(
             from_columns=from_columns,
             to_columns=to_columns,
             join_type=payload.get("join_type", "left"),
-            relationship=payload.get("relationship", "many_to_one"),
+            relationship=payload.get("relationship"),
+            cardinality=payload.get("cardinality"),
             alias=alias_value,
             is_active=is_active,
             cross_filter=cross_filter,
+            primary_key_on_to_view=raw_pk,
             force=force,
+            replaces=_replaces_payload(payload.get("replaces")),
         )
         return result
     except ValueError as e:
@@ -6192,10 +6458,11 @@ def remove_model_join(
     to_column: Optional[str] = Query(None, description="Optional target column for an exact join match"),
     from_columns: Optional[str] = Query(None, description="Optional comma-separated source columns for an exact composite join match"),
     to_columns: Optional[str] = Query(None, description="Optional comma-separated target columns for an exact composite join match"),
+    alias: Optional[str] = Query(None, description="Alias of the relationship (role-played joins to the same table differ only by alias). Send an empty value for the un-aliased one."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Remove a join/relationship from one semantic view to another."""
+    """Remove ONE join/relationship from one semantic view to another."""
     from app.services.dataset_model_service import remove_join
 
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
@@ -6222,6 +6489,8 @@ def remove_model_join(
             to_column=to_column,
             from_columns=match_from_columns,
             to_columns=match_to_columns,
+            alias=alias,
+            alias_given=alias is not None,
         )
         return result
     except ValueError as e:
@@ -6271,6 +6540,25 @@ def get_quality_summary(
     return DatasetQualityService.get_summary(db, dataset_id)
 
 
+@router.get("/{dataset_id}/model/health")
+def get_model_health(
+    dataset_id: int,
+    execute: bool = Query(True, description="Run the checks that query the warehouse (key uniqueness, snapshot parity)."),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Source quality vs semantic health vs snapshot health, as separate layers.
+
+    Semantic checks are derived from the model (relationship one-side keys and
+    declared primary keys unique on the transformed relation; no dangling column
+    references). The ones marked `blocking` also gate Sync & Publish."""
+    from app.services import semantic_health_service
+
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_view_access(db, current_user, ds, "datasets")
+    return semantic_health_service.evaluate(db, dataset_id, execute=execute)
+
+
 @router.get("/{dataset_id}/quality/rules", response_model=List[QualityRuleResponse])
 def list_quality_rules(
     dataset_id: int,
@@ -6293,7 +6581,7 @@ def preview_quality_rule(
 ):
     """Preview a rule's SQL and descriptions without saving it."""
     ds = _get_dataset_or_404(db, dataset_id)
-    require_view_access(db, current_user, ds, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, ds)  # raw values
 
     config_dict = body.config.model_dump(exclude_none=True) if body.config else {}
     result = DatasetQualityService.preview_rule(
@@ -6316,7 +6604,7 @@ def test_quality_rule(
 ):
     """Execute a rule preview against live data without saving it."""
     ds = _get_dataset_or_404(db, dataset_id)
-    require_view_access(db, current_user, ds, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, ds)  # raw values
 
     config_dict = body.config.model_dump(exclude_none=True) if body.config else {}
     result = DatasetQualityService.test_rule(
@@ -6502,11 +6790,15 @@ def trigger_quality_run(
     ds = _get_dataset_or_404(db, dataset_id)
     require_edit_access(db, current_user, ds, "datasets")
 
-    run = DatasetQualityService.create_run(
+    # Same overlap guard as the scheduler: a double-click or two users must not
+    # start concurrent full rule scans against the source.
+    run = DatasetQualityService.trigger_run(
         db,
         dataset_id,
         triggered_by_id=str(current_user.id),
     )
+    if run is None:
+        raise HTTPException(status_code=409, detail="Một lượt kiểm tra chất lượng đang chạy cho dataset này.")
     background_tasks.add_task(DatasetQualityService.execute_run, run.id)
     return QualityRunTriggerResponse(run_id=run.id, status=run.status)
 
@@ -6741,9 +7033,10 @@ def get_column_summary_endpoint(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     table = db.query(DatasetTable).filter(
         DatasetTable.id == table_id,
@@ -6792,9 +7085,10 @@ def get_table_profile(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
-    if perm == "none":
-        raise HTTPException(status_code=403, detail="Access denied")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    # Composition: rows of a composed table ARE the parent's rows - the same
+    # lineage View check charts apply (no-op for a dataset with no parents).
+    dataset_grants_service.require_view_lineage(db, current_user, dataset_id)
 
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:

@@ -60,7 +60,7 @@ When it finishes you get:
 |---|---|
 | **Frontend** | http://localhost:3000 |
 | **Backend health** | http://localhost:8000/health |
-| **Login** | `admin@appbi.io` / `123456` *(default — `run` prints the real values and warns you to change them for production)* |
+| **Login** | `admin@appbi.io` / *random per install — `run` generates it into `.env` and prints it once. Production refuses to start without a strong `ADMIN_PASSWORD`.* |
 
 > A bundled `pgvector/pgvector:pg16` Postgres container is used automatically **unless** you set `DATABASE_URL` in `.env` (then that managed database is used and the local container is skipped).
 

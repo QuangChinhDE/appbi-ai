@@ -6,7 +6,6 @@ from typing import Iterable, Optional
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import require_view_access
 from app.models.dataset import Dataset, DatasetTable
 from app.models.models import DataSource
 from app.models.user import User
@@ -23,28 +22,43 @@ def require_dataset_binding_access(
     db: Session,
     current_user: User,
     dataset_id: int,
+    capability: str = "build",
 ) -> Dataset:
+    """The Dataset authority a Workboard operation needs, from the ONE Dataset
+    policy (dataset_grants_service.dataset_capabilities: owner, module admin,
+    user/team grants, legacy shares read as canonical verbs).
+
+    THE WORKBOARD <-> DATASET CONTRACT
+    * Binding a dataset into a workboard - create, rebind, screen binding,
+      publish, public links, imports, app users, webhooks, workspace menus - is
+      using the dataset to build downstream content, and DELEGATES its rows to
+      whoever the workboard serves. It needs ``build`` (the default).
+    * Audit/metadata reads need ``view``; flagging a table as shared reference
+      data needs ``manage``.
+    * Runtime row reads/writes are authorized by the WORKBOARD (view / edit, or
+      the app user's role + row rules), within the tables and columns the
+      binder configured. Nothing here widens any other Dataset action.
+
+    There is no fallback: a policy error is an error, never a reason to try a
+    weaker check (this used to swallow any exception and fall back to a plain
+    view check, and accepted ANY non-empty capability as enough to bind).
+    """
+    from app.services import dataset_grants_service
+
     dataset = db.query(Dataset).filter(Dataset.id == int(dataset_id)).first()
     if dataset is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Dataset not found",
         )
-    # Honor the dataset-grants model (the canonical dataset sharing/security
-    # model) in addition to the classic resource-share/module check: a user the
-    # dataset was shared with (grant verb view+) can bind/import a workboard onto
-    # it. Without this, sharing a dataset via grants and having a teammate import
-    # a workboard onto it would 403 even though they can read the data.
-    try:
-        from app.services import dataset_grants_service
-
-        if dataset_grants_service.dataset_capabilities(db, current_user, dataset):
-            return dataset
-    except Exception:
-        # Grants are a best-effort widening; never let their lookup block the
-        # classic path below.
-        pass
-    require_view_access(db, current_user, dataset, "datasets")
+    caps = dataset_grants_service.dataset_capabilities(db, current_user, dataset)
+    if not caps:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found")
+    if capability not in caps:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"This needs '{capability}' on the dataset.",
+        )
     return dataset
 
 

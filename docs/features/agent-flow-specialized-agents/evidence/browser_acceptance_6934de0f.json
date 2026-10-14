@@ -1,0 +1,3240 @@
+{
+  "config": {
+    "argv": [
+      "C:\\nvm4w\\nodejs\\node.exe",
+      "D:\\Appv2\\wt-af-specialist\\e2e\\node_modules\\@playwright\\test\\cli.js",
+      "test",
+      "tests/agent-flow-specialists.spec.ts",
+      "tests/builder.spec.ts",
+      "tests/run-inspector.spec.ts",
+      "tests/open-in-builder.spec.ts",
+      "tests/agent-flow-v1-author-golden.spec.ts",
+      "tests/agent-flow-v1-reader-golden.spec.ts",
+      "tests/agent-flow-ai-keys.spec.ts",
+      "tests/security-forged.spec.ts",
+      "tests/canvas-a11y.spec.ts",
+      "tests/pointer-drag.spec.ts",
+      "--project=chromium",
+      "--retries=0",
+      "--workers=1",
+      "--reporter=line,json"
+    ],
+    "configFile": "D:\\Appv2\\wt-af-specialist\\e2e\\playwright.config.ts",
+    "rootDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "apiUrl": "http://localhost:8137",
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "D:/Appv2/wt-af-specialist/e2e/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "apiUrl": "http://localhost:8137",
+          "actualWorkers": 1
+        },
+        "id": "setup",
+        "name": "setup",
+        "testDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "/auth\\.setup\\.ts/"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "D:/Appv2/wt-af-specialist/e2e/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "apiUrl": "http://localhost:8137",
+          "actualWorkers": 1
+        },
+        "id": "chromium",
+        "name": "chromium",
+        "testDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+        "testIgnore": [
+          "/security\\/.*\\.spec\\.ts/",
+          "/chart-hardening\\.spec\\.ts/"
+        ],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "D:/Appv2/wt-af-specialist/e2e/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "apiUrl": "http://localhost:8137",
+          "actualWorkers": 1
+        },
+        "id": "chromium-1920",
+        "name": "chromium-1920",
+        "testDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "/layout\\.spec\\.ts/"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "D:/Appv2/wt-af-specialist/e2e/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "apiUrl": "http://localhost:8137",
+          "actualWorkers": 1
+        },
+        "id": "chart-hardening",
+        "name": "chart-hardening",
+        "testDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "/chart-hardening\\.spec\\.ts/"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "D:/Appv2/wt-af-specialist/e2e/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "apiUrl": "http://localhost:8137",
+          "actualWorkers": 1
+        },
+        "id": "security",
+        "name": "security",
+        "testDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "/security\\/.*\\.spec\\.ts/"
+        ],
+        "timeout": 60000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "line"
+      ],
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.63.0",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "auth.setup.ts",
+      "file": "auth.setup.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "authenticate as admin",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "setup",
+              "projectName": "setup",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4769,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-08T17:28:04.973Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "17e3fe6f4d9d8bd79c6b-1580989d32f149e984ed",
+          "file": "auth.setup.ts",
+          "line": 17,
+          "column": 6
+        }
+      ]
+    },
+    {
+      "title": "agent-flow-ai-keys.spec.ts",
+      "file": "agent-flow-ai-keys.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "Agent Flow AI Keys",
+          "file": "agent-flow-ai-keys.spec.ts",
+          "line": 23,
+          "column": 6,
+          "specs": [
+            {
+              "title": "a key is stored once, never echoed, and a step references it by id",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 547,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:10.517Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "313b7574e9024252c9bb-52ae4b7df0aec6e14143",
+              "file": "agent-flow-ai-keys.spec.ts",
+              "line": 32,
+              "column": 7
+            },
+            {
+              "title": "a step with no key is refused before anything runs",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 953,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:11.106Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "313b7574e9024252c9bb-3d438779019f1207b1c2",
+              "file": "agent-flow-ai-keys.spec.ts",
+              "line": 76,
+              "column": 7
+            },
+            {
+              "title": "the manager adds a key and a step picks it, surviving save and reload",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 7517,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:12.072Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "313b7574e9024252c9bb-57e9c5d91da6dfc2a868",
+              "file": "agent-flow-ai-keys.spec.ts",
+              "line": 87,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "agent-flow-specialists.spec.ts",
+      "file": "agent-flow-specialists.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "specialist boundary (server)",
+          "file": "agent-flow-specialists.spec.ts",
+          "line": 57,
+          "column": 6,
+          "specs": [
+            {
+              "title": "a grant outside the role is refused on save (forged payload)",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 26,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:20.724Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-7309e9a1fe861c99cb21",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 58,
+              "column": 7
+            },
+            {
+              "title": "an unknown role is refused on save",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 27,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:20.758Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-dc88827261b605eccc5e",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 66,
+              "column": 7
+            },
+            {
+              "title": "a Skill grant is outside every role",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 27,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:20.795Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-40c712521830dd0762f9",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 73,
+              "column": 7
+            },
+            {
+              "title": "role dependencies and impossible inputs block publish, even acknowledged",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 138,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:20.833Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-9ccb6287e8ac1959175e",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 80,
+              "column": 7
+            },
+            {
+              "title": "a custom agent keeps any grant it had (backward compatible)",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 125,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:20.982Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-29142d10fb755fa694e3",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 100,
+              "column": 7
+            },
+            {
+              "title": "the role catalogue is served with the tools it bounds",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 45,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:21.119Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-bee8bc00e680e9fc887e",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 112,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "specialist authoring (builder)",
+          "file": "agent-flow-specialists.spec.ts",
+          "line": 123,
+          "column": 6,
+          "specs": [
+            {
+              "title": "add a specialist, see its boundary, switch role, wire reads-from, save",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2905,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:21.173Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-d10d7bd07c7826683d90",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 126,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "specialist journeys (live model)",
+          "file": "agent-flow-specialists.spec.ts",
+          "line": 170,
+          "column": 6,
+          "specs": [
+            {
+              "title": "J1 a single custom agent still answers from the report",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 17010,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:24.089Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-431ff10344caca89f9f8",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 174,
+              "column": 7
+            },
+            {
+              "title": "J2/J4 reader then analyst: tools stay inside each role, step 1 reaches step 2",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 40333,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:28:41.106Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-787a77ad3b2982a22adf",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 184,
+              "column": 7
+            },
+            {
+              "title": "J3 knowledge reader cites only the attached document",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 8213,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:29:21.452Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-5d6267de0fa3dad14c53",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 205,
+              "column": 7
+            },
+            {
+              "title": "J6/J9 a failed input is told to the next step and the run is partial",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 9881,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:29:29.679Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-704baab4e7a4a6d34eb6",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 215,
+              "column": 7
+            },
+            {
+              "title": "J8 a branch that did not run is reported missing, not silently skipped",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 6220,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:29:39.571Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-a16e4747d490435f9ef8",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 237,
+              "column": 7
+            },
+            {
+              "title": "J7 coordinator picks the matching specialist and says when none fits",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 11464,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:29:45.811Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-c819a0b2613cf48552b5",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 259,
+              "column": 7
+            },
+            {
+              "title": "J12 publish, edit, and the published version keeps its behaviour",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 302,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:29:57.290Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-de0d6424af6c3961dd75",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 280,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "builder: branches, blanks, follow-ups",
+          "file": "agent-flow-specialists.spec.ts",
+          "line": 299,
+          "column": 6,
+          "specs": [
+            {
+              "title": "F09 a case can be removed, a new case key is unique, IF keeps its minimum",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 3134,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:29:57.605Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-acf99f46944928eb22f6",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 302,
+              "column": 7
+            },
+            {
+              "title": "F08 a blank Switch saves as a draft but cannot publish, and says why",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 104,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:00.748Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-2f46ab94caeb3988e94a",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 336,
+              "column": 7
+            },
+            {
+              "title": "F10 the answering step offers a follow-up switch that is saved",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2416,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:00.861Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-297e0c9be775790613d4",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 348,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "analytics meaning (live model, SaaS fixture)",
+          "file": "agent-flow-specialists.spec.ts",
+          "line": 365,
+          "column": 6,
+          "specs": [
+            {
+              "title": "the Metric Analyst answers August ARR with August, not July or a sum",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 11915,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:03.289Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-26dbfa34ad72d0a4cd51",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 391,
+              "column": 7
+            },
+            {
+              "title": "a range total of a flow measure is the range, not one month",
+              "ok": false,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 7912,
+                      "error": {
+                        "message": "Error: Không có biểu đồ nào hiển thị số liệu khách hàng rời bỏ (cus_churned) theo tháng trong báo cáo này. Do đó, tôi không thể cung cấp số liệu bạn yêu cầu.\n\n[FOLLOWUP] Bạn có muốn tìm hiểu thông tin khác không?  \n[FOLLOWUP] Bạn cần hỗ trợ gì thêm không?  \n[FOLLOWUP] Có cách khác nào để tôi có thể giúp bạn không?\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32mtrue\u001b[39m\nReceived: \u001b[31mfalse\u001b[39m",
+                        "stack": "Error: Không có biểu đồ nào hiển thị số liệu khách hàng rời bỏ (cus_churned) theo tháng trong báo cáo này. Do đó, tôi không thể cung cấp số liệu bạn yêu cầu.\n\n[FOLLOWUP] Bạn có muốn tìm hiểu thông tin khác không?  \n[FOLLOWUP] Bạn cần hỗ trợ gì thêm không?  \n[FOLLOWUP] Có cách khác nào để tôi có thể giúp bạn không?\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32mtrue\u001b[39m\nReceived: \u001b[31mfalse\u001b[39m\n    at D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-specialists.spec.ts:413:79",
+                        "location": {
+                          "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-specialists.spec.ts",
+                          "column": 79,
+                          "line": 413
+                        },
+                        "snippet": "\u001b[0m \u001b[90m 411 |\u001b[39m     \u001b[36mconst\u001b[39m n \u001b[33m=\u001b[39m nums(env\u001b[33m.\u001b[39manswer\u001b[33m.\u001b[39mtext)\u001b[33m;\u001b[39m\n \u001b[90m 412 |\u001b[39m     \u001b[90m// 60 is right; 40 (August alone) must not be presented as the range.\u001b[39m\n\u001b[31m\u001b[1m>\u001b[22m\u001b[39m\u001b[90m 413 |\u001b[39m     expect(n\u001b[33m.\u001b[39mincludes(\u001b[35m60\u001b[39m) \u001b[33m||\u001b[39m (env\u001b[33m.\u001b[39mnotices \u001b[33m||\u001b[39m [])\u001b[33m.\u001b[39mlength \u001b[33m>\u001b[39m \u001b[35m0\u001b[39m\u001b[33m,\u001b[39m env\u001b[33m.\u001b[39manswer\u001b[33m.\u001b[39mtext)\u001b[33m.\u001b[39mtoBe(\u001b[36mtrue\u001b[39m)\u001b[33m;\u001b[39m\n \u001b[90m     |\u001b[39m                                                                               \u001b[31m\u001b[1m^\u001b[22m\u001b[39m\n \u001b[90m 414 |\u001b[39m     \u001b[36mif\u001b[39m (\u001b[33m!\u001b[39mn\u001b[33m.\u001b[39mincludes(\u001b[35m60\u001b[39m)) expect(n)\u001b[33m.\u001b[39mnot\u001b[33m.\u001b[39mtoContain(\u001b[35m40\u001b[39m)\u001b[33m;\u001b[39m\n \u001b[90m 415 |\u001b[39m   })\u001b[33m;\u001b[39m\n \u001b[90m 416 |\u001b[39m })\u001b[33m;\u001b[39m\u001b[0m"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-specialists.spec.ts",
+                            "column": 79,
+                            "line": 413
+                          },
+                          "message": "Error: Không có biểu đồ nào hiển thị số liệu khách hàng rời bỏ (cus_churned) theo tháng trong báo cáo này. Do đó, tôi không thể cung cấp số liệu bạn yêu cầu.\n\n[FOLLOWUP] Bạn có muốn tìm hiểu thông tin khác không?  \n[FOLLOWUP] Bạn cần hỗ trợ gì thêm không?  \n[FOLLOWUP] Có cách khác nào để tôi có thể giúp bạn không?\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32mtrue\u001b[39m\nReceived: \u001b[31mfalse\u001b[39m\n\n  411 |     const n = nums(env.answer.text);\n  412 |     // 60 is right; 40 (August alone) must not be presented as the range.\n> 413 |     expect(n.includes(60) || (env.notices || []).length > 0, env.answer.text).toBe(true);\n      |                                                                               ^\n  414 |     if (!n.includes(60)) expect(n).not.toContain(40);\n  415 |   });\n  416 | });\n    at D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-specialists.spec.ts:413:79"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:15.213Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "D:\\Appv2\\wt-af-specialist\\e2e\\test-results\\agent-flow-specialists-ana-43de5--is-the-range-not-one-month-chromium\\error-context.md"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "D:\\Appv2\\wt-af-specialist\\e2e\\test-results\\agent-flow-specialists-ana-43de5--is-the-range-not-one-month-chromium\\error-context.md"
+                        },
+                        {
+                          "name": "trace",
+                          "contentType": "application/zip",
+                          "path": "D:\\Appv2\\wt-af-specialist\\e2e\\test-results\\agent-flow-specialists-ana-43de5--is-the-range-not-one-month-chromium\\trace.zip"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-specialists.spec.ts",
+                        "column": 79,
+                        "line": 413
+                      }
+                    }
+                  ],
+                  "status": "unexpected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-3a725f109a337c392388",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 405,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "agent-flow-v1-author-golden.spec.ts",
+      "file": "agent-flow-v1-author-golden.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "V1 author golden journey @critical",
+          "file": "agent-flow-v1-author-golden.spec.ts",
+          "line": 55,
+          "column": 6,
+          "specs": [
+            {
+              "title": "New flow offers the BI starter first, and says what it will build",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2864,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:27.059Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "3c5d2dd554b77d5e8925-4814fc68c5049d88c21e",
+              "file": "agent-flow-v1-author-golden.spec.ts",
+              "line": 62,
+              "column": 7
+            },
+            {
+              "title": "the starter opens as a readable three-step flow, valid with no further setup",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2062,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:30.043Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "3c5d2dd554b77d5e8925-49c4e1d81e7b0235ba48",
+              "file": "agent-flow-v1-author-golden.spec.ts",
+              "line": 99,
+              "column": 7
+            },
+            {
+              "title": "test panel opens, draft saves, and a hard reload brings the flow back",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 4039,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:32.119Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "3c5d2dd554b77d5e8925-b05a2d4002d5bb8213c8",
+              "file": "agent-flow-v1-author-golden.spec.ts",
+              "line": 153,
+              "column": 7
+            },
+            {
+              "title": "leaving with unsaved edits asks first, and staying keeps the edits",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2284,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:36.172Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "3c5d2dd554b77d5e8925-04791f6481caa174ea1c",
+              "file": "agent-flow-v1-author-golden.spec.ts",
+              "line": 194,
+              "column": 7
+            },
+            {
+              "title": "publishing shows where the flow ended up, and offers the way to a report",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2792,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:38.474Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "3c5d2dd554b77d5e8925-e21968069adf6fbbea61",
+              "file": "agent-flow-v1-author-golden.spec.ts",
+              "line": 220,
+              "column": 7
+            },
+            {
+              "title": "a configured Tool step is named by its tool, and an empty one says so",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2598,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:41.280Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "3c5d2dd554b77d5e8925-b2b34563b9919be46e01",
+              "file": "agent-flow-v1-author-golden.spec.ts",
+              "line": 251,
+              "column": 7
+            },
+            {
+              "title": "a run is inspectable and opens the step it came from in the builder",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 9981,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:43.889Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "3c5d2dd554b77d5e8925-bed3cefd283fd3b5c525",
+              "file": "agent-flow-v1-author-golden.spec.ts",
+              "line": 334,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "agent-flow-v1-reader-golden.spec.ts",
+      "file": "agent-flow-v1-reader-golden.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "V1 reader golden journey @critical",
+          "file": "agent-flow-v1-reader-golden.spec.ts",
+          "line": 62,
+          "column": 6,
+          "specs": [
+            {
+              "title": "a logged-out reader can open the link and reach the assistant",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [
+                    {
+                      "type": "slow",
+                      "location": {
+                        "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                        "line": 68,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2894,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:54.387Z",
+                      "annotations": [
+                        {
+                          "type": "slow",
+                          "location": {
+                            "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                            "line": 68,
+                            "column": 8
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "75fec31018adbe414c4d-d4832cc65412ea1f37b7",
+              "file": "agent-flow-v1-reader-golden.spec.ts",
+              "line": 228,
+              "column": 7
+            },
+            {
+              "title": "a token that does not exist is refused, and carries no binding",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [
+                    {
+                      "type": "slow",
+                      "location": {
+                        "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                        "line": 68,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2515,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:30:59.336Z",
+                      "annotations": [
+                        {
+                          "type": "slow",
+                          "location": {
+                            "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                            "line": 68,
+                            "column": 8
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "75fec31018adbe414c4d-5aac233a7f7c520dc125",
+              "file": "agent-flow-v1-reader-golden.spec.ts",
+              "line": 256,
+              "column": 7
+            },
+            {
+              "title": "nothing internal reaches the reader, on the answer or in its details",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [
+                    {
+                      "type": "slow",
+                      "location": {
+                        "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                        "line": 68,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 3300,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:01.865Z",
+                      "annotations": [
+                        {
+                          "type": "slow",
+                          "location": {
+                            "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                            "line": 68,
+                            "column": 8
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "75fec31018adbe414c4d-25cca740b8a80d92ae59",
+              "file": "agent-flow-v1-reader-golden.spec.ts",
+              "line": 296,
+              "column": 7
+            },
+            {
+              "title": "a status line, if the turn produced one, never calls a refusal an error",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [
+                    {
+                      "type": "slow",
+                      "location": {
+                        "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                        "line": 68,
+                        "column": 8
+                      }
+                    },
+                    {
+                      "type": "note",
+                      "description": "this turn called no tools, so no status line was rendered"
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 3813,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:05.176Z",
+                      "annotations": [
+                        {
+                          "type": "slow",
+                          "location": {
+                            "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                            "line": 68,
+                            "column": 8
+                          }
+                        },
+                        {
+                          "type": "note",
+                          "description": "this turn called no tools, so no status line was rendered"
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "75fec31018adbe414c4d-43e7a77967035d46a58d",
+              "file": "agent-flow-v1-reader-golden.spec.ts",
+              "line": 326,
+              "column": 7
+            },
+            {
+              "title": "a logged-out reader can rate an answer, and the verdict survives a reload",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [
+                    {
+                      "type": "slow",
+                      "location": {
+                        "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                        "line": 68,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 9330,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:09.000Z",
+                      "annotations": [
+                        {
+                          "type": "slow",
+                          "location": {
+                            "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                            "line": 68,
+                            "column": 8
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "75fec31018adbe414c4d-69e7587560e4ca2caeb3",
+              "file": "agent-flow-v1-reader-golden.spec.ts",
+              "line": 377,
+              "column": 7
+            },
+            {
+              "title": "a rating survives the reader asking another question",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [
+                    {
+                      "type": "slow",
+                      "location": {
+                        "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                        "line": 68,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 7230,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:18.343Z",
+                      "annotations": [
+                        {
+                          "type": "slow",
+                          "location": {
+                            "file": "D:\\Appv2\\wt-af-specialist\\e2e\\tests\\agent-flow-v1-reader-golden.spec.ts",
+                            "line": 68,
+                            "column": 8
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "75fec31018adbe414c4d-ed184e9e57f36f6adfa1",
+              "file": "agent-flow-v1-reader-golden.spec.ts",
+              "line": 419,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "builder.spec.ts",
+      "file": "builder.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "builder lifecycle @critical",
+          "file": "builder.spec.ts",
+          "line": 42,
+          "column": 6,
+          "specs": [
+            {
+              "title": "the flow list loads with no page errors",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 1813,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:26.403Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "eb8c965bfed0363de8d0-610d6ecb9da529ef5153",
+              "file": "builder.spec.ts",
+              "line": 50,
+              "column": 7
+            },
+            {
+              "title": "the builder opens a flow with no page errors",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2044,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:28.346Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "eb8c965bfed0363de8d0-564842ff07ce1bd21b01",
+              "file": "builder.spec.ts",
+              "line": 61,
+              "column": 7
+            },
+            {
+              "title": "the node palette has one source of truth, and it is the backend",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 27,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:30.401Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "eb8c965bfed0363de8d0-fe5556b7ff5883defb3f",
+              "file": "builder.spec.ts",
+              "line": 74,
+              "column": 7
+            },
+            {
+              "title": "a saved flow survives a hard reload",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 3477,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:30.438Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "eb8c965bfed0363de8d0-00e522689d856a58cec6",
+              "file": "builder.spec.ts",
+              "line": 95,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "ToolNode end to end @critical",
+          "file": "builder.spec.ts",
+          "line": 113,
+          "column": 6,
+          "specs": [
+            {
+              "title": "a ToolNode round-trips with its typed bindings intact",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 133,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:33.929Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "eb8c965bfed0363de8d0-b9d6a54c1b153267903f",
+              "file": "builder.spec.ts",
+              "line": 114,
+              "column": 7
+            },
+            {
+              "title": "the catalogue gives a ToolNode form everything it needs",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 38,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:34.071Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "eb8c965bfed0363de8d0-7cf69e25afc873b01fea",
+              "file": "builder.spec.ts",
+              "line": 161,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "canvas-a11y.spec.ts",
+      "file": "canvas-a11y.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "authoring canvas @critical",
+          "file": "canvas-a11y.spec.ts",
+          "line": 69,
+          "column": 6,
+          "specs": [
+            {
+              "title": "a 24-step flow does not overflow the page at 1280x800",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2323,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:34.840Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-85bd58c3dfc5352e354e",
+              "file": "canvas-a11y.spec.ts",
+              "line": 86,
+              "column": 9
+            },
+            {
+              "title": "a 3-specialist coordinator stays reachable at 1280x800",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2072,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:37.174Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-18f4c8ea9c7a2c7981d2",
+              "file": "canvas-a11y.spec.ts",
+              "line": 92,
+              "column": 9
+            },
+            {
+              "title": "a 24-step flow does not overflow the page at 1440x900",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2109,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:39.257Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-85d8fea3e35cc8602dd4",
+              "file": "canvas-a11y.spec.ts",
+              "line": 86,
+              "column": 9
+            },
+            {
+              "title": "a 3-specialist coordinator stays reachable at 1440x900",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2183,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:41.378Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-2848a6cbd1308413451f",
+              "file": "canvas-a11y.spec.ts",
+              "line": 92,
+              "column": 9
+            },
+            {
+              "title": "a 24-step flow does not overflow the page at 1920x1080",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2256,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:43.575Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-a88d1aa0f546693f46f2",
+              "file": "canvas-a11y.spec.ts",
+              "line": 86,
+              "column": 9
+            },
+            {
+              "title": "a 3-specialist coordinator stays reachable at 1920x1080",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2395,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:45.844Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-3e4136c0fc4633bbf7eb",
+              "file": "canvas-a11y.spec.ts",
+              "line": 92,
+              "column": 9
+            },
+            {
+              "title": "the selected step says so programmatically, not only in its border",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2451,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:48.253Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-33af3082a3c1ed23d283",
+              "file": "canvas-a11y.spec.ts",
+              "line": 108,
+              "column": 7
+            },
+            {
+              "title": "every step button carries a name, not just a shape",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2086,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:50.719Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-011c74b6ebceac67592e",
+              "file": "canvas-a11y.spec.ts",
+              "line": 124,
+              "column": 7
+            },
+            {
+              "title": "the keyboard can ENTER the step list on a freshly loaded flow",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2311,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:52.816Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-0d304f6278515b6a4e8c",
+              "file": "canvas-a11y.spec.ts",
+              "line": 133,
+              "column": 7
+            },
+            {
+              "title": "the drag handle is not a tab stop ahead of the step it belongs to",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2832,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:55.141Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-fc39e5c46f42a4177090",
+              "file": "canvas-a11y.spec.ts",
+              "line": 150,
+              "column": 7
+            },
+            {
+              "title": "every builder tab is reachable at 1280x800",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2373,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:31:57.984Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-86a5b5731017b4dcb058",
+              "file": "canvas-a11y.spec.ts",
+              "line": 168,
+              "column": 9
+            },
+            {
+              "title": "every builder tab is reachable at 1440x900",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2280,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:00.371Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-8609715f4a85df9d1911",
+              "file": "canvas-a11y.spec.ts",
+              "line": 168,
+              "column": 9
+            },
+            {
+              "title": "every builder tab is reachable at 1920x1080",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2229,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:02.662Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-415e32f2067ef5706115",
+              "file": "canvas-a11y.spec.ts",
+              "line": 168,
+              "column": 9
+            },
+            {
+              "title": "reaching step 24 does not take 24 tab stops",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2988,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:04.903Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-e149be493c1f3fdb10f4",
+              "file": "canvas-a11y.spec.ts",
+              "line": 187,
+              "column": 7
+            },
+            {
+              "title": "a step can be reordered from the keyboard, through the same move the drop uses",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2341,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:07.902Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "e639f974dc281f277b05-cd6f0646f557453bc66c",
+              "file": "canvas-a11y.spec.ts",
+              "line": 203,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "open-in-builder.spec.ts",
+      "file": "open-in-builder.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "Open in Builder @critical",
+          "file": "open-in-builder.spec.ts",
+          "line": 133,
+          "column": 6,
+          "specs": [
+            {
+              "title": "a trace step opens its node in the Builder, selected, with the Inspector",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 3099,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:10.630Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "73a63300bfe06ce19128-6792a84a111be4a96c37",
+              "file": "open-in-builder.spec.ts",
+              "line": 138,
+              "column": 7
+            },
+            {
+              "title": "the Runs surface gains no editing control",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2692,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:13.741Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "73a63300bfe06ce19128-d42f8732d12ac57e2754",
+              "file": "open-in-builder.spec.ts",
+              "line": 170,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "pointer-drag.spec.ts",
+      "file": "pointer-drag.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "pointer drag @critical",
+          "file": "pointer-drag.spec.ts",
+          "line": 34,
+          "column": 6,
+          "specs": [
+            {
+              "title": "a step dragged with the pointer lands where it was dropped, and stays there",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 5351,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:16.643Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "6b9aa8486a125919363a-cd1bfd747fb5e6c5ab08",
+              "file": "pointer-drag.spec.ts",
+              "line": 43,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "run-inspector.spec.ts",
+      "file": "run-inspector.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "run inspector @critical",
+          "file": "run-inspector.spec.ts",
+          "line": 79,
+          "column": 6,
+          "specs": [
+            {
+              "title": "the trace shows node order, status, tools and output",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 6745,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:22.401Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "32d5cc2191bcd0327aa0-a29765ea0fe2e420527c",
+              "file": "run-inspector.spec.ts",
+              "line": 115,
+              "column": 7
+            },
+            {
+              "title": "a container does not double-count its children tool calls",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 6030,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:29.298Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "32d5cc2191bcd0327aa0-ea61e63e051f7236c3ac",
+              "file": "run-inspector.spec.ts",
+              "line": 145,
+              "column": 7
+            },
+            {
+              "title": "a step that fails is recorded as an error with a reason",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 6273,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:35.336Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "32d5cc2191bcd0327aa0-539e33c8d8a3cec14bcc",
+              "file": "run-inspector.spec.ts",
+              "line": 185,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "security-forged.spec.ts",
+      "file": "security-forged.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "unauthenticated access @critical",
+          "file": "security-forged.spec.ts",
+          "line": 32,
+          "column": 6,
+          "specs": [
+            {
+              "title": "GET /api/v1/agent-flows/brains is refused without a session",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 37,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.285Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-76e4c745d2fb42c6611e",
+              "file": "security-forged.spec.ts",
+              "line": 36,
+              "column": 9
+            },
+            {
+              "title": "GET /api/v1/agent-flows/tools is refused without a session",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 31,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.337Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-3fb5947796745685ff51",
+              "file": "security-forged.spec.ts",
+              "line": 36,
+              "column": 9
+            },
+            {
+              "title": "GET /api/v1/agent-flows/nodes is refused without a session",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 31,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.376Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-1fd3d8c3c34f18a39d12",
+              "file": "security-forged.spec.ts",
+              "line": 36,
+              "column": 9
+            },
+            {
+              "title": "PUT /brains is refused without a session",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 31,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.414Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-bb6e12933e464d4ba4d6",
+              "file": "security-forged.spec.ts",
+              "line": 45,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "the contract refuses a forged flow body @critical",
+          "file": "security-forged.spec.ts",
+          "line": 56,
+          "column": 6,
+          "specs": [
+            {
+              "title": "a valid body is reported valid — so a refusal below means something",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 18,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.452Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-a939ac0fd2b4d868491a",
+              "file": "security-forged.spec.ts",
+              "line": 67,
+              "column": 7
+            },
+            {
+              "title": "an unknown node type is refused, and named",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 16,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.478Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-e201b0d9553998b5fe17",
+              "file": "security-forged.spec.ts",
+              "line": 78,
+              "column": 7
+            },
+            {
+              "title": "a ToolNode with no tool chosen is refused",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 16,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.502Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-e73b67b8fa9f9fd7cc67",
+              "file": "security-forged.spec.ts",
+              "line": 87,
+              "column": 7
+            },
+            {
+              "title": "a ToolNode binding with braces in the variable name is refused",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 17,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.526Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-3b03b07e052d052fbbd5",
+              "file": "security-forged.spec.ts",
+              "line": 97,
+              "column": 7
+            },
+            {
+              "title": "a variable binding with no variable named is refused",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 15,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.550Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-7ab5efca055b70ab485d",
+              "file": "security-forged.spec.ts",
+              "line": 113,
+              "column": 7
+            },
+            {
+              "title": "a flow with no steps at all is refused",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 16,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.574Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-e874050cf7e978c7d14f",
+              "file": "security-forged.spec.ts",
+              "line": 126,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "the tool catalogue is a contract too @critical",
+          "file": "security-forged.spec.ts",
+          "line": 133,
+          "column": 6,
+          "specs": [
+            {
+              "title": "it ships no callable and no model-facing schema",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 23,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.596Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-d85537e1338fef784a20",
+              "file": "security-forged.spec.ts",
+              "line": 134,
+              "column": 7
+            },
+            {
+              "title": "every tool has classified its risk",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 20,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.627Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-583bf5665de4f9b9e6dc",
+              "file": "security-forged.spec.ts",
+              "line": 147,
+              "column": 7
+            },
+            {
+              "title": "a withheld pack is shown as unavailable rather than hidden",
+              "ok": true,
+              "tags": [
+                "critical"
+              ],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 20,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-08T17:32:42.655Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "891662c956fa2637f899-1d87940eb8d9d7855466",
+              "file": "security-forged.spec.ts",
+              "line": 157,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-08T17:28:04.131Z",
+    "duration": 279014.912,
+    "expected": 75,
+    "skipped": 0,
+    "unexpected": 1,
+    "flaky": 0
+  }
+}

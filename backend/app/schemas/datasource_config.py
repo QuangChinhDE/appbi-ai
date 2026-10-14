@@ -15,6 +15,11 @@ class PostgreSQLConfig(BaseModel):
     username: str = Field(..., description="Database username")
     password: str = Field(..., description="Database password")
     schema_name: Optional[str] = Field(None, description="Default schema (default: public)")
+    # Legacy alias the connectors still read (config.get("schema")) — must not be
+    # silently dropped by validation.
+    legacy_schema: Optional[str] = Field(None, alias="schema", description="Legacy alias of schema_name")
+
+    model_config = ConfigDict(populate_by_name=True)
 
     @field_validator("host")
     @classmethod
@@ -73,6 +78,16 @@ class BigQueryConfig(BaseModel):
         None,
         description="Connected Google account email",
     )
+    # F7: the consent popup's single-use handle must SURVIVE validation until the
+    # service claims it (it is removed from the config at claim time and never
+    # persisted); the claimed per-source credential + scopes must survive too.
+    google_pending_id: Optional[str] = Field(
+        None, description="Single-use handle from the consent popup, claimed on save",
+    )
+    google_oauth_credentials: Optional[str] = Field(None, description="Encrypted authorized-user token")
+    google_oauth_scopes: Optional[list] = Field(None, description="Scopes granted at consent time")
+    # F5 marker, stamped server-side only (the service strips any client value).
+    platform_gcp_admin_approved_target: Optional[str] = Field(None)
     # --- Near-realtime snapshot materialization (Dashboard perf #5) ---
     # Opt-in. When enabled, each heavy dataset table is materialized into a flat
     # snapshot table in `materialization_dataset`; charts read the flat snapshot.
@@ -227,6 +242,8 @@ def validate_datasource_config(ds_type: str, config: dict) -> dict:
         else:
             raise ValueError(f"Unsupported data source type: {ds_type}")
 
-        return validated.model_dump()
+        # exclude_none: an absent optional key stays absent (no "key": None noise
+        # that would later read as "changed" or as an explicit empty value).
+        return validated.model_dump(exclude_none=True, by_alias=True)
     except Exception as exc:
         raise ValueError(f"Invalid configuration for {ds_type}: {str(exc)}")

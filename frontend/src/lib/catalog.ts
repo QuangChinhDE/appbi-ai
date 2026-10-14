@@ -305,6 +305,8 @@ export interface KnowledgeDoc {
   owner_email?: string | null;
   /** Caller's effective permission on this doc: none|view|edit|full. */
   user_permission?: string | null;
+  /** Backend-computed actions for the caller (see getResourcePermissions). */
+  capabilities?: Record<string, boolean> | null;
   // ── External source (Source & Sync tab) — null = hand-typed ──
   source_type?: 'google_doc' | 'file' | 'web' | null;
   source_config?: Record<string, unknown>;

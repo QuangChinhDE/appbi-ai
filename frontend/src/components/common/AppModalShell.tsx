@@ -17,6 +17,13 @@ interface AppModalShellProps {
   bodyClassName?: string;
   closeDisabled?: boolean;
   variant?: 'modal' | 'page';
+  /** A stable handle for a launch-gate test.
+   *
+   *  This shell renders no `role="dialog"`, so a modal here is not reachable by
+   *  role and the only other handle is its title — which is translated, and which
+   *  a Vietnamese-first product is expected to change. Opt-in per call site
+   *  rather than stamped on every modal: an id nobody looks for is noise. */
+  testId?: string;
 }
 
 export function AppModalShell({
@@ -31,6 +38,7 @@ export function AppModalShell({
   bodyClassName = 'p-5',
   closeDisabled = false,
   variant = 'modal',
+  testId,
 }: AppModalShellProps) {
   // Esc closes the dialog — every other popover/menu in the app already does,
   // and a modal that only closes via its X button traps keyboard users.
@@ -71,7 +79,7 @@ export function AppModalShell({
 
   if (variant === 'page') {
     return (
-      <div className="flex min-h-screen w-full min-w-0 flex-col bg-surface-0">
+      <div data-testid={testId} className="flex min-h-screen w-full min-w-0 flex-col bg-surface-0">
         <div className="sticky top-0 z-10 border-b border-[rgb(var(--border-line))] bg-surface-1 px-5 py-3.5 lg:px-8 2xl:px-10">
           {headerInner}
         </div>
@@ -95,6 +103,7 @@ export function AppModalShell({
       }}
     >
       <div
+        data-testid={testId}
         className={cn(
           'flex w-full min-h-0 max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-xl',
           'bg-surface-1 border border-[rgb(var(--border-strong))] shadow-linear-lg',

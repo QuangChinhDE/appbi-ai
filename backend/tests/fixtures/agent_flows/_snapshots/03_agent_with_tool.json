@@ -28,7 +28,7 @@
   "notice_codes": [],
   "status": "ok",
   "step_outputs": {
-    "answer": "ok :: Doanh thu thế nào?ok :: Doanh thu thế nào?"
+    "answer": "ok :: Doanh thu thế nào?ok :: (Nhắc lại: trả lời bằng ngôn ngữ của câu hỏi — nếu không rõ thì tiếng Việt. Dữ liệu ở trên là tiếng Anh, đừng để nó đổi ngôn ngữ câu trả lời.)"
   },
   "tool_calls": [
     {

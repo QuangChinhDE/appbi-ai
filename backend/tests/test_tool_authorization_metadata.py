@@ -128,10 +128,19 @@ def test_a_row_shaped_tool_states_its_exposure_explicitly(name, spec):
     a passed value from a default, so this reads the source.
     """
     src = _pack_sources()
-    # the declaration block for this tool, up to the next tool or end of pack
-    start = src.find(f'"{name}"')
-    assert start != -1, f"{name} not found in any pack source"
-    block = src[start:start + 2600]
+    # THE DECLARATION, NOT THE FIRST MENTION.
+    #
+    # This used to take the first `"<name>"` anywhere in the pack sources, so any
+    # PROSE containing the tool's name won the search and the check read a block
+    # that was not a declaration. It broke the moment a `use_with` sentence told
+    # the model to "name it in rank_values or aggregate_chart_data" — a correct
+    # piece of guidance, failing a check that was matching English.
+    #
+    # `spec(` is where a tool is actually declared, so that is what this anchors
+    # to.
+    m = re.search(r"spec\(\s*[\"']" + re.escape(name) + r"[\"']", src)
+    assert m, f"{name} has no spec(...) declaration in any pack source"
+    block = src[m.start():m.start() + 2600]
     assert re.search(r"data_exposure\s*=", block), (
         f"{name} returns a table and does not declare data_exposure. State it: "
         f"raw_rows if the rows ARE the result, derived if they are aggregated."

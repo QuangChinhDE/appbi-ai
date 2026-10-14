@@ -5,8 +5,10 @@ Sensitive fields (passwords, API keys, tokens) stored in DataSource.config are
 encrypted at rest. The encryption key is loaded from DATASOURCE_ENCRYPTION_KEY
 setting (a base64url-encoded 32-byte key generated via `Fernet.generate_key()`).
 
-If DATASOURCE_ENCRYPTION_KEY is empty, credentials are stored in plain text
-(development mode). A warning is logged on startup.
+If DATASOURCE_ENCRYPTION_KEY is empty or invalid, credentials are stored in plain
+text ONLY in development/test (ENVIRONMENT dev/development/test). Anywhere else the
+application refuses to start (config.validate_security_settings) and encrypt_value
+raises instead of silently persisting a plaintext secret.
 
 Encrypted values are prefixed with "_enc:" so we can detect them and skip
 double-encryption.
@@ -41,6 +43,16 @@ _SENSITIVE_FIELDS = frozenset({
 })
 
 
+def _plaintext_allowed() -> bool:
+    """Plaintext storage is a dev/test convenience only."""
+    from app.core.config import settings
+    return str(settings.ENVIRONMENT or "").strip().lower() in ("dev", "development", "test")
+
+
+class EncryptionNotConfiguredError(RuntimeError):
+    """No usable DATASOURCE_ENCRYPTION_KEY outside dev/test."""
+
+
 def _get_fernet():
     """Lazily build and return the Fernet instance. Returns None if key is unset."""
     from app.core.config import settings
@@ -72,10 +84,17 @@ def is_encryption_configured() -> bool:
 
 
 def encrypt_value(plaintext: str) -> str:
-    """Encrypt a string value. Returns prefixed ciphertext or original if no key."""
+    """Encrypt a string value. Returns prefixed ciphertext.
+
+    Without a usable key the original is returned ONLY in dev/test; elsewhere this
+    raises, so a secret is never silently persisted in plaintext."""
     f = _get_fernet()
     if f is None:
-        return plaintext
+        if _plaintext_allowed():
+            return plaintext
+        raise EncryptionNotConfiguredError(
+            "DATASOURCE_ENCRYPTION_KEY is missing or invalid; refusing to store a secret in plaintext."
+        )
     token = f.encrypt(plaintext.encode()).decode()
     return f"{_ENCRYPTED_PREFIX}{token}"
 

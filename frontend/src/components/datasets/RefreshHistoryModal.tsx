@@ -68,7 +68,9 @@ function RunRow({ run, datasetId }: { run: DatasetRefreshRun; datasetId: number 
     ? t('datasets.refreshHistory.triggerScheduled')
     : run.trigger === 'source_change'
       ? t('datasets.refreshHistory.triggerSourceChange')
-      : t('datasets.refreshHistory.triggerManual');
+      : run.trigger === 'ttl'
+        ? t('datasets.refreshHistory.triggerTtl')
+        : t('datasets.refreshHistory.triggerManual');
 
   return (
     <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">

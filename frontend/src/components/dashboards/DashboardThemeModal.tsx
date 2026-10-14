@@ -7,7 +7,7 @@ import { useI18n } from '@/providers/LanguageProvider';
 import {
   CARD_TREATMENTS, CHART_CHROMES, KPI_STYLES, TABLE_STYLES, SLICER_STYLES,
   LABEL_STYLES, NUMERIC_FONTS, MARK_FILLS, SECTION_SURFACES,
-  FILTER_DOCKS, SLICER_VARIANTS,
+  SLICER_VARIANTS,
   TYPOGRAPHY_ROLES, TYPO_BASE_DEFAULT,
   contrastRatio, paletteFromBrandColor, resolveStyleTokens,
   type CardTreatment, type ChartChrome, type KpiStyle, type TableStyle, type SlicerStyle,
@@ -220,7 +220,8 @@ function TemplateCard({ tpl, active, onApply }: {
 }) {
   const { t } = useI18n();
   const v = tpl.value;
-  const dock = String(v.filterDock ?? 'top');
+  // Filters are controls on the report grid, not a docked area: every template
+  // shows them the same way, as a few small cards in the grid's first band.
   const gap = v.density === 'compact' ? 2 : v.density === 'spacious' ? 5 : 3.5;
   const radius = Math.min(pxNum(v.cardRadius, 8) / 2.2, 6);
   const ink = 'rgb(var(--text-primary))';
@@ -228,21 +229,9 @@ function TemplateCard({ tpl, active, onApply }: {
   const block = (o: number, extra?: React.CSSProperties): React.CSSProperties => ({
     background: ink, opacity: o, borderRadius: radius, ...extra,
   });
-  /** The filter dock, drawn as the one emphasised element. */
   const filterBar = (
-    <div
-      style={{
-        display: 'flex', gap: 2,
-        ...(dock === 'left' || dock === 'right'
-          ? { flexDirection: 'column', width: 13, flex: '0 0 auto' }
-          : { flexDirection: 'row', height: 7 }),
-      }}
-    >
-      {[0, 1, 2].map((i) => (
-        <div key={i} style={block(0.42, dock === 'left' || dock === 'right'
-          ? { height: 5, width: '100%' }
-          : { width: dock === 'drawer' ? 12 : 22, height: '100%' })} />
-      ))}
+    <div style={{ display: 'flex', flexDirection: 'row', gap: 2, height: 7 }}>
+      {[0, 1, 2].map((i) => <div key={i} style={block(0.42, { width: 22, height: '100%' })} />)}
     </div>
   );
 
@@ -279,10 +268,10 @@ function TemplateCard({ tpl, active, onApply }: {
         style={{
           padding: gap + 3, height: 104,
           display: 'flex', gap: gap + 1,
-          flexDirection: dock === 'left' ? 'row' : dock === 'right' ? 'row-reverse' : dock === 'bottom' ? 'column-reverse' : 'column',
+          flexDirection: 'column',
         }}
       >
-        {dock !== 'hidden' && filterBar}
+        {filterBar}
         {body}
       </div>
       <div className="border-t border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5">
@@ -762,7 +751,6 @@ export function DashboardThemeModal({ initial, onClose, onSave, onApplyLayout }:
                 { key: 'numericFont', label: 'dashboards.themeModal.numericFontHeading', options: NUMERIC_FONTS, current: tokens.numericFont },
                 { key: 'markFill', label: 'dashboards.themeModal.markFillHeading', options: MARK_FILLS, current: tokens.chart.markFill },
                 { key: 'sectionSurface', label: 'dashboards.themeModal.sectionSurfaceHeading', options: SECTION_SURFACES, current: tokens.sectionSurface },
-                { key: 'filterDock', label: 'dashboards.themeModal.filterDockHeading', options: FILTER_DOCKS, current: tokens.filterDock },
                 { key: 'slicerVariant', label: 'dashboards.themeModal.slicerVariantHeading', options: SLICER_VARIANTS, current: tokens.slicerVariant },
               ] as const).map((group) => (
                 <div key={group.key}>

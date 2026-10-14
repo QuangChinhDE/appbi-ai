@@ -113,14 +113,22 @@ def test_string_literal_stays_quoted(dialect):
     assert "= 'won'" in sql
 
 
-@pytest.mark.parametrize("dialect", ["bigquery", "postgresql"])
-def test_quote_escaping_is_dialect_independent(dialect):
+@pytest.mark.parametrize("dialect, literal", [
+    # GoogleSQL has ONE string escape, the backslash. `'O''Brien'` is not an
+    # escaped quote there: it tokenizes as two adjacent literals that concatenate
+    # to "OBrien", so the filter silently matched the wrong value. This test used
+    # to assert that form for BigQuery too ("dialect independent"); it is
+    # dialect-DEPENDENT by necessity (app/services/sql_literal.py).
+    ("bigquery", r"'O\'Brien'"),
+    ("postgresql", "'O''Brien'"),
+])
+def test_quote_escaping_is_correct_for_the_dialect(dialect, literal):
     measure = {
         "name": "a", "type": "sum", "sql": "amount",
         "filters": [{"field": "status", "operator": "eq", "value": "O'Brien"}],
     }
     sql = _engine([measure], dialect)._render_measure("revenue.a")
-    assert "'O''Brien'" in sql
+    assert literal in sql, sql
 
 
 # ── The cast builder itself ───────────────────────────────────────────────
@@ -169,3 +177,144 @@ def test_superseded_engine_flags_stay_off():
     from app.core.config import settings
     assert settings.FEATURE_PROPAGATION_ENGINE_V2 is False
     assert settings.FEATURE_PER_MEASURE_ISOLATION is False
+
+
+# ── Text-pattern filters: BigQuery has no LIKE … ESCAPE ───────────────────
+# `x LIKE '%a\%%' ESCAPE '\'` is a GoogleSQL syntax error, so every text filter
+# (contains / starts_with / …) on a BigQuery dataset failed: report filters, the
+# dropdown's value search and the distinct cascade. One helper decides the shape
+# for every builder (app/services/sql_pattern). Shape only — as the module
+# docstring says, executing on a real warehouse is still the full proof.
+PATTERN_OPERATORS = ["contains", "not_contains", "starts_with", "ends_with"]
+BQ_SHAPES = {
+    "contains": "STRPOS(revenue.status, '50%_off') > 0",
+    "not_contains": "STRPOS(revenue.status, '50%_off') = 0",
+    "starts_with": "STARTS_WITH(revenue.status, '50%_off')",
+    "ends_with": "ENDS_WITH(revenue.status, '50%_off')",
+}
+PG_SHAPES = {
+    "contains": r"revenue.status LIKE '%50\%\_off%' ESCAPE '\'",
+    "not_contains": r"revenue.status NOT LIKE '%50\%\_off%' ESCAPE '\'",
+    "starts_with": r"revenue.status LIKE '50\%\_off%' ESCAPE '\'",
+    "ends_with": r"revenue.status LIKE '%50\%\_off' ESCAPE '\'",
+}
+
+
+def _where_sql(dialect, operator, value="50%_off"):
+    engine = _engine([], dialect)
+    return engine._build_where_clause({"revenue.status": {"operator": operator, "value": value}}, {})
+
+
+def _measure_filter_sql(dialect, operator, value="50%_off"):
+    measure = {
+        "name": "a", "type": "sum", "sql": "amount",
+        "filters": [{"field": "status", "operator": operator, "value": value}],
+    }
+    return _engine([measure], dialect)._render_measure("revenue.a")
+
+
+@pytest.mark.parametrize("operator", PATTERN_OPERATORS)
+def test_bigquery_report_filter_uses_string_functions_not_like_escape(operator):
+    sql = _where_sql("bigquery", operator)
+    assert BQ_SHAPES[operator] in sql, sql
+    assert "ESCAPE" not in sql and " LIKE " not in sql, sql
+
+
+@pytest.mark.parametrize("operator", PATTERN_OPERATORS)
+def test_postgres_report_filter_is_byte_for_byte_unchanged(operator):
+    sql = _where_sql("postgresql", operator)
+    assert PG_SHAPES[operator] in sql, sql
+    assert "STRPOS" not in sql and "STARTS_WITH" not in sql
+
+
+@pytest.mark.parametrize("dialect, shapes", [("bigquery", BQ_SHAPES), ("postgresql", PG_SHAPES)])
+@pytest.mark.parametrize("operator", PATTERN_OPERATORS)
+def test_measure_filter_matches_literally_like_the_report_filter(dialect, shapes, operator):
+    """A measure's own filter uses the SAME pattern helper as the report WHERE.
+
+    It used to concatenate `LIKE '%' || value || '%'`: a "%" or "_" in the value
+    acted as a wildcard, and `not_contains` rendered nothing, so the measure
+    silently summed every row (1000 instead of 700 in the audit fixture).
+    Deliberately changed in the semantic-core remediation: a saved measure whose
+    value contains % or _ now matches it literally, as the report filter does."""
+    sql = _measure_filter_sql(dialect, operator)
+    assert shapes[operator] in sql, sql
+    assert "|| '%'" not in sql and "'%' ||" not in sql, sql
+    if dialect == "bigquery":
+        assert "ESCAPE" not in sql and " LIKE " not in sql, sql
+
+
+def test_measure_filter_rejects_an_unknown_operator():
+    """An operator the renderer does not know used to leave the measure
+    UNFILTERED. It is refused instead."""
+    with pytest.raises(ValueError):
+        _measure_filter_sql("bigquery", "regex_match")
+
+
+@pytest.mark.parametrize("operator, expected", [
+    ("contains", "(revenue.status IS NOT NULL)"),
+    ("starts_with", "(revenue.status IS NOT NULL)"),
+    ("ends_with", "(revenue.status IS NOT NULL)"),
+    ("not_contains", "FALSE"),
+])
+def test_bigquery_empty_value_matches_postgres_semantics(operator, expected):
+    """Postgres `LIKE '%%'` matches every non-null row and `NOT LIKE '%%'` none;
+    BigQuery states the same explicitly rather than relying on STRPOS(col, '')."""
+    sql = _where_sql("bigquery", operator, value="")
+    assert expected in sql and "STRPOS" not in sql, sql
+
+
+def test_live_query_and_distinct_paths_use_the_same_pattern_shapes():
+    """The live-query WHERE and the dropdown's distinct-values search emit the
+    same shapes as the semantic engine (one helper), on both dialects."""
+    from app.services.live_query_service import _build_where_clause
+    from app.services.sql_pattern import pattern_predicate
+
+    bq = _build_where_clause([{"field": "status", "operator": "contains", "value": "a%b"}], "bigquery")
+    assert "STRPOS(`status`, 'a%b') > 0" in bq and "ESCAPE" not in bq, bq
+    pg = _build_where_clause([{"field": "status", "operator": "starts_with", "value": "a%b"}], "postgresql")
+    assert r"""LIKE 'a\%b%' ESCAPE '\'""" in pg, pg
+    src = (Path(__file__).resolve().parents[1] / "app" / "services" / "dataset_model_service.py").read_text(encoding="utf-8")
+    assert "pattern_predicate(field_expression, op, raw_value, _d," in src, "the dropdown search builds its own LIKE"
+    assert "ESCAPE '" not in src, "a builder still writes LIKE … ESCAPE itself"
+    quote = lambda s: "'" + s + "'"  # noqa: E731
+    assert pattern_predicate("c", "like", "x", "BIGQUERY", quote) == "STRPOS(c, 'x') > 0"
+    with pytest.raises(ValueError):
+        pattern_predicate("c", "eq", "x", "bigquery", quote)
+
+
+# ── DuckDB time grain over a VARCHAR-stored date (manual / Sheets sources) ──
+# Found by the Dashboard Public closure E2E: a viewer drill (or any time grain)
+# on a report built from an uploaded spreadsheet failed with DuckDB's
+# "date_trunc(STRING_LITERAL, VARCHAR)" Binder error — the cell is VARCHAR in
+# DuckDB while the model records the sampled type 'date', so the text-cast gate
+# did not fire. Executed on a real DuckDB, not just pattern-matched.
+@pytest.mark.parametrize("grain, expected_buckets", [("month", 3), ("quarter", 2), ("year", 1)])
+def test_duckdb_time_grain_on_a_varchar_date_column_executes(grain, expected_buckets):
+    import duckdb
+
+    engine = SemanticQueryEngine(db=None, database_type="duckdb")  # type: ignore[arg-type]
+    engine.views_cache = {
+        "sales": SimpleNamespace(
+            measures=[], dimensions=[{"name": "order_month", "type": "date"}],
+            table_name="sales", name="sales",
+        )
+    }
+    expr = engine._render_dimension_with_time_grain("sales.order_month", "sales", grain)
+    assert "TRY_CAST(" in expr, expr
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (order_month VARCHAR)")
+    con.execute("INSERT INTO sales VALUES ('2024-01-01'), ('2024-02-01'), ('2024-04-01'), ('2024-04-15')")
+    rows = con.execute(f"SELECT {expr} AS b, COUNT(*) FROM sales GROUP BY 1 ORDER BY 1").fetchall()
+    assert len(rows) == expected_buckets, rows
+
+
+def test_duckdb_live_time_grain_on_a_varchar_date_column_executes():
+    import duckdb
+    from app.services.live_query_service import _render_time_grain_expression
+
+    expr = _render_time_grain_expression('"order_month"', "quarter", "duckdb")
+    con = duckdb.connect()
+    con.execute('CREATE TABLE t ("order_month" VARCHAR)')
+    con.execute("INSERT INTO t VALUES ('2024-01-01'), ('2024-05-01')")
+    assert len(con.execute(f"SELECT {expr}, COUNT(*) FROM t GROUP BY 1").fetchall()) == 2

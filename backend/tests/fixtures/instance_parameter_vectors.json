@@ -1,0 +1,101 @@
+{
+  "_doc": "Tile instance parameter → filter vectors. Consumed by BOTH backend/tests/test_dashboard_parameter_parity.py (app/services/dashboard_parameters.instance_parameter_filters) and frontend/scripts/check-dashboard-parameter-parity.mjs (src/lib/chart-instance-parameters.ts buildInstanceParameterFilters). A public report and the Builder must turn the same author-set values into the same filters. Numbers compare numerically.",
+  "vectors": [
+    {
+      "name": "string eq is trimmed",
+      "params": [{"parameter_name": "region", "parameter_type": "dimension", "column_mapping": {"column": "region", "type": "string"}}],
+      "values": {"region": "  North "},
+      "expected": [{"field": "region", "operator": "eq", "value": "North"}]
+    },
+    {
+      "name": "comma list becomes IN",
+      "params": [{"parameter_name": "region", "column_mapping": {"column": "region", "type": "string"}}],
+      "values": {"region": "North, South,,East "},
+      "expected": [{"field": "region", "operator": "in", "value": ["North", "South", "East"]}]
+    },
+    {
+      "name": "array value becomes IN",
+      "params": [{"parameter_name": "region", "column_mapping": {"column": "region", "type": "string"}}],
+      "values": {"region": ["A", " B", ""]},
+      "expected": [{"field": "region", "operator": "in", "value": ["A", "B"]}]
+    },
+    {
+      "name": "numeric mapping coerces",
+      "params": [{"parameter_name": "min_qty", "column_mapping": {"column": "qty", "type": "integer"}}],
+      "values": {"min_qty": " 42 "},
+      "expected": [{"field": "qty", "operator": "eq", "value": 42}]
+    },
+    {
+      "name": "measure parameter type means number",
+      "params": [{"parameter_name": "target", "parameter_type": "measure", "column_mapping": {"column": "amount"}}],
+      "values": {"target": "1.5"},
+      "expected": [{"field": "amount", "operator": "eq", "value": 1.5}]
+    },
+    {
+      "name": "numeric mapping keeps a non-number as text",
+      "params": [{"parameter_name": "qty", "column_mapping": {"column": "qty", "type": "number"}}],
+      "values": {"qty": "12abc"},
+      "expected": [{"field": "qty", "operator": "eq", "value": "12abc"}]
+    },
+    {
+      "name": "hex number as JavaScript Number() reads it",
+      "params": [{"parameter_name": "qty", "column_mapping": {"column": "qty", "type": "number"}}],
+      "values": {"qty": "0x10"},
+      "expected": [{"field": "qty", "operator": "eq", "value": 16}]
+    },
+    {
+      "name": "dot-dot range becomes BETWEEN",
+      "params": [{"parameter_name": "amt", "column_mapping": {"column": "amount", "type": "number"}}],
+      "values": {"amt": "10..20"},
+      "expected": [{"field": "amount", "operator": "between", "value": [10, 20]}]
+    },
+    {
+      "name": "open-ended range",
+      "params": [{"parameter_name": "amt", "column_mapping": {"column": "amount", "type": "number"}}],
+      "values": {"amt": "10.."},
+      "expected": [{"field": "amount", "operator": "between", "value": [10, null]}]
+    },
+    {
+      "name": "date comma pair is a range",
+      "params": [{"parameter_name": "period", "parameter_type": "time_range", "column_mapping": {"column": "order_date"}}],
+      "values": {"period": "2026-01-01,2026-03-31"},
+      "expected": [{"field": "order_date", "operator": "between", "value": ["2026-01-01", "2026-03-31"]}]
+    },
+    {
+      "name": "empty string value is skipped",
+      "params": [{"parameter_name": "region", "column_mapping": {"column": "region"}}],
+      "values": {"region": "   "},
+      "expected": []
+    },
+    {
+      "name": "unmapped parameter is skipped",
+      "params": [{"parameter_name": "region", "column_mapping": null}],
+      "values": {"region": "North"},
+      "expected": []
+    },
+    {
+      "name": "missing value is skipped",
+      "params": [{"parameter_name": "region", "column_mapping": {"column": "region"}}],
+      "values": {"other": "x"},
+      "expected": []
+    },
+    {
+      "name": "two parameters, both applied",
+      "params": [
+        {"parameter_name": "region", "column_mapping": {"column": "region"}},
+        {"parameter_name": "qty", "column_mapping": {"column": "qty", "type": "int"}}
+      ],
+      "values": {"region": "North", "qty": "3"},
+      "expected": [
+        {"field": "region", "operator": "eq", "value": "North"},
+        {"field": "qty", "operator": "eq", "value": 3}
+      ]
+    },
+    {
+      "name": "value with quotes and backslash passes through untouched",
+      "params": [{"parameter_name": "name", "column_mapping": {"column": "customer"}}],
+      "values": {"name": "O'Brien \\"},
+      "expected": [{"field": "customer", "operator": "eq", "value": "O'Brien \\"}]
+    }
+  ]
+}

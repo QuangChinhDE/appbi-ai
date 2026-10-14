@@ -57,6 +57,20 @@ elif command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; th
 else bad "need openssl or python on PATH to generate secrets"; missing=1; fi
 [ "$missing" = "0" ] || { echo; echo "Environment check failed — fix the [FAIL] items above and re-run."; exit 1; }
 
+# ── which commit is about to be served: WHO decides ──────────────────────────
+#
+# Decided here, resolved later. An externally supplied GIT_SHA is real deployment
+# infrastructure stating the artifact it is shipping, and nothing below may
+# replace it. Otherwise the value is resolved AFTER the optional `--pull`,
+# immediately before the build — see "resolve the served commit" below.
+#
+# It used to be resolved right here, BEFORE the pull. With the checkout at A and
+# origin at B, `./run.sh --pull` exported GIT_SHA=A, fast-forwarded, and built B;
+# an explicit runtime GIT_SHA outranks the image's baked APPBI_BUILD_SHA, so
+# /api/v1/health named A for a service running B. Locked by
+# scripts/ci/test_deploy_identity_follows_the_pull.py.
+GIT_SHA_EXTERNAL="${GIT_SHA:-}"
+
 # ── choose compose profile: bundled local db unless an external DATABASE_URL ──
 COMPOSE=(docker compose)
 USE_LOCAL_DB=0
@@ -88,6 +102,33 @@ if [ "$USE_LOCAL_DB" = "1" ]; then
   docker volume ls --format '{{.Name}}' 2>/dev/null | grep -qiE 'db_data$' || DB_FRESH=1
 fi
 APPBI_DB_FRESH="$DB_FRESH" bash scripts/bootstrap-env.sh
+
+# ── resolve the served commit — after any pull, before the build ─────────────
+#
+# Three cases, and each claims only what is true:
+#   external GIT_SHA   → kept as supplied.
+#   building           → HEAD as it is NOW, i.e. after the pull (or after a pull
+#                        that could not fast-forward, in which case HEAD is still
+#                        the local code, which is exactly what gets built). A
+#                        dirty tree reports the commit it is based on, never a
+#                        hash of local edits.
+#   --no-build         → nothing. The image that starts may predate HEAD, and a
+#                        runtime GIT_SHA would override that image's own baked
+#                        APPBI_BUILD_SHA with a commit it may not contain.
+GIT_SHA="$GIT_SHA_EXTERNAL"
+if [ -z "${GIT_SHA:-}" ] && [ "$BUILD" = "1" ] && command -v git >/dev/null 2>&1; then
+  GIT_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+fi
+if [ -n "$GIT_SHA_EXTERNAL" ]; then
+  ok "commit ${GIT_SHA:0:12} (supplied externally)"
+elif [ -n "${GIT_SHA:-}" ]; then
+  ok "commit ${GIT_SHA:0:12} (built now; reported by /api/v1/health)"
+elif [ "$BUILD" = "1" ]; then
+  say "no commit id available - /api/v1/health will report 'unknown'"
+else
+  say "--no-build: /api/v1/health reports the commit baked into the existing image"
+fi
+export GIT_SHA
 
 # ── 4. build + up ─────────────────────────────────────────────────────────────
 UP=(up -d); [ "$BUILD" = "1" ] && UP+=(--build); [ "$RECREATE" = "1" ] && UP+=(--force-recreate)
@@ -148,5 +189,11 @@ echo "    Frontend : http://localhost:${FRONTEND_PORT}"
 echo "    Backend  : http://localhost:${BACKEND_PORT}/health"
 echo "    Login    : $(grep -m1 -E '^ADMIN_EMAIL=' .env | cut -d= -f2) / $(grep -m1 -E '^ADMIN_PASSWORD=' .env | cut -d= -f2)"
 
+if ! grep -qE '^ALLOWED_PRIVATE_SOURCE_CIDRS=.+' .env 2>/dev/null && ! grep -qE '^SOURCE_ALLOW_PRIVATE_NETWORK=true' .env 2>/dev/null; then
+  echo
+  echo "    Note: PostgreSQL/MySQL sources on private/loopback hosts (incl. this stack's"
+  echo "    own 'db' service) are refused by default. To allow one, set e.g."
+  echo "    ALLOWED_PRIVATE_SOURCE_CIDRS=172.16.0.0/12 in .env and re-run."
+fi
 [ "$FOLLOW_LOGS" = "1" ] && { echo; say "Following logs (Ctrl-C to stop)"; exec "${COMPOSE[@]}" logs -f; }
 exit 0

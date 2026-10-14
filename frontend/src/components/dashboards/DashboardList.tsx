@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { Trash2, Share2, LayoutDashboard, Loader2, Copy, Download } from 'lucide-react';
+import { Trash2, Share2, Globe, LayoutDashboard, Loader2, Copy, Download } from 'lucide-react';
 import { Dashboard } from '@/types/api';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
@@ -14,6 +14,16 @@ interface DashboardListProps {
   dashboards: Dashboard[];
   onDelete?: (id: number) => void;
   onShare?: (dashboard: Dashboard) => void;
+  /** Open the dashboard's public links.
+   *
+   *  THE VIEW DECIDED WHETHER THE ACTION EXISTED. The card view offered
+   *  `Public links`; this table did not, so an author who had just published an
+   *  assistant, followed its "Gắn vào báo cáo" call to action and happened to be
+   *  in list view arrived at a page with no way to do the thing they had been
+   *  sent to do — and nothing said the control was one view-toggle away. A row
+   *  and a card are two renderings of one object; the actions on them cannot
+   *  disagree about what may be done to it. */
+  onPublicLinks?: (dashboard: Dashboard) => void;
   onDuplicate?: (dashboard: Dashboard) => void;
   onExport?: (dashboard: Dashboard) => void;
   deletingId?: number;
@@ -32,6 +42,7 @@ export function DashboardList({
   dashboards,
   onDelete,
   onShare,
+  onPublicLinks,
   onDuplicate,
   onExport,
   deletingId,
@@ -119,7 +130,7 @@ export function DashboardList({
         </thead>
         <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
           {dashboards.map((dashboard) => {
-            const perms = getResourcePermissions(dashboard.user_permission);
+            const perms = getResourcePermissions(dashboard.user_permission, dashboard.capabilities);
             const chartCount = dashboard.dashboard_charts?.length || 0;
             const stateMeta = getStateMeta(chartCount);
             const accessMeta = getAccessMeta(dashboard.user_permission);
@@ -226,6 +237,17 @@ export function DashboardList({
                         title="Share"
                       >
                         <Share2 className="h-3.5 w-3.5" />
+                      </IconButton>
+                    )}
+                    {onPublicLinks && perms.canEdit && (
+                      <IconButton
+                        aria-label="Public links"
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => onPublicLinks(dashboard)}
+                        title="Public links"
+                      >
+                        <Globe className="h-3.5 w-3.5" />
                       </IconButton>
                     )}
                     {onDelete && perms.canDelete && (

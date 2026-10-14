@@ -240,16 +240,6 @@ export function composeSections(
   return sections;
 }
 
-const SPAN_FOR_ROLE: Record<PresentationRole, 'small' | 'medium' | 'large' | 'full'> = {
-  headline: 'full',
-  kpi: 'small',
-  primary: 'large',
-  secondary: 'medium',
-  breakdown: 'small',
-  table: 'full',
-  supporting: 'medium',
-};
-
 const EMPHASIS_FOR_ROLE: Record<PresentationRole, 'low' | 'normal' | 'high'> = {
   headline: 'high',
   kpi: 'normal',
@@ -268,7 +258,6 @@ const EMPHASIS_FOR_ROLE: Record<PresentationRole, 'low' | 'normal' | 'high'> = {
 export function planFromTemplate(
   templateId: string,
   snapshot: DashboardPresentationSnapshot,
-  scope: 'page' | 'report' = 'page',
 ): PresentationPlan {
   const intent = TEMPLATE_INTENTS[templateId] ?? TEMPLATE_INTENTS.console;
   const sections = composeSections(intent.composition, snapshot.visuals);
@@ -278,13 +267,15 @@ export function planFromTemplate(
     const role = visual.displayRoleHint;
     visualPreferences[String(visual.dashboardChartId)] = {
       role,
-      span: SPAN_FOR_ROLE[role],
       emphasis: EMPHASIS_FOR_ROLE[role],
     };
   }
 
+  // "Re-arrange using a template" is an explicit request to rebuild the layout,
+  // so it is the one entry point that starts at `redesign`. Locked visuals are
+  // still fixed by the executor, exactly as for a chat redesign.
   return {
-    scope,
+    layer: 'redesign',
     direction: { style: intent.composition, density: intent.density },
     sections,
     visualPreferences,

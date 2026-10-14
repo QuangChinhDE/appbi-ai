@@ -24,6 +24,7 @@ from app.services.chart_contracts import (
     normalize_filter_operator,
 )
 from app.services import query_cache
+from app.services.time_contract import utc_iso
 from app.services.dataset_calendar_service import build_calendar_filter_expression
 from app.services.transformation_compiler import TransformationCompiler
 from app.services.sql_validator import validate_select_only
@@ -42,6 +43,7 @@ class LiveBaseQueryPlan:
     output_columns: List[str]
 
 
+from app.services.sql_pattern import pattern_predicate, regex_predicate
 # ── SQL dialect helpers ──────────────────────────────────────────────────────
 
 def _quote_identifier(name: str, dialect: str) -> str:
@@ -54,15 +56,12 @@ def _quote_identifier(name: str, dialect: str) -> str:
         return f'"{name}"'
 
 
-def _sql_literal(value) -> str:
-    """Safely escape a Python value as a SQL literal."""
-    if value is None:
-        return "NULL"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, (int, float)):
-        return str(value)
-    return "'" + str(value).replace("'", "''") + "'"
+def _sql_literal(value, dialect: str | None) -> str:
+    """A SQL literal for ``value`` on ``dialect`` — the canonical, dialect-aware
+    escaping in app/services/sql_literal (a backslash escapes inside BigQuery and
+    MySQL strings; doubling the quote alone left them injectable)."""
+    from app.services.sql_literal import sql_literal
+    return sql_literal(value, dialect)
 
 
 def _dialect_for_ds_type(ds_type: str) -> str:
@@ -105,7 +104,22 @@ def _render_time_grain_expression(field_sql: str, grain: str, dialect: str) -> s
         if g == "year":
             return f"MAKEDATE(YEAR({field_sql}), 1)"
 
+    if dialect == "duckdb":
+        # Same as the semantic engine: DuckDB-backed manual/Sheets cells are VARCHAR.
+        return f"DATE_TRUNC('{g}', TRY_CAST({field_sql} AS TIMESTAMP))"
     return f"DATE_TRUNC('{g}', {field_sql})"
+
+
+def _mark_cached_read(cached):
+    """A result re-served from the cache keeps the time its source was read
+    (`result_as_of`, stamped on the miss) and says it is cached — an entry
+    stored before the stamp existed has no read time, still never "current"."""
+    if not isinstance(cached, dict):
+        return cached
+    debug = dict(cached.get("_debug") or {})
+    debug["result_cached"] = True
+    debug.setdefault("result_as_of", None)
+    return {**cached, "_debug": debug}
 
 
 def _should_cache_live_query(ds_type: str) -> bool:
@@ -406,7 +420,7 @@ def _build_source_select_query(
     """Build the raw source SELECT used before dataset transformations."""
     table_identifier = db_table.source_table_name or db_table.display_name
     if db_table.source_kind == "sql_query" and db_table.source_query:
-        validate_select_only(db_table.source_query)
+        validate_select_only(db_table.source_query, ds_type)
         source_sql = db_table.source_query
         # BigQuery uses backticks for identifiers; double-quotes denote string
         # literals.  Convert any double-quoted identifiers coming from the
@@ -681,11 +695,16 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             return build_safe_cast_sql(col_sql, "float", dialect)
         return col_sql
 
+    from app.services.chart_contracts import refuse_unapplied_authoritative
+
     for f in normalize_filter_conditions(filters):
+        _parts_before = len(parts)
         field = f.get("field", "")
         op = normalize_filter_operator(f.get("operator"))
+        op = {"date_eq": "eq", "date_between": "between"}.get(op, op)
         value = f.get("value")
         if not field:
+            refuse_unapplied_authoritative(f, "no_field")
             continue
         calendar_field = str(f.get("calendarField") or f.get("calendar_field") or "").strip()
         calendar_source_field = str(
@@ -701,66 +720,92 @@ def _build_where_clause(filters: list, dialect: str) -> str:
         cal = bool(calendar_field)
         if op == "eq":
             _v = _coerce_numeric_text([value])[0]
-            parts.append(f"{_num(qf, cal, value)} = {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} = {_sql_literal(value, dialect)}")
         elif op == "neq":
             _v = _coerce_numeric_text([value])[0]
-            parts.append(f"{_num(qf, cal, value)} != {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} != {_sql_literal(value, dialect)}")
         elif op == "gt":
-            parts.append(f"{_num(qf, cal, value)} > {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} > {_sql_literal(value, dialect)}")
         elif op == "gte":
-            parts.append(f"{_num(qf, cal, value)} >= {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} >= {_sql_literal(value, dialect)}")
         elif op == "lt":
-            parts.append(f"{_num(qf, cal, value)} < {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} < {_sql_literal(value, dialect)}")
         elif op == "lte":
-            parts.append(f"{_num(qf, cal, value)} <= {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} <= {_sql_literal(value, dialect)}")
         elif op == "between" and isinstance(value, list) and len(value) >= 2:
             lo, hi = value[0], value[1]
             bf = _num(qf, cal, lo, hi)
             if value_present(lo) and value_present(hi):
-                parts.append(f"{bf} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}")
+                parts.append(f"{bf} BETWEEN {_sql_literal(lo, dialect)} AND {_sql_literal(hi, dialect)}")
             elif value_present(lo):
-                parts.append(f"{bf} >= {_sql_literal(lo)}")
+                parts.append(f"{bf} >= {_sql_literal(lo, dialect)}")
             elif value_present(hi):
-                parts.append(f"{bf} <= {_sql_literal(hi)}")
+                parts.append(f"{bf} <= {_sql_literal(hi, dialect)}")
         elif op == "in" and isinstance(value, list):
             present = [v for v in _coerce_numeric_text(value) if value_present(v)]
-            vals = ", ".join(_sql_literal(v) for v in present)
+            vals = ", ".join(_sql_literal(v, dialect) for v in present)
             if vals:
                 parts.append(f"{_num(qf, cal, *present)} IN ({vals})")
         elif op == "in" and isinstance(value, str) and value:
             vals = ", ".join(
-                _sql_literal(v.strip()) for v in value.split(",") if v.strip()
+                _sql_literal(v.strip(), dialect) for v in value.split(",") if v.strip()
             )
             if vals:
                 parts.append(f"{qf} IN ({vals})")
         elif op == "not_in" and isinstance(value, list):
             present = [v for v in _coerce_numeric_text(value) if value_present(v)]
-            vals = ", ".join(_sql_literal(v) for v in present)
+            vals = ", ".join(_sql_literal(v, dialect) for v in present)
             if vals:
                 parts.append(f"{_num(qf, cal, *present)} NOT IN ({vals})")
         elif op == "not_in" and isinstance(value, str) and value:
             vals = ", ".join(
-                _sql_literal(v.strip()) for v in value.split(",") if v.strip()
+                _sql_literal(v.strip(), dialect) for v in value.split(",") if v.strip()
             )
             if vals:
                 parts.append(f"{qf} NOT IN ({vals})")
-        elif op == "like" and value is not None:
-            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
-            parts.append(f"{qf} LIKE '%{esc}%' ESCAPE '\\'")
-        elif op == "contains" and value is not None:
-            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
-            parts.append(f"{qf} LIKE '%{esc}%' ESCAPE '\\'")
-        elif op == "not_contains" and value is not None:
-            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
-            parts.append(f"{qf} NOT LIKE '%{esc}%' ESCAPE '\\'")
-        elif op == "starts_with" and value is not None:
-            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
-            parts.append(f"{qf} LIKE '{esc}%' ESCAPE '\\'")
+        elif op in ("like", "contains", "not_contains", "starts_with", "ends_with") and value is not None:
+            # One shape per dialect (app/services/sql_pattern): BigQuery has no
+            # LIKE … ESCAPE, so it gets STRPOS / STARTS_WITH / ENDS_WITH.
+            parts.append(pattern_predicate(qf, op, value, dialect, lambda s: _sql_literal(s, dialect)))
+        elif op == "matches_regex" and value_present(value):
+            parts.append(regex_predicate(qf, value, dialect, lambda s: _sql_literal(s, dialect)))
+        elif op == "not_between" and isinstance(value, list) and len(value) >= 2:
+            lo, hi = value[0], value[1]
+            bf = _num(qf, cal, lo, hi)
+            if value_present(lo) and value_present(hi):
+                parts.append(f"{bf} NOT BETWEEN {_sql_literal(lo, dialect)} AND {_sql_literal(hi, dialect)}")
+            elif value_present(lo):
+                parts.append(f"{bf} < {_sql_literal(lo, dialect)}")
+            elif value_present(hi):
+                parts.append(f"{bf} > {_sql_literal(hi, dialect)}")
         elif op == "is_null":
             parts.append(f"{qf} IS NULL")
         elif op == "is_not_null":
             parts.append(f"{qf} IS NOT NULL")
+        elif op not in _LIVE_HANDLED_OPERATORS:
+            # An operator no branch renders used to vanish here and the query
+            # ran UNFILTERED — a plausible number that answers another
+            # question. Refused, as the semantic engine refuses it.
+            raise ValueError(
+                f"Filter không áp được: toán tử '{op}' không được hỗ trợ cho '{field}'."
+            )
+        if len(parts) == _parts_before and op not in ("top_n", "bottom_n"):
+            # a branch rendered nothing (incomplete value): an authoritative
+            # constraint is refused, never skipped
+            refuse_unapplied_authoritative(f, "empty_value")
     return " AND ".join(parts)
+
+
+# Operators the branches above render (a branch may still skip a filter whose
+# value is incomplete — that is the documented "empty filter = no filter").
+_LIVE_HANDLED_OPERATORS = frozenset({
+    "eq", "neq", "gt", "gte", "lt", "lte", "between", "not_between", "in", "not_in",
+    "like", "contains", "not_contains", "starts_with", "ends_with", "matches_regex",
+    "is_null", "is_not_null",
+    # Not predicates: chart_service._top_n_from_filters turns them into
+    # ORDER BY + LIMIT before the query is built (the engine skips them too).
+    "top_n", "bottom_n",
+})
 
 
 # ── Aggregation query builder (dialect-aware) ────────────────────────────────
@@ -1257,7 +1302,10 @@ class LiveQueryService:
     ) -> Dict[str, Any]:
         """Preview dataset rows directly from the source with cache + cost guard."""
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-        dialect = "bigquery" if ds_type == "bigquery" else "postgresql"
+        # The SOURCE's dialect, as the base relation (build_live_base_query_plan)
+        # uses: a MySQL source got Postgres-quoted WHERE / ORDER BY ("col" is a
+        # STRING LITERAL there — the preview filtered and sorted on a constant).
+        dialect = _dialect_for_ds_type(ds_type)
         cache_enabled = _should_cache_live_query(ds_type)
 
         from app.core.crypto import decrypt_config
@@ -1526,6 +1574,8 @@ class LiveQueryService:
                 # so two requests whose ONLY difference is the dropped
                 # filter share a cache slot. Re-stamp `_debug.dropped_filters`
                 # with THIS request's diagnostics before returning.
+                # Pair #5 F1: re-served rows say when the source was read.
+                cached = _mark_cached_read(cached)
                 try:
                     cached_debug = dict(cached.get("_debug") or {})
                     cached_debug["dropped_filters"] = list(local_drops)
@@ -1593,6 +1643,9 @@ class LiveQueryService:
                 "row_count": len(rows),
                 # Phase-15.78: surface filters dropped on the way here.
                 "dropped_filters": list(local_drops),
+                # Pair #5 F1: when the source was read (a cache hit re-serves it).
+                "result_as_of": utc_iso(datetime.utcnow()),
+                "result_cached": False,
             },
         }
 
@@ -1641,7 +1694,7 @@ class LiveQueryService:
         from app.services.datasource_service import DataSourceConnectionService
 
         config = decrypt_config(datasource.config)
-        validate_select_only(sql_query)
+        validate_select_only(sql_query, ds_type)
         normalized_sql_query = sql_query.strip().rstrip(";").rstrip()
 
         all_filters = list(filters or [])
@@ -1675,6 +1728,8 @@ class LiveQueryService:
             )
             if cached is not None:
                 # Phase-15.96 — see _execute_semantic_chart_runtime comment.
+                # Pair #5 F1: re-served rows say when the source was read.
+                cached = _mark_cached_read(cached)
                 try:
                     cached_debug = dict(cached.get("_debug") or {})
                     cached_debug["dropped_filters"] = list(local_drops)
@@ -1735,6 +1790,9 @@ class LiveQueryService:
                 "row_count": len(rows),
                 # Phase-15.78: surface filters dropped on the way here.
                 "dropped_filters": list(local_drops),
+                # Pair #5 F1: when the source was read (a cache hit re-serves it).
+                "result_as_of": utc_iso(datetime.utcnow()),
+                "result_cached": False,
             },
         }
 
@@ -1919,9 +1977,9 @@ def _get_bigquery_table_size(config: dict, schema_name: str, table_name: str) ->
 
 def _get_postgresql_table_size(config: dict, schema_name: str, table_name: str) -> Dict[str, Any]:
     """Use pg_class.reltuples for fast row estimates."""
-    import psycopg2
+    from app.services.datasource_service import _pg_connect
 
-    conn = psycopg2.connect(
+    conn = _pg_connect(
         host=config.get("host", "localhost"),
         port=config.get("port", 5432),
         user=config.get("username") or config.get("user", ""),
@@ -1955,9 +2013,9 @@ def _get_postgresql_table_size(config: dict, schema_name: str, table_name: str) 
 
 def _get_mysql_table_size(config: dict, schema_name: str, table_name: str) -> Dict[str, Any]:
     """Use INFORMATION_SCHEMA.TABLES for row/size estimates."""
-    import pymysql
+    from app.services.datasource_service import _mysql_connect
 
-    conn = pymysql.connect(
+    conn = _mysql_connect(
         host=config.get("host", "localhost"),
         port=int(config.get("port", 3306)),
         user=config.get("username") or config.get("user", ""),

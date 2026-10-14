@@ -63,6 +63,7 @@ export default defineConfig({
     {
       name: 'chromium',
       dependencies: ['setup'],
+      testIgnore: [/security\/.*\.spec\.ts/, /chart-hardening\.spec\.ts/, /chart-visual\.spec\.ts/, /observability\.spec\.ts/],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/admin.json',
@@ -80,6 +81,61 @@ export default defineConfig({
         storageState: '.auth/admin.json',
         viewport: { width: 1920, height: 1080 },
       },
+    },
+    {
+      // CHART SEMANTIC JOURNEYS (base lifecycle, refusal UX, disclosure). No
+      // retries: a semantic journey that passes on the second try is a race.
+      name: 'chart-hardening',
+      dependencies: ['setup'],
+      testMatch: /chart-hardening\.spec\.ts/,
+      retries: 0,
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: '.auth/admin.json',
+        viewport: { width: 1440, height: 900 },
+      },
+    },
+    {
+      // OBSERVABILITY JOURNEYS O01–O24. No retries: a monitoring journey that
+      // passes on the second try is a race, not a pass. A dedicated project so
+      // the chromium retry policy can never cover for it.
+      name: 'observability',
+      dependencies: ['setup'],
+      testMatch: /observability\.spec\.ts/,
+      retries: 0,
+      timeout: 180_000,
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: '.auth/admin.json',
+        viewport: { width: 1440, height: 900 },
+      },
+    },
+    {
+      // CHART VISUAL CERTIFICATION: every Builder chart type must visibly draw
+      // its data marks (not just axes / a legend). retries 0, animations off.
+      name: 'chart-visual',
+      dependencies: ['setup'],
+      testMatch: /chart-visual\.spec\.ts/,
+      retries: 0,
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: '.auth/admin.json',
+        viewport: { width: 1440, height: 900 },
+        trace: 'retain-on-failure',
+        screenshot: 'only-on-failure',
+        // Charts honour prefers-reduced-motion: every mark is drawn complete at
+        // once, so a measurement / screenshot never catches a half-drawn line.
+        contextOptions: { reducedMotion: 'reduce' },
+      },
+    },
+    {
+      // AUTHORIZATION RELEASE GATE. No retries: a security assertion that passes
+      // on the second try is a race, not a pass. Own principals per context, so it
+      // does not depend on the admin session.
+      name: 'security',
+      testMatch: /security\/.*\.spec\.ts/,
+      retries: 0,
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
   ],
 

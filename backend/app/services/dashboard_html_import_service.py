@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.dependencies import require_edit_access, require_view_access
+from app.core.authz import decision as _authz
 from app.core.logging import get_logger
 from app.models import Dashboard
 from app.models.dataset import Dataset, DatasetTable
@@ -418,6 +419,11 @@ def parse_uploaded_source_sheets(
     file_bytes: bytes,
     filename: Optional[str],
 ) -> Dict[str, Dict[str, Any]]:
+    # Same accepted set as the Source upload: legacy .xls cannot be read by
+    # openpyxl, so it is refused with an actionable message instead of a crash.
+    from app.services.manual_assets.parsing import check_extension
+    if "." in str(filename or ""):
+        check_extension(filename)
     lower_name = str(filename or "").lower()
     if lower_name.endswith(".csv"):
         return _parse_csv_source_sheets(file_bytes, filename=filename)
@@ -732,7 +738,7 @@ def _load_existing_source_profile(
     if not dataset_obj:
         raise ValueError("Dataset not found")
 
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
 
     columns_cache = db_table.columns_cache if isinstance(db_table.columns_cache, dict) else {}
     cached_columns = columns_cache.get("columns") if isinstance(columns_cache, dict) else None
@@ -798,7 +804,7 @@ def _load_existing_dataset_profiles(
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise ValueError("Dataset not found")
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
 
     db_tables = (
         db.query(DatasetTable)
@@ -5183,7 +5189,7 @@ def build_dashboard_from_import(
             dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
             if not dataset_obj:
                 raise ValueError("Dataset not found.")
-            require_view_access(db, current_user, dataset_obj, "datasets")
+            _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
             resolved_dataset_id = dataset_obj.id
 
             db_tables = (
@@ -5207,12 +5213,14 @@ def build_dashboard_from_import(
             dataset_obj = db.query(Dataset).filter(Dataset.id == db_table.dataset_id).first()
             if not dataset_obj:
                 raise ValueError("Dataset not found.")
-            require_view_access(db, current_user, dataset_obj, "datasets")
+            _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)  # a dashboard from this dataset
             resolved_dataset_id = dataset_obj.id
         else:
             raise ValueError("dataset_id or dataset_table_id is required when building from an existing source.")
     else:
-        dataset_permission = (current_user.permissions or {}).get("datasets", "none")
+        from app.core.permissions import get_user_module_permission
+
+        dataset_permission = get_user_module_permission(current_user, "datasets")  # PAT-capped
         if dataset_permission not in {"edit", "full"}:
             raise ValueError("Creating a temporary dataset from Excel requires datasets edit permission.")
 
@@ -5411,6 +5419,9 @@ def build_dashboard_from_import(
             _build_chart_config(plan, resolved_dataset_id),
             auto_generate=True,
         )
+        # Custom SQL is datasource authority, not dataset authority.
+        from app.services.chart_sql_authority import require_custom_sql_authority
+        require_custom_sql_authority(db, current_user, chart_table_id, chart_config)
         db_chart = Chart(
             name=internal_name,
             description=chart_description or None,
@@ -5566,6 +5577,7 @@ def build_dashboard_from_import(
         )
         db.add(dashboard_chart)
 
+    _place_slicer_controls(db, dashboard_obj)
     db.commit()
     db.refresh(dashboard_obj)
 
@@ -6087,21 +6099,32 @@ def _serialize_chart_for_snapshot(chart: Chart) -> Dict[str, Any]:
 
 
 def serialize_dashboard_snapshot(dashboard: Dashboard) -> Dict[str, Any]:
-    """Serialize a live dashboard into a portable, verbatim snapshot dict.
+    """Serialize a dashboard's PUBLISHED state into a portable snapshot dict.
 
     The dashboard must be loaded with its ``dashboard_charts`` (and each
     tile's ``chart``) — ``DashboardService.get_by_id`` already eager-loads
     that graph. No DB access happens here.
+
+    Published state only: a tile that exists only in someone's draft
+    (``draftOnly``) is not part of the report and is not copied, and the
+    draft-state keys a live row carries (draftOnly/draftOwner/draftRemoved/
+    draftRemovedBy) are stripped — a copy used to carry another author's
+    unpublished blocks, still marked as theirs. The published device layouts
+    travel with the tiles (rebuild maps them onto the copy's tile ids).
     """
+    from app.services.dashboard_service import is_draft_only_item, strip_draft_row_keys
+
     tiles: List[Dict[str, Any]] = []
     for dc in dashboard.dashboard_charts or []:
+        if is_draft_only_item(dc):
+            continue
         widget_type = str(dc.widget_type or "chart").strip().lower() or "chart"
         tile: Dict[str, Any] = {
             "dashboard_chart_id": dc.id,
             "widget_type": widget_type,
             "widget_config": dc.widget_config or {},
             "parameters": dc.parameters or {},
-            "layout": dc.layout or {},
+            "layout": strip_draft_row_keys(dc.layout or {}),
         }
         if widget_type == "chart" and dc.chart is not None:
             tile["chart"] = _serialize_chart_for_snapshot(dc.chart)
@@ -6124,6 +6147,7 @@ def serialize_dashboard_snapshot(dashboard: Dashboard) -> Dict[str, Any]:
             "slicers_config": dashboard.slicers_config or [],
             "slicer_cluster_layout": dashboard.slicer_cluster_layout or None,
             "public_filters_config": dashboard.public_filters_config or [],
+            "responsive_layouts": getattr(dashboard, "responsive_layouts", None) or None,
         },
         "charts": tiles,
     }
@@ -6235,8 +6259,18 @@ def rebuild_dashboard_from_snapshot(
     referenced_ids: Set[int] = set()
     for tile in tiles:
         chart = tile.get("chart") if isinstance(tile, dict) else None
-        if isinstance(chart, dict) and isinstance(chart.get("dataset_table_id"), int):
-            referenced_ids.add(int(chart["dataset_table_id"]))
+        if not isinstance(chart, dict) or chart.get("dataset_table_id") is None:
+            continue
+        # ONE representation for the check AND the write. Only ints used to be
+        # collected for the check, while Chart(...) below took the raw value - a
+        # table id sent as "1305" skipped the authorization and Postgres cast it
+        # on insert (authz review, third pass). Normalised in place, refused
+        # when it is not a whole number.
+        raw = chart.get("dataset_table_id")
+        if isinstance(raw, bool) or not (isinstance(raw, int) or (isinstance(raw, str) and raw.strip().isdigit())):
+            raise ValueError(f"Cannot import snapshot — invalid dataset_table_id: {raw!r}.")
+        chart["dataset_table_id"] = int(raw)
+        referenced_ids.add(chart["dataset_table_id"])
 
     missing_ids: List[int] = []
     forbidden_ids: List[int] = []
@@ -6250,7 +6284,7 @@ def rebuild_dashboard_from_snapshot(
             missing_ids.append(table_id)
             continue
         try:
-            require_view_access(db, current_user, dataset, "datasets")
+            _authz.require(db, current_user, _authz.Action.BUILD, dataset)  # a dashboard from this dataset
         except Exception:
             forbidden_ids.append(table_id)
 
@@ -6301,11 +6335,18 @@ def rebuild_dashboard_from_snapshot(
     db.flush()
 
     # --- Recreate each tile verbatim. ---
+    # Old tile id → the copy's row: tile ids are references too (a member's
+    # layout.sectionId, the device layouts' items), rewritten once all exist.
+    created: List[Any] = []
     for tile in tiles:
         if not isinstance(tile, dict):
             continue
         widget_type = str(tile.get("widget_type") or "chart").strip().lower() or "chart"
         layout = tile.get("layout") if isinstance(tile.get("layout"), dict) else {}
+        # A snapshot from an older export may still carry draft-state keys.
+        from app.services.dashboard_service import strip_draft_row_keys
+        layout = strip_draft_row_keys(layout)
+        old_tile_id = tile.get("dashboard_chart_id")
         chart_spec = tile.get("chart") if isinstance(tile.get("chart"), dict) else None
 
         if widget_type == "chart" and chart_spec is not None:
@@ -6318,6 +6359,10 @@ def rebuild_dashboard_from_snapshot(
                 current_user.id,
                 _normalize_text(chart_spec.get("name"), max_len=255) or "Imported Chart",
             )
+            # Custom SQL is datasource authority, not dataset authority.
+            from app.services.chart_sql_authority import require_custom_sql_authority
+            require_custom_sql_authority(db, current_user, chart_spec.get("dataset_table_id"),
+                                         chart_spec.get("config") or {})
             new_chart = Chart(
                 name=chart_name,
                 description=_normalize_text(chart_spec.get("description"), max_len=1024) or None,
@@ -6355,35 +6400,56 @@ def rebuild_dashboard_from_snapshot(
                     )
                 )
 
-            db.add(
-                DashboardChart(
-                    dashboard_id=dashboard_obj.id,
-                    chart_id=new_chart.id,
-                    widget_type="chart",
-                    widget_config=tile.get("widget_config") if isinstance(tile.get("widget_config"), dict) else None,
-                    layout=layout,
-                    parameters=tile.get("parameters") if isinstance(tile.get("parameters"), dict) else {},
-                )
+            row = DashboardChart(
+                dashboard_id=dashboard_obj.id,
+                chart_id=new_chart.id,
+                widget_type="chart",
+                widget_config=tile.get("widget_config") if isinstance(tile.get("widget_config"), dict) else None,
+                layout=layout,
+                parameters=tile.get("parameters") if isinstance(tile.get("parameters"), dict) else {},
             )
+            db.add(row)
+            created.append((old_tile_id, row))
         else:
             # Non-chart widget (text/image/shape/countdown/parameter_switcher).
-            db.add(
-                DashboardChart(
-                    dashboard_id=dashboard_obj.id,
-                    chart_id=None,
-                    widget_type=widget_type,
-                    widget_config=normalize_dashboard_widget_config(
-                        widget_type,
-                        tile.get("widget_config") if isinstance(tile.get("widget_config"), dict) else {},
-                    ),
-                    layout=layout,
-                    parameters={},
-                )
+            row = DashboardChart(
+                dashboard_id=dashboard_obj.id,
+                chart_id=None,
+                widget_type=widget_type,
+                widget_config=normalize_dashboard_widget_config(
+                    widget_type,
+                    tile.get("widget_config") if isinstance(tile.get("widget_config"), dict) else {},
+                ),
+                layout=layout,
+                parameters={},
             )
+            db.add(row)
+            created.append((old_tile_id, row))
 
+    db.flush()
+    id_map = {str(old): str(row.id) for old, row in created if old is not None}
+    for _old, row in created:
+        section = row.layout.get("sectionId") if isinstance(row.layout, dict) else None
+        if section is not None:
+            # A header that was not copied (a draft-only one) is no section of the copy.
+            row.layout = {**row.layout, "sectionId": int(id_map[str(section)]) if str(section) in id_map else None}
+    from app.services.responsive_layouts import remap as _remap_responsive
+    dashboard_obj.responsive_layouts = _remap_responsive(dash_meta.get("responsive_layouts"), id_map)
+
+    _place_slicer_controls(db, dashboard_obj)
     db.commit()
     db.refresh(dashboard_obj)
 
     from app.services.dashboard_service import DashboardService
 
     return DashboardService.get_by_id(db, dashboard_obj.id)
+
+
+def _place_slicer_controls(db: Session, dashboard_obj: Any) -> None:
+    """The filters an import declares get their controls on the report grid
+    (a band at the top of each page): a report has no filter area of its own."""
+    from app.services.slicer_control_service import ensure_slicer_controls
+
+    db.flush()
+    db.refresh(dashboard_obj)
+    ensure_slicer_controls(db, dashboard_obj, origin="import")

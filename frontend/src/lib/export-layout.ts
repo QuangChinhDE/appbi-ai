@@ -19,7 +19,18 @@ import type { PdfOrientation, PdfPageSize } from './export-pdf';
 
 export const SHEET_COLS = 12;
 
+/**
+ * The key of a report element that is not a chart (a report header, a section
+ * heading, text, a note, an insight): the negative of its tile id, so it can
+ * never collide with a chart id. The arranger and the exporter treat both the
+ * same way; only where the element is found on the page differs.
+ */
+export const planKeyForElement = (dashboardChartId: number): number => -Math.abs(dashboardChartId);
+/** Report elements that print (interactive controls do not). */
+export const PRINTABLE_ELEMENT_TYPES = new Set(['hero_strip', 'section_header', 'text', 'callout', 'narrative', 'image', 'shape', 'html_fragment']);
+
 export interface PlanTile {
+  /** A chart id, or planKeyForElement(tileId) for a report element. */
   chartId: number;
   x: number;
   y: number;
@@ -117,7 +128,9 @@ export function autoArrange(
 
   for (const c of candidates) {
     const isKpi = /KPI|CARD/i.test(c.chartType || '');
-    const w = isKpi ? 3 : 6;
+    // A table reads across: full sheet width, not a half-width box.
+    const isTable = /^(TABLE|PIVOT|MATRIX)/i.test(c.chartType || '');
+    const w = isKpi ? 3 : isTable ? SHEET_COLS : 6;
     const h = isKpi ? 2 : 4;
     if (x + w > SHEET_COLS) { x = 0; y += rowH; rowH = 0; }
     if (y + h > rows) { pushSheet(); }

@@ -217,6 +217,13 @@ export const TYPOGRAPHY_ROLES = [
   { key: 'tableHeader',    scale: 0.84, weight: 600 },
   { key: 'tableBody',      scale: 0.86, weight: 400 },
   { key: 'filterLabel',    scale: 0.78, weight: 500 },
+  // The report's own words. The opening title is the largest text on the page
+  // (a report reads from it), narrative is body text, caption and meta are the
+  // quiet lines (source, period, filters) that must stay readable.
+  { key: 'reportTitle',    scale: 2.15, weight: 700 },
+  { key: 'narrative',      scale: 1.00, weight: 400 },
+  { key: 'caption',        scale: 0.86, weight: 400 },
+  { key: 'meta',           scale: 0.80, weight: 500 },
 ] as const;
 
 export type TypographyRole = (typeof TYPOGRAPHY_ROLES)[number]['key'];

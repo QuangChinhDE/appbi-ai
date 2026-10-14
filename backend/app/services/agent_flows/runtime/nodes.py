@@ -25,6 +25,7 @@ where an author looks for them.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
@@ -52,6 +53,18 @@ class NodeSpec:
     #: Requires the link to allow reaching outside AppBI.
     reaches_outside: bool = False
 
+    @property
+    def child_slots(self) -> tuple[tuple[str, str], ...]:
+        """Where this type keeps its children, or empty for a leaf.
+
+        Read from `contract.CHILD_SLOTS` rather than restated here: two places to
+        record the same topology is how `coordinate` came to be walked by some
+        traversals and not others.
+        """
+        from app.services.agent_flows.contract import CHILD_SLOTS
+
+        return CHILD_SLOTS.get(self.type, ())
+
 
 _REGISTRY: dict[str, NodeSpec] = {}
 
@@ -59,13 +72,30 @@ _REGISTRY: dict[str, NodeSpec] = {}
 def register(spec: NodeSpec) -> None:
     if spec.type in _REGISTRY:
         raise ValueError(f"node type '{spec.type}' registered twice")
+    _check(spec)
+    _REGISTRY[spec.type] = spec
+
+
+def _check(spec: NodeSpec) -> None:
+    """The rules every registered type must satisfy, refused at import."""
     if spec.handler is None and not spec.structural:
         # The exact failure this module exists to prevent, refused at import.
         raise ValueError(
             f"node type '{spec.type}' has no handler and is not structural — "
             "it would appear in the builder and do nothing"
         )
-    _REGISTRY[spec.type] = spec
+    if spec.child_slots and not spec.structural:
+        # `structural` means "the executor runs this itself, it has no handler" —
+        # NOT "this holds other nodes". `filter` is structural and holds nothing,
+        # which is why the guard runs this way round rather than the obvious one.
+        # A type that declares child slots is by definition run by the executor.
+        raise ValueError(
+            f"node type '{spec.type}' declares child slots but is not structural — "
+            "a container is run by the executor, not by a handler"
+        )
+
+
+_LOAD_LOCK = threading.Lock()
 
 
 def _load() -> None:
@@ -73,19 +103,37 @@ def _load() -> None:
 
     Late, because handlers pull in the query engine and the knowledge services, and
     this module is also imported by the API layer where that cost is not wanted.
+
+    UNDER A LOCK, PUBLISHED IN ONE STEP. Sync endpoints run in a thread pool, and
+    the builder's first screen fires its requests in parallel — the flow and the
+    node palette together. Right after a restart two threads both saw an empty
+    registry, both registered, and the second answered 500 "node type 'agent'
+    registered twice": the node palette failed on the first page load after a
+    restart (seen on the AI Keys verification rig). Filling the shared table one
+    entry at a time would also let a third thread read a half-built registry, so
+    the table is built aside and published with a single update.
     """
     if _REGISTRY:
         return
-    from app.services.agent_flows.runtime.handlers import (  # noqa: F401
-        agent as _agent,
-        data as _data,
-        logic as _logic,
-        util as _util,
-    )
+    with _LOAD_LOCK:
+        if _REGISTRY:
+            return
+        from app.services.agent_flows.runtime.handlers import (  # noqa: F401
+            agent as _agent,
+            data as _data,
+            logic as _logic,
+            skill as _skill,
+            util as _util,
+        )
 
-    for mod in (_agent, _data, _logic, _util):
-        for spec in mod.SPECS:
-            register(spec)
+        staged: dict[str, NodeSpec] = {}
+        for mod in (_agent, _data, _logic, _skill, _util):
+            for spec in mod.SPECS:
+                if spec.type in staged:
+                    raise ValueError(f"node type '{spec.type}' registered twice")
+                _check(spec)
+                staged[spec.type] = spec
+        _REGISTRY.update(staged)
 
 
 def spec_for(node_type: str) -> NodeSpec | None:
@@ -130,5 +178,11 @@ def catalogue(*, web_enabled: bool = True) -> list[dict[str, Any]]:
             "reaches_outside": s.reaches_outside,
             "gated_by_link": s.reaches_outside,
             "available": (not s.reaches_outside) or web_enabled,
+            # WHERE THIS TYPE KEEPS ITS CHILDREN, so the builder's walkers read the
+            # same declaration the backend does instead of each re-deriving it.
+            # Empty for a leaf type; additive, so an older client ignores it.
+            "child_slots": [
+                {"field": field, "kind": kind} for field, kind in s.child_slots
+            ],
         })
     return out

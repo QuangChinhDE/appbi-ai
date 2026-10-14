@@ -9,8 +9,29 @@
 import { apiClient } from './api-client';
 import { parseSseStream } from './api/sse';
 import type { AnswerBlock, FlowOutputEnvelope } from './agentFlows';
+import type { FlowNotice } from '@/lib/notices';
+import type { ReaderOutcome } from './notices';
 
 const BASE = '/agent-flows/chat';
+
+/** One question class an assistant can or cannot answer, in reader language.
+ *
+ *  Static metadata only. The backend recomputes this per SURFACE and never
+ *  projects the author's coverage view, which carries tool names, pack names,
+ *  node keys and document ids — see `reader_capability.py` for why that is a
+ *  separate computation rather than a filtered copy. */
+export interface CapabilityClass {
+  key: string;
+  label: string;
+  example: string;
+}
+
+export interface ReaderCapability {
+  surface: string;
+  can: CapabilityClass[];
+  cannot: CapabilityClass[];
+  suggested_questions: string[];
+}
 
 export interface ChatBrain {
   brain_key: string;
@@ -19,6 +40,10 @@ export interface ChatBrain {
   version: number;
   flow_id: number | null;
   knowledge_count: number;
+  /** Optional on purpose: an older backend, or one that could not compute it,
+   *  must degrade to name + purpose rather than render an assistant as
+   *  capability-less. */
+  capability?: ReaderCapability | null;
 }
 
 export interface ChatThread {
@@ -41,7 +66,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   status?: string;
-  notices?: { code: string; text: string }[];
+  notices?: FlowNotice[];
   citations?: ChatCitation[];
   run_id?: number;
   rating?: string | null;
@@ -77,7 +102,11 @@ export interface ChatThreadDetail extends ChatThread {
 export type ChatEvent =
   | { type: 'text'; text: string }
   | { type: 'status'; text: string; tool?: string }
-  | { type: 'tool_result'; tool: string; ok: boolean; error?: string | null }
+  // `outcome` classifies the failure the way a READER reads it; `ok` stays
+  // the transport fact it always was. Optional so a frontend deployed ahead
+  // of the backend degrades to the old counting rather than to `undefined`.
+  | { type: 'tool_result'; tool: string; ok: boolean; outcome?: ReaderOutcome;
+      error?: string | null }
   | { type: 'usage'; [k: string]: unknown }
   | { type: 'error'; text: string }
   | { type: 'node_started'; step?: string; name?: string }
@@ -88,8 +117,14 @@ export type ChatEvent =
   | { type: 'result'; envelope: FlowOutputEnvelope }
   | { type: 'done' };
 
-export async function listChatBrains(): Promise<ChatBrain[]> {
-  const { data } = await apiClient.get<{ brains: ChatBrain[] }>(`${BASE}/brains`);
+export async function listChatBrains(lang?: string): Promise<ChatBrain[]> {
+  // `lang` reaches the capability labels, which are the only reader-facing
+  // strings the backend produces here — the question classes were written for
+  // the author's canvas in Vietnamese, and a reader on the English UI has to see
+  // English. Everything else on this screen is translated in the frontend.
+  const { data } = await apiClient.get<{ brains: ChatBrain[] }>(`${BASE}/brains`, {
+    params: lang ? { lang } : undefined,
+  });
   return data.brains || [];
 }
 

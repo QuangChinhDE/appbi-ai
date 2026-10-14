@@ -1,0 +1,1403 @@
+{
+ "note": "Temp Postgres (55433), reports 1, 5, 574 and 604 (a copy of 574 made after the upgrade). upgrade (state before) -> downgrade -> upgrade. Taken with read-only SELECTs.",
+ "1_before_roundtrip": {
+  "alembic": "20260929_0001",
+  "controls_made_by_migration": {
+   "1": [
+    6420
+   ],
+   "5": [
+    6424
+   ],
+   "574": [
+    6430
+   ],
+   "604": [
+    6430
+   ]
+  },
+  "tiles": [
+   {
+    "id": 1,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     3,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 2,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     9,
+     3,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 3,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     18,
+     3,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 4,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     27,
+     3,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 5,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     9,
+     24,
+     14
+    ]
+   },
+   {
+    "id": 6,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     24,
+     9,
+     12,
+     14
+    ]
+   },
+   {
+    "id": 7,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     23,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 8,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     18,
+     23,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 9,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     37,
+     18,
+     12
+    ]
+   },
+   {
+    "id": 10,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     18,
+     37,
+     18,
+     12
+    ]
+   },
+   {
+    "id": 11,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     49,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 12,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     9,
+     49,
+     27,
+     12
+    ]
+   },
+   {
+    "id": 49,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     0,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 50,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     12,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 51,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     24,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 52,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     0,
+     12,
+     24,
+     16
+    ]
+   },
+   {
+    "id": 53,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     24,
+     12,
+     12,
+     16
+    ]
+   },
+   {
+    "id": 54,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     0,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 55,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     18,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 56,
+    "report": 5,
+    "type": "section_header",
+    "cell": [
+     0,
+     9,
+     36,
+     3
+    ]
+   },
+   {
+    "id": 6114,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     0,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6115,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     12,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6116,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     24,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6117,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     0,
+     12,
+     24,
+     16
+    ]
+   },
+   {
+    "id": 6118,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     24,
+     12,
+     12,
+     16
+    ]
+   },
+   {
+    "id": 6119,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     0,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6120,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     18,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6121,
+    "report": 574,
+    "type": "section_header",
+    "cell": [
+     0,
+     9,
+     36,
+     3
+    ]
+   },
+   {
+    "id": 6420,
+    "report": 1,
+    "type": "slicer",
+    "cell": [
+     0,
+     0,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6424,
+    "report": 5,
+    "type": "slicer",
+    "cell": [
+     0,
+     0,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6430,
+    "report": 574,
+    "type": "slicer",
+    "cell": [
+     0,
+     0,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6437,
+    "report": 574,
+    "type": "slicer",
+    "cell": [
+     8,
+     0,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6438,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     0,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6439,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     12,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6440,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     24,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6441,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     0,
+     12,
+     24,
+     16
+    ]
+   },
+   {
+    "id": 6442,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     24,
+     12,
+     12,
+     16
+    ]
+   },
+   {
+    "id": 6443,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     0,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6444,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     18,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6445,
+    "report": 604,
+    "type": "section_header",
+    "cell": [
+     0,
+     9,
+     36,
+     3
+    ]
+   },
+   {
+    "id": 6449,
+    "report": 604,
+    "type": "slicer",
+    "cell": [
+     0,
+     6,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6450,
+    "report": 604,
+    "type": "slicer",
+    "cell": [
+     8,
+     6,
+     8,
+     3
+    ]
+   }
+  ]
+ },
+ "2_after_downgrade": {
+  "alembic": "20260928_0001",
+  "controls_made_by_migration": {
+   "1": null,
+   "5": null,
+   "604": null,
+   "574": null
+  },
+  "tiles": [
+   {
+    "id": 1,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     0,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 2,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     9,
+     0,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 3,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     18,
+     0,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 4,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     27,
+     0,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 5,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     6,
+     24,
+     14
+    ]
+   },
+   {
+    "id": 6,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     24,
+     6,
+     12,
+     14
+    ]
+   },
+   {
+    "id": 7,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     20,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 8,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     18,
+     20,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 9,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     34,
+     18,
+     12
+    ]
+   },
+   {
+    "id": 10,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     18,
+     34,
+     18,
+     12
+    ]
+   },
+   {
+    "id": 11,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     46,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 12,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     9,
+     46,
+     27,
+     12
+    ]
+   },
+   {
+    "id": 49,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     0,
+     0,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 50,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     12,
+     0,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 51,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     24,
+     0,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 52,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     0,
+     9,
+     24,
+     16
+    ]
+   },
+   {
+    "id": 53,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     24,
+     9,
+     12,
+     16
+    ]
+   },
+   {
+    "id": 54,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     0,
+     25,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 55,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     18,
+     25,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 56,
+    "report": 5,
+    "type": "section_header",
+    "cell": [
+     0,
+     6,
+     36,
+     3
+    ]
+   },
+   {
+    "id": 6114,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     0,
+     0,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6115,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     12,
+     0,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6116,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     24,
+     0,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6117,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     0,
+     9,
+     24,
+     16
+    ]
+   },
+   {
+    "id": 6118,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     24,
+     9,
+     12,
+     16
+    ]
+   },
+   {
+    "id": 6119,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     0,
+     25,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6120,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     18,
+     25,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6121,
+    "report": 574,
+    "type": "section_header",
+    "cell": [
+     0,
+     6,
+     36,
+     3
+    ]
+   },
+   {
+    "id": 6437,
+    "report": 574,
+    "type": "slicer",
+    "cell": [
+     8,
+     0,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6438,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     0,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6439,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     12,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6440,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     24,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6441,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     0,
+     12,
+     24,
+     16
+    ]
+   },
+   {
+    "id": 6442,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     24,
+     12,
+     12,
+     16
+    ]
+   },
+   {
+    "id": 6443,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     0,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6444,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     18,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6445,
+    "report": 604,
+    "type": "section_header",
+    "cell": [
+     0,
+     9,
+     36,
+     3
+    ]
+   },
+   {
+    "id": 6449,
+    "report": 604,
+    "type": "slicer",
+    "cell": [
+     0,
+     6,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6450,
+    "report": 604,
+    "type": "slicer",
+    "cell": [
+     8,
+     6,
+     8,
+     3
+    ]
+   }
+  ]
+ },
+ "3_after_reupgrade": {
+  "alembic": "20260929_0001",
+  "controls_made_by_migration": {
+   "1": [
+    6708
+   ],
+   "5": [
+    6709
+   ],
+   "604": null,
+   "574": [
+    6720
+   ]
+  },
+  "tiles": [
+   {
+    "id": 1,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     3,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 2,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     9,
+     3,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 3,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     18,
+     3,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 4,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     27,
+     3,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 5,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     9,
+     24,
+     14
+    ]
+   },
+   {
+    "id": 6,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     24,
+     9,
+     12,
+     14
+    ]
+   },
+   {
+    "id": 7,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     23,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 8,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     18,
+     23,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 9,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     37,
+     18,
+     12
+    ]
+   },
+   {
+    "id": 10,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     18,
+     37,
+     18,
+     12
+    ]
+   },
+   {
+    "id": 11,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     0,
+     49,
+     9,
+     6
+    ]
+   },
+   {
+    "id": 12,
+    "report": 1,
+    "type": "chart",
+    "cell": [
+     9,
+     49,
+     27,
+     12
+    ]
+   },
+   {
+    "id": 49,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     0,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 50,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     12,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 51,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     24,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 52,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     0,
+     12,
+     24,
+     16
+    ]
+   },
+   {
+    "id": 53,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     24,
+     12,
+     12,
+     16
+    ]
+   },
+   {
+    "id": 54,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     0,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 55,
+    "report": 5,
+    "type": "chart",
+    "cell": [
+     18,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 56,
+    "report": 5,
+    "type": "section_header",
+    "cell": [
+     0,
+     9,
+     36,
+     3
+    ]
+   },
+   {
+    "id": 6114,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     0,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6115,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     12,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6116,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     24,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6117,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     0,
+     12,
+     24,
+     16
+    ]
+   },
+   {
+    "id": 6118,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     24,
+     12,
+     12,
+     16
+    ]
+   },
+   {
+    "id": 6119,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     0,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6120,
+    "report": 574,
+    "type": "chart",
+    "cell": [
+     18,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6121,
+    "report": 574,
+    "type": "section_header",
+    "cell": [
+     0,
+     9,
+     36,
+     3
+    ]
+   },
+   {
+    "id": 6437,
+    "report": 574,
+    "type": "slicer",
+    "cell": [
+     8,
+     3,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6438,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     0,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6439,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     12,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6440,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     24,
+     3,
+     12,
+     6
+    ]
+   },
+   {
+    "id": 6441,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     0,
+     12,
+     24,
+     16
+    ]
+   },
+   {
+    "id": 6442,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     24,
+     12,
+     12,
+     16
+    ]
+   },
+   {
+    "id": 6443,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     0,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6444,
+    "report": 604,
+    "type": "chart",
+    "cell": [
+     18,
+     28,
+     18,
+     14
+    ]
+   },
+   {
+    "id": 6445,
+    "report": 604,
+    "type": "section_header",
+    "cell": [
+     0,
+     9,
+     36,
+     3
+    ]
+   },
+   {
+    "id": 6449,
+    "report": 604,
+    "type": "slicer",
+    "cell": [
+     0,
+     6,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6450,
+    "report": 604,
+    "type": "slicer",
+    "cell": [
+     8,
+     6,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6708,
+    "report": 1,
+    "type": "slicer",
+    "cell": [
+     0,
+     0,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6709,
+    "report": 5,
+    "type": "slicer",
+    "cell": [
+     0,
+     0,
+     8,
+     3
+    ]
+   },
+   {
+    "id": 6720,
+    "report": 574,
+    "type": "slicer",
+    "cell": [
+     0,
+     0,
+     8,
+     3
+    ]
+   }
+  ]
+ }
+}

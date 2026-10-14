@@ -128,30 +128,24 @@ def _assert_google_email_allowed(email: str) -> None:
 
 
 def create_access_token(user: User) -> str:
-    now = datetime.now(timezone.utc)
-    payload = {
-        "sub": str(user.id),
-        "jti": str(uuid.uuid4()),
-        "iat": now,
-        # Stamped so get_current_user can tell an access token from the three other
-        # token kinds signed with the same key. Without it a refresh token was
-        # accepted here as an access token.
-        "type": ACCESS_TOKEN_TYPE,
-        "exp": now + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS),
-    }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+    # Own signing domain (app.core.tokens): verifies nowhere but as an access
+    # token. `ss` ties it to the user's security stamp (password change /
+    # deactivation ends it).
+    from app.core import tokens
+
+    return tokens.encode(tokens.ACCESS, {
+        "sub": str(user.id), "jti": str(uuid.uuid4()),
+        "ss": getattr(user, "security_stamp", None) or "",
+    }, ttl=timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS))
 
 
 def create_refresh_token(user: User) -> str:
-    now = datetime.now(timezone.utc)
-    payload = {
-        "sub": str(user.id),
-        "jti": str(uuid.uuid4()),
-        "iat": now,
-        "exp": now + timedelta(hours=REFRESH_TOKEN_EXPIRE_HOURS),
-        "type": "refresh",
-    }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+    from app.core import tokens
+
+    return tokens.encode(tokens.REFRESH, {
+        "sub": str(user.id), "jti": str(uuid.uuid4()),
+        "ss": getattr(user, "security_stamp", None) or "",
+    }, ttl=timedelta(hours=REFRESH_TOKEN_EXPIRE_HOURS))
 
 
 def _set_auth_cookie(response: Response, token: str) -> None:
@@ -462,6 +456,7 @@ def me(current_user: User = Depends(get_current_user)):
 @_limiter.limit("3/minute")
 def change_password(
     request: Request,
+    response: Response,
     body: ChangePasswordRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -479,8 +474,15 @@ def change_password(
             detail="Old password is incorrect",
         )
 
+    from app.core.tokens import new_security_stamp
+
     current_user.password_hash = _pwd.hash(body.new_password)
+    # Every other session (other browsers, a stolen cookie) ends now; this one
+    # continues with freshly minted tokens.
+    current_user.security_stamp = new_security_stamp()
     db.commit()
+    _set_auth_cookie(response, create_access_token(current_user))
+    _set_refresh_cookie(response, create_refresh_token(current_user))
     audit(db, AuditAction.PASSWORD_CHANGED, request=request, user_id=current_user.id)
     return {"message": "Password changed successfully"}
 
@@ -648,9 +650,10 @@ def logout(
         """Blacklist one token's jti. Returns its `sub` for the audit entry."""
         if not raw:
             return None
-        try:
-            payload = jwt.decode(raw, settings.SECRET_KEY, algorithms=[ALGORITHM])
-        except Exception:
+        from app.core import tokens
+
+        payload = tokens.decode(raw, tokens.ACCESS) or tokens.decode(raw, tokens.REFRESH)
+        if payload is None:
             return None
         jti = payload.get("jti")
         exp = payload.get("exp")
@@ -691,18 +694,13 @@ def refresh_access_token(
             detail="Refresh token missing",
         )
 
-    try:
-        payload = jwt.decode(refresh, settings.SECRET_KEY, algorithms=[ALGORITHM])
-    except Exception:
+    from app.core import tokens
+
+    payload = tokens.decode(refresh, tokens.REFRESH)
+    if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
-        )
-
-    if payload.get("type") != "refresh":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token type",
         )
 
     old_jti = payload.get("jti")
@@ -715,12 +713,20 @@ def refresh_access_token(
             )
 
     user_id = payload.get("sub")
-    user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+    try:
+        user_uuid = uuid.UUID(str(user_id))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid or expired refresh token")
+    user = db.query(User).filter(User.id == user_uuid).first()
     if not user or user.status != UserStatus.ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or deactivated",
         )
+    if (payload.get("ss") or "") != (getattr(user, "security_stamp", None) or ""):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Session ended - please login again")
 
     if old_jti:
         exp = payload.get("exp")

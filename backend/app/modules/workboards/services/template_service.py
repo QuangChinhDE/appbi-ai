@@ -239,7 +239,10 @@ def export_workboard(
     impersonate the workboard's users — admins set fresh PINs after
     import. Demo / disposable templates can opt in.
     """
-    layout = workboard.layout_json or {}
+    # OCR API keys (ciphertext) never leave in an export, credentials or not.
+    from app.modules.workboards.services.ocr_secrets import strip_layout_ocr_keys
+
+    layout = strip_layout_ocr_keys(workboard.layout_json or {})
 
     # Collect table ids that appear in the layout, plus the workboard's own
     # primary_table_id (it doesn't always show up in screens[]).
@@ -1123,6 +1126,10 @@ def import_workboard(
     # display-mode / geocode block built by a newer or divergent build) so the
     # import degrades gracefully with a warning instead of a hard 400.
     raw_layout, report.stripped_features = _sanitize_layout_for_import(raw_layout)
+    # An imported layout never brings OCR key material with it.
+    from app.modules.workboards.services.ocr_secrets import strip_layout_ocr_keys
+
+    raw_layout = strip_layout_ocr_keys(raw_layout)
     old_pk_table = bundle.get("primary_table_id")
     old_pk_table_id = old_pk_table if isinstance(old_pk_table, int) else None
     layout_with_columns = _rewrite_column_references(
@@ -1237,9 +1244,12 @@ def _import_app_users(
 
     # Sentinel hash that no PIN can verify against — bcrypt of a long
     # random string. Hashed once per import so we don't churn cycles.
-    placeholder_hash = app_user_service.hash_pin(
-        "__appbi_placeholder__set_via_admin__"
-    )
+    # A random secret nobody ever sees: no PIN can verify against it until an
+    # admin sets one. It used to be the hash of a FIXED string written in this
+    # file - a known credential for every user imported without a PIN.
+    import secrets as _secrets
+
+    placeholder_hash = app_user_service.hash_pin(_secrets.token_urlsafe(48))
 
     inserted = 0
     needs_pin: List[str] = []
@@ -1556,6 +1566,7 @@ def rebuild_dataset_from_bundle(
                 built = _rebuild_semantic_from_bundle(db, dataset.id, id_map, semantic)
         except Exception as exc:
             logger.warning("rebuild: faithful model rebuild failed for ds %s: %s", dataset.id, exc)
+            report["model_rebuild_error"] = str(exc)[:500]
             try:
                 db.rollback()
             except Exception:
@@ -1655,11 +1666,24 @@ def _rebuild_semantic_from_bundle(
         db.flush()
         view_by_old_table[old_tid] = view
 
+    from app.services.semantic_join_resolver import read_join_contract
+
     for be in explores_b:
         old_base = be.get("base_view_old_table_id")
         base_view = view_by_old_table.get(int(old_base)) if old_base is not None else None
         if not base_view:
             continue
+        # A relationship is stored only if the runtime can read it: a bundle row
+        # the contract refuses fails the faithful rebuild (loud, in the import
+        # report) instead of landing as a model every query then refuses.
+        _base_name = _remap_dt_tokens(be.get("base_view_name"), id_map) or base_view.name
+        _bad = [
+            f"{j.get('view')}: {'; '.join(c.invalid)}"
+            for j in (_remap_dt_tokens(be.get("joins") or [], id_map) or [])
+            for c in [read_join_contract(_base_name, j)] if not c.valid
+        ]
+        if _bad:
+            raise ValueError("Quan hệ trong bundle không hợp lệ: " + " | ".join(_bad))
         db.add(
             SemanticExplore(
                 model_id=model.id,

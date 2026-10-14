@@ -31,6 +31,14 @@ class AuditAction(str, enum.Enum):
     SHARE_CREATED = "share_created"
     SHARE_REVOKED = "share_revoked"
     DATASOURCE_CONNECTED = "datasource_connected"
+    # Source lifecycle (migration 20261006_0003). Details carry ids, provider,
+    # changed field NAMES and error categories — never a config value or secret.
+    DATASOURCE_CREATED = "datasource_created"
+    DATASOURCE_CONFIG_CHANGED = "datasource_config_changed"
+    DATASOURCE_AUTH_MODE_CHANGED = "datasource_auth_mode_changed"
+    DATASOURCE_TEST_FAILED = "datasource_test_failed"
+    DATASOURCE_DELETED = "datasource_deleted"
+    DATASOURCE_DELETE_BLOCKED = "datasource_delete_blocked"
     DATA_EXPORTED = "data_exported"
     WORKBOARD_CREATED = "workboard_created"
     WORKBOARD_UPDATED = "workboard_updated"
@@ -50,7 +58,33 @@ class AuditAction(str, enum.Enum):
     AGENT_FLOW_RESTORED = "agent_flow_restored"
     AGENT_FLOW_DELETED = "agent_flow_deleted"
     AGENT_FLOW_ASSIGNED = "agent_flow_assigned"
+    # A stored AI key that Agent Flow steps bill to. Created, changed (name, secret
+    # rotated, default) and deleted are recorded; the secret itself never is.
+    AI_CREDENTIAL_CREATED = "ai_credential_created"
+    AI_CREDENTIAL_UPDATED = "ai_credential_updated"
+    AI_CREDENTIAL_DELETED = "ai_credential_deleted"
     AGENT_FLOW_UNASSIGNED = "agent_flow_unassigned"
+    # A person accepted / rejected a change AI Design PROPOSED to a report's
+    # content or meaning (sort order, a title). Presentation edits are not
+    # audited; a change to what a tile says is.
+    DASHBOARD_CONTENT_PROPOSAL_ACCEPTED = "dashboard_content_proposal_accepted"
+    DASHBOARD_CONTENT_PROPOSAL_REJECTED = "dashboard_content_proposal_rejected"
+    # Privileged authorization actions (authz remediation, migration 20261008_0006):
+    # who gave or took access, who can be alerted, who rotated an address.
+    DATASET_GRANT_CREATED = "dataset_grant_created"
+    DATASET_GRANT_REVOKED = "dataset_grant_revoked"
+    ALERT_CHANNEL_CREATED = "alert_channel_created"
+    ALERT_CHANNEL_UPDATED = "alert_channel_updated"
+    ALERT_CHANNEL_DELETED = "alert_channel_deleted"
+    ALERT_CHANNEL_TESTED = "alert_channel_tested"
+    OBSERVABILITY_GLOBAL_SCAN = "observability_global_scan"
+    OBSERVABILITY_DATASET_SCAN = "observability_dataset_scan"
+    OBSERVABILITY_INCIDENT_ACTION = "observability_incident_action"
+    OBSERVABILITY_BASELINE_ACCEPTED = "observability_baseline_accepted"
+    OBSERVABILITY_MONITOR_CHANGED = "observability_monitor_changed"
+    WORKSPACE_TOKEN_ROTATED = "workspace_token_rotated"
+    PUBLIC_LINK_UPDATED = "public_link_updated"
+    SHARE_UPDATED = "share_updated"
 
 
 class AuditSeverity(str, enum.Enum):

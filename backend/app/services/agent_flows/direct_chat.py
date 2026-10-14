@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 
 from app.models.agent_brain import AgentBrainVersion
 from app.models.agent_flow_chat_thread import AgentFlowChatThread
+from app.services.agent_flows.envelope import reader_notice_dict
 from app.services.agent_flows.contract import (
     _CHART_KEYED_TOOLS,
     Flow,
@@ -288,6 +289,9 @@ def create_thread(db: Session, user: Any, brain_key: str) -> AgentFlowChatThread
 ThreadAccess = str
 
 
+from app.core.permissions import is_module_admin as _is_module_admin  # noqa: E402
+
+
 def _module_level(user: Any) -> str:
     """This person's `chat` level, read the same way every gate reads it."""
     from app.core.dependencies import _normalize_permissions, _sanitize_permission_level
@@ -312,7 +316,7 @@ def thread_access(db: Session, user: Any, thread: AgentFlowChatThread) -> Thread
     """
     if str(getattr(thread, "user_id", "")) == str(getattr(user, "id", "")):
         return "owner"
-    if _module_level(user) == "full":
+    if _is_module_admin(user, "chat"):
         return "full"
 
     from app.core.resource_shares import get_highest_share_for_resource
@@ -361,7 +365,7 @@ def list_threads(
     q = db.query(AgentFlowChatThread).filter(
         AgentFlowChatThread.deleted_at.is_(None)
     )
-    if _module_level(user) != "full":
+    if not _is_module_admin(user, "chat"):
         from app.core.resource_shares import get_shared_resource_ids_query
         from app.models.resource_share import ResourceType
 
@@ -433,7 +437,13 @@ def transcript(db: Session, thread: AgentFlowChatThread, limit: int = 50) -> lis
                 "role": "assistant",
                 "content": answer,
                 "status": run.status,
-                "notices": (content.notices if content else None) or [],
+                # Stored turns are replayed to a READER, including turns recorded
+                # before the audience boundary existed, so the filter runs here on
+                # plain dicts rather than trusting what was written.
+                "notices": [
+                    reader_notice_dict(n) for n in ((content.notices if content else None) or [])
+                    if (n or {}).get("audience", "reader") != "author"
+                ],
                 "citations": (content.citations if content else None) or [],
                 "run_id": run.id,
                 "rating": run.rating,

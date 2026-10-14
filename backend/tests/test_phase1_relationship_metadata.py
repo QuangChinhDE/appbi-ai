@@ -15,13 +15,13 @@ from app.services.semantic_join_resolver import (
     JoinPath,
     JoinStep,
     SemanticJoinResolver,
+    canonical_cardinality,
     invert_cardinality,
-    normalize_cardinality,
 )
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# normalize_cardinality / invert_cardinality
+# canonical_cardinality (strict) / invert_cardinality
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -42,13 +42,15 @@ from app.services.semantic_join_resolver import (
     ("1:N", "one_to_many"),
     ("N:1", "many_to_one"),
     ("M:N", "many_to_many"),
-    # Unknown / empty falls back to many_to_one (FK→PK star-schema default).
-    ("", "many_to_one"),
-    (None, "many_to_one"),
-    ("garbage", "many_to_one"),
+    # Unknown / empty is NOT a cardinality — never a guessed many_to_one (the
+    # lenient normalizer that mapped these to many_to_one was removed; a reader
+    # that met one would have trusted an unverified join as non-fanning).
+    ("", None),
+    (None, None),
+    ("garbage", None),
 ])
-def test_normalize_cardinality(raw, expected):
-    assert normalize_cardinality(raw) == expected
+def test_canonical_cardinality_is_strict(raw, expected):
+    assert canonical_cardinality(raw) == expected
 
 
 @pytest.mark.parametrize("forward,reverse", [
@@ -59,6 +61,10 @@ def test_normalize_cardinality(raw, expected):
 ])
 def test_invert_cardinality(forward, reverse):
     assert invert_cardinality(forward) == reverse
+
+
+def test_an_unknown_cardinality_has_no_inverse():
+    assert invert_cardinality("garbage") is None and invert_cardinality(None) is None
 
 
 def test_allowed_cardinality_constant():
@@ -121,13 +127,16 @@ def test_edge_from_dict_falls_back_to_relationship_field():
     assert e.cardinality == "one_to_many"
 
 
-def test_edge_from_dict_unknown_cardinality_defaults():
+def test_edge_from_dict_unknown_cardinality_is_invalid_not_many_to_one():
+    """An unknown cardinality is NOT a "safe default" of many-to-one: that
+    default let an unverified relationship be trusted as non-fanning. The row
+    is invalid and gives no edge (the engine refuses the model loudly)."""
     e = SemanticJoinResolver._edge_from_join_dict("orders", {
         "view": "customers",
         "from_column": "x", "to_column": "y",
         "cardinality": "bogus",
     })
-    assert e.cardinality == "many_to_one"  # safe default
+    assert e is None
 
 
 # ──────────────────────────────────────────────────────────────────────────

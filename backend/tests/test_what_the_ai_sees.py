@@ -46,7 +46,7 @@ def _rctx(answer_key="answer", base="BASE CONTRACT " * 40):
         ctx=_Ctx(),
         base_system_prompt=base,
         answer_key=answer_key,
-        api_key="",
+        credentials=None,
     )
 
 

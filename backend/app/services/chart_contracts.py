@@ -31,9 +31,15 @@ def compute_date_preset_range(preset: str) -> tuple[str, str]:
     EVERY consumer (public link, embed, AI bot, PDF worker): the range is
     recomputed at request time instead of being frozen to the build-time window.
     Returns ('', '') for 'custom'/unknown. Weeks are Monday-start (matches FE).
+
+    "Today" is resolved in an EXPLICIT app timezone and against the current
+    request's report-read anchor when the client stamped one (so every tile of
+    one logical read — even across midnight — shares one window). See
+    ``time_contract.current_report_date``.
     """
     p = str(preset or "").strip().lower()
-    today = datetime.now().date()
+    from app.services.time_contract import current_report_date
+    today = current_report_date()
     fmt = lambda d: d.isoformat()
     if p == "today":
         return fmt(today), fmt(today)
@@ -73,6 +79,41 @@ def compute_date_preset_range(preset: str) -> tuple[str, str]:
     return "", ""
 
 
+#: Marker on a filter the VIEWER may not relax — a public link's lock / 🚫
+#: hidden constraint, a 🔒/🚫 dashboard filter, a page scope, a link 'limit'
+#: allow-list, an embed claim, a workboard role scope. Such a constraint is
+#: either APPLIED or the request is refused: it is never skipped "softly"
+#: (unreachable view, no join path, empty value…), because skipping it returns
+#: data wider than the server-owned scope.
+AUTHORITATIVE_KEY = "_authoritative"
+
+
+class AuthoritativeFilterNotApplied(ValueError):
+    """An authoritative constraint could not be applied to this query.
+
+    The message names no field and no value: it may reach an anonymous viewer,
+    and a 🚫 constraint's field must not be disclosed."""
+
+    def __init__(self, reason: str = ""):
+        self.reason = reason
+        super().__init__(
+            "Biểu đồ này không áp được một giới hạn bắt buộc của báo cáo / liên kết, nên không trả dữ liệu "
+            "(tránh hiển thị rộng hơn phạm vi được chia sẻ). Báo người chia sẻ kiểm tra lại quan hệ dữ liệu "
+            "hoặc bộ lọc khoá của báo cáo."
+        )
+
+
+def refuse_unapplied_authoritative(filt: Any, reason: str) -> None:
+    """Raise when ``filt`` is authoritative: called wherever a filter would be
+    dropped instead of applied."""
+    if isinstance(filt, dict) and filt.get(AUTHORITATIVE_KEY):
+        logger.warning(
+            "[authoritative-filter] refused: field=%s reason=%s",
+            filt.get("semanticField") or filt.get("fieldKey") or filt.get("field"), reason,
+        )
+        raise AuthoritativeFilterNotApplied(reason)
+
+
 def _summarize_filter(filt: dict[str, Any] | None) -> dict[str, Any]:
     """Phase-15.78 — extract the dropped-filter diagnostic shape from a
     runtime filter dict. Keeps the diagnostic small (no full value blobs)
@@ -95,7 +136,11 @@ def _record_dropped_filter(
     """Phase-15.78 — append a structured drop entry to caller-provided
     diagnostics list and emit a WARNING log. Caller passes None when it
     doesn't care (most internal sites); chart-data endpoints pass a list
-    and forward it into ChartDebugInfo.dropped_filters."""
+    and forward it into ChartDebugInfo.dropped_filters.
+
+    An AUTHORITATIVE filter is never dropped: recording its drop refuses the
+    request (``AuthoritativeFilterNotApplied``)."""
+    refuse_unapplied_authoritative(filt, reason)
     summary = _summarize_filter(filt)
     logger.warning(
         "[filter-drop] reason=%s field=%s semantic=%s op=%s detail=%s",
@@ -118,13 +163,18 @@ def _record_dropped_filter(
 # a first-class aggregation there, so normalize must preserve it (not strip it
 # to the default) — otherwise an explicit % -of-total override is silently
 # lost. "auto" means "defer to the field's declared measure type".
-_VALID_AGGS = {"sum", "avg", "count", "min", "max", "count_distinct", "percent_of_total", "auto"}
-CHART_QUERY_MODE_GENERATED = "generated"
-CHART_QUERY_MODE_CUSTOM = "custom"
-_VALID_CHART_QUERY_MODES = {
-    CHART_QUERY_MODE_GENERATED,
+from app.schemas.chart_config import CHART_METRIC_AGGS as _VALID_AGGS  # noqa: E402  one vocabulary
+# The query-mode contract lives with the schemas (the validator needs it and must
+# not import services); re-exported here for every existing caller.
+from app.schemas.chart_config import (  # noqa: E402,F401
     CHART_QUERY_MODE_CUSTOM,
-}
+    CHART_QUERY_MODE_GENERATED,
+    _VALID_CHART_QUERY_MODES,
+    get_chart_active_role_config,
+    get_chart_custom_sql,
+    get_chart_query_mode,
+    normalize_chart_query_mode,
+)
 
 # Canonical operator vocabulary. Phase-B of the PBI-parity rework
 # extends this with date-relative and top-N operators (see
@@ -285,43 +335,6 @@ _VALID_CHART_FILTER_CONTEXTS = {
     CHART_FILTER_CONTEXT_DEFAULT,
     CHART_FILTER_CONTEXT_DASHBOARD,
 }
-
-
-def normalize_chart_query_mode(mode: Any) -> str:
-    raw = str(mode or CHART_QUERY_MODE_GENERATED).strip().lower()
-    return raw if raw in _VALID_CHART_QUERY_MODES else CHART_QUERY_MODE_GENERATED
-
-
-def get_chart_query_mode(config: dict[str, Any] | None) -> str:
-    if not isinstance(config, dict):
-        return CHART_QUERY_MODE_GENERATED
-
-    mode = normalize_chart_query_mode(config.get("queryMode"))
-    custom_sql = str(config.get("customSql") or "").strip()
-    if mode == CHART_QUERY_MODE_CUSTOM and custom_sql:
-        return CHART_QUERY_MODE_CUSTOM
-    return CHART_QUERY_MODE_GENERATED
-
-
-def get_chart_custom_sql(config: dict[str, Any] | None) -> str | None:
-    if get_chart_query_mode(config) != CHART_QUERY_MODE_CUSTOM:
-        return None
-    custom_sql = str((config or {}).get("customSql") or "").strip()
-    return custom_sql or None
-
-
-def get_chart_active_role_config(config: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(config, dict):
-        return {}
-
-    mode = get_chart_query_mode(config)
-    if mode == CHART_QUERY_MODE_CUSTOM and isinstance(config.get("customRoleConfig"), dict):
-        return config.get("customRoleConfig") or {}
-    if mode == CHART_QUERY_MODE_GENERATED and isinstance(config.get("generatedRoleConfig"), dict):
-        return config.get("generatedRoleConfig") or {}
-    if isinstance(config.get("roleConfig"), dict):
-        return config.get("roleConfig") or {}
-    return {}
 
 
 def normalize_filter_operator(operator: str | None) -> str:
@@ -533,9 +546,11 @@ def merge_chart_query_filters(
     physical, custom SQL, semantic, public). Base filters are the chart's
     saved scope; ``extra_filters`` are the runtime overlay (dashboard /
     slicer / public-link filters — for the public path already pre-merged by
-    `filter_layered_merge.merge_layered_filters`). On the same semantic scope
-    the runtime value WINS over the base (PBI-parity "viewer narrows the
-    chart's default"); see `_filter_dedupe_key`.
+    `filter_layered_merge.merge_layered_filters`). The base is the author's
+    HARD constraint: base AND runtime, never replaced — even on the same
+    field (product decision 2026-05-31, below). Runtime-vs-runtime override
+    ("viewer narrows the dashboard default") is resolved upstream by the
+    layered merge, not here.
 
     NOTE: base-internal duplicates are intentionally PRESERVED (only
     base-vs-extra collisions are deduped). A chart whose base scope is a

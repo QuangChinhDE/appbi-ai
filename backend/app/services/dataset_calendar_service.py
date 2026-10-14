@@ -170,13 +170,16 @@ def normalize_dataset_settings(
     *,
     enabled_default: bool,
 ) -> Dict[str, Any]:
+    """Normalize the calendar namespace; every other namespace (snapshot_config,
+    model_layout, destination, …) is owned by another subsystem and passes
+    through untouched — dropping them here erased a configured snapshot
+    schedule or model layout whenever the Calendar was edited."""
     raw = dict(raw_settings or {})
-    return {
-        "calendar_dimension": normalize_calendar_dimension_settings(
-            raw.get("calendar_dimension"),
-            enabled_default=enabled_default,
-        )
-    }
+    raw["calendar_dimension"] = normalize_calendar_dimension_settings(
+        raw.get("calendar_dimension"),
+        enabled_default=enabled_default,
+    )
+    return raw
 
 
 def get_dataset_settings(dataset: Dataset | Any, *, enabled_default: bool = False) -> Dict[str, Any]:
@@ -236,7 +239,7 @@ def exclude_calendar_join(
     exclusions.append(key)
     calendar_settings["excluded_auto_joins"] = exclusions
     dataset.settings = normalize_dataset_settings(
-        {"calendar_dimension": calendar_settings},
+        {**current_settings, "calendar_dimension": calendar_settings},
         enabled_default=bool(calendar_settings.get("enabled", enabled_default)),
     )
     return True
@@ -365,11 +368,21 @@ FROM UNNEST(GENERATE_DATE_ARRAY(DATE '{start_date}', DATE '{end_date}')) AS d
 """.strip()
 
     if dialect == "mysql":
+        # NOT a recursive CTE: MySQL aborts one after `cte_max_recursion_depth`
+        # (1000) iterations, and the default calendar spans 2000-2100 (~37k
+        # days) — every MySQL calendar query failed. The days are an offset
+        # from start_date built from as many decimal digit tables as the range
+        # needs (never truncated), filtered to end_date.
+        _days = (date.fromisoformat(str(end_date)) - date.fromisoformat(str(start_date))).days
+        _digits = max(1, len(str(max(_days, 0))))
+        _digit_table = " UNION ALL ".join(f"SELECT {i} AS n" for i in range(10))
+        _offset = " + ".join(f"d{k}.n * {10 ** k}" for k in range(_digits))
+        _from = " CROSS JOIN ".join(f"({_digit_table}) AS d{k}" for k in range(_digits))
         return f"""
-WITH RECURSIVE calendar_series AS (
-  SELECT CAST('{start_date}' AS DATE) AS d
-  UNION ALL
-  SELECT DATE_ADD(d, INTERVAL 1 DAY) FROM calendar_series WHERE d < '{end_date}'
+WITH calendar_series AS (
+  SELECT DATE_ADD(CAST('{start_date}' AS DATE), INTERVAL ({_offset}) DAY) AS d
+  FROM {_from}
+  WHERE {_offset} <= {max(_days, 0)}
 )
 SELECT
   d AS date,
@@ -380,7 +393,7 @@ SELECT
   MONTH(d) AS month,
   MONTHNAME(d) AS month_name,
   DATE_FORMAT(d, '%b') AS month_short,
-  DATE_FORMAT(d, '%Y-%m') AS year_month,
+  DATE_FORMAT(d, '%Y-%m') AS `year_month`,
   WEEK(d, 3) AS week_of_year_iso,
   DATE_SUB(d, INTERVAL (WEEKDAY(d)) DAY) AS week_start_date,
   DATE_ADD(DATE_SUB(d, INTERVAL (WEEKDAY(d)) DAY), INTERVAL 6 DAY) AS week_end_date,
@@ -476,9 +489,39 @@ def ensure_calendar_table(
 
 
 def remove_calendar_table(db: Session, dataset_id: int) -> bool:
+    """Remove the generated calendar AND everything the model built on it.
+
+    Deleting only the table left its SemanticView (FK SET NULL), the per-date
+    role views (``<view>__<column>__date_dim``) and the calendar auto-joins in
+    the model until someone regenerated it — fields of a calendar that no longer
+    exists kept appearing in pickers. User-authored joins are never touched."""
+    from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
+
     table = get_calendar_table(db, dataset_id)
     if table is None:
         return False
+    calendar_views = {v.name for v in db.query(SemanticView).filter(
+        SemanticView.dataset_table_id == table.id).all()}
+    own_prefixes = tuple(
+        f"{v.name}__" for v in db.query(SemanticView).join(
+            DatasetTable, SemanticView.dataset_table_id == DatasetTable.id).filter(
+            DatasetTable.dataset_id == dataset_id, DatasetTable.id != table.id).all())
+    role_views = [v for v in db.query(SemanticView).filter(
+        SemanticView.dataset_table_id.is_(None), SemanticView.name.like(r"%\_\_date\_dim", escape="\\")).all()
+        if own_prefixes and v.name.startswith(own_prefixes)]
+    gone = calendar_views | {v.name for v in role_views}
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if model is not None:
+        for explore in db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all():
+            joins = list(explore.joins or [])
+            kept = [j for j in joins if not (isinstance(j, dict) and (
+                j.get("calendar_role") or j.get("view") in gone or j.get("presentation_view") in gone))]
+            if len(kept) != len(joins):
+                explore.joins = kept  # a NEW list: the JSON column has no mutation tracking
+    for v in role_views:
+        db.delete(v)
+    for v in db.query(SemanticView).filter(SemanticView.dataset_table_id == table.id).all():
+        db.delete(v)
     db.delete(table)
     return True
 
@@ -590,21 +633,54 @@ def expand_local_date_macros(sql: str, dialect: str | None) -> str:
     d = (dialect or "").strip().lower()
 
     def _one(m: "re.Match[str]") -> str:
-        expr = m.group(1).strip()
-        tz = m.group(2).strip()
-        if not _TZ_NAME_RE.fullmatch(tz):
-            return f"CAST({expr} AS DATE)"
-        if d == "bigquery":
-            return f"DATE({expr}, '{tz}')"
-        if d in ("postgresql", "duckdb"):
-            # naive timestamps are stored as UTC instants in our pipeline —
-            # interpret as UTC, then shift to the calendar timezone.
-            return f"CAST(({expr} AT TIME ZONE 'UTC' AT TIME ZONE '{tz}') AS DATE)"
-        if d == "mysql":
-            return f"DATE(CONVERT_TZ({expr}, 'UTC', '{tz}'))"
-        return f"CAST({expr} AS DATE)"
+        return local_date_sql(m.group(1).strip(), m.group(2).strip(), d)
 
     return _LOCAL_DATE_MACRO_RE.sub(_one, sql)
+
+
+def local_date_sql(expr: str, tz: str, dialect: str | None) -> str:
+    """The calendar date, in timezone `tz`, of the instant `expr`.
+
+    The ONE rule for "which local day does this event belong to" — used by the
+    calendar join (via the macro above) and by time-grain bucketing, so a chart
+    grouped by month and a chart grouped by the calendar's month put a
+    near-midnight event in the same bucket. Unknown tz or dialect → plain CAST."""
+    d = (dialect or "").strip().lower()
+    if not _TZ_NAME_RE.fullmatch(str(tz or "")):
+        return f"CAST({expr} AS DATE)"
+    if d == "bigquery":
+        return f"DATE({expr}, '{tz}')"
+    if d in ("postgresql", "duckdb"):
+        # naive timestamps are stored as UTC instants in our pipeline —
+        # interpret as UTC, then shift to the calendar timezone.
+        return f"CAST(({expr} AT TIME ZONE 'UTC' AT TIME ZONE '{tz}') AS DATE)"
+    if d == "mysql":
+        return f"DATE(CONVERT_TZ({expr}, 'UTC', '{tz}'))"
+    return f"CAST({expr} AS DATE)"
+
+
+_INSTANT_PHYSICAL_TYPES = frozenset({"timestamp", "timestamptz", "timestamp_tz", "timestamp with time zone"})
+
+
+def is_instant_column(physical_type: str | None, column_type: str | None) -> bool:
+    """TIMESTAMP-like columns are instants (convertible between timezones); a
+    wall-clock DATETIME/DATE carries no timezone. Keyed on the PHYSICAL type —
+    BigQuery TIMESTAMP is often value-sampled as semantic "datetime"."""
+    phys = str(physical_type or "").strip().lower().split("(", 1)[0].strip()
+    ctype = str(column_type or "").strip().lower()
+    return phys in _INSTANT_PHYSICAL_TYPES or (not phys and ctype == "timestamp")
+
+
+def effective_calendar_timezone(dataset) -> str | None:
+    """The dataset calendar's timezone when it is an explicit non-UTC IANA name
+    (the only case that shifts dates), else None."""
+    try:
+        tz = str(get_calendar_settings(dataset).get("timezone") or "").strip()
+    except Exception:  # noqa: BLE001 — unreadable settings = default (UTC)
+        return None
+    if tz and tz.upper() != "UTC" and _TZ_NAME_RE.fullmatch(tz):
+        return tz
+    return None
 
 
 def build_calendar_join_sql(
@@ -628,10 +704,7 @@ def build_calendar_join_sql(
     # no-op. TIMESTAMP/TIMESTAMPTZ are instants (tz-convertible); a genuine
     # wall-clock DATETIME/DATE carries no tz and keeps the plain CAST.
     tz = str(timezone or "").strip()
-    phys = str(physical_type or "").strip().lower().split("(", 1)[0].strip()
-    ctype = str(column_type or "").strip().lower()
-    _INSTANT_PHYS = {"timestamp", "timestamptz", "timestamp_tz", "timestamp with time zone"}
-    is_instant = phys in _INSTANT_PHYS or (not phys and ctype == "timestamp")
+    is_instant = is_instant_column(physical_type, column_type)
     if (
         tz and tz.upper() != "UTC" and is_instant
         and _TZ_NAME_RE.fullmatch(tz)

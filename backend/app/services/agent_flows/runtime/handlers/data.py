@@ -14,6 +14,10 @@ having a second set of bugs.
 """
 from __future__ import annotations
 
+from app.services.agent_flows.reader_diagnostics import (
+    tool_label as _reader_tool_label,
+)
+
 import logging
 from typing import Any, AsyncGenerator
 from urllib.parse import urlparse
@@ -46,8 +50,9 @@ def _call(rctx: Any, state: RunState, tool: str, args: dict) -> Any:
         tool if result.get("ok")
         else f"{tool}({result.get('error_code') or 'failed'})"
     )
-    # Everything the run READ, so the answer's figures can be checked against it.
-    state.add_evidence(result)
+    # Everything the run READ, so the answer's figures can be checked against it —
+    # and referenceable, so a later `compute` can name exactly which figure it used.
+    state.record_evidence(result, tool=tool, args=args)
     return result
 
 
@@ -70,70 +75,189 @@ def _route_call(rctx: Any, state: RunState, tool: str, args: dict) -> Any:
     return result
 
 
+def _selection_mode(node: ReportReadNode) -> str:
+    """How this node decides WHAT to read. Explicit beats question beats index.
+
+    Named rather than re-derived from a pair of booleans at each call site: an
+    author has to be able to answer "why those charts?", and so does the trace.
+    """
+    if node.chart_ids:
+        return "explicit"
+    if node.detail == "index":
+        return "report_index"
+    return "question" if node.match_question else "report_order"
+
+
 def _charts_for_question(
     node: ReportReadNode, state: RunState, rctx: Any, allowed: list[int]
-) -> tuple[list[int], str]:
-    """The allowed charts, reordered so the ones the question names come first.
+) -> tuple[list[int], dict]:
+    """Which charts the question is about, and the evidence for saying so.
 
-    Ranking is `list_charts`' own term match — the audited path that already backs
-    the picker and the discover pack — rather than a second implementation of
-    "which chart is this about" living in the runtime. Deterministic: no model is
-    consulted, which is the property that lets this step stay model-free.
+    Resolution is delegated to the ONE canonical resolver, which composes the
+    audited lexical path with the business vocabulary — governed metrics, glossary
+    terms, semantic fields — and the metric -> chart bridge. No second matcher
+    lives here.
 
-    Returns the ordered ids and a reason when the question matched nothing, so the
-    caller can say so instead of silently reading the report in id order and
-    calling it a match.
+    NO SILENT FALLBACK. Reading the report in its own order when the question
+    cannot be resolved stays allowed, because stored flows must keep working — but
+    it is RECORDED as a fallback. "Could not tell what the question refers to" and
+    "the first N charts are relevant" are different claims and only one is true.
     """
+    from app.services.agent_flows.resolver import resolve_charts
+
     question = state.resolve_text(node.query) or rctx.inp.question.text()
     if not question.strip():
-        return allowed, "no_question"
-    listing = _route_call(rctx, state, "list_charts",
-                          {"query": question, "detail": "compact"})
-    if not isinstance(listing, dict) or not listing.get("ok"):
-        return allowed, "lookup_failed"
-    # `_ok` wraps the payload: {"ok": true, "data": {...}}.
-    payload = listing.get("data") if isinstance(listing.get("data"), dict) else {}
-    selection = payload.get("selection") if isinstance(payload.get("selection"), dict) else {}
-    status = str(selection.get("status") or "")
+        return allowed, {"mode": "question", "status": "no_question",
+                         "fell_back_to": "report_order", "candidates": []}
 
-    # THE WHOLE POINT OF THE CONTRACT: a fallback listing is never a match here.
+    # Through `_route_call`, so these lookups are counted against the turn's tool
+    # budget and recorded in the run's tool log exactly like every other call.
+    got = resolve_charts(
+        question, allowed,
+        call=lambda tool, args: _route_call(rctx, state, tool, args),
+    )
+    status = got.get("status") or "none"
+    ids = [c for c in (got.get("chart_ids") or []) if c in set(allowed)]
+
+    # THIS DICT IS SERIALISED INTO THE ANSWERING PROMPT, so it carries the status
+    # and the ids and not the evidence prose. The full candidate reasoning goes to
+    # the author diagnostic below, which no model pays for.
+    candidates = got.get("candidates") or []
+    candidate_ids = [c.get("chart_id") for c in candidates
+                     if isinstance(c, dict) and isinstance(c.get("chart_id"), int)]
+    selection: dict[str, Any] = {"mode": "question", "status": status}
+    if status in ("exact", "semantic") and ids:
+        selection["selected_ids"] = ids
+        return ids, selection
+
+    # EVIDENCE TRUTH IS NOT QUESTION RELEVANCE.
     #
-    # `list_charts` answers a miss with the FULL listing plus a note, which is
-    # right for a model — it reads the note and decides. This caller has no model,
-    # and the fallback listing is byte-shaped exactly like a successful one. It
-    # read "here is everything, sorry" as "here is what you asked for".
+    # This used to return the whole allowed list and merely LABEL it
+    # `fell_back_to: report_order`. Observability is not correctness: the step
+    # still handed the answering model six charts of unrelated evidence, which it
+    # summarised. Asked "thời tiết Hà Nội hôm nay", an Olist assistant replied
+    # with GMV, orders, AOV and ratings — every figure real, every figure
+    # answering a question nobody asked.
     #
-    # `ambiguous` is refused for the same reason and is NOT a failure: one shared
-    # token is enough for this tool to rank a chart, so "thời tiết sao Hỏa hôm nay"
-    # matched four — "sao" from "Tỷ lệ 5 sao", "thời" from "Dòng thời gian". The
-    # step degrades to its default scope and says so; the run continues.
-    if status in ("none", "ambiguous"):
-        return allowed, "no_match" if status == "none" else "weak_match"
-    if status and status != "matched":
-        return allowed, "lookup_failed"
-    if not status:
-        # An older payload with no `selection` block. Trust it rather than refuse
-        # every match — but the coverage note is the one signal that survives.
-        coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
-        if "query_matched_nothing" in coverage:
-            return allowed, "no_match"
+    # In QUESTION mode the author asked for charts THE QUESTION selects. Nothing
+    # selected means nothing to read. Explicit report-overview flows never reach
+    # here: they run in `report_order` / `report_index` / `explicit` mode, so
+    # compatibility needs no new setting — the existing toggle already says which
+    # behaviour was asked for.
+    if status == "lookup_failed":
+        # FAIL CLOSED, WITHOUT CLAIMING A VERDICT.
+        #
+        # Two different wrong answers were available here. Reading the report in
+        # id order says "these charts are relevant" on no evidence — the same
+        # fail-open the weather fix closed for `none`, with a nicer label. Calling
+        # it `unsupported` says "this report cannot answer you" on no evidence
+        # either; the resolver never reached that conclusion, it broke.
+        #
+        # So: read nothing, and say the resolution was UNAVAILABLE. Other
+        # authorised capabilities in the flow are untouched and may still answer.
+        selection["resolution_unavailable"] = True
+        state.notices.append(
+            Notice(
+                code="read_resolution_unavailable", audience="reader", severity="info",
+                text="Hiện chưa xác định được phần dữ liệu liên quan trong báo cáo, "
+                     "nên trợ lý chưa trả lời từ báo cáo này.",
+            )
+        )
+        state.notices.append(
+            Notice(
+                code="read_question_unmatched", audience="author", severity="warning",
+                node_key=node.key,
+                facts={"selection_status": status, "charts_read": 0},
+                remedies=["Xem lượt tool của bước này để biết tra cứu hỏng ở đâu."],
+                text=f"Bước “{node.name or node.key}” không tra cứu được để chọn biểu "
+                     "đồ theo câu hỏi, nên không đọc biểu đồ nào — đọc theo thứ tự "
+                     "báo cáo sẽ là đoán mò về mức liên quan.",
+            )
+        )
+        return [], selection
 
-    ranked = [
-        c for c in (selection.get("selected_ids") or [])
-        if isinstance(c, int)
-    ] or [
-        c.get("chart_id") for c in (payload.get("charts") or [])
-        if isinstance(c, dict) and isinstance(c.get("chart_id"), int)
-    ]
-    # NEVER WIDENS. `list_charts` is scoped to the context, but a selector that let
-    # its output DEFINE scope would be a second implementation of entitlement, and
-    # this is the class of bug where being wrong is a leak rather than a bad answer.
-    keep = set(allowed)
-    ordered = [c for c in ranked if c in keep]
-    return (ordered or allowed), ("" if ordered else "no_match")
+    if candidate_ids:
+        selection["candidate_chart_ids"] = candidate_ids[:5]
+    if status == "ambiguous":
+        # "Which of these?" — not "I cannot". Different states, different
+        # downstream behaviour; merging them loses the useful half.
+        selection["needs_clarification"] = True
+    else:
+        # NOT the same as an empty read. "The report has nothing about this" is a
+        # fact about capability; "the read returned nothing" is a fact about data,
+        # and it sends an author hunting a problem that is not there.
+        selection["unsupported"] = True
+
+    # THE REMEDY FOLLOWS FROM WHAT HAPPENED. Matching RAN to reach this branch, so
+    # advising the author to switch it on is advice that changes nothing.
+    # EVERY REMEDY HERE MUST BE PERFORMABLE IN THE PRODUCT AS IT STANDS.
+    #
+    # "Chỉ định danh sách biểu đồ" was removed rather than fixed. `chart_ids` is
+    # kept for compatibility and advanced flows, but the builder deliberately has
+    # no picker for it: a chart id belongs to ONE report while a flow is meant to
+    # stay reusable across bindings, so a UI that persisted a raw id would bake
+    # hidden report-specific coupling into a portable object. Binding-aware asset
+    # selection is a Wave 3 design item; until it exists, advice to use it would
+    # be advice the author cannot follow.
+    #
+    # What is left is portable: sharpen the query, read the candidates the
+    # resolver already reports, or give the asset business vocabulary.
+    if status == "ambiguous":
+        text = (f"Bước “{node.name or node.key}” tìm được nhiều khả năng cho câu hỏi "
+                "nhưng không đủ căn cứ chọn một, nên không đọc biểu đồ nào.")
+        remedies = ["Viết rõ hơn câu hỏi hoặc ô “Khớp theo” của bước này.",
+                    "Xem danh sách khả năng ở trên để biết nó đang phân vân giữa những gì.",
+                    "Đặt bí danh/mô tả cho biểu đồ, hoặc khai báo chỉ số trong Từ điển "
+                    "để câu hỏi nghiệp vụ trỏ đúng một thứ."]
+    else:
+        text = (f"Bước “{node.name or node.key}” đã tra theo câu hỏi nhưng không tìm "
+                "được biểu đồ hay chỉ số nào khớp, nên không đọc biểu đồ nào — báo "
+                "cáo này không có dữ liệu cho câu hỏi đó.")
+        remedies = ["Viết rõ hơn câu hỏi hoặc ô “Khớp theo” của bước này.",
+                    "Thêm mô tả/bí danh cho biểu đồ, hoặc khai báo chỉ số trong Từ điển.",
+                    "Nếu báo cáo thực sự không có dữ liệu này, hãy chấp nhận “không "
+                    "khớp” thay vì để bước đọc theo thứ tự báo cáo."]
+
+    # THE READER IS TOLD TOO, deterministically. Expecting the model to infer
+    # "I was given nothing, so I should refuse" is the prompt-only fix this
+    # explicitly is not: the runtime knows the answer is out of scope, so the
+    # runtime says so.
+    state.notices.append(
+        Notice(
+            code=("read_question_ambiguous" if status == "ambiguous"
+                  else "read_question_unsupported"),
+            audience="reader",
+            severity="info",
+            text=("Câu hỏi có thể hiểu theo nhiều cách với báo cáo này — bạn muốn "
+                  "xem cụ thể phần nào?" if status == "ambiguous" else
+                  "Báo cáo này không có dữ liệu cho câu hỏi đó, nên trợ lý chưa "
+                  "trả lời được."),
+        )
+    )
+    state.notices.append(
+        Notice(
+            code="read_question_unmatched",
+            audience="author",
+            severity="warning",
+            node_key=node.key,
+            # THE FACTS MUST MATCH WHAT HAPPENED. `fell_back_to: report_order`
+            # survived the change that stopped the fallback, so an author
+            # debugging a zero-chart read was told the step read in report order.
+            # A diagnostic that lies is the defect Wave 1 closed.
+            facts={"selection_status": status,
+                   "charts_read": 0,
+                   "candidate_chart_ids": candidate_ids,
+                   "concepts": got.get("concepts") or [],
+                   "candidates": candidates[:8]},
+            remedies=remedies,
+            text=text,
+        )
+    )
+    # Nothing resolved, so nothing is read. The step succeeds: "no chart in this
+    # report is about that" is an answer, not a failure.
+    return [], selection
 
 
-# ═══ Read the open report ═════════════════════════════════════════════════════
 async def run_report_read(
     node: ReportReadNode, state: RunState, rctx: Any
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -159,26 +283,29 @@ async def run_report_read(
     # that must survive, dropped by construction, leaving a partial reading looking
     # like a complete one. Filled in below, once there is something to report.
     out: dict[str, Any] = {"scope": {}, "charts": [], "filters": None}
+    # WHY THESE CHARTS — recorded, not implied. The trace and the authoring UI
+    # both have to answer it, and the answer differs per mode.
+    state.evidence_source = node.key
+    out["selection"] = {"mode": _selection_mode(node)}
     yield AgentEvent(type="status", text="Đang đọc báo cáo…")
 
     if node.include_filters:
         out["filters"] = _call(rctx, state, "inspect_filters", {})
+        if node.detail == "compact":
+            out["filters"] = _compact_filters(out["filters"])
 
     # BY THE QUESTION, WHEN THE AUTHOR ASKED FOR THAT. An explicit `chart_ids`
     # list always wins: the author already answered "which charts", and a keyword
     # match must not overrule them.
     if node.match_question and not node.chart_ids:
-        wanted, why = _charts_for_question(node, state, rctx, wanted)
-        if why in ("no_match", "weak_match"):
-            state.notices.append(
-                Notice(
-                    code="read_question_unmatched",
-                    text=f"Bước “{node.name or node.key}” không tìm thấy biểu đồ nào "
-                         "khớp rõ câu hỏi, nên đọc theo thứ tự mặc định. Nếu báo cáo "
-                         "gọi thứ này bằng tên khác, hãy chỉ định danh sách biểu đồ "
-                         "cho bước này.",
-                )
-            )
+        wanted, selection = _charts_for_question(node, state, rctx, wanted)
+        out["selection"] = selection
+
+    # PROPAGATED DETERMINISTICALLY. The answering step's own output cannot say
+    # whether its evidence was relevant; this can. Numeric verification asks
+    # whether a figure exists in the evidence — a necessary question that is
+    # not sufficient, because unrelated figures exist too.
+    state.question_grounding[node.key] = dict(out["selection"])
 
     planned = wanted[:node.max_charts]
     read_count = 0
@@ -220,6 +347,7 @@ async def run_report_read(
             continue
         if node.include_summary:
             entry["summary"] = _call(rctx, state, "get_chart_summary", {"chart_id": chart_id})
+            _note_status(entry, "summary", entry["summary"])
         if node.include_data and rctx.inp.binding.capabilities.read_rows:
             # ASK FOR THE TOP ROWS, NOT THE FIRST ROWS.
             #
@@ -239,6 +367,7 @@ async def run_report_read(
                 args["sort"] = "desc"
                 args["sort_by"] = measure
             entry["data"] = _call(rctx, state, "get_chart_data", args)
+            _note_status(entry, "data", entry["data"])
             entry["rows_ordered_by"] = measure or "(thứ tự của biểu đồ)"
             _flag_partial(entry, state, node)
         if node.detail == "compact":
@@ -262,7 +391,19 @@ async def run_report_read(
         c.get("chart_id") for c in out["charts"]
         if not _entry_has_data(c)
     ]
-    out["read_ok"] = len(failed) < len(out["charts"]) if out["charts"] else False
+    # NO-MATCH IS NOT EMPTY DATA. Reading nothing because the question resolved to
+    # nothing is a complete outcome; reading nothing because every chart failed is
+    # a fault. Both end with an empty list, and collapsing them sends an author
+    # hunting a data problem that does not exist.
+    _resolved_to_nothing = bool(
+        (out.get("selection") or {}).get("unsupported")
+        or (out.get("selection") or {}).get("needs_clarification")
+        or (out.get("selection") or {}).get("resolution_unavailable")
+    )
+    if out["charts"]:
+        out["read_ok"] = len(failed) < len(out["charts"])
+    else:
+        out["read_ok"] = _resolved_to_nothing
     if failed:
         out["unreadable_chart_ids"] = failed
         # AND WHY. Counting the charts told an author that something broke and
@@ -368,7 +509,13 @@ def _why(payload: Any) -> str:
     """
     if not isinstance(payload, dict) or payload.get("ok"):
         return ""
-    return str(payload.get("detail") or payload.get("error") or "").strip()
+    # A DELIBERATE REFUSAL IS NOT A BROKEN READ, and a structured `detail` is for
+    # the trace, never a sentence (browser: "{'requested_dimension': …}" reached
+    # the viewer notes).
+    if payload.get("error_code") in ("dimension_mismatch", "period_not_in_chart"):
+        return ""
+    detail = payload.get("detail")
+    return str(detail if isinstance(detail, str) and detail else payload.get("error") or "").strip()
 
 
 def _failure_reasons(entries: list[dict]) -> list[str]:
@@ -408,10 +555,11 @@ def _degraded_by_reason(entries: list[dict]) -> dict[str, list]:
     return out
 
 
-#: What a step's result is cut to on its way into a prompt. Mirrors
-#: `_MAX_STEP_CHARS` / the `carried[:8000]` slice in the agent handler — imported
-#: rather than re-declared would be better, and is a circular import today.
-_DOWNSTREAM_CHARS = 2000
+#: The ceiling this step's result is measured against, imported from the module
+#: that owns the handoff. It used to be a local `2000` mirroring a constant in the
+#: agent handler; that constant was replaced and this copy was not, so the notice
+#: quoted a limit that no longer existed.
+from app.services.agent_flows.runtime.context import HANDOFF_CHARS as _DOWNSTREAM_CHARS
 
 
 def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> None:
@@ -445,24 +593,148 @@ def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> No
     size = len(render_value(out))
     if size <= _DOWNSTREAM_CHARS:
         return
-    kept = max(1, round(len(out["charts"]) * _DOWNSTREAM_CHARS / size))
-    # Grouped the way the reader of this sentence writes numbers. Formatted per
-    # number, not by search-replacing the finished sentence — that also turns the
-    # commas in the prose into full stops.
+    # Reduction is STRUCTURAL now — the compiler shrinks the biggest arrays inside
+    # each chart, it does not keep "the first N charts and drop the rest". Saying
+    # the old thing would be a second lie on top of the old number.
     vn = lambda n: f"{n:,}".replace(",", ".")
+
+    # REMEDIES ARE DERIVED FROM STATE, NOT WRITTEN INTO THE SENTENCE.
+    #
+    # The invariant: a diagnostic may only recommend an action that is actually
+    # applicable right now. The fixed sentence used to end with "Bật 'đọc theo câu
+    # hỏi'" whether or not it was already on, so the product read as though it
+    # could not see its own configuration — and an author who follows advice that
+    # changes nothing stops trusting the next notice too.
+    remedies: list[str] = []
+    if not node.match_question and not node.chart_ids:
+        remedies.append("Bật “đọc theo câu hỏi” để chọn biểu đồ theo nội dung hỏi.")
+    if not node.chart_ids:
+        remedies.append("Giảm số biểu đồ tối đa của bước này.")
+    if node.detail == "full":
+        remedies.append("Hạ mức chi tiết xuống “gọn”.")
+    if node.detail in ("full", "compact"):
+        remedies.append("Chuyển mức chi tiết sang “chỉ mục” rồi để bước sau gọi "
+                        "công cụ lấy đúng con số.")
+    if not remedies:
+        # Already at the tightest settings this node offers. Saying nothing
+        # actionable is honest; pretending there is a knob left is not.
+        remedies.append("Bước này đã ở mức gọn nhất; phần dư cần được xử lý ở "
+                        "bước sau (gọi công cụ lấy số) thay vì đọc thêm.")
+
     state.notices.append(
         Notice(
             code="read_exceeds_context",
+            audience="author",
+            severity="warning",
+            node_key=node.key,
+            facts={
+                "charts_read": len(out["charts"]),
+                "rendered_chars": size,
+                "downstream_chars": _DOWNSTREAM_CHARS,
+                "over_budget_by": size - _DOWNSTREAM_CHARS,
+                "match_question": node.match_question,
+                "detail": node.detail,
+                "explicit_chart_ids": len(node.chart_ids),
+            },
+            remedies=remedies,
+            # REMEDIES LIVE IN `remedies`, ONCE. They were also appended to this
+            # sentence, from a time when no surface rendered the field; both
+            # author surfaces render it now, so appending printed every remedy
+            # twice on screen.
             text=(
                 f"Bước “{node.name or node.key}” đọc {len(out['charts'])} biểu đồ "
-                f"(~{vn(size)} ký tự) nhưng bước sau chỉ nhận được "
-                f"{vn(_DOWNSTREAM_CHARS)} ký tự đầu — khoảng {kept} biểu đồ đầu "
-                "danh sách, phần còn lại bị cắt. Bật “đọc theo câu hỏi”, giảm số "
-                "biểu đồ, hoặc chuyển mức chi tiết sang “chỉ mục” rồi để bước sau "
-                "gọi công cụ lấy đúng con số."
+                f"(~{vn(size)} ký tự), vượt ngân sách ngữ cảnh của bước trả lời "
+                f"(~{vn(_DOWNSTREAM_CHARS)} ký tự cho TẤT CẢ các bước cộng lại) nên "
+                "phần chi tiết trong mỗi biểu đồ sẽ bị lược bớt; nếu còn bước khác "
+                "cũng có kết quả thì phần dành cho bước này còn nhỏ hơn."
             ),
         )
     )
+
+
+#: Where a chart entry's READ EXECUTION STATUS lives. Separate from the payload on
+#: purpose: the payload is shaped for the model (compacted, indexed, trimmed) and a
+#: shaping step must never be able to change whether the tool succeeded. Written
+#: once, at execution; read by every later stage.
+_STATUS = "read_status"
+
+
+def _note_status(entry: dict, key: str, payload: Any) -> None:
+    """Fold one part's outcome into the entry's rollup, as it is read.
+
+    One short string, not a per-part dict: this entry is serialised into the
+    downstream prompt, and `{"summary":"ok","data":"ok"}` on twenty charts spends
+    ~900 of the 2,000 characters the answering step receives. "partial" also says
+    something the model should act on — part of this chart is missing.
+    """
+    ok = isinstance(payload, dict) and bool(payload.get("ok"))
+    prev = entry.get(_STATUS)
+    if prev is None:
+        entry[_STATUS] = "ok" if ok else "failed"
+    elif (prev == "ok") != ok:
+        entry[_STATUS] = "partial"
+
+
+def restore_report_read_provenance(value: Any, state: RunState, *,
+                                   node_key: str) -> None:
+    """Put back what the ORIGINAL read put in — and only that.
+
+    A node with `run_policy="when_stale"` is skipped on a later turn and its
+    stored value is hydrated into the prompt, so the model answers from data this
+    turn never fetched. The ledger the figure checker reads has to describe that
+    data, or every verdict built on it is wrong in one direction or the other.
+
+    IT LIVES HERE, NEXT TO THE PRODUCER, BECAUSE THE TWO HAVE TO CORRESPOND.
+    Above, exactly three things reach `state.evidence`, all through `_call`:
+    `inspect_filters`, and per chart its `summary` and `data` tool results — plus
+    the single figure `_index` keeps from a KPI tile, which is the only part of
+    that `_call` result the stored entry carries. Everything else in the output is
+    routing: it was fetched with `_route_call`, or computed here, and `_route_call`
+    says why it must stay out — a chart id of 1001 vouching for a claim of 1001.
+
+    So this walks the data-bearing sub-payloads rather than the whole dict. The
+    first version handed `state.add_evidence` the entire stored value, which was
+    wrong twice over: it harvested `charts[].chart_id`, `scope.read` and
+    `scope.available`, and it still MISSED the real numbers — rows sit seven
+    levels down and `add_evidence` stops at six, so the reused ledger held the
+    metadata and nothing else.
+    """
+    if not isinstance(value, dict):
+        return
+    state.evidence_source = node_key
+    if value.get("filters") is not None:
+        state.add_evidence(value["filters"])
+    for entry in value.get("charts") or []:
+        if not isinstance(entry, dict):
+            continue
+        for field in ("summary", "data"):
+            if entry.get(field) is not None:
+                start = len(state.evidence)
+                state.add_evidence(entry[field])
+                # And what those figures MEAN, or a reused read looks, to the
+                # answer's claim check, like a run that read nothing.
+                state.note_claims("get_chart_summary" if field == "summary" else "get_chart_data",
+                                  entry[field], state.evidence[start:])
+        if "value" in entry:
+            state.add_evidence(entry["value"])
+            if entry.get("value_of"):
+                state.add_evidence(entry["value_of"])
+        # The same charts it cited when it ran. `history.no_citation` is derived
+        # from the recorded citations, so without these the author is told a
+        # reused turn cites nothing — about an answer carrying `[chart:683]`.
+        ref = str(entry.get("chart_id") or "")
+        if ref and not any(
+            c.ref == ref and c.kind == "chart" for c in state.citations
+        ):
+            state.citations.append(
+                Citation(kind="chart", ref=ref, label=(entry.get("title") or ""))
+            )
+    # Carried forward too, or the relevance rule quietly stops applying on every
+    # follow-up turn: a selection that resolved to nothing would come back looking
+    # clean.
+    selection = value.get("selection")
+    if isinstance(selection, dict):
+        state.question_grounding[node_key] = dict(selection)
 
 
 def _entry_has_data(entry: dict) -> bool:
@@ -478,6 +750,14 @@ def _entry_has_data(entry: dict) -> bool:
     """
     if entry.get("indexed"):
         return True
+    # THE RECORDED STATUS WINS. Sniffing the payload for `ok` made the verdict a
+    # property of the payload's SHAPE, so `_compact` — which replaces the summary
+    # with a presentation object that has no `ok` — turned a successful
+    # summary-only read into "could not read any chart".
+    status = entry.get(_STATUS)
+    if status:
+        return status in ("ok", "partial")
+    # Entries built elsewhere (stored traces, replay fixtures) carry no status.
     for key in ("summary", "data"):
         payload = entry.get(key)
         if isinstance(payload, dict) and payload.get("ok"):
@@ -543,6 +823,32 @@ def _compact(entry: dict) -> None:
     is what an answer actually cites; the rows themselves stay, because they are the
     evidence the figure check verifies against.
     """
+    # Stamp before reshaping: this function is about to destroy the only evidence
+    # that the read succeeded, and the invariant is that it may not.
+    for key in ("summary", "data"):
+        if key in entry:
+            _note_status(entry, key, entry.get(key))
+    # ONE FAILURE, SAID ONCE. A chart refused for the question ("this KPI is the
+    # all-period figure, not the month asked") failed its summary and its rows with
+    # the same sentence, so the reason travelled twice — ~350 characters a chart of
+    # a handoff that, in live round 7, then had no room left for the rows.
+    s_part, d_part = entry.get("summary"), entry.get("data")
+    _drop_read_bookkeeping(d_part)
+    if (isinstance(s_part, dict) and isinstance(d_part, dict) and not s_part.get("ok")
+            and not d_part.get("ok") and s_part.get("error") == d_part.get("error")):
+        del entry["summary"]
+        return
+    # WHEN EVERY ROW IS HERE, THE ROWS ARE THE EVIDENCE. The summary then only
+    # repeats them — the title, the type, the column names, the row count — plus
+    # cross-row stats, and a cross-row total is meaningless for a balance. Live
+    # round 7: a 4,427-character read over a ~4,000 share lost ALL its rows to the
+    # handoff reducer while "arr_active total 5244" (ARR summed over eight months)
+    # survived, and the writer said July and August were not in the report. A read
+    # that is only PART of the chart keeps its summary: there it says what the rows
+    # cannot.
+    if _rows_complete(entry.get("data")) and isinstance(s_part, dict) and s_part.get("ok"):
+        del entry["summary"]
+        return
     summary = (entry.get("summary") or {}).get("data") if isinstance(entry.get("summary"), dict) else None
     if not isinstance(summary, dict):
         return
@@ -563,6 +869,49 @@ def _compact(entry: dict) -> None:
         "total_rows": summary.get("total_rows"),
         "columns": columns,
     }
+
+
+def _compact_filters(result: Any) -> Any:
+    """No filter is active: the facts say so, and the paragraph explaining where
+    filters come from is for a model that has a filter to read. The evidence was
+    recorded when the tool was called."""
+    data = result.get("data") if isinstance(result, dict) and result.get("ok") else None
+    # Only a payload that SAYS no filter is active. Anything else is kept as it
+    # came: compacting a shape this does not recognise drops data it never read.
+    if not (isinstance(data, dict) and data.get("has_filters") is False
+            and data.get("active_filters") == []):
+        return result
+    return {"ok": True, "data": {k: data[k] for k in ("filter_count", "has_filters", "active_filters")
+                                 if k in data}}
+
+
+def _drop_read_bookkeeping(data_part: Any) -> None:
+    """What the row tool says about ITSELF, not about the chart: the request cap it
+    applied, an empty filter list, and the same coverage block twice (the tool's
+    and the result wrapper's). Every figure and the coverage itself survive."""
+    if not isinstance(data_part, dict) or not data_part.get("ok"):
+        return
+    inner = data_part.get("data") if isinstance(data_part.get("data"), dict) else None
+    for part in (data_part, inner):
+        if isinstance(part, dict):
+            cov = part.get("coverage")
+            if isinstance(cov, dict):
+                cov.pop("capped_by_policy", None)
+            if part.get("filters_applied") == []:
+                part.pop("filters_applied", None)
+    if inner is not None and data_part.get("coverage") == inner.get("coverage"):
+        data_part.pop("coverage", None)
+
+
+def _rows_complete(data_part: Any) -> bool:
+    """Every row of the chart came back (nothing capped, nothing truncated)."""
+    if not isinstance(data_part, dict) or not data_part.get("ok"):
+        return False
+    inner = data_part.get("data") if isinstance(data_part.get("data"), dict) else data_part
+    cov = inner.get("coverage") if isinstance(inner, dict) else None
+    rows = inner.get("rows") if isinstance(inner, dict) else None
+    return (isinstance(cov, dict) and isinstance(rows, list) and bool(rows)
+            and cov.get("truncated") is False and cov.get("returned") == cov.get("total") == len(rows))
 
 
 def _flag_partial(entry: dict, state: RunState, node: ReportReadNode) -> None:
@@ -629,6 +978,95 @@ def build_knowledge_scope(attachments: Any) -> dict[str, list]:
     return scope
 
 
+#: A value no real id takes, standing for "nothing". An EMPTY list means "no
+#: narrowing — everything the report is entitled to", so an intersection that
+#: comes out empty must not be written as an empty list.
+_NOTHING = {"doc_ids": [-1], "dataset_ids": [-1], "metric_names": ["\x00"], "term_fqns": ["\x00"]}
+
+
+def bounded_scope(ctx: Any, scope: dict[str, list]) -> dict[str, list]:
+    """A step's knowledge scope: inside the Skill ceiling, then inside the RUN's.
+
+    The run ceiling (`ctx.run_scope_ceiling`, set by dispatch from
+    `permissions.run_scope`) is owner ∩ attached ∩ link ∩ caller. A step's own
+    document or dataset attachment is kept only if the run scope kept it — so a
+    viewer whose rights `run_scope` removed a document for cannot get it back
+    through the step that attached it (found while hardening Specialized Agents:
+    the Knowledge Reader role reads exactly through these attachments).
+    """
+    out = _bounded_by_skill(ctx, scope)
+    run = getattr(ctx, "run_scope_ceiling", None)
+    if not isinstance(run, dict):
+        return out
+    for key in ("doc_ids", "dataset_ids"):
+        own = list(out.get(key) or [])
+        if not own or own == list(_NOTHING[key]):
+            continue
+        allowed = {str(x) for x in (run.get(key) or [])}
+        kept = [x for x in own if str(x) in allowed]
+        out[key] = kept or list(_NOTHING[key])
+    return out
+
+
+def _bounded_by_skill(ctx: Any, scope: dict[str, list]) -> dict[str, list]:
+    """A step's knowledge scope, never wider than the CEILING its run was given.
+
+    A step's attachments REPLACE the context's scope — that is how a step narrows.
+    Inside a Skill child run that would let the Skill's own attachments stand in
+    for the caller's: the ceiling (`ctx.knowledge_ceiling`, the caller's scope at
+    the moment it invoked the Skill) is what makes the child's reach
+    caller ∩ Skill rather than whatever the Skill attached. No ceiling = a
+    top-level run, and the scope is returned untouched.
+    """
+    ceiling = getattr(ctx, "knowledge_ceiling", None)
+    if ceiling is None:
+        return scope
+    out: dict[str, list] = {}
+    for key in ("doc_ids", "dataset_ids", "metric_names", "term_fqns"):
+        cap = list(ceiling.get(key) or [])
+        own = list(scope.get(key) or [])
+        if not cap:
+            # THE CALLER DID NOT NARROW THIS KIND — it reads what its REPORT is
+            # entitled to. The Skill's own list is then NOT a grant: an explicit
+            # document or dataset grant is allowed to reach outside the report
+            # (`govern_tools._visible_doc_ids`) because it was checked against the
+            # FLOW author's rights, and a Skill's was checked against the SKILL
+            # author's. Found by review: an empty caller scope let a Skill's
+            # attachment reach a document the caller could not read. So it is cut
+            # to the report's entitlement here, and fails CLOSED if that cannot be
+            # computed.
+            out[key] = _within_entitlement(ctx, key, own) if own else own
+        elif not own:
+            out[key] = cap
+        else:
+            both = [x for x in own if x in cap]
+            out[key] = both or list(_NOTHING[key])
+    return out
+
+
+def _within_entitlement(ctx: Any, key: str, own: list) -> list:
+    """A Skill's explicit list, narrowed to what the caller's REPORT may read."""
+    if key == "metric_names":
+        # Metric attachments only narrow (entitlement is applied first in
+        # `govern_tools._metrics_in_scope`), so they cannot widen anything.
+        return own
+    if key == "term_fqns":
+        # An attached term is reached regardless of report; without a caller
+        # grant the child keeps the caller's own reach (vocabulary / measure).
+        return []
+    try:
+        from app.services.dashboard_ai_bot import govern_tools
+
+        if key == "doc_ids":
+            allowed = govern_tools._entitled_doc_ids(ctx)
+        else:
+            allowed = govern_tools._scope(ctx)[1]
+        kept = [x for x in own if int(x) in allowed]
+    except Exception:                                           # noqa: BLE001
+        kept = []
+    return kept or list(_NOTHING[key])
+
+
 async def run_knowledge(
     node: KnowledgeNode, state: RunState, rctx: Any
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -659,7 +1097,7 @@ async def run_knowledge(
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
     scope = build_knowledge_scope(node.knowledge)
     if hasattr(rctx.ctx, "knowledge_scope"):
-        rctx.ctx.knowledge_scope = scope
+        rctx.ctx.knowledge_scope = bounded_scope(rctx.ctx, scope)
 
     try:
         result = _call(rctx, state, "search_knowledge", {"query": query, "limit": node.top_k})
@@ -765,6 +1203,16 @@ async def run_web(
             url = (item or {}).get("url") or ""
             if not url or not _domain_ok(url, node.allowed_domains):
                 continue
+            # OPTIONAL READS STOP AT THE RESERVATION. The search was this step's
+            # minimum; each page is extra, and an extra call may not spend what
+            # the steps after it are owed (found by review: three fetches ran
+            # the run out before its answer).
+            if state.budget.tools_left() <= 0:
+                state.notices.append(Notice(
+                    code="web_pages_skipped_for_budget", severity="info", node_key=node.key,
+                    text="Bỏ bớt trang web cần đọc vì số lượt công cụ còn lại được giữ cho các bước sau.",
+                ))
+                break
             pages.append(_call(rctx, state, "fetch_url", {"url": url}))
 
     for item in kept[:5]:
@@ -816,7 +1264,8 @@ async def run_tool(
     grant. What still bounds it is the binding, narrowed before the first node ran.
     """
     args = _resolve_inputs(node, state)
-    yield AgentEvent(type="status", text=f"Đang chạy {node.tool}…")
+    # Same reader boundary as the agent loop: the product label, not the id.
+    yield AgentEvent(type="status", text=f"Đang chạy {_reader_tool_label(node.tool)}…")
 
     state.budget.spend_tool()
     result = tool_registry.execute(rctx.ctx, node.tool, args, allowed=None)
@@ -824,7 +1273,7 @@ async def run_tool(
         node.tool if result.get("ok")
         else f"{node.tool}({result.get('error_code') or 'failed'})"
     )
-    state.add_evidence(result)
+    state.record_evidence(result, tool=node.tool, args=args)
 
     if not result.get("ok"):
         # RAISED, not swallowed. `on_error` on the node decides what happens next —
@@ -832,6 +1281,17 @@ async def run_tool(
         # publish a value the next step would read as data.
         detail = result.get("detail") or result.get("error") or "công cụ lỗi"
         raise RuntimeError(f"{node.tool}: {detail}")
+
+    # A DECLARED SCHEMA IS A PROMISE TO THE NEXT STEP — checked where it is relied
+    # on. A result that does not fit is refused here, as a step error, rather
+    # than wired into a typed binding downstream as something it is not.
+    spec = tool_registry.all_tools().get(node.tool)
+    if spec is not None and spec.output_schema:
+        from app.services.agent_flows.tools.schema_check import problems as _schema_problems
+
+        wrong = _schema_problems(result.get("data"), spec.output_schema)
+        if wrong:
+            raise RuntimeError(f"{node.tool}: kết quả không đúng kiểu đã khai báo ({wrong[0]})")
 
     # WHAT THE NEXT STEP READS IS `data`, NOT THE ENVELOPE.
     #
@@ -862,6 +1322,15 @@ def _resolve_inputs(node: ToolNode, state: RunState) -> dict:
         if binding.ref in state.vars:
             out[name] = state.vars[binding.ref]
             continue
+        # A FIELD OF A TYPED RESULT: `calc.result`, `ranking.items[0].value`. Read
+        # through the one template resolver, which keeps the type of a sole
+        # reference — a number stays a number.
+        head = binding.ref.split(".", 1)[0].split("[", 1)[0]
+        if head != binding.ref and head in state.vars:
+            value = state.resolve("{{%s}}" % binding.ref)
+            if value is not None and value != "":
+                out[name] = value
+                continue
         # A MISSING VARIABLE IS NOT AN EMPTY ONE. Passing `None` would let the tool
         # refuse for a reason that names the ARGUMENT instead of the BINDING, and
         # an author would go looking at the tool.

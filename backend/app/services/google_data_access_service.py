@@ -108,24 +108,26 @@ def build_google_data_access_state(
     popup: bool,
     scope: str = "user",
 ) -> str:
-    now = datetime.now(timezone.utc)
-    payload = {
+    # Its own signing domain: an OAuth state travels in a URL (Google, browser
+    # history), so it must never verify as anything else - it used to have no
+    # `type` and a user-id `sub`, which made it a 15-minute access token.
+    from app.core import tokens
+
+    return tokens.encode(tokens.OAUTH_STATE, {
         "sub": str(user.id),
         "email": _normalize_email(user.email),
         "purpose": "google_data_access",
         "scope": scope if scope in ("user", "datasource") else "user",
         "return_to": return_to,
         "popup": popup,
-        "iat": now,
-        "exp": now + timedelta(minutes=_STATE_EXPIRY_MINUTES),
-    }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+    }, ttl=timedelta(minutes=_STATE_EXPIRY_MINUTES))
 
 
 def decode_google_data_access_state(state_token: str) -> dict[str, Any]:
-    try:
-        payload = jwt.decode(state_token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
+    from app.core import tokens
+
+    payload = tokens.decode(state_token, tokens.OAUTH_STATE)
+    if payload is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired Google OAuth state.",

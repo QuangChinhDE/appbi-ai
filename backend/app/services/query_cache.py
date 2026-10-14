@@ -153,6 +153,17 @@ def _canonicalize_filter(filter_obj: dict[str, Any]) -> dict[str, Any] | None:
         if calendar_source_field:
             normalized["calendarSourceField"] = calendar_source_field
 
+    # Two markers change what the SAME predicate means to the engine, so they
+    # are identity too: copies of ONE fanned Date filter collapse onto the main
+    # calendar (look-alike role filters are AND-ed), and an authoritative
+    # predicate refuses where an ordinary one is soft-dropped — per predicate,
+    # never per field (an authoritative and an ordinary pick on one field).
+    fan = filter_obj.get("_calendar_fan")
+    if fan:
+        normalized["_calendar_fan"] = str(fan)
+    if filter_obj.get("_authoritative"):
+        normalized["_authoritative"] = True
+
     return normalized
 
 
@@ -325,6 +336,20 @@ class _SharedSqliteCache:
             except sqlite3.IntegrityError:
                 return False  # another caller holds the slot
 
+    def extend_inflight(self, datasource_id: int, cache_key: str, ttl_seconds: float) -> bool:
+        """Push a HELD claim's expiry to now + ttl. Only a live claim is extended
+        (a lapsed one stays lapsed — renewing never resurrects a lease another
+        worker may already have taken). True = still held and extended."""
+        self._ensure_initialized()
+        now = time.time()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE live_query_inflight SET expires_at = ? "
+                "WHERE datasource_id = ? AND cache_key = ? AND expires_at > ?",
+                (now + float(ttl_seconds), int(datasource_id), cache_key, now),
+            )
+            return int(cursor.rowcount or 0) == 1
+
     def release_inflight(self, datasource_id: int, cache_key: str) -> None:
         self._ensure_initialized()
         with self._connect() as conn:
@@ -442,6 +467,15 @@ def _get_ds_cache(datasource_id: int) -> TTLCache:
     return _caches[datasource_id]
 
 
+# The semantic contract a cached result was computed under. Bump it whenever a
+# change alters what the SAME query means (relationship contract, key guard,
+# filter authority, engine semantics): every result cached by older code then
+# has a different key and is never served — including from the shared store,
+# which survives restarts and would otherwise serve pre-deploy results for a
+# TTL (or two, through the local re-insert).
+SEMANTIC_RESULT_CACHE_VERSION = "foundation-freeze-2026-10"
+
+
 def _make_key(
     table_identifier: str,
     chart_type: str,
@@ -450,6 +484,7 @@ def _make_key(
 ) -> str:
     """Deterministic cache key from query parameters (datasource_id handled by dict key)."""
     payload = {
+        "v": SEMANTIC_RESULT_CACHE_VERSION,
         "tbl": table_identifier,
         "ct": chart_type,
         "rc": _canonicalize_json_value(role_config),
@@ -622,6 +657,19 @@ def try_claim_global(key: str, ttl_seconds: float) -> bool:
         return True
 
 
+def renew_global(key: str, ttl_seconds: float) -> bool:
+    """Extend a held cross-worker lease (heartbeat of a long job). True = still
+    held. No shared store → True (in-process registries are authoritative)."""
+    store = _get_shared_store()
+    if store is None:
+        return True
+    try:
+        return store.extend_inflight(_GLOBAL_CLAIM_NS, key, ttl_seconds)
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("global-renew", exc)
+        return True
+
+
 def release_global(key: str) -> None:
     store = _get_shared_store()
     if store is None:
@@ -718,6 +766,27 @@ def set_public_meta(token: str, data: Dict[str, Any]) -> None:
         store.set(_PUBLIC_META_NS, str(token), data, ttl_seconds=_PUBLIC_META_TTL_SECONDS)
     except Exception as exc:  # noqa: BLE001
         _log_shared_cache_failure("pubmeta-write", exc)
+
+
+def invalidate_all_public_meta() -> int:
+    """Drop every cached public-report structure. Called on Publish.
+
+    The structure is keyed by TOKEN (public link, share token, rotating embed
+    grants), and one dashboard can be reached through many of them, so the
+    namespace is cleared as a whole rather than hunting for keys. Publishing is
+    rare; the cost is one rebuild per report on its next view. Without this, a
+    viewer who opened /d or /embed in the minute before Publish kept receiving
+    the pre-publish layout and theme for up to the TTL — the report was
+    published, but not what the author approved. NEVER raises.
+    """
+    store = _get_shared_store()
+    if store is None:
+        return 0
+    try:
+        return int(store.invalidate_datasource(_PUBLIC_META_NS) or 0)
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("pubmeta-invalidate", exc)
+        return 0
 
 
 def begin_coalesced_public_meta(

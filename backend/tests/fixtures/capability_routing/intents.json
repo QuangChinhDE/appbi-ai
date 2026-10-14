@@ -1,0 +1,392 @@
+{
+  "_about": "Labelled intents for the deterministic capability-routing eval (test_capability_routing_eval.py). Each question is written the way a report reader would ask it, NOT copied from any tool's answers_vi examples - a router that only matches its own examples back is not a router. `expect` is any-of: the question is served if at least one listed capability is loaded. `need` is how an agent that knows it lacks something would phrase the search - different words from the question on purpose.",
+  "intents": [
+    {
+      "q": "Danh mục nào mang lại doanh thu lớn nhất?",
+      "need": "xếp hạng nhóm theo chỉ số",
+      "expect": [
+        "rank_values"
+      ]
+    },
+    {
+      "q": "Top 3 bang có nhiều đơn hàng nhất là bang nào?",
+      "need": "top các nhóm",
+      "expect": [
+        "rank_values"
+      ]
+    },
+    {
+      "q": "Which product category sells the least?",
+      "need": "rank groups by a measure",
+      "expect": [
+        "rank_values"
+      ]
+    },
+    {
+      "q": "Tổng doanh thu của cả báo cáo là bao nhiêu?",
+      "need": "tổng của một chỉ số",
+      "expect": [
+        "total_measure"
+      ]
+    },
+    {
+      "q": "What is the average order value overall?",
+      "need": "total or average of a measure",
+      "expect": [
+        "total_measure"
+      ]
+    },
+    {
+      "q": "Bang SP đóng góp bao nhiêu phần trăm tổng doanh thu?",
+      "need": "tỉ trọng một nhóm trong tổng",
+      "expect": [
+        "share_of"
+      ]
+    },
+    {
+      "q": "What share of revenue comes from health_beauty?",
+      "need": "share of total for one group",
+      "expect": [
+        "share_of"
+      ]
+    },
+    {
+      "q": "Doanh thu tháng này so với tháng trước tăng hay giảm?",
+      "need": "so sánh hai kỳ",
+      "expect": [
+        "compare_periods"
+      ]
+    },
+    {
+      "q": "How did revenue change year over year?",
+      "need": "compare two periods",
+      "expect": [
+        "compare_periods"
+      ]
+    },
+    {
+      "q": "Miền Bắc và miền Nam bán khác nhau thế nào?",
+      "need": "so sánh hai phân khúc",
+      "expect": [
+        "compare_segments",
+        "segment_compare"
+      ]
+    },
+    {
+      "q": "Compare revenue between the SP and RJ states",
+      "need": "compare segments",
+      "expect": [
+        "compare_segments",
+        "segment_compare"
+      ]
+    },
+    {
+      "q": "Tại sao doanh thu tháng 8 lại tụt?",
+      "need": "giải thích nguyên nhân thay đổi",
+      "expect": [
+        "explain_change"
+      ]
+    },
+    {
+      "q": "Which categories drove the drop in revenue?",
+      "need": "explain what drove a change",
+      "expect": [
+        "explain_change"
+      ]
+    },
+    {
+      "q": "Có tháng nào số liệu bất thường không?",
+      "need": "phát hiện điểm bất thường",
+      "expect": [
+        "detect_anomaly"
+      ]
+    },
+    {
+      "q": "Are there any unusual spikes in daily orders?",
+      "need": "detect outliers",
+      "expect": [
+        "detect_anomaly"
+      ]
+    },
+    {
+      "q": "Doanh số có lặp lại theo mùa trong năm không?",
+      "need": "tính mùa vụ",
+      "expect": [
+        "detect_seasonality"
+      ]
+    },
+    {
+      "q": "Is there a seasonal pattern in sales?",
+      "need": "seasonality",
+      "expect": [
+        "detect_seasonality"
+      ]
+    },
+    {
+      "q": "Mấy tháng gần đây doanh thu đi lên hay đi xuống?",
+      "need": "xu hướng theo thời gian",
+      "expect": [
+        "analyze_trend"
+      ]
+    },
+    {
+      "q": "What's the overall trend of revenue this year?",
+      "need": "trend over time",
+      "expect": [
+        "analyze_trend"
+      ]
+    },
+    {
+      "q": "Tháng sau doanh thu dự kiến khoảng bao nhiêu?",
+      "need": "dự báo kỳ tới",
+      "expect": [
+        "forecast_measure"
+      ]
+    },
+    {
+      "q": "Can you forecast next quarter's orders?",
+      "need": "forecast a measure",
+      "expect": [
+        "forecast_measure"
+      ]
+    },
+    {
+      "q": "Với tốc độ hiện tại thì cuối năm có đạt kế hoạch không?",
+      "need": "chiếu tới cuối kỳ so với mục tiêu",
+      "expect": [
+        "project_to_period_end",
+        "compare_to_target"
+      ]
+    },
+    {
+      "q": "Are we on track to hit the annual target?",
+      "need": "project to end of period against target",
+      "expect": [
+        "project_to_period_end",
+        "compare_to_target"
+      ]
+    },
+    {
+      "q": "Doanh thu thực tế đạt bao nhiêu phần trăm chỉ tiêu?",
+      "need": "so với mục tiêu",
+      "expect": [
+        "compare_to_target"
+      ]
+    },
+    {
+      "q": "Hai chỉ số giao hàng trễ và đánh giá thấp có liên quan nhau không?",
+      "need": "tương quan hai chỉ số",
+      "expect": [
+        "correlate_charts"
+      ]
+    },
+    {
+      "q": "Is delivery time correlated with review score?",
+      "need": "correlation between two measures",
+      "expect": [
+        "correlate_charts"
+      ]
+    },
+    {
+      "q": "Doanh thu có dồn vào một nhóm nhỏ khách hàng không?",
+      "need": "phân phối, mức độ tập trung",
+      "expect": [
+        "describe_distribution"
+      ]
+    },
+    {
+      "q": "How concentrated is revenue across sellers?",
+      "need": "distribution / concentration",
+      "expect": [
+        "describe_distribution"
+      ]
+    },
+    {
+      "q": "Đi sâu vào riêng danh mục đồ gia dụng giúp tôi",
+      "need": "khoan sâu vào một nhóm",
+      "expect": [
+        "smart_drilldown"
+      ]
+    },
+    {
+      "q": "Drill into the furniture category for me",
+      "need": "drill down into one group",
+      "expect": [
+        "smart_drilldown"
+      ]
+    },
+    {
+      "q": "Số liệu trong báo cáo cập nhật đến ngày nào?",
+      "need": "phạm vi thời gian của dữ liệu",
+      "expect": [
+        "describe_time_coverage"
+      ]
+    },
+    {
+      "q": "How fresh is the data behind this dashboard?",
+      "need": "data time coverage",
+      "expect": [
+        "describe_time_coverage"
+      ]
+    },
+    {
+      "q": "Báo cáo đang áp bộ lọc gì vậy?",
+      "need": "bộ lọc đang áp dụng",
+      "expect": [
+        "inspect_filters"
+      ]
+    },
+    {
+      "q": "Which filters are applied right now?",
+      "need": "active filters",
+      "expect": [
+        "inspect_filters"
+      ]
+    },
+    {
+      "q": "Chỉ số GMV được định nghĩa như thế nào trong mô hình?",
+      "need": "định nghĩa chỉ số trong mô hình dữ liệu",
+      "expect": [
+        "describe_semantic_model",
+        "explain_measurement",
+        "search_knowledge",
+        "get_chart_glossary"
+      ]
+    },
+    {
+      "q": "How is the revenue column calculated in this chart?",
+      "need": "field definitions of a chart",
+      "expect": [
+        "get_chart_glossary",
+        "describe_semantic_model",
+        "explain_measurement"
+      ]
+    },
+    {
+      "q": "Chính sách đổi trả của công ty quy định gì?",
+      "need": "tìm trong tài liệu nội bộ",
+      "expect": [
+        "search_knowledge"
+      ]
+    },
+    {
+      "q": "What does our internal playbook say about late deliveries?",
+      "need": "search company documents",
+      "expect": [
+        "search_knowledge"
+      ]
+    },
+    {
+      "q": "Lần trước mình đã kết luận gì về nhóm khách hàng này?",
+      "need": "nhớ lại kết luận đã lưu",
+      "expect": [
+        "recall_knowledge"
+      ]
+    },
+    {
+      "q": "Gộp doanh thu theo quý thay vì theo tháng",
+      "need": "tổng hợp lại theo chiều khác",
+      "expect": [
+        "aggregate_chart_data"
+      ]
+    },
+    {
+      "q": "Re-aggregate this chart by state instead of category",
+      "need": "aggregate by another dimension",
+      "expect": [
+        "aggregate_chart_data"
+      ]
+    },
+    {
+      "q": "Cho tôi xem từng dòng dữ liệu của biểu đồ này",
+      "need": "dữ liệu chi tiết từng dòng",
+      "expect": [
+        "get_chart_data"
+      ]
+    },
+    {
+      "q": "Biểu đồ doanh thu theo tháng đang cho thấy điều gì?",
+      "need": "tóm tắt biểu đồ",
+      "expect": [
+        "get_chart_summary",
+        "analyze_trend"
+      ]
+    },
+    {
+      "q": "Doanh thu tăng bao nhiêu phần trăm nếu lấy số tháng 9 chia tháng 8?",
+      "need": "tính toán từ các số đã có",
+      "expect": [
+        "compute",
+        "compare_periods"
+      ]
+    },
+    {
+      "q": "Vì sao chỉ số tỷ lệ giao đúng hẹn không đạt?",
+      "need": "giải thích cách đo một chỉ số",
+      "expect": [
+        "explain_measurement",
+        "explain_change"
+      ]
+    },
+    {
+      "q": "Nhóm khách hàng này có khác biệt so với phần còn lại không?",
+      "need": "so một nhóm với phần còn lại",
+      "expect": [
+        "segment_compare",
+        "compare_segments"
+      ]
+    },
+    {
+      "q": "Báo cáo này có những biểu đồ nào?",
+      "need": "liệt kê biểu đồ",
+      "expect": [
+        "list_charts",
+        "search_business_assets"
+      ]
+    },
+    {
+      "q": "Tỷ lệ hủy đơn nằm ở biểu đồ nào?",
+      "need": "tìm biểu đồ chứa chỉ số",
+      "expect": [
+        "resolve_chart_candidates",
+        "search_business_assets"
+      ]
+    },
+    {
+      "q": "Tỷ lệ giao hàng đúng hẹn là bao nhiêu?",
+      "need": "giá trị của một chỉ số",
+      "expect": [
+        "total_measure",
+        "get_chart_summary",
+        "get_chart_data"
+      ]
+    },
+    {
+      "q": "Điểm đánh giá trung bình của khách hiện là bao nhiêu?",
+      "need": "đọc giá trị chỉ số",
+      "expect": [
+        "total_measure",
+        "get_chart_summary",
+        "get_chart_data"
+      ]
+    },
+    {
+      "q": "What is the on-time delivery rate?",
+      "need": "value of a KPI",
+      "expect": [
+        "total_measure",
+        "get_chart_summary",
+        "get_chart_data"
+      ]
+    },
+    {
+      "q": "How many orders do we have?",
+      "need": "read a measure's value",
+      "expect": [
+        "total_measure",
+        "get_chart_summary",
+        "get_chart_data"
+      ]
+    }
+  ]
+}

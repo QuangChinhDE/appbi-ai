@@ -10,8 +10,10 @@
  * Sessions expire after 2 hours (server-enforced via JWT expiry).
  */
 import axios from 'axios';
+import { reportAnchor } from '@/lib/report-anchor';
 import type { Dashboard } from '@/types/api';
 import type { BaseFilter } from '@/lib/filters';
+import type { ReaderOutcome } from '../notices';
 
 /** One server-side render job as the polling endpoint returns it. */
 export interface PublicExportJob {
@@ -34,6 +36,17 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 const publicClient = axios.create({
   baseURL: API_BASE,
   withCredentials: false,
+});
+
+// One relative-date anchor for all tiles of the current public report read, so a
+// load across midnight cannot mix windows. Non-credential header; the server
+// resolves relative presets against it (falls back to now() when absent).
+publicClient.interceptors.request.use((config) => {
+  try {
+    const a = reportAnchor();
+    if (a) { config.headers = config.headers || {} as any; (config.headers as any)['X-AppBI-As-Of'] = a; }
+  } catch { /* best-effort */ }
+  return config;
 });
 
 export const publicDashboardApi = {
@@ -69,6 +82,9 @@ export const publicDashboardApi = {
     sessionToken?: string,
     filters?: BaseFilter[],
     granularity?: string,
+    pageId?: string,
+    tileId?: number,
+    overrides?: Record<string, string> | null,
   ): Promise<any> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     // #2 — viewer date-hierarchy: re-bucket the time axis at the grain the
@@ -76,6 +92,11 @@ export const publicDashboardApi = {
     const params: Record<string, string> = {};
     if (filters && filters.length > 0) params.filters = JSON.stringify(filters);
     if (granularity) params.granularity = granularity;
+    // The page being shown: the server applies that page's scope itself.
+    if (pageId) params.page_id = pageId;
+    // The tile (its own parameter values apply) and its what-if selection.
+    if (tileId != null) params.tile_id = String(tileId);
+    if (overrides && Object.keys(overrides).length > 0) params.overrides = JSON.stringify(overrides);
     const res = await publicClient.get(
       `/public/dashboards/${token}/charts/${chartId}/data`,
       {
@@ -94,12 +115,23 @@ export const publicDashboardApi = {
   getChartsDataBatch: async (
     token: string,
     sessionToken: string | undefined,
-    items: Array<{ chart_id: number; filters?: BaseFilter[]; granularity?: string }>,
-  ): Promise<{ results: Array<{ chart_id: number; data?: any; error?: string; status?: number }> }> => {
+    items: Array<{
+      chart_id: number;
+      /** The tile: a chart may sit on the report twice with its own parameters. */
+      tile_id?: number;
+      filters?: BaseFilter[];
+      granularity?: string;
+      /** What-if selection bound to this tile ({dimension?, metric?}). */
+      overrides?: Record<string, string>;
+    }>,
+    pageId?: string,
+  ): Promise<{ results: Array<{ chart_id: number; tile_id?: number; data?: any; error?: string; status?: number; category?: string | null }> }> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     const res = await publicClient.post(
       `/public/dashboards/${token}/charts/data`,
-      { items },
+      // page_id: the server applies that page's scope itself (the filters the
+      // page sends are only the viewer's own choices, bounded client-side too).
+      { items, ...(pageId ? { page_id: pageId } : {}) },
       { headers },
     );
     return res.data;
@@ -118,6 +150,20 @@ export const publicDashboardApi = {
     return res.data;
   },
 
+  /** Editable PowerPoint of what this reader sees (see report_pptx_service). */
+  exportPptx: async (
+    token: string,
+    sessionToken: string | undefined,
+    payload: unknown,
+  ): Promise<Blob> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.post(`/public/dashboards/${token}/exports/pptx`, payload, {
+      headers,
+      responseType: 'blob',
+    });
+    return res.data as Blob;
+  },
+
   createExportJob: async (
     token: string,
     sessionToken: string | undefined,
@@ -127,6 +173,8 @@ export const publicDashboardApi = {
       page_format?: string;
       layout?: string;
       filters?: BaseFilter[];
+      /** Report parameter values at export time, so the file shows the same slice. */
+      params?: Record<string, string>;
       session?: string;
     },
   ): Promise<PublicExportJob> => {
@@ -170,7 +218,8 @@ export const publicDashboardApi = {
     filters?: BaseFilter[],
     search?: string,
     offset?: number,
-  ): Promise<{ field: string; values: string[]; total?: number; has_more?: boolean }> => {
+    pageId?: string,
+  ): Promise<{ field: string; values: string[]; total?: number; has_more?: boolean; unavailable?: boolean; restricted?: boolean }> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     const res = await publicClient.get(
       `/public/dashboards/${token}/filters/distinct-values`,
@@ -183,6 +232,7 @@ export const publicDashboardApi = {
           ...(offset ? { offset } : {}),
           ...(search && search.trim() ? { search: search.trim() } : {}),
           ...(filters?.length ? { filters: JSON.stringify(filters) } : {}),
+          ...(pageId ? { page_id: pageId } : {}),
         },
       },
     );
@@ -346,7 +396,11 @@ export type AiAgentEvent =
   | { type: 'route'; mode: 'normal' | 'thinking'; auto: boolean; reasons: string[] }
   | { type: 'sources'; sources: { title?: string | null; url?: string | null }[] }
   | { type: 'status'; text: string; tool: string }
-  | { type: 'tool_result'; tool: string; ok: boolean; error?: string | null }
+  // `outcome` classifies the failure the way a READER reads it; `ok` stays
+  // the transport fact it always was. Optional so a frontend deployed ahead
+  // of the backend degrades to the old counting rather than to `undefined`.
+  | { type: 'tool_result'; tool: string; ok: boolean; outcome?: ReaderOutcome;
+      error?: string | null }
   | { type: 'reading_plan'; items: AiReadingPlanItem[]; overall_goal?: string | null }
   | { type: 'plan_step'; step_index: number; chart_id: number | null; status: AiPlanStepStatus }
   | ({ type: 'exploration_step' } & AiExplorationStep)
@@ -355,6 +409,12 @@ export type AiAgentEvent =
   | { type: 'cost'; usd: number; cap_usd: number; remaining_usd: number; over_cap: boolean; near_cap?: boolean; rounds?: number; prompt_tokens?: number; completion_tokens?: number }
   | { type: 'usage'; prompt_tokens: number; completion_tokens: number }
   | { type: 'error'; text: string }
+  // THE TERMINAL ENVELOPE. The backend has emitted this since typed answers
+  // existed (`wire.event_to_envelope`, branch `result`); the union never listed
+  // it, so every consumer's type said the event could not happen and the handler
+  // that would have used it was unreachable by construction. Typed blocks,
+  // citations and notices were arriving and being discarded.
+  | { type: 'result'; envelope: unknown }
   | { type: 'done' };
 
 // ── Briefing Wizard types ────────────────────────────────────────────────────

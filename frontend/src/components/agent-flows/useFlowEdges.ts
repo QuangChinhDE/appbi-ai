@@ -16,7 +16,7 @@
  */
 import React from 'react';
 
-import type { FlowNode } from '@/lib/agentFlows';
+import { isBranching, isContainer, laneViews, type FlowNode } from '@/lib/agentFlows';
 import type { MiniRect } from './Minimap';
 
 export type EdgeKind = 'line' | 'split' | 'merge';
@@ -60,31 +60,15 @@ export function buildEdges(nodes: FlowNode[]): EdgeSpec[] {
   };
 
   const layoutNode = (n: FlowNode): Block => {
-    if (n.type === 'if' || n.type === 'switch' || n.type === 'coordinate') {
+    if (isBranching(n)) {
       // A COORDINATOR'S LANES NEED THE SAME WIRES AS A SWITCH'S.
       //
       // `FlowCanvas` learned to DRAW the lanes and this did not learn to CONNECT
       // them, so the specialists rendered as two cards floating either side of a
       // line that ran straight past them — the picture said the flow ignores them,
-      // which is the opposite of what the node does. The lanes and the edges are
-      // computed in two places, and adding a branching node means teaching both.
-      const lanes = n.type === 'coordinate'
-        ? [
-            ...(n.specialists || []).map((s) => ({
-              key: s.key, body: s.body || [], path: `${n.key}:specialist:${s.key}`,
-            })),
-            ...((n.fallback || []).length
-              ? [{ key: 'fallback', body: n.fallback || [], path: `${n.key}:fallback:` }]
-              : []),
-          ]
-        : n.type === 'if'
-        ? n.paths.map((p) => ({ key: p.key, body: p.body || [], path: `${n.key}:path:${p.key}` }))
-        : [
-            ...n.cases.map((c) => ({ key: c.key, body: c.body || [], path: `${n.key}:case:${c.key}` })),
-            ...(n.has_fallback !== false
-              ? [{ key: 'fallback', body: n.fallback || [], path: `${n.key}:fallback:` }]
-              : []),
-          ];
+      // which is the opposite of what the node does. Both now read `laneViews`,
+      // so there is one answer to "what lanes does this node have" instead of two.
+      const lanes = laneViews(n);
       const ruleIds = lanes.map((l) => idRule(n.key, l.key));
       if (ruleIds.length) edges.push({ kind: 'split', from: [idNode(n.key)], to: ruleIds });
 
@@ -102,10 +86,12 @@ export function buildEdges(nodes: FlowNode[]): EdgeSpec[] {
       return { entry: idNode(n.key), exits };
     }
 
-    if (n.type === 'loop') {
+    if (isContainer(n)) {
+      // The non-branching container: one body, run repeatedly.
+      const lane = laneViews(n)[0];
       const box = idBox(n.key);
       edges.push({ kind: 'line', from: [idNode(n.key)], to: [box] });
-      const inner = layoutBody(n.body || [], `${n.key}:body:`);
+      const inner = layoutBody(lane?.body || [], lane?.path || `${n.key}:body:`);
       if (inner) edges.push({ kind: 'line', from: [box], to: [inner.entry] });
       return { entry: idNode(n.key), exits: [box] };
     }

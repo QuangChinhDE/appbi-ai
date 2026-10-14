@@ -33,21 +33,25 @@ is the group where that is hardest and matters most.
 """
 from __future__ import annotations
 
-import re
 import statistics
 from typing import Any
 
 from app.services.agent_flows.tools import result as R
 from app.services.agent_flows.tools.packs import measure_meta
+from app.services.time_semantics import (
+    TIME_NAME_CANDIDATE_RX,
+    TIME_NAME_RX,
+    values_look_like_time,
+)
 from app.services.dashboard_ai_bot.tool_context import (
     ToolContext, ToolError, _fetch_chart_data,
 )
 
-#: Column names that mark a time axis. Same vocabulary the coverage tool uses, so
-#: a report readable by one is readable by the other.
-_DATE_NAME = re.compile(
-    r"(date|ngay|ngày|thang|tháng|nam|năm|time|timestamp|_at|_dt|period|ky|kỳ|"
-    r"month|quarter|week|year)", re.IGNORECASE)
+#: Column names that mark a time axis. The comment that used to sit here claimed
+#: this was "the same vocabulary the coverage tool uses"; it was not, and had not
+#: been since the segment fix landed here alone. Both tools now read the one
+#: definition, so a report readable by one really is readable by the other.
+_DATE_NAME = TIME_NAME_RX
 
 #: Seasonal cycle lengths worth testing, by what a period usually is. Testing
 #: every lag up to n/2 finds a "pattern" in noise; these are the cycles a business
@@ -92,8 +96,19 @@ def _series(ctx: ToolContext, chart_id: int) -> tuple[list[tuple[str, float]], s
     fields = (ctx.chart_meta.get(chart_id) or {}).get("fields") or {}
     lower = {c.lower(): i for i, c in enumerate(columns)}
 
+    # PROJECTION IS TIME MATHS, so a name that only SUGGESTS time is not
+    # enough. A strong name is taken as-is; an ambiguous one (`ky_*`, `quy_*`)
+    # has to be proven by the column's own labels, which are already in hand.
     t_idx = next(
         (i for i, c in enumerate(columns) if _DATE_NAME.search(c or "")), None)
+    if t_idx is None:
+        for i, c in enumerate(columns):
+            if not TIME_NAME_CANDIDATE_RX.search(c or ""):
+                continue
+            labels = [r[i] for r in rows if i < len(r) and r[i] is not None][:12]
+            if values_look_like_time(labels):
+                t_idx = i
+                break
     if t_idx is None:
         return R.err(
             f"chart {chart_id} has no time axis — this tool needs one",
@@ -321,6 +336,10 @@ def tool_project_to_period_end(ctx: ToolContext, args: dict) -> dict:
         gap = projected - t
         needed = (t - to_date) / remaining if remaining else None
         payload.update({
+            # A caller target: what is derived from it is the caller's arithmetic;
+            # the report vouches for the run and the projection only.
+            "evidence_paths": ["to_date", "periods_so_far", "run_rate_per_period",
+                               "remaining_periods", "projected_total"],
             "target": round(t, 4),
             "projected_vs_target": round(gap, 4),
             "projected_attainment_pct": round(projected / t * 100.0, 2),

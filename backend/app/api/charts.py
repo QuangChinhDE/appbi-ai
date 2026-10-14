@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.services.chart_sql_authority import require_custom_sql_authority
 from app.core import get_db
 from app.core.dependencies import (
     module_floor,
@@ -21,6 +22,7 @@ from app.core.dependencies import (
     batch_effective_permissions,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
+from app.core.authz import decision as _authz
 from app.models.models import Chart, ChartMetadata, ChartType, DashboardChart, Dashboard
 from app.models.dataset import Dataset, DatasetTable
 from app.models.resource_share import ResourceType
@@ -54,16 +56,6 @@ from app.services.description_pipeline_service import (
 from app.core.logging import get_logger
 
 
-class AIChartPreviewRequest(BaseModel):
-    """Request body for AI chart preview/create."""
-    dataset_table_id: int
-    chart_type: str
-    config: Dict[str, Any] = {}
-    name: str = "AI Chart"
-    description: Optional[str] = None
-    save: bool = False
-
-
 class ChartPreviewDataRequest(BaseModel):
     """Request body for Explore chart preview."""
     dataset_table_id: int
@@ -79,30 +71,12 @@ class ChartPreviewDataRequest(BaseModel):
     source_sample_limit: int = Field(default=100, ge=1, le=10_000_000)
 
 
-class ChartNormalizeConfigRequest(BaseModel):
-    """Request body for the canonical normalize endpoint.
-
-    Phase-12 single-source-of-truth contract: MCP / SDK / FE callers POST
-    their proposed (chart_type, config) here and trust the response —
-    never re-implement role-config / metric / agg normalization locally.
-    """
-    chart_type: str
-    config: Dict[str, Any] = Field(default_factory=dict)
-
-
 class ChartConfigChange(BaseModel):
-    """One field the normalize endpoint mutated, surfaced to the caller."""
+    """One field the dry-run normalization rewrote, surfaced to the caller."""
     path: str
     before: Any
     after: Any
     reason: str
-
-
-class ChartNormalizeConfigResponse(BaseModel):
-    """Response shape — the normalized config the BE will actually save."""
-    normalized_config: Dict[str, Any]
-    changes: List[ChartConfigChange] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
 
 
 class ChartDryRunCreateRequest(BaseModel):
@@ -115,13 +89,11 @@ class ChartDryRunCreateRequest(BaseModel):
 
 
 class ChartDryRunCreateResponse(BaseModel):
-    """Single endpoint MCP / SDK call before creating a chart.
+    """The Chart Builder's pre-save check (canonical Chart API).
 
-    On ``ok=True`` the caller can confidently call ``POST /charts/`` with
-    ``normalized_config`` and the chart will land cleanly. On ``ok=False``
-    the caller MUST not write — show ``validation_errors`` /
-    ``runtime_errors`` to the user (or AI) and ask for a corrected
-    payload.
+    On ``ok=True`` ``POST /charts/`` with ``normalized_config`` lands cleanly.
+    On ``ok=False`` nothing may be written — ``validation_errors`` /
+    ``runtime_errors`` / ``runtime_refusal`` say why.
     """
     ok: bool
     normalized_config: Dict[str, Any]
@@ -130,12 +102,14 @@ class ChartDryRunCreateResponse(BaseModel):
     semantic_warnings: List[str] = Field(default_factory=list)
     runtime_errors: List[str] = Field(default_factory=list)
     runtime_root_cause: Optional[str] = None
+    #: The runtime preview's semantic refusal, structured exactly like a 400
+    #: ``refusal`` from preview-data — so Save explains it the same way Run does.
+    runtime_refusal: Optional[Dict[str, Any]] = None
     runtime_preview_sample: Optional[List[Dict[str, Any]]] = None
-    # Phase-12.6: config keys the BE would accept + save but the FE
-    # Explore renderer does NOT consume — typically misspellings or
-    # legacy fields the AI emitted. These don't block the create (BE is
-    # tolerant) but are surfaced so the caller can warn the user
-    # "the chart will save but the field X won't visibly affect rendering".
+    # Phase-12.6: config keys the BE would accept + save but the Explore
+    # renderer does NOT consume (misspellings, legacy fields). They don't
+    # block the create but are surfaced so the Builder can warn "the chart
+    # will save but field X won't visibly affect rendering".
     fe_unrecognised_keys: List[str] = Field(default_factory=list)
 
 
@@ -314,6 +288,7 @@ def list_charts(
     perm_map = batch_effective_permissions(db, current_user, items, "explore_charts")
     for item in items:
         item.user_permission = perm_map.get(item.id, "none")
+    _authz.attach_capabilities(db, current_user, items)
     stamp_owner_emails(db, items)
     _stamp_chart_catalog_fields(current_user, items)
     return items
@@ -349,159 +324,6 @@ def search_charts_vector(
     return results
 
 
-@router.post("/ai-preview")
-def ai_chart_preview(
-    payload: AIChartPreviewRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("explore_charts", "view")),
-):
-    """
-    Execute a chart from AI config and optionally save it permanently.
-    Used by the AI agent's create_chart tool.
-    Requires explore_charts >= view permission.
-    """
-    from app.models.models import DataSource
-    from app.services.live_query_service import build_live_dataset_query, _dialect_for_ds_type
-    from app.services.datasource_service import DataSourceConnectionService
-
-    dataset_obj, db_table = _get_dataset_for_chart_table(db, payload.dataset_table_id)
-    require_view_access(db, current_user, dataset_obj, "datasets")
-    if payload.save:
-        perms = current_user.permissions or {}
-        if perms.get("explore_charts", "none") not in ("edit", "full"):
-            raise HTTPException(
-                status_code=403,
-                detail="Requires 'edit' permission on module 'explore_charts'",
-            )
-    config = payload.config or {}
-
-    # Resolve live datasource and base SQL for every table type
-    try:
-        if is_generated_calendar_table(db_table):
-            # Calendar tables need an explicit datasource to determine dialect.
-            # Pick the first physical datasource referenced by the dataset.
-            from app.models.dataset import DatasetTable
-            sibling_table = (
-                db.query(DatasetTable)
-                .filter(
-                    DatasetTable.dataset_id == dataset_obj.id,
-                    DatasetTable.datasource_id.isnot(None),
-                )
-                .first()
-            )
-            if sibling_table is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail="No datasource available for calendar table",
-                )
-            datasource = db.query(DataSource).filter(DataSource.id == sibling_table.datasource_id).first()
-            if datasource is None:
-                raise HTTPException(status_code=404, detail="Datasource not found")
-            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-            dialect = _dialect_for_ds_type(ds_type)
-            base_sql = build_calendar_live_sql(
-                get_calendar_settings(dataset_obj, enabled_default=False),
-                dialect,
-            )
-        elif is_derived_table(db_table):
-            datasource, proxy_table = build_live_proxy_table_for_dataset_table(
-                db, dataset_obj, db_table,
-            )
-            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-            dialect = _dialect_for_ds_type(ds_type)
-            base_sql = proxy_table.source_query
-        else:
-            # Physical or sql_query table — build live SQL via query plan
-            from app.services.dataset_relation_service import resolve_dataset_table_relation
-            datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-            if not datasource:
-                raise HTTPException(status_code=404, detail="Datasource not found")
-            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-            dialect = _dialect_for_ds_type(ds_type)
-            plan = resolve_dataset_table_relation(datasource, db_table)
-            base_sql = plan.sql
-    except DatasetTableSqlError as exc:
-        code = getattr(exc, "code", "")
-        if code == "NOT_SYNCED":
-            raise HTTPException(
-                status_code=422,
-                detail={"code": exc.code, "message": str(exc)},
-            )
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    # Build and execute aggregation query via live datasource
-    dimensions = config.get("dimensions") or []
-    metrics = config.get("metrics") or []
-    limit = min(int(config.get("limit", 500)), 2000)
-    measures = [
-        {
-            "field": item.get("column", ""),
-            "agg": str(item.get("aggregation", "sum")).lower(),
-        }
-        for item in metrics
-        if item.get("column")
-    ]
-
-    sql = build_live_dataset_query(
-        base_table=f"({base_sql}) AS base_table",
-        dimensions=dimensions,
-        measures=measures,
-        filters=[],
-        order_by=[],
-        limit=limit,
-        dialect=dialect,
-    )
-
-    try:
-        _, data, _ = DataSourceConnectionService.execute_query(
-            ds_type,
-            datasource.config,
-            sql,
-            timeout_seconds=60 if ds_type == "bigquery" else 30,
-            skip_bigquery_cost_check=True,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Query failed: {str(exc)}")
-
-    response: Dict[str, Any] = {
-        "chart_type": payload.chart_type,
-        "config": config,
-        "data": data,
-        "row_count": len(data),
-        "saved": False,
-        "chart_id": None,
-    }
-
-    if payload.save:
-        from app.schemas import ChartCreate
-        from app.schemas.schemas import ChartTypeSchema
-        chart_type_val = payload.chart_type.upper()
-        try:
-            ct = ChartTypeSchema(chart_type_val)
-        except ValueError:
-            ct = ChartTypeSchema.BAR
-        chart_create = ChartCreate(
-            name=payload.name,
-            description=payload.description,
-            dataset_table_id=payload.dataset_table_id,
-            chart_type=ct,
-            config=config,
-        )
-        new_chart = ChartService.create(db, chart_create, owner_id=current_user.id)
-        DescriptionPipelineService.enqueue_chart_pipeline(
-            background_tasks,
-            db,
-            new_chart.id,
-            trigger="chart_created",
-        )
-        response["saved"] = True
-        response["chart_id"] = new_chart.id
-        response["chart_name"] = new_chart.name
-
-    return response
-
-
 @router.post("/preview-data", response_model=ChartPreviewDataResponse)
 def preview_chart_data(
     payload: ChartPreviewDataRequest,
@@ -510,7 +332,8 @@ def preview_chart_data(
 ):
     """Preview chart runtime for Explore using the saved-chart execution path."""
     dataset_obj, _ = _get_dataset_for_chart_table(db, payload.dataset_table_id)
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    require_custom_sql_authority(db, current_user, payload.dataset_table_id, payload.config)
 
     try:
         result = ChartService.preview_chart_data(
@@ -526,42 +349,36 @@ def preview_chart_data(
         return ChartPreviewDataResponse(**result)
     except ValueError as exc:
         # Humanise internal dataset_table_<id> tokens → friendly table names so
-        # the DA sees "dim_customer" not "dataset_table_585" in the error.
+        # the DA sees "dim_customer" not "dataset_table_585" in the error; a
+        # semantic refusal also carries its structured `refusal` object.
+        from app.services.chart_error_contract import refusal_response
         from app.services.dataset_model_service import humanize_view_tokens
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=humanize_view_tokens(str(exc), db, getattr(dataset_obj, "id", 0)),
-        )
+        _dsid = getattr(dataset_obj, "id", 0)
+        return refusal_response(exc, lambda t: humanize_view_tokens(t, db, _dsid))
     except Exception as exc:
-        logger.exception("Failed to preview chart data")
+        from app.services.chart_error_contract import failure_detail
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to preview chart data: {exc}",
+            detail=failure_detail(exc, "chart preview"),
         )
 
 
 # ---------------------------------------------------------------------------
-# Phase-12: BE-as-single-source-of-truth contract.
+# Canonical Chart API — ONE application contract.
 #
-# `/normalize-config` is a pure function — caller (MCP / FE / SDK) sends a
-# raw config, gets back the canonical form the BE will actually save +
-# the list of fields that were rewritten so the caller can surface the diff.
-#
-# `/dry-run-create` runs the full ChartCreate validation + semantic
-# preflight + runtime preview pipeline WITHOUT touching the DB. Callers
-# use this as their single pre-flight check before POST /charts/.
-#
-# Why these exist: every previous attempt to embed normalization logic in
-# MCP (or any external SDK) eventually drifted from the canonical BE
-# rules — Phase-3 `agg='auto'`, Phase-9 validator, Phase-10 binding
-# hydration. With these endpoints the BE is the single gatekeeper; MCP
-# tools call here instead of re-implementing the contract.
+# The Chart Builder (Explore) and any future integration go through the same
+# endpoints: `/preview-data` (run), `/dry-run-create` (the pre-save check:
+# normalize + ChartCreate validation + runtime preview, nothing written),
+# `POST /` and `PUT /{id}` (both validated by ChartCreate on the final state)
+# and `GET /{id}/data`. There is no second creation/validation path in this
+# application: an external integration is a client of these routes, under the
+# caller's own authorization.
 
 
 # Phase-12.6 FE-key registry. These are the keys the Explore renderer
-# actually consumes. Maintained by hand here so the BE can warn callers
-# (MCP, AI agents) when they emit configs with keys the FE will silently
-# drop — the recurring "chart saves but doesn't look like I asked" defect.
+# actually consumes. Maintained by hand here so dry-run can warn when a
+# config carries keys the renderer will silently drop — the recurring
+# "chart saves but doesn't look like I asked" defect.
 #
 # Source of truth: keep these sets in sync with the TS interfaces in
 # `frontend/src/components/explore/ExploreChartConfig.tsx`:
@@ -654,7 +471,7 @@ _FE_STYLE_CONFIG_KEYS: set[str] = {
     "scatterLabelField",
     # Phase-15.82 — render-pipeline extensions. All read by ExploreChart
     # / chartDataAdapter; declared here so /charts/dry-run-create doesn't
-    # report them as `fe_unrecognised_keys` to MCP and AI agents.
+    # report them as `fe_unrecognised_keys`.
     "showAllPoints",
     "seriesFormats", "seriesDecimalPlaces",
     "tooltipExtraFields",
@@ -673,8 +490,8 @@ _FE_STYLE_CONFIG_KEYS: set[str] = {
 
 def _collect_fe_unrecognised_keys(config: Dict[str, Any]) -> List[str]:
     """Walk a chart config and list any keys the Explore renderer doesn't
-    know about. Used by ``/charts/dry-run-create`` so MCP / AI agents
-    learn which fields they emitted will silently no-op at view time.
+    know about. Used by ``/charts/dry-run-create`` to report which fields
+    will silently no-op at view time.
 
     The walk only checks the well-known buckets — role containers, style
     config, metric entries. It does NOT recurse into arbitrary user
@@ -755,27 +572,6 @@ def _normalize_chart_config_with_diff(
     return out, changes
 
 
-@router.post("/normalize-config", response_model=ChartNormalizeConfigResponse)
-def normalize_chart_config(
-    payload: ChartNormalizeConfigRequest,
-    current_user: User = Depends(get_current_user),
-):
-    """Canonicalise a chart config without saving.
-
-    Used by external SDKs (MCP, scripts) so they never have to mirror the
-    normalization rules locally. Pass any role-config shape the AI emitted
-    and you get back the exact form the BE would persist.
-    """
-    normalized, changes = _normalize_chart_config_with_diff(
-        payload.chart_type, payload.config or {}
-    )
-    return ChartNormalizeConfigResponse(
-        normalized_config=normalized,
-        changes=changes,
-        warnings=[],
-    )
-
-
 @router.post("/dry-run-create", response_model=ChartDryRunCreateResponse)
 def dry_run_create_chart(
     payload: ChartDryRunCreateRequest,
@@ -792,8 +588,8 @@ def dry_run_create_chart(
       3. ``ChartService.preview_chart_data`` so we know the chart's query
          would actually execute against the bound table.
 
-    Returns ``ok=True`` only when all three pass. Callers (MCP) treat that
-    as permission to POST ``/charts/`` with ``normalized_config``.
+    Returns ``ok=True`` only when all three pass; only then may the caller
+    POST ``/charts/`` with ``normalized_config``.
     """
     from pydantic import ValidationError
     from app.schemas import ChartCreate as ChartCreateSchema
@@ -804,6 +600,23 @@ def dry_run_create_chart(
     )
 
     validation_errors: List[str] = []
+    # Normalize rewrites an unknown aggregation to "auto" (a locked runtime
+    # contract). Dry-run must not turn that into permission: an author who asked
+    # for e.g. "median" would save a chart computing something else. Check the
+    # aggregations AS SENT, against the one vocabulary create/update use.
+    from app.schemas.chart_config import CHART_METRIC_AGGS
+    for _key in ("roleConfig", "generatedRoleConfig", "customRoleConfig"):
+        _rc = (payload.config or {}).get(_key)
+        if not isinstance(_rc, dict):
+            continue
+        _metrics = [(f"{_key}.metrics[{i}]", m) for i, m in enumerate(_rc.get("metrics") or [])]
+        _metrics += [(f"{_key}.{k}", _rc.get(k)) for k in ("lineMetric", "benchmarkMetric", "tablePivotMetric")]
+        for _where, _m in _metrics:
+            _agg = _m.get("agg") if isinstance(_m, dict) else None
+            if _agg is not None and str(_agg).strip().lower() not in CHART_METRIC_AGGS:
+                validation_errors.append(
+                    f"config.{_where}.agg={_agg!r} is not supported — use one of {sorted(CHART_METRIC_AGGS)}."
+                )
     try:
         chart_type_enum = ChartTypeSchema(payload.chart_type.upper())
     except ValueError:
@@ -852,11 +665,13 @@ def dry_run_create_chart(
             changes=changes,
             validation_errors=[f"dataset_table_id: {exc.detail}"],
         )
-    require_view_access(db, current_user, dataset_obj, "datasets")
+    _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
+    require_custom_sql_authority(db, current_user, payload.dataset_table_id, normalized)
 
     runtime_errors: List[str] = []
     runtime_root_cause: Optional[str] = None
     runtime_sample: Optional[List[Dict[str, Any]]] = None
+    runtime_refusal: Optional[Dict[str, Any]] = None
     try:
         preview = ChartService.preview_chart_data(
             db,
@@ -866,10 +681,16 @@ def dry_run_create_chart(
         )
         runtime_sample = (preview.get("data") or [])[:5]
     except ValueError as exc:
-        runtime_errors.append(str(exc))
+        from app.services.chart_error_contract import refusal_info
+        from app.services.dataset_model_service import humanize_view_tokens
+        _dsid = getattr(dataset_obj, "id", 0)
+        _human = lambda t: humanize_view_tokens(t, db, _dsid)  # noqa: E731
+        from app.services.chart_error_contract import user_safe_message
+        runtime_errors.append(user_safe_message(exc, 'dry-run-create runtime preview', _human))
+        runtime_refusal = refusal_info(exc, _human)
     except Exception as exc:
-        logger.exception("dry-run-create runtime preview failed")
-        runtime_errors.append(f"runtime preview failed: {type(exc).__name__}: {exc}")
+        from app.services.chart_error_contract import failure_detail
+        runtime_errors.append(f"runtime preview failed: {failure_detail(exc, 'dry-run-create runtime preview')}")
         runtime_root_cause = type(exc).__name__
 
     return ChartDryRunCreateResponse(
@@ -879,10 +700,51 @@ def dry_run_create_chart(
         validation_errors=[],
         semantic_warnings=[],
         runtime_errors=runtime_errors,
+        runtime_refusal=runtime_refusal,
         runtime_root_cause=runtime_root_cause,
         runtime_preview_sample=runtime_sample,
         fe_unrecognised_keys=fe_unrecognised,
     )
+
+
+@router.get("/{chart_id}/usage")
+def get_chart_usage(
+    chart_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The reports that show this chart — what an edit to it would change.
+
+    A chart is a shared library object: saving it changes every report that
+    shows it, live, including their published state. The editor asks this
+    before saving from a report, so the author chooses between the shared chart
+    and a copy for one report. Reports the caller cannot view are counted, not
+    named.
+    """
+    chart = ChartService.get_by_id(db, chart_id)
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart with ID {chart_id} not found")
+    require_view_access(db, current_user, chart, "explore_charts")
+    from app.services.dashboard_service import is_draft_only_item
+    rows = db.query(DashboardChart).filter(DashboardChart.chart_id == chart_id).all()
+    by_dash: dict[int, list] = {}
+    for r in rows:
+        by_dash.setdefault(r.dashboard_id, []).append(r)
+    reports: list[dict] = []
+    hidden = 0
+    for dash in db.query(Dashboard).filter(Dashboard.id.in_(list(by_dash))).all() if by_dash else []:
+        if get_effective_permission(db, current_user, dash, "dashboards") == "none":
+            hidden += 1
+            continue
+        tiles = by_dash.get(dash.id, [])
+        reports.append({
+            "id": dash.id,
+            "name": dash.name,
+            "tiles": len(tiles),
+            "published": any(not is_draft_only_item(t) for t in tiles),
+        })
+    reports.sort(key=lambda d: (str(d["name"] or "").lower(), d["id"]))
+    return {"chart_id": chart_id, "reports": reports, "other_reports": hidden}
 
 
 @router.get("/{chart_id}", response_model=ChartResponse)
@@ -899,6 +761,7 @@ def get_chart(
             detail=f"Chart with ID {chart_id} not found"
         )
     chart.user_permission = require_view_access(db, current_user, chart, "explore_charts")
+    _authz.attach_capabilities(db, current_user, [chart])
     stamp_owner_emails(db, [chart])
     _stamp_chart_catalog_fields(current_user, [chart])
     return chart
@@ -914,7 +777,8 @@ def create_chart(
     """Create a new chart."""
     try:
         dataset_obj, _ = _get_dataset_for_chart_table(db, chart.dataset_table_id)
-        require_view_access(db, current_user, dataset_obj, "datasets")
+        _authz.require(db, current_user, _authz.Action.BUILD, dataset_obj)
+        require_custom_sql_authority(db, current_user, chart.dataset_table_id, chart.config)
         new_chart = ChartService.create(db, chart, owner_id=current_user.id)
         new_chart = ChartService.get_by_id(db, new_chart.id)
         if new_chart:
@@ -929,7 +793,40 @@ def create_chart(
         )
         return new_chart
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        from app.services.chart_error_contract import user_safe_message
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=user_safe_message(e, 'chart save'))
+
+
+def validate_chart_final_state(chart_obj: Chart, chart_update: ChartUpdate) -> None:
+    """CREATE validation == UPDATE final-state validation.
+
+    The runtime runs the MERGED chart (stored type/config/table + this update),
+    so that is what is validated, through the very ChartCreate contract a new
+    chart passes. Validating only the request fragment let a config-only PUT
+    save a BAR without a dimension, or a type-only PUT turn a chart into a
+    SCATTER with no axes. A pure rename/description edit does not change what
+    runs and is not re-validated (legacy charts stay renameable)."""
+    from pydantic import ValidationError
+
+    from app.schemas import ChartCreate
+
+    changes = chart_update.model_dump(exclude_unset=True)
+    if not ({"config", "chart_type", "dataset_table_id"} & set(changes)):
+        return
+    stored_type = getattr(chart_obj.chart_type, "value", chart_obj.chart_type)
+    merged = {
+        "name": changes.get("name") or chart_obj.name,
+        "description": changes.get("description", chart_obj.description),
+        "chart_type": changes.get("chart_type") or stored_type,
+        "dataset_table_id": changes.get("dataset_table_id") or chart_obj.dataset_table_id,
+        "config": changes["config"] if changes.get("config") is not None else (chart_obj.config or {}),
+    }
+    try:
+        ChartCreate.model_validate(merged)
+    except ValidationError as exc:
+        reasons = "; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())
+        raise HTTPException(status_code=422, detail=f"Biểu đồ sau khi cập nhật không hợp lệ: {reasons}")
 
 
 @router.put("/{chart_id}", response_model=ChartResponse)
@@ -947,7 +844,20 @@ def update_chart(
     require_edit_access(db, current_user, chart_obj, "explore_charts")
     if chart_update.dataset_table_id is not None:
         dataset_obj, _ = _get_dataset_for_chart_table(db, chart_update.dataset_table_id)
-        require_view_access(db, current_user, dataset_obj, "datasets")
+        # Re-binding a chart to another table is building new content from that
+        # dataset (build). Saving the chart on the table it already uses keeps
+        # the read check: the content was built by whoever held build then.
+        rebinding = chart_update.dataset_table_id != getattr(chart_obj, "dataset_table_id", None)
+        _authz.require(db, current_user, _authz.Action.BUILD if rebinding else _authz.Action.READ, dataset_obj)
+    if chart_update.config is not None or chart_update.dataset_table_id is not None:
+        # Whoever writes custom SQL needs the datasource right themselves; the
+        # owner's right is checked again at every run.
+        require_custom_sql_authority(
+            db, current_user,
+            chart_update.dataset_table_id if chart_update.dataset_table_id is not None else chart_obj.dataset_table_id,
+            chart_update.config if chart_update.config is not None else chart_obj.config,
+        )
+    validate_chart_final_state(chart_obj, chart_update)
     try:
         chart = ChartService.update(db, chart_id, chart_update)
         if chart:
@@ -962,7 +872,9 @@ def update_chart(
         )
         return chart
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        from app.services.chart_error_contract import user_safe_message
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=user_safe_message(e, 'chart save'))
 
 
 @router.delete("/{chart_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1041,6 +953,34 @@ def _parse_role_overrides(overrides: Optional[str]) -> Optional[dict]:
     return out or None
 
 
+def _authorized_role_overrides(db: Session, user: User, chart, overrides: dict) -> dict:
+    """A what-if swap re-queries the chart on ANOTHER field, so it is not
+    covered by holding view on the chart. Allowed when the caller may EXPLORE
+    the chart's dataset (any field), or when every value is an option a bound
+    switcher offers on a dashboard the caller can view that shows this chart -
+    the same rule the public path applies (dashboard_parameters.validate_role_overrides)."""
+    from app.models.models import Dashboard, DashboardChart
+    from app.services.dashboard_parameters import ParameterRefused, dashboard_parameters, validate_role_overrides
+
+    if chart.dataset_table_id is not None:
+        dataset_obj, _ = _get_dataset_for_chart_table(db, chart.dataset_table_id)
+        if _authz.can(db, user, _authz.Action.EXPLORE, dataset_obj):
+            return overrides
+    tiles = db.query(DashboardChart).filter(DashboardChart.chart_id == chart.id).all()
+    for tile in tiles:
+        dash = db.get(Dashboard, tile.dashboard_id)
+        if dash is None or get_effective_permission(db, user, dash, "dashboards") == "none":
+            continue
+        try:
+            allowed = validate_role_overrides(tile, overrides, dashboard_parameters(dash.dashboard_charts or []))
+        except ParameterRefused:
+            continue
+        if allowed:
+            return allowed
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                        detail="This field swap is not offered to you for this chart.")
+
+
 @router.get("/{chart_id}/data", response_model=ChartDataResponse)
 def get_chart_data(
     chart_id: int,
@@ -1071,6 +1011,9 @@ def get_chart_data(
         if _dt is not None and getattr(_dt, "dataset_id", None) is not None:
             dataset_grants_service.require_view_lineage(db, current_user, _dt.dataset_id)
 
+    if role_overrides:
+        role_overrides = _authorized_role_overrides(db, current_user, chart, role_overrides)
+
     extra_filters = None
     if filters:
         try:
@@ -1089,7 +1032,10 @@ def get_chart_data(
             granularity_override=granularity_override,
             role_overrides=role_overrides,
         )
-        return ChartDataResponse(**result)
+        # Full diagnostics (emitted SQL with inlined filter values, routing,
+        # dialect) only for people who may edit the chart.
+        from app.services.chart_error_contract import restrict_debug
+        return ChartDataResponse(**restrict_debug(result, perm))
     except ValueError as e:
         # Phase-12.7: ValueError from the semantic engine / chart runtime
         # means the chart's CONFIG is invalid given the current dataset
@@ -1105,19 +1051,13 @@ def get_chart_data(
             from app.services.dataset_crud import DatasetCRUDService
             _dt2 = DatasetCRUDService.get_table_by_id(db, chart.dataset_table_id)
             _dsid = getattr(_dt2, "dataset_id", 0) or 0
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=humanize_view_tokens(str(e), db, _dsid),
-        )
+        from app.services.chart_error_contract import refusal_response
+        return refusal_response(e, lambda t: humanize_view_tokens(t, db, _dsid))
     except Exception as e:
-        logger.exception(
-            "Failed to get chart data for chart_id=%s context=%s",
-            chart_id,
-            context,
-        )
+        from app.services.chart_error_contract import failure_detail
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve chart data: {e}",
+            detail=failure_detail(e, f"chart data chart_id={chart_id} context={context}"),
         )
 
 

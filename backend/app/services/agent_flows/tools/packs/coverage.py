@@ -48,11 +48,11 @@ tool declares itself non-deterministic and pays for a fresh read.
 """
 from __future__ import annotations
 
-import re
 from datetime import date, datetime
 from typing import Any
 
 from app.services.agent_flows.tools import result as R
+from app.services.time_semantics import TIME_NAME_CANDIDATE_RX
 from app.services.dashboard_ai_bot.tool_context import ToolContext, _fetch_chart_data
 
 #: How many charts to read looking for dates. The scan stops as soon as it has a
@@ -64,10 +64,18 @@ MAX_CHARTS_SCANNED = 4
 #: Column names that mark a date even when the type does not. Warehouse loaders
 #: routinely land a date as STRING, and a report that shows a month axis should
 #: not be unreadable here because Airbyte chose a text column.
-_DATE_NAME = re.compile(
-    r"(date|ngay|ngày|thang|tháng|nam|năm|time|timestamp|_at|_dt|period|ky|kỳ)",
-    re.IGNORECASE,
-)
+#:
+#: SHARED with the seasonality pack rather than restated. The copy that used to
+#: live here matched substrings and had never learned `month|quarter|week|year`,
+#: so it read `product_category_name_english` as a date column and did NOT read
+#: `year_month` as one — wrong in both directions at once. The value parsing
+#: below is unchanged and still has the final say.
+# CANDIDATES, not verdicts. This module scores columns by name and then
+# PARSES their values, requiring most to be real dates before it trusts one.
+# That value gate is strictly stronger than any name rule, so an ambiguous
+# name like `ky_bao_cao` is safe to consider here and would be unsafe in a
+# tool that did time maths straight off the name.
+_DATE_NAME = TIME_NAME_CANDIDATE_RX
 
 #: Accepted written forms, widest first. Year-only is last because "2016" also
 #: parses as an integer measure, and treating a revenue column as a date would be

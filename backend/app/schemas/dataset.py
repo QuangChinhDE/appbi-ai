@@ -140,6 +140,9 @@ class DatasetResponse(DatasetBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    # Backend-computed {action: bool} for THIS caller (UX only; every
+    # mutation is re-checked). The frontend reads this, not owner/share/level.
+    capabilities: Optional[Dict[str, bool]] = None
     datasource_ids: List[int] = Field(default_factory=list)
     dictionary_updated_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
@@ -272,6 +275,9 @@ class TablePreviewRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     filters: Optional[List[FilterCondition]] = None
     sort: Optional[Dict[str, str]] = None  # {'column': 'asc'|'desc'}
+    # Explicit "re-read this table's schema" (editor action): persist the column
+    # cache + resync the model from the unfiltered first page. Preview alone is a read.
+    refresh_schema: bool = False
 
 
 class TablePreviewResponse(BaseModel):
@@ -329,6 +335,9 @@ class ExecuteQueryResponse(BaseModel):
     """Response schema for executed query"""
     columns: List[ColumnMetadata]
     rows: List[Dict[str, Any]]
+    # Filters the semantic engine left out by its declared soft-drop policy
+    # (unreachable_view / no_join_path) — never silent, as on /charts.
+    dropped_filters: List[Dict[str, Any]] = []
 
 
 # ===== Dataset Quality Schemas =====

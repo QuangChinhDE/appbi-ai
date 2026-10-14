@@ -40,7 +40,7 @@ def store_media(
         id=uuid.uuid4(),
         workboard_id=workboard_id,
         filename=(filename or None),
-        content_type=(content_type or "application/octet-stream")[:120],
+        content_type=safe_content_type(content_type),
         byte_size=len(data),
         data=data,
         created_by=created_by,
@@ -52,6 +52,22 @@ def store_media(
     else:
         db.flush()
     return media
+
+
+# Types a browser may render INLINE from /public/media. Everything else is stored
+# and served as an octet-stream download: the endpoint is public and same-origin,
+# so a client-declared text/html or image/svg+xml would run script on the app
+# origin (authz review, fourth pass - stored XSS). SVG is deliberately absent.
+INLINE_SAFE_TYPES = frozenset({
+    "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/avif",
+    "application/pdf", "video/mp4", "video/webm", "audio/mpeg", "audio/mp4", "audio/webm",
+})
+
+
+def safe_content_type(content_type: Optional[str]) -> str:
+    """The declared type when it is inline-safe, else application/octet-stream."""
+    base = (content_type or "").split(";", 1)[0].strip().lower()
+    return base if base in INLINE_SAFE_TYPES else "application/octet-stream"
 
 
 def get_media(db: Session, media_id: str) -> Optional[WorkboardMedia]:

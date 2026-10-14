@@ -1,0 +1,43 @@
+{
+  "dashboard_id": 1046,
+  "tiles": 12,
+  "origin": "http://localhost:3218",
+  "timings": {
+    "builder_load": {
+      "cold_ms": 190,
+      "p50_ms": 183,
+      "p95_ms": 448,
+      "n": 8
+    },
+    "public_structure": {
+      "cold_ms": 350,
+      "p50_ms": 447,
+      "p95_ms": 558,
+      "n": 8
+    },
+    "public_page_data": {
+      "cold_ms": 1952,
+      "p50_ms": 290,
+      "p95_ms": 333,
+      "n": 8
+    },
+    "distinct": {
+      "cold_ms": 154,
+      "p50_ms": 54,
+      "p95_ms": 96,
+      "n": 8
+    },
+    "draft_write": {
+      "cold_ms": 125,
+      "p50_ms": 101,
+      "p95_ms": 128,
+      "n": 8
+    },
+    "publish": {
+      "cold_ms": 135,
+      "p50_ms": 228,
+      "p95_ms": 259,
+      "n": 8
+    }
+  }
+}

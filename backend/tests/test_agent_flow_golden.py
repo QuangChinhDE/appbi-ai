@@ -50,6 +50,7 @@ from app.services.agent_flows.runtime import executor  # noqa: E402
 from app.services.agent_flows.runtime.handlers import agent as agent_handler  # noqa: E402
 from app.services.dashboard_ai_bot.events import AgentEvent  # noqa: E402
 import app.services.agent_flows.tools.registry as tool_registry  # noqa: E402
+from replay_harness import fixed_credentials  # noqa: E402
 
 
 # ── harness ───────────────────────────────────────────────────────────────────
@@ -142,7 +143,7 @@ def run(flow: Flow, **over: Any) -> dict:
         out = None
         async for ev in executor.run_flow(
             FlowInput.model_validate(envelope(**over)), flow=flow, ctx=Ctx(),
-            api_key="k", base_system_prompt="BASE",
+            credentials=fixed_credentials("k"), base_system_prompt="BASE",
         ):
             if ev.type == "result":
                 out = ev.extra.get("envelope")
@@ -972,7 +973,12 @@ def test_a_reading_steps_result_reaches_the_step_that_answers():
     # The rule under test is that the reading step's output reaches the step that
     # answers; that is what these two lines check.
     assert "read" in shown, "kết quả bước đọc không được gắn tên bước nào"
-    assert "charts" in shown and "chart_id" in shown, "tới nơi nhưng rỗng ruột"
+    # `read_status`, not `chart_id`: the reader-facing answer is scrubbed of internal
+    # field keys and raw ids (services/agent_flows/reader_text.py), so the echo of
+    # the reading step's data is asserted on a DATA field of that result instead -
+    # the step's own status record next to its charts list, which is still the
+    # proof that the result arrived and is not hollow.
+    assert "charts" in shown and "read_status" in shown, "tới nơi nhưng rỗng ruột"
 
 
 def test_previous_text_carries_every_shape_a_step_can_return():
@@ -1184,7 +1190,7 @@ def test_an_attached_source_that_matched_nothing_is_not_cited():
 # ── 16 · the node list is frozen, and the two halves must agree ───────────────
 #: The fourteen. Changing this list is a deliberate act; the test below makes it one.
 FROZEN_NODE_TYPES = {
-    "agent", "coordinate",                     # AI
+    "agent", "coordinate", "skill",            # AI
     "report_read", "knowledge", "web", "tool",  # data
     "if", "switch", "filter",                  # logic
     "loop", "stop", "delay",                   # flow
@@ -1218,7 +1224,14 @@ def test_the_node_list_is_exactly_the_frozen_thirteen():
     another to read the result, and puts every granted tool's schema in every
     prompt of that step. This node spends `ToolSpec.self_sufficient`, which the
     registry has documented as LATENT for exactly as long as no node could call a
-    tool directly."""
+    tool directly.
+
+    `skill` (V3 phase 5) is the third. A flow that works cannot otherwise be reused:
+    an author who built "compare period performance" rebuilt it in every flow. A
+    Skill step runs a PUBLISHED flow, pinned to an exact version, as a governed
+    child run on the caller's authority — the deterministic counterpart of an
+    Agent granted the same Skill as a capability. Both go through one invoker
+    (`services/agent_flows/skills.invoke_skill`)."""
     assert _contract_node_types() == FROZEN_NODE_TYPES
 
 
@@ -2787,44 +2800,41 @@ def test_one_renderer_for_a_value_becoming_text():
 
 
 def test_one_rule_for_which_model_a_step_runs_on():
-    """The runtime preferred the node's pin; the slow-model guard read only the link.
+    """The runtime and the slow-model guard must agree on each step's model.
 
-    A flow pinning `gpt-5` on a `gpt-4o` link was costed at 4 seconds a call instead
-    of 18, so the warning whose whole job is to catch a ninety-second answer stayed
-    silent. The reverse was equally wrong.
+    They once did not: the runtime preferred a step's pin, the guard read only the
+    link, so a flow pinning `gpt-5` on a `gpt-4o` link was costed at 4 seconds a call
+    instead of 18. Steps now ALWAYS name their own model — there is no link model
+    to inherit — so the one rule is "the step's own", and both readers use it.
+    (Rewritten when stored AI keys replaced the link/server key: the old version
+    asserted `effective_model`'s inherit branch, which no longer exists.)
     """
+    from types import SimpleNamespace
+
     from app.services.agent_flows.binding import _slowest_model
-    from app.services.agent_flows.models_catalogue import effective_model
+    from app.services.agent_flows.runtime.agent_runtime import _resolve_model
 
-    # The shared rule: a pin wins, otherwise inherit.
-    assert effective_model("openai", "gpt-5", "openai", "gpt-4o") == ("openai", "gpt-5")
-    assert effective_model("inherit", "", "openai", "gpt-4o") == ("openai", "gpt-4o")
-
-    fast = {"ai_bot_provider": "openai", "ai_bot_model": "gpt-4o"}
-    slow = {"ai_bot_provider": "openai", "ai_bot_model": "gpt-5"}
-
-    # The measured failure: one step pins a reasoning model on a fast link.
     pinned_slow = build([
         {"key": "a", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-5"},
-        {"key": "b", "type": "agent", "prompt": "p"},
+        {"key": "b", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-4o"},
     ], answer_node="b")
-    assert _slowest_model(pinned_slow, fast) == ("gpt-5", 18)
+    assert _slowest_model(pinned_slow) == ("gpt-5", 18)
+    rctx = SimpleNamespace(inp=None)
+    assert [_resolve_model(n, rctx) for n in pinned_slow.agent_nodes()] == [
+        ("openai", "gpt-5"), ("openai", "gpt-4o")]
 
-    # The other direction: every step pins something fast, so no `gpt-5` call ever
-    # happens and costing it as one is the same false alarm reversed. Seeding the
-    # max from the link's model reintroduced exactly this.
+    # Every step fast: no `gpt-5` call happens, so none is costed.
     pinned_fast = build([
         {"key": "a", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-4o"},
         {"key": "b", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-4o"},
     ], answer_node="b")
-    assert _slowest_model(pinned_fast, slow) == ("gpt-4o", 4)
+    assert _slowest_model(pinned_fast) == ("gpt-4o", 4)
 
-    # A step that INHERITS is how the link's model legitimately enters the set.
-    mixed = build([
-        {"key": "a", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-4o"},
-        {"key": "b", "type": "agent", "prompt": "p"},
-    ], answer_node="b")
-    assert _slowest_model(mixed, slow) == ("gpt-5", 18)
+    # A step written before steps chose their own model is brought forward to what
+    # it actually ran on, and costed as that.
+    legacy = build([{"key": "a", "type": "agent", "prompt": "p", "provider": "inherit"}],
+                   answer_node="a")
+    assert _resolve_model(legacy.agent_nodes()[0], rctx) == ("openai", "gpt-4o-mini")
 
 
 def test_one_definition_of_output_a_viewer_can_be_shown():

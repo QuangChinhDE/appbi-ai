@@ -396,7 +396,24 @@ export function TableVisualization({
   // prints the page as it looks on screen, so expanding to every row there would
   // cost seconds of layout for rows nobody asked to see.
   const exporting = useFullDataExportMode();
+  const anyExport = useExportMode();
   const displayRows = exporting ? sortedRows : sortedRows.slice(0, maxRows);
+  // Paper has no horizontal scroll: a table wider than its tile printed only the
+  // columns that fit (a portrait A4 lost 5 of 11). While exporting, scale the
+  // table down just enough to show every column — screen behaviour unchanged.
+  const printTableRef = useRef<HTMLTableElement | null>(null);
+  // Imperative (no state): measure the unzoomed width, then zoom — re-measuring
+  // a zoomed table from state looped.
+  useLayoutEffect(() => {
+    const table = printTableRef.current;
+    const box = containerRef.current;
+    if (!table) return;
+    table.style.removeProperty('zoom');
+    if (!anyExport || !box) return;
+    const natural = table.scrollWidth;
+    const avail = box.clientWidth;
+    if (natural > avail + 1) table.style.setProperty('zoom', String(Math.max(0.5, avail / natural)));
+  });
 
   useEffect(() => {
     liveColumnWidthsRef.current = liveColumnWidths;
@@ -697,6 +714,36 @@ export function TableVisualization({
     && allColumnWidthsResolved
     && containerWidth > 0
     && naturalTotalWidth > containerWidth;
+  // A narrow tile (a phone) gets tighter cells, so more of the width is text.
+  const narrowTable = !exporting && containerWidth > 0 && containerWidth < 480;
+  const cellPadX = narrowTable ? 8 : 16;
+  // Each column's floor is its own unbreakable content — the longest word of
+  // its header and its widest formatted value — so fitting to the tile never
+  // breaks "CUSTOMER_STATE" into letters or "R$83,035" across lines. When the
+  // floors together exceed the tile, the table scrolls sideways instead.
+  const columnFloors = useMemo(() => {
+    const charPx = 7.6;
+    const sample = rows.slice(0, 60);
+    const out: Record<string, number> = {};
+    for (const col of cols) {
+      const header = String(lookupColumnLabel(col, columnLabels) ?? col);
+      const headerWord = header.split(/[\s_.-]+/).reduce((m, w) => Math.max(m, w.length), 0);
+      const valueLen = sample.reduce((m, r) => {
+        const v = formatCellValue((r as any)?.[col], { numberFormat: getColumnFormat(col), decimalPlaces, currencySymbol });
+        const longest = String(v ?? '').split(/\s+/).reduce((mm, w) => Math.max(mm, w.length), 0);
+        return Math.max(m, longest);
+      }, 0);
+      // The header's longest word sits beside its controls — the sort arrow
+      // (12px + gap) and, since it has its own slot, the filter button (16px +
+      // gap) — so budget them in px: a 2-char allowance split "region" into
+      // "regio / n" once the filter stopped overlapping the arrow.
+      const headerPx = Math.ceil(headerWord * charPx) + 18 + (enableColumnFilters ? 22 : 0);
+      out[col] = Math.min(240, Math.max(MIN_FIT_COLUMN_WIDTH - (16 - cellPadX) * 2,
+        Math.max(headerPx, Math.ceil(valueLen * charPx)) + cellPadX * 2));
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colsKey, rows, columnLabels, decimalPlaces, currencySymbol, cellPadX, enableColumnFilters]);
   const renderColumnWidths = useMemo(() => {
     if (!shouldFitToContainer) return liveColumnWidths;
     // Water-fill so the total lands ON the container width even with a floor:
@@ -709,11 +756,11 @@ export function TableVisualization({
     const frozen = new Set<string>();
     for (let pass = 0; pass <= cols.length; pass++) {
       const free = cols.filter((col) => !frozen.has(col));
-      const frozenWidth = (cols.length - free.length) * MIN_FIT_COLUMN_WIDTH;
+      const frozenWidth = cols.filter((col) => frozen.has(col)).reduce((sum, col) => sum + columnFloors[col], 0);
       const freeNatural = free.reduce((sum, col) => sum + liveColumnWidths[col], 0);
       if (freeNatural <= 0) break;
       const scale = (containerWidth - frozenWidth) / freeNatural;
-      const toFreeze = free.filter((col) => liveColumnWidths[col] * scale < MIN_FIT_COLUMN_WIDTH);
+      const toFreeze = free.filter((col) => liveColumnWidths[col] * scale < columnFloors[col]);
       if (toFreeze.length === 0) {
         for (const col of free) out[col] = Math.floor(liveColumnWidths[col] * scale);
         break;
@@ -721,12 +768,12 @@ export function TableVisualization({
       toFreeze.forEach((col) => frozen.add(col));
     }
     for (const col of cols) {
-      if (out[col] == null) out[col] = MIN_FIT_COLUMN_WIDTH;
+      if (out[col] == null) out[col] = columnFloors[col];
     }
     return out;
     // colsKey captures the column set; liveColumnWidths/containerWidth drive the scale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldFitToContainer, containerWidth, colsKey, liveColumnWidths]);
+  }, [shouldFitToContainer, containerWidth, colsKey, liveColumnWidths, columnFloors]);
 
   const tableWidth = allColumnWidthsResolved
     // Each measured width is Math.ceil'd (see the measure effect), so the raw sum
@@ -750,8 +797,15 @@ export function TableVisualization({
       style={exporting ? undefined : { scrollbarGutter: 'stable' }}
     >
       <table
+        ref={printTableRef}
         className="border-separate border-spacing-0 text-sm min-w-full"
-        style={{
+        style={anyExport ? {
+          // Export: the browser's auto layout at the tile width wraps cells only
+          // between words (no letter-by-letter columns); whatever still cannot
+          // fit is zoomed by the layout effect above so every column prints.
+          tableLayout: 'auto',
+          width: '100%',
+        } : {
           tableLayout: allColumnWidthsResolved ? 'fixed' : 'auto',
           width: tableWidth,
         }}
@@ -766,7 +820,7 @@ export function TableVisualization({
                 // hairline horizontal scrollbar even when the columns fit. min-w-full
                 // redistributes the ≤1px/col slack back so nothing clips; a genuinely
                 // too-wide table still overshoots by far more and keeps scrolling.
-                style={renderColumnWidths[col] ? { width: Math.max(1, renderColumnWidths[col] - 1) } : undefined}
+                style={!anyExport && renderColumnWidths[col] ? { width: Math.max(1, renderColumnWidths[col] - 1) } : undefined}
               />
             ))}
           </colgroup>
@@ -782,11 +836,27 @@ export function TableVisualization({
                       headerCellRefs.current[col] = element;
                     }}
                     className={clsx(
-                      "group/table-header relative border-b-2 border-[rgb(var(--border-line))] px-4 py-3 font-semibold text-text-secondary",
+                      "group/table-header relative border-b-2 border-[rgb(var(--border-line))] py-3 font-semibold text-text-secondary",
+                      // Narrow tables still keep the right edge clear of the
+                      // 12px resize strip so it never sits on the filter button.
+                      narrowTable ? (enableColumnResize ? "pl-2 pr-3" : "px-2") : "px-4",
                       "cursor-pointer hover:bg-surface-2 select-none",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand",
                     )}
                     style={{ textAlign: alignment }}
+                    tabIndex={0}
+                    aria-sort={(() => {
+                      const s = effectiveSorts.find((x) => x.field === col);
+                      return s ? (s.direction === 'asc' ? 'ascending' : 'descending') : 'none';
+                    })()}
                     onClick={() => handleHeaderClick(col)}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        handleHeaderClick(col);
+                      }
+                    }}
                   >
                     <div className={clsx("flex min-w-0 items-start gap-1.5", getHeaderJustifyClass(alignment))}>
                       {/* Phase-15.13: render the friendly label, not the raw
@@ -801,35 +871,40 @@ export function TableVisualization({
                       >
                         {renderWrappableHeaderLabel(lookupColumnLabel(col, columnLabels))}
                       </span>
-                      <span className="shrink-0">{getSortIndicator(col)}</span>
+                      <span className="shrink-0" data-testid="table-sort-indicator">{getSortIndicator(col)}</span>
+                      {/* The column filter sits IN the row, after the sort
+                          indicator: the layout reserves its own hit area, so it
+                          can never lie on top of the sort affordance (it used to
+                          be absolutely positioned over it — and, invisible until
+                          hover, swallowed clicks meant for sort). Visible on
+                          hover, keyboard focus, touch devices and when active. */}
+                      {enableColumnFilters && (
+                        <button
+                          type="button"
+                          aria-label={`Filter ${lookupColumnLabel(col, columnLabels)}`}
+                          title="Filter column"
+                          data-testid="table-column-filter"
+                          aria-haspopup="dialog"
+                          aria-expanded={openFilterCol === col}
+                          className={clsx(
+                            "-my-0.5 shrink-0 rounded p-0.5 transition-colors focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand",
+                            isTableColumnFilterActive(columnFilters[col])
+                              ? "text-brand"
+                              : "text-text-quaternary opacity-0 group-hover/table-header:opacity-100 group-focus-within/table-header:opacity-100 hover:text-text-secondary [@media(hover:none)]:opacity-100",
+                            openFilterCol === col && "text-brand opacity-100",
+                          )}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openColumnFilter(col, event.currentTarget);
+                          }}
+                          onKeyDown={(event) => event.stopPropagation()}
+                        >
+                          <FilterIcon
+                            className={clsx("h-3 w-3", isTableColumnFilterActive(columnFilters[col]) && "fill-current")}
+                          />
+                        </button>
+                      )}
                     </div>
-
-                    {/* Column filter is ABSOLUTELY positioned (not in the label
-                        flex row) so it never steals horizontal space from the
-                        header text — critical when a column is squeezed narrow
-                        and the label needs the full width to wrap readably. */}
-                    {enableColumnFilters && (
-                      <button
-                        type="button"
-                        aria-label={`Filter ${lookupColumnLabel(col, columnLabels)}`}
-                        title="Filter column"
-                        className={clsx(
-                          "absolute right-3.5 top-2 z-10 rounded p-0.5 transition-colors",
-                          isTableColumnFilterActive(columnFilters[col])
-                            ? "text-brand"
-                            : "text-text-quaternary opacity-0 group-hover/table-header:opacity-100 hover:text-text-secondary",
-                          openFilterCol === col && "text-brand opacity-100",
-                        )}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          openColumnFilter(col, event.currentTarget);
-                        }}
-                      >
-                        <FilterIcon
-                          className={clsx("h-3 w-3", isTableColumnFilterActive(columnFilters[col]) && "fill-current")}
-                        />
-                      </button>
-                    )}
 
                     {enableColumnResize && (
                       <button
@@ -886,7 +961,7 @@ export function TableVisualization({
                   return (
                     <td
                       key={col}
-                      className="border-b border-[rgb(var(--border-line))] px-4 py-2.5 align-top"
+                      className={clsx("border-b border-[rgb(var(--border-line))] py-2.5 align-top", narrowTable ? "px-2" : "px-4")}
                       style={{
                         ...colorStyle,
                         textAlign: alignment,

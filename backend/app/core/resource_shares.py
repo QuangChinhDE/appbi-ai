@@ -77,3 +77,28 @@ def get_shared_resource_ids_query(db: Session, user: User, resource_type: Resour
         .filter(ResourceShare.resource_type == resource_type)
         .filter(share_target_filter_for_user(user))
     )
+
+
+def shared_resource_ids_subquery(user: User, resource_type: ResourceType):
+    """SELECT resource_id of every ResourceShare reaching ``user`` (directly or
+    through a team) for ``resource_type`` - the one share resolution."""
+    from sqlalchemy import select
+
+    return (
+        select(ResourceShare.resource_id)
+        .where(ResourceShare.resource_type == resource_type)
+        .where(share_target_filter_for_user(user))
+    )
+
+
+def purge_shares(db: Session, resource_type: ResourceType, resource_id) -> int:
+    """Delete every share row of ONE resource (the resource itself is being
+    deleted). The share engine's only bulk-delete entry point, so business
+    modules never query ResourceShare themselves (authz static rule). Does not
+    commit: the caller's transaction owns the delete."""
+    return (
+        db.query(ResourceShare)
+        .filter(ResourceShare.resource_type == resource_type,
+                ResourceShare.resource_id == str(resource_id))
+        .delete(synchronize_session=False)
+    )

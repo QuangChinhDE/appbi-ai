@@ -13,7 +13,6 @@ from app.models.models import (
     DashboardChart,
     ChartMetadata,
     ChartParameter,
-    SyncJob,
 )
 from app.models.semantic import (
     SemanticView,
@@ -36,6 +35,8 @@ from app.models.observability import (
     ObservabilityCheck,
     ObservabilityIncident,
     ObservabilityAlertChannel,
+    ObservabilityAlertDelivery,
+    ObservabilityScanRun,
 )
 from app.models.user_notification import UserNotification, NOTIFICATION_LEVELS
 from app.models.ai_feedback import AIFeedback
@@ -48,6 +49,9 @@ from app.models.ai_chat_session import AiChatSession
 from app.models.ai_chat_turn_log import AiChatTurnLog
 from app.models.agent_brain import AgentBrainVersion
 from app.models.agent_flow_chat_thread import AgentFlowChatThread
+from app.models.agent_flow_delegation import AgentFlowDelegation  # noqa: F401
+from app.models.ai_provider_credential import AiProviderCredential
+from app.models.manual_source_asset import ManualSourceAsset
 # Workboard models live under app.modules.workboards but are re-exported here
 # so SQLAlchemy metadata + alembic autogenerate always see them, regardless of
 # whether the workboards module router is enabled at runtime.
@@ -67,6 +71,8 @@ __all__ = [
     "ResourceShare",
     "ResourceType",
     "AgentBrainVersion",
+    "AiProviderCredential",
+    "ManualSourceAsset",
     "SharePermission",
     "DataSource",
     "DataSourceType",
@@ -84,13 +90,14 @@ __all__ = [
     "DatasetQualityRun",
     "DatasetQualitySchedule",
     "SemanticExplore",
-    "SyncJob",
     "MonitoredMetric",
     "AnomalyAlert",
     "ObservabilityMonitor",
     "ObservabilityCheck",
     "ObservabilityIncident",
     "ObservabilityAlertChannel",
+    "ObservabilityAlertDelivery",
+    "ObservabilityScanRun",
     "AIFeedback",
     "PersonalAccessToken",
     "RevokedToken",

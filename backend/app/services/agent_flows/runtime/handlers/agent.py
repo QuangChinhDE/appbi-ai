@@ -10,11 +10,12 @@ import asyncio
 import json
 import logging
 import re
+from app.services.agent_flows import roles as _roles_mod
 from typing import Any, AsyncGenerator
 
 from app.services.agent_flows.contract import AgentNode
-from app.services.agent_flows.envelope import Answer
-from app.services.agent_flows.models_catalogue import INHERIT
+from app.services.agent_flows.envelope import Answer, Notice
+from app.services.agent_flows.qualifiers import check_qualifiers
 from app.services.agent_flows.runtime.nodes import NodeSpec
 from app.services.agent_flows.runtime.state import RunState
 from app.services.agent_flows.tools import registry as tool_registry
@@ -62,12 +63,43 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
     allowed = set(node.tool_names())
     web_enabled = bool(rctx.inp.binding.capabilities.web_search)
     schemas = tool_registry.definitions_for(allowed, web_enabled=web_enabled)
+    # THE SAME VIEW A RUN BUILDS for round one. A step granted more than the
+    # visibility limit is shown a shortlist; showing the author the full grant
+    # here would describe a prompt the model never receives.
+    from app.services.agent_flows.runtime.agent_runtime import (
+        _skill_capabilities,
+        build_step_view,
+    )
+
+    try:
+        extras, excluded_extras = _skill_capabilities(node, rctx)
+    except Exception:                                           # noqa: BLE001
+        extras, excluded_extras = [], {}
+    view = build_step_view(node, rctx, web_enabled=web_enabled,
+                           extras=extras, excluded_extras=excluded_extras)
+    view.refresh()
+    from app.services.agent_flows.runtime.capabilities import schema_chars
+    if view.shortlisted:
+        schemas = view.schemas(web_enabled=web_enabled)
+    else:
+        # A run offers granted Skills alongside the tools; so does the preview.
+        schemas = schemas + [e.definition for e in extras]
 
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
     try:
         _apply_scope(rctx.ctx, node)
-        system = _system_prompt(node, state, rctx)
-        messages = _messages(node, state, rctx)
+        # The STRATEGY builds the request, exactly as a run does — so anything a
+        # strategy adds to the context (the evidence index a `compute` step is
+        # given) is on this screen too.
+        from app.services.agent_flows.runtime.strategies import strategy_for
+
+        strategy = strategy_for(node, state, rctx, max_rounds=MAX_ROUNDS)
+        strategy.build_request()
+        system, messages = strategy.system, strategy.messages
+        # The run appends this in `ToolCallingStrategy.run`; the preview must too.
+        note = view.routing_note()
+        if note:
+            system = f"{system}\n\n{note}"
     finally:
         # Same restore discipline as `run`: a preview must not leave the context
         # holding a scope the next caller was never granted.
@@ -131,6 +163,22 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
             "chars": len(_preview_text(m)),
         } for m in messages],
         "tools": tools,
+        #: Granted vs eligible vs shown on round one — and why anything granted
+        #: was left out. The model sees only `tools`; this says how it got there.
+        "capabilities": {
+            "granted": view.granted,
+            "eligible": view.eligible,
+            "excluded": view.excluded,
+            "limit": view.limit,
+            "schema_budget": view.schema_budget,
+            "shortlisted": view.shortlisted,
+            "visible": view.visible,
+            #: Listed, one line each, inside `find_capability` — loadable on demand.
+            "catalogue": view.catalogue(),
+            "schema_chars": schema_chars(schemas),
+            #: Why each shown capability is there (core / loaded / question:score).
+            "why_shown": dict(view.why_shown),
+        },
         "knowledge_scope": dict(getattr(rctx.ctx, "knowledge_scope", None) or {}),
         "budget": {
             "max_tool_calls": node.max_tool_calls,
@@ -161,236 +209,88 @@ def _preview_text(message: dict) -> str:
     return _json.dumps(content, ensure_ascii=False)[:4000]
 
 
+# The retry policy, dimension outcome, citations, model and scope resolution are
+# EXECUTION rules and live in `runtime/agent_runtime.py`. Re-exported under their
+# old names, which tests and the executor import from here.
+from app.services.agent_flows.runtime.agent_runtime import (  # noqa: E402,F401
+    _FINAL_ERROR_CODES,
+    _MAX_IGNORED_RECOVERIES,
+    AgentRuntime,
+    _apply_scope,
+    _call_with_retry_policy,
+    _collect_citation,
+    _is_final_refusal,
+    _note_dimension_outcome,
+    _resolve_model,
+    _retry_key,
+    _source_label,
+)
+from app.services.agent_flows.reader_diagnostics import (
+    tool_label as _reader_tool_label,
+)
+
+
 async def run(
     node: AgentNode, state: RunState, rctx: Any
 ) -> AsyncGenerator[AgentEvent, None]:
-    provider, model = _resolve_model(node, rctx)
-    api_key = node.resolved_api_key() or rctx.api_key
-    if not api_key:
-        # An error event rather than a raise: the chain continues, and a later node
-        # with its own token can still produce an answer.
-        raise RuntimeError(f"chưa có token để gọi {provider or 'nhà cung cấp'}")
+    """One Agent step: the node's STRATEGY reasons, the RUNTIME executes and governs.
 
-    is_answering = node.key == rctx.answer_key
-    allowed = set(node.tool_names())
-    web_enabled = bool(rctx.inp.binding.capabilities.web_search)
-    schemas = tool_registry.definitions_for(allowed, web_enabled=web_enabled)
+    The loop that used to live here is `strategies/tool_calling.py`; the rules it
+    enforced are `agent_runtime.AgentRuntime`. What stays here is the answer
+    contract for the step's output — output formats and the answering node's
+    verifiers — which are correctness rules applied to whatever the strategy wrote.
+    """
+    from app.services.agent_flows.runtime.strategies import strategy_for
 
-    # This node's own knowledge scope, set for the duration of the node.
-    #
-    # ATTACHING NARROWS; ATTACHING NOTHING DOES NOT MEAN NOTHING. A step that names
-    # its sources reaches only those. A step that names none is not sealed off — it
-    # reaches everything the REPORT is entitled to, which is what the binding's
-    # `knowledge.mode` grants. This comment used to claim the boundary held in both
-    # cases, and a reader who trusted it would have thought an unattached step read
-    # nothing at all. The entitlement is still the ceiling either way; the author's
-    # list only ever cuts inside it.
-    previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
-    _apply_scope(rctx.ctx, node)
-    # The previous turn's question, for any tool this node calls that retrieves.
-    # Set here because this is already where the node's retrieval boundary is
-    # applied, and the two belong to the same question.
-    if hasattr(rctx.ctx, "prior_question"):
-        from app.services.dashboard_ai_bot.govern_doc_followup import (
-            prior_user_question,
-        )
-
-        rctx.ctx.prior_question = prior_user_question(
-            rctx.inp.conversation.history)
-
-    system = _system_prompt(node, state, rctx)
-    messages = _messages(node, state, rctx)
-    collected = ""
-    calls_made = 0
-    #: Provider adapters report a refused key or a bad model as an `error` EVENT
-    #: rather than an exception. Without capturing it the node finished with empty
-    #: text and was recorded `ok` — so the trace said every step succeeded while the
-    #: answer was blank, which is the single most misleading thing a run log can do.
-    provider_error = ""
-
+    rt = AgentRuntime(
+        node, state, rctx,
+        # Looked up at call time, so the one place a provider name is interpreted
+        # stays `_stream` below — and a harness replacing it replaces it for runs.
+        stream=lambda **kw: _stream(**kw),
+        status_label=_reader_tool_label,
+    )
+    strategy = strategy_for(node, state, rctx, max_rounds=MAX_ROUNDS)
+    rt.enter()
     try:
-        for _round in range(MAX_ROUNDS):
-            state.budget.spend_llm()
-            pending: list[AgentEvent] = []
-            assistant_text = ""
-
-            # THE RUN BUDGET HAS TO BIND DURING A CALL, NOT ONLY BETWEEN NODES.
-            #
-            # `max_seconds` was checked between nodes, so a single slow call could
-            # ignore it entirely: on a reasoning model this flow took 91s against a
-            # 45s budget and every client gave up before the answer arrived. The
-            # remaining budget is the ceiling for THIS round.
-            remaining = max(5.0, state.budget.max_seconds - state.budget.elapsed())
-            try:
-                async with asyncio.timeout(remaining):
-                    async for ev in _stream(
-                        provider=provider, api_key=api_key, model=model,
-                        system_prompt=system, messages=messages, tools=schemas,
-                    ):
-                        if ev.type == "tool_call":
-                            pending.append(ev)
-                            continue
-                        if ev.type == "text":
-                            assistant_text += ev.text
-                            # Only the answering node's prose reaches the viewer, and
-                            # only when it IS prose: a half-written JSON object cannot
-                            # be rendered.
-                            if is_answering and node.output_format == "chat":
-                                yield ev
-                            continue
-                        if ev.type == "usage":
-                            state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
-                            state.completion_tokens += int(
-                                ev.extra.get("completion_tokens") or 0
-                            )
-                        if ev.type == "error":
-                            provider_error = ev.text or "nhà cung cấp trả về lỗi"
-                            continue
-                        yield ev
-            except TimeoutError:
-                # Named, not swallowed. "The model took longer than this link allows"
-                # is a different problem from "the model refused", and an operator
-                # reading the Runs table has to be able to tell them apart.
-                provider_error = (
-                    f"{model or provider} không trả lời kịp trong "
-                    f"{int(remaining)} giây còn lại của lượt này."
-                )
-                break
-
-            collected += assistant_text
-            if not pending:
-                break
-
-            # HOW MANY OF THIS BATCH MAY ACTUALLY RUN.
-            #
-            # The node ceiling used to be tested once per ROUND, then the whole
-            # batch ran. A model that asks for five tools in parallel with one
-            # call of headroom left made five — the limit held on paper and was
-            # exceeded in fact. The run-wide budget is checked here too, so the
-            # answer step is refused a tool rather than killed by one.
-            room = max(0, min(
-                node.max_tool_calls - calls_made,
-                state.budget.tools_left(answering=is_answering),
-            ))
-            if room <= 0:
-                # Out of budget: tell the model so it answers with what it has,
-                # rather than cutting it off mid-thought.
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "No tool calls remain for this step. Answer with what "
-                        "you already have, and say plainly what you could not "
-                        "check. Reply in the language of the user's question."
-                    ),
-                })
-                schemas = []
-                continue
-
-            runnable, refused = pending[:room], pending[room:]
-            messages.append({
-                "role": "assistant",
-                "content": assistant_text,
-                # `args` — the key BOTH provider adapters read and the one their
-                # own docstrings document. Sending `arguments` meant every tool
-                # call this engine replayed reached the next round as `{}`: the
-                # model could not see what it had just asked for, so it re-asked,
-                # spending a second round to learn what it already knew.
-                "tool_calls": [
-                    {"id": c.tool_call_id, "name": c.tool_name, "args": c.tool_args}
-                    for c in pending
-                ],
-            })
-            # THE PROTOCOL OWES A RESULT TO EVERY CALL IT ANNOUNCED.
-            #
-            # A tool_call with no matching tool message makes OpenAI reject the
-            # whole request, so a refused call must still be answered — with the
-            # reason, which is also the more useful thing for the model to read.
-            for call in refused:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call.tool_call_id,
-                    "name": call.tool_name,
-                    "result": {
-                        "ok": False,
-                        "error_code": "budget_exhausted",
-                        "error": "không còn lượt gọi công cụ cho bước này — hãy "
-                                 "trả lời bằng dữ liệu đã có và nói rõ phần chưa kiểm được",
-                    },
-                })
-            for call in runnable:
-                state.budget.spend_tool()
-                calls_made += 1
-                yield AgentEvent(type="status", text=f"Đang dùng {call.tool_name}…")
-                # ARGUMENTS THE PROVIDER COULD NOT PARSE ARE NOT ARGUMENTS.
-                #
-                # They used to arrive as `{}` and the call went ahead, so the tool
-                # failed on a missing required field and the model had to guess at
-                # a fault the runtime had already identified. Handing back the
-                # parse error instead lets it correct the call on the next round.
-                malformed = (call.extra or {}).get("malformed_args")
-                if malformed:
-                    result = {
-                        "ok": False,
-                        "error_code": "bad_tool_arguments",
-                        "error": f"tham số gửi kèm không phải JSON hợp lệ ({malformed}). "
-                                 "Hãy gọi lại công cụ với JSON đúng định dạng.",
-                    }
-                else:
-                    result = tool_registry.execute(
-                        rctx.ctx, call.tool_name, call.tool_args, allowed=allowed
-                    )
-                # Named in the run history, success or not. A refused call is the
-                # most interesting row in an audit and the easiest one to lose.
-                state.tool_log.append(
-                    call.tool_name if result.get("ok")
-                    else f"{call.tool_name}({result.get('error_code') or 'failed'})"
-                )
-                state.add_evidence(result)
-                _collect_citation(state, call.tool_name, call.tool_args, result)
-                yield AgentEvent(
-                    type="tool_result",
-                    tool_call_id=call.tool_call_id,
-                    tool_name=call.tool_name,
-                    tool_result=result,
-                )
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call.tool_call_id,
-                    "name": call.tool_name,
-                    # `result`, which is the key the provider adapters document and
-                    # read. Sending `content` meant every tool output this engine
-                    # produced reached the model as `{}` — the agent was answering
-                    # about a report it had never actually been shown.
-                    "result": result,
-                })
-        # THE LANGUAGE CONSTRAINT HAS TO SIT NEXT TO THE DECISION.
-        #
-        # It is already in the system prompt, and that was not enough. A tool result
-        # is a large English payload — English keys, an English `ordered_by`, English
-        # notes like "compare the values, do not add them" — and next to a
-        # ten-word Vietnamese question the model follows the payload. Measured:
-        # `total_measure` answered in Vietnamese, `rank_values` and `share_of`
-        # answered in English, on identical prompts in one session.
-        #
-        # So the reminder is repeated as the LAST message before generation, after
-        # the tool output rather than before it. One short line, only when a tool
-        # actually ran — a flow that never calls one never had the problem.
-        if calls_made:
-            messages.append({"role": "user", "content": _language_reminder(rctx)})
+        async for ev in strategy.run(rt):
+            yield ev
     finally:
         # Restored even when the node raises, or the next node would inherit a scope
         # it was never granted — a silent widening of what the flow may read.
-        if previous_scope is not None:
-            rctx.ctx.knowledge_scope = previous_scope
+        rt.exit()
+
+    provider, model, api_key = rt.provider, rt.model, rt.api_key
+    provider_error = rt.provider_error
+    system, messages, collected = strategy.system, strategy.messages, strategy.collected
 
     text = _plain_formulas(collected.strip())
+    if node.key == rctx.answer_key and getattr(node, "followups", True) is False:
+        text = _strip_followups(text)
     if provider_error and not text:
         # Raised, so the executor records `error`, honours `retry` and `on_error`,
         # and the Runs table shows which node actually failed.
         raise RuntimeError(provider_error)
 
     if node.output_format == "json":
-        state.outputs[node.key] = _parse_blocks(text, state, node)
+        parsed = _parse_blocks(text, state, node)
+        # TYPED OUTPUT GOES THROUGH THE SAME PUBLICATION BOUNDARY as prose: a
+        # metric value, delta or table cell is checked and withheld like a figure
+        # in a sentence (pilot review: this branch never reached the claim check).
+        if node.key == rctx.answer_key and isinstance(parsed, dict) \
+                and isinstance(parsed.get("blocks"), list) and not provider_error:
+            from app.services.agent_flows.runtime import claim_check
+
+            try:
+                published, final = claim_check.check_blocks(
+                    state, getattr(rctx, "ctx", None), parsed["blocks"], _locale_of(rctx))
+            except Exception:                                   # noqa: BLE001
+                published, final = parsed["blocks"], {}
+            if (final or {}).get("flagged"):
+                state.unverified_claims = [*(state.unverified_claims or []), *final["flagged"]]
+                parsed = {**parsed, "blocks": published}
+            if final:
+                state.capability_trace.setdefault(node.key, {})["claims"] = final
+        state.outputs[node.key] = parsed
     elif node.output_format == "choice":
         # THE CONSTRAINT, CHECKED AFTER THE MODEL SPEAKS.
         #
@@ -409,7 +309,7 @@ async def run(
         if picked is None and not provider_error:
             picked = await _retry_choice(
                 node, state, system, messages, text,
-                provider=provider, api_key=api_key, model=model,
+                provider=provider, api_key=api_key, model=model, rt=rt,
             )
         if picked is None:
             raise RuntimeError(
@@ -461,7 +361,7 @@ async def run(
             if unsupported:
                 fixed = await _retry_figures(
                     node, state, system, messages, text, unsupported,
-                    provider=provider, api_key=api_key, model=model,
+                    provider=provider, api_key=api_key, model=model, rt=rt,
                 )
                 if fixed and not _echoes_instruction(fixed):
                     left, kept = _figure_check(fixed, state)
@@ -481,6 +381,70 @@ async def run(
                         )
                         text = fixed
 
+        # THE WORDS AROUND THE NUMBER ARE CLAIMS TOO.
+        #
+        # `_figure_check` above asks whether the digits trace to evidence. It passes
+        # "1.258.681,34 USD doanh thu tháng 9" as readily as "1.258.681,34", and
+        # measured on this deployment the same figure was published once as USD and
+        # once as VNĐ over BRAZILIAN data, with no currency declared anywhere. Both
+        # answers verified clean.
+        #
+        # Same place, same shape, same "only if actually better" acceptance rule —
+        # the tool results are still in `messages`, so the model can fix a qualifier
+        # by re-reading rather than recalling.
+        if node.key == rctx.answer_key and text and not provider_error:
+            tool_results: list[Any] = [
+                m.get("result") for m in messages if m.get("role") == "tool"
+            ]
+            # EARLIER STEPS' DATA COUNTS AS EVIDENCE; THEIR PROSE DOES NOT.
+            #
+            # A range established by `describe_time_coverage` in a previous node is
+            # a real source, and treating it as absent would flag a correct answer.
+            # But this used to hand over every earlier step's OUTPUT, including what
+            # an earlier Agent WROTE — so "1.258.681,34 VNĐ" typed by a specialist
+            # made "VNĐ" in the answer "found in the evidence". A qualifier is
+            # verified by what tools returned and deterministic steps read, never by
+            # what a model said about them.
+            tool_results.extend(_trusted_prior_results(state, skip=node.key))
+            tools_called = sorted({
+                *(str(m.get("name") or "") for m in messages if m.get("role") == "tool"),
+                *(t for step in state.trace for t in (step.tool_calls or [])),
+            })
+            violations = check_qualifiers(text, tool_results, tools_called)
+            if violations:
+                _, supported_before = _figure_check(text, state)
+                fixed = await _retry_qualifiers(
+                    node, state, system, messages, text, violations,
+                    provider=provider, api_key=api_key, model=model, rt=rt,
+                )
+                if fixed and not _echoes_instruction(fixed):
+                    left = check_qualifiers(fixed, tool_results, tools_called)
+                    _, supported_after = _figure_check(fixed, state)
+                    # A rewrite that drops the analysis to lose a qualifier is not a
+                    # correction — the same trap the figure retry already learned.
+                    if len(left) < len(violations) and supported_after >= supported_before:
+                        logger.info(
+                            "[flow] %s: qualifier correction %d -> %d unsupported",
+                            node.key, len(violations), len(left),
+                        )
+                        text = fixed
+                        violations = left
+                if violations:
+                    state.notices.append(
+                        Notice(
+                            code="qualifier_unverified",
+                            audience="reader",
+                            severity="warning",
+                            text=(
+                                "Câu trả lời nêu "
+                                + ", ".join(
+                                    f"“{v['claim']}”" for v in violations[:3])
+                                + " nhưng dữ liệu đã đọc không khẳng định điều đó — "
+                                "hãy đối chiếu lại trước khi dùng."
+                            ),
+                        )
+                    )
+
         asked = getattr(getattr(rctx, "inp", None), "question", None)
         asked_text = asked.text() if hasattr(asked, "text") else ""
         if (
@@ -492,13 +456,53 @@ async def run(
             fixed = await _retry_language(
                 node, state, system, messages, text,
                 provider=provider, api_key=api_key, model=model,
-                locale=_locale_of(rctx),
+                locale=_answer_language(rctx), rt=rt,
             )
             # Only if the second attempt is actually better. A restatement that
             # still reads as the wrong language is not worth losing the first
             # answer's figures over.
             if fixed and not _looks_wrong_language(fixed, _locale_of(rctx), asked_text):
                 text = fixed
+        # WHAT STILL DOES NOT STAND, SAID TO THE READER — never rewritten. The draft
+        # review inside the loop already gave the model its chance, with tools;
+        # what remains is shown as unverified and the run is `partial`, so a
+        # figure with the wrong meaning is never published as a verified one.
+        # Only when the step WANTED more: a call refused at the ceiling, or a round
+        # forced to answer with tools still granted (review: a step that read once
+        # and answered fully was marked incomplete).
+        if node.key == rctx.answer_key and node.tools and getattr(rt, "wanted_past_ceiling", False):
+            state.tool_budget_reached = True
+        if node.key == rctx.answer_key and text and not provider_error:
+            from app.services.agent_flows.runtime import claim_check
+
+            try:
+                final = claim_check.check(state, getattr(rctx, "ctx", None), text)
+            except Exception:                                   # noqa: BLE001
+                # THE CHECK THAT DID NOT RUN IS NOT A CHECK THAT PASSED. This used to
+                # publish the answer as verified, silently: a run said `ok` while no
+                # figure in it had been checked (closure review). Logged, said to the
+                # reader, and the run is `partial`.
+                logger.exception("[flow] %s: claim check failed; answer published UNCHECKED", node.key)
+                final = {}
+                if not any(n.code == "claims_unchecked" for n in state.notices):
+                    state.notices.append(Notice(
+                        code="claims_unchecked", audience="reader", severity="warning", node_key=node.key,
+                        text=("Không kiểm chứng được các con số trong câu trả lời này — hãy đối chiếu "
+                              "với báo cáo trước khi dùng."),
+                    ))
+            if final.get("flagged"):
+                # Extended, not replaced: a Skill child's withheld figures are
+                # already here (`skills.invoke_skill`).
+                state.unverified_claims = [*(state.unverified_claims or []), *final["flagged"]]
+                # THE PUBLIC ANSWER NEVER CARRIES A FLAGGED FIGURE: it is withheld
+                # (the draft stays in the audit trace) and the reader is told why.
+                final["draft"] = text
+                loc = _locale_of(rctx)
+                text = claim_check.redact(text, final["flagged"], loc)
+                text = claim_check.with_reader_note(
+                    text, claim_check.reader_note(final["flagged"], loc))
+            if final:
+                state.capability_trace.setdefault(node.key, {})["claims"] = final
         state.outputs[node.key] = text
 
 
@@ -527,6 +531,38 @@ _MIN_WORDS_TO_JUDGE = 6
 def _locale_of(rctx: Any) -> str:
     _req = getattr(getattr(rctx, "inp", None), "request", None)
     return (getattr(_req, "locale", "") or "vi").lower().split("-")[0]
+
+
+#: Words only an English sentence is made of. Two of them, and no Vietnamese
+#: diacritic anywhere, make an English question; "doanh thu la bao nhieu" typed
+#: without accents has none of them and falls through to the locale.
+_EN_MARKERS = frozenset(
+    "what which who how many much is are was were the of and in by does do did show "
+    "give tell me total share rate compared than there".split())
+
+
+def question_language(question: str, locale: str) -> str:
+    """The language the ANSWER must be written in: the question's, else the locale.
+
+    Browser run at ce6d6313: "What share of payment value was paid by boleto?" and
+    "What is the customer churn rate?" were answered in Vietnamese on an English UI.
+    The check below only knew one direction (a Vietnamese question answered in
+    English), and the reminder asked for "the question's language" in Vietnamese —
+    a principle, which a Vietnamese system prompt out-voted.
+    """
+    q = question or ""
+    if any(ch in _VI_DIACRITICS for ch in q):
+        return "vi"
+    words = [w.lower() for w in _ASCII_WORD.findall(q)]
+    if sum(w in _EN_MARKERS for w in words) >= 2:
+        return "en"
+    return locale or "vi"
+
+
+def _answer_language(rctx: Any) -> str:
+    asked = getattr(getattr(rctx, "inp", None), "question", None)
+    text = asked.text() if hasattr(asked, "text") else ""
+    return question_language(text, _locale_of(rctx))
 
 
 def _segment_is_wrong_language(segment: str, locale: str) -> bool:
@@ -563,11 +599,17 @@ def _looks_wrong_language(text: str, locale: str, question: str = "") -> bool:
     prose supplied the diacritics that made the chips look fine. The chips are the
     part a reader is invited to CLICK, so they are judged on their own.
     """
-    if locale != "vi" or not text:
+    if not text:
+        return False
+    target = question_language(question, locale)
+    if target == "en":
+        return _reads_vietnamese(text)
+    if target != "vi":
         return False
     # The viewer wrote Vietnamese, or there is nothing to enforce.
     if not any(ch in _VI_DIACRITICS for ch in question or ""):
         return False
+    locale = "vi"
     body: list[str] = []
     follow: list[str] = []
     for line in text.split("\n"):
@@ -576,6 +618,19 @@ def _looks_wrong_language(text: str, locale: str, question: str = "") -> bool:
         _segment_is_wrong_language("\n".join(body), locale)
         or _segment_is_wrong_language("\n".join(follow), locale)
     )
+
+
+def _reads_vietnamese(text: str) -> bool:
+    """An answer an English reader asked for, written in Vietnamese: most of its
+    words carry diacritics. A quoted chart title ("Tổng phí vận chuyển") is a few
+    words, not most of them."""
+    for part in ("\n".join(l for l in text.split("\n") if "[FOLLOWUP]" not in l.upper()),
+                 "\n".join(l for l in text.split("\n") if "[FOLLOWUP]" in l.upper())):
+        words = re.findall(r"[^\W\d_]+", part)
+        if len(words) >= _MIN_WORDS_TO_JUDGE and \
+                sum(any(ch in _VI_DIACRITICS for ch in w) for w in words) > 0.3 * len(words):
+            return True
+    return False
 
 
 #: LaTeX a chat bubble cannot render. Narrow on purpose — these are the forms a
@@ -588,6 +643,14 @@ _LATEX_FIXES = (
     (re.compile(r"\\times"), "×"),
     (re.compile(r"\\(?=[_%&#${}])"), ""),
 )
+
+
+_FOLLOWUP_LINE_RE = re.compile(r"^[\s>*•.)\-\d]*\[FOLLOWUP\].*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _strip_followups(text: str) -> str:
+    """Remove `[FOLLOWUP]` lines — the same shape the chat UI turns into chips."""
+    return re.sub(r"\n{3,}", "\n\n", _FOLLOWUP_LINE_RE.sub("", text or "")).strip()
 
 
 def _plain_formulas(text: str) -> str:
@@ -656,9 +719,48 @@ def _fmt_figure(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else ("%g" % value)
 
 
+def _spend_optional(state: RunState) -> bool:
+    """An optional correction call: only from what this step may spend — never a
+    later step's reservation (`Budget.try_spend_llm`). A budget without the
+    method (a test double) is charged the old way."""
+    spend = getattr(state.budget, "try_spend_llm", None)
+    if spend is not None:
+        return bool(spend())
+    try:
+        state.budget.spend_llm()
+    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
+        return False
+    return True
+
+
+async def _correction(state: RunState, system: str, messages: list[dict], *, rt: Any,
+                      provider: str, api_key: str, model: str, what: str) -> str:
+    """One correction round. Through the RUNTIME when there is one (deadline,
+    usage, reservation — `AgentRuntime.correct`); directly otherwise."""
+    if rt is not None:
+        return await rt.correct(system, messages)
+    if not _spend_optional(state):
+        return ""
+    out = ""
+    try:
+        async for ev in _stream(
+            provider=provider, api_key=api_key, model=model,
+            system_prompt=system, messages=messages, tools=[],
+        ):
+            if ev.type == "text":
+                out += ev.text
+            elif ev.type == "usage":
+                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
+                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
+    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
+        logger.warning("[flow] %s correction failed", what, exc_info=True)
+        return ""
+    return out.strip()
+
+
 async def _retry_figures(
     node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
-    unsupported: list[float], *, provider: str, api_key: str, model: str,
+    unsupported: list[float], *, provider: str, api_key: str, model: str, rt: Any = None,
 ) -> str:
     """Name the figures that trace to nothing, and ask for one correction.
 
@@ -688,30 +790,42 @@ async def _retry_figures(
             ),
         },
     ]
-    try:
-        state.budget.spend_llm()
-    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
-        return ""
-    out = ""
-    try:
-        async for ev in _stream(
-            provider=provider, api_key=api_key, model=model,
-            system_prompt=system, messages=retry_messages, tools=[],
-        ):
-            if ev.type == "text":
-                out += ev.text
-            elif ev.type == "usage":
-                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
-                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
-    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
-        logger.warning("[flow] figure correction failed", exc_info=True)
-        return ""
-    return out.strip()
+    return await _correction(state, system, retry_messages, rt=rt, provider=provider,
+                             api_key=api_key, model=model, what="figure")
 
+async def _retry_qualifiers(
+    node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
+    violations: list[dict], *, provider: str, api_key: str, model: str, rt: Any = None,
+) -> str:
+    """Name the unsourced qualifiers and ask for one correction.
+
+    NAME THEM, like the figure retry does, and for the same reason: "một số chi tiết
+    có thể chưa chính xác" produces a hedge, which is what the notice already was.
+    Each violation carries the sentence explaining what to change, written where the
+    rule that found it lives — so the model is told which claim, and why it fails.
+    """
+    listed = chr(10).join(f"- {v['why']}" for v in violations[:5])
+    retry_messages = [
+        *messages,
+        {"role": "assistant", "content": said},
+        {
+            "role": "user",
+            "content": (
+                "Những chi tiết sau trong câu trả lời trên KHÔNG có trong dữ liệu "
+                f"bạn vừa đọc:{chr(10)}{listed}{chr(10)}"
+                "Sửa lại từng điểm: bỏ phần không có căn cứ, hoặc nói rõ là dữ liệu "
+                "không cho biết điều đó. GIỮ NGUYÊN mọi con số đã đúng và phần phân "
+                "tích còn lại, kể cả các dòng [FOLLOWUP] (đúng số dòng, vẫn bắt đầu "
+                "bằng [FOLLOWUP]). Không thêm phân tích mới, không bỏ bớt kết quả."
+            ),
+        },
+    ]
+    return await _correction(state, system, retry_messages, rt=rt, provider=provider,
+                             api_key=api_key, model=model, what="qualifier")
 
 async def _retry_language(
     node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
-    *, provider: str, api_key: str, model: str, locale: str,
+    *, provider: str, api_key: str, model: str, rt: Any = None, locale: str,
 ) -> str:
     """Ask once for the same answer in the right language.
 
@@ -733,30 +847,12 @@ async def _retry_language(
             ),
         },
     ]
-    try:
-        state.budget.spend_llm()
-    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
-        return ""
-    out = ""
-    try:
-        async for ev in _stream(
-            provider=provider, api_key=api_key, model=model,
-            system_prompt=system, messages=retry_messages, tools=[],
-        ):
-            if ev.type == "text":
-                out += ev.text
-            elif ev.type == "usage":
-                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
-                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
-    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
-        logger.warning("[flow] language restatement failed", exc_info=True)
-        return ""
-    return out.strip()
-
+    return await _correction(state, system, retry_messages, rt=rt, provider=provider,
+                             api_key=api_key, model=model, what="language")
 
 async def _retry_choice(
     node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
-    *, provider: str, api_key: str, model: str,
+    *, provider: str, api_key: str, model: str, rt: Any = None,
 ) -> str | None:
     """One more round, with the miss quoted back. Returns the value, or None.
 
@@ -764,10 +860,6 @@ async def _retry_choice(
     has no budget left for it — a classifier is a cheap step and must not be the
     reason an answer never gets written.
     """
-    try:
-        state.budget.spend_llm()
-    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
-        return None
     retry_messages = [
         *messages,
         {"role": "assistant", "content": said},
@@ -780,49 +872,11 @@ async def _retry_choice(
             ),
         },
     ]
-    got = ""
-    async for ev in _stream(
-        provider=provider, api_key=api_key, model=model,
-        system_prompt=system, messages=retry_messages, tools=[],
-    ):
-        if ev.type == "text":
-            got += ev.text
-        elif ev.type == "usage":
-            state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
-            state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
+    got = await _correction(state, system, retry_messages, rt=rt, provider=provider,
+                            api_key=api_key, model=model, what="choice")
+    if not got:
+        return None
     return _match_choice(got, node.choices)
-
-
-def _resolve_model(node: AgentNode, rctx: Any) -> tuple[str, str]:
-    """The node's provider/model, or the link's when it inherits.
-
-    Delegates rather than deciding: the preflight guard needs the same answer to
-    cost the flow, and when it had its own copy it read only the link's model — so
-    a flow pinning a reasoning model on a fast link was costed at a quarter of what
-    it takes. One rule, both readers.
-    """
-    from app.services.agent_flows.models_catalogue import effective_model
-
-    return effective_model(
-        node.provider, node.model,
-        rctx.inp.runtime.provider, rctx.inp.runtime.model,
-    )
-
-
-def _apply_scope(ctx: Any, node: AgentNode) -> None:
-    """This node's knowledge boundary, built by the SAME code the Knowledge node
-    uses.
-
-    Two copies of this existed and they disagreed: the copy here never collected
-    `term_fqns`, so a glossary term attached to an Agent step was accepted by the
-    builder, shown in the step's source list, and then dropped before retrieval —
-    the picker worked and the boundary it configured did not. One builder, one
-    set of keys, no room for the two to drift again.
-    """
-    from app.services.agent_flows.runtime.handlers.data import build_knowledge_scope
-
-    if hasattr(ctx, "knowledge_scope"):
-        ctx.knowledge_scope = build_knowledge_scope(node.knowledge)
 
 
 def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
@@ -870,84 +924,181 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
     # Only the answering node gets the full set. That is where combining is the
     # job; giving it to every node would restore the "full transcript to every
     # step" cost this function exists to avoid.
+    # THE AUTHOR SAID WHICH STEPS THIS ONE WORKS FROM. Honoured for every step,
+    # the answering one included: a writer told to combine the reader and the
+    # analyst should not be handed the classifier's one-word verdict as a finding.
+    if getattr(node, "reads_from", None):
+        declared = _declared_inputs(node, state, rctx)
+        if declared:
+            out.append({"role": "user", "content": declared})
+        return out
+
     if node.key and node.key == getattr(rctx, "answer_key", ""):
         gathered = _all_step_results(state, rctx, skip=node.key)
+        _note_handoff(state, node.key, "all_steps", getattr(state, "context_coverage", None))
         if gathered:
             out.append({"role": "user", "content": gathered})
             return out
 
+    # THE STEP BEFORE, PROJECTED — NOT HEAD-SLICED. `carried[:8000]` cut a JSON
+    # result mid-array with nothing telling the model (or the trace) that the rest
+    # existed. `_reduce` shrinks by structure and says so.
+    from app.services.agent_flows.runtime.context import _reduce
+
     carried = _previous_text(state.vars.get("previous"))
     if carried:
+        body, reduced = _reduce(carried, _HANDOFF_CHARS)
+        _note_handoff(state, node.key, "previous", {
+            "included": [] if reduced else ["previous"],
+            "reduced": ["previous"] if reduced else [], "omitted": [],
+            "budget_chars": _HANDOFF_CHARS,
+        })
         out.append({
             "role": "user",
-            "content": f"Result of the previous step:\n\n{carried[:8000]}",
+            "content": f"Result of the previous step:\n\n{body}",
         })
     return out
 
 
-#: Per-step and total ceilings for what the synthesiser is handed. Bounded because
-#: this is the one place a flow's cost grows with the number of steps: eight
-#: specialists must not become eight full transcripts.
-_MAX_STEP_CHARS = 2000
-_MAX_GATHERED_CHARS = 8000
+def _note_handoff(state: RunState, key: str, mode: str, coverage: dict | None,
+                  missing: list[dict] | None = None) -> None:
+    """What this step was handed, kept on its trace row (`capabilities.handoff`).
+
+    Without it a step that answered badly and a step that was given half its
+    input look the same in the Runs inspector."""
+    if not key:
+        return
+    entry = {"mode": mode, **(coverage or {})}
+    if missing:
+        entry["missing"] = missing
+    trace = getattr(state, "capability_trace", None)
+    if isinstance(trace, dict):
+        trace.setdefault(key, {})["handoff"] = entry
+
+
+def _declared_inputs(node: AgentNode, state: RunState, rctx: Any) -> str:
+    """The results of the steps named in `node.reads_from`, projected, with every
+    input that did not deliver SAID — failed, skipped, or never reached.
+
+    A missing input also raises `handoff_input_missing`, which downgrades the run
+    to `partial`: a step that worked from half of what it was built on did not run
+    as designed, however fluent its output.
+    """
+    from app.services.agent_flows.envelope import Notice
+    from app.services.agent_flows.runtime.context import StepView, compile_context
+
+    last: dict[str, Any] = {}
+    for step in state.trace:
+        last[step.key] = step  # the latest run of a key (a loop records many)
+    names = {s.key: (s.name or s.key) for s in state.trace}
+
+    views: list[StepView] = []
+    missing: list[dict] = []
+    for k in node.reads_from:
+        step = last.get(k)
+        if step is None:
+            missing.append({"key": k, "status": "not_run"})
+            continue
+        status = getattr(step, "status", "ok")
+        text = _previous_text(state.outputs.get(k)) or ""
+        if status in ("error", "blocked"):
+            missing.append({"key": k, "status": status,
+                            "error": str(getattr(step, "error", "") or "")[:200]})
+            continue
+        if status == "skipped" or not text:
+            missing.append({"key": k, "status": status if status == "skipped" else "empty"})
+            continue
+        views.append(StepView(key=k, name=names.get(k, k), text=text))
+
+    projection = compile_context(views, _HANDOFF_CHARS)
+    _note_handoff(state, node.key, "inputs", projection.coverage or {
+        "included": [], "reduced": [], "omitted": [], "budget_chars": _HANDOFF_CHARS,
+    }, missing)
+    if missing and not any(n.code == "handoff_input_missing" and n.node_key == node.key
+                           for n in state.notices):
+        state.notices.append(Notice(
+            code="handoff_input_missing", severity="warning", node_key=node.key,
+            text=(f"Bước “{node.name or node.key}” thiếu đầu vào từ: "
+                  + ", ".join(f"{m['key']} ({m['status']})" for m in missing)),
+        ))
+
+    parts: list[str] = []
+    if projection.text:
+        parts.append("Kết quả của các bước được chỉ định làm đầu vào cho bước này:\n\n"
+                     + projection.text)
+    if missing:
+        parts.append(
+            "ĐẦU VÀO KHÔNG CÓ (nói rõ điều này trong kết quả, không suy ra phần "
+            "thiếu):\n" + "\n".join(
+                f"- {names.get(m['key'], m['key'])}: "
+                + {"not_run": "chưa chạy (nhánh không đi qua hoặc bị bỏ qua)",
+                   "error": "bị lỗi", "blocked": "bị chặn", "skipped": "bị bỏ qua",
+                   "empty": "không trả về gì"}.get(m["status"], m["status"])
+                + (f" — {m['error']}" if m.get("error") else "")
+                for m in missing)
+        )
+    return "\n\n".join(parts)
+
 
 from app.services.agent_flows.contract import ROUTING_NODE_TYPES as _ROUTING_TYPES
 
+#: What the synthesiser is handed, in characters. Defined by the module that owns
+#: the handoff so the read node can warn against the same number this spends.
+from app.services.agent_flows.runtime.context import HANDOFF_CHARS as _HANDOFF_CHARS
+
+
+#: Step types whose output is DATA the engine fetched, not text a model wrote.
+_DETERMINISTIC_STEP_TYPES = frozenset({"report_read", "knowledge", "tool"})
+
+
+def _trusted_prior_results(state: RunState, *, skip: str = "") -> list[Any]:
+    """Evidence a qualifier may be checked against: every recorded tool result
+    (`evidence_store`, any step) and the outputs of deterministic steps. Agent,
+    Skill and Coordinator outputs are prose and are left out on purpose."""
+    out: list[Any] = []
+    for entry in (getattr(state, "evidence_store", None) or {}).values():
+        if isinstance(entry, dict) and entry.get("result") is not None:
+            out.append(entry["result"])
+    for step in getattr(state, "trace", None) or []:
+        if step.key == skip or getattr(step, "type", "") not in _DETERMINISTIC_STEP_TYPES:
+            continue
+        value = (getattr(state, "outputs", None) or {}).get(step.key)
+        if value not in (None, "", [], {}):
+            out.append(value)
+    return out
+
 
 def _all_step_results(state: RunState, rctx: Any, *, skip: str = "") -> str:
-    """Every step's result, in the order they ran, named so they can be told apart.
+    """Every step's result, projected into what this model can actually read.
 
-    Named rather than concatenated: "the previous step said 91.2%" is unusable when
-    four steps spoke, and a synthesiser that cannot attribute a figure to the step
-    that produced it cannot cite it either.
+    Projection, not truncation. The old version head-sliced each step at 2,000
+    characters and spent an 8,000-character total in run order, so a JSON result
+    could arrive cut mid-array and a third specialist could vanish because the
+    first was verbose — while the run reported three healthy steps.
 
-    Steps that produced nothing are left out. A blank line under a heading reads to
-    a model like an answer of "nothing", which is not the same as a step that was
-    skipped, and inventing that distinction here would be worse than omitting it.
+    Routing steps stay out: `{"picked": ["chuyen_gia_chi_phi"]}` is a record of
+    which way the run went, not evidence a number is right. The TRACE keeps it,
+    which is where an author looks to see why a lane ran.
     """
+    from app.services.agent_flows.runtime.context import StepView, compile_context
+
     names = {s.key: (s.name or s.key) for s in state.trace}
-    parts: list[str] = []
-    used = 0
-    for step in state.trace:
-        if step.key == skip or step.type in _ROUTING_TYPES:
-            # A routing step's "result" is a record of which way the run went —
-            # `{"picked": ["chuyen_gia_chi_phi"], "considered": [...]}`. Handing
-            # that to the model that writes the answer puts a list of internal
-            # node keys in front of it and calls it evidence. The TRACE keeps it,
-            # which is where an author looks to see why a lane did or did not run.
-            continue
-        text = _previous_text(state.outputs.get(step.key))
-        if not text:
-            continue
-        # TRUNCATION USED TO BE SILENT, which is the worst of the three options.
-        #
-        # A 6,000-character report reading arrived as 2,000 characters that simply
-        # stop — mid-array, mid-number — and a model reads that as the whole of what
-        # the step found. It answered a question about product categories from six
-        # KPI tiles and called the figure "được xác nhận là chính xác", because
-        # nothing in what it was handed suggested there was more.
-        body = text[:_MAX_STEP_CHARS]
-        if len(text) > _MAX_STEP_CHARS:
-            body += (
-                "\n… (kết quả của bước này đã bị cắt bớt để vừa ngữ cảnh — phần "
-                "thiếu KHÔNG phải là không có dữ liệu. Nếu câu hỏi cần thứ không "
-                "thấy ở đây, hãy gọi công cụ để lấy đúng thứ cần thay vì suy ra.)"
-            )
-        block = "### %s\n%s" % (names.get(step.key, step.key), body)
-        if used + len(block) > _MAX_GATHERED_CHARS:
-            parts.append(
-                "(Còn kết quả của các bước sau nữa nhưng đã vượt giới hạn ngữ "
-                "cảnh — trả lời bằng những gì đang có và nói rõ phần chưa gộp.)"
-            )
-            break
-        parts.append(block)
-        used += len(block)
-    if not parts:
+    views = [
+        StepView(key=step.key, name=names.get(step.key, step.key),
+                 text=_previous_text(state.outputs.get(step.key)) or "")
+        for step in state.trace
+        if step.key != skip and step.type not in _ROUTING_TYPES
+    ]
+    projection = compile_context(views, _HANDOFF_CHARS)
+    # WHAT THE MODEL SAW, kept where an author can find it. The Runs inspector
+    # cannot tell the truth about a handoff the runtime never recorded.
+    state.context_coverage = projection.coverage
+    if not projection.text:
         return ""
     return (
         "Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, "
         "không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì "
-        "chọn bừa một bên:\n\n" + "\n\n".join(parts)
+        "chọn bừa một bên:\n\n" + projection.text
     )
 
 
@@ -981,7 +1132,7 @@ def _knowledge_readers(node: AgentNode) -> list[str]:
     """
     from app.services.agent_flows.coverage import READERS_BY_SOURCE
 
-    granted = {str(getattr(g, "tool", "") or "") for g in (node.tools or [])}
+    granted = {str(getattr(g, "tool", "") or "") for g in _roles_mod.effective_grants_of(node)}
     needed: set[str] = set()
     for k in node.knowledge or []:
         needed |= set(READERS_BY_SOURCE.get(str(getattr(k, "source", "") or ""), ()))
@@ -1024,7 +1175,15 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
         )
     parts.append(state.resolve_text(node.prompt).strip())
 
-    notes = [f"- {g.tool}: {g.note.strip()}" for g in node.tools if g.note.strip()]
+    # THE ROLE'S CHARTER, when the step has one: what it is for and what it must
+    # not do, from `roles.py` — the same contract the tool boundary comes from.
+    from app.services.agent_flows import roles as _roles
+
+    _role = _roles.get(node.role)
+    if _role is not None and node.output_format != "choice":
+        parts.append(_role.charter)
+
+    notes = [f"- {g.tool}: {g.note.strip()}" for g in _roles_mod.effective_grants_of(node) if g.note.strip()]
     if notes:
         parts.append("KHI NÀO DÙNG CÔNG CỤ NÀO\n" + "\n".join(notes))
 
@@ -1076,16 +1235,21 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
         # terse answer style and a working suggestion strip can coexist. Kept to
         # two lines because a long reminder here would itself start competing with
         # the author's prompt for the model's attention.
-        parts.append(
-            "Dù hướng dẫn ở trên yêu cầu ngắn gọn thế nào, LUÔN kết thúc câu trả "
-            "lời bằng 2-3 dòng gợi ý, mỗi dòng bắt đầu bằng [FOLLOWUP] và kết "
-            "thúc bằng dấu ?. Chúng không tính vào độ dài câu trả lời. "
-            # The chips are the one part of the reply the reader is invited to
-            # CLICK, and they were coming back in English under a Vietnamese
-            # answer — the language rule was read as being about the prose. Said
-            # here because this is the sentence that asks for them.
-            "Các dòng gợi ý phải CÙNG ngôn ngữ với câu trả lời."
-        )
+        if getattr(node, "followups", True) is False:
+            # THE AUTHOR TURNED THEM OFF. Said last, like the rule it replaces,
+            # because the base prompt above still asks for them.
+            parts.append("KHÔNG thêm dòng gợi ý [FOLLOWUP] nào vào câu trả lời.")
+        else:
+            parts.append(
+                "Dù hướng dẫn ở trên yêu cầu ngắn gọn thế nào, LUÔN kết thúc câu trả "
+                "lời bằng 2-3 dòng gợi ý, mỗi dòng bắt đầu bằng [FOLLOWUP] và kết "
+                "thúc bằng dấu ?. Chúng không tính vào độ dài câu trả lời. "
+                # The chips are the one part of the reply the reader is invited to
+                # CLICK, and they were coming back in English under a Vietnamese
+                # answer — the language rule was read as being about the prose. Said
+                # here because this is the sentence that asks for them.
+                "Các dòng gợi ý phải CÙNG ngôn ngữ với câu trả lời."
+            )
         # WHICH LANGUAGE TO ANSWER IN, SAID RATHER THAN INFERRED.
         #
         # The base prompt already asks for "the language of the question", and the
@@ -1111,6 +1275,14 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
             f"trả lời bằng {lang}. Giá trị dữ liệu (tên danh mục, tên bang…) giữ "
             "nguyên như trong báo cáo, không dịch."
         )
+    # WHAT THE QUESTION ASKS FOR, as the runtime resolved it (the intent contract)
+    # — told to every step that works on the reader's question, so a follow-up's
+    # "tháng trước" is the resolved month and an absent quantity is said to be
+    # absent instead of substituted.
+    if not getattr(rctx, "skill_stack", ()):
+        from app.services.agent_flows.runtime import intent as intent_mod
+
+        parts.append(intent_mod.describe_for_prompt(getattr(state, "intent", None) or {}, _locale_of(rctx)))
     return "\n\n".join(p for p in parts if p)
 
 
@@ -1121,6 +1293,12 @@ def _language_reminder(rctx: Any) -> str:
     a paragraph here would push the payload further from the model's focus while
     saying nothing the system prompt has not already said.
     """
+    target = _answer_language(rctx)
+    if target == "en":
+        # Said in the language it asks for: a Vietnamese sentence asking for English
+        # is the instruction a Vietnamese system prompt out-voted.
+        return ("(Reminder: the reader asked in English. Write the whole answer, "
+                "including every [FOLLOWUP] line, in English.)")
     _req = getattr(getattr(rctx, "inp", None), "request", None)
     locale = (getattr(_req, "locale", "") or "vi").lower()
     lang = _LANGUAGE_NAMES.get(locale.split("-")[0], locale)
@@ -1279,98 +1457,26 @@ def _parse_blocks(text: str, state: RunState, node: AgentNode) -> dict:
     }
 
 
-def _collect_citation(state: RunState, tool: str, args: dict, result: Any) -> None:
-    """Record what the answer was actually built from.
-
-    Derived from the TOOL CALLS, not from what the model says it used: a citation
-    the model wrote is a claim, a citation from the tool log is evidence.
-    """
-    from app.services.agent_flows.envelope import Citation
-
-    if not isinstance(result, dict) or result.get("ok") is False:
-        return
-
-    # THE PAYLOAD IS UNDER `data`.
-    #
-    # `tools.result.normalise` wraps every tool body as `{ok, kind, data}`, so
-    # `result.get("citations")` is None and `result.get("name")` is None — this
-    # read the ENVELOPE and the facts live one level down. Every knowledge search
-    # therefore contributed nothing to the answer's citation list, and every chart
-    # citation was labelled with an empty string, in production, while a unit test
-    # passed because it handed this function the inner payload directly.
-    #
-    # Found by driving the Test panel in a browser and seeing no source cards under
-    # an answer whose trace showed three `search_knowledge` calls.
-    payload = result.get("data") if isinstance(result.get("data"), dict) else result
-
-    chart_id = args.get("chart_id") if isinstance(args, dict) else None
-    if chart_id and not any(c.ref == str(chart_id) for c in state.citations):
-        state.citations.append(
-            Citation(kind="chart", ref=str(chart_id), label=str(payload.get("name") or ""))
-        )
-    doc_id = args.get("document_id") if isinstance(args, dict) else None
-    if doc_id and not any(c.ref == str(doc_id) for c in state.citations):
-        state.citations.append(Citation(kind="document", ref=str(doc_id)))
-
-    # THE PASSAGES A KNOWLEDGE SEARCH ACTUALLY RETURNED.
-    #
-    # Only `chart_id` and `document_id` were read above, both from the tool's
-    # ARGUMENTS — so a `search_knowledge` call, which names no document in its
-    # arguments and returns eight numbered sources in its result, contributed
-    # nothing. An agent could search the knowledge base, quote a policy, and hand
-    # the viewer an answer whose citation list was empty.
-    #
-    # `ref` is "doc:block" rather than the document id alone: two passages from
-    # different sections of the same document are two different citations, and
-    # collapsing them loses the only part a reader needs — which part.
-    for source in (payload.get("citations") or [])[:12]:
-        if not isinstance(source, dict):
-            continue
-        ref = "%s:%s" % (source.get("doc_id"), source.get("block"))
-        if any(c.ref == ref for c in state.citations):
-            continue
-        state.citations.append(Citation(
-            kind="document",
-            ref=ref,
-            label=_source_label(source),
-            # The number the model was told to cite. Without it a `[3]` in the
-            # answer cannot be resolved back to the passage it names.
-            used=[str(source.get("n"))] if source.get("n") else [],
-            # What makes the citation re-openable at the version it was made
-            # against, months later, with a check that the text is still the same.
-            version=source.get("source_version"),
-            block_to=source.get("block_to"),
-            fingerprint=str(source.get("content_fingerprint") or ""),
-        ))
-
-
-def _source_label(source: dict) -> str:
-    """A passage named the way a person would name it: document, section, page."""
-    title = str(source.get("title") or "").strip()
-    path = [p.strip() for p in str(source.get("heading_path") or "").split(">") if p.strip()]
-    if path and title and path[0].lower() == title.lower():
-        path = path[1:]
-    parts = [title, " > ".join(path)]
-    if source.get("page"):
-        parts.append("trang %s" % source["page"])
-    return " › ".join(p for p in parts if p)
-
-
 async def _stream(
     *, provider: str, api_key: str, model: str,
     system_prompt: str, messages: list[dict], tools: list[dict],
 ) -> AsyncGenerator[AgentEvent, None]:
     """Dispatch to the vendor adapter. The one place a provider name is interpreted."""
+    from app.services.agent_flows.models_catalogue import spec as model_spec
     from app.services.dashboard_ai_bot.providers import (
         stream_anthropic,
-        stream_gemini_singleshot,
+        stream_gemini,
         stream_openai,
     )
+    from app.services.dashboard_ai_bot.providers.openai_responses import stream_openai_responses
 
+    # Gemini runs through its OpenAI-compatible endpoint (`stream_gemini`), which
+    # keeps tool calling. The native single-shot adapter ignores `tools`, so an
+    # Agent step on it silently lost every capability it was granted.
     fn = {
         "openai": stream_openai,
         "anthropic": stream_anthropic,
-        "gemini": stream_gemini_singleshot,
+        "gemini": stream_gemini,
     }.get((provider or "").strip().lower())
     if fn is None:
         raise RuntimeError(f"nhà cung cấp không hỗ trợ: {provider or '(chưa đặt)'}")
@@ -1383,6 +1489,20 @@ async def _stream(
     }
     if model:
         kwargs["model"] = model
+    # THE MODEL'S OWN PROTOCOL AND BUDGET, from the catalogue. A step runs the
+    # model it names through the endpoint that model needs (GPT-6: Responses),
+    # with an output budget its reasoning fits in — the adapters' 2048 default was
+    # spent on thinking before a word of the answer. Strict mode everywhere: no
+    # silent model switch, truncation is an error, provider state is replayed.
+    s = model_spec(prov := (provider or "").strip().lower(), model) or {}
+    if s.get("max_output_tokens"):
+        kwargs["max_tokens"] = int(s["max_output_tokens"])
+    if prov == "openai" and s.get("endpoint") == "responses":
+        fn = stream_openai_responses
+        if s.get("reasoning_effort"):
+            kwargs["reasoning_effort"] = s["reasoning_effort"]
+    else:
+        kwargs["strict"] = True
     async for ev in fn(**kwargs):
         yield ev
 

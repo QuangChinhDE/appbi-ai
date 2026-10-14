@@ -8,7 +8,7 @@ import { toast } from '@/lib/toast';
 import { useDashboards, useCreateDashboard, useDeleteDashboard, useDuplicateDashboard } from '@/hooks/use-dashboards';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
-import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { getResourcePermissions, accessTier } from '@/hooks/use-resource-permission';
 import { DashboardList } from '@/components/dashboards/DashboardList';
 import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
@@ -22,6 +22,7 @@ import { BulkActionBar } from '@/components/common/BulkActionBar';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { Modal } from '@/components/common/Modal';
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
+import { ReportStarterModal } from '@/components/dashboards/ReportStarterModal';
 import { Button, IconButton } from '@/components/ui/Button';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { Input, Textarea, FieldGroup } from '@/components/ui/Input';
@@ -58,6 +59,7 @@ export default function DashboardsPage() {
   const [publicShareDash, setPublicShareDash] = useState<Dashboard | null>(null);
   const [shareDash, setShareDash] = useState<Dashboard | null>(null);
   const [isHtmlImportOpen, setIsHtmlImportOpen] = useState(false);
+  const [isStarterOpen, setIsStarterOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [showBulkConfirm, setShowBulkConfirm] = useState(false);
@@ -112,13 +114,15 @@ export default function DashboardsPage() {
   const handleCreate = async (event: React.FormEvent) => {
     event.preventDefault();
     try {
-      await createMutation.mutateAsync({
+      const created = await createMutation.mutateAsync({
         name: newDashboardName,
         description: newDashboardDescription || undefined,
       });
       setNewDashboardName('');
       setNewDashboardDescription('');
       setIsCreating(false);
+      // A new report opens in the builder, on its guided start.
+      if ((created as { id?: number } | undefined)?.id) router.push(`/dashboards/${(created as { id: number }).id}`);
     } catch (error: any) {
       toast.error(`Could not create dashboard: ${error.message}`);
     }
@@ -249,6 +253,15 @@ export default function DashboardsPage() {
               Import HTML
             </Button>
             <Button
+              variant="secondary"
+              size="sm"
+              data-testid="report-starter-open"
+              leadingIcon={<Plus className="h-3.5 w-3.5" />}
+              onClick={() => setIsStarterOpen(true)}
+            >
+              {t('report.starter.open')}
+            </Button>
+            <Button
               variant="primary"
               size="sm"
               leadingIcon={<Plus className="h-3.5 w-3.5" />}
@@ -291,7 +304,7 @@ export default function DashboardsPage() {
             )}
             {listFilters.access && (
               <FilterTag tone="info" active onClick={() => toggleListFilter('access', listFilters.access!)}>
-                {listFilters.access === 'full'
+                {listFilters.access === 'manage'
                   ? 'Full access'
                   : listFilters.access === 'edit'
                     ? 'Editable'
@@ -330,7 +343,7 @@ export default function DashboardsPage() {
           const needle = filterText.trim().toLowerCase();
           const filtered = (dashboards ?? []).filter((dashboard) => {
             const chartState = (dashboard.dashboard_charts?.length || 0) > 0 ? 'linked' : 'empty';
-            const accessState = dashboard.user_permission ?? 'none';
+            const accessState = accessTier(dashboard.user_permission, dashboard.capabilities);
             const relations = relationIndex.dashboardRelationsById.get(dashboard.id);
             const matchesSearch =
               needle.length === 0 ||
@@ -399,7 +412,7 @@ export default function DashboardsPage() {
                                 <LayoutDashboard className="h-4 w-4" />
                               </div>
                             </div>
-                            {getResourcePermissions(dashboard.user_permission).canDelete && (
+                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canDelete && (
                               <IconButton
                                 aria-label="Delete"
                                 variant="ghost"
@@ -426,7 +439,7 @@ export default function DashboardsPage() {
                         </div>
                         <div className="flex items-center justify-between border-t border-[rgb(var(--border-line))] bg-surface-2 px-4 py-2.5 rounded-b-xl">
                           <div className="flex items-center gap-3">
-                            {getResourcePermissions(dashboard.user_permission).canShare && (
+                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canShare && (
                               <button
                                 onClick={() => setShareDash(dashboard)}
                                 className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"
@@ -436,7 +449,7 @@ export default function DashboardsPage() {
                                 Share
                               </button>
                             )}
-                            {getResourcePermissions(dashboard.user_permission).canEdit && (
+                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canEdit && (
                               <button
                                 onClick={() => setPublicShareDash(dashboard)}
                                 className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"
@@ -464,6 +477,7 @@ export default function DashboardsPage() {
                       dashboards={pageItems}
                       onDelete={canEdit ? handleDelete : undefined}
                       onShare={(dashboard) => setShareDash(dashboard)}
+                      onPublicLinks={canEdit ? (dashboard) => setPublicShareDash(dashboard) : undefined}
                       onDuplicate={canEdit ? handleDuplicate : undefined}
                       onExport={handleExport}
                       deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
@@ -512,7 +526,7 @@ export default function DashboardsPage() {
           setNewDashboardName('');
           setNewDashboardDescription('');
         }}
-        title="Create New Dashboard"
+        title={t('dashboards.create.title')}
         size="md"
         footer={
           <>
@@ -526,7 +540,7 @@ export default function DashboardsPage() {
               }}
               disabled={createMutation.isPending}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               variant="primary"
@@ -534,23 +548,26 @@ export default function DashboardsPage() {
               onClick={handleCreate}
               disabled={createMutation.isPending || !newDashboardName}
               loading={createMutation.isPending}
+              data-testid="dashboard-create-submit"
             >
-              Create
+              {t('dashboards.create.submit')}
             </Button>
           </>
         }
       >
         <form onSubmit={handleCreate} className="space-y-3">
-          <FieldGroup label="Dashboard Name" required>
+          <FieldGroup label={t('dashboards.create.name')} required>
             <Input
+              data-testid="dashboard-create-name"
               value={newDashboardName}
               onChange={(event) => setNewDashboardName(event.target.value)}
               required
               autoFocus
             />
           </FieldGroup>
-          <FieldGroup label="Description">
+          <FieldGroup label={t('dashboards.create.description')} description={t('dashboards.create.descriptionHint')}>
             <Textarea
+              data-testid="dashboard-create-description"
               value={newDashboardDescription}
               onChange={(event) => setNewDashboardDescription(event.target.value)}
               rows={3}
@@ -587,6 +604,14 @@ export default function DashboardsPage() {
           resourceId={shareDash.id}
           resourceName={shareDash.name}
           onClose={() => setShareDash(null)}
+        />
+      )}
+
+      {isStarterOpen && (
+        <ReportStarterModal
+          datasets={datasets.map((d: any) => ({ id: d.id, name: d.name }))}
+          onClose={() => setIsStarterOpen(false)}
+          onCreated={(id) => router.push(`/dashboards/${id}`)}
         />
       )}
 

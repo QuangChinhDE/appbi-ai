@@ -17,9 +17,10 @@
  */
 import {
   AlertTriangle, ArrowLeft, Check, LayoutDashboard, Loader2, Maximize2,
-  MessagesSquare, Minus, Play, Plus, Redo2, Save, Send, Undo2, X,
+  KeyRound, MessagesSquare, Minus, Play, Plus, Puzzle, Redo2, Save, Send, Trash2, Undo2, X,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { FlowActivation } from './FlowActivation';
 import React from 'react';
 
 import { AppModalShell } from '@/components/common/AppModalShell';
@@ -31,18 +32,25 @@ import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
-  blankNode, branchCoverage, brainImpact, canDropInto, findNode, getBrain, insertNode,
-  listAttachable, listNodeSpecs, listProviders, listToolPacks, moveNode,
+  blankNode, branchCoverage, brainImpact, canDropInto, defaultCredentialFor, findNode, getBrain, insertNode,
+  isModelStep,
+  isBranching, isContainer,
+  listToolCatalogue, applyRole, roleText,
+  type AgentNode, type AgentRole,
+  listAttachable, listNodeSpecs, listProviders, listSkills, moveNode,
   publishBrain, removeNode,
   replaceNode, saveBrain, setFlowType, validateFlow, walkNodes,
   type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type FlowType,
   type InsertTarget,
   type Attachable, type NodeSpec, type NodeType, type ProviderGroup,
-  type Specialist, type SwitchCase, type ToolPack,
+  type SkillContract, type SkillInput, type SkillSummary,
+  type Specialist, type SwitchCase, type ToolPack, type ToolSpec,
   type ValidateResult,
 } from '@/lib/agentFlows';
 
 import { ActivityTab } from './ActivityTab';
+import { useAiKeys } from './aiKeys/AiKeysContext';
+import { stepHasUsableKey } from './inspector/ModelPicker';
 import { FlowCanvas } from './FlowCanvas';
 import { NodeInspector } from './NodeInspector';
 import { NodeLibrary } from './NodeLibrary';
@@ -52,77 +60,11 @@ import { RunsTab } from './RunsTab';
 import { TestChat } from './TestChat';
 import { StatusBadge } from './shared';
 
-/** The inspector's width, dragged by the author and remembered per browser.
- *
- *  WHY IT IS NOT JUST A CONSTANT ANY MORE.
- *
- *  400px is right for naming a step and wrong for the two jobs that need room:
- *  reading a prompt of several paragraphs, and choosing among 36 tools whose
- *  descriptions are prose. It was the fixed width that pushed the tool picker's
- *  type down to 10px in the first place — everything had to fit, so everything
- *  got smaller. Letting the panel grow is the other half of making it readable.
- *
- *  Bounded on both sides: below ~320px the two-column rows inside collapse into
- *  unreadable slivers, and past ~820px the canvas stops being a canvas. Stored in
- *  `localStorage` because it is a per-person working preference, not a property of
- *  the flow — two people editing the same flow want different widths, and neither
- *  wants to set it again tomorrow.
- */
-const INSPECTOR_MIN = 320;
-const INSPECTOR_MAX = 820;
-const INSPECTOR_KEY = 'appbi.agentFlows.inspectorWidth';
-
-function useInspectorWidth() {
-  const [width, setWidth] = React.useState(400);
-
-  React.useEffect(() => {
-    try {
-      const raw = Number(window.localStorage.getItem(INSPECTOR_KEY));
-      if (Number.isFinite(raw) && raw >= INSPECTOR_MIN && raw <= INSPECTOR_MAX) {
-        setWidth(raw);
-      }
-    } catch { /* private mode: the default is a fine answer */ }
-  }, []);
-
-  const commit = React.useCallback((next: number) => {
-    const clamped = Math.min(INSPECTOR_MAX, Math.max(INSPECTOR_MIN, Math.round(next)));
-    setWidth(clamped);
-    try { window.localStorage.setItem(INSPECTOR_KEY, String(clamped)); } catch { /* ignore */ }
-  }, []);
-
-  /** Drag from the panel's left edge. Pointer events rather than mouse, so a pen
-   *  or a touch screen works, and capture so the drag survives the pointer leaving
-   *  the 6px handle — which it does immediately, every time. */
-  const onPointerDown = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const handle = e.currentTarget;
-    handle.setPointerCapture(e.pointerId);
-    const startX = e.clientX;
-    const startWidth = width;
-    const move = (ev: PointerEvent) => commit(startWidth + (startX - ev.clientX));
-    const up = () => {
-      handle.releasePointerCapture(e.pointerId);
-      handle.removeEventListener('pointermove', move);
-      handle.removeEventListener('pointerup', up);
-    };
-    handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', up);
-  }, [width, commit]);
-
-  /** A drag handle nobody can reach with a keyboard is a control half the people
-   *  who need a wider panel cannot use. Arrows nudge, Home/End go to the bounds. */
-  const onKeyDown = React.useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = e.shiftKey ? 80 : 20;
-    if (e.key === 'ArrowLeft') { e.preventDefault(); commit(width + step); }
-    if (e.key === 'ArrowRight') { e.preventDefault(); commit(width - step); }
-    if (e.key === 'Home') { e.preventDefault(); commit(INSPECTOR_MAX); }
-    if (e.key === 'End') { e.preventDefault(); commit(INSPECTOR_MIN); }
-  }, [width, commit]);
-
-  return { width, onPointerDown, onKeyDown, reset: () => commit(400) };
-}
 
 type Mode = 'design' | 'runs' | 'feedback' | 'activity';
+
+import { useFlowHistory } from './builder/useFlowHistory';
+import { useInspectorWidth, INSPECTOR_MIN, INSPECTOR_MAX } from './builder/useInspectorWidth';
 
 export function BrainBuilder({
   brainKey, onBack, canEdit, canPublish,
@@ -160,9 +102,49 @@ export function BrainBuilder({
   const openRun = React.useCallback(
     (runId: number) => goTab('runs', { run: String(runId) }), [goTab],
   );
+  /** Runs -> the node that produced a trace step, open in the Builder.
+   *
+   *  Closes the debugging loop: an author reading "which step went wrong" had to
+   *  find that node again by eye. Built on `goTab` and the existing `selected`
+   *  state rather than a second navigation model — the only new thing is one URL
+   *  parameter. */
+  const openNodeInBuilder = React.useCallback(
+    (nodeKey: string) => goTab('design', { node: nodeKey }), [goTab],
+  );
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [dirty, setDirty] = React.useState(false);
+
+  // UNSAVED WORK IS NEVER DROPPED SILENTLY. Every way out of the builder asks
+  // first while there are edits: the back arrow, a reload or tab close
+  // (`beforeunload`, the pattern workboard settings use), and any in-app link —
+  // the sidebar is a client-side navigation `beforeunload` never sees, so a
+  // capture-phase click guard asks before the router moves.
+  const dirtyRef = React.useRef(false);
+  dirtyRef.current = dirty;
+  const confirmLeave = React.useCallback(
+    () => !dirtyRef.current || window.confirm(t('agentFlows.builder.leaveUnsaved')), [t],
+  );
+  React.useEffect(() => {
+    if (!dirty) return;
+    const onUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+      if (!a || a.target === '_blank' || a.hasAttribute('download')) return;
+      const url = new URL(a.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      if (url.pathname === window.location.pathname && url.search === window.location.search) return;
+      if (!window.confirm(t('agentFlows.builder.leaveUnsaved'))) { e.preventDefault(); e.stopPropagation(); }
+    };
+    window.addEventListener('beforeunload', onUnload);
+    document.addEventListener('click', onClick, true);
+    return () => {
+      window.removeEventListener('beforeunload', onUnload);
+      document.removeEventListener('click', onClick, true);
+    };
+  }, [dirty, t]);
+  const leave = React.useCallback(() => { if (confirmLeave()) onBack(); }, [confirmLeave, onBack]);
 
   const [name, setName] = React.useState('');
   const [description, setDescription] = React.useState('');
@@ -174,14 +156,42 @@ export function BrainBuilder({
   const [specs, setSpecs] = React.useState<Record<string, NodeSpec>>({});
   const [specList, setSpecList] = React.useState<NodeSpec[]>([]);
   const [toolPacks, setToolPacks] = React.useState<ToolPack[]>([]);
+  /** Flattened tool catalogue, so the canvas can name a Tool step.
+   *
+   *  Derived from the packs already loaded for the inspector rather than fetched
+   *  again — one request, one source, and no window in which the card and the
+   *  panel beside it disagree about what a tool is called. */
+  const toolSpecsByName = React.useMemo(() => {
+    const out: Record<string, ToolSpec> = {};
+    for (const pack of toolPacks) for (const tool of pack.tools) out[tool.name] = tool;
+    return out;
+  }, [toolPacks]);
   const [providers, setProviders] = React.useState<ProviderGroup[]>([]);
   // What this author may point a step at. Null until it arrives, so the picker
   // can say "loading" rather than "nothing to attach" — the two look identical
   // in an empty dropdown and mean opposite things.
   const [attachable, setAttachable] = React.useState<Attachable | null>(null);
-  const [coverage, setCoverage] = React.useState<Record<string, number>>({});
+  /** Published Skills this author may attach — server-side, like `attachable`. */
+  const [skills, setSkills] = React.useState<SkillSummary[]>([]);
+  const [roles, setRoles] = React.useState<AgentRole[]>([]);
+  // RUN COUNTS per node, not question coverage. Two different product
+  // concepts were both called `coverage`: this one counts how often a branch
+  // ran, and the one on the Test tab is which question CLASSES the flow can
+  // answer. A reader of either screen had to know which was meant.
+  const [runCounts, setRunCounts] = React.useState<Record<string, number>>({});
 
   const [selected, setSelected] = React.useState<string | null>(null);
+  // ?node=<key> selects it, once. Consumed rather than kept: leaving it in the URL
+  // would fight every later click, and a stale parameter re-selecting a node on
+  // refresh is the kind of ghost that gets blamed on the canvas.
+  const nodeParam = searchParams?.get('node') || '';
+  React.useEffect(() => {
+    if (!nodeParam) return;
+    setSelected(nodeParam);
+    const q = new URLSearchParams(searchParams?.toString() || '');
+    q.delete('node');
+    router.replace(q.toString() ? `${pathname}?${q.toString()}` : pathname);
+  }, [nodeParam, router, pathname, searchParams]);
   const [insertAt, setInsertAt] = React.useState<InsertTarget | null>(null);
   const [validation, setValidation] = React.useState<ValidateResult | null>(null);
   // Which surface this flow was built for. Held here rather than read off `detail`
@@ -191,15 +201,10 @@ export function BrainBuilder({
   const [typeOpen, setTypeOpen] = React.useState(false);
   const [typeBusy, setTypeBusy] = React.useState(false);
 
-  // UNDO IS A STACK OF WHOLE BODIES, not a log of operations.
-  //
-  // A tree edit can touch several places at once — dragging a branch moves a whole
-  // subtree, deleting an IF takes its lanes with it — and an inverse-operation log
-  // has to be right about every one of those. Snapshots are bigger and always
-  // correct, and a flow is a few kilobytes.
-  const past = React.useRef<FlowBody[]>([]);
-  const future = React.useRef<FlowBody[]>([]);
-  const [, setHistoryTick] = React.useState(0);
+  // Undo/redo lives in `useFlowHistory`, with the snapshot-not-oplog reasoning
+  // that goes with it. `mutate` is still the only way a tree edit reaches the
+  // body, which is what makes every tree edit undoable.
+  const { mutate, undo, redo, canUndo, canRedo } = useFlowHistory(setBody, setDirty);
 
   const [zoom, setZoom] = React.useState(1);
   const [miniRects, setMiniRects] = React.useState<MiniRect[]>([]);
@@ -216,11 +221,12 @@ export function BrainBuilder({
     setLoading(true);
     try {
       const [detail, nodeSpecs, packs, provs] = await Promise.all([
-        getBrain(brainKey), listNodeSpecs(), listToolPacks(true), listProviders(),
+        getBrain(brainKey), listNodeSpecs(), listToolCatalogue(true), listProviders(),
       ]);
       // Fetched separately and non-blocking: a slow governance query must not
       // hold up opening the flow, and a step with nothing attached still works.
       listAttachable().then(setAttachable).catch(() => setAttachable(null));
+      listSkills().then(setSkills).catch(() => setSkills([]));
       setName(detail.name);
       setDescription(detail.description || '');
       setVersion(detail.version);
@@ -230,11 +236,12 @@ export function BrainBuilder({
       setBody(detail.body || { nodes: [] });
       setSpecList(nodeSpecs);
       setSpecs(Object.fromEntries(nodeSpecs.map((s) => [s.type, s])));
-      setToolPacks(packs);
+      setToolPacks(packs.packs);
+      setRoles(packs.roles);
       setProviders(provs);
       setDirty(false);
       brainImpact(brainKey).then((i) => setLinks(i.links)).catch(() => undefined);
-      branchCoverage(brainKey).then(setCoverage).catch(() => undefined);
+      branchCoverage(brainKey).then(setRunCounts).catch(() => undefined);
     } catch {
       toast.error(t('agentFlows.builder.loadFailed'));
     } finally {
@@ -268,10 +275,18 @@ export function BrainBuilder({
    *  sentence names the links or the steps, and a generic "không đổi được" would
    *  throw that away.
    */
-  const applyType = React.useCallback(async (next: FlowType) => {
+  const applyType = React.useCallback(async (next: FlowType, contract?: SkillContract) => {
     setTypeBusy(true);
     try {
-      await setFlowType(brainKey, next);
+      if (next === 'skill' && contract) {
+        const nextBody = { ...body, skill: contract };
+        const detail = await saveBrain({ brain_key: brainKey, name, description, body: nextBody });
+        setVersion(detail.version);
+        setStatus(detail.status);
+        setBody(detail.body);
+        setDirty(false);
+      }
+      if (next !== flowType) await setFlowType(brainKey, next);
       setType(next);
       setTypeOpen(false);
       toast.success(t('agentFlows.builder.type.changed'));
@@ -282,41 +297,16 @@ export function BrainBuilder({
     } finally {
       setTypeBusy(false);
     }
-  }, [brainKey, t]);
+  }, [body, brainKey, description, flowType, name, t]);
 
   // ── tree edits ────────────────────────────────────────────────────────────
-  /** Every tree edit goes through here, so every tree edit is undoable. */
-  const mutate = (nodes: FlowNode[]) => {
-    setBody((b) => {
-      past.current = [...past.current.slice(-49), b];
-      future.current = [];
-      return { ...b, nodes };
-    });
-    setDirty(true);
-    setHistoryTick((n) => n + 1);
-  };
 
-  const undo = React.useCallback(() => {
-    setBody((b) => {
-      const prev = past.current.pop();
-      if (!prev) return b;
-      future.current = [...future.current, b];
-      return prev;
-    });
-    setDirty(true);
-    setHistoryTick((n) => n + 1);
-  }, []);
-
-  const redo = React.useCallback(() => {
-    setBody((b) => {
-      const next = future.current.pop();
-      if (!next) return b;
-      past.current = [...past.current, b];
-      return next;
-    });
-    setDirty(true);
-    setHistoryTick((n) => n + 1);
-  }, []);
+  // Declared before the keyboard effect that uses it: Alt+Arrow reorders through
+  // exactly this function, so the drop path and the keyboard path cannot drift.
+  const onMoveNode = React.useCallback((key: string, target: InsertTarget) => {
+    const next = moveNode(body.nodes, key, target);
+    if (next !== body.nodes) mutate(next);
+  }, [body.nodes, mutate]);
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -324,6 +314,68 @@ export function BrainBuilder({
       // Never steal Ctrl+Z from a field the author is typing in — the text field's
       // own undo is the one they mean there.
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+
+      // ROVING FOCUS ON THE CANVAS.
+      //
+      // Every node card used to be a tab stop, so reaching step 40 of a long flow
+      // meant tabbing past thirty-nine of them. Only the SELECTED card is a tab
+      // stop now, and the arrows move between cards from there — the pattern a
+      // toolbar or a tree view uses, and the reason the minimap can stay a
+      // pointer convenience rather than pretending to be keyboard-operable.
+      //
+      // Scoped to a focused node card: plain arrows anywhere else are scrolling,
+      // and stealing them would be worse than the problem.
+      const onCard = target?.closest?.('[data-node-button]') as HTMLElement | null;
+      if (onCard && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        const order = walkNodes(body.nodes).map((n) => n.key);
+        const here = order.indexOf(onCard.getAttribute('data-node-button') || '');
+        if (here < 0) return;
+
+        // ALT MOVES THE STEP; the bare arrow moves the selection. Drag has no
+        // keyboard equivalent otherwise, and claiming the canvas is operable
+        // without one would be claiming support that does not exist.
+        const key = onCard.getAttribute('data-node-button') || '';
+
+        // ALT MOVES THE STEP; the bare arrow moves the selection. Drag has no
+        // keyboard equivalent otherwise, and a canvas whose only way to reorder
+        // is a pointer is not operable — saying it is would be worse than the
+        // gap.
+        //
+        // BOUNDED TO REORDERING AMONG TOP-LEVEL SIBLINGS, deliberately. Moving a
+        // step INTO or OUT OF a branch is a different decision — which lane, at
+        // what depth — and guessing it from an arrow key would move steps
+        // somewhere the author did not ask for. It goes through the same
+        // `moveNode` a drop uses; there is no second mutation path.
+        if (e.altKey) {
+          e.preventDefault();
+          const top = body.nodes.findIndex((n) => n.key === key);
+          if (top < 0) return;                     // nested: drag it, for now
+          const to = top + (e.key === 'ArrowDown' ? 1 : -1);
+          if (to < 0 || to >= body.nodes.length) return;
+          onMoveNode(key, { containerPath: '', index: e.key === 'ArrowDown' ? to + 1 : to });
+          // Same reason: focus follows the step that moved, immediately, so a
+          // second Alt+Arrow keeps moving the same step.
+          window.requestAnimationFrame(() => {
+            document.querySelector<HTMLElement>(`[data-node-button="${key}"]`)?.focus();
+          });
+          return;
+        }
+
+        e.preventDefault();
+        const next = order[here + (e.key === 'ArrowDown' ? 1 : -1)];
+        if (!next) return;
+        setSelected(next);
+        // FOCUS MOVES NOW, not on the next frame. Deferring it dropped keys held
+        // down: the press after this one landed on a card that had just stopped
+        // being the tab stop, so focus fell to the body and the rest of the run
+        // went nowhere. Every card is rendered, so the element already exists;
+        // only the scroll needs to wait for layout.
+        const el = document.querySelector<HTMLElement>(`[data-node-button="${next}"]`);
+        el?.focus();
+        window.requestAnimationFrame(() => el?.scrollIntoView({ block: 'nearest' }));
+        return;
+      }
+
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
       if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
@@ -331,9 +383,46 @@ export function BrainBuilder({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo]);
+  }, [undo, redo, body.nodes, onMoveNode]);
 
   const onInsert = (target: InsertTarget) => setInsertAt(target);
+
+  // MODEL STEPS WITHOUT A KEY THIS AUTHOR CAN SEE AS USABLE. There is nothing for
+  // such a step to fall back to, so the header says how many and a click goes
+  // straight to the first one. The server is still the judge (a key shared to
+  // the flow's author but not to me shows here too, and runs fine).
+  const aiKeys = useAiKeys();
+  const keyless = React.useMemo(
+    () => (aiKeys.loaded
+      ? walkNodes(body.nodes).filter(isModelStep)
+        .filter((n) => !stepHasUsableKey(n.credential_id, n.provider, aiKeys.credentials))
+      : []),
+    [aiKeys.loaded, aiKeys.credentials, body.nodes],
+  );
+  // Keyless steps that would take the author's default for their provider. One
+  // click assigns them all — what every flow written before AI Keys needs once.
+  // An explicit edit the author then saves, never a run-time fallback.
+  const assignable = React.useMemo(
+    () => keyless.filter((n) => defaultCredentialFor(n.provider || 'openai', aiKeys.credentials) != null),
+    [keyless, aiKeys.credentials],
+  );
+  const assignDefaults = () => {
+    let next = body.nodes;
+    for (const n of assignable) {
+      const id = defaultCredentialFor(n.provider || 'openai', aiKeys.credentials);
+      if (id != null) next = replaceNode(next, n.key, { ...n, credential_id: id } as FlowNode);
+    }
+    mutate(next);
+  };
+  const goToKeyless = () => {
+    setSelected(keyless[0].key);
+    // The key line sits below the prompt and tools; selecting the step alone left
+    // it far below the fold, so bring it into view once the inspector renders.
+    window.setTimeout(() => {
+      document.querySelector('[data-testid="agent-model-picker"], [data-testid="coordinate-model-picker"]')
+        ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 80);
+  };
 
   const addNode = (type: NodeType) => {
     if (!insertAt) return;
@@ -341,7 +430,25 @@ export function BrainBuilder({
       agentPrompt: t('agentFlows.defaults.agentPrompt'),
       pathA: t('agentFlows.defaults.pathA'),
       pathB: t('agentFlows.defaults.pathB'),
+      // A new model step starts on the author's default OpenAI key, so adding a
+      // step never means re-entering one.
+      credentialId: defaultCredentialFor('openai', aiKeys.credentials),
     });
+    mutate(insertNode(body.nodes, insertAt, node));
+    setInsertAt(null);
+    setSelected(node.key);
+  };
+
+  /** A Specialized Agent: an ordinary Agent step, started on the role's tools,
+   *  default instructions and name. Everything stays editable afterwards. */
+  const addRoleNode = (role: AgentRole) => {
+    if (!insertAt) return;
+    const base = blankNode('agent', body.nodes, {
+      agentPrompt: t('agentFlows.defaults.agentPrompt'),
+      credentialId: defaultCredentialFor('openai', aiKeys.credentials),
+    }) as AgentNode;
+    const { patch } = applyRole(base, role, roles, language, t('agentFlows.defaults.agentPrompt'));
+    const node = { ...base, ...patch, name: roleText(role, 'label', language) } as FlowNode;
     mutate(insertNode(body.nodes, insertAt, node));
     setInsertAt(null);
     setSelected(node.key);
@@ -351,11 +458,6 @@ export function BrainBuilder({
     (key: string, containerPath: string) => canDropInto(body.nodes, key, containerPath),
     [body.nodes],
   );
-
-  const onMoveNode = (key: string, target: InsertTarget) => {
-    const next = moveNode(body.nodes, key, target);
-    if (next !== body.nodes) mutate(next);
-  };
 
   const stepZoom = (delta: number) =>
     setZoom((z) => Math.round(Math.max(0.5, Math.min(1.3, z + delta)) * 100) / 100);
@@ -385,6 +487,18 @@ export function BrainBuilder({
   const answerKey = body.answer_node || body.nodes[body.nodes.length - 1]?.key || '';
 
   // Selection is either a node key or a lane selector `node:group:key`.
+  /** Steps that run before the selected one and hand back a result — what an
+   *  Agent's "reads from" may name. Document order is run order (the server's
+   *  `input_problems` checks the same thing). Routers record a path, not data. */
+  const earlierSteps = React.useMemo(() => {
+    const all = walkNodes(body.nodes);
+    const at = all.findIndex((n) => n.key === selected);
+    const routers = new Set(['coordinate', 'switch', 'if', 'filter']);
+    return (at < 0 ? [] : all.slice(0, at))
+      .filter((n) => !routers.has(n.type))
+      .map((n) => ({ key: n.key, name: n.name || n.key, type: n.type }));
+  }, [body.nodes, selected]);
+
   const sel = React.useMemo(() => {
     if (!selected) return { node: null as FlowNode | null };
     const [ownerKey, group, laneKey] = selected.split(':');
@@ -430,10 +544,47 @@ export function BrainBuilder({
     updateNode({ ...owner, cases: owner.cases.map((c) => (c.key === next.key ? next : c)) });
   };
 
+  /** Keys of a node and everything inside it. */
+  const subtreeKeys = (n: FlowNode): Set<string> =>
+    new Set(walkNodes([n]).map((x) => x.key));
+
+  // A DELETED ANSWERING STEP IS NOT STILL THE ANSWER. `answer_node` used to keep
+  // naming it, the save then failed validation, and with no answer node the last
+  // top-level step silently became the answer instead.
+  // Through `mutate` so undo still restores the step (and, with it, the answer).
+  const dropAnswerIfGone = (removed: Set<string>) => {
+    if (body.answer_node && removed.has(body.answer_node)) {
+      setBody((b) => ({ ...b, answer_node: undefined }));
+    }
+  };
+
   const deleteSelected = () => {
     if (!sel.node) return;
+    const gone = subtreeKeys(sel.node);
     mutate(removeNode(body.nodes, sel.node.key));
+    dropAnswerIfGone(gone);
     setSelected(null);
+  };
+
+  // F09 — branches can be removed, down to the minimum the server enforces
+  // (IF: two paths; Switch: one case). Their contents go with them.
+  const removePath = () => {
+    const owner = sel.owner;
+    if (!owner || owner.type !== 'if' || !sel.path || owner.paths.length <= 2) return;
+    const gone = new Set(walkNodes(sel.path.body || []).map((x) => x.key));
+    const next = { ...owner, paths: owner.paths.filter((p) => p.key !== sel.path!.key) };
+    mutate(replaceNode(body.nodes, owner.key, next));
+    dropAnswerIfGone(gone);
+    setSelected(owner.key);
+  };
+  const removeCase = () => {
+    const owner = sel.owner;
+    if (!owner || owner.type !== 'switch' || !sel.switchCase || owner.cases.length <= 1) return;
+    const gone = new Set(walkNodes(sel.switchCase.body || []).map((x) => x.key));
+    const next = { ...owner, cases: owner.cases.filter((c) => c.key !== sel.switchCase!.key) };
+    mutate(replaceNode(body.nodes, owner.key, next));
+    dropAnswerIfGone(gone);
+    setSelected(owner.key);
   };
 
   // ── save / publish ────────────────────────────────────────────────────────
@@ -489,11 +640,10 @@ export function BrainBuilder({
     nodes: all.length,
     // A coordinator branches too — it just picks the lane with a model rather
     // than a condition. Left out, the chip under the title said "1 branch" for a
-    // flow with three.
-    branches: all.filter(
-      (n) => n.type === 'if' || n.type === 'switch' || n.type === 'coordinate',
-    ).length,
-    loops: all.filter((n) => n.type === 'loop').length,
+    // flow with three. Derived from the topology declaration now, so a fifteenth
+    // branching type counts itself.
+    branches: all.filter(isBranching).length,
+    loops: all.filter((n) => isContainer(n) && !isBranching(n)).length,
   };
 
   return (
@@ -512,19 +662,36 @@ export function BrainBuilder({
           elements at breakpoints was the alternative and it is the wrong shape: it
           makes reachability depend on guessing every width in advance, which is
           how this row lost its buttons in the first place. */}
-      <div className="flex h-11 flex-shrink-0 items-center gap-2 overflow-x-auto border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
-        <button type="button" onClick={onBack}
-          className="flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
-          <ArrowLeft className="h-3.5 w-3.5" /> {t('agentFlows.title')}
+      {/* BELOW 768px THE ROW WRAPS instead of scrolling: at 390px the tabs and
+          Save / Publish sat off-screen in a 1082px row. From md up it is the
+          one-line, horizontally scrolling row it always was. */}
+      <div className="flex min-h-11 flex-shrink-0 flex-wrap items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 xl:h-11 xl:flex-nowrap xl:overflow-x-auto xl:px-4 xl:py-0">
+        {/* THE ARROW KEEPS ITS MEANING WITHOUT THE WORDS. At the declared 1280px
+            minimum the row overflowed by ~124px even on a valid flow, and the
+            tabs — navigation — scrolled under the sticky verdict group, leaving
+            "Activity" unreachable at the width the product names as its floor.
+            The label is the first thing on this row that costs width and carries
+            no information the icon does not. */}
+        <button type="button" onClick={leave} data-testid="builder-back" aria-label={t('agentFlows.title')}
+          className="flex flex-shrink-0 items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
+          <ArrowLeft className="h-3.5 w-3.5" />
+          {/* `2xl`, not `xl`: Tailwind's `xl` is min-width 1280, so it MATCHES at
+              exactly 1280 — the label stayed visible at the one width that
+              needed it gone, and the tabs stayed under the sticky group. */}
+          <span className="hidden 2xl:inline">{t('agentFlows.title')}</span>
         </button>
-        <span className="text-text-quaternary">/</span>
+        <span className="hidden text-text-quaternary 2xl:inline">/</span>
         <Input
           value={name}
           disabled={!canEdit}
           onChange={(e) => { setName(e.target.value); setDirty(true); }}
           // Narrower than it was: the row now carries the tabs too, and the name
           // is the one element that can give up width without losing meaning.
-          className="h-7 w-[120px] flex-shrink-0 border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))] lg:w-[150px] xl:w-[240px]"
+          // The 240px step moved from `xl` to `2xl` because Tailwind's `xl` is
+          // min-width 1280 — it applied at exactly the declared minimum, and the
+          // 90px it took was the whole of the header's overflow there, which put
+          // the "Activity" tab under the sticky action group.
+          className="h-7 w-[120px] flex-shrink-0 border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))] lg:w-[150px] 2xl:w-[240px]"
         />
         <StatusBadge status={status} version={version} size="xs" />
 
@@ -563,6 +730,9 @@ export function BrainBuilder({
             ones that need the height. The chips are the first thing dropped as
             the window narrows: they are context, while the tabs are navigation
             and the validation badge is a warning. */}
+        {/* `order-last` below xl: when the row is tight the tabs move to the end,
+            next to the sticky verdict group, so the thing that scrolls out of
+            sight is the identity cluster — context — rather than navigation. */}
         <div className="ml-2 inline-flex flex-shrink-0 items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
           {([
             ['design', 'agentFlows.builder.tab.design'],
@@ -609,11 +779,26 @@ export function BrainBuilder({
             and the three buttons stay put while the identity and tabs scroll under
             them. `bg-surface-1` is required, not cosmetic: without it the scrolled
             row shows through. */}
-        <div className="sticky right-0 flex flex-shrink-0 items-center gap-2 bg-surface-1 pl-2">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 bg-surface-1 xl:sticky xl:right-0 xl:flex-shrink-0 xl:flex-nowrap xl:pl-2">
         {validation && (
           validation.ok
-            ? <Badge size="xs" variant="success" dot>{t('agentFlows.builder.valid')}</Badge>
-            : <Badge size="xs" variant="danger">{validation.errors[0] || t('agentFlows.builder.invalid')}</Badge>
+            ? (
+              <Badge data-testid="flow-validity" size="xs" variant="success" dot>
+                {t('agentFlows.builder.valid')}
+              </Badge>
+            )
+            : (
+              // BOUNDED. The verdict lives in the sticky right group, so a long
+              // error — and validation messages name the step and the reason —
+              // grew that group until it covered the tab strip, and "Activity"
+              // became unreachable at 1280. The full sentence is still one hover
+              // away, and the Design tab shows it in full beside the step.
+              <Badge data-testid="flow-validity" size="xs" variant="danger" title={validation.errors[0] || ''}>
+                <span className="block max-w-[200px] truncate 2xl:max-w-none">
+                  {validation.errors[0] || t('agentFlows.builder.invalid')}
+                </span>
+              </Badge>
+            )
         )}
         {!!validation?.warnings.length && (
           <span
@@ -630,52 +815,111 @@ export function BrainBuilder({
         )}
         {canEdit && (
           <div className="mr-1 flex items-center gap-0.5">
-            <IconBtn onClick={undo} label={t('agentFlows.builder.undo')} disabled={!past.current.length}>
+            <IconBtn onClick={undo} label={t('agentFlows.builder.undo')} disabled={!canUndo}>
               <Undo2 className="h-3.5 w-3.5" />
             </IconBtn>
-            <IconBtn onClick={redo} label={t('agentFlows.builder.redo')} disabled={!future.current.length}>
+            <IconBtn onClick={redo} label={t('agentFlows.builder.redo')} disabled={!canRedo}>
               <Redo2 className="h-3.5 w-3.5" />
             </IconBtn>
           </div>
         )}
-        <Button variant="secondary" size="xs" onClick={() => setTestOpen(true)}>
+        {keyless.length > 0 && (
+          // COMPACT: the sticky right group already competes with the tab strip at
+          // 1440, so the chip is a count; the full sentence and the step names are
+          // in its title.
+          <button
+            type="button"
+            data-testid="builder-keyless"
+            title={`${t('agentFlows.builder.keylessCount', { count: keyless.length })}: ${keyless.map((n) => n.name || n.key).join(', ')}`}
+            onClick={goToKeyless}
+            className="flex items-center gap-1 rounded-full border border-warning/25 bg-warning/5 px-2 py-px text-tiny text-warning hover:bg-warning/10"
+          >
+            <KeyRound className="h-3 w-3" /> {t('agentFlows.builder.keylessShort', { count: keyless.length })}
+          </button>
+        )}
+        {canEdit && assignable.length > 0 && (
+          <button
+            type="button"
+            data-testid="builder-assign-default-keys"
+            title={t('agentFlows.builder.assignDefaultKeysHint', { count: assignable.length })}
+            onClick={assignDefaults}
+            className="rounded-full border border-brand/30 px-2 py-px text-tiny text-brand hover:bg-brand/5"
+          >
+            {t('agentFlows.builder.assignDefaultKeys')}
+          </button>
+        )}
+        <IconBtn onClick={() => aiKeys.open()} label={t('agentFlows.aiKeys.title')} testId="ai-keys-open">
+          <KeyRound className="h-3.5 w-3.5" />
+        </IconBtn>
+        <Button data-testid="builder-test" variant="secondary" size="xs" onClick={() => setTestOpen(true)}>
           <Play className="h-3 w-3" /> {t('agentFlows.builder.test')}
         </Button>
         {canEdit && (
-          <Button variant="secondary" size="xs" onClick={save} loading={saving} disabled={!dirty}>
+          <Button data-testid="builder-save" variant="secondary" size="xs" onClick={save} loading={saving} disabled={!dirty}>
             <Save className="h-3 w-3" /> {t('agentFlows.builder.saveDraft')}
           </Button>
         )}
         {canPublish && (
-          <Button size="xs" onClick={() => setPublishOpen(true)} disabled={dirty}>
+          <Button data-testid="builder-publish" size="xs" onClick={() => setPublishOpen(true)} disabled={dirty}>
             <Send className="h-3 w-3" /> {t('agentFlows.builder.publish')}
           </Button>
         )}
         </div>
       </div>
 
+      {/* WHERE IT ENDS UP, not just that it saved.
+          Publish writes a version. It does NOT make the assistant reachable: a
+          reader meets it only through a report's public link, configured on the
+          dashboard. The builder used to say "· 1 link" in text that was not a
+          link, not a button, and hidden below 2xl — so an author who had just
+          published had no way to learn they were one step short, or where that
+          step lives. The data was already fetched; only the answer was missing. */}
+      {flowType === 'bot' && (
+        <FlowActivation
+          links={links}
+          publishedVersion={publishedVersion}
+          draftVersion={version}
+        />
+      )}
+
       {/* body */}
       <div className="relative min-h-0 flex-1">
         {mode === 'design' && (
-          <div className="flex h-full">
+          // BELOW 768px CANVAS ABOVE, INSPECTOR BELOW, both full width: the
+          // fixed-width inspector used to squeeze the canvas to 0px at 390px, so
+          // no step could be selected. From md up: side by side, as before.
+          <div className="flex h-full flex-col md:flex-row">
             <main
               ref={(el) => { canvasRef.current = el; }}
               onScroll={syncViewport}
-              className="relative min-w-0 flex-1 overflow-auto bg-[rgb(var(--surface-0))] [background-image:linear-gradient(rgb(var(--border-line)/.45)_1px,transparent_1px),linear-gradient(90deg,rgb(var(--border-line)/.45)_1px,transparent_1px)] [background-size:24px_24px]">
+              className="relative min-h-[45%] min-w-0 flex-1 overflow-auto bg-[rgb(var(--surface-0))] md:min-h-0 [background-image:linear-gradient(rgb(var(--border-line)/.45)_1px,transparent_1px),linear-gradient(90deg,rgb(var(--border-line)/.45)_1px,transparent_1px)] [background-size:24px_24px]">
               <FlowCanvas
+                flowType={flowType}
                 nodes={body.nodes}
                 specs={specs}
+                toolSpecs={toolSpecsByName}
                 selectedKey={selected}
+                // The door into the roving list: with nothing selected the
+                // FIRST step is the canvas's tab stop, so Tab reaches a step
+                // and the arrows take it from there.
+                focusKey={body.nodes[0]?.key ?? null}
                 answerKey={answerKey}
                 onSelect={setSelected}
                 onInsert={onInsert}
-                coverage={coverage}
+                runCounts={runCounts}
                 zoom={zoom}
                 onMove={canEdit ? onMoveNode : undefined}
                 canDropInto={dropGuard}
                 onLayout={handleLayout}
               />
 
+              {/* A POINTER CONVENIENCE, and marked as one. It drags to scroll and
+                  has no keyboard operation; rather than bolt on a fake one, the
+                  equivalent navigation lives on the canvas itself — arrows move
+                  between steps from the selected card, which is reachable by
+                  Tab. Announcing this to a screen reader would offer a control
+                  that cannot be used. */}
+              <div aria-hidden>
               <Minimap
                 rects={miniRects.map((r) => ({ ...r, selected: r.key === `n:${selected}` }))}
                 viewport={viewport}
@@ -689,6 +933,7 @@ export function BrainBuilder({
                   }
                 }}
               />
+              </div>
 
               <div className="absolute bottom-4 left-4 z-30 flex items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-0.5 shadow-linear-sm">
                 <IconBtn onClick={() => stepZoom(-0.1)} label={t('agentFlows.builder.zoomOut')}>
@@ -719,13 +964,14 @@ export function BrainBuilder({
               onKeyDown={inspector.onKeyDown}
               onDoubleClick={inspector.reset}
               title={t('agentFlows.builder.resizeInspector')}
-              className="group relative w-1.5 flex-shrink-0 cursor-col-resize bg-[rgb(var(--border-line))] transition-colors hover:bg-brand focus:bg-brand focus:outline-none"
+              className="group relative hidden w-1.5 flex-shrink-0 cursor-col-resize bg-[rgb(var(--border-line))] transition-colors hover:bg-brand focus:bg-brand focus:outline-none md:block"
             >
               <span className="absolute inset-y-0 -left-1 -right-1" />
             </div>
             <aside
-              style={{ width: inspector.width }}
-              className="flex flex-shrink-0 flex-col overflow-hidden border-l border-[rgb(var(--border-line))] bg-surface-1"
+              data-inspector=""
+              style={{ ['--inspector-w' as string]: `${inspector.width}px` }}
+              className="flex max-h-[55%] w-full flex-shrink-0 flex-col overflow-hidden border-t border-[rgb(var(--border-line))] bg-surface-1 md:max-h-none md:w-[var(--inspector-w)] md:max-w-[50vw] md:border-l md:border-t-0"
             >
               <div className="flex h-11 flex-shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))] px-3">
                 <b className="truncate text-caption font-strong">
@@ -755,6 +1001,9 @@ export function BrainBuilder({
                   spec={sel.node ? specs[sel.node.type] : undefined}
                   specs={specs}
                   toolPacks={toolPacks}
+                  skills={skills}
+                  roles={roles}
+                  earlierSteps={earlierSteps}
                   providers={providers}
                   attachable={attachable}
                   isAnswerNode={sel.node?.key === answerKey}
@@ -763,6 +1012,8 @@ export function BrainBuilder({
                   onChange={updateNode}
                   onChangePath={updatePath}
                   onChangeCase={updateCase}
+                  onRemovePath={sel.owner?.type === 'if' && sel.owner.paths.length > 2 ? removePath : undefined}
+                  onRemoveCase={sel.owner?.type === 'switch' && sel.owner.cases.length > 1 ? removeCase : undefined}
                   onDelete={deleteSelected}
                   onMakeAnswer={() => {
                     if (sel.node) { setBody((b) => ({ ...b, answer_node: sel.node!.key })); setDirty(true); }
@@ -773,7 +1024,9 @@ export function BrainBuilder({
           </div>
         )}
 
-        {mode === 'runs' && <RunsTab brainKey={brainKey} />}
+        {mode === 'runs' && (
+          <RunsTab brainKey={brainKey} onOpenNode={openNodeInBuilder} toolSpecs={toolSpecsByName} />
+        )}
         {mode === 'feedback' && (
           <FeedbackTab
             brainKey={brainKey}
@@ -792,6 +1045,8 @@ export function BrainBuilder({
               ? t('agentFlows.builder.position.inside', { name: insertAt.containerPath.split(':')[0] })
               : t('agentFlows.builder.position.root')}
             onPick={addNode}
+            roles={roles}
+            onPickRole={addRoleNode}
             onClose={() => setInsertAt(null)}
           />
         )}
@@ -812,6 +1067,7 @@ export function BrainBuilder({
       {typeOpen && (
         <FlowTypeDialog
           current={flowType}
+          contract={body.skill ?? null}
           blockers={validation?.chat_blockers ?? []}
           busy={typeBusy}
           onClose={() => setTypeOpen(false)}
@@ -857,7 +1113,8 @@ function PublishDialog({
   const [accepted, setAccepted] = React.useState(false);
   const blocked = problems.length > 0 && !accepted;
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-[rgb(0_0_0/0.22)]">
+    <div data-testid="publish-dialog"
+      className="absolute inset-0 z-50 flex items-center justify-center bg-[rgb(0_0_0/0.22)]">
       <div className="w-[540px] rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
         <div className="border-b border-[rgb(var(--border-line))] p-3.5">
           <b className="text-body font-strong">{t('agentFlows.publish.title', { version })}</b>
@@ -918,7 +1175,7 @@ function PublishDialog({
         </div>
         <div className="flex justify-end gap-2 border-t border-[rgb(var(--border-line))] p-3">
           <Button variant="secondary" size="sm" onClick={onCancel}>{t('agentFlows.publish.cancel')}</Button>
-          <Button size="sm" onClick={() => onConfirm(accepted)} loading={busy} disabled={blocked}>
+          <Button data-testid="publish-confirm" size="sm" onClick={() => onConfirm(accepted)} loading={busy} disabled={blocked}>
             {t('agentFlows.builder.publish')}
           </Button>
         </div>
@@ -932,13 +1189,14 @@ function PublishDialog({
 /** A square icon button. Small enough that a label would double its width, so the
  *  name lives in the tooltip and in `aria-label` rather than nowhere. */
 function IconBtn({
-  onClick, label, disabled, children,
+  onClick, label, disabled, children, testId,
 }: {
-  onClick: () => void; label: string; disabled?: boolean; children: React.ReactNode;
+  onClick: () => void; label: string; disabled?: boolean; children: React.ReactNode; testId?: string;
 }) {
   return (
     <button
       type="button"
+      data-testid={testId}
       onClick={onClick}
       disabled={disabled}
       title={label}
@@ -955,7 +1213,7 @@ function IconBtn({
 
 /* ── which surface this flow is for ───────────────────────────────────────── */
 
-const TYPE_ICON = { bot: LayoutDashboard, chat: MessagesSquare } as const;
+const TYPE_ICON = { bot: LayoutDashboard, chat: MessagesSquare, skill: Puzzle } as const;
 
 /** The header chip. States the type, and warns when the flow has drifted out of
  *  it — a chat flow that grew a report-reading step is still labelled Chat and can
@@ -1004,16 +1262,29 @@ function FlowTypeChip({
  *  picking happens rather than in a toast after a refusal.
  */
 function FlowTypeDialog({
-  current, blockers, busy, onClose, onPick,
+  current, contract, blockers, busy, onClose, onPick,
 }: {
   current: FlowType;
+  contract: SkillContract | null;
   blockers: string[];
   busy: boolean;
   onClose: () => void;
-  onPick: (next: FlowType) => void;
+  onPick: (next: FlowType, contract?: SkillContract) => void;
 }) {
   const { t } = useI18n();
   const [picked, setPicked] = React.useState<FlowType>(current);
+  /* A SKILL IS A PROMISE: what goes in, what comes out, when to reach for it.
+   * Edited here, next to the choice that makes it a Skill, because the server
+   * refuses a Skill without it and an agent is shown exactly these words. */
+  const [draft, setDraft] = React.useState<SkillContract>(
+    contract ?? { inputs: [{ name: 'question', type: 'text', required: true, description: '' }],
+                  output: '', when_to_use: '' });
+  const contractOk = draft.when_to_use.trim().length >= 12
+    && draft.inputs.every((i) => /^[a-z][a-z0-9_]{0,39}$/.test(i.name));
+  const contractChanged = JSON.stringify(draft) !== JSON.stringify(contract);
+  const canApply = picked === 'skill'
+    ? contractOk && (picked !== current || contractChanged)
+    : picked !== current && !(picked === 'chat' && blockers.length > 0);
 
   return (
     <AppModalShell
@@ -1031,8 +1302,8 @@ function FlowTypeDialog({
           <Button
             size="sm"
             loading={busy}
-            disabled={picked === current || (picked === 'chat' && blockers.length > 0)}
-            onClick={() => onPick(picked)}
+            disabled={!canApply}
+            onClick={() => onPick(picked, picked === 'skill' ? draft : undefined)}
           >
             {t('agentFlows.builder.type.apply')}
           </Button>
@@ -1040,7 +1311,7 @@ function FlowTypeDialog({
       )}
     >
       <div className="space-y-2">
-        {(['bot', 'chat'] as const).map((kind) => {
+        {(['bot', 'chat', 'skill'] as const).map((kind) => {
           const Icon = TYPE_ICON[kind];
           // A bot flow is never refused: a report hands a flow strictly more than
           // chat does, so anything that runs in Chat runs on a report.
@@ -1085,7 +1356,121 @@ function FlowTypeDialog({
             </button>
           );
         })}
+        {picked === 'skill' && (
+          <SkillContractEditor value={draft} onChange={setDraft} />
+        )}
       </div>
     </AppModalShell>
+  );
+}
+
+/** The contract a Skill publishes. Inputs are the ONLY data that reaches a Skill,
+ *  so each one is named here rather than inferred from the prompt. */
+function SkillContractEditor({
+  value, onChange,
+}: { value: SkillContract; onChange: (v: SkillContract) => void }) {
+  const { t } = useI18n();
+  const setInput = (i: number, patch: Partial<SkillInput>) => onChange({
+    ...value, inputs: value.inputs.map((x, j) => (j === i ? { ...x, ...patch } : x)),
+  });
+  return (
+    <div className="space-y-2 rounded-lg border border-[rgb(var(--border-line))] p-3">
+      <label className="block">
+        <span className="text-caption font-strong">{t('agentFlows.builder.skill.whenToUse')}</span>
+        <Textarea
+          id="skill-when-to-use"
+          rows={2}
+          value={value.when_to_use}
+          placeholder={t('agentFlows.builder.skill.whenToUsePlaceholder')}
+          onChange={(e) => onChange({ ...value, when_to_use: e.target.value })} />
+        <span className="mt-0.5 block text-tiny text-text-tertiary">{t('agentFlows.builder.skill.whenToUseHint')}</span>
+      </label>
+      <label className="block">
+        <span className="text-caption font-strong">{t('agentFlows.builder.skill.output')}</span>
+        <Input
+          id="skill-output"
+          value={value.output}
+          placeholder={t('agentFlows.builder.skill.outputPlaceholder')}
+          onChange={(e) => onChange({ ...value, output: e.target.value })} />
+      </label>
+      <div className="flex flex-wrap items-end gap-1.5">
+        <label className="block">
+          <span className="text-caption font-strong">{t('agentFlows.builder.skill.returns')}</span>
+          <select
+            id="skill-returns"
+            className="mt-0.5 block h-8 rounded-md border border-[rgb(var(--border-line))] bg-surface px-1 text-caption"
+            value={value.returns || 'text'}
+            onChange={(e) => onChange({ ...value, returns: e.target.value as 'text' | 'number' })}>
+            <option value="text">{t('agentFlows.builder.skill.returns.text')}</option>
+            <option value="number">{t('agentFlows.builder.skill.returns.number')}</option>
+          </select>
+        </label>
+        {value.returns === 'number' && (
+          <>
+            <label className="block">
+              <span className="text-tiny text-text-tertiary">{t('agentFlows.builder.skill.valueStep')}</span>
+              <Input id="skill-value-step" className="h-8 w-36" value={value.value_step || ''}
+                placeholder="tinh_ty_le"
+                onChange={(e) => onChange({ ...value, value_step: e.target.value.trim() })} />
+            </label>
+            <label className="block">
+              <span className="text-tiny text-text-tertiary">{t('agentFlows.builder.skill.valuePath')}</span>
+              <Input id="skill-value-path" className="h-8 w-36" value={value.value_path || ''}
+                placeholder="result"
+                onChange={(e) => onChange({ ...value, value_path: e.target.value.trim() })} />
+            </label>
+          </>
+        )}
+      </div>
+      {value.returns === 'number' && (
+        <span className="block text-tiny text-text-tertiary">{t('agentFlows.builder.skill.returnsNumberHint')}</span>
+      )}
+      <div>
+        <span className="text-caption font-strong">{t('agentFlows.builder.skill.inputs')}</span>
+        <span className="block text-tiny text-text-tertiary">{t('agentFlows.builder.skill.inputsHint')}</span>
+        <div className="mt-1 space-y-1.5">
+          {value.inputs.map((inp, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <Input
+                id={`skill-input-name-${i}`}
+                className="h-8 w-32"
+                value={inp.name}
+                placeholder="ten_input"
+                onChange={(e) => setInput(i, { name: e.target.value.trim() })} />
+              <select
+                id={`skill-input-type-${i}`}
+                className="h-8 rounded-md border border-[rgb(var(--border-line))] bg-surface px-1 text-caption"
+                value={inp.type}
+                onChange={(e) => setInput(i, { type: e.target.value as SkillInput['type'] })}>
+                {(['text', 'number', 'date', 'chart_ref'] as const).map((k) => (
+                  <option key={k} value={k}>{t('agentFlows.builder.skill.type.' + k)}</option>
+                ))}
+              </select>
+              <Input
+                id={`skill-input-desc-${i}`}
+                className="h-8 flex-1"
+                value={inp.description || ''}
+                placeholder={t('agentFlows.builder.skill.inputDescription')}
+                onChange={(e) => setInput(i, { description: e.target.value })} />
+              <label className="flex items-center gap-1 text-tiny text-text-tertiary">
+                <input type="checkbox" checked={inp.required}
+                  onChange={(e) => setInput(i, { required: e.target.checked })} />
+                {t('agentFlows.builder.skill.required')}
+              </label>
+              <button type="button" aria-label={t('agentFlows.builder.skill.removeInput')}
+                onClick={() => onChange({ ...value, inputs: value.inputs.filter((_, j) => j !== i) })}
+                className="rounded p-1 text-text-tertiary hover:text-danger">
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+        <Button variant="secondary" size="xs" className="mt-1.5"
+          onClick={() => onChange({ ...value, inputs: [...value.inputs,
+            { name: '', type: 'text', required: false, description: '' }] })}>
+          {t('agentFlows.builder.skill.addInput')}
+        </Button>
+      </div>
+    </div>
   );
 }

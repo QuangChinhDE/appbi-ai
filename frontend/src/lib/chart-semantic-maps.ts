@@ -36,6 +36,48 @@ export function buildSemanticLabelMap(
   return map;
 }
 
+/** The display symbol for an ISO currency code ("BRL" → "R$", "VND" → "₫").
+ *  Taken from the platform's own currency data rather than a hand table, so
+ *  every code a measure can declare has a symbol. Unknown codes return the code. */
+export function currencySymbolFor(code: string | undefined | null): string | undefined {
+  const raw = (code || '').trim();
+  if (!raw) return undefined;
+  const c = raw.toUpperCase();
+  if (!/^[A-Z]{3}$/.test(c)) return raw;
+  try {
+    const part = new Intl.NumberFormat('en', { style: 'currency', currency: c, currencyDisplay: 'narrowSymbol' })
+      .formatToParts(0)
+      .find((p) => p.type === 'currency');
+    return part?.value || c;
+  } catch {
+    return c;
+  }
+}
+
+/**
+ * {qualified-or-bare field → currency symbol} for measures whose declared format
+ * is a currency WITH a code. Before this the code was dropped on the way to the
+ * chart and every currency measure rendered with the style default "$" — a BRL
+ * revenue shown as dollars. A currency measure without a code is not in the map;
+ * the chart then keeps its own symbol setting.
+ */
+export function buildSemanticCurrencyMap(
+  views: DatasetModelView[] | undefined | null,
+): Map<string, string> | undefined {
+  if (!views) return undefined;
+  const map = new Map<string, string>();
+  for (const view of views) {
+    for (const measure of view.measures ?? []) {
+      if (measure.format?.kind !== 'currency') continue;
+      const sym = currencySymbolFor((measure.format as { currency?: string | null }).currency);
+      if (!sym) continue;
+      map.set(`${view.name}.${measure.name}`, sym);
+      if (!map.has(measure.name)) map.set(measure.name, sym);
+    }
+  }
+  return map.size > 0 ? map : undefined;
+}
+
 /**
  * {qualified-or-bare field → NumberFormat} from the measure's declared
  * `format.kind`. percent / currency / number map through; duration / custom

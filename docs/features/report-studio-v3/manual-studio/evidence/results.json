@@ -1,0 +1,266 @@
+{
+  "sha": "933ab8b2",
+  "ranAt": "2026-09-29T18:36:41.462Z",
+  "results": {
+    "M1 blank to finished": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — a new report opens in the builder on its guided start",
+        "PASS — the header states the report name without it being typed",
+        "PASS — the header states the report description",
+        "PASS — the new header is open in the Inspector (Report header)",
+        "PASS — five charts were added (5)",
+        "PASS — the charts were placed under the selected header ([[18306,16],[18307,208],[18308,208],[18309,208],[18310,432],[18311,432]])",
+        "PASS — nothing overlaps after adding",
+        "PASS — three KPIs are on the page (3)",
+        "PASS — the Inspector shows the multi-selection (3 elements selected)",
+        "PASS — the KPI strip is one row ([208,208,208])",
+        "PASS — the KPI strip has equal widths ([305,305,305])",
+        "PASS — nothing overlaps after the pattern",
+        "PASS — the new section introduces the charts under it ({\"sec\":{\"header\":18312,\"members\":[18310,18311]},\"below\":[18310,18311]})",
+        "PASS — the outline reports nothing broken",
+        "PASS — the insight states two findings, each with a figure ([\"Revenue is R$ 13.6M.\",\"Orders is 98.7K.\"])",
+        "PASS — fit to content: the insight shows all it says, without a large empty band ({\"scroll\":110,\"client\":110})",
+        "PASS — the lead KPI reads larger than the others ([{\"lead\":\"lead\",\"size\":46},{\"lead\":\"normal\",\"size\":32},{\"lead\":\"normal\",\"size\":32}])",
+        "PASS — nothing overlaps after a resize",
+        "PASS — moving the heading moved its section: every member kept its place under it ({\"secBefore\":432,\"secAfter\":208})",
+        "PASS — the KPIs were pushed below the moved section ([[18306,\"hero_strip\",16],[18307,\"kpi\",1008],[18308,\"kpi\",1008],[18309,\"kpi\",1008],[18310,\"chart\",496],[18311,\"chart\",496],[18312,\"section_header\",208],[18313,\"narrative\",304]])",
+        "PASS — nothing overlaps after the section move",
+        "PASS — undo returns the section to where it was",
+        "PASS — the insight belongs to the section it was added under ({\"header\":18312,\"members\":[18313,18310,18311]})",
+        "PASS — the published report stores the section membership ({\"stated\":[18310,18311,18313],\"members\":[18313,18310,18311]})",
+        "PASS — M1 public 1440px: no render defect",
+        "PASS — M1 public 1440px: no sideways scroll",
+        "PASS — M1 public 1440px: no chart cuts its last axis label",
+        "PASS — M1 public 1440px: headers, text and KPI cards show all they say",
+        "PASS — M1 public 1440px: every short legend shows all its labels",
+        "PASS — M1 public 820px: no render defect",
+        "PASS — M1 public 820px: no sideways scroll",
+        "PASS — M1 public 820px: no chart cuts its last axis label",
+        "PASS — M1 public 820px: headers, text and KPI cards show all they say",
+        "PASS — M1 public 820px: every short legend shows all its labels",
+        "PASS — M1 public 390px: no render defect",
+        "PASS — M1 public 390px: no sideways scroll",
+        "PASS — M1 public 390px: no chart cuts its last axis label",
+        "PASS — M1 public 390px: headers, text and KPI cards show all they say",
+        "PASS — M1 public 390px: every short legend shows all its labels",
+        "PASS — public header states the title the link presents to its readers (Commercial review mun0icwj (for readers))",
+        "PASS — public header states the description",
+        "PASS — public header states the period the data covers (Data: Sep 2016 – Sep 2018)",
+        "PASS — public insight states the same findings ([\"Revenue is R$ 13.6M.\",\"Orders is 98.7K.\"])",
+        "PASS — the published section draws its band (1)",
+        "PASS — the band holds only its section",
+        "PASS — on a phone the heading is followed by its own members",
+        "PASS — on a phone the report header comes first (hero_strip,chart,chart)",
+        "PASS — M1-report: the PDF has pages (2)",
+        "PASS — M1-report: the PDF reports nothing missing ([])"
+      ],
+      "metrics": {
+        "add_5_charts_ms": 4519,
+        "select_ms": 141,
+        "pattern_commit_ms": 995,
+        "fit_commit_ms": 991,
+        "resize_ms": 1196,
+        "drag_ms": 1145,
+        "save_draft_ms": 1594,
+        "publish_ms": 281,
+        "M1_public_render_1440_ms": 2349,
+        "M1_public_render_820_ms": 2255,
+        "M1_public_render_390_ms": 2228,
+        "M1-report_pdf_ms": 1624,
+        "M1-report_pdf_pages": 2
+      },
+      "evidence": [
+        "M1-01-guided-start.jpg",
+        "M1-02-section-moved.jpg",
+        "M1-03-builder-final.jpg",
+        "M1-public-1440.jpg",
+        "M1-public-820.jpg",
+        "M1-public-390.jpg",
+        "M1-report.pdf"
+      ],
+      "notes": []
+    },
+    "M2 charts to professional report": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the lead chart takes about two thirds of the row (625 vs 305)",
+        "PASS — nothing overlaps after the patterns",
+        "PASS — the header headline is a finding stated from data (Revenue is R$ 13.6M.)",
+        "PASS — the header opens the report ([[\"kpi\",304],[\"kpi\",304],[\"kpi\",304],[\"kpi\",304],[\"chart\",496],[\"chart\",496],[\"chart\",944],[\"chart\",944],[\"chart\",1392],[\"chart\",1392],[\"kpi\",1776],[\"table\",1776],[\"slicer\",208],[\"hero_strip\",16]])",
+        "PASS — nothing overlaps after adding the header",
+        "PASS — M2 public 1440px: no render defect",
+        "PASS — M2 public 1440px: no sideways scroll",
+        "PASS — M2 public 1440px: no chart cuts its last axis label",
+        "PASS — M2 public 1440px: headers, text and KPI cards show all they say",
+        "PASS — M2 public 1440px: every short legend shows all its labels",
+        "PASS — M2 public 820px: no render defect",
+        "PASS — M2 public 820px: no sideways scroll",
+        "PASS — M2 public 820px: no chart cuts its last axis label",
+        "PASS — M2 public 820px: headers, text and KPI cards show all they say",
+        "PASS — M2 public 820px: every short legend shows all its labels",
+        "PASS — M2 public 390px: no render defect",
+        "PASS — M2 public 390px: no sideways scroll",
+        "PASS — M2 public 390px: no chart cuts its last axis label",
+        "PASS — M2 public 390px: headers, text and KPI cards show all they say",
+        "PASS — M2 public 390px: every short legend shows all its labels",
+        "PASS — public: the header headline is stated",
+        "PASS — public: KPI figures are readable (≥ 20px) and not shouting (≤ 60px) ([32,32,32,32,32])"
+      ],
+      "metrics": {
+        "save_draft_ms": 1648,
+        "publish_ms": 513,
+        "M2_public_render_1440_ms": 3525,
+        "M2_public_render_820_ms": 3106,
+        "M2_public_render_390_ms": 3412
+      },
+      "evidence": [
+        "M2-01-before.jpg",
+        "M2-02-composed.jpg",
+        "M2-public-1440.jpg",
+        "M2-public-820.jpg",
+        "M2-public-390.jpg"
+      ],
+      "notes": []
+    },
+    "M3 improve migrated report": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the outline names the report's existing section with its members ([{\"header\":18335,\"members\":[18331,18332,18333,18334]}])",
+        "PASS — the migrated section moved as a whole ({\"s0\":496,\"s1\":208})",
+        "PASS — nothing overlaps after the move",
+        "PASS — the outline reports nothing broken after the edits",
+        "PASS — the report's filter controls are all still there (2)",
+        "PASS — M3 public 1440px: no render defect",
+        "PASS — M3 public 1440px: no sideways scroll",
+        "PASS — M3 public 1440px: no chart cuts its last axis label",
+        "PASS — M3 public 1440px: headers, text and KPI cards show all they say",
+        "PASS — M3 public 1440px: every short legend shows all its labels",
+        "PASS — M3 public 820px: no render defect",
+        "PASS — M3 public 820px: no sideways scroll",
+        "PASS — M3 public 820px: no chart cuts its last axis label",
+        "PASS — M3 public 820px: headers, text and KPI cards show all they say",
+        "PASS — M3 public 820px: every short legend shows all its labels",
+        "PASS — M3 public 390px: no render defect",
+        "PASS — M3 public 390px: no sideways scroll",
+        "PASS — M3 public 390px: no chart cuts its last axis label",
+        "PASS — M3 public 390px: headers, text and KPI cards show all they say",
+        "PASS — M3 public 390px: every short legend shows all its labels",
+        "PASS — public: the header states the new title (Sales performance)",
+        "PASS — public: the band of the moved section holds only its section (KPIs and controls outside stay outside)",
+        "PASS — public phone: the moved section keeps its members together"
+      ],
+      "metrics": {
+        "drag_ms": 1391,
+        "save_draft_ms": 1666,
+        "publish_ms": 968,
+        "M3_public_render_1440_ms": 3089,
+        "M3_public_render_820_ms": 2918,
+        "M3_public_render_390_ms": 2634
+      },
+      "evidence": [
+        "M3-01-before.jpg",
+        "M3-02-after.jpg",
+        "M3-public-1440.jpg",
+        "M3-public-820.jpg",
+        "M3-public-390.jpg"
+      ],
+      "notes": []
+    },
+    "M4 two datasets": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — each section holds the two charts of its own dataset ([{\"header\":18370,\"members\":[18371,18372]},{\"header\":18373,\"members\":[18374,18375]}])",
+        "PASS — the outline reports nothing broken",
+        "PASS — both datasets render numbers (no load error)",
+        "PASS — section 18370: its two elements fill the row (930 of 962)",
+        "PASS — section 18373: its two elements fill the row (930 of 962)",
+        "PASS — nothing overlaps after arranging both sections",
+        "PASS — M4 public 1440px: no render defect",
+        "PASS — M4 public 1440px: no sideways scroll",
+        "PASS — M4 public 1440px: no chart cuts its last axis label",
+        "PASS — M4 public 1440px: headers, text and KPI cards show all they say",
+        "PASS — M4 public 1440px: every short legend shows all its labels",
+        "PASS — M4 public 820px: no render defect",
+        "PASS — M4 public 820px: no sideways scroll",
+        "PASS — M4 public 820px: no chart cuts its last axis label",
+        "PASS — M4 public 820px: headers, text and KPI cards show all they say",
+        "PASS — M4 public 820px: every short legend shows all its labels",
+        "PASS — M4 public 390px: no render defect",
+        "PASS — M4 public 390px: no sideways scroll",
+        "PASS — M4 public 390px: no chart cuts its last axis label",
+        "PASS — M4 public 390px: headers, text and KPI cards show all they say",
+        "PASS — M4 public 390px: every short legend shows all its labels",
+        "PASS — public: the header states each dataset’s own period, named by its section (Data: Marketplace: Sep 2016 – Sep 2018 · Sales: Jan 2024 – Dec 2025)",
+        "PASS — public phone: each dataset's charts stay under their own heading",
+        "PASS — M4-report: the PDF has pages (2)",
+        "PASS — M4-report: the PDF reports nothing missing ([])"
+      ],
+      "metrics": {
+        "save_draft_ms": 1605,
+        "publish_ms": 296,
+        "M4_public_render_1440_ms": 2994,
+        "M4_public_render_820_ms": 2257,
+        "M4_public_render_390_ms": 2198,
+        "M4-report_pdf_ms": 1842,
+        "M4-report_pdf_pages": 2
+      },
+      "evidence": [
+        "M4-01-builder.jpg",
+        "M4-public-1440.jpg",
+        "M4-public-820.jpg",
+        "M4-public-390.jpg",
+        "M4-report.pdf"
+      ],
+      "notes": []
+    },
+    "M5 Inspector edit lifecycle": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — Publish right after typing ships the edit ([\"Lifecycle A mun0mra2\"])",
+        "PASS — after Discard the builder holds the published text, not the discarded one ([\"Lifecycle A mun0mra2\"])",
+        "PASS — the public report never saw the discarded text",
+        "PASS — after a reload the canvas shows the published text only ([\"Lifecycle A mun0mra2\"])"
+      ],
+      "metrics": {},
+      "evidence": [],
+      "notes": []
+    },
+    "A11Y report building surfaces": {
+      "status": "PASS",
+      "assertions": [
+        "PASS — the Add palette opens from the keyboard and closes on Escape",
+        "PASS — Inspector: no serious or critical accessibility issue ([])",
+        "PASS — Add palette: no serious or critical accessibility issue ([])",
+        "PASS — report header, sections, insights in the builder: no serious or critical issue ([])",
+        "PASS — public 1440px: report header, sections, insights have no serious or critical issue ([])",
+        "PASS — public 390px: report header, sections, insights have no serious or critical issue ([])"
+      ],
+      "metrics": {
+        "builder_page_violations": [
+          "serious:color-contrast×4",
+          "serious:document-title×1",
+          "moderate:heading-order×2",
+          "moderate:landmark-complementary-is-top-level×1",
+          "moderate:landmark-unique×1",
+          "serious:link-name×1",
+          "serious:svg-img-alt×4"
+        ],
+        "save_draft_ms": 1627,
+        "publish_ms": 558,
+        "public_1440_page_violations": [
+          "serious:document-title×1",
+          "serious:svg-img-alt×4"
+        ],
+        "public_390_page_violations": [
+          "serious:document-title×1",
+          "serious:svg-img-alt×4"
+        ]
+      },
+      "evidence": [],
+      "notes": [
+        "Whole-page violations are recorded (metrics), not asserted: they include surfaces outside this change (charts, app chrome). The asserted scope is what this round built."
+      ]
+    }
+  }
+}

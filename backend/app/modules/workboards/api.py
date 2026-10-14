@@ -22,10 +22,14 @@ from app.core.dependencies import (
     get_effective_permission,
     require_edit_access,
     require_full_access,
+    require_publish_access,
+    can_publish,
     require_permission,
     require_view_access,
     _normalize_permissions,
+    batch_effective_permissions,
 )
+from app.core.authz import decision as _authz
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.core.logging import get_logger
 from app.models.audit_log import AuditAction
@@ -113,8 +117,10 @@ def list_workboards(
         .limit(limit)
         .all()
     )
+    perm_map = batch_effective_permissions(db, current_user, items, "workboards")
     for item in items:
-        item.user_permission = get_effective_permission(db, current_user, item, "workboards")
+        item.user_permission = perm_map.get(item.id, "none")
+    _authz.attach_capabilities(db, current_user, items)
     stamp_owner_emails(db, items)
     # Serialize per-row so one workboard with an unexpected stored layout_json
     # can never 500 the whole list. The Screen schema already heals known
@@ -159,6 +165,7 @@ def _degraded_workboard_response(item: Workboard) -> WorkboardResponse:
         owner_id=item.owner_id,
         owner_email=getattr(item, "owner_email", None),
         user_permission=getattr(item, "user_permission", None),
+        capabilities=getattr(item, "capabilities", None),
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -196,7 +203,8 @@ def create_workboard(
         if username and pin:
             response.headers["X-AppBI-Default-Owner-Username"] = username
             response.headers["X-AppBI-Default-Owner-Pin"] = pin
-    wb.user_permission = "full"
+    wb.user_permission = get_effective_permission(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     return wb
 
 
@@ -208,6 +216,7 @@ def get_workboard(
 ):
     wb = _get_or_404(db, workboard_id)
     wb.user_permission = require_view_access(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     # Mask OCR tokens before the layout leaves the server (owner sees only
     # "đã cấu hình", never the raw key). Transient — no commit, not persisted.
     from app.modules.workboards.services.ocr_secrets import mask_layout_ocr_keys
@@ -230,7 +239,8 @@ async def upload_workboard_media(
     from app.modules.workboards.services import media_service
 
     wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
+    # A durable write (stored file): edit, not view.
+    require_edit_access(db, current_user, wb, "workboards")
     data = await file.read()
     try:
         media = media_service.store_media(
@@ -379,7 +389,8 @@ def update_workboard(
         },
     )
     if updated:
-        updated.user_permission = "full"
+        updated.user_permission = get_effective_permission(db, current_user, updated, "workboards")
+        _authz.attach_capabilities(db, current_user, [updated])
     return updated
 
 
@@ -449,7 +460,8 @@ def update_workboard_screen(
         details={"screen_scoped": True, "screen_id": screen_id},
     )
     if updated:
-        updated.user_permission = "full"
+        updated.user_permission = get_effective_permission(db, current_user, updated, "workboards")
+        _authz.attach_capabilities(db, current_user, [updated])
     return updated
 
 
@@ -663,7 +675,7 @@ def publish_workboard(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _assert_owner_pin_rotated(db, wb.id)
     wb = _promote_workboard_to_published(db, wb, creator=current_user)
@@ -675,7 +687,8 @@ def publish_workboard(
         resource_type="workboard",
         resource_id=str(workboard_id),
     )
-    wb.user_permission = "full"
+    wb.user_permission = get_effective_permission(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     return wb
 
 
@@ -691,7 +704,7 @@ def unpublish_workboard(
     public runtime resolver then 404s the app — but keeps the published snapshot
     intact so a later Publish can promote the (possibly edited) draft again."""
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     wb.is_published = False
     db.commit()
     db.refresh(wb)
@@ -703,7 +716,8 @@ def unpublish_workboard(
         resource_type="workboard",
         resource_id=str(workboard_id),
     )
-    wb.user_permission = "full"
+    wb.user_permission = get_effective_permission(db, current_user, wb, "workboards")
+    _authz.attach_capabilities(db, current_user, [wb])
     return wb
 
 
@@ -780,7 +794,7 @@ def audit_workboard(
     """
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    require_dataset_binding_access(db, current_user, wb.dataset_id, capability="view")
     return compute_workboard_audit(db, wb)
 
 
@@ -864,6 +878,31 @@ def compute_workboard_audit(db: Session, wb: Workboard) -> dict[str, Any]:
             dash_id = dash_spec.get("dashboard_id") if isinstance(dash_spec, dict) else None
             if isinstance(dash_id, int):
                 referenced_dashboard_ids.add(int(dash_id))
+    # Manual-mode screens paste a raw public token. It must name an ACTIVE user
+    # public link: the legacy Dashboard.share_token authority is retired, and a
+    # managed embed link's token is never served on its own. A token that does
+    # not resolve is surfaced here (publish gate) instead of as a blank iframe.
+    manual_tokens: set[str] = set()
+    for screen in screens_iter:
+        if screen.get("kind") == "dashboard":
+            dash_spec = screen.get("dashboard") or {}
+            if isinstance(dash_spec, dict) and dash_spec.get("dashboard_id") is None:
+                tok = str(dash_spec.get("share_token") or "").strip()
+                if tok:
+                    manual_tokens.add(tok)
+    live_manual_tokens: set[str] = set()
+    if manual_tokens:
+        from app.models.models import DashboardPublicLink as _PublicLink
+        live_manual_tokens = {
+            str(row[0])
+            for row in db.query(_PublicLink.token)
+            .filter(
+                _PublicLink.token.in_(manual_tokens),
+                _PublicLink.is_active == True,  # noqa: E712
+                _PublicLink.source != "embed_api",
+            )
+            .all()
+        }
     existing_dashboard_ids: set[int] = set()
     if referenced_dashboard_ids:
         existing_dashboard_ids = {
@@ -1169,6 +1208,18 @@ def compute_workboard_audit(db: Session, wb: Workboard) -> dict[str, Any]:
                     detail="Dashboard screen has neither dashboard_id nor share_token.",
                     screen=screen,
                 )
+            elif dash_id is None and str(share_token or "").strip() not in live_manual_tokens:
+                _add(
+                    severity="error",
+                    code="dashboard_token_unresolved",
+                    detail=(
+                        "The pasted dashboard token is not an active public link "
+                        "(revoked, deleted, or a retired legacy share token). "
+                        "Create a public link on the dashboard and paste its token, "
+                        "or bind the screen to the dashboard directly."
+                    ),
+                    screen=screen,
+                )
             elif isinstance(dash_id, int) and int(dash_id) not in existing_dashboard_ids:
                 _add(
                     severity="error",
@@ -1315,7 +1366,7 @@ def access_audit_workboard(
 
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    require_dataset_binding_access(db, current_user, wb.dataset_id, capability="view")
 
     return audit_workboard_access(db, workboard=wb)
 
@@ -1338,7 +1389,7 @@ def set_table_miniapp_share(
 
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    require_dataset_binding_access(db, current_user, wb.dataset_id, capability="manage")
 
     table = (
         db.query(_DatasetTable)
@@ -1443,7 +1494,15 @@ def list_public_links(
 ):
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
-    return WorkboardPublicLinkService.list_links(wb)
+    publisher = can_publish(db, current_user, wb, "workboards")
+    out = []
+    for link in WorkboardPublicLinkService.list_links(wb):
+        item = WorkboardPublicLinkResponse.model_validate(link)
+        out.append(item.model_copy(update={
+            "token": item.token if publisher else None,
+            "capabilities": {"manage": publisher, "reveal_token": publisher},
+        }))
+    return out
 
 
 @router.post(
@@ -1459,7 +1518,7 @@ def create_public_link(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _assert_owner_pin_rotated(db, wb.id)
     if not wb.is_published:
@@ -1496,7 +1555,7 @@ def update_public_link(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     updated = WorkboardPublicLinkService.update_link(
         db,
@@ -1521,7 +1580,7 @@ def delete_public_link(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
+    require_publish_access(db, current_user, wb, "workboards")
     deleted = WorkboardPublicLinkService.delete_link(db, wb, link_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Public link not found")
@@ -1564,7 +1623,17 @@ def export_workboard_template(
     current_user: User = Depends(get_current_user),
 ):
     wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
+    # Exporting a workboard is copying its definition out: edit. Including
+    # credentials (app users' PIN hashes, crackable offline) is a separate,
+    # owner/admin-only action, and audited.
+    require_edit_access(db, current_user, wb, "workboards")
+    if include_credentials:
+        require_full_access(db, current_user, wb, "workboards")
+        audit(
+            db, AuditAction.DATA_EXPORTED,
+            user_id=current_user.id, resource_type="workboard", resource_id=str(wb.id),
+            details={"export": "workboard_template", "include_credentials": True},
+        )
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     bundle = _template_svc.export_workboard(
         db, wb, include_credentials=include_credentials
@@ -1776,14 +1845,63 @@ class _ImportFromSourcePayload(__import__("pydantic").BaseModel):
     table_source_overrides: Optional[Dict[str, str]] = None
 
 
-def _validate_datasources_exist(db: Session, datasource_map: Dict[str, int]) -> None:
-    from app.models.models import DataSource
+def _sql_refs_in_bundle(bundle: dict) -> set:
+    """Bundle datasource refs that carry a ``sql_query`` table (template SQL that
+    would be persisted and run against the chosen Source)."""
+    return {
+        str(dt.get("datasource_ref"))
+        for dt in (bundle or {}).get("dataset_tables") or []
+        if (dt.get("source_kind") or "physical_table") == "sql_query"
+        and dt.get("datasource_ref") is not None
+    }
 
+
+def _validate_datasources_exist(
+    db: Session,
+    datasource_map: Dict[str, int],
+    current_user: User,
+    sql_refs: Optional[set] = None,
+) -> None:
+    """Authorize every caller-chosen target Source BEFORE any table listing or
+    binding, with the same object check api/datasources.py uses.
+
+    Contract (matches api/datasets.py S2): binding a physical table is a read of
+    the Source -> ``view``; a ``sql_query`` table persists template SQL that runs
+    with the Source's stored credentials (same as Query Runner / dataset
+    sql_query) -> ``edit`` on the Source. Nonexistent and inaccessible Sources
+    get the SAME 404 so ids cannot be probed. Non-tabular providers refused.
+    """
+    from app.core.dependencies import require_edit_access, require_view_access
+    from app.models.models import DataSource
+    from app.services.source_capabilities import SourceNotTabularError, require_capability
+
+    sql_refs = sql_refs or set()
     for ref, ds_id in (datasource_map or {}).items():
-        if not db.query(DataSource).filter(DataSource.id == ds_id).first():
+        not_found = HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source được chọn (id={ds_id}) cho '{ref}' không tồn tại hoặc bạn không có quyền truy cập.",
+        )
+        ds = db.query(DataSource).filter(DataSource.id == ds_id).first()
+        if not ds:
+            raise not_found
+        try:
+            require_view_access(db, current_user, ds, "data_sources")
+        except HTTPException:
+            raise not_found
+        if str(ref) in sql_refs:
+            try:
+                require_edit_access(db, current_user, ds, "data_sources")
+            except HTTPException:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Template chứa bảng SQL cho '{ref}': cần quyền edit trên Source (id={ds_id}).",
+                )
+        try:
+            require_capability(ds.type, "tabular")
+        except SourceNotTabularError as exc:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Source được chọn (id={ds_id}) cho '{ref}' không tồn tại.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": exc.code, "message": str(exc)},
             )
 
 
@@ -1795,7 +1913,7 @@ def import_inspect_source(
 ):
     """Dry-run table-match preview for the v2 'pick a Source' import. Creates
     nothing — just reports which bundle tables exist on the chosen Source(s)."""
-    _validate_datasources_exist(db, payload.datasource_map)
+    _validate_datasources_exist(db, payload.datasource_map, current_user)
     try:
         return _template_svc.inspect_source_match(db, payload.bundle, payload.datasource_map or {})
     except ValueError as exc:
@@ -1823,7 +1941,9 @@ def import_from_source_endpoint(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cần chọn ít nhất một Source để tự tạo dataset (datasource_map rỗng).",
             )
-        _validate_datasources_exist(db, payload.datasource_map)
+        _validate_datasources_exist(
+            db, payload.datasource_map, current_user, _sql_refs_in_bundle(payload.bundle)
+        )
 
     if payload.target_workspace_id is not None:
         _ensure_can_attach_workspace(current_user)
@@ -2074,6 +2194,10 @@ def update_app_user(
 
     if "pin" in data and data["pin"]:
         user.pin_hash = app_user_service.hash_pin(data["pin"])
+    # A changed PIN, role, context, name, or deactivation ends this app user's
+    # existing sessions (they carried the old identity for up to the TTL).
+    if any(k in data for k in ("pin", "role", "active", "context", "username")):
+        app_user_service.bump_session_epoch(user)
 
     for field in ("full_name", "role", "active"):
         if field in data:

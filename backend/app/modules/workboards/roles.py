@@ -7,6 +7,9 @@ from typing import Any, Optional
 APP_USER_ROLE_USER = "user"
 APP_USER_ROLE_ADMIN = "admin"
 APP_USER_ROLE_OWNER = "owner"
+# LEGACY: the PIN every workboard's owner app user used to be created with.
+# No longer assigned (new owners get a random one-time PIN); kept only so the
+# builder can warn about rows that still use it.
 DEFAULT_APP_USER_PIN = "123456"
 CANONICAL_APP_USER_ROLES = (
     APP_USER_ROLE_USER,

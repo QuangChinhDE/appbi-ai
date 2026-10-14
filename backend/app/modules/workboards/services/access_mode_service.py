@@ -98,14 +98,16 @@ def _build_relationship_graph(
             to_table = table_by_view_id.get(to_view.id)
             if to_table is None:
                 continue
-            from_columns = join.get("from_columns") or (
-                [join["from_column"]] if join.get("from_column") else []
-            )
-            to_columns = join.get("to_columns") or (
-                [join["to_column"]] if join.get("to_column") else []
-            )
-            if not from_columns or not to_columns:
+            # The same reading the query engine uses: an invalid or inactive
+            # relationship is not a chain (the runtime does not walk it), and
+            # the key is the full contract key, whatever its spelling.
+            from app.services.semantic_join_resolver import read_join_contract
+
+            contract = read_join_contract(explore.base_view_name, join)
+            if not (contract.valid and contract.is_active and contract.key_pairs):
                 continue
+            from_columns = [f for f, _t in contract.key_pairs]
+            to_columns = [t for _f, t in contract.key_pairs]
             edge_id = (
                 from_table.id,
                 to_table.id,
@@ -123,7 +125,7 @@ def _build_relationship_graph(
                 "to_view": to_view_name,
                 "from_columns": [str(c) for c in from_columns],
                 "to_columns": [str(c) for c in to_columns],
-                "relationship": join.get("relationship") or "many_to_one",
+                "relationship": contract.cardinality,
                 "direction": "forward",
             }
             edge_meta_reverse = {

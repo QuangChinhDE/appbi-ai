@@ -100,6 +100,76 @@ def compute_filter_hash(dashboard_id: int, canonical_filters: list[dict]) -> str
 # Validation against the dashboard's real filterable fields
 # ---------------------------------------------------------------------------
 
+def _dataset_key(value) -> int | None:
+    try:
+        return int(value) if value is not None and str(value).strip() != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _bare_names(item: dict) -> set[str]:
+    sem = str(item.get("semanticField") or "").strip()
+    names = {str(item.get(k) or "").strip().lower() for k in ("field", "name")}
+    if "." in sem:
+        names.add(sem.rsplit(".", 1)[1].lower())
+    return names - {""}
+
+
+def _bare_field_of(item: dict) -> str:
+    for key in ("field", "name"):
+        value = str(item.get(key) or "").strip()
+        if value and "." not in value:
+            return value
+    sem = str(item.get("semanticField") or "").strip()
+    return sem.rsplit(".", 1)[-1] if sem else str(item.get("field") or "").strip()
+
+
+def _resolve_filter_identity(candidates: dict[tuple, dict], f: dict, raw_ref: str) -> dict:
+    """The ONE filterable field a caller's filter names — never a guess.
+
+    - ``semanticField`` (or a qualified ``field``) selects that exact field; a
+      ``datasetId`` given with it must be that field's dataset.
+    - A bare ``field`` is accepted only when exactly one filterable field has that
+      name; several → 400 asking for semanticField + datasetId.
+    Zero matches → 400. A different dataset is never chosen silently.
+    """
+    def refuse(detail: str):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+    wanted_ds = _dataset_key(f.get("datasetId"))
+    if f.get("datasetId") not in (None, "") and wanted_ds is None:
+        refuse(f"Filter '{raw_ref}' has an invalid datasetId.")
+    sem = str(f.get("semanticField") or "").strip()
+    fld = str(f.get("field") or "").strip()
+    # Only a dotted name is a qualified reference; a bare name always goes
+    # through the uniqueness count below, even when it equals some item's ref.
+    qualified = sem or (fld if "." in fld and any(ref == fld.lower() for _ds, ref in candidates) else "")
+
+    if qualified:
+        hits = [(ds, item) for (ds, ref), item in candidates.items() if ref == qualified.lower()]
+        if not hits:
+            refuse(f"Field '{qualified}' is not filterable on this dashboard.")
+        if wanted_ds is not None:
+            hits = [(ds, item) for ds, item in hits if ds == wanted_ds]
+            if not hits:
+                refuse(f"Field '{qualified}' does not belong to dataset {wanted_ds}.")
+        if len(hits) > 1:
+            refuse(f"Field '{qualified}' exists in several datasets; provide datasetId.")
+        match = hits[0][1]
+        if fld and sem and fld.lower() not in _bare_names(match) and fld.lower() != sem.lower():
+            refuse(f"Filter field '{fld}' does not match semanticField '{sem}'.")
+        return match
+
+    hits = [(ds, item) for (ds, _ref), item in candidates.items() if fld.lower() in _bare_names(item)]
+    if wanted_ds is not None:
+        hits = [(ds, item) for ds, item in hits if ds == wanted_ds]
+    if not hits:
+        refuse(f"Field '{raw_ref}' is not filterable on this dashboard.")
+    if len(hits) > 1:
+        refuse(f"Field '{raw_ref}' is ambiguous on this dashboard; provide semanticField + datasetId.")
+    return hits[0][1]
+
+
 def validate_and_lock_filters(db: Session, dash: Dashboard, filters: list[dict]) -> list[dict]:
     """Validate incoming filters against the dashboard's allowed public filter
     fields and return LOCKED link entries (value-bearing, not hidden).
@@ -120,15 +190,15 @@ def validate_and_lock_filters(db: Session, dash: Dashboard, filters: list[dict])
     from app.api.public import _build_public_filter_fields
 
     allowed = _build_public_filter_fields(db, dash, [])
-    by_sem = {}
-    by_field = {}
+    # One candidate per filterable IDENTITY (datasetId, semanticField): the
+    # inventory lists a field once per source (chart scan, slicer), and two
+    # different fields may share a bare name (orders.region, customers.region).
+    candidates: dict[tuple, dict] = {}
     for item in allowed:
         sem = str(item.get("semanticField") or "").strip()
-        fld = str(item.get("field") or "").strip()
-        if sem:
-            by_sem[sem.lower()] = item
-        if fld:
-            by_field.setdefault(fld.lower(), item)
+        ref = sem or str(item.get("field") or "").strip()
+        if ref:
+            candidates.setdefault((_dataset_key(item.get("datasetId")), ref.lower()), item)
 
     locked: list[dict] = []
     for f in filters:
@@ -147,21 +217,33 @@ def validate_and_lock_filters(db: Session, dash: Dashboard, filters: list[dict])
             if empty:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Filter '{raw_ref}' has no value.")
 
-        match = by_sem.get(raw_ref.lower()) or by_field.get(raw_ref.lower())
-        if not match:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Field '{raw_ref}' is not filterable on this dashboard.",
-            )
+        match = _resolve_filter_identity(candidates, f, raw_ref)
         locked.append({
-            "field": match.get("field") or match.get("semanticField"),
+            # The bare column name, as a link made in the Public Links dialog
+            # stores it (column.name). The inventory carries it as `field` or
+            # `name`; storing the qualified name here made the lock a different
+            # dedupe key from a filter on the same field, so it ANDed with it
+            # instead of replacing it — an emb_ and an equivalent link answered
+            # the same request differently.
+            "field": _bare_field_of(match),
             "semanticField": match.get("semanticField"),
             "datasetId": match.get("datasetId"),
-            "operator": "in" if isinstance(value, (list, tuple)) and op in ("in", "not_in", "eq") else op,
+            # A list under eq means "one of these"; an exclusion stays an exclusion
+            # (not_in was rewritten to in, so a claim excluding X showed only X).
+            "operator": "in" if isinstance(value, (list, tuple)) and op in ("in", "eq") else op,
             "value": list(value) if isinstance(value, (list, tuple)) else value,
             # value-bearing + not hidden => locked (link_managed_field_keys strips
             # the interactive slicer; _build_public_chart_filters enforces it).
         })
+        # A claim the chart engine would DROP (e.g. `between 5`) must not be
+        # stored: the link would restrict nothing. Same rule the public paths
+        # enforce (filter_layered_merge.link_entry_state).
+        from app.services.filter_layered_merge import LINK_ENTRY_ENFORCED, link_entry_state
+        if link_entry_state(locked[-1]) != LINK_ENTRY_ENFORCED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Filter '{raw_ref}' has a value that cannot be applied with operator '{op}'.",
+            )
     return locked
 
 
@@ -318,26 +400,65 @@ def resolve_pat_allowed_origins(pat) -> list[str]:
     return [str(v) for v in raw] if isinstance(raw, list) else []
 
 
-def embed_policy_for_token(token: str, db: Session) -> dict:
-    """Framing policy for an embed grant token, for the frontend middleware.
+def embed_policy_for_token(token: str, db: Session, origin: str | None = None) -> dict:
+    """Framing policy for an embed page, for the frontend middleware.
 
-    Deliberately returns nothing but the policy: this is called without
-    authentication (the token IS the capability) on every iframe page load, so it
-    must not become a metadata oracle. An unknown/expired token yields the
-    unrestricted default rather than an error — the page itself still refuses the
-    token, and answering "that token doesn't exist" here would turn this into a
-    probe endpoint.
+    An explicit STATE, never an empty list standing in for several meanings:
+
+      * ``unrestricted`` — a stable public token (no per-link policy exists; the
+        deployment-wide EMBED_FRAME_ANCESTORS floor still applies), or a live
+        ``emb_`` grant minted without allowed origins;
+      * ``restricted`` — a live ``emb_`` grant with an allowlist. When the
+        caller passes the framing ``origin`` (the Referer's origin), the
+        decision is made HERE with the one canonical matcher
+        (``origin_allowed``) and returned as ``origin_allowed``;
+      * ``invalid`` — an ``emb_`` token that does not resolve to a live grant:
+        unknown, expired, revoked, its PAT revoked/expired, or its link
+        disabled. Never reported as unrestricted.
+
+    Tokens are 256 random hex characters, so telling "invalid" apart from
+    "unrestricted" is no enumeration oracle. Stable tokens are answered
+    ``unrestricted`` without a lookup: the page itself refuses an unknown one.
     """
-    origins: list[str] = []
-    if token and token.startswith(EMBED_GRANT_PREFIX):
-        grant = (
-            db.query(EmbedGrant)
-            .filter(EmbedGrant.token_hash == _hash_token(token))
-            .first()
-        )
-        if grant is not None and isinstance(grant.allowed_origins, list):
-            origins = [str(v) for v in grant.allowed_origins]
-    return {"allowed_origins": origins, "enforced": bool(origins)}
+    if not token or not token.startswith(EMBED_GRANT_PREFIX):
+        return {"state": "unrestricted", "allowed_origins": [], "enforced": False, "origin_allowed": True}
+    invalid = {"state": "invalid", "allowed_origins": [], "enforced": True, "origin_allowed": False}
+    grant = (
+        db.query(EmbedGrant)
+        .filter(EmbedGrant.token_hash == _hash_token(token))
+        .first()
+    )
+    if grant is None or grant.revoked_at is not None:
+        return invalid
+    now = datetime.now(timezone.utc)
+    exp = grant.expires_at
+    if exp is not None and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp is not None and now >= exp:
+        return invalid
+    if not _minting_token_is_live(grant, db, now):
+        return invalid
+    link_live = (
+        db.query(DashboardPublicLink)
+        .filter(DashboardPublicLink.id == grant.link_id, DashboardPublicLink.is_active == True)  # noqa: E712
+        .first()
+    )
+    if link_live is None:
+        return invalid
+    # The same liveness as data resolution (resolve_embed_grant): a grant whose
+    # minter was deactivated or lost publish is not reported as a live policy.
+    if not _minter_may_still_publish(grant, link_live, db):
+        return invalid
+    origins = [str(v) for v in grant.allowed_origins] if isinstance(grant.allowed_origins, list) else []
+    if not origins:
+        return {"state": "unrestricted", "allowed_origins": [], "enforced": False, "origin_allowed": True}
+    return {
+        "state": "restricted",
+        "allowed_origins": origins,
+        "enforced": True,
+        "origin_allowed": origin_allowed(origin, origins) if origin else None,
+        "expires_at": exp.isoformat() if exp is not None else None,
+    }
 
 
 def get_or_create_embed_link(
@@ -456,6 +577,7 @@ def mint_embed_grant(
     ttl_seconds: int,
     header: str | None = None,
     allowed_origins: list[str] | None = None,
+    personal_access_token_id=None,
 ) -> tuple[str, EmbedGrant]:
     raw = f"{EMBED_GRANT_PREFIX}{secrets.token_hex(EMBED_GRANT_HEX_CHARS // 2)}"
     grant = EmbedGrant(
@@ -463,6 +585,7 @@ def mint_embed_grant(
         link_id=link.id,
         token_hash=_hash_token(raw),
         created_by=created_by,
+        personal_access_token_id=personal_access_token_id,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
         header=sanitize_embed_header(header),
         allowed_origins=list(allowed_origins) if allowed_origins else None,
@@ -474,6 +597,44 @@ def mint_embed_grant(
     if secrets.randbelow(_GRANT_PURGE_PROBABILITY_DENOM) == 0:
         _purge_expired_grants(db)
     return raw, grant
+
+
+def _minting_token_is_live(grant: EmbedGrant, db: Session, now: datetime) -> bool:
+    pat_id = getattr(grant, "personal_access_token_id", None)
+    if pat_id is None:
+        return False  # minted before PAT binding existed — refuse, never assume
+    from app.models.personal_access_token import PersonalAccessToken
+    pat = db.query(PersonalAccessToken).filter(PersonalAccessToken.id == pat_id).first()
+    if pat is None or pat.revoked_at is not None:
+        return False
+    exp = pat.expires_at
+    if exp is not None and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp is None or now < exp
+
+
+def _minter_may_still_publish(grant: EmbedGrant, link: DashboardPublicLink, db: Session) -> bool:
+    from app.core.dependencies import _stamp_auth_context, can_publish
+    from app.models.models import Dashboard
+    from app.models.personal_access_token import PersonalAccessToken
+    from app.models.user import User, UserStatus
+
+    pat = db.query(PersonalAccessToken).filter(
+        PersonalAccessToken.id == getattr(grant, "personal_access_token_id", None)).first()
+    if pat is None:
+        return False
+    owner = db.query(User).filter(User.id == pat.owner_id).first()
+    if owner is None or owner.status != UserStatus.ACTIVE:
+        return False
+    dash = db.query(Dashboard).filter(Dashboard.id == link.dashboard_id).first()
+    if dash is None:
+        return False
+    # Decided with the PAT's own caps, exactly as at mint time.
+    _stamp_auth_context(owner, token_kind="personal_access_token", permission_caps=pat.scopes or {})
+    try:
+        return can_publish(db, owner, dash, "dashboards")
+    finally:
+        db.expunge(owner) if owner in db else None
 
 
 def resolve_embed_grant(token: str, db: Session) -> tuple[DashboardPublicLink, EmbedGrant] | None:
@@ -504,6 +665,11 @@ def resolve_embed_grant(token: str, db: Session) -> tuple[DashboardPublicLink, E
     if exp is not None and now >= exp:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="This embed link has expired.")
 
+    # A grant lives only as long as the PAT that minted it. Revoking the token is
+    # THE revocation for an integration: every link it issued stops at once.
+    if not _minting_token_is_live(grant, db, now):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This embed link has been revoked.")
+
     link = (
         db.query(DashboardPublicLink)
         .filter(DashboardPublicLink.id == grant.link_id, DashboardPublicLink.is_active == True)
@@ -511,6 +677,12 @@ def resolve_embed_grant(token: str, db: Session) -> tuple[DashboardPublicLink, E
     )
     if not link:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="This embed link is no longer available.")
+
+    # ...and only while the person who minted it may still PUBLISH that
+    # dashboard: deactivated, demoted or no longer the owner means the embeds
+    # they issued stop now, not when each grant's TTL runs out.
+    if not _minter_may_still_publish(grant, link, db):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This embed link has been revoked.")
 
     # Throttle telemetry writes (see _USE_COUNT_WRITE_WINDOW_SECONDS): one embed
     # view resolves the grant on its metadata request AND on every chart-data

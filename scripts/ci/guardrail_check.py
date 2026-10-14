@@ -58,13 +58,76 @@ def _load_core():
     return guardrail_core
 
 
-def _git(*args: str) -> str:
+def _git_run(*args: str) -> subprocess.CompletedProcess:
     # errors="replace": git output carries file content, which in this repo is
     # not always decodable under the Windows default codepage. A crash here
     # would silently turn the guardrail off on half the team's machines.
-    out = subprocess.run(["git", "-C", str(REPO_ROOT), *args], capture_output=True,
-                         text=True, encoding="utf-8", errors="replace")
-    return out.stdout or ""
+    return subprocess.run(["git", "-C", str(REPO_ROOT), *args], capture_output=True,
+                          text=True, encoding="utf-8", errors="replace")
+
+
+def _git(*args: str) -> str:
+    """stdout only — for calls whose failure mode is genuinely "nothing to add".
+
+    NOT for resolving a diff range. Dropping the exit code there is what let an
+    unresolvable ref produce an empty string, which is indistinguishable from an
+    empty diff: the command then reported a clean review of a range it had never
+    resolved. `resolve_diff` uses `_git_run` and checks.
+    """
+    return _git_run(*args).stdout or ""
+
+
+class RangeError(Exception):
+    """The guardrail could not obtain the diff it was asked to review.
+
+    Distinct from "the diff is empty" on purpose: one is a verdict, the other is
+    the absence of one.
+    """
+
+    def __init__(self, code: str, message: str, remedy: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.remedy = remedy
+
+    def payload(self, source: str) -> dict:
+        return {
+            "verdict": "unknown",
+            "source": source,
+            "error": {"code": self.code, "message": self.message,
+                      "remedy": self.remedy},
+            # Deliberately absent rather than []: a caller reading `changed_files`
+            # must not be handed an empty list that reads as "nothing changed".
+            "changed_files": None,
+            "reasons": [f"{self.message}{(' — ' + self.remedy) if self.remedy else ''}"],
+        }
+
+
+#: A ref this repository will never carry, used to tell "cannot resolve" from
+#: "resolved to nothing".
+def _resolve_ref(ref: str) -> None:
+    """Raise unless `ref` names a commit in THIS repository.
+
+    `git diff bad_ref...HEAD` prints nothing on stdout and exits non-zero. Checking
+    the refs first is what makes the message name the ref that failed instead of
+    reporting a generic git error.
+    """
+    probe = _git_run("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    if probe.returncode != 0 or not probe.stdout.strip():
+        shallow = (REPO_ROOT / ".git" / "shallow").exists()
+        remedy = (
+            "this clone is SHALLOW — fetch history (actions/checkout with "
+            "`fetch-depth: 0`, or `git fetch --unshallow`) so the range can be "
+            "resolved"
+            if shallow else
+            "pass a ref that exists in this repository, or fetch the branch it "
+            "belongs to"
+        )
+        raise RangeError(
+            "unresolvable_ref",
+            f"cannot resolve {ref!r} to a commit in this repository",
+            remedy,
+        )
 
 
 def _git_diff(staged: bool) -> str:
@@ -119,9 +182,19 @@ def resolve_diff(staged: bool, diff_file: str | None,
     if base or head:
         base = base or "HEAD^"
         head = head or "HEAD"
+        _resolve_ref(base)
+        _resolve_ref(head)
         # Three-dot: changes introduced BY this branch, measured from the merge
         # base, so commits landing on the target meanwhile are not blamed on it.
-        return _git("diff", f"{base}...{head}"), f"{base}...{head}"
+        got = _git_run("diff", f"{base}...{head}")
+        if got.returncode != 0:
+            raise RangeError(
+                "git_failed",
+                f"git diff {base}...{head} exited {got.returncode}: "
+                f"{(got.stderr or '').strip()[:200]}",
+                "check that both refs share history in this clone",
+            )
+        return got.stdout or "", f"{base}...{head}"
     return _git_diff(staged), "staged working tree" if staged else "working tree"
 
 
@@ -152,11 +225,34 @@ def risky_unknown_files(core, diff: str) -> list[str]:
 def cmd_diff(core, staged: bool, as_json: bool,
              diff_file: str | None = None,
              base: str | None = None, head: str | None = None) -> int:
-    diff, source = resolve_diff(staged, diff_file, base, head)
+    source = f"{base or 'HEAD^'}...{head or 'HEAD'}" if (base or head) else "working tree"
+    try:
+        diff, source = resolve_diff(staged, diff_file, base, head)
+    except RangeError as err:
+        # FAIL CLOSED. The guardrail has not judged this change; it could not see
+        # it. Reporting 0 here is how a gate becomes decoration.
+        payload = err.payload(source)
+        if as_json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"guardrail: cannot review {source}")
+            print("guardrail verdict: UNKNOWN")
+            print(f"\n  {err.message}")
+            if err.remedy:
+                print(f"  remedy: {err.remedy}")
+        return 2
     if not as_json:
         print(f"guardrail: reviewing {source}")
     if not diff.strip():
-        print("guardrail: no changes to validate.")
+        # A RESOLVED RANGE THAT IS GENUINELY EMPTY. This one IS a verdict, and
+        # `--json` has to keep its promise in this state too — printing a
+        # sentence here is what handed `json.loads` a parse error.
+        if as_json:
+            print(json.dumps({"verdict": "ok", "source": source,
+                              "changed_files": [],
+                              "reasons": ["no changes in this range"]}, indent=2))
+        else:
+            print("guardrail: no changes to validate.")
         return 0
     result = core.validate_patch(diff)
     if as_json:

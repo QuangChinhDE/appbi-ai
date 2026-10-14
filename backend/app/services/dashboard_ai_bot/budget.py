@@ -27,6 +27,7 @@ Resolution order for the USD ceiling:
 from __future__ import annotations
 
 import logging
+from app.core.log_safety import token_ref
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -131,7 +132,7 @@ def check_budget(
         spent = float(row[0] or 0.0)
         turns = int(row[1] or 0)
     except Exception:  # noqa: BLE001
-        logger.warning("ai budget: usage read failed for token=%s — allowing", token, exc_info=True)
+        logger.warning("ai budget: usage read failed for link=%s — allowing", token_ref(token), exc_info=True)
         return BudgetVerdict(allowed=True)
 
     if limit_usd > 0 and spent >= limit_usd:

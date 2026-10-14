@@ -14,7 +14,6 @@ from app.models.dataset import DatasetTable
 from app.modules.workboards.models import Workboard, WorkboardAppUser, WorkboardSubmission
 from app.modules.workboards.roles import (
     APP_USER_ROLE_OWNER,
-    DEFAULT_APP_USER_PIN,
     build_default_owner_username,
 )
 from app.modules.workboards.schemas import (
@@ -278,12 +277,20 @@ def _resolve_related_tables(
         for join in (explore.get("joins") or []):
             if not isinstance(join, dict):
                 continue
-            from_column = str(join.get("from_column") or "").strip()
+            # A lookup is a to-one, single-column relationship the runtime
+            # actually uses — read through the relationship contract (an
+            # invalid, inactive, composite or fanning row is not a lookup).
+            from app.services.semantic_join_resolver import read_join_contract
+
+            contract = read_join_contract(str(explore.get("base_view_name") or ""), join)
+            if not (contract.valid and contract.is_active and len(contract.key_pairs) == 1
+                    and contract.cardinality in ("many_to_one", "one_to_one")):
+                continue
+            from_column, to_column = contract.key_pairs[0]
             if not from_column or from_column not in primary_col_names:
                 continue
             target_view = view_by_name.get(str(join.get("view") or ""))
             target_table_id = target_view.get("dataset_table_id") if isinstance(target_view, dict) else None
-            to_column = str(join.get("to_column") or "").strip()
             if not target_table_id or not to_column:
                 continue
             table_key = f"lookup_{target_table_id}"
@@ -308,7 +315,7 @@ def _resolve_related_tables(
                     "from_column": from_column,
                     "to_table": table_key,
                     "to_column": to_column,
-                    "cardinality": "many_to_one",
+                    "cardinality": contract.cardinality,
                 }
             )
             lookup_tables.append(
@@ -737,11 +744,18 @@ class WorkboardService:
             db.flush()
 
             default_owner_username = build_default_owner_username(db_obj.id)
+            # A random one-time PIN, returned once to the creator (response
+            # header) and never stored in plaintext. It used to be "123456" for
+            # every workboard: anyone holding a workspace token could log in as
+            # the owner of any app whose PIN was never changed.
+            import secrets as _secrets
+
+            initial_pin = "".join(_secrets.choice("0123456789") for _ in range(8))
             db.add(
                 WorkboardAppUser(
                     workboard_id=db_obj.id,
                     username=default_owner_username,
-                    pin_hash=hash_pin(DEFAULT_APP_USER_PIN),
+                    pin_hash=hash_pin(initial_pin),
                     role=APP_USER_ROLE_OWNER,
                     active=True,
                     context={},
@@ -757,7 +771,7 @@ class WorkboardService:
             "_default_app_user",
             {
                 "username": default_owner_username,
-                "pin": DEFAULT_APP_USER_PIN,
+                "pin": initial_pin,
             },
         )
         logger.info(

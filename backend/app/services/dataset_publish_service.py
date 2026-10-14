@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 LIFECYCLE_STATES = {
     "draft", "ready", "syncing", "published", "changes_pending", "sync_failed", "disabled",
 }
-_PUBLISH_LEASE_SECONDS = 3600  # a publish/sync owns the dataset for up to 1h
+_PUBLISH_LEASE_SECONDS = 3600  # a publish/sync owns the dataset for up to 1h…
+_PUBLISH_LEASE_RENEW_SECONDS = 300  # …renewed every 5 min while it is still running
 _REFRESH_RUN_KEEP = 50  # rolling history depth per dataset
 
 
@@ -170,6 +171,11 @@ def reconcile_stuck_runs(db: Session, dataset_id: Optional[int] = None, force: b
         for run in q.all():
             if not force and _qc.is_claimed_global(_lease_key(run.dataset_id)):
                 continue  # a live sync holds the lease — genuinely in flight
+            if _sync_looks_alive(run.dataset_id):
+                # Progress is still moving SOMEWHERE: another worker's live sync
+                # (a restart here must not fail it or free its lease), or a sync
+                # that outlived its lease TTL. Only a provably dead run is reaped.
+                continue
             if force:
                 # Startup: a fresh process runs no sync, so a still-claimed lease
                 # is a crash leftover — free it so it can't block the next sync.
@@ -258,11 +264,17 @@ def _refresh_run_tables(db: Session, dataset_id: int, built: Optional[list]) -> 
         return None
 
 
-def design_fingerprint(db: Session, dataset_id: int) -> str:
+def design_fingerprint(db: Session, dataset_id: int,
+                       parent_generations: Optional[Dict[int, int]] = None) -> str:
     """sha256 of the LOCKED design — tables (source kind/name/query + column
     name:type + transforms + type overrides) and the semantic model
     (view dimensions/measures + explore joins). Stable across ordering. A change
-    here after publish ⇒ changes_pending."""
+    here after publish ⇒ changes_pending.
+
+    ``parent_generations`` ({parent_dataset_id: generation}) fingerprints a
+    composed table against the parent generation it was PINNED to (the publish
+    records what it validated); omitted, the parent's current one (what a reader
+    compares against — so a parent that moved on reads changes_pending)."""
     import app.models.semantic as sem
 
     parts: List[str] = []
@@ -294,8 +306,11 @@ def design_fingerprint(db: Session, dataset_id: int) -> str:
     # re-validates + re-publishes against the new parent generation (principle #2).
     for t in tables:
         if getattr(t, "source_kind", None) == "dataset":
-            parent = db.query(Dataset).filter(Dataset.id == t.parent_dataset_id).first()
-            gen = getattr(parent, "published_generation", None) if parent else None
+            if parent_generations is not None and t.parent_dataset_id in parent_generations:
+                gen = parent_generations[t.parent_dataset_id]
+            else:
+                parent = db.query(Dataset).filter(Dataset.id == t.parent_dataset_id).first()
+                gen = getattr(parent, "published_generation", None) if parent else None
             parts.append("P|%s|%s|%s" % (t.id, t.parent_dataset_id, gen))
     model = db.query(sem.SemanticModel).filter(sem.SemanticModel.dataset_id == dataset_id).first()
     if model is not None:
@@ -314,6 +329,33 @@ def design_fingerprint(db: Session, dataset_id: int) -> str:
             .all()
         )
         for e in explores:
+            parts.append("E|%s|%s" % (e.base_view_name, _stable(e.joins)))
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def authored_design_fingerprint(db: Session, dataset_id: int) -> str:
+    """sha256 of what a PERSON authors and a sync never writes: each table's
+    source (kind / name / query), enabled flag, transformations and type
+    overrides, and the model's measures and joins. Excludes the column cache
+    and the dimensions mirrored from it — the build itself rewrites those (the
+    physical-type reconcile), so they cannot tell an edit from the sync."""
+    import app.models.semantic as sem
+
+    tables = (db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id)
+              .order_by(DatasetTable.id).all())
+    parts: List[str] = [
+        "|".join(["T", str(t.id), str(getattr(t, "enabled", True)), str(t.source_kind),
+                  str(t.source_table_name or ""), str(t.source_query or ""),
+                  _stable(t.transformations), _stable(t.type_overrides)])
+        for t in tables
+    ]
+    model = db.query(sem.SemanticModel).filter(sem.SemanticModel.dataset_id == dataset_id).first()
+    if model is not None:
+        for v in (db.query(sem.SemanticView).filter(sem.SemanticView.dataset_table_id.in_([t.id for t in tables]))
+                  .order_by(sem.SemanticView.id).all()):
+            parts.append("V|%s|%s" % (v.name, _stable(v.measures)))
+        for e in (db.query(sem.SemanticExplore).filter(sem.SemanticExplore.model_id == model.id)
+                  .order_by(sem.SemanticExplore.id).all()):
             parts.append("E|%s|%s" % (e.base_view_name, _stable(e.joins)))
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
@@ -370,12 +412,19 @@ def get_publish_info(db: Session, dataset: Dataset) -> Dict[str, Any]:
             .first()
             is not None
         )
+    live_engines, live_executable = _live_execution_engines(db, dataset.id)
     return {
         "publish_state": state,  # None = legacy
         "published_generation": dataset.published_generation,
-        "published_at": dataset.published_at.isoformat() if dataset.published_at else None,
+        "published_at": _utc_iso(dataset.published_at),
         "last_sync_error": dataset.last_sync_error,
         "syncing": syncing,
+        # A live chart runs on ONE engine. When a dataset's source tables span
+        # more than one engine, every chart is refused live (it must be Sync &
+        # Published to serve a single-engine snapshot). Surfaced so the dataset
+        # UI can say so BEFORE a chart fails, instead of showing a plain "Live".
+        "live_engines": live_engines,
+        "live_executable": live_executable,
         "stoppable": syncing,  # a stop can be requested only while a sync is live
         "has_published_data": dataset.published_generation is not None,
         "has_prior_complete": has_prior_complete,
@@ -384,8 +433,81 @@ def get_publish_info(db: Session, dataset: Dataset) -> Dict[str, Any]:
     }
 
 
+def _live_execution_engines(db: Session, dataset_id: int) -> tuple[list[str], bool]:
+    """(connection labels, live_executable) for a dataset's source-backed tables.
+
+    A live chart runs on ONE physical connection. The runtime
+    (``execution_plan.refuse_foreign_live_sources``) refuses a live query that
+    reads tables from more than one connection IDENTITY — (engine, host, port,
+    database, schema, user) — not merely more than one dialect: two PostgreSQL
+    datasources on different databases are the same dialect but cannot share a
+    live connection. This mirrors that exact contract so the UI warns whenever
+    the runtime would refuse a cross-table live chart. Composed / calculated
+    tables carry no datasource of their own and do not count.
+    """
+    from app.models.models import DataSource
+    from app.services.execution_plan import _connection_identity
+
+    ds_ids = {
+        t.datasource_id
+        for t in db.query(DatasetTable).filter(
+            DatasetTable.dataset_id == dataset_id,
+            DatasetTable.enabled.is_(True),
+        ).all()
+        if t.datasource_id and (t.source_kind in (None, "physical_table", "sql_query"))
+    }
+    if not ds_ids:
+        return [], True
+    # Group by the runtime's connection identity. Two datasources that resolve
+    # to the same physical scope (e.g. duplicate records of one DB) count as one.
+    conns: dict[tuple, str] = {}
+    for d in db.query(DataSource).filter(DataSource.id.in_(sorted(ds_ids))).all():
+        dtype = str(getattr(d.type, "value", d.type)).lower()
+        conns[_connection_identity(d)] = f"{d.name} ({dtype})"
+    labels = sorted(conns.values())
+    return labels, len(conns) <= 1
+
+
+def _utc_iso(dt):
+    from app.services.time_contract import utc_iso
+
+    return utc_iso(dt)
+
+
 def _lease_key(dataset_id: int) -> str:
     return f"datasetpublish::{dataset_id}"
+
+
+#: How long a start waits for a FINISHED sync to release its lease.
+_LEASE_HANDOFF_WAIT_SECONDS = 10.0
+
+
+def _claim_publish_lease(dataset_id: int) -> bool:
+    """Claim the dataset's publish lease. A sync records its terminal run (the
+    history already says Success/Failed) a moment BEFORE its thread releases the
+    lease, so a Sync clicked in that gap was refused as "already syncing" for a
+    sync that had finished. When no run is still ``running``, wait briefly for
+    the release instead of refusing; a genuinely running sync still refuses."""
+    import time as _time
+
+    if _qc.try_claim_global(_lease_key(dataset_id), _PUBLISH_LEASE_SECONDS):
+        return True
+    from app.core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        running = db.query(DatasetRefreshRun.id).filter(
+            DatasetRefreshRun.dataset_id == dataset_id, DatasetRefreshRun.status == "running").first()
+    finally:
+        db.close()
+    if running is not None:
+        return False
+    deadline = _time.monotonic() + _LEASE_HANDOFF_WAIT_SECONDS
+    while _time.monotonic() < deadline:
+        _time.sleep(0.25)
+        if _qc.try_claim_global(_lease_key(dataset_id), _PUBLISH_LEASE_SECONDS):
+            return True
+    return False
 
 
 def start_sync_and_publish(
@@ -402,13 +524,32 @@ def start_sync_and_publish(
     from app.core.database import SessionLocal
     from app.services import sync_progress
 
-    if not _qc.try_claim_global(_lease_key(dataset_id), _PUBLISH_LEASE_SECONDS):
+    if not _claim_publish_lease(dataset_id):
+        logger.info("[publish] start refused dataset=%s trigger=%s: already_syncing", dataset_id, trigger)
         return {"started": False, "reason": "already_syncing"}
+    if _qc.is_claimed_global(f"snaprebuild::{dataset_id}"):
+        # A background rebuild is building this dataset's tables right now; a
+        # publish started on top would race it table by table. One writer.
+        _qc.release_global(_lease_key(dataset_id))
+        logger.info("[publish] start refused dataset=%s trigger=%s: rebuilding", dataset_id, trigger)
+        return {"started": False, "reason": "rebuilding"}
 
     sync_progress.start(dataset_id, total=0, trigger=trigger)
 
+    stop_heartbeat = threading.Event()
+
+    def _heartbeat() -> None:
+        # A sync can outlive the lease TTL (big extracts). Without renewal a
+        # second Sync & Publish could claim the dataset and write alongside this
+        # one, and the run-history reconcile would read this live run as dead.
+        while not stop_heartbeat.wait(_PUBLISH_LEASE_RENEW_SECONDS):
+            if not _qc.renew_global(_lease_key(dataset_id), _PUBLISH_LEASE_SECONDS):
+                logger.warning("[publish] lease for dataset=%s lapsed mid-sync (not renewed)", dataset_id)
+                return
+
     def _run() -> None:
         db = SessionLocal()
+        threading.Thread(target=_heartbeat, name=f"ds-publish-hb-{dataset_id}", daemon=True).start()
         # Open the history row HERE (before the blocking body) so the crash
         # handler below can finalize it even if the body raises before its own
         # terminal-branch finalize runs.
@@ -432,6 +573,7 @@ def start_sync_and_publish(
             # Idempotent: no-op if a terminal branch already finalized the row.
             _refresh_run_finish(db, run_id, "failed", error="internal error during sync")
         finally:
+            stop_heartbeat.set()
             db.close()
             _qc.release_global(_lease_key(dataset_id))
             from app.services import sync_control
@@ -441,19 +583,47 @@ def start_sync_and_publish(
     return {"started": True}
 
 
+#: A sync whose progress has not moved for this long is presumed dead.
+STUCK_SYNC_STALE_SECONDS = 20 * 60
+
+
+def _sync_looks_alive(dataset_id: int, now: Optional[float] = None) -> bool:
+    """Is a sync for ``dataset_id`` still making progress SOMEWHERE? The running
+    sync mirrors its progress (with ``updated_at``) to the shared cross-worker
+    store; a fresh progress record means another worker is still running it."""
+    import time as _time
+
+    from app.services import sync_progress
+
+    p = sync_progress.get(dataset_id) or {}
+    ts = p.get("updated_at")
+    if not isinstance(ts, (int, float)):
+        return False
+    if str(p.get("phase") or "") in ("done", "failed", "stopped"):
+        return False
+    return ((now or _time.time()) - float(ts)) < STUCK_SYNC_STALE_SECONDS
+
+
 def reap_stuck_syncs() -> int:
-    """Startup reaper: a fresh process means NO sync is actually running, so any
-    dataset left in 'syncing' is a crash/restart casualty — it would otherwise
-    show "Syncing…" forever and block new syncs until the 1h lease TTL expires
-    (the lease lives in shared sqlite and survives a restart). Release the stale
-    publish lease + reset the state to its safe prior value. Mirrors the workboard
-    stuck-run reaper. NEVER raises."""
+    """Startup reaper: a dataset left in 'syncing' by a crash/restart would show
+    "Syncing…" forever and block new syncs until the 1h lease TTL expires (the
+    lease lives in shared sqlite and survives a restart). Release the stale
+    publish lease + reset the state to its safe prior value. NEVER raises.
+
+    Only a sync that is provably DEAD is reaped — its cross-worker progress has
+    not moved for STUCK_SYNC_STALE_SECONDS (or it has none). "A fresh process
+    means no sync is running" holds for one worker only: with several, one
+    worker's restart released ANOTHER worker's live lease and reset its state,
+    and a second sync could then run — and publish — alongside the first."""
     from app.core.database import SessionLocal
     db = SessionLocal()
     n = 0
     try:
         stuck = db.query(Dataset).filter(Dataset.publish_state == "syncing").all()
         for ds in stuck:
+            if _sync_looks_alive(ds.id):
+                logger.info("[publish] dataset %s still syncing elsewhere (progress is fresh) — not reaped", ds.id)
+                continue
             _qc.release_global(_lease_key(ds.id))
             if ds.published_generation is not None:
                 ds.publish_state = "published"  # keep serving the pinned gen
@@ -519,9 +689,10 @@ def _sync_and_publish_blocking(
     #    the same BQ host, resolvable at its pinned generation, and the edge must
     #    not form a cycle / exceed depth. Fail LOUD (sync_failed) rather than
     #    publish a child pointing at a missing/unpublished parent (principles #2/#6).
+    validated_parents: Dict[int, int] = {}
     try:
         from app.services import dataset_composition_service as _comp
-        _comp.validate_parents_publishable(db, dataset_id)
+        validated_parents = _comp.validate_parents_publishable(db, dataset_id) or {}
     except ValueError as exc:
         ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         ds.publish_state = "sync_failed"
@@ -533,9 +704,10 @@ def _sync_and_publish_blocking(
         logger.warning("[publish] composition pre-flight FAILED dataset=%s: %s", dataset_id, exc)
         return {"ok": False, "error": str(exc)}
 
-    # 1) LOCK the design fingerprint NOW (before ETL) so a mid-sync edit doesn't
-    #    silently publish a different design than was validated.
-    locked_fp = design_fingerprint(db, dataset_id)
+    # 1) LOCK the authored design NOW (before ETL): an edit landing mid-sync must
+    #    refuse the publish (checked after the build), never publish a generation
+    #    built partly from another design.
+    locked_authored = authored_design_fingerprint(db, dataset_id)
 
     # 2) SYNC — build one complete generation (reuses the proven builder).
     result = snapshot_service.refresh_all_for_dataset(db, dataset_id, force=True)
@@ -565,10 +737,28 @@ def _sync_and_publish_blocking(
                 "built": built, "skipped": skipped}
 
     # 3) VALIDATE gate — the generation must fully cover every materializable
-    #    (enabled, non-calendar, non-derived) table.
+    #    (enabled, non-calendar, non-derived) table, AND be built from the design
+    #    that was locked: tables are built from the design as it is AT BUILD TIME,
+    #    so an edit landing mid-sync published a generation partly built from the
+    #    new design under the OLD design's fingerprint. Refused — sync again.
     from app.services import sync_progress
     sync_progress.set_phase(dataset_id, "validating")
     ok, reason = _validate_generation(db, dataset_id, generation)
+    if not ok and not built and result.get("no_host"):
+        # Nothing was built because there is nowhere to build it: no BigQuery
+        # datasource hosts this dataset's snapshots. "build có bảng lỗi" sent
+        # the user hunting for a table error that does not exist.
+        reason = ("Không có nơi lưu snapshot: dataset này chưa có BigQuery datasource nào bật "
+                  "materialization (snapshot host), nên không bảng nào được dựng. Thêm một "
+                  "BigQuery host để Sync & Publish.")
+    if not ok and result.get("errors"):
+        names = {t.id: (t.display_name or t.source_table_name or f"#{t.id}")
+                 for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()}
+        causes = [f"{names.get(tid, tid)}: {err}" for tid, err in sorted(result["errors"].items())]
+        reason = f"{reason} " + " | ".join(causes[:3]) if reason else " | ".join(causes[:3])
+    if ok and authored_design_fingerprint(db, dataset_id) != locked_authored:
+        ok, reason = False, ("Thiết kế dataset đã thay đổi trong lúc đồng bộ — generation vừa dựng không "
+                             "khớp một thiết kế duy nhất nên không được publish. Bấm Sync & Publish lại.")
     if not ok:
         ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         ds.publish_state = "sync_failed"
@@ -589,7 +779,15 @@ def _sync_and_publish_blocking(
     ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     ds.published_generation = generation
     ds.published_at = datetime.utcnow()
-    ds.published_design_fingerprint = locked_fp
+    # The design AS BUILT: the build itself rewrites the column cache (the
+    # physical-type reconcile), so the pre-build fingerprint made a fresh
+    # publish read "changes pending" for changes nobody made. An authored edit
+    # during the sync already refused the publish above. A composed table is
+    # fingerprinted against the parent generation it is PINNED to (what was
+    # validated): a parent that re-published meanwhile then reads
+    # changes_pending, never "published" over an older parent generation.
+    ds.published_design_fingerprint = design_fingerprint(
+        db, dataset_id, parent_generations=validated_parents or None)
     ds.publish_state = "published"
     ds.last_sync_error = None
     db.commit()
@@ -605,7 +803,14 @@ def _sync_and_publish_blocking(
     #    changes_pending (they keep serving their OLD pin until they re-publish).
     try:
         from app.services import dataset_composition_service as _comp
-        _comp.pin_parent_generations(db, dataset_id)
+        _comp.pin_parent_generations(db, dataset_id, validated_parents)
+        if validated_parents:
+            # Pinning re-mirrors the composed tables' columns from the pinned
+            # parent: fingerprint the design as pinned, or a fresh publish reads
+            # changes_pending (and the scheduler then skips it).
+            ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+            ds.published_design_fingerprint = design_fingerprint(
+                db, dataset_id, parent_generations=validated_parents)
         affected = _comp.cascade_children_to_pending(db, dataset_id)
         db.commit()
         if affected:
@@ -656,10 +861,34 @@ def _validate_generation(db: Session, dataset_id: int, generation: Optional[int]
     refs, _fps, _asof = snapshot_service.resolve_specific_generation_refs(db, want, generation)
     if not refs:
         missing = [tid for tid in want]  # resolve returns empty if ANY missing
-        return False, f"Generation {generation} chưa phủ đủ {len(missing)} bảng — build có bảng lỗi."
+        msg = f"Generation {generation} chưa phủ đủ {len(missing)} bảng — build có bảng lỗi."
+        # WHICH table failed and WHY (its own build error) — the bare message
+        # sent the user hunting for the cause the build had already recorded.
+        from app.models.dataset import DatasetTableSnapshot
+
+        names = {t.id: (t.display_name or t.source_table_name or f"#{t.id}") for t in tables}
+        failed = (db.query(DatasetTableSnapshot)
+                  .filter(DatasetTableSnapshot.dataset_id == dataset_id,
+                          DatasetTableSnapshot.generation == int(generation),
+                          DatasetTableSnapshot.status == "failed")
+                  .order_by(DatasetTableSnapshot.id).all())
+        causes = [f"{names.get(s.dataset_table_id, s.dataset_table_id)}: "
+                  f"{(str(s.error).strip().splitlines() or [''])[0][:240]}" for s in failed if s.error]
+        if causes:
+            msg += " " + " | ".join(causes[:3])
+        return False, msg
     # semantic model must exist + resolve views for the base tables
     import app.models.semantic as sem
     model = db.query(sem.SemanticModel).filter(sem.SemanticModel.dataset_id == dataset_id).first()
     if model is None:
         return False, "Dataset chưa có semantic model — chạy Generate Model trước khi publish."
+    # Semantic health: a relationship declared many-to-one whose one-side key is
+    # not unique (or a declared primary key with duplicates) inflates every
+    # total that joins through it — silently. Refuse to publish that; the prior
+    # generation keeps serving. A check that could not run does not block.
+    from app.services.semantic_health_service import publish_blockers
+
+    blockers = publish_blockers(db, dataset_id, generation=generation)
+    if blockers:
+        return False, "Semantic health: " + " | ".join(blockers[:5])
     return True, None

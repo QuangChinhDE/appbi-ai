@@ -251,8 +251,13 @@ def update_user(
     payload = body.model_dump(exclude_unset=True)
     team_ids = payload.pop("team_ids", None)
 
+    status_changed = "status" in payload and payload["status"] != user.status
     for field, value in payload.items():
         setattr(user, field, value)
+    if status_changed:
+        from app.core.tokens import new_security_stamp
+
+        user.security_stamp = new_security_stamp()  # end every session now
 
     if team_ids is not None:
         _replace_user_teams(db, user, team_ids)
@@ -279,7 +284,10 @@ def deactivate_user(
             detail="You cannot deactivate your own account",
         )
 
+    from app.core.tokens import new_security_stamp
+
     user.status = UserStatus.DEACTIVATED
+    user.security_stamp = new_security_stamp()  # end every session now
     db.commit()
     audit(
         db,

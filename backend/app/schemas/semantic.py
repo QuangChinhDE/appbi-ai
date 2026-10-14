@@ -354,6 +354,9 @@ class JoinDefinition(BaseModel):
     type: Literal["left", "inner", "right", "full"] = "left"
     sql_on: str  # SQL join condition, can use ${view.field} placeholders
     relationship: Optional[Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"]] = None
+    # Canonical cardinality — the value the engine and grain guard read. It was
+    # not declared here, so a join re-saved through this schema silently lost it.
+    cardinality: Optional[Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"]] = None
     from_view: Optional[str] = None
     from_column: Optional[str] = None
     to_column: Optional[str] = None
@@ -366,8 +369,15 @@ class JoinDefinition(BaseModel):
     # Phase-3b: edge controls inspired by Power BI's "Manage relationships".
     # Default both fields preserve pre-Phase-3 behaviour so legacy joins keep
     # working without migration: every existing join is active + single-direction.
-    is_active: bool = True
-    cross_filter: Literal["single", "both"] = "single"
+    # None = omitted: a whole-list write keeps the stored relationship's value
+    # (a new relationship takes the defaults true / "single").
+    is_active: Optional[bool] = None
+    cross_filter: Optional[Literal["single", "both"]] = None
+    # Provenance written by the server (calendar roles, an auto join the user
+    # edited). Declared so a GET → PUT round trip keeps them; the server takes
+    # them from the stored row of the same identity anyway.
+    calendar_role: Optional[str] = None
+    user_edited: Optional[bool] = None
 
 
 # Semantic View
@@ -443,6 +453,10 @@ class SemanticExploreUpdate(BaseModel):
     joins: Optional[List[JoinDefinition]] = None
     default_filters: Optional[Dict[str, Any]] = None
     description: Optional[str] = None
+    # Optimistic concurrency for the whole-list relationship write: the
+    # `joins_version` the client read. REQUIRED when `joins` is sent (428
+    # without it, 409 when the stored list changed since).
+    expected_joins_version: Optional[str] = None
 
 
 class SemanticExplore(SemanticExploreBase):
@@ -450,6 +464,20 @@ class SemanticExplore(SemanticExploreBase):
     model_id: int
     created_at: datetime
     updated_at: datetime
+    # content version of the stored relationship list — quote it as
+    # expected_joins_version when replacing the list
+    joins_version: Optional[str] = None
+
+    @field_validator("joins", mode="after")
+    @classmethod
+    def _read_as_the_runtime_reads(cls, joins):
+        # an omitted is_active / cross_filter is shown as the runtime reads it
+        for j in joins or []:
+            if j.is_active is None:
+                j.is_active = True
+            if j.cross_filter is None:
+                j.cross_filter = "single"
+        return joins
 
     class Config:
         from_attributes = True
@@ -597,3 +625,6 @@ class SemanticQueryResponse(BaseModel):
     execution_time_ms: Optional[float] = None
     pivoted_columns: List[PivotedColumn] = []  # Metadata for pivoted columns
     warnings: List[str] = []  # Any warnings about query execution
+    # Filters the engine left out by its declared soft-drop policy
+    # (unreachable_view / no_join_path) — never silent, as on /charts.
+    dropped_filters: List[Dict[str, Any]] = []

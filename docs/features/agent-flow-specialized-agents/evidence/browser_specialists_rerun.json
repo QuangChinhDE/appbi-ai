@@ -1,0 +1,940 @@
+{
+  "config": {
+    "argv": [
+      "C:\\nvm4w\\nodejs\\node.exe",
+      "D:\\Appv2\\wt-af-specialist\\e2e\\node_modules\\@playwright\\test\\cli.js",
+      "test",
+      "tests/agent-flow-specialists.spec.ts",
+      "--project=chromium",
+      "--retries=0",
+      "--workers=1",
+      "--reporter=line,json"
+    ],
+    "configFile": "D:\\Appv2\\wt-af-specialist\\e2e\\playwright.config.ts",
+    "rootDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "apiUrl": "http://localhost:8137",
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "D:/Appv2/wt-af-specialist/e2e/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "apiUrl": "http://localhost:8137",
+          "actualWorkers": 1
+        },
+        "id": "setup",
+        "name": "setup",
+        "testDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "/auth\\.setup\\.ts/"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "D:/Appv2/wt-af-specialist/e2e/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "apiUrl": "http://localhost:8137",
+          "actualWorkers": 1
+        },
+        "id": "chromium",
+        "name": "chromium",
+        "testDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+        "testIgnore": [
+          "/security\\/.*\\.spec\\.ts/",
+          "/chart-hardening\\.spec\\.ts/",
+          "/observability\\.spec\\.ts/"
+        ],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "D:/Appv2/wt-af-specialist/e2e/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "apiUrl": "http://localhost:8137",
+          "actualWorkers": 1
+        },
+        "id": "chromium-1920",
+        "name": "chromium-1920",
+        "testDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "/layout\\.spec\\.ts/"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "D:/Appv2/wt-af-specialist/e2e/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "apiUrl": "http://localhost:8137",
+          "actualWorkers": 1
+        },
+        "id": "chart-hardening",
+        "name": "chart-hardening",
+        "testDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "/chart-hardening\\.spec\\.ts/"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "D:/Appv2/wt-af-specialist/e2e/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "apiUrl": "http://localhost:8137",
+          "actualWorkers": 1
+        },
+        "id": "observability",
+        "name": "observability",
+        "testDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "/observability\\.spec\\.ts/"
+        ],
+        "timeout": 180000
+      },
+      {
+        "outputDir": "D:/Appv2/wt-af-specialist/e2e/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "apiUrl": "http://localhost:8137",
+          "actualWorkers": 1
+        },
+        "id": "security",
+        "name": "security",
+        "testDir": "D:/Appv2/wt-af-specialist/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "/security\\/.*\\.spec\\.ts/"
+        ],
+        "timeout": 60000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "line"
+      ],
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.63.0",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "auth.setup.ts",
+      "file": "auth.setup.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "authenticate as admin",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "setup",
+              "projectName": "setup",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 7317,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-12T03:54:59.000Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "17e3fe6f4d9d8bd79c6b-1580989d32f149e984ed",
+          "file": "auth.setup.ts",
+          "line": 17,
+          "column": 6
+        }
+      ]
+    },
+    {
+      "title": "agent-flow-specialists.spec.ts",
+      "file": "agent-flow-specialists.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "specialist boundary (server)",
+          "file": "agent-flow-specialists.spec.ts",
+          "line": 57,
+          "column": 6,
+          "specs": [
+            {
+              "title": "a grant outside the role is refused on save (forged payload)",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 101,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:55:08.241Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-7309e9a1fe861c99cb21",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 58,
+              "column": 7
+            },
+            {
+              "title": "an unknown role is refused on save",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 158,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:55:08.394Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-dc88827261b605eccc5e",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 66,
+              "column": 7
+            },
+            {
+              "title": "a Skill grant is outside every role",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 50,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:55:08.573Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-40c712521830dd0762f9",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 73,
+              "column": 7
+            },
+            {
+              "title": "role dependencies and impossible inputs block publish, even acknowledged",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 314,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:55:08.639Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-9ccb6287e8ac1959175e",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 80,
+              "column": 7
+            },
+            {
+              "title": "a custom agent keeps any grant it had (backward compatible)",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 252,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:55:08.967Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-29142d10fb755fa694e3",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 100,
+              "column": 7
+            },
+            {
+              "title": "the role catalogue is served with the tools it bounds",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 62,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:55:09.232Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-bee8bc00e680e9fc887e",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 112,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "specialist authoring (builder)",
+          "file": "agent-flow-specialists.spec.ts",
+          "line": 123,
+          "column": 6,
+          "specs": [
+            {
+              "title": "add a specialist, see its boundary, switch role, wire reads-from, save",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 4471,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:55:09.310Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-d10d7bd07c7826683d90",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 126,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "specialist journeys (live model)",
+          "file": "agent-flow-specialists.spec.ts",
+          "line": 170,
+          "column": 6,
+          "specs": [
+            {
+              "title": "J1 a single custom agent still answers from the report",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 14453,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:55:13.914Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-431ff10344caca89f9f8",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 174,
+              "column": 7
+            },
+            {
+              "title": "J2/J4 reader then analyst: tools stay inside each role, step 1 reaches step 2",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 34124,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:55:28.376Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-787a77ad3b2982a22adf",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 184,
+              "column": 7
+            },
+            {
+              "title": "J3 knowledge reader cites only the attached document",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 7757,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:56:02.519Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-5d6267de0fa3dad14c53",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 209,
+              "column": 7
+            },
+            {
+              "title": "J6/J9 a failed input is told to the next step and the run is partial",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 10532,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:56:10.294Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-704baab4e7a4a6d34eb6",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 219,
+              "column": 7
+            },
+            {
+              "title": "J8 a branch that did not run is reported missing, not silently skipped",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 6815,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:56:20.841Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-a16e4747d490435f9ef8",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 241,
+              "column": 7
+            },
+            {
+              "title": "J7 coordinator picks the matching specialist and says when none fits",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 18052,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:56:27.670Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-c819a0b2613cf48552b5",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 263,
+              "column": 7
+            },
+            {
+              "title": "J12 publish, edit, and the published version keeps its behaviour",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 239,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:56:45.733Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-de0d6424af6c3961dd75",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 284,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "builder: branches, blanks, follow-ups",
+          "file": "agent-flow-specialists.spec.ts",
+          "line": 303,
+          "column": 6,
+          "specs": [
+            {
+              "title": "F09 a case can be removed, a new case key is unique, IF keeps its minimum",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 4263,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:56:45.983Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-acf99f46944928eb22f6",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 306,
+              "column": 7
+            },
+            {
+              "title": "F08 a blank Switch saves as a draft but cannot publish, and says why",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 141,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:56:50.259Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-2f46ab94caeb3988e94a",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 340,
+              "column": 7
+            },
+            {
+              "title": "F10 the answering step offers a follow-up switch that is saved",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 2810,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:56:50.415Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-297e0c9be775790613d4",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 352,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "analytics meaning (live model, SaaS fixture)",
+          "file": "agent-flow-specialists.spec.ts",
+          "line": 369,
+          "column": 6,
+          "specs": [
+            {
+              "title": "the Metric Analyst answers August ARR with August, not July or a sum",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 12749,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:56:53.238Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-26dbfa34ad72d0a4cd51",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 395,
+              "column": 7
+            },
+            {
+              "title": "GMV is never published with product revenue's figure (Olist)",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 5366,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:57:05.998Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-678a4466e7cafdbae4cf",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 409,
+              "column": 7
+            },
+            {
+              "title": "a range total of a flow measure is the range, not one month",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 600000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 4577,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-12T03:57:11.378Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "7b54a2978bf35d0b64b9-3a725f109a337c392388",
+              "file": "agent-flow-specialists.spec.ts",
+              "line": 428,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-12T03:54:57.983Z",
+    "duration": 142015.06399999998,
+    "expected": 21,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

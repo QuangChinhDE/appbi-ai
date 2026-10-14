@@ -15,14 +15,18 @@ export function useUrlNav() {
   const sp = useSearchParams();
 
   const set = useCallback(
-    (updates: Record<string, string | null | undefined>) => {
+    (updates: Record<string, string | null | undefined>, opts?: { push?: boolean }) => {
       const next = new URLSearchParams(Array.from(sp.entries()));
       for (const [k, v] of Object.entries(updates)) {
         if (v == null || v === '') next.delete(k);
         else next.set(k, v);
       }
       const qs = next.toString();
-      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+      const url = qs ? `${pathname}?${qs}` : pathname;
+      // Default stays a soft replace. `push` adds a history entry, for a move
+      // between distinct views (list -> detail) that Back should undo.
+      if (opts?.push) router.push(url, { scroll: false });
+      else router.replace(url, { scroll: false });
     },
     [router, pathname, sp],
   );

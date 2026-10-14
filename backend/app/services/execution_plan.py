@@ -34,7 +34,10 @@ and failing with a cryptic parser error.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -147,6 +150,67 @@ def _resolve_dataset_id(db: Session, binding: dict, base_view_name: str) -> Opti
             if bt is not None:
                 return bt.dataset_id
     return None
+
+
+class ReadScope:
+    """ONE logical read — a public page batch, an AI turn, an export page — sees
+    ONE snapshot generation per dataset (the dashboard generation contract).
+
+    Each tile resolves its generation independently, so a read straddling a
+    publish (the pointer flips N → N+1 between two tiles) used to draw tile A
+    from N and tile B from N+1 under one "data as of" label. The first tile of
+    a dataset in the scope fixes its generation; every later tile of that
+    dataset in the same scope is served the SAME one (or refused when it is no
+    longer servable) — never the other. Thread-safe: a batch plans its tiles in
+    a thread pool."""
+
+    def __init__(self) -> None:
+        self._pins: Dict[int, Optional[int]] = {}
+        self._lock = threading.Lock()
+
+    def pin(self, dataset_id: Any, generation: Optional[int]) -> Optional[int]:
+        """The generation this read serves for ``dataset_id``: the first one
+        seen, else ``generation`` (which then becomes the pin)."""
+        with self._lock:
+            return self._pins.setdefault(int(dataset_id), generation)
+
+    def pins(self) -> Dict[int, Optional[int]]:
+        with self._lock:
+            return dict(self._pins)
+
+
+_read_scope_var: contextvars.ContextVar[Optional[ReadScope]] = contextvars.ContextVar(
+    "appbi_read_scope", default=None,
+)
+
+
+def current_read_scope() -> Optional[ReadScope]:
+    return _read_scope_var.get()
+
+
+@contextlib.contextmanager
+def read_scope(scope: Optional[ReadScope] = None):
+    """Run a logical read under ``scope`` (a new one when omitted; the current
+    one is kept when already inside a read)."""
+    active = scope or _read_scope_var.get() or ReadScope()
+    token = _read_scope_var.set(active)
+    try:
+        yield active
+    finally:
+        _read_scope_var.reset(token)
+
+
+def _pinned_generation(dataset_id: Any, generation: Optional[int]) -> Optional[int]:
+    scope = _read_scope_var.get()
+    if scope is None or dataset_id is None:
+        return generation
+    return scope.pin(dataset_id, generation)
+
+
+_GENERATION_MOVED = (
+    "Dữ liệu của dataset vừa được cập nhật trong lúc tải báo cáo — tải lại để xem cùng một phiên bản "
+    "dữ liệu cho mọi biểu đồ."
+)
 
 
 def plan_chart_execution(
@@ -306,6 +370,19 @@ def plan_chart_execution(
         overrides, stored_fps, generation, as_of = snapshot_service.resolve_generation_refs(
             db, [t.id for t in mat_tables]
         )
+        # One read, one generation per dataset (ReadScope): a later tile of this
+        # read is served the generation its first tile was — never the newer one.
+        if overrides and generation is not None:
+            pinned = _pinned_generation(dataset_id, generation)
+            if pinned != generation:
+                if pinned is None:
+                    return live(_GENERATION_MOVED, dataset_id=dataset_id, blocked=_GENERATION_MOVED)
+                overrides, stored_fps, as_of = snapshot_service.resolve_specific_generation_refs(
+                    db, [t.id for t in mat_tables], pinned
+                )
+                if not overrides:
+                    return live(_GENERATION_MOVED, dataset_id=dataset_id, blocked=_GENERATION_MOVED)
+                generation = pinned
         if not overrides:
             # Not built yet → warm in the background. Single-engine dataset
             # serves live meanwhile; mixed-engine CANNOT run live → blocked
@@ -403,6 +480,30 @@ def plan_chart_execution(
         )
     except Exception:  # noqa: BLE001 — planning must NEVER break a chart
         logger.warning("[exec-plan] planning failed; falling back to live", exc_info=True)
+        # Fail-CLOSED for a PUBLISHED dataset. The published contract (Pair #5) is
+        # "served ONLY from the pinned published generation — never live". If the
+        # published plan cannot be CONSTRUCTED (not just executed), a silent live
+        # fallback would show un-published source numbers under a published
+        # intent. Block with a clear message instead, mirroring the execution-time
+        # refusal. A LEGACY (publish_state NULL) dataset keeps the live fallback.
+        try:
+            ds_id = _resolve_dataset_id(db, binding, base_view_name)
+            if ds_id and not is_preview:
+                from app.models.dataset import Dataset as _Dataset
+                from app.services import snapshot_service as _ss
+                _d = db.query(_Dataset).filter(_Dataset.id == ds_id).first()
+                if (_d is not None and getattr(_d, "publish_state", None) is not None
+                        and not _ss.is_operational_dataset(_d)):
+                    return live(
+                        "planner error on a PUBLISHED dataset → blocked (no live fallback)",
+                        dataset_id=ds_id,
+                        blocked="Không lập được kế hoạch đọc snapshot đã phát hành của Dataset "
+                        "(có thể cấu hình/registry lỗi). Dashboard không tự chạy trực tiếp (live) "
+                        "để tránh hiển thị số liệu chưa được phát hành — vào Dataset bấm "
+                        "“Sync & Publish” để dựng lại.",
+                    )
+        except Exception:  # noqa: BLE001 — never break the block decision
+            pass
         # Issue #5: fail-CLOSED for mixed-engine datasets. A silent live fallback
         # on a dataset that spans >1 engine would generate cross-engine SQL and
         # leak one dialect into another. Cheap re-probe of the engine span; if
@@ -467,7 +568,10 @@ def _plan_published(db: Session, dataset_obj, base_view_name: str, *, is_preview
 
     dataset_id = dataset_obj.id
     state = getattr(dataset_obj, "publish_state", None)
-    pg = getattr(dataset_obj, "published_generation", None)
+    current_pg = getattr(dataset_obj, "published_generation", None)
+    # One read, one generation per dataset (ReadScope): a publish that flips the
+    # pointer mid-read does not split this read across N and N+1.
+    pg = _pinned_generation(dataset_id, current_pg)
     scope = getattr(dataset_obj, "security_scope", None) or "shared"
 
     def blocked_plan(msg: str, *, trigger: Optional[int] = None) -> ExecutionPlan:
@@ -512,6 +616,8 @@ def _plan_published(db: Session, dataset_obj, base_view_name: str, *, is_preview
     ]
     if want:
         refs, _fps, as_of = snapshot_service.resolve_specific_generation_refs(db, want, pg)
+        if not refs and pg != current_pg:
+            return blocked_plan(_GENERATION_MOVED)
         if not refs:
             return blocked_plan(
                 "Snapshot đã publish không còn đầy đủ (có thể đã hết hạn/bị xoá) — bấm “Sync & Publish” "
@@ -585,3 +691,88 @@ def _dataset_is_mixed_engine(db: Session, dataset_id: int) -> bool:
     rows = db.query(DataSource).filter(DataSource.id.in_(list(ds_ids))).all()
     dialects = {_dialect_for_ds_type(str(getattr(d.type, "value", d.type)).lower()) for d in rows}
     return len(dialects) > 1
+
+
+# ── One live statement, one connection ────────────────────────────────────────
+# A live statement runs on ONE connection, and each table in it is rendered from
+# its OWN datasource's definition. A Postgres / MySQL table is named relative to
+# the connection (`sales`, `schema.sales`: its database and search_path), and a
+# Sheets / manual datasource is its own in-memory engine — so a table of
+# datasource B read through datasource A's connection is A's object of that
+# name: another database's rows (or nothing). BigQuery names a PHYSICAL table
+# absolutely (`project.dataset.table`); a custom-SQL / calculated table's text
+# names its tables relative to the executing job's project (`dataset.table`).
+# Two connections to the same physical scope (host, port, database, schema,
+# user) are one connection.
+
+_IDENTITY_KEYS = (("host",), ("port",), ("database", "dbname", "db"), ("schema_name", "schema"),
+                  ("username", "user"))
+_DEFAULT_PORT = {"postgresql": "5432", "mysql": "3306"}
+_LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+
+
+def _connection_identity(ds) -> tuple:
+    ds_type = str(getattr(ds.type, "value", ds.type)).lower()
+    cfg = getattr(ds, "config", None) or {}
+    out = []
+    for keys in _IDENTITY_KEYS:
+        val = next((cfg.get(k) for k in keys if cfg.get(k) not in (None, "")), None)
+        out.append(str(val).strip().lower() if val is not None else None)
+    host, port, database, schema, user = out
+    if host in _LOOPBACK:
+        host = "localhost"
+    port = port or _DEFAULT_PORT.get(ds_type)
+    if ds_type == "postgresql":
+        schema = schema or "public"
+    else:
+        schema = None            # MySQL: the database IS the schema
+    return (ds_type, host, port, database, schema, user)
+
+
+def _bigquery_project(ds) -> str | None:
+    cfg = getattr(ds, "config", None) or {}
+    val = cfg.get("project_id")
+    return str(val).strip().lower() if val else None
+
+
+def refuse_foreign_live_sources(db: Session, source_ids, executing_ds, source_kinds=None) -> None:
+    """Refuse (SemanticRefusal UNSUPPORTED_CONTEXT) a live statement that reads
+    a table of a datasource other than ``executing_ds`` unless the statement
+    can read it there as the same physical table (see above). ``source_ids``:
+    the engine's ``live_source_ids``; ``source_kinds``: ``{datasource id: {the
+    source kinds read}}`` (the engine's ``live_source_kinds``) — without it a
+    foreign BigQuery table counts as named relative to the job."""
+    from app.models.models import DataSource
+    from app.services.live_query_service import _dialect_for_ds_type
+    from app.services.semantic_join_resolver import SemanticRefusal
+
+    exec_id = getattr(executing_ds, "id", None)
+    others = {int(i) for i in (source_ids or ()) if i and int(i) != exec_id}
+    if not others or executing_ds is None:
+        return
+    kinds = source_kinds or {}
+    exec_type = str(getattr(executing_ds.type, "value", executing_ds.type)).lower()
+    exec_dialect = _dialect_for_ds_type(exec_type)
+    for other in db.query(DataSource).filter(DataSource.id.in_(sorted(others))).all():
+        o_type = str(getattr(other.type, "value", other.type)).lower()
+        if _dialect_for_ds_type(o_type) != exec_dialect:
+            why = f"một bảng thuộc kết nối {o_type} không chạy được trên engine {exec_type}"
+        elif exec_dialect == "bigquery":
+            if _bigquery_project(other) == _bigquery_project(executing_ds):
+                continue  # the same project: relative and absolute names alike
+            read = kinds.get(other.id) or kinds.get(int(other.id)) or set()
+            if read and read <= {"physical_table"}:
+                continue  # physical tables are named absolutely (project.dataset.table)
+            why = ("một bảng SQL / bảng tính toán của kết nối BigQuery khác đặt tên bảng theo project "
+                   "của chính nó — chạy trong project khác sẽ đọc một bảng khác")
+        elif exec_type in ("postgresql", "mysql") and _connection_identity(other) == _connection_identity(executing_ds):
+            continue      # the same physical database / schema
+        else:
+            why = ("một bảng của kết nối khác được đặt tên theo kết nối của chính nó — đọc qua kết nối "
+                   "đang chạy sẽ là một bảng khác (database / schema / engine khác)")
+        raise SemanticRefusal(
+            "Truy vấn này đọc bảng từ nhiều kết nối dữ liệu khác nhau, nhưng một truy vấn trực tiếp "
+            f"(live) chỉ chạy trên MỘT kết nối: {why}. Dùng snapshot hợp nhất (bật materialization "
+            "trên một kết nối BigQuery làm host), hoặc đặt các bảng trên cùng một kết nối.",
+            category=SemanticRefusal.UNSUPPORTED_CONTEXT,
+        )
