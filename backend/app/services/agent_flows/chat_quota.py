@@ -44,9 +44,12 @@ class ChatQuotaVerdict:
     limit_runs: int = 0
 
 
+#: The window is the LAST 24 HOURS (see `check_chat_quota`), not a calendar day.
+#: The sentence used to promise a reset "at the start of tomorrow", which a reader
+#: who hit the limit at 23:00 found false at 00:01.
 _MSG = (
-    "Bạn đã dùng hết lượt chat AI trong ngày ({used}/{limit}). "
-    "Hạn mức được đặt lại vào đầu ngày hôm sau."
+    "Bạn đã dùng hết {limit} lượt chat AI cho phép trong 24 giờ ({used}/{limit}). "
+    "Hãy thử lại sau — hạn mức tính theo 24 giờ gần nhất."
 )
 
 

@@ -105,6 +105,31 @@ def usable_brains(db: Session, user: Any):
 
     Fails closed: `agent_flows: none` sees nothing.
     """
+    return _owned_or_shared_brains(db, user, module="agent_flows")
+
+
+def chat_usable_brains(db: Session, user: Any):
+    """Brains this user may TALK TO in the Chat module: their own, plus shared.
+
+    The same owner-or-shared rule as `usable_brains`, gated on the `chat` key
+    instead of `agent_flows`. Chat was given its own key precisely so a reader
+    needs no access to the flow builder — but the catalogue and every turn still
+    went through `usable_brains`, which fails closed on `agent_flows: none`, so a
+    reader granted only `chat` saw no assistant at all, even one shared with them.
+
+    `agent_flows: full` still sees every flow, as before: that is the builder's
+    administrator, and narrowing them here would hide flows they manage.
+    `chat: full` is oversight of CONVERSATIONS, not of flows, so it does not widen
+    this.
+    """
+    from app.core.permissions import is_module_admin
+
+    if is_module_admin(user, "agent_flows"):
+        return db.query(AgentBrainVersion)
+    return _owned_or_shared_brains(db, user, module="chat")
+
+
+def _owned_or_shared_brains(db: Session, user: Any, *, module: str):
     from sqlalchemy import func, or_
 
     from app.core.permissions import get_user_module_permission, is_module_admin
@@ -112,10 +137,10 @@ def usable_brains(db: Session, user: Any):
 
     q = db.query(AgentBrainVersion)
 
-    level = get_user_module_permission(user, "agent_flows")
+    level = get_user_module_permission(user, module)
     if level == "none":
         return q.filter(False)
-    if is_module_admin(user, "agent_flows"):
+    if module == "agent_flows" and is_module_admin(user, "agent_flows"):
         return q
 
     # The one share engine (user + team), keyed by brain_key per the registry.

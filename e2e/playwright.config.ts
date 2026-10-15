@@ -63,7 +63,7 @@ export default defineConfig({
     {
       name: 'chromium',
       dependencies: ['setup'],
-      testIgnore: [/security\/.*\.spec\.ts/, /chart-hardening\.spec\.ts/, /chart-visual\.spec\.ts/, /observability\.spec\.ts/],
+      testIgnore: [/security\/.*\.spec\.ts/, /chat\/.*\.spec\.ts/, /chart-hardening\.spec\.ts/, /chart-visual\.spec\.ts/, /observability\.spec\.ts/],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/admin.json',
@@ -135,6 +135,16 @@ export default defineConfig({
       name: 'security',
       testMatch: /security\/.*\.spec\.ts/,
       retries: 0,
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
+    },
+    {
+      // AI CHAT JOURNEYS. Each principal is its own context with its own token
+      // (no shared admin state); the fixture comes from seed_e2e_chat.py. No
+      // retries: a conversation journey that passes on the second try is a race.
+      name: 'chat',
+      testMatch: /chat\/.*\.spec\.ts/,
+      retries: 0,
+      timeout: 120_000,
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
   ],

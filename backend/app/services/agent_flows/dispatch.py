@@ -1018,7 +1018,7 @@ async def run_for_chat_thread(
     if user is None or thread is None:
         # Deleted, or the account went away, between the request being accepted and
         # the stream starting. Nothing to record it against, so it is said and dropped.
-        out = blocked(run_id, direct_chat.BLOCK_MESSAGES["not_published"], "not_published")
+        out = blocked(run_id, direct_chat.block_message("not_published", locale), "not_published")
         yield AgentEvent(type="text", text=out.answer.plain_text())
         yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
         yield AgentEvent(type="done")
@@ -1027,11 +1027,11 @@ async def run_for_chat_thread(
     # MAY THIS PERSON ADD TO THIS CONVERSATION? Separate from whether they may
     # read it: a conversation shared at `view` is a transcript to look at, and a
     # reader typing into it would be writing in somebody else's record.
-    if direct_chat.thread_access(db, user, thread) not in ("owner", "edit", "full"):
+    # `full` is oversight and READS; it is refused here exactly as `view` is, so
+    # the stream and the thread view agree (`direct_chat.WRITE_ACCESS`).
+    if not direct_chat.may_write(direct_chat.thread_access(db, user, thread)):
         out = blocked(
-            run_id,
-            "Cuộc trò chuyện này được chia sẻ cho bạn ở mức chỉ đọc.",
-            "thread_read_only",
+            run_id, direct_chat.block_message("thread_read_only", locale), "thread_read_only",
         )
         yield AgentEvent(type="text", text=out.answer.plain_text())
         yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
@@ -1047,9 +1047,7 @@ async def run_for_chat_thread(
     if problem or flow is None or row is None:
         out = blocked(
             run_id,
-            direct_chat.BLOCK_MESSAGES.get(
-                problem, direct_chat.BLOCK_MESSAGES["not_published"]
-            ),
+            direct_chat.block_message(problem or "not_published", locale),
             problem or "not_published",
         )
         _record_chat_blocked(db, out, thread, question)
@@ -1067,7 +1065,7 @@ async def run_for_chat_thread(
             logger.info("[flow] chat run refused: %s", "; ".join(m["message"] for m in missing))
     if gate:
         message = (
-            "Trợ lý này chưa được cấu hình AI key. Vui lòng liên hệ tác giả của trợ lý."
+            direct_chat.block_message("missing_credential", locale)
             if gate == "missing_credential" else _block_message(gate)
         )
         out = blocked(run_id, message, gate)
@@ -1186,8 +1184,13 @@ async def run_for_chat_thread(
                     *memory_notices,
                     Notice(
                         code="turn_abandoned",
-                        text="Lượt hỏi kết thúc trước khi có câu trả lời — "
-                             "bạn đã rời trang, hoặc mô hình trả lời quá chậm.",
+                        text=(
+                            "The turn ended before an answer arrived — you left the "
+                            "page or stopped it, or the model was too slow."
+                            if str(locale).lower().startswith("en") else
+                            "Lượt hỏi kết thúc trước khi có câu trả lời — bạn đã "
+                            "rời trang hoặc dừng lại, hoặc mô hình trả lời quá chậm."
+                        ),
                     ),
                 ],
             )
