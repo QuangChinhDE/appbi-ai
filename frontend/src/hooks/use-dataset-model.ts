@@ -497,6 +497,9 @@ export interface MeasureDryRunResult {
   ok: boolean;
   error: string | null;
   compiled_sql: string | null;
+  /** Set when the engine REFUSED the measure on purpose (a semantic refusal such as
+   *  UNRELATED_GRAIN / UNSUPPORTED_CONTEXT), as opposed to SQL that does not compile. */
+  category?: string | null;
 }
 
 /**
@@ -531,6 +534,7 @@ export async function dryRunMeasure(args: {
 export interface MeasurePreviewResult {
   ok: boolean;
   error: string | null;
+  category?: string | null;
   rows: Record<string, unknown>[];
   measure_key?: string | null;
   group_key?: string | null;

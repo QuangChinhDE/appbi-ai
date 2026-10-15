@@ -64,15 +64,31 @@ Gates: `pair2_golden_topology`, `galaxy_golden`, `golden_sql`.
   stitch); a dimension with no many-to-one path from a measure's fact is
   refused (`UNRELATED_GRAIN`); an answer that would multiply rows is refused
   (`FANOUT_RISK`).
-- A formula measure (`expression` + `depends_on`) is evaluated at its own
-  view's grain, from any base. Its dependencies must be measures of that same
-  view: a measure of ANOTHER view inside a formula is refused
-  (`UNSUPPORTED_CONTEXT`) — inlined, it would aggregate over the formula view's
-  joined rows (a dimension's rows repeated per fact row, another fact's rows
-  multiplied), never the number the same measure has on its own. Asked as
-  separate measures, each keeps its own grain. A formula is never
-  re-aggregated: an explicit agg other than its type, or a pivot cell, is
-  refused (`UNSUPPORTED_CONTEXT`).
+- A formula measure (`expression` + `depends_on`) over measures of its own
+  view is evaluated at that view's grain, from any base.
+- **Kernel v2 — cross-view derived measures** (supersedes the v1 refusal; see
+  `docs/features/semantic-kernel-v2-cross-view-formulas/`). A formula whose
+  dependencies are measures of OTHER views (`${orders.revenue} /
+  ${employees.headcount}`) is arithmetic over those measures' own answers:
+  its dependency tree is expanded to its plain measures (each computed once),
+  they are asked as ONE ordinary request — isolation / re-anchor / stitch,
+  with every grain, route, filter, key-guard and refusal rule above — and the
+  formula is applied to that result with the same arithmetic (true division,
+  NULL on a zero denominator). So a dependency means what it means asked on
+  its own, the answer is the same from every base, and a formula answers
+  exactly when its dependencies, asked together, answer: a dimension or
+  filter one dependency cannot take is that request's refusal, same
+  category. A cross-view formula is pure measure arithmetic — one that reads
+  a column (`${TABLE}`), calls an aggregate / window itself, or references a
+  dimension is refused (`UNSUPPORTED_CONTEXT`), as are pivots / window
+  functions / calculated fields over it and a dependency shown with a
+  different aggregation in the same request.
+  History, never to return: v0 (`50d39a55` … `6afc9523`) inlined the
+  dependency into the formula view's statement — `customers.n` aggregated over
+  the joined sales rows (rev_per_cust 39 for 198 / 4, and 49 next to its own
+  dependencies: one measure, two answers); v1 (`455034e3`) refused it.
+- A formula is never re-aggregated: an explicit agg other than its type, or a
+  pivot cell, is refused (`UNSUPPORTED_CONTEXT`).
 - A dataset-scope measure (`source_columns`) aggregates at its grain — the
   single foreign view it reads, or its declared view. A column of another view
   is allowed only when that view is many-to-one reachable from the grain (one
@@ -190,7 +206,8 @@ definition signatures (views, measures, formulas, tables, transformations,
 types, dataset settings incl. calendar timezone), fields, aggregations,
 filters, sorts, limits, grains, snapshot generation / as-of, execution host,
 security scope — and `SEMANTIC_RESULT_CACHE_VERSION`, bumped whenever the same
-request starts to mean something else (current: `foundation-freeze-2026-10`),
+request starts to mean something else (current: `kernel-v2-cross-view-formula-2026-10`;
+v1 cached a refusal for a cross-view formula that v2 answers),
 so no pre-deploy result is served from the shared store; a fanned Date filter
 and look-alike role filters never share a slot. A cached result carries the
 engine's own dropped filters, so a hit reports them as the first computation

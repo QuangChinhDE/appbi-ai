@@ -63,7 +63,8 @@ export default defineConfig({
     {
       name: 'chromium',
       dependencies: ['setup'],
-      testIgnore: [/security\/.*\.spec\.ts/, /chart-hardening\.spec\.ts/, /chart-visual\.spec\.ts/, /observability\.spec\.ts/],
+      testIgnore: [/security\/.*\.spec\.ts/, /chart-hardening\.spec\.ts/, /chart-visual\.spec\.ts/, /observability\.spec\.ts/,
+                   /semantic-cross-view-formula\.spec\.ts/],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/admin.json',
@@ -80,6 +81,22 @@ export default defineConfig({
         ...devices['Desktop Chrome'],
         storageState: '.auth/admin.json',
         viewport: { width: 1920, height: 1080 },
+      },
+    },
+    {
+      // SEMANTIC KERNEL JOURNEYS (cross-view derived measures: author → preview →
+      // chart → published dashboard). No retries: a semantic journey that passes on
+      // the second try is a race.
+      name: 'semantic-journeys',
+      dependencies: ['setup'],
+      testMatch: /semantic-cross-view-formula\.spec\.ts/,
+      retries: 0,
+      timeout: 600_000,
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: '.auth/admin.json',
+        viewport: { width: 1440, height: 900 },
+        trace: 'on',
       },
     },
     {
