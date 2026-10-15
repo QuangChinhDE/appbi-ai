@@ -267,6 +267,12 @@ export function PublicLinkAppearanceEditor({
             description="Show the “Đang lọc theo…” banner naming the link's locked filters. Hiding it does not remove the filters — the report stays scoped either way."
             onToggle={() => updateField('show_filter_banner', !appearance.show_filter_banner)}
           />
+          <ToggleCard
+            checked={appearance.allow_report_export}
+            label="Allow report export (PDF / PowerPoint) on embed"
+            description="Show the Export button when this link is opened as /embed/… (e.g. inside an iframe). The /d/… page always offers export."
+            onToggle={() => updateField('allow_report_export', !appearance.allow_report_export)}
+          />
         </div>
       </div>
 
