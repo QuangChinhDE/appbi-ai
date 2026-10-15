@@ -267,3 +267,52 @@ def test_a_deep_wide_formula_compiles_in_bounded_time_with_each_dependency_once(
 def test_a_meaning_change_has_a_new_result_cache_identity():
     # v1 (foundation-freeze-2026-10) cached a REFUSAL for a cross-view formula; v2 answers it
     assert SEMANTIC_RESULT_CACHE_VERSION != "foundation-freeze-2026-10"
+
+
+def _add_dimension(w, view_name, dim):
+    v = w.db.query(SemanticView).filter(SemanticView.name == view_name).first()
+    v.dimensions = list(v.dimensions or []) + [dim]
+    flag_modified(v, "dimensions")
+    w.db.flush()
+
+
+@pytest.mark.parametrize("lock,revenue", [
+    ({"operator": "neq", "value": 1, "_authoritative": True}, 98),      # every sale but #1 (100)
+    ({"operator": "eq", "value": 1, "_authoritative": True}, 100),      # sale #1 only
+])
+def test_a_lock_on_a_dimension_named_like_a_cross_view_formula_filters_rows(world, lock, revenue):
+    """Review finding (semantic-guard): `p2_sales.cust_half` is BOTH a cross-view formula and — here —
+    a dimension (the sale id). A filter on it is a ROW filter (the kernel's rule for a name that is
+    also a dimension), never a condition on the formula's value: reinterpreted, the lock was bypassed
+    (198 for 98) on a chart that does not even show the formula."""
+    _add_dimension(world, "p2_sales", {"name": "cust_half", "type": "number", "sql": "${TABLE}.id"})
+    expect(run(world, "G1_star", "p2_sales",
+               {"dims": [], "measures": ["p2_sales.revenue"], "filters": {"p2_sales.cust_half": [lock]}}),
+           [{"p2_sales.revenue": revenue}])
+
+
+def test_an_empty_lock_on_a_dimension_named_like_a_formula_is_never_dropped(world):
+    _add_dimension(world, "p2_sales", {"name": "cust_half", "type": "number", "sql": "${TABLE}.id"})
+    kind, payload, _ = run(world, "G1_star", "p2_sales",
+                           {"dims": [], "measures": ["p2_sales.revenue"],
+                            "filters": {"p2_sales.cust_half": [{"operator": "in", "value": [],
+                                                                "_authoritative": True}]}})
+    # applied (nothing passes an empty IN) or refused — never the unfiltered 198
+    assert kind == "error" or payload == [{"p2_sales.revenue": None}], payload
+
+
+def test_a_formula_asked_by_its_bare_name_is_answered(world):
+    expect(run(world, "G1_star", "p2_customers", {"dims": [], "measures": ["cust_half"]}),
+           [{"cust_half": 2}])
+
+
+@pytest.mark.parametrize("fn", ["GROUP_CONCAT", "CORR", "BOOL_AND", "JSON_AGG", "MODE"])
+def test_a_cross_view_formula_that_aggregates_itself_is_refused(world, fn):
+    from app.services.semantic_join_resolver import SemanticRefusal
+
+    _set_measures(world, "p2_revenue", [{"name": "agg_self", "type": "sum",
+                                          "expression": f"{fn}(${{amount}}) / ${{p2_deals.value}}",
+                                          "depends_on": ["amount", "p2_deals.value"]}])
+    with pytest.raises(SemanticRefusal) as exc:
+        _engine_generate(world, "G6_three_facts", "p2_revenue", measures=["p2_revenue.agg_self"])
+    assert exc.value.category == SemanticRefusal.UNSUPPORTED_CONTEXT

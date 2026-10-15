@@ -3171,7 +3171,9 @@ class SemanticQueryEngine:
     # the dependencies' RESULT rows, not their source rows — refused.
     _XF_ROW_LEVEL = re.compile(
         r"\b(SUM|AVG|COUNT|MIN|MAX|STDDEV\w*|VARIANCE|VAR_\w+|ARRAY_AGG|STRING_AGG|LISTAGG|"
-        r"PERCENTILE\w*|MEDIAN|APPROX_\w+|ANY_VALUE|COUNTIF|LOGICAL_\w+)\s*\(|\bOVER\s*\(",
+        r"PERCENTILE\w*|MEDIAN|APPROX_\w+|ANY_VALUE|COUNTIF|LOGICAL_\w+|GROUP_CONCAT|BOOL_AND|BOOL_OR|"
+        r"EVERY|BIT_\w+|CORR|COVAR_\w+|MODE|JSONB?_AGG|JSONB?_OBJECT_AGG|ARRAY_CONCAT_AGG|XMLAGG|"
+        r"REGR_\w+|HLL_COUNT\.\w+|KURTOSIS|SKEWNESS|ENTROPY)\s*\(|\bOVER\s*\(",
         re.IGNORECASE,
     )
 
@@ -3289,7 +3291,11 @@ class SemanticQueryEngine:
         a measure filter); else the plan: which formulas are computed over the
         dependencies' result, and which plain measures that result carries."""
         requested = [m for m in (measures or []) if isinstance(m, str)]
-        filter_keys = [k for k in (filters or {}) if isinstance(k, str)]
+        # Only a filter on an AGGREGATE can be a filter on a formula: a key that is
+        # also a dimension of its view is a row filter (the same rule HAVING and the
+        # stitch use) — never reinterpreted as a condition on a formula's value.
+        filter_keys = [k for k in (filters or {})
+                       if isinstance(k, str) and self._filter_targets_measure(k, requested)]
         cross = [r for r in dict.fromkeys(requested + filter_keys) if self._is_cross_view_formula(r)]
         other_refs = [str(wf.get("base_measure") or "").strip() for wf in (window_functions or [])]
         for cf in calculated_fields or []:
@@ -3320,7 +3326,7 @@ class SemanticQueryEngine:
         for ref in outer:
             mdef = self._measure_def_of(ref) or {}
             o = self._normalized_agg_override(overrides.get(ref))
-            stored = str(mdef.get("type") or "").lower().strip()
+            stored = str(mdef.get("type") or "count").lower().strip()
             if o and o != stored:
                 raise SemanticRefusal(
                     f"Measure '{ref}' là measure công thức (trên các measure đã tổng hợp) — không "
@@ -3340,7 +3346,7 @@ class SemanticQueryEngine:
             if m not in inner:
                 continue
             norm = self._normalized_agg_override(o)
-            stored = str((self._measure_def_of(m) or {}).get("type") or "").lower().strip()
+            stored = str((self._measure_def_of(m) or {}).get("type") or "count").lower().strip()
             if m in leaf_set and norm and norm != stored and m in requested:
                 raise SemanticRefusal(
                     f"Measure '{m}' được hiển thị bằng '{norm}' nhưng cũng là thành phần của một "
@@ -3385,6 +3391,9 @@ class SemanticQueryEngine:
         self, plan: Dict[str, Any], *, explore, explore_name, dimensions, measures, filters,
         sorts, limit, time_grains, top_n, model_id, explore_id, _disable_isolation,
     ) -> Tuple[str, List[str], List[PivotedColumn]]:
+        # Rendered now, against this request's views (the inner request reloads its own).
+        formula_sql = {ref: self._render_formula_over_result(ref, "_xf")
+                       for ref in dict.fromkeys(list(plan["outer"]) + list(plan["outer_filters"]))}
         inner_sql, _inner_cols, _ = self.generate_sql(
             explore_name=explore_name,
             dimensions=list(dimensions),
@@ -3410,12 +3419,12 @@ class SemanticQueryEngine:
         cols = [f"_xf.{a} AS {a}" for a in dim_aliases]
         for m in measures:
             if m in plan["outer"]:
-                cols.append(f"{self._render_formula_over_result(m, '_xf')} AS {self._safe_alias(m)}")
+                cols.append(f"{formula_sql[m]} AS {self._safe_alias(m)}")
             else:
                 cols.append(f"_xf.{self._safe_alias(m)} AS {self._safe_alias(m)}")
         for f_ref in plan["outer_filters"]:
             if f_ref not in measures:
-                cols.append(f"{self._render_formula_over_result(f_ref, '_xf')} AS {self._safe_alias(f_ref)}")
+                cols.append(f"{formula_sql[f_ref]} AS {self._safe_alias(f_ref)}")
         computed = "SELECT\n  " + ",\n  ".join(cols) + f"\nFROM (\n{inner_sql}\n) AS _xf"
 
         conditions: List[str] = []
