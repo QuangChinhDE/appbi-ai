@@ -78,6 +78,8 @@ There is no per-grant revoke endpoint; rotate the PAT if a URL leaked.
 | `dashboard_id` | int | Required. |
 | `filters` | list | Locked filters, each `{field?, semanticField?, datasetId?, operator, value}` with a non-empty value. **Field identity** (§3.1): send `semanticField` + `datasetId` to name one field exactly; a bare `field` is accepted only when exactly one filterable field of the dashboard has that name. Unknown, ambiguous or mismatched identities and unappliable operator/value pairs are `400`. |
 | `full_report` | bool | Must be `true` to embed **without** filters. No filters and no `full_report` is `400`, so a forgotten scope cannot leak the whole dataset. |
+| `allow_report_export` | bool, default `false` | Show the **Export** button (PDF / PowerPoint) on this embed. PowerPoint is built server-side from what the viewer rendered; PDF is rendered in the viewer's browser (the server PDF worker does not serve `emb_` links). Without it the export endpoints return `403` for the grant. Per grant. |
+| `show_filter_banner` | bool, default `true` | `false` hides the "Đang lọc theo…" banner naming the locked filters. The filters still apply. Per grant. |
 | `allowed_origins` | list[str] | Sites allowed to frame the URL (see §4). **Remembered on the PAT** and applied to every later mint. Omitted or `[]` keeps what the PAT already declared; it never clears it. |
 | `header` | str ≤ 200 | Title the embedded report shows. |
 | `ttl_seconds` | int | Requested lifetime. **Capped at 3600.** Larger values are accepted and silently capped (the schema accepts up to 86400 for backward compatibility). |

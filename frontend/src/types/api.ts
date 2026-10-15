@@ -750,6 +750,10 @@ export interface PublicLinkAppearanceConfig {
    *  public/embed report (only the chart's already-filtered/permission-scoped
    *  rows). Admins can turn it off per link. */
   allow_data_export?: boolean;
+  /** Show the "Đang lọc theo…" banner of locked filters (default true). */
+  show_filter_banner?: boolean;
+  /** Report export on /embed (set per `emb_` grant by the embed API). */
+  allow_report_export?: boolean;
   /** @deprecated Retired — ignored by the runtime. */
   show_footer?: boolean;
   /** @deprecated Retired — ignored by the runtime. */

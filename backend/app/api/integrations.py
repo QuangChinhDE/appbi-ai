@@ -93,6 +93,12 @@ class EmbedResolveRequest(BaseModel):
     # No filters + full_report=False → 400, so a caller can't accidentally leak
     # the entire dataset by forgetting the per-viewer scope.
     full_report: bool = Field(default=False)
+    # Viewer options for THIS link. allow_report_export shows the Export
+    # (PDF / PowerPoint) button on the embed; off by default so existing
+    # integrations are unchanged. show_filter_banner=false hides the
+    # "Đang lọc theo…" banner of locked filters (the filters still apply).
+    allow_report_export: bool = Field(default=False)
+    show_filter_banner: bool = Field(default=True)
 
 
 class EmbedResolveResponse(BaseModel):
@@ -107,6 +113,8 @@ class EmbedResolveResponse(BaseModel):
     # Sites that may iframe this link (empty = embeddable anywhere, the default).
     # Echoed back so a caller can assert the restriction actually took effect.
     allowed_origins: list[str] = []
+    allow_report_export: bool = False
+    show_filter_banner: bool = True
 
 
 def _request_origin(request: Request) -> str:
@@ -195,6 +203,10 @@ def resolve_embed_link(
     raw_token, grant = mint_embed_grant(
         db, link, current_user.id, ttl, header=header, allowed_origins=effective_origins,
         personal_access_token_id=pat_id,
+        display_options={
+            "allow_report_export": body.allow_report_export,
+            "show_filter_banner": body.show_filter_banner,
+        },
     )
 
     logger.info(
@@ -211,4 +223,6 @@ def resolve_embed_link(
         filter_hash=filter_hash,
         header=header,
         allowed_origins=effective_origins,
+        allow_report_export=body.allow_report_export,
+        show_filter_banner=body.show_filter_banner,
     )
