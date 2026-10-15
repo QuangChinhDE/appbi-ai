@@ -243,10 +243,22 @@ test.describe('Semantic kernel v2 — cross-view derived measure', () => {
     const runsBefore = await j(await request.get(`${API}/api/v1/datasets/${w.id}/refresh-runs`));
     const before = (Array.isArray(runsBefore) ? runsBefore : runsBefore.runs ?? [])[0]?.id ?? 0;
     await page.goto(`/datasets/${w.id}`);
-    await page.getByRole('button', { name: /^(Sync & Publish|Re-publish)$/ }).first().click();
-    await dump(page, 'x3-publish-modal');
-    await expect(page.getByRole('heading', { name: 'Sync & Publish' })).toBeVisible();
-    await page.getByRole('button', { name: /^Sync & Publish$/ }).last().click();
+    const latestRunId = async () => {
+      const runs = await j(await request.get(`${API}/api/v1/datasets/${w.id}/refresh-runs`));
+      return Number((Array.isArray(runs) ? runs : runs.runs ?? [])[0]?.id ?? 0);
+    };
+    // A publish is declined while a background snapshot rebuild of the same dataset is
+    // still running (one build at a time). An analyst presses Sync & Publish again;
+    // so does the journey — keyed on a NEW run, never on an old one.
+    for (let attempt = 0; attempt < 3 && (await latestRunId()) <= before; attempt += 1) {
+      await page.getByRole('button', { name: /^(Sync & Publish|Re-publish)$/ }).first().click();
+      await dump(page, 'x3-publish-modal');
+      await expect(page.getByRole('heading', { name: 'Sync & Publish' })).toBeVisible();
+      await page.getByRole('button', { name: /^Sync & Publish$/ }).last().click();
+      await expect.poll(latestRunId, { timeout: 30_000, intervals: [2_000] }).toBeGreaterThan(before).catch(() => {});
+      if ((await latestRunId()) <= before) await page.reload();
+    }
+    expect(await latestRunId(), 'Sync & Publish started a run').toBeGreaterThan(before);
     let run: any;
     await expect.poll(async () => {
       const runs = await j(await request.get(`${API}/api/v1/datasets/${w.id}/refresh-runs`));
