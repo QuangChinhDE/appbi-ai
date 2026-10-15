@@ -720,6 +720,10 @@ export interface SnapshotTableInfo {
 export interface SnapshotConfigResponse {
   schedule: SnapshotSchedule;
   tables: SnapshotTableInfo[];
+  notify?: SnapshotNotify;
+}
+export interface SnapshotNotify {
+  email_on_failure: boolean;
 }
 
 export function useDatasetSnapshotConfig(datasetId: number | null, enabled = true) {
@@ -736,12 +740,13 @@ export function useDatasetSnapshotConfig(datasetId: number | null, enabled = tru
 export function useSaveSnapshotConfig() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ datasetId, schedule, tables }: {
+    mutationFn: async ({ datasetId, schedule, tables, notify }: {
       datasetId: number;
       schedule?: SnapshotSchedule;
       tables?: Record<string, SnapshotTableConfig>;
+      notify?: SnapshotNotify;
     }) => {
-      const response = await api.put(`/datasets/${datasetId}/snapshot-config`, { schedule, tables });
+      const response = await api.put(`/datasets/${datasetId}/snapshot-config`, { schedule, tables, notify });
       return response.data;
     },
     onSuccess: (_data, variables) => {

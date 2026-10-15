@@ -139,4 +139,15 @@ def validate_config(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "cluster_fields": [str(c).strip() for c in cf if str(c).strip()][:MAX_CLUSTER_FIELDS],
             }
         out["tables"] = norm_tables
+    notify = payload.get("notify")
+    if isinstance(notify, dict):
+        out["notify"] = {"email_on_failure": bool(notify.get("email_on_failure", True))}
     return out
+
+
+def email_on_failure_enabled(dataset: Any) -> bool:
+    """Email the owner when a refresh fails — on unless explicitly turned off."""
+    notify = get_snapshot_config(dataset).get("notify")
+    if not isinstance(notify, dict):
+        return True
+    return bool(notify.get("email_on_failure", True))

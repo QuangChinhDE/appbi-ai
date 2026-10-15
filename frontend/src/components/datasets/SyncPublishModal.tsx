@@ -51,6 +51,7 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
   const tzOptions = useMemo(() => listTimezones(), []);
   const [schedule, setSchedule] = useState<SnapshotSchedule>({ mode: 'manual', timezone: browserTz });
   const [tablesCfg, setTablesCfg] = useState<Record<string, SnapshotTableConfig>>({});
+  const [emailOnFailure, setEmailOnFailure] = useState(true);
 
   useEffect(() => {
     if (!data) return;
@@ -59,6 +60,7 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
     const init: Record<string, SnapshotTableConfig> = {};
     for (const tb of data.tables) init[String(tb.id)] = { ...tb.config };
     setTablesCfg(init);
+    setEmailOnFailure(data.notify?.email_on_failure ?? true);
   }, [data, browserTz]);
 
   const busy = save.isPending || publish.isPending;
@@ -72,7 +74,10 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
     setTable(id, { cluster_fields: next });
   };
 
-  const payload = useMemo(() => ({ datasetId, schedule, tables: tablesCfg }), [datasetId, schedule, tablesCfg]);
+  const payload = useMemo(
+    () => ({ datasetId, schedule, tables: tablesCfg, notify: { email_on_failure: emailOnFailure } }),
+    [datasetId, schedule, tablesCfg, emailOnFailure],
+  );
 
   const doSave = async () => {
     try {
@@ -169,6 +174,23 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
               {t('datasets.sync.scheduleHint')}
               {schedule.mode !== 'manual' && ` ${t('datasets.sync.timezoneHint', { tz: schedule.timezone || browserTz })}`}
             </p>
+          </section>
+
+          {/* Failure alerts */}
+          <section>
+            <label className="flex items-start gap-2 text-sm text-text-secondary">
+              <input
+                type="checkbox"
+                data-testid="sync-email-on-failure"
+                className="mt-0.5"
+                checked={emailOnFailure}
+                onChange={(e) => setEmailOnFailure(e.target.checked)}
+              />
+              <span>
+                {t('datasets.sync.emailOnFailure')}
+                <span className="block text-tiny text-text-quaternary">{t('datasets.sync.emailOnFailureHint')}</span>
+              </span>
+            </label>
           </section>
 
           {/* Per-table storage */}
