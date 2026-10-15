@@ -2974,7 +2974,8 @@ def get_dataset_snapshot_config(
             "date_columns": date_cols, "columns": names,
             "config": per_table.get(str(t.id)) or {},
         })
-    return {"schedule": cfg.get("schedule") or {"mode": "manual"}, "tables": tables}
+    return {"schedule": cfg.get("schedule") or {"mode": "manual"}, "tables": tables,
+            "notify": {"email_on_failure": sc.email_on_failure_enabled(ds)}}
 
 
 @router.put("/{dataset_id}/snapshot-config")

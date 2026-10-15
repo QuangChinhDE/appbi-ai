@@ -271,6 +271,7 @@ jobs:
             tests/test_reaper_spares_live_runs.py \
             tests/test_dataset_source_boundary_caches.py \
             tests/test_dataset_preview_is_read_only.py \
+            tests/test_dataset_sync_failure_alerts.py \
             tests/test_quality_run_overlap.py \
             tests/test_refresh_follows_publish_lifecycle.py \
             tests/test_semantic_health.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log

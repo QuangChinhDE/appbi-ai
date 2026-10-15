@@ -118,6 +118,10 @@ def _refresh_run_finish(
     except Exception:  # noqa: BLE001
         db.rollback()
         logger.warning("[publish] refresh-run finish-log failed run=%s", run_id, exc_info=True)
+        return
+    # Owner alert (in-app + optional email). Best-effort, never changes the run.
+    from app.services import dataset_sync_alerts
+    dataset_sync_alerts.on_run_finished(db, run, status)
 
 
 def _prune_refresh_runs(db: Session, dataset_id: int) -> None:
