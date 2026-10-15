@@ -1901,7 +1901,9 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
    * credential on `/d` and `/embed`, so for it this is presentation, not a
    * permission.
    */
-  const exportEnabledOnThisSurface = !isEmbed;
+  // An embed may opt in per link/grant (`allow_report_export`, set by the embed
+  // API); the server enforces the same flag for `emb_` grants.
+  const exportEnabledOnThisSurface = !isEmbed || appearance.allow_report_export;
 
   // ── Shared masthead pieces (used by BOTH the TOP and LEFT layouts) ──
   // Extracted so the LEFT app-shell can reuse them without divergence.
@@ -2480,7 +2482,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                   with locked entries (read-only, 🔒) plus override-allowed
                   entries (editable). See docs/filter-semantics.md §9 +
                   user-approved wireframe. */}
-              {(filterContextFacts.length > 0 || overridableFilterEntries.length > 0) && (
+              {appearance.show_filter_banner && (filterContextFacts.length > 0 || overridableFilterEntries.length > 0) && (
                 <div
                   className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary"
                   style={publicTheme.neutralPillStyle}

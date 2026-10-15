@@ -508,6 +508,11 @@ class EmbedGrant(Base):
     # every link minted after it — fast enough without touching live grants.
     allowed_origins = Column(JSONB, nullable=True)
 
+    # Viewer options the host app asked for at mint time, merged over the
+    # managed link's appearance_config when the grant is served:
+    # {"allow_report_export": bool, "show_filter_banner": bool}. Null = defaults.
+    display_options = Column(JSONB, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_used_at = Column(DateTime(timezone=True), nullable=True)
 
