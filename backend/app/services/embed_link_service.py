@@ -578,6 +578,7 @@ def mint_embed_grant(
     header: str | None = None,
     allowed_origins: list[str] | None = None,
     personal_access_token_id=None,
+    display_options: dict | None = None,
 ) -> tuple[str, EmbedGrant]:
     raw = f"{EMBED_GRANT_PREFIX}{secrets.token_hex(EMBED_GRANT_HEX_CHARS // 2)}"
     grant = EmbedGrant(
@@ -589,6 +590,7 @@ def mint_embed_grant(
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
         header=sanitize_embed_header(header),
         allowed_origins=list(allowed_origins) if allowed_origins else None,
+        display_options=dict(display_options) if display_options else None,
     )
     db.add(grant)
     db.commit()

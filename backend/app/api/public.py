@@ -1651,7 +1651,10 @@ def _get_dashboard_by_token(
         display_name = getattr(grant, "header", None) or grant_link.name
         _refuse_malformed_link(grant_link.filters_config)
         _refuse_malformed_author_bounds(dash)
-        return dash, grant_link.filters_config or [], display_name, grant_link.appearance_config or {}
+        # The host app's per-grant viewer options (export, filter banner) win
+        # over the managed link's own appearance settings.
+        appearance = {**(grant_link.appearance_config or {}), **(getattr(grant, "display_options", None) or {})}
+        return dash, grant_link.filters_config or [], display_name, appearance
 
     # The ONE authority for a stable public token: an ACTIVE DashboardPublicLink.
     # There is no second lookup. The legacy `Dashboard.share_token` fallback that
@@ -4217,14 +4220,15 @@ class _ExportCreateBody(BaseModel):
     session: str | None = None
 
 
-def _refuse_report_export_on_embed_grant(token: str) -> None:
-    """Report export (PDF/PPTX) is a capability of the stable public link, NOT of
-    the integration embed. An `emb_` grant is a short-lived, origin-bound view
-    for a host app's iframe; the server renderer opens `/d/<token>`, which is
-    refused for grants (the per-grant framing policy lives on `/embed` only).
-    Declared here rather than left to fail in the worker. Per-tile CSV (the rows
-    the viewer already received) is unaffected."""
-    if token and token.startswith(EMBED_GRANT_PREFIX):
+def _refuse_report_export_on_embed_grant(token: str, appearance: dict | None = None) -> None:
+    """Report export (PDF/PPTX) on an integration embed (`emb_`) is opt-in: the
+    host app asks for it per grant (`allow_report_export` on
+    /integrations/embed/resolve). Without it the embed refuses, as before. With
+    it, PowerPoint and the in-browser PDF work; the SERVER PDF renderer stays
+    unavailable for grants (it opens `/d/<token>`, which refuses grants), so
+    capabilities report no server engine and the client renders the PDF.
+    Per-tile CSV (the rows the viewer already received) is unaffected."""
+    if token and token.startswith(EMBED_GRANT_PREFIX) and not (appearance or {}).get("allow_report_export"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Report export is not available on an integration embed link.",
@@ -4240,10 +4244,11 @@ def get_public_export_capabilities(
     x_public_session: str | None = Header(default=None),
 ):
     """Does this deployment have a render worker? Drives engine selection in the UI."""
-    _refuse_report_export_on_embed_grant(token)
-    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    _dash, _f, _n, appearance = _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    _refuse_report_export_on_embed_grant(token, appearance)
+    is_grant = token.startswith(EMBED_GRANT_PREFIX)
     return {
-        "server_engine": pdf_export_service.engine_available(),
+        "server_engine": pdf_export_service.engine_available() and not is_grant,
         "max_pages_per_hour": settings.PDF_QUOTA_PER_LINK_HOUR,
     }
 
@@ -4263,11 +4268,10 @@ def export_public_dashboard_pptx(
     locked/hidden filters); reads no data itself, so it cannot widen the link.
     """
     from app.services.report_pptx_service import PptxIncompleteError, build_report_pptx
-    _refuse_report_export_on_embed_grant(token)
-
     dash, _public_filters, _link, _appearance = _get_dashboard_by_token(
         token, db, session_token=x_public_session, track_access=False,
     )
+    _refuse_report_export_on_embed_grant(token, _appearance)
     try:
         content = build_report_pptx(body)
     except PptxIncompleteError as exc:
