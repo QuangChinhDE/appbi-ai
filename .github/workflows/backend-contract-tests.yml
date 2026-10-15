@@ -562,6 +562,15 @@ jobs:
           python -m pytest -q -p no:cacheprovider \
             tests/test_semantic_foundation_pg.py
 
+      # Semantic Kernel v2 — cross-view derived measures: a formula over other
+      # views' measures equals the arithmetic over its dependencies asked
+      # together (or their refusal, same category), from every chart base, on
+      # Postgres and DuckDB; never the historical JOIN-before-aggregate number.
+      - name: "GATE — Cross-view formula measures (Postgres + DuckDB)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_semantic_cross_view_formula_pg.py
+
       # ChartService ↔ every consuming surface (Pair #4): the Kernel's answer
       # asked THROUGH the authenticated tile, the public single chart (/d,
       # /embed, the PDF worker), the public batch, the public slicer and the AI

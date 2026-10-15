@@ -111,26 +111,150 @@ EXECUTED_REFUSALS = [
 ]
 
 # ── F7 — a formula's dependencies keep their own meaning ─────────────────────
-# customers.n counts customers: 4 (C1..C4), whatever the base. Inlined in a formula on sales it
-# counted the 5 joined sales rows (198 / 5 = 39.6, silently) — refused instead: each dependency is
-# evaluated at its own grain only when asked as its own measure.
+# Semantic Kernel Contract v2 (cross-view derived measures). A formula over measures of other
+# views is arithmetic over those measures' OWN answers. History, kept because it must never
+# return: customers.n counts 4 customers (C1..C4) whatever the base; inlined in a formula on
+# sales (JOIN-before-aggregate, 50d39a55 … 6afc9523) it counted the 5 joined sales rows —
+# rev_per_cust was 39 (198 / 5, integer division), and 49 when its dependencies were asked in the
+# same chart: one measure, two answers. The v1 freeze (455034e3) refused it (UNSUPPORTED_CONTEXT);
+# v2 answers 198 / 4 = 49.5 and inherits every refusal of asking the dependencies together.
+#
+#   G1 sales  revenue 198 · by customer C1 100, C2 61, C3 30, (none) 7 · by product Pen 141, Ink 57
+#      customers n 4 (C1..C4; C4 has no sale) · North C1 C3, South C2 C4
+#   G2 north_rev 130 · revenue by customer region North 130, South 61, (none) 7
+#   G6 revenue amount 180 · deals value 1420 · activity calls 7
+#      by owner   Ann 140 / 1120 · Bob 35 / 300 · (none) 5 / —
+#      by year    2024 170 / 1370 / 3 · 2025 10 / 50 / 4
+#      deals Won 1300 · revenue owner 1 140 · owner Bob 35 / 300 / 3
+#   G7 sales by order year 2024 191, 2025 7 · revenue 2024 170, 2025 10
+
+
+def _x(cid, model, base, measures, expected, dims=(), filters=None):
+    req = {"dims": list(dims), "measures": list(measures)}
+    if filters:
+        req["filters"] = filters
+    return (cid, model, base, req, expected)
+
+
+def _eq(value, **kw):
+    return {"operator": "eq", "value": value, **kw}
+
+
+_RPC, _ROD = "p2_sales.rev_per_cust", "p2_revenue.rev_over_deals"
+XVIEW_CASES = [
+    _x("F7.dependencies_asked_separately", "G1_star", "p2_sales", ["p2_sales.revenue", "p2_customers.n"],
+       [{"p2_sales.revenue": 198, "p2_customers.n": 4}]),
+    # ── scalar / KPI ──
+    _x("F7.cross_view_formula.kpi", "G1_star", "p2_sales", [_RPC], [{_RPC: 49.5}]),
+    _x("F7.cross_view_formula.kpi_base_customers", "G1_star", "p2_customers", [_RPC], [{_RPC: 49.5}]),
+    _x("F7.cross_view_formula.kpi_base_products", "G1_star", "p2_products", [_RPC], [{_RPC: 49.5}]),
+    _x("F7.cross_view_formula.with_dependencies", "G1_star", "p2_sales",
+       ["p2_sales.revenue", "p2_customers.n", _RPC],
+       [{"p2_sales.revenue": 198, "p2_customers.n": 4, _RPC: 49.5}]),
+    _x("F7.formula_of_another_views_measures.kpi", "G1_star", "p2_sales", ["p2_sales.cust_half"],
+       [{"p2_sales.cust_half": 2}]),
+    _x("F7.cross_fact_formula.kpi", "G6_three_facts", "p2_revenue", [_ROD], [{_ROD: 180 / 1420}]),
+    _x("F7.cross_fact_formula.kpi_base_deals", "G6_three_facts", "p2_deals", [_ROD], [{_ROD: 180 / 1420}]),
+    _x("F7.cross_fact_formula.kpi_base_owners", "G6_three_facts", "p2_owners", [_ROD], [{_ROD: 180 / 1420}]),
+    _x("F7.cross_fact_formula.declared_on_other_fact", "G6_three_facts", "p2_revenue",
+       ["p2_deals.rev_over_deals_d"], [{"p2_deals.rev_over_deals_d": 180 / 1420}]),
+    _x("F7.cross_fact_formula.with_dependencies", "G6_three_facts", "p2_revenue",
+       ["p2_revenue.amount", "p2_deals.value", _ROD],
+       [{"p2_revenue.amount": 180, "p2_deals.value": 1420, _ROD: 180 / 1420}]),
+    _x("F7.nested_cross_view_formula.kpi", "G6_three_facts", "p2_revenue", ["p2_revenue.rev_per_call"],
+       [{"p2_revenue.rev_per_call": (180 / 1420) / 7}]),
+    _x("F7.repeated_dependency.kpi", "G6_three_facts", "p2_revenue", ["p2_revenue.rev_sq_over_deals"],
+       [{"p2_revenue.rev_sq_over_deals": 180 * 180 / 1420}]),
+    _x("F7.zero_denominator_other_fact.kpi", "G6_three_facts", "p2_revenue", ["p2_revenue.rev_over_zero"],
+       [{"p2_revenue.rev_over_zero": None}]),
+    _x("F7.null_dependency_other_fact.kpi", "G6_three_facts", "p2_revenue", ["p2_revenue.rev_over_none"],
+       [{"p2_revenue.rev_over_none": None}]),
+    _x("F7.cross_table_dependency.kpi", "G6_three_facts", "p2_revenue", ["p2_revenue.rev_over_deal_value"],
+       [{"p2_revenue.rev_over_deal_value": 180 / 1420}]),
+    _x("F7.measure_filter_dependency.kpi", "G2_snowflake", "p2_sales", ["p2_sales.north_per_cust"],
+       [{"p2_sales.north_per_cust": 32.5}]),
+    # ── dimensions ──
+    _x("F7.cross_fact_formula.by_owner", "G6_three_facts", "p2_revenue", [_ROD],
+       [{"p2_owners.name": "Ann", _ROD: 140 / 1120}, {"p2_owners.name": "Bob", _ROD: 35 / 300},
+        {"p2_owners.name": None, _ROD: None}], dims=["p2_owners.name"]),
+    _x("F7.cross_fact_formula.by_year", "G6_three_facts", "p2_revenue", [_ROD],
+       [{"p2_cal.year": 2024, _ROD: 170 / 1370}, {"p2_cal.year": 2025, _ROD: 0.2}], dims=["p2_cal.year"]),
+    _x("F7.nested_cross_view_formula.by_year", "G6_three_facts", "p2_revenue", ["p2_revenue.rev_per_call"],
+       [{"p2_cal.year": 2024, "p2_revenue.rev_per_call": (170 / 1370) / 3},
+        {"p2_cal.year": 2025, "p2_revenue.rev_per_call": 0.05}], dims=["p2_cal.year"]),
+    _x("F7.cross_view_formula.by_customer", "G1_star", "p2_sales", [_RPC],
+       [{"p2_customers.name": "C1", _RPC: 100}, {"p2_customers.name": "C2", _RPC: 61},
+        {"p2_customers.name": "C3", _RPC: 30}, {"p2_customers.name": "C4", _RPC: None},
+        {"p2_customers.name": None, _RPC: None}], dims=["p2_customers.name"]),
+    _x("F7.formula_of_another_views_measures.by_customer", "G1_star", "p2_sales", ["p2_sales.cust_half"],
+       [{"p2_customers.name": c, "p2_sales.cust_half": 0.5} for c in ("C1", "C2", "C3", "C4")],
+       dims=["p2_customers.name"]),
+    _x("F7.cross_view_formula.by_snowflake_region", "G2_snowflake", "p2_sales", [_RPC],
+       [{"p2_regions.name": "North", _RPC: 65}, {"p2_regions.name": "South", _RPC: 30.5},
+        {"p2_regions.name": None, _RPC: None}], dims=["p2_regions.name"]),
+    _x("F7.conformed_calendar.by_year", "G7_roles_main", "p2_revenue", ["p2_sales.rev_over_revenue"],
+       [{"p2_cal.year": 2024, "p2_sales.rev_over_revenue": 191 / 170},
+        {"p2_cal.year": 2025, "p2_sales.rev_over_revenue": 0.7}], dims=["p2_cal.year"]),
+    # a dimension one dependency cannot answer by: refused like asking the dependencies together
+    _x("F7.cross_view_formula.by_product", "G1_star", "p2_sales", [_RPC], "FANOUT_RISK",
+       dims=["p2_products.name"]),
+    _x("F7.cross_fact_formula.by_deal_stage", "G6_three_facts", "p2_revenue", [_ROD], "FANOUT_RISK",
+       dims=["p2_deals.stage"]),
+    _x("F7.cross_fact_formula.by_revenue_id", "G6_three_facts", "p2_revenue", [_ROD], "FANOUT_RISK",
+       dims=["p2_revenue.id"]),
+    _x("F7.conformed_calendar.tied_roles", "G7_roles_only", "p2_revenue", ["p2_sales.rev_over_revenue"],
+       "AMBIGUOUS_ROUTE", dims=["p2_cal.year"]),
+    # two meanings of the sale's region: the stitch of the dependencies refuses (FANOUT_RISK, naming
+    # both routes) — the category the kernel gives revenue + customers.n by region asked together
+    _x("F7.cross_view_formula.ambiguous_route", "G3_diamond", "p2_sales", [_RPC], "FANOUT_RISK",
+       dims=["p2_regions.name"]),
+    _x("F7.cross_view_formula.route_limit", "G14_lattice", "p2_lat_fact", ["p2_lat_top.lat_half"],
+       "ROUTE_LIMIT", dims=["p2_lat_top.name"]),
+    _x("F7.cross_view_formula.invalid_relationship", "F10_invalid", "p2_sales", [_RPC],
+       "INVALID_RELATIONSHIP"),
+    # a formula that is not measure arithmetic cannot be combined across views
+    _x("F7.cross_view_formula.reads_a_column", "G6_three_facts", "p2_revenue",
+       ["p2_revenue.rev_col_over_deals"], "UNSUPPORTED_CONTEXT"),
+    # ── filters (each dependency receives the filter as when asked on its own) ──
+    _x("F7.cross_fact_formula.deal_filter", "G6_three_facts", "p2_revenue", [_ROD], [{_ROD: 180 / 1300}],
+       filters={"p2_deals.stage": [_eq("Won")]}),
+    _x("F7.cross_fact_formula.conformed_owner_filter", "G6_three_facts", "p2_revenue", [_ROD],
+       [{_ROD: 35 / 300}], filters={"p2_owners.name": [_eq("Bob")]}),
+    _x("F7.cross_fact_formula.calendar_filter", "G6_three_facts", "p2_revenue", [_ROD],
+       [{_ROD: 170 / 1370}], filters={"p2_cal.year": [_eq(2024)]}),
+    _x("F7.cross_fact_formula.two_predicates_one_field", "G6_three_facts", "p2_revenue", [_ROD],
+       [{_ROD: 140 / 1120}],
+       filters={"p2_owners.name": [{"operator": "in", "value": ["Ann", "Bob"]},
+                                   {"operator": "neq", "value": "Bob"}]}),
+    _x("F7.cross_view_formula.related_dimension_filter", "G2_snowflake", "p2_sales", [_RPC],
+       [{_RPC: 65}], filters={"p2_regions.name": [_eq("North")]}),
+    _x("F7.cross_fact_formula.formula_filter_by_owner", "G6_three_facts", "p2_revenue", [_ROD],
+       [{"p2_owners.name": "Ann", _ROD: 0.125}], dims=["p2_owners.name"],
+       filters={_ROD: [{"operator": "gt", "value": 0.12}]}),
+    _x("F7.cross_fact_formula.authoritative_deal_filter", "G6_three_facts", "p2_revenue", [_ROD], "REFUSED",
+       filters={"p2_deals.stage": [_eq("Won", _authoritative=True)]}),
+]
+CASES += XVIEW_CASES
+# a formula over its OWN view's measures is answered at that view's grain from any base (unchanged)
 CASES += [
-    ("F7.dependencies_asked_separately", "G1_star", "p2_sales",
-     {"dims": [], "measures": ["p2_sales.revenue", "p2_customers.n"]},
-     [{"p2_sales.revenue": 198, "p2_customers.n": 4}]),
-    ("F7.cross_view_formula.kpi", "G1_star", "p2_sales",
-     {"dims": [], "measures": ["p2_sales.rev_per_cust"]}, "UNSUPPORTED_CONTEXT"),
-    ("F7.cross_view_formula.by_product", "G1_star", "p2_sales",
-     {"dims": ["p2_products.name"], "measures": ["p2_sales.rev_per_cust"]}, "UNSUPPORTED_CONTEXT"),
-    ("F7.cross_fact_formula.kpi", "G6_three_facts", "p2_revenue",
-     {"dims": [], "measures": ["p2_revenue.rev_over_deals"]}, "UNSUPPORTED_CONTEXT"),
-    # a formula over its OWN view's measures is answered at that view's grain from any base
     ("F7.formula_on_dimension_view.kpi", "G1_star", "p2_sales",
      {"dims": [], "measures": ["p2_customers.cust_ratio"]}, [{"p2_customers.cust_ratio": 2}]),
     ("F7.formula_on_dimension_view.by_customer", "G1_star", "p2_sales",
      {"dims": ["p2_customers.name"], "measures": ["p2_customers.cust_ratio"]},
      [{"p2_customers.name": c, "p2_customers.cust_ratio": 0.5} for c in ("C1", "C2", "C3", "C4")]),
 ]
+# a filter only one dependency can reach is a RECORDED soft drop for the other (F11)
+XVIEW_SOFT_DROPS = [
+    ("F7.cross_fact_formula.own_fact_filter", "G6_three_facts", "p2_revenue",
+     {"dims": [], "measures": [_ROD], "filters": {"p2_revenue.owner_id": [_eq(1)]}},
+     {"rows": [{_ROD: 140 / 1420}], "dropped": ["p2_revenue.owner_id"]}),
+]
+# executed refusal: the one side of a dependency's relationship is not unique (key guard)
+XVIEW_EXECUTED_REFUSALS = [
+    ("F7.cross_view_formula.duplicate_one_side", "F10_dup_key", "p2_sales",
+     {"dims": ["p2_customers_dup.name"], "measures": ["p2_sales.rev_per_dupcust"]}, "FANOUT_RISK"),
+]
+EXECUTED_REFUSALS += XVIEW_EXECUTED_REFUSALS
 
 # ── review round: the scanner never appends a division to a `--` comment ─────
 # unit_a = a / b when b > 0 (the `/` starts the line after a comment): 2.5, 0.5, NULL (b = 0), 1.333
@@ -160,7 +284,7 @@ CASES += [
 
 # ── a filter one measure's fact cannot reach is a RECORDED soft drop on every entry point ──
 # revenue's own owner filter (owner 1: 100 + 40) does not filter deals / activity (PowerBI parity)
-SOFT_DROP_CASES = [
+SOFT_DROP_CASES = list(XVIEW_SOFT_DROPS) + [
     ("F11.isolated_measure_unreachable_filter", "G6_three_facts", "p2_revenue",
      {"dims": [], "measures": ["p2_revenue.amount", "p2_deals.value", "p2_activity.calls"],
       "filters": {"p2_revenue.owner_id": [{"operator": "eq", "value": 1}]}},
