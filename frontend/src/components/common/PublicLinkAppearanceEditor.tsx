@@ -261,6 +261,12 @@ export function PublicLinkAppearanceEditor({
             description="Offer a CSV download of the rows each chart already shows. Turning it off removes the button; it does not hide data the report displays."
             onToggle={() => updateField('allow_data_export', !appearance.allow_data_export)}
           />
+          <ToggleCard
+            checked={appearance.show_filter_banner}
+            label="Show locked-filter banner"
+            description="Show the “Đang lọc theo…” banner naming the link's locked filters. Hiding it does not remove the filters — the report stays scoped either way."
+            onToggle={() => updateField('show_filter_banner', !appearance.show_filter_banner)}
+          />
         </div>
       </div>
 

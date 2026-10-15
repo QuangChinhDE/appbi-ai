@@ -325,3 +325,53 @@ def test_report_export_is_not_part_of_the_integration_surface(env):
     assert client.get(f"/public/dashboards/{token}/exports/capabilities").status_code == 403
     assert client.post(f"/public/dashboards/{token}/exports", json={}).status_code in (403, 503)
     assert client.post(f"/public/dashboards/{token}/exports/pptx", json={"slides": []}).status_code in (403, 422)
+
+
+def test_mint_defaults_keep_export_off_and_the_filter_banner_on(env):
+    client, S, _jwt, make_pat = env
+    _tid, pat = make_pat()
+    resp = _mint(client, pat)
+    body = resp.json()
+    assert body["allow_report_export"] is False and body["show_filter_banner"] is True
+    with S() as s:
+        grant = s.query(EmbedGrant).one()
+        assert grant.display_options == {"allow_report_export": False, "show_filter_banner": True}
+
+
+def test_a_grant_that_asks_for_report_export_gets_powerpoint_and_the_browser_pdf(env):
+    client, _S, _jwt, make_pat = env
+    _tid, pat = make_pat()
+    resp = _mint(client, pat, allow_report_export=True)
+    assert resp.json()["allow_report_export"] is True
+    token = _grant_token(resp)
+    caps = client.get(f"/public/dashboards/{token}/exports/capabilities")
+    assert caps.status_code == 200, caps.text
+    # The server renderer opens /d/<token>, which refuses grants → the client
+    # must render the PDF itself.
+    assert caps.json()["server_engine"] is False
+    deck = {"pages": [{"name": "P1", "width": 1200, "tiles": [
+        {"kind": "text", "x": 0, "y": 0, "w": 400, "h": 80, "text": "hello"}]}]}
+    pptx = client.post(f"/public/dashboards/{token}/exports/pptx", json=deck)
+    assert pptx.status_code == 200, pptx.text
+    # The server PDF job stays refused for a grant.
+    assert client.post(f"/public/dashboards/{token}/exports", json={}).status_code in (403, 503)
+
+
+def test_grant_options_are_isolated_per_grant_on_the_same_managed_link(env):
+    client, _S, _jwt, make_pat = env
+    _tid, pat = make_pat()
+    on = _grant_token(_mint(client, pat, allow_report_export=True))
+    off = _grant_token(_mint(client, pat))
+    assert client.get(f"/public/dashboards/{on}/exports/capabilities").status_code == 200
+    assert client.get(f"/public/dashboards/{off}/exports/capabilities").status_code == 403
+
+
+def test_grant_options_reach_the_viewer_appearance(env):
+    from app.api.public import _get_dashboard_by_token
+    client, S, _jwt, make_pat = env
+    _tid, pat = make_pat()
+    token = _grant_token(_mint(client, pat, show_filter_banner=False, allow_report_export=True))
+    with S() as s:
+        _d, _f, _n, appearance = _get_dashboard_by_token(token, s, track_access=False, load_dashboard=False)
+    assert appearance["show_filter_banner"] is False
+    assert appearance["allow_report_export"] is True

@@ -24,6 +24,11 @@ export interface NormalizedPublicLinkAppearanceConfig {
   show_page_tabs: boolean;
   allow_viewer_filters: boolean;
   allow_data_export: boolean;
+  /** Show the "Đang lọc theo…" banner of locked filters (filters apply either way). */
+  show_filter_banner: boolean;
+  /** Report export (PDF / PowerPoint) on an /embed surface. Set per `emb_` grant
+   *  by the embed API; the server enforces it for grants. */
+  allow_report_export: boolean;
   show_footer: boolean;
   show_chart_type_label: boolean;
 }
@@ -166,6 +171,8 @@ const DEFAULT_APPEARANCE: NormalizedPublicLinkAppearanceConfig = {
   show_page_tabs: true,
   allow_viewer_filters: true,
   allow_data_export: true,
+  show_filter_banner: true,
+  allow_report_export: false,
   show_footer: false,
   show_chart_type_label: false,
 };
@@ -270,6 +277,12 @@ export function normalizePublicLinkAppearance(
     allow_data_export: typeof source.allow_data_export === 'boolean'
       ? source.allow_data_export
       : DEFAULT_APPEARANCE.allow_data_export,
+    show_filter_banner: typeof source.show_filter_banner === 'boolean'
+      ? source.show_filter_banner
+      : DEFAULT_APPEARANCE.show_filter_banner,
+    allow_report_export: typeof source.allow_report_export === 'boolean'
+      ? source.allow_report_export
+      : DEFAULT_APPEARANCE.allow_report_export,
     show_footer: DEFAULT_APPEARANCE.show_footer,
     show_chart_type_label: DEFAULT_APPEARANCE.show_chart_type_label,
   };
