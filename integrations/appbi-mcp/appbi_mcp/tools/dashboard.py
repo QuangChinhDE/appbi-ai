@@ -294,7 +294,10 @@ async def plan_dashboard(env: Env, plan: DashboardPlanInput) -> dict[str, Any]:
             errors.append(f"a dashboard named '{p.dashboard_name}' already exists; choose another name")
 
     mine = await env.appbi.get("/charts/", scope="mine", limit=500)
-    my_chart_names = {str(c.get("name")) for c in (mine.get("items", mine) if isinstance(mine, dict) else mine) or []}
+    # AppBI refuses a chart name that matches one of the owner's charts case-insensitively
+    # (real pilot: "Monthly Revenue and Orders" vs an existing "Monthly revenue and orders"
+    # failed the build mid-run), so the clash check folds case too.
+    my_chart_names = {str(c.get("name")).casefold() for c in (mine.get("items", mine) if isinstance(mine, dict) else mine) or []}
 
     charts: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -307,10 +310,10 @@ async def plan_dashboard(env: Env, plan: DashboardPlanInput) -> dict[str, Any]:
         # clash gets a short counter rather than a long suffix.
         name = ch.title[:240]
         n = 2
-        while name in my_chart_names or name in used_names:
+        while name.casefold() in my_chart_names or name.casefold() in used_names:
             name = f"{ch.title[:240]} ({n})"
             n += 1
-        used_names.add(name)
+        used_names.add(name.casefold())
         config, agg_notes = pin_measure_aggregations(dict(ch.config), measure_types)
         warnings.extend(f"{ch.title}: {n}" for n in agg_notes)
         config.setdefault("chartType", ch.chart_type)
