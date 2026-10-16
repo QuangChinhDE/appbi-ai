@@ -240,30 +240,46 @@ test.describe('Semantic kernel v2 — cross-view derived measure', () => {
   test('X3 after Sync & Publish the dashboard reads the published result', async ({ page, request }) => {
     test.setTimeout(600_000);
     expect(dashboardId, 'X2 built the dashboard').toBeTruthy();
-    const runsBefore = await j(await request.get(`${API}/api/v1/datasets/${w.id}/refresh-runs`));
-    const before = (Array.isArray(runsBefore) ? runsBefore : runsBefore.runs ?? [])[0]?.id ?? 0;
-    await page.goto(`/datasets/${w.id}`);
-    const latestRunId = async () => {
-      const runs = await j(await request.get(`${API}/api/v1/datasets/${w.id}/refresh-runs`));
-      return Number((Array.isArray(runs) ? runs : runs.runs ?? [])[0]?.id ?? 0);
+    const runs = async (): Promise<any[]> => {
+      const body = await j(await request.get(`${API}/api/v1/datasets/${w.id}/refresh-runs`));
+      return Array.isArray(body) ? body : body.runs ?? [];
     };
-    // A publish is declined while a background snapshot rebuild of the same dataset is
-    // still running (one build at a time). An analyst presses Sync & Publish again;
-    // so does the journey — keyed on a NEW run, never on an old one.
-    for (let attempt = 0; attempt < 3 && (await latestRunId()) <= before; attempt += 1) {
-      await page.getByRole('button', { name: /^(Sync & Publish|Re-publish)$/ }).first().click();
-      await dump(page, 'x3-publish-modal');
-      await expect(page.getByRole('heading', { name: 'Sync & Publish' })).toBeVisible();
-      await page.getByRole('button', { name: /^Sync & Publish$/ }).last().click();
-      await expect.poll(latestRunId, { timeout: 30_000, intervals: [2_000] }).toBeGreaterThan(before).catch(() => {});
-      if ((await latestRunId()) <= before) await page.reload();
-    }
-    expect(await latestRunId(), 'Sync & Publish started a run').toBeGreaterThan(before);
+    // The page first: opening it reads the dataset (which may itself start a background
+    // rebuild), so the precondition below is observed AFTER it, right before the click.
+    await page.goto(`/datasets/${w.id}`);
+    await expect(page.getByRole('button', { name: /^(Sync & Publish|Re-publish)$/ }).first()).toBeVisible();
+    // PRECONDITION (the product's contract, observed — never forced): one build of a
+    // dataset at a time. A background snapshot rebuild (a `ttl` run, started by the
+    // dashboard reads of X2) holds the dataset; a publish requested meanwhile is
+    // declined and the UI says so ("already running — try again when it finishes").
+    // Sync & Publish is certified from the state in which the product allows it: no
+    // run in flight, no publish lease, no active progress phase.
+    await expect.poll(async () => {
+      const st = await j(await request.get(`${API}/api/v1/datasets/${w.id}/publish-status`));
+      const phase = st.progress?.phase;
+      const busy = (await runs()).some((r) => r.status === 'running') || st.syncing
+        || ['syncing', 'validating', 'publishing', 'stopping'].includes(phase);
+      return busy ? 'busy' : 'idle';
+    }, { timeout: 300_000, intervals: [2_000] }).toBe('idle');
+    const before = Math.max(0, ...(await runs()).map((r) => Number(r.id)));
+
+    // ONE confirmation of Sync & Publish
+    await page.getByRole('button', { name: /^(Sync & Publish|Re-publish)$/ }).first().click();
+    await dump(page, 'x3-publish-modal');
+    await expect(page.getByRole('heading', { name: 'Sync & Publish' })).toBeVisible();
+    await page.getByRole('button', { name: /^Sync & Publish$/ }).last().click();
+    // the UI says it started — never the "already running" refusal
+    await expect(page.getByText(/Sync started|Đã bắt đầu đồng bộ/).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/already running|đang được đồng bộ hoặc làm mới/)).toHaveCount(0);
+
+    // ... and exactly that click is ONE new manual run, which publishes
     let run: any;
     await expect.poll(async () => {
-      const runs = await j(await request.get(`${API}/api/v1/datasets/${w.id}/refresh-runs`));
-      run = (Array.isArray(runs) ? runs : runs.runs ?? [])[0];
-      return run && run.id > before && run.status !== 'running' ? run.status : 'pending';
+      const mine = (await runs()).filter((r) => Number(r.id) > before);
+      expect(mine.filter((r) => r.trigger === 'manual').length, 'one confirmation = one manual run')
+        .toBeLessThanOrEqual(1);
+      run = mine.find((r) => r.trigger === 'manual');
+      return run && run.status !== 'running' ? run.status : 'pending';
     }, { timeout: 480_000, intervals: [5_000] }).toBe('success');
     const status = await j(await request.get(`${API}/api/v1/datasets/${w.id}/publish-status`));
     expect(status.publish_state).toBe('published');

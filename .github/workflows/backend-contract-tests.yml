@@ -626,6 +626,13 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_observability_monitors_mysql_pg.py
+      # Semantic Kernel v2 cross-view formulas EXECUTED on MySQL 8.4 (this job's
+      # service): the dialect's division (DOUBLE, x / 0 NULL) over the
+      # dependencies' result, multi-fact shapes, refusals. Fails (never skips) in CI.
+      - name: "GATE — Cross-view formula measures on MySQL"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_semantic_cross_view_formula_mysql_pg.py
   # ── Authorization / security gate ─────────────────────────────────────────
   #
   # EVERY MODULE MOUNTED, PINNED DEPENDENCIES, REAL POSTGRES ROLES.
