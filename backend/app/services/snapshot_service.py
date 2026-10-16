@@ -1962,15 +1962,22 @@ def refresh_with_history(db: Session, dataset_id: int, trigger: str, *, force: b
     """``refresh_all_for_dataset`` recorded in the refresh-run ledger. Every
     build path that is not Sync & Publish (legacy manual Refresh, TTL warm,
     source-change rebuild) used to leave no history: a failure there was a log
-    line only. Same ledger, same terminal statuses, the real error."""
+    line only. Same ledger, same terminal statuses, the real error.
+
+    The live progress (publish-status ``progress``) ends with the run too, under
+    the run's own trigger: a background rebuild left it at phase 'syncing',
+    labelled 'manual', forever — "Syncing…" after the build had finished."""
     from app.services import dataset_publish_service as pub
+    from app.services import sync_progress as _sp
 
     run_id = pub._refresh_run_start(db, dataset_id, trigger, None, None)
+    _sp.start(dataset_id, total=0, trigger=trigger)
     try:
         res = refresh_all_for_dataset(db, dataset_id, force=force)
     except Exception as exc:  # noqa: BLE001 — recorded, then re-raised to the caller
         pub._refresh_run_finish(db, run_id, "failed", error=str(exc).strip().splitlines()[0][:500]
                                 if str(exc).strip() else type(exc).__name__)
+        _sp.set_phase(dataset_id, "failed")
         raise
     errors = res.get("errors") or {}
     built = res.get("built") or []
@@ -1986,6 +1993,7 @@ def refresh_with_history(db: Session, dataset_id: int, trigger: str, *, force: b
             "failed", "Không có snapshot host (BigQuery) để dựng.")
     pub._refresh_run_finish(db, run_id, status, error=error, generation=res.get("generation"),
                             tables_built=len(built), tables=pub._refresh_run_tables(db, dataset_id, built))
+    _sp.set_phase(dataset_id, {"success": "done"}.get(status, status))
     return res
 
 
