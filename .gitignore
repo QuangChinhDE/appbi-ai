@@ -455,6 +455,8 @@ backend/_verify_gate.db
 !backend/tests/test_chart_final_hardening_pg.py
 !backend/tests/test_chart_dryrun_style_keys.py
 !backend/tests/test_semantic_foundation_pg.py
+!backend/tests/test_semantic_cross_view_formula_pg.py
+!backend/tests/test_semantic_cross_view_formula_mysql_pg.py
 !backend/tests/test_semantic_cross_view_measure_filter_save_pg.py
 !backend/tests/test_pair4_surfaces_pg.py
 !backend/tests/test_pair5_data_state_pg.py

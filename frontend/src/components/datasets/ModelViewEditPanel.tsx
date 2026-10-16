@@ -3465,8 +3465,13 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
             continue;
           }
           if (!result.ok) {
+            // A semantic refusal (the engine declines a meaning it cannot answer
+            // correctly — e.g. a formula that reads a column across tables) is not
+            // a syntax error: say what the engine said, not "lỗi cú pháp".
             toast.error(
-              `Measure "${m.label || m.name}" có lỗi cú pháp — sửa trước khi lưu:\n${result.error ?? 'SQL không hợp lệ'}`,
+              result.category
+                ? `Measure "${m.label || m.name}" chưa dùng được — sửa trước khi lưu:\n${result.error ?? ''}`
+                : `Measure "${m.label || m.name}" có lỗi cú pháp — sửa trước khi lưu:\n${result.error ?? 'SQL không hợp lệ'}`,
             );
             return false;
           }

@@ -177,6 +177,10 @@ def _sum(name, col):
     return {"name": name, "type": "sum", "sql": f"${{TABLE}}.{col}"}
 
 
+def _formula(name, expression, *deps):
+    return {"name": name, "type": "sum", "expression": expression, "depends_on": list(deps)}
+
+
 _DATES = {"order_date": "date", "ship_date": "date", "close_date": "date", "rdate": "date", "ddate": "date",
           "adate": "date", "date": "date", "signup": "date", "founded": "date"}
 
@@ -209,9 +213,18 @@ VIEWS = {
                   # a measure-level filter on the sale's product
                   {**_sum("pen_rev", "amount"),
                    "filters": [{"field": "p2_products.name", "operator": "eq", "value": "Pen"}]},
-                  # foundation F7: a formula over a measure of ANOTHER view (customers) — refused
+                  # foundation F7 (kernel v2): a formula over a measure of ANOTHER view (customers) — each
+                  # dependency at its own grain: 198 / 4 (v1 refused it; before v1 it was 198 / 5 rows)
                   {"name": "rev_per_cust", "type": "sum", "expression": "${revenue} / ${p2_customers.n}",
                    "depends_on": ["revenue", "p2_customers.n"]},
+                  # kernel v2: declared on sales, every dependency on customers — customers' meaning
+                  _formula("cust_half", "${p2_customers.n} / 2", "p2_customers.n"),
+                  # kernel v2: a measure-level filter on a related view inside a cross-view formula
+                  _formula("north_per_cust", "${north_rev} / ${p2_customers.n}", "north_rev", "p2_customers.n"),
+                  # kernel v2: two facts by a conformed calendar (G7)
+                  _formula("rev_over_revenue", "${revenue} / ${p2_revenue.amount}", "revenue", "p2_revenue.amount"),
+                  # kernel v2: dependency of a non-unique one side (F10 dup key)
+                  _formula("rev_per_dupcust", "${revenue} / ${p2_customers_dup.n}", "revenue", "p2_customers_dup.n"),
                   # foundation A3: a many-to-one parent's column (one product row per sale) — answered
                   {"name": "rev_x_prod", "type": "sum", "expression": "${TABLE}.amount * ${p2_products.id}",
                    "scope": "dataset", "source_columns": [{"view": "p2_products", "field": "id"}]},
@@ -221,13 +234,33 @@ VIEWS = {
     "p2_owners": ("T:owners", _dims("id", "name"), []),
     "p2_revenue": ("T:revenue", _dims("id", "rdate", "owner_id", types=_DATES),
                    [_sum("amount", "amount"),
-                    # foundation F7: a formula over ANOTHER fact's measure — refused
+                    # foundation F7 (kernel v2): a formula over ANOTHER fact's measure — 180 / 1420
                     {"name": "rev_over_deals", "type": "sum", "expression": "${amount} / ${p2_deals.value}",
                      "depends_on": ["amount", "p2_deals.value"]},
+                    # kernel v2: a formula over a cross-view formula (nested) and a third fact
+                    _formula("rev_per_call", "${rev_over_deals} / ${p2_activity.calls}",
+                             "rev_over_deals", "p2_activity.calls"),
+                    # kernel v2: the same dependency used twice (computed once)
+                    _formula("rev_sq_over_deals", "${amount} * ${amount} / ${p2_deals.value}",
+                             "amount", "p2_deals.value"),
+                    # kernel v2: a zero / a NULL denominator from another fact
+                    _formula("rev_over_zero", "${amount} / ${p2_deals.zero_v}", "amount", "p2_deals.zero_v"),
+                    _formula("rev_over_none", "${amount} / ${p2_deals.none_v}", "amount", "p2_deals.none_v"),
+                    # kernel v2: a same-view dependency whose grain is another view (cross-table measure)
+                    _formula("rev_over_deal_value", "${amount} / ${deal_value}", "amount", "deal_value"),
+                    # kernel v2: a cross-view formula that reads a column — refused (not measure arithmetic)
+                    _formula("rev_col_over_deals", "${TABLE}.amount / ${p2_deals.value}", "p2_deals.value"),
                     # foundation B1: declared on revenue, aggregates deals.value only (its grain is deals)
                     {"name": "deal_value", "type": "sum", "expression": "${p2_deals.value}", "scope": "dataset",
                      "source_columns": [{"view": "p2_deals", "field": "value"}]}]),
-    "p2_deals": ("T:deals", _dims("id", "ddate", "owner_id", "stage", types=_DATES), [_sum("value", "value")]),
+    "p2_deals": ("T:deals", _dims("id", "ddate", "owner_id", "stage", types=_DATES),
+                 [_sum("value", "value"),
+                  # kernel v2: a total that is 0, and one over no row at all (NULL)
+                  {"name": "zero_v", "type": "sum", "sql": "${TABLE}.value * 0"},
+                  {**_sum("none_v", "value"), "where_sql": "${TABLE}.value < 0"},
+                  # kernel v2: declared on deals, the same quantity as revenue.rev_over_deals
+                  {"name": "rev_over_deals_d", "type": "sum", "expression": "${p2_revenue.amount} / ${value}",
+                   "depends_on": ["p2_revenue.amount", "value"]}]),
     "p2_activity": ("T:activity", _dims("id", "adate", "owner_id", types=_DATES), [_sum("calls", "calls")]),
     # the generated calendar (main) and two role-played date dims of sales
     "p2_cal": ("CAL", _dims("date", "year", "month", types={"date": "date", "year": "number", "month": "number"}),
@@ -245,16 +278,15 @@ VIEWS = {
     "p2_acct_rev": ("T:acct_rev", _dims("id", "account_id"), [_sum("amount", "amount")]),
     "p2_ties": ("T:ties", _dims("id", "name"), [_sum("total", "v")]),
     "p2_lat_fact": ("T:lat_fact", _dims("id", "k"), [_sum("amount", "amount")]),
-    "p2_lat_top": ("T:lat", _dims("id", "name"), []),
+    "p2_lat_top": ("T:lat", _dims("id", "name"),
+                   # kernel v2: a formula over the lattice fact's measure (its route bound applies)
+                   [{"name": "lat_half", "type": "sum", "expression": "${p2_lat_fact.amount} / 2",
+                     "depends_on": ["p2_lat_fact.amount"]}]),
     "p2_events_tz": ("T:events_tz",
                      [{"name": "id", "type": "number", "sql": "${TABLE}.id"},
                       {"name": "ts", "type": "datetime", "source_type": "timestamp", "sql": "${TABLE}.ts"}],
                      [_sum("total", "amount")]),
 }
-
-
-def _formula(name, expression, *deps):
-    return {"name": name, "type": "sum", "expression": expression, "depends_on": list(deps)}
 
 
 # Semantic foundation — numeric meaning. Division is TRUE division and a zero denominator is
@@ -289,7 +321,7 @@ VIEWS["p2_nums"] = (
      _formula("ratio_of_ratio", "${ratio_ab} / ${a_per_row}", "ratio_ab", "a_per_row")],
 )
 VIEWS["p2_sales_ext"] = ("T:sales_ext", _dims("sale_id", "channel"), [])
-VIEWS["p2_customers_dup"] = ("T:customers_dup", _dims("id", "name"), [])
+VIEWS["p2_customers_dup"] = ("T:customers_dup", _dims("id", "name"), [{"name": "n", "type": "count", "sql": "*"}])
 VIEWS["p2_thirds"] = ("T:thirds", _dims("id"),
                       [{"name": "avg_flag", "type": "avg", "sql": "${TABLE}.flag"},
                        _sum("sum_flag", "flag"), {"name": "n", "type": "count", "sql": "*"},
