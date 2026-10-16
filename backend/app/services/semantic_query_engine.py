@@ -371,6 +371,23 @@ class SemanticQueryEngine:
             )
         self._load_views(field_refs)
 
+        # ── Cross-view formula measures (Semantic Kernel Contract v2) ──
+        # A formula over measures of other views is arithmetic over those
+        # measures' OWN answers: the dependencies are asked as one ordinary
+        # request (every grain / filter / refusal rule of asking them
+        # separately applies), and the formula is applied to that result.
+        _xview = self._plan_cross_view_formulas(
+            measures, filters, pivots, window_functions, calculated_fields,
+            sorts, top_n, measure_agg_overrides,
+        )
+        if _xview is not None:
+            return self._generate_cross_view_formula_sql(
+                _xview, explore=explore, explore_name=explore_name, dimensions=dimensions,
+                measures=measures, filters=filters, sorts=sorts, limit=limit,
+                time_grains=time_grains, top_n=top_n, model_id=model_id, explore_id=explore_id,
+                _disable_isolation=_disable_isolation,
+            )
+
         # ── Diet bug #3: collapse a fanned synthetic-calendar filter to the
         # fact's PRIMARY calendar relationship (no-op unless a multi-date fact
         # was fanned). Runs before isolation/where so every path sees the
@@ -3134,6 +3151,327 @@ class SemanticQueryEngine:
             raise ValueError(f"Unknown semantic field in measure formula: {ref}")
 
         return re.sub(placeholder_pattern, replace_placeholder, rendered)
+
+    # ── Cross-view formula measures (Semantic Kernel Contract v2) ─────────────
+    #
+    # A formula such as ``${orders.revenue} / ${employees.headcount}`` means:
+    # evaluate every dependency exactly as that measure is evaluated when asked
+    # on its own, then apply the arithmetic. The formula is never inlined into
+    # one statement over another view's joined rows (the JOIN-before-aggregate
+    # defect: customers.n counted the 5 joined sales rows — 39, while the same
+    # measure is 4 — refused by the v1 freeze, FZ-3). Its dependency tree is
+    # expanded to its plain measures, those are compiled as ONE ordinary
+    # request (isolation / re-anchor / stitch and every grain, filter and
+    # refusal rule of the kernel), and the formula is computed over that
+    # result. A formula therefore inherits — never widens — what its
+    # dependencies are allowed to answer.
+
+    _XF_PLACEHOLDER = r"\$\{([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\}"
+    # An aggregate / window call in a formula's own text would be evaluated over
+    # the dependencies' RESULT rows, not their source rows — refused.
+    _XF_ROW_LEVEL = re.compile(
+        r"\b(SUM|AVG|COUNT|MIN|MAX|STDDEV\w*|VARIANCE|VAR_\w+|ARRAY_AGG|STRING_AGG|LISTAGG|"
+        r"PERCENTILE\w*|MEDIAN|APPROX_\w+|ANY_VALUE|COUNTIF|LOGICAL_\w+|GROUP_CONCAT|BOOL_AND|BOOL_OR|"
+        r"EVERY|BIT_\w+|CORR|COVAR_\w+|MODE|JSONB?_AGG|JSONB?_OBJECT_AGG|ARRAY_CONCAT_AGG|XMLAGG|"
+        r"REGR_\w+|HLL_COUNT\.\w+|KURTOSIS|SKEWNESS|ENTROPY)\s*\(|\bOVER\s*\(",
+        re.IGNORECASE,
+    )
+
+    def _measure_def_of(self, ref: str) -> Optional[Dict[str, Any]]:
+        try:
+            view_name, field = self._parse_field_ref(ref)
+            view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
+        except Exception:  # noqa: BLE001 — not a measure of this model
+            return None
+        return next(
+            (m for m in (getattr(view, "measures", None) or [])
+             if isinstance(m, dict) and m.get("name") == field),
+            None,
+        )
+
+    @staticmethod
+    def _is_formula_def(mdef: Optional[Dict[str, Any]]) -> bool:
+        return bool(
+            mdef
+            and str(mdef.get("expression") or "").strip()
+            and any(str(d or "").strip() for d in (mdef.get("depends_on") or []))
+        )
+
+    def _formula_dep_refs(self, ref: str, mdef: Dict[str, Any]) -> List[str]:
+        view_name, _ = self._parse_field_ref(ref)
+        out: List[str] = []
+        for dep in mdef.get("depends_on") or []:
+            dep_s = str(dep or "").strip()
+            if dep_s:
+                out.append(dep_s if "." in dep_s else f"{view_name}.{dep_s}")
+        return out
+
+    def _is_cross_view_formula(self, ref: str) -> bool:
+        """A formula whose dependency tree reaches a measure aggregated at another
+        grain than the formula's own view (another view's measure, or a cross-table
+        measure whose source is another view)."""
+        mdef = self._measure_def_of(ref)
+        if not self._is_formula_def(mdef):
+            return False
+        own_view, _ = self._parse_field_ref(ref)
+        seen: Set[str] = set()
+        todo = [ref]
+        while todo:
+            cur = todo.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            cdef = self._measure_def_of(cur)
+            if cdef is None:
+                continue
+            if self._is_formula_def(cdef):
+                todo.extend(self._formula_dep_refs(cur, cdef))
+            elif self._measure_fact_view(cur) != own_view:
+                return True
+            if self._parse_field_ref(cur)[0] != own_view:
+                return True
+        return False
+
+    def _formula_is_expandable(self, ref: str, mdef: Dict[str, Any]) -> Optional[str]:
+        """None when the formula is pure arithmetic over its listed measures,
+        else the product-facing reason it cannot be combined across views."""
+        template = str(mdef.get("expression") or "")
+        if "${TABLE}" in template:
+            return "công thức đọc trực tiếp cột của bảng (${TABLE})"
+        if self._XF_ROW_LEVEL.search(template):
+            return "công thức tự gọi hàm tổng hợp / window thay vì dùng measure"
+        allowed = set(self._formula_dep_refs(ref, mdef))
+        view_name, _ = self._parse_field_ref(ref)
+        for raw in re.findall(self._XF_PLACEHOLDER, template):
+            qualified = raw if "." in raw else f"{view_name}.{raw}"
+            if self._measure_def_of(qualified) is None:
+                return f"'{raw}' không phải là measure (công thức chỉ được kết hợp các measure)"
+            if qualified not in allowed:
+                raise ValueError(
+                    f"Measure formula references '{raw}' but it is not listed in depends_on"
+                )
+        return None
+
+    def _formula_leaves(self, ref: str, _stack: Optional[List[str]] = None) -> List[str]:
+        """The plain (non-formula) measures under formula ``ref``, in first-use
+        order, each once — a dependency used twice is computed once."""
+        stack = list(_stack or [])
+        if ref in stack:
+            raise ValueError(f"Circular measure dependency detected: {' -> '.join(stack + [ref])}")
+        mdef = self._measure_def_of(ref)
+        if not self._is_formula_def(mdef):
+            return [ref]
+        reason = self._formula_is_expandable(ref, mdef)
+        if reason:
+            raise SemanticRefusal(
+                f"Measure công thức '{ref}' kết hợp measure của nhiều bảng nhưng {reason}. "
+                "Một công thức trên measure của bảng khác chỉ được là phép tính giữa các "
+                "measure — đưa phần tính theo dòng vào một measure riêng rồi dùng measure đó.",
+                SemanticRefusal.UNSUPPORTED_CONTEXT,
+            )
+        out: List[str] = []
+        view_name, _ = self._parse_field_ref(ref)
+        for raw in re.findall(self._XF_PLACEHOLDER, str(mdef.get("expression") or "")):
+            qualified = raw if "." in raw else f"{view_name}.{raw}"
+            for leaf in self._formula_leaves(qualified, stack + [ref]):
+                if leaf not in out:
+                    out.append(leaf)
+        return out
+
+    @staticmethod
+    def _normalized_agg_override(override: Optional[str]) -> str:
+        o = str(override or "").lower().strip()
+        return o if o in {"count", "sum", "avg", "min", "max", "count_distinct", "percent_of_total"} else ""
+
+    def _plan_cross_view_formulas(
+        self, measures, filters, pivots, window_functions, calculated_fields,
+        sorts, top_n, measure_agg_overrides,
+    ) -> Optional[Dict[str, Any]]:
+        """None unless the request names a cross-view formula (as a measure or as
+        a measure filter); else the plan: which formulas are computed over the
+        dependencies' result, and which plain measures that result carries."""
+        requested = [m for m in (measures or []) if isinstance(m, str)]
+        # Only a filter on an AGGREGATE can be a filter on a formula: a key that is
+        # also a dimension of its view is a row filter (the same rule HAVING and the
+        # stitch use) — never reinterpreted as a condition on a formula's value.
+        filter_keys = [k for k in (filters or {})
+                       if isinstance(k, str) and self._filter_targets_measure(k, requested)]
+        cross = [r for r in dict.fromkeys(requested + filter_keys) if self._is_cross_view_formula(r)]
+        other_refs = [str(wf.get("base_measure") or "").strip() for wf in (window_functions or [])]
+        for cf in calculated_fields or []:
+            other_refs.extend(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\}",
+                                         str(cf.get("sql") or "")))
+        hidden = [r for r in other_refs if r and self._is_cross_view_formula(r)]
+        if not cross and not hidden:
+            return None
+        if pivots or window_functions or calculated_fields or hidden:
+            raise SemanticRefusal(
+                f"Measure công thức {sorted(set(cross + hidden))} kết hợp measure của nhiều bảng — "
+                "chưa dùng được cùng pivot, window function hay calculated field. Bỏ pivot / "
+                "window / calculated field khỏi chart, hoặc hiển thị công thức ở chart riêng.",
+                SemanticRefusal.UNSUPPORTED_CONTEXT,
+            )
+        overrides = dict(measure_agg_overrides or {})
+        # Every requested formula that is pure measure arithmetic is computed over
+        # the result (a same-view one too: its measures then ride the same safe
+        # multi-measure plan instead of joining another view's rows). A filter
+        # on a cross-view formula is a condition on that computed value.
+        outer: List[str] = []
+        for ref in dict.fromkeys(requested + [k for k in filter_keys if k in cross]):
+            mdef = self._measure_def_of(ref)
+            if not self._is_formula_def(mdef):
+                continue
+            if ref in cross or self._formula_is_expandable(ref, mdef) is None:
+                outer.append(ref)
+        for ref in outer:
+            mdef = self._measure_def_of(ref) or {}
+            o = self._normalized_agg_override(overrides.get(ref))
+            stored = str(mdef.get("type") or "count").lower().strip()
+            if o and o != stored:
+                raise SemanticRefusal(
+                    f"Measure '{ref}' là measure công thức (trên các measure đã tổng hợp) — không "
+                    f"thể tổng hợp lại bằng '{o}'. Dùng tổng hợp mặc định (auto) của measure.",
+                    SemanticRefusal.UNSUPPORTED_CONTEXT,
+                )
+        inner: List[str] = [m for m in requested if m not in outer]
+        for ref in outer:
+            for leaf in self._formula_leaves(ref):
+                if leaf not in inner:
+                    inner.append(leaf)
+        # A dependency computed with another aggregation would not be the
+        # dependency any more: a leaf a formula needs keeps its own aggregation.
+        leaf_set = {leaf for ref in outer for leaf in self._formula_leaves(ref)}
+        inner_overrides: Dict[str, str] = {}
+        for m, o in overrides.items():
+            if m not in inner:
+                continue
+            norm = self._normalized_agg_override(o)
+            stored = str((self._measure_def_of(m) or {}).get("type") or "count").lower().strip()
+            if m in leaf_set and norm and norm != stored and m in requested:
+                raise SemanticRefusal(
+                    f"Measure '{m}' được hiển thị bằng '{norm}' nhưng cũng là thành phần của một "
+                    "measure công thức (tính bằng tổng hợp mặc định) — một chart không thể dùng "
+                    "hai nghĩa của cùng measure. Bỏ tổng hợp tuỳ chọn hoặc tách chart.",
+                    SemanticRefusal.UNSUPPORTED_CONTEXT,
+                )
+            inner_overrides[m] = o
+        for s in list(sorts or []) + ([top_n] if isinstance(top_n, dict) else []):
+            field = str((s or {}).get("field") or "").strip()
+            if field and field not in requested and self._is_cross_view_formula(field):
+                raise ValueError(f"Sắp xếp theo '{field}' không có trong kết quả của chart này.")
+        return {
+            "outer": outer,
+            "inner": inner,
+            "inner_overrides": inner_overrides,
+            "outer_filters": {k: v for k, v in (filters or {}).items() if k in outer},
+            "inner_filters": {k: v for k, v in (filters or {}).items() if k not in outer},
+        }
+
+    def _render_formula_over_result(self, ref: str, rel: str, _stack: Optional[List[str]] = None) -> str:
+        """The formula's arithmetic over the dependencies' result columns:
+        the same text the in-statement renderer uses (true division, NULL on a
+        zero denominator — semantic_arithmetic), measures replaced by columns."""
+        stack = list(_stack or [])
+        if ref in stack:
+            raise ValueError(f"Circular measure dependency detected: {' -> '.join(stack + [ref])}")
+        mdef = self._measure_def_of(ref)
+        if not self._is_formula_def(mdef):
+            return f"{rel}.{self._safe_alias(ref)}"
+        view_name, _ = self._parse_field_ref(ref)
+        rendered = normalize_division(str(mdef.get("expression") or ""), self.database_type)
+
+        def _sub(match):
+            raw = match.group(1)
+            qualified = raw if "." in raw else f"{view_name}.{raw}"
+            return f"({self._render_formula_over_result(qualified, rel, stack + [ref])})"
+
+        return re.sub(self._XF_PLACEHOLDER, _sub, rendered)
+
+    def _generate_cross_view_formula_sql(
+        self, plan: Dict[str, Any], *, explore, explore_name, dimensions, measures, filters,
+        sorts, limit, time_grains, top_n, model_id, explore_id, _disable_isolation,
+    ) -> Tuple[str, List[str], List[PivotedColumn]]:
+        # Rendered now, against this request's views (the inner request reloads its own).
+        formula_sql = {ref: self._render_formula_over_result(ref, "_xf")
+                       for ref in dict.fromkeys(list(plan["outer"]) + list(plan["outer_filters"]))}
+        inner_sql, _inner_cols, _ = self.generate_sql(
+            explore_name=explore_name,
+            dimensions=list(dimensions),
+            measures=list(plan["inner"]),
+            filters=dict(plan["inner_filters"]),
+            pivots=[],
+            sorts=[],
+            limit=0,                 # the order / limit apply to the formula's result, below
+            window_functions=[],
+            calculated_fields=[],
+            time_grains=dict(time_grains or {}),
+            top_n=None,
+            measure_agg_overrides=dict(plan["inner_overrides"]) or None,
+            model_id=getattr(explore, "model_id", None) if model_id is None else model_id,
+            explore_id=getattr(explore, "id", None) if explore_id is None else explore_id,
+            _disable_isolation=_disable_isolation,
+            snapshot_overrides=getattr(self, "_snapshot_overrides", None) or {},
+        )
+        # (the inner request starts this query's plan; the formula is recorded on it)
+        self._plan_note(formula="cross_view", formula_dependencies=list(plan["inner"]))
+        dim_aliases = [self._safe_alias(d) for d in dimensions]
+        out_names = dim_aliases + [self._safe_alias(m) for m in measures]
+        cols = [f"_xf.{a} AS {a}" for a in dim_aliases]
+        for m in measures:
+            if m in plan["outer"]:
+                cols.append(f"{formula_sql[m]} AS {self._safe_alias(m)}")
+            else:
+                cols.append(f"_xf.{self._safe_alias(m)} AS {self._safe_alias(m)}")
+        for f_ref in plan["outer_filters"]:
+            if f_ref not in measures:
+                cols.append(f"{formula_sql[f_ref]} AS {self._safe_alias(f_ref)}")
+        computed = "SELECT\n  " + ",\n  ".join(cols) + f"\nFROM (\n{inner_sql}\n) AS _xf"
+
+        conditions: List[str] = []
+        for f_ref, f_defs in plan["outer_filters"].items():
+            for f_def in (f_defs if isinstance(f_defs, list) else [f_defs]):
+                pred = self._aggregate_predicate(f"_xo.{self._safe_alias(f_ref)}", f_ref, f_def or {})
+                if pred:
+                    conditions.append(pred)
+
+        output = set(out_names)
+        order_parts: List[str] = []
+        effective_limit = limit
+        if isinstance(top_n, dict) and top_n.get("field"):
+            t_alias = self._safe_alias(str(top_n["field"]))
+            if t_alias not in output:
+                raise ValueError(f"Top-N theo '{top_n['field']}' không có trong kết quả của chart này.")
+            order_parts.append(self._order_term(f"_xo.{t_alias}", "DESC", nulls_last=True))
+            try:
+                n_value = int(top_n.get("n", 0))
+            except (TypeError, ValueError):
+                n_value = 0
+            if n_value > 0:
+                effective_limit = n_value
+        for s in sorts or []:
+            s_field = str(s.get("field") or "").strip()
+            if not s_field:
+                continue
+            s_alias = self._safe_alias(s_field)
+            if s_alias not in output:
+                raise ValueError(f"Sắp xếp theo '{s_field}' không có trong kết quả của chart này.")
+            direction = "DESC" if str(s.get("direction") or "asc").lower() == "desc" else "ASC"
+            order_parts.append(self._order_term(f"_xo.{s_alias}", direction, nulls_last=True))
+        order_parts.extend(self._order_term(f"_xo.{a}", "ASC", nulls_last=True) for a in dim_aliases)
+
+        sql = ("SELECT\n  " + ",\n  ".join(f"_xo.{a} AS {a}" for a in out_names)
+               + f"\nFROM (\n{computed}\n) AS _xo")
+        if conditions:
+            sql += "\nWHERE\n  " + " AND\n  ".join(conditions)
+        if order_parts:
+            sql += "\nORDER BY " + ", ".join(order_parts)
+        if effective_limit:
+            sql += f"\nLIMIT {effective_limit}"
+        logger.info(
+            "semantic_emit[cross_view_formula] explore=%s dims=%s formulas=%s dependencies=%s",
+            explore_name, list(dimensions), plan["outer"], plan["inner"],
+        )
+        return sql, out_names, []
 
     def _render_one_measure_filter(
         self, f: Dict[str, Any], view_name: str

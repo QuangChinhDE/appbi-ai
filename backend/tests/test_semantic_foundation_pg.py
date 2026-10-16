@@ -130,10 +130,26 @@ ENTRY_CORPUS = [
     "G3.by_region", "G12.unequal.fact_by_customer", "G2d.base_customers_by_region",
     "G7.stitch_by_year_tied_roles", "G12.orphan.two_chains_by_product", "G6.by_stage_two_facts",
     "G14.lattice_select", "G9.by_tag", "G2.modifier_all_refused", "G1.measure_filter_related_unreachable",
+    # Kernel v2 — cross-view derived measures: answered (KPI from several bases, with its
+    # dependencies, nested, a zero denominator, grouped by a conformed / M:1 / snowflake dimension
+    # and the calendar, filtered) and refused exactly as asking the dependencies together
+    "F7.cross_view_formula.kpi_base_customers", "F7.cross_view_formula.with_dependencies",
+    "F7.cross_fact_formula.kpi", "F7.cross_fact_formula.kpi_base_deals", "F7.nested_cross_view_formula.kpi",
+    "F7.zero_denominator_other_fact.kpi", "F7.cross_fact_formula.by_owner", "F7.cross_fact_formula.by_year",
+    "F7.cross_view_formula.by_customer", "F7.cross_view_formula.by_snowflake_region",
+    "F7.conformed_calendar.by_year", "F7.cross_fact_formula.deal_filter",
+    "F7.cross_fact_formula.two_predicates_one_field", "F7.cross_view_formula.related_dimension_filter",
+    "F7.cross_fact_formula.formula_filter_by_owner", "F7.cross_fact_formula.calendar_filter",
+    "F7.cross_view_formula.by_product", "F7.cross_fact_formula.by_deal_stage",
+    "F7.conformed_calendar.tied_roles", "F7.cross_view_formula.ambiguous_route",
+    "F7.cross_view_formula.route_limit", "F7.cross_view_formula.invalid_relationship",
+    "F7.cross_view_formula.reads_a_column", "F7.cross_fact_formula.authoritative_deal_filter",
+    "F7.cross_view_formula.duplicate_one_side",
 ]
 # declared soft drops: the filter is left out AND said so, on every entry point
 SOFT_DROPS = ["G5.kpi_won_deals_single", "G9.kpi_vip_single", "G1.dims_only_fact_filter_single",
-              "F11.isolated_measure_unreachable_filter", "F11.unrelated_fact_filter_recorded"]
+              "F11.isolated_measure_unreachable_filter", "F11.unrelated_fact_filter_recorded",
+              "F7.cross_fact_formula.own_fact_filter"]
 
 
 def _refs(req):
