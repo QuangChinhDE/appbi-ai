@@ -3024,9 +3024,9 @@ export function ExploreEditor({
     ? (customQueryState?.columns?.length ?? 0)
     : previewColumns.length;
 
-  // Query controls sit inline in the header from 1400px (a 1440 screen keeps
-  // its single row); below that they get their own bar.
-  const queryInline = useMinWidth(1400);
+  // Query controls sit inline in the header from 1280px (one 48px row); below
+  // that they get their own bar instead of wrapping the header.
+  const queryInline = useMinWidth(1280);
 
   // Show loading skeleton while fetching existing chart
   if (!isNew && isChartLoading) {
@@ -3110,7 +3110,8 @@ export function ExploreEditor({
             <div className={`flex items-center gap-2 ${queryInline ? 'min-w-0' : 'shrink-0'}`}>
             {!isDashboardModal && (
                 <>
-                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.mode')}</span>
+                  {/* Decorative labels: the controls say what they are; they yield their width first. */}
+                  <span className="hidden shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary min-[1440px]:inline">{t('explore.editor.mode')}</span>
                   <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
                     <button
                       onClick={handleUseGeneratedQuery}
@@ -3140,7 +3141,7 @@ export function ExploreEditor({
                   <div className="hidden h-5 w-px bg-[rgb(var(--border-line))] lg:block" />
                 </>
               )}
-              <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.dataset')}</span>
+              <span className="hidden shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary min-[1440px]:inline">{t('explore.editor.dataset')}</span>
               <div className="min-w-[14rem] max-w-[22rem] flex-1">
                 <ExploreSourceSelector
                   selectedDatasetId={selectedDatasetId}
