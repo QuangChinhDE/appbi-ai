@@ -1,5 +1,6 @@
 'use client';
 
+import { useMinWidth } from '@/hooks/use-media-query';
 import { sectionTitlesOf } from '@/lib/report-meta';
 import { clearReportAnchor, reportAnchor, stampReportAnchor } from '@/lib/report-anchor';
 import React, { useState, useCallback, useEffect } from 'react';
@@ -31,7 +32,7 @@ import { buildPresentationSnapshot, tilesOnPage } from '@/lib/dashboard-presenta
 import { buildPresentationMutation, tilesWithLocalEdits, toLocalLayoutOverrides } from '@/lib/dashboard-presentation/executor';
 import { useAiDesign } from '@/components/dashboards/ai-design/useAiDesign';
 import { DashboardThemeModal } from '@/components/dashboards/DashboardThemeModal';
-import { Palette, Undo2, Redo2, ArrowUpToLine, Eye } from 'lucide-react';
+import { Palette, Undo2, Redo2, ArrowUpToLine, Eye, Save, Send } from 'lucide-react';
 import { ChartTile } from '@/components/dashboards/ChartTile';
 import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
@@ -4326,6 +4327,16 @@ function DashboardDetailPageInner() {
     }
   }, [dashboard, dashboardPages, activePageId, summarizeAppliedFilters, t]);
 
+  // Header priority: what sits inline at which width. Below these widths the
+  // control moves into the More menu — exactly one copy is mounted, so a
+  // data-testid stays unique. Save draft / Save & Publish / Filters / More /
+  // Add never collapse.
+  const headerSm = useMinWidth('sm');
+  const headerMd = useMinWidth('md');
+  const headerLg = useMinWidth('lg');
+  const headerXl = useMinWidth('xl');
+  const header2xl = useMinWidth('2xl');
+
   if (isLoadingDashboard) {
     return (
       <div className="min-h-full bg-surface-2">
@@ -4387,17 +4398,45 @@ function DashboardDetailPageInner() {
     : [];
   const lockedTileCount = visibleDashboardCharts.filter((dc) => (dc.layout as any)?.locked === true).length;
 
+  // While a draft is pending the row also carries Save draft / Save & Publish /
+  // Discard, so every secondary moves inline one breakpoint later.
+  const pendingRow = canEditResource && hasAnyPendingChanges;
+  const inline = {
+    rename: pendingRow ? headerLg : headerMd,
+    undo: pendingRow ? headerXl : headerLg,
+    discard: headerXl,
+    design: pendingRow ? headerXl : headerLg,
+    inspector: pendingRow ? headerXl : headerLg,
+    studio: pendingRow ? header2xl : headerXl,
+    slicer: pendingRow ? header2xl : headerXl,
+    asOf: pendingRow ? header2xl : headerXl,
+    saveDraft: headerSm,
+    add: headerSm,
+  };
+  const anyCollapsed =
+    (canEditResource && !inline.rename)
+    || (canEditResource && (canUndo || canRedo) && !inline.undo)
+    || (pendingRow && (!inline.discard || !inline.saveDraft))
+    || (canEditThisPage && (!inline.design || !inline.slicer || (designMode === 'manual' && !inline.inspector)))
+    || !inline.studio
+    || (Boolean(snapshotAsOf) && !inline.asOf);
+
   return (
     <DashboardThemeProvider theme={previewTheme} className="min-h-full bg-surface-2">
-      {/* ── Sticky compact header (single row) ── */}
+      {/* ── Sticky compact header (single row) ──
+          z-50 only while one of its own menus is open: below lg the Inspector is
+          a fixed z-40 dock, and a z-20 header kept its More menu UNDER it. */}
       {!studioPreview && (
-      <div ref={builderHeaderRef} className="sticky top-0 z-20 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8">
+      <div
+        ref={builderHeaderRef}
+        className={`sticky top-0 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8 ${isMoreMenuOpen || isPagesMenuOpen || isAddElementOpen ? 'z-50' : 'z-20'}`}
+      >
         <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-surface-1 shadow-linear-sm overflow-visible">
 
-          {/* One row when it fits; when the draft actions and the tools do not
-              fit beside the name, the tools wrap to a second row instead of
-              drawing over each other. */}
-          <div className="flex min-h-11 flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-1.5">
+          {/* One row at every width. It used to wrap to 2-3 rows (74px at
+              768-1024, 108px at 390 with six tools off-screen); now the tools
+              that do not fit move into More instead. */}
+          <div data-testid="dashboard-header-row" className="flex h-12 flex-nowrap items-center gap-x-1.5 px-3 sm:gap-x-2">
             {/* Back */}
             <Link
               href="/dashboards"
@@ -4407,10 +4446,10 @@ function DashboardDetailPageInner() {
               <ArrowLeft className="h-4 w-4" />
             </Link>
 
-            <div className="h-4 w-px bg-[rgba(255,255,255,0.08)]" />
+            <div className="hidden h-4 w-px bg-[rgba(255,255,255,0.08)] sm:block" />
 
             {/* Title (inline edit) */}
-            <div className="flex min-w-fit flex-1 items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               {isEditingName ? (
                 <div className="flex min-w-0 flex-1 items-center gap-1">
                   <input
@@ -4444,10 +4483,10 @@ function DashboardDetailPageInner() {
                 <>
                   {/* The report's name keeps its room: the toolbar's status and
                       actions used to squeeze it to "I…" while a draft was open. */}
-                  <h1 className="min-w-[5rem] max-w-[18rem] shrink-0 truncate text-[14px] font-[590] tracking-[-0.182px] text-text-primary" title={dashboard.name}>
+                  <h1 className="min-w-[4rem] max-w-[18rem] shrink truncate text-[14px] font-[590] tracking-[-0.182px] text-text-primary" title={dashboard.name}>
                     {dashboard.name}
                   </h1>
-                  {canEditResource && (
+                  {canEditResource && inline.rename && (
                     <button
                       onClick={handleStartEditName}
                       className="rounded-md p-1 text-text-quaternary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-secondary"
@@ -4496,12 +4535,13 @@ function DashboardDetailPageInner() {
                       <button
                         type="button"
                         data-testid="builder-pages-menu"
+                        aria-label={`${t('dashboards.detail.switchPage')}: ${currentPage?.name ?? t('dashboards.detail.pageFallback')}`}
                         onClick={() => { setIsPagesMenuOpen((v) => !v); setIsMoreMenuOpen(false); }}
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                         title={t('dashboards.detail.switchPage')}
                       >
-                        <span className="max-w-[10rem] truncate">{currentPage?.name ?? t('dashboards.detail.pageFallback')}</span>
-                        <span className="text-text-quaternary">· {dashboardPages.length}</span>
+                        <span className={`hidden max-w-[10rem] truncate ${pendingRow ? 'lg:inline' : 'sm:inline'}`}>{currentPage?.name ?? t('dashboards.detail.pageFallback')}</span>
+                        <span className="text-text-quaternary"><span className="hidden sm:inline">· </span>{dashboardPages.length}</span>
                         <ChevronDown className="h-3 w-3" />
                       </button>
                       {isPagesMenuOpen && (
@@ -4617,7 +4657,7 @@ function DashboardDetailPageInner() {
                   {/* Phase-B17 — compact presence: small avatars of others editing
                       now (name on hover). Replaces the bulky banner. */}
                   {canEditResource && editorChips.length > 0 && (
-                    <div className="ml-2 flex shrink-0 items-center" title={t('dashboards.detail.coEditing')}>
+                    <div className="ml-2 hidden shrink-0 items-center lg:flex" title={t('dashboards.detail.coEditing')}>
                       {editorChips.slice(0, 3).map((c, i) => (
                         <span
                           key={i}
@@ -4636,7 +4676,7 @@ function DashboardDetailPageInner() {
                   {/* Undo / Redo (Ctrl+Z / Ctrl+Shift+Z) — layout + theme only.
                       Shown whenever there's history (a theme change is a live
                       write with no "pending" badge, so gate on the stacks). */}
-                  {canEditResource && (canUndo || canRedo) && (
+                  {canEditResource && (canUndo || canRedo) && inline.undo && (
                     <div className="ml-2 flex shrink-0 items-center gap-1">
                       <button
                         type="button"
@@ -4661,7 +4701,8 @@ function DashboardDetailPageInner() {
                   {canEditResource && hasAnyPendingChanges && (
                     <div className="ml-2 flex shrink-0 items-center gap-1.5">
                       <span
-                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-[600] uppercase tracking-wide ${
+                        data-testid="dashboard-pending-badge"
+                        className={`hidden items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-[600] uppercase tracking-wide xl:inline-flex ${
                           hasUnsavedPresentation
                             ? 'bg-warning/20 text-warning'
                             : 'bg-warning/10 text-warning'
@@ -4674,6 +4715,7 @@ function DashboardDetailPageInner() {
                       >
                         {hasUnsavedPresentation ? t('dashboards.detail.badgeUnsaved') : t('dashboards.detail.badgeDraft')}
                       </span>
+                      {inline.saveDraft && (
                       <button
                         type="button"
                         onClick={handleSaveDraft}
@@ -4687,11 +4729,13 @@ function DashboardDetailPageInner() {
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
                         title={t('dashboards.detail.saveDraftTooltip')}
+                        aria-label={t('dashboards.detail.saveDraft')}
                       >
-                        {isStagingDraft || updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        {t('dashboards.detail.saveDraft')}
-                        <kbd className="ml-1 hidden rounded bg-[rgba(255,255,255,0.08)] px-1 text-[9px] text-text-tertiary sm:inline">⌘S</kbd>
+                        {isStagingDraft || updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3 sm:hidden" />}
+                        <span className="hidden sm:inline">{t('dashboards.detail.saveDraft')}</span>
+                        <kbd className="ml-1 hidden rounded bg-[rgba(255,255,255,0.08)] px-1 text-[9px] text-text-tertiary xl:inline">⌘S</kbd>
                       </button>
+                      )}
                       <button
                         type="button"
                         onClick={handlePublish}
@@ -4704,10 +4748,12 @@ function DashboardDetailPageInner() {
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white transition-colors hover:bg-brand-hover disabled:opacity-50"
                         title={t('dashboards.detail.publishTooltip')}
+                        aria-label={t('dashboards.detail.saveAndPublish')}
                       >
-                        {publishDashboardMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        {t('dashboards.detail.saveAndPublish')}
+                        {publishDashboardMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3 sm:hidden" />}
+                        <span className="hidden sm:inline">{t('dashboards.detail.saveAndPublish')}</span>
                       </button>
+                      {inline.discard && (
                       <button
                         type="button"
                         onClick={() => setIsDiscardConfirmOpen(true)}
@@ -4718,6 +4764,7 @@ function DashboardDetailPageInner() {
                       >
                         {t('dashboards.detail.discard')}
                       </button>
+                      )}
                     </div>
                   )}
                 </>
@@ -4732,8 +4779,9 @@ function DashboardDetailPageInner() {
                   per-dashboard "Refresh data" action was removed — a dashboard
                   rebuild never advanced a PUBLISHED dataset's pinned generation
                   anyway (misleading no-op). This just surfaces "data as of". */}
-              {snapshotAsOf && (
+              {snapshotAsOf && inline.asOf && (
                 <span
+                  data-testid="dashboard-data-as-of"
                   className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[11px] font-[510] text-text-tertiary"
                   title={t('dashboards.detail.dataAsOfHint')}
                 >
@@ -4764,7 +4812,7 @@ function DashboardDetailPageInner() {
                   title={isFilterPaneOpen ? t('dashboards.detail.hideFilterPane') : t('dashboards.detail.showFilterPane')}
                 >
                   <Filter className="h-3 w-3" />
-                  <span>{t('dashboards.detail.filters')}</span>
+                  <span className={`hidden ${pendingRow ? 'lg:inline' : 'md:inline'}`}>{t('dashboards.detail.filters')}</span>
                   {appliedGlobalFilters.length > 0 && (
                     <span className="rounded-full bg-brand/20 px-1.5 text-[10px] font-[600] leading-[1.4] text-brand">
                       {appliedGlobalFilters.length}
@@ -4794,6 +4842,137 @@ function DashboardDetailPageInner() {
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => { setIsMoreMenuOpen(false); }} />
                     <div className="absolute right-0 z-50 mt-1.5 w-56 overflow-y-auto max-h-[80vh] rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-1 py-1 shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]">
+                      {/* Collapsed header tools (narrow screens): the same actions,
+                          one copy — they are inline from their breakpoint up. */}
+                      {anyCollapsed && (
+                        <>
+                          {pendingRow && !inline.saveDraft && (
+                            <button
+                              onClick={() => { setIsMoreMenuOpen(false); void handleSaveDraft(); }}
+                              data-testid="dashboard-save-draft"
+                              data-state={isStagingDraft ? 'saving' : hasUnsavedPresentation ? 'unsaved' : 'saved'}
+                              disabled={
+                                !hasUnsavedPresentation
+                                || isStagingDraft
+                                || isCommittingPresentation
+                                || updateDraftLayoutMutation.isPending
+                              }
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary disabled:opacity-50"
+                              title={t('dashboards.detail.saveDraftTooltip')}
+                            >
+                              <Save className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.detail.saveDraft')}
+                            </button>
+                          )}
+                          {canEditResource && !inline.rename && (
+                            <button
+                              onClick={() => { setIsMoreMenuOpen(false); handleStartEditName(); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            >
+                              <Edit2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.detail.renameDashboard')}
+                            </button>
+                          )}
+                          {snapshotAsOf && !inline.asOf && (
+                            <div className="flex items-center gap-2.5 px-3 py-2 text-[12px] text-text-tertiary" title={t('dashboards.detail.dataAsOfHint')}>
+                              <Clock className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.detail.snapshotAsOf', {
+                                time: new Date(snapshotAsOf).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+                              })}
+                            </div>
+                          )}
+                          {pendingRow && !inline.discard && (
+                            <button
+                              data-testid="dashboard-discard"
+                              onClick={() => { setIsMoreMenuOpen(false); setIsDiscardConfirmOpen(true); }}
+                              disabled={discardDraftMutation.isPending}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+                              title={t('dashboards.detail.discardTooltip')}
+                            >
+                              <X className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.detail.discard')}
+                            </button>
+                          )}
+                          {canEditResource && (canUndo || canRedo) && !inline.undo && (
+                            <>
+                              <button
+                                onClick={() => { setIsMoreMenuOpen(false); doUndo(); }}
+                                disabled={!canUndo || isCommittingPresentation}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary disabled:opacity-40"
+                              >
+                                <Undo2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                                {t('dashboards.detail.undo')}
+                              </button>
+                              <button
+                                onClick={() => { setIsMoreMenuOpen(false); doRedo(); }}
+                                disabled={!canRedo || isCommittingPresentation}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary disabled:opacity-40"
+                              >
+                                <Redo2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                                {t('dashboards.detail.redo')}
+                              </button>
+                            </>
+                          )}
+                          {!inline.studio && (
+                            <button
+                              data-testid="studio-preview-open"
+                              onClick={() => { setIsMoreMenuOpen(false); setStudioOpen(true); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              title={t('dashboards.studio.openFull')}
+                            >
+                              <Eye className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.studio.open')}
+                            </button>
+                          )}
+                          {canEditThisPage && !inline.design && (['manual', 'ai'] as const).map((mode) => (
+                            <button
+                              key={mode}
+                              role="menuitemradio"
+                              aria-checked={designMode === mode}
+                              data-testid={`design-mode-${mode}`}
+                              onClick={() => {
+                                setIsMoreMenuOpen(false);
+                                if (mode === 'manual' && aiDesign.pending) aiDesign.discard();
+                                setDesignMode(mode);
+                              }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            >
+                              {mode === 'ai' ? <Sparkles className="h-3.5 w-3.5 shrink-0 text-text-quaternary" /> : <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />}
+                              <span className="flex-1 text-left">{t(mode === 'manual' ? 'dashboards.aiDesign.modeManual' : 'dashboards.aiDesign.modeAi')}</span>
+                              {designMode === mode && <Check className="h-3 w-3 shrink-0 text-brand" />}
+                            </button>
+                          ))}
+                          {canEditThisPage && !inline.slicer && (
+                            <button
+                              data-testid="add-slicer-open"
+                              onClick={() => { setIsMoreMenuOpen(false); setIsAddSlicerOpen(true); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              title={t('dashboards.addSlicer.title')}
+                            >
+                              <Filter className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              <span className="flex-1 text-left">{t('dashboards.addSlicer.menu')}</span>
+                              {unplacedControlFilters.length > 0 && (
+                                <span data-testid="add-slicer-unplaced-count" className="rounded-full bg-brand/15 px-1.5 text-[10px] font-semibold text-brand">
+                                  {unplacedControlFilters.length}
+                                </span>
+                              )}
+                            </button>
+                          )}
+                          {canEditThisPage && designMode === 'manual' && !inline.inspector && (
+                            <button
+                              data-testid="inspector-toggle"
+                              aria-pressed={inspectorOpen}
+                              onClick={() => { setIsMoreMenuOpen(false); setInspectorOpen((v) => !v); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              title={t('dashboards.inspector.openHint')}
+                            >
+                              <PanelRight className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.inspector.title')}
+                            </button>
+                          )}
+                          <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
+                        </>
+                      )}
                       {/* Export */}
                       <button
                         onClick={() => { setIsExportDialogOpen(true); setIsMoreMenuOpen(false); }}
@@ -4916,7 +5095,7 @@ function DashboardDetailPageInner() {
                   and a person needs to see which mode they are in without
                   opening anything. Grid only — a canvas dashboard has no grid
                   for a composition to compile onto. */}
-              {(
+              {inline.studio && (
                 <button
                   type="button"
                   data-testid="studio-preview-open"
@@ -4928,7 +5107,7 @@ function DashboardDetailPageInner() {
                   {t('dashboards.studio.open')}
                 </button>
               )}
-              {canEditThisPage && (
+              {canEditThisPage && inline.design && (
                 <div
                   className="inline-flex h-7 items-center rounded-md border border-[rgb(var(--border-line))] p-0.5"
                   role="radiogroup"
@@ -4964,7 +5143,7 @@ function DashboardDetailPageInner() {
                 </div>
               )}
 
-              {canEditThisPage && (
+              {canEditThisPage && inline.slicer && (
                 <button
                   type="button"
                   data-testid="add-slicer-open"
@@ -4987,17 +5166,20 @@ function DashboardDetailPageInner() {
               )}
               {canEditThisPage && (
                 <div className="relative">
+                  {inline.add && (
                   <button
                     type="button"
                     data-testid="add-element-open"
                     aria-haspopup="dialog"
                     aria-expanded={isAddElementOpen}
                     onClick={() => setIsAddElementOpen((v) => !v)}
+                    aria-label={t('dashboards.addElement.open')}
                     className="inline-flex h-7 items-center gap-1.5 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white shadow-sm transition-colors hover:bg-brand-hover"
                   >
                     <Plus className="h-3 w-3" />
-                    <span>{t('dashboards.addElement.open')}</span>
+                    <span className="hidden sm:inline">{t('dashboards.addElement.open')}</span>
                   </button>
+                  )}
                   <AddElementMenu
                     open={isAddElementOpen}
                     onClose={() => setIsAddElementOpen(false)}
@@ -5012,7 +5194,7 @@ function DashboardDetailPageInner() {
                   />
                 </div>
               )}
-              {canEditThisPage && designMode === 'manual' && (
+              {canEditThisPage && designMode === 'manual' && inline.inspector && (
                 <button
                   type="button"
                   data-testid="inspector-toggle"

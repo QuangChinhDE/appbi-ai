@@ -15,9 +15,12 @@
  * The badge in the sub-bar comes from `POST /validate`, so "is this flow sound"
  * stopped being a question you could only answer by committing to the answer.
  */
+import { DetailHeader } from '@/components/common/DetailHeader';
+import type { DetailIssue } from '@/components/common/IssueSummary';
+import { useMinWidth } from '@/hooks/use-media-query';
 import {
-  AlertTriangle, ArrowLeft, Check, LayoutDashboard, Loader2, Maximize2,
-  KeyRound, MessagesSquare, Minus, Play, Plus, Puzzle, Redo2, Save, Send, Trash2, Undo2, X,
+  AlertOctagon, AlertTriangle, LayoutDashboard, Loader2, Maximize2,
+  KeyRound, Layers, MessagesSquare, Minus, Play, Plus, Puzzle, Redo2, Save, Send, Trash2, Undo2,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { FlowActivation } from './FlowActivation';
@@ -587,6 +590,9 @@ export function BrainBuilder({
     setSelected(owner.key);
   };
 
+  // Below xl the type chip lives in the header menu (same dialog).
+  const headerWide = useMinWidth('xl');
+
   // ── save / publish ────────────────────────────────────────────────────────
   const save = async () => {
     setSaving(true);
@@ -646,226 +652,228 @@ export function BrainBuilder({
     loops: all.filter((n) => isContainer(n) && !isBranching(n)).length,
   };
 
+  // Warnings → the header counter (a list, not a tooltip). A keyless step cannot
+  // run at all, so it is a pinned warning carrying its own two fixes.
+  const headerIssues: DetailIssue[] = [
+    ...(validation?.warnings ?? []).map((w, i) => ({
+      id: `warning-${i}`, severity: 'warning' as const, title: w,
+    })),
+    ...(keyless.length > 0
+      ? [{
+          id: 'keyless',
+          severity: 'warning' as const,
+          persistent: true,
+          title: t('agentFlows.builder.keylessCount', { count: keyless.length }),
+          detail: keyless.map((n) => n.name || n.key).join(', '),
+          action: (
+            <span className="flex items-center gap-2">
+              <button
+                type="button"
+                data-testid="builder-keyless"
+                onClick={goToKeyless}
+                className="flex items-center gap-1 rounded-full border border-warning/25 bg-warning/5 px-2 py-px text-tiny text-warning hover:bg-warning/10"
+              >
+                <KeyRound className="h-3 w-3" /> {t('agentFlows.builder.keylessShort', { count: keyless.length })}
+              </button>
+              {canEdit && assignable.length > 0 && (
+                <button
+                  type="button"
+                  data-testid="builder-assign-default-keys"
+                  title={t('agentFlows.builder.assignDefaultKeysHint', { count: assignable.length })}
+                  onClick={assignDefaults}
+                  className="rounded-full border border-brand/30 bg-surface-1 px-2 py-px text-tiny text-brand hover:bg-brand/5"
+                >
+                  {t('agentFlows.builder.assignDefaultKeys')}
+                </button>
+              )}
+            </span>
+          ),
+        }]
+      : []),
+  ];
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* topbar */}
-      {/* THE HEADER SCROLLS; THE ACTIONS DO NOT.
-          Measured at 1024×768 — a window size people genuinely build in — this row
-          needed 1,104px inside a 958px container whose parent is `overflow-hidden`.
-          Save draft and Publish were simply CUT OFF: not shrunk, not wrapped,
-          gone, with nothing on screen to say a control existed. An author at that
-          width could edit a flow and could not save it.
-
-          Two changes, and only two. The row may scroll sideways, so nothing is
-          ever unreachable; and the action cluster is pinned to the right edge, so
-          the controls that matter most are the ones that never move. Shedding
-          elements at breakpoints was the alternative and it is the wrong shape: it
-          makes reachability depend on guessing every width in advance, which is
-          how this row lost its buttons in the first place. */}
-      {/* BELOW 768px THE ROW WRAPS instead of scrolling: at 390px the tabs and
-          Save / Publish sat off-screen in a 1082px row. From md up it is the
-          one-line, horizontally scrolling row it always was. */}
-      <div className="flex min-h-11 flex-shrink-0 flex-wrap items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 xl:h-11 xl:flex-nowrap xl:overflow-x-auto xl:px-4 xl:py-0">
-        {/* THE ARROW KEEPS ITS MEANING WITHOUT THE WORDS. At the declared 1280px
-            minimum the row overflowed by ~124px even on a valid flow, and the
-            tabs — navigation — scrolled under the sticky verdict group, leaving
-            "Activity" unreachable at the width the product names as its floor.
-            The label is the first thing on this row that costs width and carries
-            no information the icon does not. */}
-        <button type="button" onClick={leave} data-testid="builder-back" aria-label={t('agentFlows.title')}
-          className="flex flex-shrink-0 items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
-          <ArrowLeft className="h-3.5 w-3.5" />
-          {/* `2xl`, not `xl`: Tailwind's `xl` is min-width 1280, so it MATCHES at
-              exactly 1280 — the label stayed visible at the one width that
-              needed it gone, and the tabs stayed under the sticky group. */}
-          <span className="hidden 2xl:inline">{t('agentFlows.title')}</span>
-        </button>
-        <span className="hidden text-text-quaternary 2xl:inline">/</span>
-        <Input
-          value={name}
-          disabled={!canEdit}
-          onChange={(e) => { setName(e.target.value); setDirty(true); }}
-          // Narrower than it was: the row now carries the tabs too, and the name
-          // is the one element that can give up width without losing meaning.
-          // The 240px step moved from `xl` to `2xl` because Tailwind's `xl` is
-          // min-width 1280 — it applied at exactly the declared minimum, and the
-          // 90px it took was the whole of the header's overflow there, which put
-          // the "Activity" tab under the sticky action group.
-          className="h-7 w-[120px] flex-shrink-0 border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))] lg:w-[150px] 2xl:w-[240px]"
-        />
-        <StatusBadge status={status} version={version} size="xs" />
-
-        {/* WHAT THIS FLOW IS FOR, NEXT TO WHAT IT IS CALLED.
-            It belongs in the identity cluster rather than beside the validity
-            badge: the type is not a verdict on the flow, it is half of what the
-            flow IS — it decides what the flow is handed, which picker lists it,
-            and whether a "read the report" step makes sense at all. An author who
-            cannot see it while building is the author who asks why their
-            assistant never appears in Chat.
-
-            It turns into a warning when the SHAPE has drifted out of the
-            declaration, which is the one combination that silently produces a
-            flow nobody can use. */}
-        <FlowTypeChip
-          flowType={flowType}
-          blockers={validation?.chat_blockers ?? []}
-          canEdit={canEdit}
-          onOpen={() => setTypeOpen(true)}
-        />
-
-        {publishedVersion != null && publishedVersion !== version && (
-          <span className="text-tiny text-text-tertiary">· {t('agentFlows.builder.runningVersion', { version: publishedVersion })}</span>
-        )}
-        {/* Pushed from `lg` to `2xl`: the type chip took the room, and of the two
-            this is the one an author can also read on the Runs tab. Hidden entirely
-            on a chat flow — "0 links" reads as "not deployed yet" on a flow that
-            cannot have a link at all. */}
-        {flowType === 'bot' && (
-          <span className="hidden text-tiny text-text-tertiary 2xl:inline">· {links.length} {t(links.length === 1 ? 'agentFlows.common.link' : 'agentFlows.common.links')}</span>
-        )}
-
-        {/* TABS AND CHIPS LIVE ON THE HEADER ROW, not a second bar below it.
-            Two stacked bars cost 40px of every screen beneath them, and the
-            screens beneath them — the canvas and the run inspector — are the
-            ones that need the height. The chips are the first thing dropped as
-            the window narrows: they are context, while the tabs are navigation
-            and the validation badge is a warning. */}
-        {/* `order-last` below xl: when the row is tight the tabs move to the end,
-            next to the sticky verdict group, so the thing that scrolls out of
-            sight is the identity cluster — context — rather than navigation. */}
-        <div className="ml-2 inline-flex flex-shrink-0 items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
-          {([
-            ['design', 'agentFlows.builder.tab.design'],
-            ['runs', 'agentFlows.builder.tab.runs'],
-            // Feedback sits next to Runs, not inside it: "what did it do" and "what
-            // did people think of it" are separate questions, and burying the
-            // second under a filter on the first is how it stayed unread.
-            ['feedback', 'agentFlows.builder.tab.feedback'],
-            ['activity', 'agentFlows.builder.tab.activity'],
-          ] as const).map(([key, labelKey]) => (
-            <button key={key} type="button" onClick={() => setMode(key as Mode)}
-              className={cn('h-6 rounded-md px-2.5 text-caption font-medium transition',
-                mode === key ? 'bg-surface-1 text-brand shadow-linear-sm' : 'text-text-tertiary')}>
-              {t(labelKey)}
-            </button>
-          ))}
-        </div>
-
-        {/* SHOWN ONLY WHERE THERE IS ROOM FOR THEM.
-            These chips are a glance at the flow's size, not a control, and at
-            `xl` they did not fit: measured at 1440px the header overflowed by
-            50px and the estimate chip — the one without `whitespace-nowrap` —
-            absorbed the squeeze by wrapping into a four-line stack 64px tall,
-            inside a 40px row. Hiding the group below 2xl makes the header fit
-            exactly (measured: 50px of overflow to 0), and the nowrap below means
-            it can never stack again if the row gets crowded another way. */}
-        <div className="hidden items-center gap-1.5 2xl:flex">
-          <Badge size="xs" variant="neutral">{counts.nodes} {t(counts.nodes === 1 ? 'agentFlows.common.step' : 'agentFlows.common.steps')}</Badge>
-          {counts.branches > 0 && <Badge size="xs" variant="neutral">{counts.branches} {t(counts.branches === 1 ? 'agentFlows.common.branch' : 'agentFlows.common.branches')}</Badge>}
-          {counts.loops > 0 && <Badge size="xs" variant="neutral">{counts.loops} loop</Badge>}
-          {validation?.estimate && (
-            <span
-              title={t('agentFlows.builder.estimateTitle')}
-              className="cursor-help whitespace-nowrap rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-px text-tiny text-text-tertiary"
-            >
-              ≤ {validation.estimate.max_llm_calls} {t('agentFlows.common.modelCallPerQuestion')}
-            </span>
-          )}
-        </div>
-
-        <div className="flex-1" />
-
-        {/* Pinned to the right edge of the SCROLL PORT, not the row, so the verdict
-            and the three buttons stay put while the identity and tabs scroll under
-            them. `bg-surface-1` is required, not cosmetic: without it the scrolled
-            row shows through. */}
-        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 bg-surface-1 xl:sticky xl:right-0 xl:flex-shrink-0 xl:flex-nowrap xl:pl-2">
-        {validation && (
-          validation.ok
-            ? (
-              <Badge data-testid="flow-validity" size="xs" variant="success" dot>
-                {t('agentFlows.builder.valid')}
-              </Badge>
-            )
-            : (
-              // BOUNDED. The verdict lives in the sticky right group, so a long
-              // error — and validation messages name the step and the reason —
-              // grew that group until it covered the tab strip, and "Activity"
-              // became unreachable at 1280. The full sentence is still one hover
-              // away, and the Design tab shows it in full beside the step.
-              <Badge data-testid="flow-validity" size="xs" variant="danger" title={validation.errors[0] || ''}>
-                <span className="block max-w-[200px] truncate 2xl:max-w-none">
-                  {validation.errors[0] || t('agentFlows.builder.invalid')}
+      {/* topbar — one DetailHeader row.
+          History of this row: at 1024 Save/Publish were cut off; at 1280 the tabs
+          slid under a sticky action group and "Activity" became unreachable; at
+          390 it was a 218px wrapped stack. The fix is a priority order instead of
+          a scrolling row: back, name, status, tabs, the validity verdict and
+          Save/Publish never collapse; Undo/Redo, AI keys and Test move into the
+          overflow menu when there is no room; a keyless flow is a pinned warning
+          with its two actions, not two more chips competing for the row. */}
+      <DetailHeader
+        testId="builder-header"
+        tabsInlineFrom="lg"
+        back={{ label: t('agentFlows.title'), onClick: leave, testId: 'builder-back', showLabelFrom: '2xl' }}
+        title={
+          <Input
+            value={name}
+            disabled={!canEdit}
+            aria-label={t('agentFlows.builder.nameLabel')}
+            onChange={(e) => { setName(e.target.value); setDirty(true); }}
+            className="h-7 w-full min-w-0 max-w-[120px] border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))] 2xl:max-w-[240px]"
+          />
+        }
+        status={
+          <span className="flex items-center gap-2">
+            {/* Draft/published: from sm up (on a phone the activation strip under
+                the header says it, and the row keeps room for the verdict). */}
+            <span className="hidden sm:inline-flex"><StatusBadge status={status} version={version} size="xs" /></span>
+            {/* WHAT THIS FLOW IS FOR, NEXT TO WHAT IT IS CALLED — the type decides
+                what the flow is handed and which picker lists it; it turns into a
+                warning when the shape drifted out of the declaration. Below xl it
+                is one menu item away (same dialog). */}
+            {headerWide && (
+              <FlowTypeChip
+                flowType={flowType}
+                blockers={validation?.chat_blockers ?? []}
+                canEdit={canEdit}
+                onOpen={() => setTypeOpen(true)}
+              />
+            )}
+          </span>
+        }
+        meta={
+          <span className="flex items-center gap-1.5 whitespace-nowrap">
+            {publishedVersion != null && publishedVersion !== version && (
+              <span className="hidden text-tiny xl:inline">{t('agentFlows.builder.runningVersion', { version: publishedVersion })}</span>
+            )}
+            {/* A glance at the flow's size, not a control: only where there is room. */}
+            <span className="hidden items-center gap-1.5 2xl:flex">
+              {/* Hidden on a chat flow — "0 links" reads as "not deployed yet" on
+                  a flow that cannot have a link at all. */}
+              {flowType === 'bot' && (
+                <span className="text-tiny">· {links.length} {t(links.length === 1 ? 'agentFlows.common.link' : 'agentFlows.common.links')}</span>
+              )}
+              <Badge size="xs" variant="neutral">{counts.nodes} {t(counts.nodes === 1 ? 'agentFlows.common.step' : 'agentFlows.common.steps')}</Badge>
+              {counts.branches > 0 && <Badge size="xs" variant="neutral">{counts.branches} {t(counts.branches === 1 ? 'agentFlows.common.branch' : 'agentFlows.common.branches')}</Badge>}
+              {counts.loops > 0 && <Badge size="xs" variant="neutral">{counts.loops} loop</Badge>}
+              {validation?.estimate && (
+                <span
+                  title={t('agentFlows.builder.estimateTitle')}
+                  className="cursor-help whitespace-nowrap rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-px text-tiny text-text-tertiary"
+                >
+                  ≤ {validation.estimate.max_llm_calls} {t('agentFlows.common.modelCallPerQuestion')}
                 </span>
-              </Badge>
-            )
-        )}
-        {!!validation?.warnings.length && (
-          <span
-            title={validation.warnings.join('\n\n')}
-            className="flex cursor-help items-center gap-1 rounded-full border border-warning/25 bg-warning/5 px-2 py-px text-tiny text-warning"
-          >
-            <AlertTriangle className="h-3 w-3" /> {t('agentFlows.builder.warningCount', { count: validation.warnings.length })}
+              )}
+            </span>
           </span>
-        )}
-        {dirty && (
-          <span className="flex items-center gap-1.5 text-tiny font-medium text-warning">
-            <span className="h-1.5 w-1.5 rounded-full bg-warning" /> {t('agentFlows.common.unsaved')}
-          </span>
-        )}
-        {canEdit && (
-          <div className="mr-1 flex items-center gap-0.5">
-            <IconBtn onClick={undo} label={t('agentFlows.builder.undo')} disabled={!canUndo}>
-              <Undo2 className="h-3.5 w-3.5" />
-            </IconBtn>
-            <IconBtn onClick={redo} label={t('agentFlows.builder.redo')} disabled={!canRedo}>
-              <Redo2 className="h-3.5 w-3.5" />
-            </IconBtn>
+        }
+        tabs={
+          <div role="tablist" className="inline-flex flex-shrink-0 items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
+            {([
+              ['design', 'agentFlows.builder.tab.design'],
+              ['runs', 'agentFlows.builder.tab.runs'],
+              // Feedback sits next to Runs, not inside it: "what did it do" and
+              // "what did people think of it" are separate questions.
+              ['feedback', 'agentFlows.builder.tab.feedback'],
+              ['activity', 'agentFlows.builder.tab.activity'],
+            ] as const).map(([key, labelKey]) => (
+              <button key={key} type="button" role="tab" aria-selected={mode === key} tabIndex={mode === key ? 0 : -1}
+                onClick={() => setMode(key as Mode)}
+                className={cn('h-6 whitespace-nowrap rounded-md px-2.5 text-caption font-medium transition',
+                  mode === key ? 'bg-surface-1 text-brand shadow-linear-sm' : 'text-text-tertiary')}>
+                {t(labelKey)}
+              </button>
+            ))}
           </div>
-        )}
-        {keyless.length > 0 && (
-          // COMPACT: the sticky right group already competes with the tab strip at
-          // 1440, so the chip is a count; the full sentence and the step names are
-          // in its title.
-          <button
-            type="button"
-            data-testid="builder-keyless"
-            title={`${t('agentFlows.builder.keylessCount', { count: keyless.length })}: ${keyless.map((n) => n.name || n.key).join(', ')}`}
-            onClick={goToKeyless}
-            className="flex items-center gap-1 rounded-full border border-warning/25 bg-warning/5 px-2 py-px text-tiny text-warning hover:bg-warning/10"
-          >
-            <KeyRound className="h-3 w-3" /> {t('agentFlows.builder.keylessShort', { count: keyless.length })}
-          </button>
-        )}
-        {canEdit && assignable.length > 0 && (
-          <button
-            type="button"
-            data-testid="builder-assign-default-keys"
-            title={t('agentFlows.builder.assignDefaultKeysHint', { count: assignable.length })}
-            onClick={assignDefaults}
-            className="rounded-full border border-brand/30 px-2 py-px text-tiny text-brand hover:bg-brand/5"
-          >
-            {t('agentFlows.builder.assignDefaultKeys')}
-          </button>
-        )}
-        <IconBtn onClick={() => aiKeys.open()} label={t('agentFlows.aiKeys.title')} testId="ai-keys-open">
-          <KeyRound className="h-3.5 w-3.5" />
-        </IconBtn>
-        <Button data-testid="builder-test" variant="secondary" size="xs" onClick={() => setTestOpen(true)}>
-          <Play className="h-3 w-3" /> {t('agentFlows.builder.test')}
-        </Button>
-        {canEdit && (
-          <Button data-testid="builder-save" variant="secondary" size="xs" onClick={save} loading={saving} disabled={!dirty}>
-            <Save className="h-3 w-3" /> {t('agentFlows.builder.saveDraft')}
-          </Button>
-        )}
-        {canPublish && (
-          <Button data-testid="builder-publish" size="xs" onClick={() => setPublishOpen(true)} disabled={dirty}>
-            <Send className="h-3 w-3" /> {t('agentFlows.builder.publish')}
-          </Button>
-        )}
-        </div>
-      </div>
+        }
+        center={
+          <span className="flex items-center gap-2">
+            {validation && (
+              validation.ok
+                ? (
+                  <Badge data-testid="flow-validity" size="xs" variant="success" dot title={t('agentFlows.builder.valid')}>
+                    {/* Dot-only on phones; the verdict stays the accessible name. */}
+                    <span className="sr-only sm:not-sr-only">{t('agentFlows.builder.valid')}</span>
+                  </Badge>
+                )
+                : (
+                  // BOUNDED: validation messages name the step and the reason; the
+                  // full sentence is one hover away and in full on the Design tab.
+                  <Badge data-testid="flow-validity" size="xs" variant="danger" title={validation.errors[0] || ''}>
+                    <AlertOctagon className="h-3 w-3 shrink-0 sm:hidden" aria-hidden />
+                    <span className="sr-only sm:not-sr-only sm:block sm:max-w-[120px] sm:truncate xl:max-w-[200px] 2xl:max-w-none">
+                      {validation.errors[0] || t('agentFlows.builder.invalid')}
+                    </span>
+                  </Badge>
+                )
+            )}
+            {dirty && (
+              <span data-testid="builder-unsaved" title={t('agentFlows.common.unsaved')} className="flex items-center gap-1.5 text-tiny font-medium text-warning">
+                <span className="h-1.5 w-1.5 rounded-full bg-warning" />
+                <span className="hidden lg:inline">{t('agentFlows.common.unsaved')}</span>
+              </span>
+            )}
+          </span>
+        }
+        issues={headerIssues}
+        secondaryActions={[
+          ...(canEdit
+            ? [
+                {
+                  id: 'undo', inlineFrom: 'xl' as const, label: t('agentFlows.builder.undo'), icon: <Undo2 />,
+                  disabled: !canUndo, onSelect: undo,
+                  renderInline: () => (
+                    <IconBtn onClick={undo} label={t('agentFlows.builder.undo')} disabled={!canUndo}>
+                      <Undo2 className="h-3.5 w-3.5" />
+                    </IconBtn>
+                  ),
+                },
+                {
+                  id: 'redo', inlineFrom: 'xl' as const, label: t('agentFlows.builder.redo'), icon: <Redo2 />,
+                  disabled: !canRedo, onSelect: redo,
+                  renderInline: () => (
+                    <IconBtn onClick={redo} label={t('agentFlows.builder.redo')} disabled={!canRedo}>
+                      <Redo2 className="h-3.5 w-3.5" />
+                    </IconBtn>
+                  ),
+                },
+              ]
+            : []),
+          ...(!headerWide
+            ? [{
+                id: 'flow-type', inlineFrom: 'never' as const, label: t('agentFlows.builder.flowTypeMenu'), icon: <Layers />,
+                onSelect: () => setTypeOpen(true),
+              }]
+            : []),
+          {
+            id: 'ai-keys', testId: 'ai-keys-open', inlineFrom: 'xl', label: t('agentFlows.aiKeys.title'), icon: <KeyRound />,
+            onSelect: () => aiKeys.open(),
+            renderInline: () => (
+              <IconBtn onClick={() => aiKeys.open()} label={t('agentFlows.aiKeys.title')} testId="ai-keys-open">
+                <KeyRound className="h-3.5 w-3.5" />
+              </IconBtn>
+            ),
+          },
+          {
+            id: 'test', testId: 'builder-test', inlineFrom: 'xl', label: t('agentFlows.builder.test'), icon: <Play />,
+            onSelect: () => setTestOpen(true),
+            renderInline: () => (
+              <Button data-testid="builder-test" variant="secondary" size="xs" onClick={() => setTestOpen(true)}>
+                <Play className="h-3 w-3" /> {t('agentFlows.builder.test')}
+              </Button>
+            ),
+          },
+        ]}
+        actions={
+          <>
+            {canEdit && (
+              <Button data-testid="builder-save" variant="secondary" size="xs" onClick={save} loading={saving} disabled={!dirty}
+                aria-label={t('agentFlows.builder.saveDraft')} title={t('agentFlows.builder.saveDraft')}>
+                <Save className="h-3 w-3" /> <span className="hidden sm:inline">{t('agentFlows.builder.saveDraft')}</span>
+              </Button>
+            )}
+            {canPublish && (
+              <Button data-testid="builder-publish" size="xs" onClick={() => setPublishOpen(true)} disabled={dirty}
+                aria-label={t('agentFlows.builder.publish')} title={t('agentFlows.builder.publish')}>
+                <Send className="h-3 w-3" /> <span className="hidden sm:inline">{t('agentFlows.builder.publish')}</span>
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {/* WHERE IT ENDS UP, not just that it saved.
           Publish writes a version. It does NOT make the assistant reachable: a

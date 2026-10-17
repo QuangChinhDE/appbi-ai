@@ -5,8 +5,10 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { Save, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Pencil, Check, Search, Settings2, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
+import { Save, ChevronDown, ChevronRight, ChevronUp, Pencil, Check, Search, Settings2, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
+import { DetailHeader } from '@/components/common/DetailHeader';
+import { useMinWidth } from '@/hooks/use-media-query';
 import { useI18n } from '@/providers/LanguageProvider';
 import { useDataset, useTablePreview, type ColumnMetadata } from '@/hooks/use-datasets';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
@@ -3022,6 +3024,10 @@ export function ExploreEditor({
     ? (customQueryState?.columns?.length ?? 0)
     : previewColumns.length;
 
+  // Query controls sit inline in the header from 1400px (a 1440 screen keeps
+  // its single row); below that they get their own bar.
+  const queryInline = useMinWidth(1400);
+
   // Show loading skeleton while fetching existing chart
   if (!isNew && isChartLoading) {
     return (
@@ -3094,27 +3100,187 @@ export function ExploreEditor({
           </div>
         </div>
       )}
-      {!isNew && !resPerms.canEdit && resPerms.canView && (
-        <div className="shrink-0 border-b border-warning/30 bg-warning/10 px-4 py-2">
-          <div className="flex items-center gap-2 text-xs text-warning">
-            <Eye className="h-3.5 w-3.5 shrink-0" />
-            <span className="font-medium">{t('explore.editor.viewOnly')}</span>
-            <span className="text-warning">- {t('explore.editor.viewOnlyDescription')}</span>
-          </div>
-        </div>
-      )}
-      <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          {/* Left: back + name */}
-          <div className="flex min-w-0 items-center gap-2">
+      {(() => {
+        // Query controls (mode · dataset · base · run) belong to the work, not
+        // to the object: inline in the header on wide screens, otherwise one
+        // dedicated bar under it — never a 3-4 line wrapped header.
+        const queryControls = (
+          <>
+            {/* In the bar (narrow screens) nothing shrinks — the bar scrolls. */}
+            <div className={`flex items-center gap-2 ${queryInline ? 'min-w-0' : 'shrink-0'}`}>
+            {!isDashboardModal && (
+                <>
+                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.mode')}</span>
+                  <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
+                    <button
+                      onClick={handleUseGeneratedQuery}
+                      disabled={!resPerms.canEdit}
+                      className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                        isConfigBuilderMode
+                          ? 'bg-surface-1 text-brand shadow-linear-sm'
+                          : 'text-text-secondary hover:bg-surface-1'
+                      }`}
+                    >
+                      <Database className="h-3 w-3" />
+                      {t('explore.editor.builder')}
+                    </button>
+                    <span className="group/csql relative inline-flex">
+                      <button
+                        disabled
+                        className="inline-flex cursor-not-allowed items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-text-quaternary opacity-50"
+                      >
+                        <Code2 className="h-3 w-3" />
+                        {t('explore.editor.sql')}
+                      </button>
+                      <span className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-52 rounded-md bg-surface-inverse px-2.5 py-2 text-[11px] text-white shadow-lg group-hover/csql:block">
+                        {t('explore.editor.sqlUnavailable')}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="hidden h-5 w-px bg-[rgb(var(--border-line))] lg:block" />
+                </>
+              )}
+              <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.dataset')}</span>
+              <div className="min-w-[14rem] max-w-[22rem] flex-1">
+                <ExploreSourceSelector
+                  selectedDatasetId={selectedDatasetId}
+                  selectedTableId={selectedTableId}
+                  onDatasetChange={handleDatasetChange}
+                  onTableChange={setSelectedTableId}
+                  disabled={!resPerms.canEdit}
+                  lockDataset={lockDatasetSelection}
+                  variant="compact"
+                  hideTable
+                />
+              </div>
+              {/* Phase-15.10: base + relationship chip.
+                  Replaces the old "X tables joined" chip and surfaces what the
+                  old "Source" dropdown used to anchor. When no field has been
+                  picked yet (selectedSemanticView null), nothing renders —
+                  pick a field below and the base auto-derives from its view.
+                  Once derived, the chip stays informative even for single-
+                  table charts ("Base: Meetings") and grows to show JOIN count
+                  or joinable potential when relationships exist. */}
+              {selectedDatasetId != null && datasetModel && (() => {
+                // Base chip. Says WHAT the base is, WHERE it came from (saved /
+                // chosen / derived from the user's first field) and — when the
+                // chart's numbers come from another fact — on which table they
+                // are computed. It is never green just because tables are joined:
+                // joining is not health; a refused last run turns it amber.
+                const baseLabel = selectedSemanticView ? getSemanticViewDisplayName(selectedSemanticView) : null;
+                const crossUsed = activeRelationshipSummary.crossTableInUse;
+                const joinedCount = selectedSemanticView ? (activeRelationshipSummary.crossTableViews?.length ?? 0) : 0;
+                const joinableCount = Math.max(0, activeRelationshipSummary.activeViewCount - 1);
+                const hasJoined = Boolean(selectedSemanticView) && crossUsed && joinedCount > 0;
+                const hasJoinable = !crossUsed && joinableCount > 0;
+                const refused = queryFailure?.kind === 'ambiguous_route' || queryFailure?.kind === 'semantic_refusal';
+                const tone = refused
+                  ? 'border-warning/50 bg-warning/10 text-warning'
+                  : selectedSemanticView
+                    ? 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary'
+                    : 'border-dashed border-primary/50 bg-primary/5 text-primary';
+                const recommendedView = recommendedBaseTableId != null
+                  ? datasetModel.views?.find((v) => v.dataset_table_id === recommendedBaseTableId) ?? null
+                  : null;
+                const baseTip = !baseLabel
+                  ? t('explore.base.none')
+                  : hasJoined
+                    ? t(joinedCount === 1 ? 'explore.editor.relatedTablesJoinedTitleOne' : 'explore.editor.relatedTablesJoinedTitleMany', {
+                        count: joinedCount,
+                        tables: (activeRelationshipSummary.crossTableViews ?? []).join(', '),
+                      })
+                    : hasJoinable
+                      ? t(joinableCount === 1 ? 'explore.editor.relatedTablesJoinableTitleOne' : 'explore.editor.relatedTablesJoinableTitleMany', {
+                          base: baseLabel,
+                          count: joinableCount,
+                        })
+                      : t('explore.editor.dataBaseTitle', { base: baseLabel });
+                const tip = refused ? `${baseTip} — ${t('explore.base.refusedTip')}` : baseTip;
+                return (
+                  <BaseTablePicker
+                    tables={dataset?.tables ?? []}
+                    selectedTableId={selectedTableId}
+                    recommendedTableId={recommendedBaseTableId}
+                    onChange={handleBaseChange}
+                    baseLabel={baseLabel ?? t('explore.base.choose')}
+                    joinedCount={joinedCount}
+                    tone={tone}
+                    hasJoined={hasJoined}
+                    tip={tip}
+                    originLabel={baseOrigin ? t(`explore.base.origin.${baseOrigin}`) : null}
+                    measureNote={measureTableLabels.length > 0
+                      ? t('explore.base.measuresFrom', { tables: measureTableLabels.join(', ') })
+                      : null}
+                    recommendedNote={recommendedView && selectedTableId != null && recommendedBaseTableId !== selectedTableId
+                      ? t('explore.base.recommendedDiffers', { table: getSemanticViewDisplayName(recommendedView) })
+                      : null}
+                    disabled={!resPerms.canEdit}
+                  />
+                );
+              })()}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+            {isQueryDirty && (
+              <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
+                {t('explore.editor.runToRefresh')}
+              </span>
+            )}
+            {activeQueryState && (
+              <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
+                {t(activeQueryState.rows.length === 1 ? 'explore.editor.rowCountOne' : 'explore.editor.rowCountMany', { count: activeQueryState.rows.length })}
+                {activeQueryState.executionTimeMs != null ? ` · ${activeQueryState.executionTimeMs}ms` : ''}
+              </span>
+            )}
+            {/* Phase-15.83 — DA dropped per-query row cap; Limit dropdown
+                removed. Run button below sends the BE query without any
+                client-imposed cap. */}
             <button
-              onClick={handleExit}
-              className="flex shrink-0 items-center gap-1 text-xs text-text-quaternary hover:text-text-secondary"
+              data-testid="explore-run"
+              onClick={() => void handleRunQuery()}
+              disabled={!selectedTableId || isRunningQuery || (isConfigBuilderMode && isPreviewLoading)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-xs font-medium text-text-secondary hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              {resolvedBackLabel}
+              {isRunningQuery
+                ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-text-secondary border-t-transparent" />
+                : <Play className="h-3 w-3" />}
+              {isRunningQuery ? t('explore.editor.running') : t('explore.editor.run')}
             </button>
-            <span className="text-text-secondary">/</span>
+            {!isDashboardModal && (
+              isEditingDesc ? (
+                <input
+                  autoFocus
+                  type="text"
+                  value={chartDescInput}
+                  onChange={(e) => setChartDescInput(e.target.value)}
+                  onBlur={() => {
+                    setIsEditingDesc(false);
+                    if (chartId) updateChart.mutate({ id: chartId, data: { description: chartDescInput.trim() || null } });
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                    if (e.key === 'Escape') { setChartDescInput(chart?.description ?? ''); setIsEditingDesc(false); }
+                  }}
+                  placeholder={t('explore.editor.addNote')}
+                  className="w-44 border-b border-brand/50 bg-transparent px-0.5 text-xs text-text-secondary outline-none"
+                />
+              ) : resPerms.canEdit ? (
+                <button
+                  type="button"
+                  onClick={() => setIsEditingDesc(true)}
+                  className="group/desc flex max-w-[12rem] cursor-text items-center gap-1 rounded-md px-2 py-1 text-[11px] text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
+                >
+                  <span className="truncate">{chartDescInput || <span className="italic">{t('explore.editor.addNote')}</span>}</span>
+                  <Pencil className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover/desc:opacity-100" />
+                </button>
+              ) : chartDescInput ? (
+                <span className="text-[11px] text-text-quaternary">{chartDescInput}</span>
+              ) : null
+            )}
+            </div>
+          </>
+        );
+        const nameNode = (
+          <div className="flex min-w-0 items-center gap-2">
             {isEditingName ? (
               <div className="flex items-center gap-1.5">
                 <input
@@ -3163,195 +3329,51 @@ export function ExploreEditor({
               </div>
             )}
           </div>
-
-          <div className="hidden h-5 w-px bg-[rgb(var(--border-line))] md:block" />
-
-          {/* Middle: mode + source compact */}
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-            {!isDashboardModal && (
-              <>
-                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.mode')}</span>
-                <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
-                  <button
-                    onClick={handleUseGeneratedQuery}
-                    disabled={!resPerms.canEdit}
-                    className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                      isConfigBuilderMode
-                        ? 'bg-surface-1 text-brand shadow-linear-sm'
-                        : 'text-text-secondary hover:bg-surface-1'
-                    }`}
-                  >
-                    <Database className="h-3 w-3" />
-                    {t('explore.editor.builder')}
-                  </button>
-                  <span className="group/csql relative inline-flex">
-                    <button
-                      disabled
-                      className="inline-flex cursor-not-allowed items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-text-quaternary opacity-50"
-                    >
-                      <Code2 className="h-3 w-3" />
-                      {t('explore.editor.sql')}
-                    </button>
-                    <span className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-52 rounded-md bg-surface-inverse px-2.5 py-2 text-[11px] text-white shadow-lg group-hover/csql:block">
-                      {t('explore.editor.sqlUnavailable')}
-                    </span>
-                  </span>
-                </div>
-                <div className="hidden h-5 w-px bg-[rgb(var(--border-line))] lg:block" />
-              </>
-            )}
-            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.dataset')}</span>
-            <div className="min-w-[14rem] max-w-[22rem] flex-1">
-              <ExploreSourceSelector
-                selectedDatasetId={selectedDatasetId}
-                selectedTableId={selectedTableId}
-                onDatasetChange={handleDatasetChange}
-                onTableChange={setSelectedTableId}
-                disabled={!resPerms.canEdit}
-                lockDataset={lockDatasetSelection}
-                variant="compact"
-                hideTable
-              />
-            </div>
-            {/* Phase-15.10: base + relationship chip.
-                Replaces the old "X tables joined" chip and surfaces what the
-                old "Source" dropdown used to anchor. When no field has been
-                picked yet (selectedSemanticView null), nothing renders —
-                pick a field below and the base auto-derives from its view.
-                Once derived, the chip stays informative even for single-
-                table charts ("Base: Meetings") and grows to show JOIN count
-                or joinable potential when relationships exist. */}
-            {selectedDatasetId != null && datasetModel && (() => {
-              // Base chip. Says WHAT the base is, WHERE it came from (saved /
-              // chosen / derived from the user's first field) and — when the
-              // chart's numbers come from another fact — on which table they
-              // are computed. It is never green just because tables are joined:
-              // joining is not health; a refused last run turns it amber.
-              const baseLabel = selectedSemanticView ? getSemanticViewDisplayName(selectedSemanticView) : null;
-              const crossUsed = activeRelationshipSummary.crossTableInUse;
-              const joinedCount = selectedSemanticView ? (activeRelationshipSummary.crossTableViews?.length ?? 0) : 0;
-              const joinableCount = Math.max(0, activeRelationshipSummary.activeViewCount - 1);
-              const hasJoined = Boolean(selectedSemanticView) && crossUsed && joinedCount > 0;
-              const hasJoinable = !crossUsed && joinableCount > 0;
-              const refused = queryFailure?.kind === 'ambiguous_route' || queryFailure?.kind === 'semantic_refusal';
-              const tone = refused
-                ? 'border-warning/50 bg-warning/10 text-warning'
-                : selectedSemanticView
-                  ? 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary'
-                  : 'border-dashed border-primary/50 bg-primary/5 text-primary';
-              const recommendedView = recommendedBaseTableId != null
-                ? datasetModel.views?.find((v) => v.dataset_table_id === recommendedBaseTableId) ?? null
-                : null;
-              const baseTip = !baseLabel
-                ? t('explore.base.none')
-                : hasJoined
-                  ? t(joinedCount === 1 ? 'explore.editor.relatedTablesJoinedTitleOne' : 'explore.editor.relatedTablesJoinedTitleMany', {
-                      count: joinedCount,
-                      tables: (activeRelationshipSummary.crossTableViews ?? []).join(', '),
-                    })
-                  : hasJoinable
-                    ? t(joinableCount === 1 ? 'explore.editor.relatedTablesJoinableTitleOne' : 'explore.editor.relatedTablesJoinableTitleMany', {
-                        base: baseLabel,
-                        count: joinableCount,
-                      })
-                    : t('explore.editor.dataBaseTitle', { base: baseLabel });
-              const tip = refused ? `${baseTip} — ${t('explore.base.refusedTip')}` : baseTip;
-              return (
-                <BaseTablePicker
-                  tables={dataset?.tables ?? []}
-                  selectedTableId={selectedTableId}
-                  recommendedTableId={recommendedBaseTableId}
-                  onChange={handleBaseChange}
-                  baseLabel={baseLabel ?? t('explore.base.choose')}
-                  joinedCount={joinedCount}
-                  tone={tone}
-                  hasJoined={hasJoined}
-                  tip={tip}
-                  originLabel={baseOrigin ? t(`explore.base.origin.${baseOrigin}`) : null}
-                  measureNote={measureTableLabels.length > 0
-                    ? t('explore.base.measuresFrom', { tables: measureTableLabels.join(', ') })
-                    : null}
-                  recommendedNote={recommendedView && selectedTableId != null && recommendedBaseTableId !== selectedTableId
-                    ? t('explore.base.recommendedDiffers', { table: getSemanticViewDisplayName(recommendedView) })
-                    : null}
-                  disabled={!resPerms.canEdit}
-                />
-              );
-            })()}
-          </div>
-
-          {/* Right: status + limit + run + save (+ desc note) */}
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            {isQueryDirty && (
-              <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
-                {t('explore.editor.runToRefresh')}
+        );
+        return (
+          <DetailHeader
+            testId="explore-header"
+            back={{ label: resolvedBackLabel, onClick: handleExit, showLabelFrom: 'xl' }}
+            title={nameNode}
+            status={!isNew && !resPerms.canEdit && resPerms.canView ? (
+              // Read-only is a property of this chart for this user: a status
+              // chip with the reason, not a banner above the whole editor.
+              <span
+                data-testid="explore-view-only"
+                role="status"
+                title={t('explore.editor.viewOnlyDescription')}
+                aria-label={`${t('explore.editor.viewOnly')} — ${t('explore.editor.viewOnlyDescription')}`}
+                className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning"
+              >
+                <Eye className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                {t('explore.editor.viewOnly')}
               </span>
+            ) : undefined}
+            center={queryInline ? <div className="flex min-w-0 items-center gap-3">{queryControls}</div> : undefined}
+            below={queryInline ? undefined : (
+              <div
+                data-testid="explore-query-bar"
+                className="flex min-h-11 items-center gap-3 overflow-x-auto border-t border-[rgb(var(--border-line))] px-3 py-1.5 sm:px-4 [scrollbar-width:none]"
+              >
+                {queryControls}
+              </div>
             )}
-            {activeQueryState && (
-              <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
-                {t(activeQueryState.rows.length === 1 ? 'explore.editor.rowCountOne' : 'explore.editor.rowCountMany', { count: activeQueryState.rows.length })}
-                {activeQueryState.executionTimeMs != null ? ` · ${activeQueryState.executionTimeMs}ms` : ''}
-              </span>
-            )}
-            {/* Phase-15.83 — DA dropped per-query row cap; Limit dropdown
-                removed. Run button below sends the BE query without any
-                client-imposed cap. */}
-            <button
-              onClick={() => void handleRunQuery()}
-              disabled={!selectedTableId || isRunningQuery || (isConfigBuilderMode && isPreviewLoading)}
-              className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-xs font-medium text-text-secondary hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isRunningQuery
-                ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-text-secondary border-t-transparent" />
-                : <Play className="h-3 w-3" />}
-              {isRunningQuery ? t('explore.editor.running') : t('explore.editor.run')}
-            </button>
-            {!isDashboardModal && (
-              isEditingDesc ? (
-                <input
-                  autoFocus
-                  type="text"
-                  value={chartDescInput}
-                  onChange={(e) => setChartDescInput(e.target.value)}
-                  onBlur={() => {
-                    setIsEditingDesc(false);
-                    if (chartId) updateChart.mutate({ id: chartId, data: { description: chartDescInput.trim() || null } });
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                    if (e.key === 'Escape') { setChartDescInput(chart?.description ?? ''); setIsEditingDesc(false); }
-                  }}
-                  placeholder={t('explore.editor.addNote')}
-                  className="w-44 border-b border-brand/50 bg-transparent px-0.5 text-xs text-text-secondary outline-none"
-                />
-              ) : resPerms.canEdit ? (
-                <button
-                  type="button"
-                  onClick={() => setIsEditingDesc(true)}
-                  className="group/desc flex max-w-[12rem] cursor-text items-center gap-1 rounded-md px-2 py-1 text-[11px] text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
-                >
-                  <span className="truncate">{chartDescInput || <span className="italic">{t('explore.editor.addNote')}</span>}</span>
-                  <Pencil className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover/desc:opacity-100" />
-                </button>
-              ) : chartDescInput ? (
-                <span className="text-[11px] text-text-quaternary">{chartDescInput}</span>
-              ) : null
-            )}
-            {resPerms.canEdit && (
+            actions={resPerms.canEdit ? (
               <button
+                data-testid="explore-save"
                 onClick={() => { void requestSave(); }}
                 disabled={!selectedTableId || dryRunCreateChart.isPending || createChart.isPending || updateChart.isPending}
-                className="flex items-center gap-1.5 rounded-md border border-brand bg-brand px-3 py-1 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex h-8 items-center gap-1.5 rounded-md border border-brand bg-brand px-3 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Save className="h-3.5 w-3.5" />
                 {dryRunCreateChart.isPending || createChart.isPending || updateChart.isPending
                   ? t('explore.editor.saving')
                   : (saveButtonLabel ?? (chartId ? t('explore.editor.update') : t('explore.editor.save')))}
               </button>
-            )}
-          </div>
-        </div>
-      </div>
+            ) : undefined}
+          />
+        );
+      })()}
 
       <div className="min-h-0 flex-1 overflow-hidden">
         <div className="flex h-full flex-col gap-4 p-4 lg:flex-row">

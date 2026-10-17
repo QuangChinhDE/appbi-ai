@@ -4,6 +4,8 @@ import type { ModuleCatalog } from '../messages';
 // UI primitives like DateInput / SqlEditor, getting-started guide).
 export const sharedCatalog: ModuleCatalog = {
   en: {
+    'common.detailHeader.moreActions': 'More actions',
+    'common.detailHeader.issuesCount': '{{count}} notices',
     'common.close': 'Close',
     'common.confirm': 'Confirm',
     'common.deleting': 'Deleting...',
@@ -66,6 +68,8 @@ export const sharedCatalog: ModuleCatalog = {
     'sidebar.notifications.unknownTime': 'Unknown time',
   },
   vi: {
+    'common.detailHeader.moreActions': 'Thao tác khác',
+    'common.detailHeader.issuesCount': '{{count}} thông báo',
     'common.close': 'Đóng',
     'common.confirm': 'Xác nhận',
     'common.deleting': 'Đang xóa...',
