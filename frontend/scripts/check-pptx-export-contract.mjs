@@ -168,6 +168,16 @@ check('both tile renderers publish their export state; the capture hides export-
   assert(/loading > 0/.test(rr) && /tileReadiness\(t\)/.test(rr), 'page readiness no longer waits for every tile');
 });
 
+check('a tile is measured against the page box read at the same moment (a scroll mid-page never shifts later tiles)', () => {
+  // CI 39012842620: a loading chart's scrollIntoView moved the page 108 px after
+  // the page box was read once; every later tile went up by 108 (y = -92) and the
+  // server refused the deck (422, y >= 0) — the export looked like a timeout.
+  const ex = source('lib/export-pptx.ts');
+  const loop = ex.slice(ex.indexOf('for (const t of page.tiles)'), ex.lastIndexOf('pages.push({ name: page.name'));
+  assert(/const base = root\.getBoundingClientRect\(\);\s*const r = el\.getBoundingClientRect\(\);/.test(loop), 'the page box is not read beside each tile box');
+  assert(/y: r\.top - base\.top/.test(loop) && /x: r\.left - base\.left/.test(loop), 'tile geometry uses a stale page box');
+});
+
 // ── Bounded total wait: an export ends (deck or loud error) within its cap ──
 async function checkAsync(name, fn) {
   try { await fn(); passed += 1; } catch (error) { failures.push({ name, error }); }

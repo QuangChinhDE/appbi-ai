@@ -280,9 +280,13 @@ export async function exportDashboardPptx(opts: PptxExportOptions): Promise<void
       }
       // The tile AS RENDERED (px, relative to the page): the slide keeps its
       // shape with one uniform scale, so pictures fill their blocks.
+      // Measured against the page box read at the SAME moment: an earlier
+      // tile's scroll (loading / capture retry) moves both, so the box read
+      // once before the loop would offset every later tile by that scroll.
+      const base = root.getBoundingClientRect();
       const r = el.getBoundingClientRect();
       if (r.width < 2 || r.height < 2) continue;
-      const geom = { x: r.left - rootRect.left, y: r.top - rootRect.top, w: r.width, h: r.height };
+      const geom = { x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height };
       if (isExportControl(t)) { controls.push(geom); continue; }
       const title = textOf(el.querySelector('[data-pdf-tile-title]')) || t.title || null;
       const type = String(t.chartType ?? '');
