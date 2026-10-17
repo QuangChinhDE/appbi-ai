@@ -1100,7 +1100,7 @@ export function PublicLinksManager({
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-tiny font-emphasis transition-colors',
                   previewMode === 'public'
-                    ? 'bg-brand text-text-inverse shadow-linear-sm'
+                    ? 'bg-brand-container text-brand-on-container shadow-linear-sm'
                     : 'text-text-tertiary hover:text-text-secondary',
                 )}
               >
@@ -1114,7 +1114,7 @@ export function PublicLinksManager({
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-tiny font-emphasis transition-colors',
                   previewMode === 'embed'
-                    ? 'bg-brand text-text-inverse shadow-linear-sm'
+                    ? 'bg-brand-container text-brand-on-container shadow-linear-sm'
                     : 'text-text-tertiary hover:text-text-secondary',
                 )}
               >
@@ -1601,7 +1601,7 @@ export function PublicLinksManager({
                       className={cn(
                         'flex-1 rounded-md px-3 py-1.5 text-caption font-emphasis transition-colors',
                         formTab === t.id
-                          ? 'bg-brand text-text-inverse shadow-linear-sm'
+                          ? 'bg-brand-container text-brand-on-container shadow-linear-sm'
                           : 'text-text-tertiary hover:text-text-secondary',
                       )}
                     >

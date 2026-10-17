@@ -27,8 +27,8 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
           'w-full rounded-md bg-surface-1 text-text-primary placeholder:text-text-quaternary',
           'border transition-[border-color,box-shadow] duration-150 outline-none',
           invalid
-            ? 'border-danger/60 focus:shadow-[0_0_0_3px_rgb(220_38_38/0.15)]'
-            : 'border-[rgb(var(--border-strong))] focus:border-brand focus:shadow-focus-brand',
+            ? 'border-danger focus:shadow-[0_0_0_3px_rgb(var(--danger)/0.18)]'
+            : 'border-stroke-control focus:border-brand focus:shadow-focus-brand',
           sizeMap[size],
           hasLeading ? 'pl-9' : 'pl-3',
           hasTrailing ? 'pr-9' : 'pr-3',
@@ -74,8 +74,8 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
           'border transition-[border-color,box-shadow] duration-150 outline-none',
           'px-3 py-2 text-caption leading-relaxed resize-y',
           invalid
-            ? 'border-danger/60 focus:shadow-[0_0_0_3px_rgb(220_38_38/0.15)]'
-            : 'border-[rgb(var(--border-strong))] focus:border-brand focus:shadow-focus-brand',
+            ? 'border-danger focus:shadow-[0_0_0_3px_rgb(var(--danger)/0.18)]'
+            : 'border-stroke-control focus:border-brand focus:shadow-focus-brand',
           'disabled:cursor-not-allowed disabled:opacity-60 disabled:bg-surface-2',
           className,
         )}
@@ -101,11 +101,11 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
           'w-full rounded-md bg-surface-1 text-text-primary',
           'border transition-[border-color,box-shadow] duration-150 outline-none',
           'px-3 pr-8 appearance-none',
-          'bg-[url("data:image/svg+xml;utf8,<svg xmlns=%27http://www.w3.org/2000/svg%27 width=%2716%27 height=%2716%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27%238a8f98%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27><polyline points=%276 9 12 15 18 9%27/></svg>")]',
+          'bg-[url("data:image/svg+xml;utf8,<svg xmlns=%27http://www.w3.org/2000/svg%27 width=%2716%27 height=%2716%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27%235A6D84%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27><polyline points=%276 9 12 15 18 9%27/></svg>")]',
           'bg-no-repeat bg-[right_0.625rem_center]',
           invalid
-            ? 'border-danger/60 focus:shadow-[0_0_0_3px_rgb(220_38_38/0.15)]'
-            : 'border-[rgb(var(--border-strong))] focus:border-brand focus:shadow-focus-brand',
+            ? 'border-danger focus:shadow-[0_0_0_3px_rgb(var(--danger)/0.18)]'
+            : 'border-stroke-control focus:border-brand focus:shadow-focus-brand',
           sizeMap[size],
           'disabled:cursor-not-allowed disabled:opacity-60 disabled:bg-surface-2',
           className,

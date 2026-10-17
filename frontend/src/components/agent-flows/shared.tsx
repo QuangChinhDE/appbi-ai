@@ -438,7 +438,7 @@ export function KnowledgeAttachments({
               className={cn(
                 'h-8 flex-shrink-0 rounded-md px-2.5 text-caption font-medium transition',
                 canAdd
-                  ? 'bg-brand text-white hover:opacity-90'
+                  ? 'bg-brand text-text-inverse hover:bg-brand-hover'
                   : 'cursor-not-allowed bg-surface-2 text-text-quaternary',
               )}
             >

@@ -67,7 +67,7 @@ export function Tabs<T extends string = string>({
                 size === 'sm' ? 'h-7 px-2.5 text-label' : 'h-8 px-3 text-caption',
                 'font-emphasis',
                 active
-                  ? 'bg-surface-1 text-text-primary shadow-linear-sm'
+                  ? 'bg-surface-1 text-brand-on-container shadow-linear-sm'
                   : 'text-text-tertiary hover:text-text-primary',
                 item.disabled && 'opacity-50 cursor-not-allowed',
               )}

@@ -543,7 +543,7 @@ export function AiDesignPanel({
                   </p>
                   <div className="mt-1.5 flex gap-1.5">
                     <button type="button" onClick={() => onDecideProposal(p, true)} data-testid="ai-design-proposal-accept"
-                      className="rounded-md bg-brand px-2 py-1 text-[11px] font-[560] text-white hover:bg-brand/90">{t('dashboards.aiDesign.proposalAccept')}</button>
+                      className="rounded-md bg-brand px-2 py-1 text-[11px] font-[560] text-white hover:bg-brand-hover">{t('dashboards.aiDesign.proposalAccept')}</button>
                     <button type="button" onClick={() => onDecideProposal(p, false)} data-testid="ai-design-proposal-reject"
                       className="rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-[11px] text-text-secondary hover:bg-surface-2">{t('dashboards.aiDesign.proposalReject')}</button>
                   </div>

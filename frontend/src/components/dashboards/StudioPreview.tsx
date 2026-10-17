@@ -132,7 +132,7 @@ export function StudioPreview({ dashboardId, before, after, hasPending, onApply,
       aria-pressed={device === d}
       onClick={() => setDevice(d)}
       className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-[560] transition-colors ${
-        device === d ? 'bg-brand text-white' : 'text-text-secondary hover:bg-surface-2'
+        device === d ? 'bg-brand-container text-brand-on-container' : 'text-text-secondary hover:bg-surface-2'
       }`}
     >
       <Icon className="h-3.5 w-3.5" />
@@ -182,7 +182,7 @@ export function StudioPreview({ dashboardId, before, after, hasPending, onApply,
           ) : null}
           {hasPending && onApply ? (
             <button type="button" data-testid="studio-apply" onClick={onApply}
-              className="h-8 rounded-md bg-brand px-3 text-[12px] font-[600] text-white hover:bg-brand/90">
+              className="h-8 rounded-md bg-brand px-3 text-[12px] font-[600] text-white hover:bg-brand-hover">
               {t('dashboards.studio.apply')}
             </button>
           ) : null}

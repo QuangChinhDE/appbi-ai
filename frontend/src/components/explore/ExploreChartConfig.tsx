@@ -2132,7 +2132,7 @@ function DataLabelsEditor({
                       title={opt.desc}
                       className={`px-1.5 py-1 text-[11px] rounded border ${
                         active
-                          ? 'bg-brand text-white border-brand'
+                          ? 'bg-brand-container text-brand-on-container border-brand'
                           : 'bg-surface-1 border-[rgb(var(--border-line))] hover:bg-surface-2'
                       }`}
                     >
@@ -2160,7 +2160,7 @@ function DataLabelsEditor({
                   onClick={() => patchTarget({ position: opt.value })}
                   className={`px-1.5 py-1 text-[11px] rounded border ${
                     (highlightPosition(currentStyle.position) ?? (isAll ? defaultPosition : undefined)) === opt.value
-                      ? 'bg-brand text-white border-brand'
+                      ? 'bg-brand-container text-brand-on-container border-brand'
                       : 'bg-surface-1 border-[rgb(var(--border-line))] hover:bg-surface-2'
                   }`}
                 >
@@ -2179,7 +2179,7 @@ function DataLabelsEditor({
                   onClick={() => patchTarget({ rotation: r })}
                   className={`px-2 py-1 text-[11px] rounded border ${
                     (currentStyle.rotation ?? 0) === r
-                      ? 'bg-brand text-white border-brand'
+                      ? 'bg-brand-container text-brand-on-container border-brand'
                       : 'bg-surface-1 border-[rgb(var(--border-line))] hover:bg-surface-2'
                   }`}
                 >
@@ -4505,14 +4505,14 @@ export function ExploreChartConfig({
                             <button
                               type="button"
                               onClick={() => updateTableHyperlinkRule(index, { urlTemplate: undefined })}
-                              className={`px-2 py-0.5 text-[11px] ${!useTemplate ? 'bg-brand text-white' : 'bg-surface-1 text-text-secondary hover:bg-surface-2'}`}
+                              className={`px-2 py-0.5 text-[11px] ${!useTemplate ? 'bg-brand-container text-brand-on-container' : 'bg-surface-1 text-text-secondary hover:bg-surface-2'}`}
                             >
                               URL column
                             </button>
                             <button
                               type="button"
                               onClick={() => updateTableHyperlinkRule(index, { urlTemplate: rule.urlTemplate ?? '' })}
-                              className={`px-2 py-0.5 text-[11px] ${useTemplate ? 'bg-brand text-white' : 'bg-surface-1 text-text-secondary hover:bg-surface-2'}`}
+                              className={`px-2 py-0.5 text-[11px] ${useTemplate ? 'bg-brand-container text-brand-on-container' : 'bg-surface-1 text-text-secondary hover:bg-surface-2'}`}
                             >
                               URL template
                             </button>
@@ -6109,7 +6109,7 @@ export function ExploreChartConfig({
                           }}
                           className={`px-1.5 py-0.5 text-[11px] rounded border transition-colors ${
                             selected
-                              ? 'bg-brand text-white border-brand'
+                              ? 'bg-brand-container text-brand-on-container border-brand'
                               : 'bg-surface-1 text-text-secondary border-[rgb(var(--border-line))] hover:bg-surface-2'
                           }`}
                           title={colName}

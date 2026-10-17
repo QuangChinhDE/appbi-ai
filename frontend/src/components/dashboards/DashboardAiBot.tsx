@@ -1589,7 +1589,7 @@ function KeyInputView({
       <button
         onClick={onSubmit}
         disabled={!apiKey.trim()}
-        className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2 text-caption font-strong text-white transition-colors hover:bg-brand/90 disabled:cursor-not-allowed disabled:opacity-50"
+        className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2 text-caption font-strong text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
       >
         <Bot className="h-4 w-4" />
         {t('dashboards.aiBot.startChat')}
@@ -1768,7 +1768,7 @@ function ChatView({
               // with no argument, which is why only the button was broken.
               onClick={() => onSend()}
               disabled={!inputText.trim() || !!reconError}
-              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand text-white shadow-sm transition-all hover:bg-brand/90 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand text-white shadow-sm transition-all hover:bg-brand-hover hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
               aria-label={t('dashboards.aiBot.sendAria')}
             >
               <Send className="h-3.5 w-3.5" />

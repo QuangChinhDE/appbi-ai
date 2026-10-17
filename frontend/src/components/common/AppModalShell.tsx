@@ -97,7 +97,7 @@ export function AppModalShell({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/84 backdrop-blur-[3px] p-4 animate-fade-in"
+      className="app-chrome fixed inset-0 z-50 flex items-center justify-center bg-overlay/84 backdrop-blur-[3px] p-4 animate-fade-in"
       onClick={() => {
         if (!closeDisabled) onClose();
       }}

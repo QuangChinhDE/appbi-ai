@@ -181,7 +181,7 @@ export function BriefingWizard({
         </div>
         <button
           onClick={onSkip}
-          className="rounded-lg bg-brand px-3 py-1.5 text-caption font-strong text-white transition-colors hover:bg-brand/90"
+          className="rounded-lg bg-brand px-3 py-1.5 text-caption font-strong text-white transition-colors hover:bg-brand-hover"
         >
           {t('dashboards.briefingWizard.skipToChat')}
         </button>
@@ -338,7 +338,7 @@ function DomainStep({
         </button>
         <button
           onClick={onConfirm}
-          className="flex items-center gap-1 rounded-lg bg-brand px-3 py-1.5 text-caption font-strong text-white transition-colors hover:bg-brand/90"
+          className="flex items-center gap-1 rounded-lg bg-brand px-3 py-1.5 text-caption font-strong text-white transition-colors hover:bg-brand-hover"
         >
           {t('dashboards.briefingWizard.confirmDomain')} <ChevronRight className="h-3.5 w-3.5" />
         </button>
@@ -551,7 +551,7 @@ function OptionPills({
             title={opt.hint_vi || opt.label_vi || opt.label || opt.value}
             className={`rounded-full px-2.5 py-1 text-tiny font-strong transition-colors ${
               active
-                ? 'bg-brand text-white'
+                ? 'bg-brand-container text-brand-on-container'
                 : 'border border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary hover:bg-surface-3'
             }`}
           >

@@ -83,19 +83,19 @@ export default function OfflineBar() {
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-24 z-[60] flex justify-center px-4">
       {flash && pending === 0 ? (
-        <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 shadow-lg">
+        <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-success/25 bg-success-bg px-4 py-2 text-sm font-semibold text-success shadow-lg">
           <CheckCircle2 className="h-4 w-4" />
           {flash}
         </div>
       ) : (
-        <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-amber-200 bg-white px-4 py-2 text-sm shadow-lg">
-          <span className={`flex items-center gap-1.5 font-semibold ${failed > 0 ? 'text-rose-700' : 'text-amber-700'}`}>
+        <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-warning/30 bg-surface-1 px-4 py-2 text-sm shadow-lg">
+          <span className={`flex items-center gap-1.5 font-semibold ${failed > 0 ? 'text-danger' : 'text-warning'}`}>
             {failed > 0 ? (
               <AlertTriangle className="h-4 w-4" />
             ) : offline ? (
               <WifiOff className="h-4 w-4" />
             ) : (
-              <CheckCircle2 className="h-4 w-4 text-amber-500" />
+              <CheckCircle2 className="h-4 w-4 text-warning" />
             )}
             {failed > 0 ? `${failed} lỗi, ${pending - failed} chờ gửi` : `${pending} bản ghi chờ gửi`}
           </span>

@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 type ButtonVariant =
   | 'primary'
   | 'secondary'
+  | 'tonal'
   | 'ghost'
   | 'subtle'
   | 'outline'
@@ -37,15 +38,18 @@ const variants: Record<ButtonVariant, string> = {
   primary:
     'bg-brand text-text-inverse hover:bg-brand-hover active:bg-brand-active shadow-linear-sm',
   secondary:
-    'bg-surface-1 text-text-primary border border-[rgb(var(--border-strong))] hover:bg-surface-2',
+    'bg-surface-1 text-text-primary border border-stroke-strong hover:border-stroke-control hover:bg-surface-2 active:bg-surface-3',
+  // Recognisable but quieter than primary: brand container, brand text.
+  tonal:
+    'bg-brand-container text-brand-on-container hover:bg-brand-container-hover active:bg-brand-container-hover',
   ghost:
-    'bg-transparent text-text-secondary hover:bg-surface-2 hover:text-text-primary',
+    'bg-transparent text-text-secondary hover:bg-surface-2 hover:text-text-primary active:bg-surface-3',
   subtle:
     'bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary',
   outline:
-    'bg-transparent text-text-primary border border-[rgb(var(--border-strong))] hover:bg-surface-2',
+    'bg-transparent text-text-primary border border-stroke-strong hover:border-stroke-control hover:bg-surface-2',
   danger:
-    'bg-danger text-text-inverse hover:opacity-90 shadow-linear-sm',
+    'bg-danger text-text-inverse hover:brightness-90 active:brightness-75 shadow-linear-sm',
   link:
     'bg-transparent text-brand hover:text-brand-hover underline-offset-4 hover:underline px-1 h-auto',
 };
