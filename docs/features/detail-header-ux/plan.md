@@ -1,6 +1,6 @@
 # Unified Detail Header UX — intent, spec and plan
 
-Status: **PROPOSED — awaiting approval. Nothing implemented.**
+Status: **APPROVED 2026-10-17 — implemented on `feat/detail-header-ux`.**
 
 ## Intent
 
@@ -36,7 +36,7 @@ draft/live semantics. This change is frontend-only.
 
 - **`DetailHeader`**: one row with a 48px target and a 56px maximum on desktop. Typed slots:
   - `back`, `title` (truncates, renamable via render prop), `status` (≤1 primary badge), `tabs`, `primaryActions`, `secondaryActions[]`, `issues`.
-  - **Priority overflow.** `secondaryActions` render inline while they fit (measured with ResizeObserver). The rest collapse into an `OverflowMenu`.
+  - **Priority overflow.** Each secondary action declares the breakpoint from which it sits inline; below it, it lives in the `OverflowMenu`. Exactly one copy is mounted, so a `data-testid` stays unique. (Declared breakpoints, not runtime measurement: deterministic, testable, and no ResizeObserver loop next to the dashboard's existing height measurement.)
   - Back, title, critical status and primary actions are never collapsed.
   - The header never wraps.
 - **`OverflowMenu`**: an accessible menu (`role=menu`, arrow-key navigation, Esc, focus return). It replaces the three hand-rolled menus. Disabled items carry a reason tooltip.
