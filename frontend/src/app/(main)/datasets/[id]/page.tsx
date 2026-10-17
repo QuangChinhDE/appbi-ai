@@ -12,7 +12,6 @@ import {
   Database,
   Download,
   RefreshCw,
-  ChevronLeft,
   ChevronDown,
   Loader2,
   Columns,
@@ -46,7 +45,8 @@ import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
 import { OperationalDestinationBanner } from '@/components/datasets/OperationalDestinationBanner';
 import { DatasetMeasuresPanel } from '@/components/datasets/DatasetMeasuresPanel';
-import { DatasetPublishControls, DatasetPublishBanner } from '@/components/datasets/DatasetPublishBar';
+import { useDatasetPublishHeader } from '@/components/datasets/DatasetPublishBar';
+import { DetailHeader } from '@/components/common/DetailHeader';
 import type { ModelViewEditPanelHandle } from '@/components/datasets/ModelViewEditPanel';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { useDatasetModel, fetchColumnLineage, type DatasetModelView, type MeasureDefinition } from '@/hooks/use-dataset-model';
@@ -626,6 +626,13 @@ export default function DatasetDetailPage() {
   const { data: sidebarModel } = useDatasetModel(datasetId);
 
   const resPerms = getResourcePermissions(dataset?.user_permission, dataset?.capabilities);
+  const isOperational = dataset?.purpose === 'operational';
+  // Publish lifecycle only exists for a loaded, non-operational dataset (null
+  // keeps its queries disabled otherwise, as before).
+  const publishHeader = useDatasetPublishHeader({
+    datasetId: dataset && !isOperational ? datasetId : null,
+    canEditFallback: resPerms.canEdit,
+  });
   const refreshTableSchema = useRefreshTableSchema(datasetId);
 
   // Fetch table preview
@@ -1346,136 +1353,65 @@ export default function DatasetDetailPage() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* ── Single top header: 1 dòng, compact ── */}
-      <div className="flex h-11 shrink-0 items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
-        {/* Breadcrumb */}
-        <button
-          onClick={() => requestLeaveMeasures(() => router.push('/datasets'))}
-          className="flex items-center gap-1 text-sm text-text-tertiary hover:text-text-primary transition-colors"
-        >
-          <ChevronLeft className="w-4 h-4" />
-          {t('datasets.detail.breadcrumbDatasets')}
-        </button>
-        <span className="text-text-quaternary">/</span>
-        <span className="text-sm font-medium text-text-primary truncate max-w-[200px]">{dataset.name}</span>
-
-        {/* Divider */}
-        <div className="w-px h-5 bg-surface-3 mx-1" />
-
-        {/* Tab navigation */}
-        <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
-          <button
-            onClick={() => setActiveTab('tables')}
-            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-              activeTab === 'tables'
-                ? 'bg-surface-1 text-brand shadow-linear-sm'
-                : 'text-text-tertiary hover:bg-surface-1'
-            }`}
-          >
-            <Database className="h-3.5 w-3.5" />
-            {t('datasets.detail.tabTables')}
-          </button>
-          <button
-            onClick={() => requestLeaveMeasures(() => setActiveTab('model'))}
-            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-              activeTab === 'model'
-                ? 'bg-surface-1 text-brand shadow-linear-sm'
-                : 'text-text-tertiary hover:bg-surface-1'
-            }`}
-          >
-            <Sigma className="h-3.5 w-3.5" />
-            {t('datasets.detail.tabModel')}
-          </button>
-        </div>
-
-        {/* Spacer */}
-        <div className="flex-1" />
-
-        {/* Publish lifecycle: status badge + Sync&Publish + Grants (Import-mode).
-            An OPERATIONAL (Workboard) dataset is live-only and never published to
-            BigQuery, so the publish controls are replaced by a read-only badge. */}
-        {dataset?.purpose === 'operational' ? (
-          <span
-            title={t('datasets.detail.operationalHint')}
-            className="inline-flex items-center gap-1.5 rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-tertiary"
-          >
-            <Database className="h-3.5 w-3.5 text-text-quaternary" />
-            {t('datasets.detail.operationalBadge')}
-          </span>
-        ) : (
-          <DatasetPublishControls datasetId={datasetId!} canEditFallback={resPerms.canEdit} />
-        )}
-
-        {activeTab === 'tables' && tablesWorkspace === 'preview' && selectedTable && (
-          <div className="w-px h-5 bg-surface-3 mx-1" />
-        )}
-
-        {/* Table-level actions — chỉ hiện ở tab Tables khi có table được chọn */}
-        {activeTab === 'tables' && tablesWorkspace === 'preview' && selectedTable && (
-          <div className="flex items-center gap-1">
-            <button
-              onClick={handleExportExcel}
-              disabled={isExportingExcel}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded transition-colors disabled:opacity-40"
+      <DetailHeader
+        testId="dataset-header"
+        back={{
+          label: t('datasets.detail.breadcrumbDatasets'),
+          onClick: () => requestLeaveMeasures(() => router.push('/datasets')),
+        }}
+        title={<span title={dataset.name}>{dataset.name}</span>}
+        status={
+          dataset?.purpose === 'operational' ? (
+            // An OPERATIONAL (Workboard) dataset is live-only and never published
+            // to BigQuery: a read-only badge instead of the publish lifecycle.
+            <span
+              title={t('datasets.detail.operationalHint')}
+              className="inline-flex items-center gap-1.5 rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-tertiary"
             >
-              {isExportingExcel ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-              {t('datasets.detail.exportExcel')}
+              <Database className="h-3.5 w-3.5 text-text-quaternary" />
+              {t('datasets.detail.operationalBadge')}
+            </span>
+          ) : (
+            publishHeader.status
+          )
+        }
+        tabs={
+          <div role="tablist" className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
+            <button
+              role="tab"
+              aria-selected={activeTab === 'tables'}
+              tabIndex={activeTab === 'tables' ? 0 : -1}
+              onClick={() => setActiveTab('tables')}
+              className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                activeTab === 'tables'
+                  ? 'bg-surface-1 text-brand shadow-linear-sm'
+                  : 'text-text-tertiary hover:bg-surface-1'
+              }`}
+            >
+              <Database className="h-3.5 w-3.5" />
+              {t('datasets.detail.tabTables')}
             </button>
-            {resPerms.canEdit && !selectedTableIsGenerated && (
-              <div className="w-px h-4 bg-surface-3 mx-1" />
-            )}
-            {resPerms.canEdit && !selectedTableIsGenerated && (
-              <button
-                onClick={() => setIsManageColumnsOpen(true)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded transition-colors"
-              >
-                <Columns className="w-3.5 h-3.5" />
-                {t('datasets.detail.columns')}
-              </button>
-            )}
-            <div className="w-px h-4 bg-surface-3 mx-1" />
-            <label className="flex items-center gap-1.5 text-xs text-text-tertiary">
-              {t('datasets.detail.rowsLabel')}
-              <select
-                value={previewLimit}
-                onChange={(e) => { setPreviewLimit(Number(e.target.value)); setPage(1); }}
-                className="px-1.5 py-0.5 border border-[rgb(var(--border-strong))] rounded text-xs focus:outline-none focus:ring-1 focus:ring-brand"
-              >
-                <option value={10}>10</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-                <option value={200}>200</option>
-                <option value={500}>500</option>
-                <option value={1000}>1000</option>
-              </select>
-            </label>
             <button
-              onClick={async () => {
-                // An editor's refresh re-reads the table's schema from the source
-                // (Preview alone never rewrites the shared column cache).
-                if (resPerms.canEdit && selectedTableId) {
-                  try {
-                    await refreshTableSchema.mutateAsync(selectedTableId);
-                  } catch (error) {
-                    toast.error(extractDatasetErrorMessage(error, t('datasets.detail.refreshPreview')));
-                  }
-                }
-                refetchPreview();
-              }}
-              disabled={loadingPreview || refreshTableSchema.isPending}
-              className="p-1 text-text-quaternary hover:text-text-secondary hover:bg-surface-2 rounded transition-colors disabled:opacity-40"
-              title={t('datasets.detail.refreshPreview')}
+              role="tab"
+              aria-selected={activeTab === 'model'}
+              tabIndex={activeTab === 'model' ? 0 : -1}
+              onClick={() => requestLeaveMeasures(() => setActiveTab('model'))}
+              className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                activeTab === 'model'
+                  ? 'bg-surface-1 text-brand shadow-linear-sm'
+                  : 'text-text-tertiary hover:bg-surface-1'
+              }`}
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${loadingPreview ? 'animate-spin' : ''}`} />
+              <Sigma className="h-3.5 w-3.5" />
+              {t('datasets.detail.tabModel')}
             </button>
           </div>
-        )}
-      </div>
-
-      {/* Changes-pending / sync-failed / draft banner (Import-mode lifecycle) */}
-      {dataset?.purpose !== 'operational' && (
-        <DatasetPublishBanner datasetId={datasetId!} canEditFallback={resPerms.canEdit} />
-      )}
+        }
+        issues={isOperational ? [] : publishHeader.issues}
+        secondaryActions={isOperational ? [] : publishHeader.secondaryActions}
+        actions={isOperational ? null : publishHeader.primary}
+      />
+      {!isOperational && publishHeader.overlays}
 
       {/* Operational (Workboard) dataset → OLTP Destination store setup / status */}
       {dataset?.purpose === 'operational' && datasetId && (
@@ -1876,6 +1812,73 @@ export default function DatasetDetailPage() {
             </div>
           ) : selectedTable ? (
             <>
+              {/* Table preview toolbar — the actions only apply to this table. */}
+              <div
+                data-testid="dataset-preview-toolbar"
+                className="flex h-10 shrink-0 items-center gap-2 overflow-x-auto border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 [scrollbar-width:none]"
+              >
+                <span className="min-w-0 truncate text-xs font-medium text-text-secondary" title={selectedTable.display_name || selectedTable.source_table_name}>
+                  {selectedTable.display_name || selectedTable.source_table_name}
+                </span>
+                <div className="flex-1" />
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    onClick={handleExportExcel}
+                    disabled={isExportingExcel}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded transition-colors disabled:opacity-40"
+                  >
+                    {isExportingExcel ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                    {t('datasets.detail.exportExcel')}
+                  </button>
+                  {resPerms.canEdit && !selectedTableIsGenerated && (
+                    <div className="w-px h-4 bg-surface-3 mx-1" />
+                  )}
+                  {resPerms.canEdit && !selectedTableIsGenerated && (
+                    <button
+                      onClick={() => setIsManageColumnsOpen(true)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded transition-colors"
+                    >
+                      <Columns className="w-3.5 h-3.5" />
+                      {t('datasets.detail.columns')}
+                    </button>
+                  )}
+                  <div className="w-px h-4 bg-surface-3 mx-1" />
+                  <label className="flex items-center gap-1.5 text-xs text-text-tertiary">
+                    {t('datasets.detail.rowsLabel')}
+                    <select
+                      value={previewLimit}
+                      onChange={(e) => { setPreviewLimit(Number(e.target.value)); setPage(1); }}
+                      className="px-1.5 py-0.5 border border-[rgb(var(--border-strong))] rounded text-xs focus:outline-none focus:ring-1 focus:ring-brand"
+                    >
+                      <option value={10}>10</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                      <option value={200}>200</option>
+                      <option value={500}>500</option>
+                      <option value={1000}>1000</option>
+                    </select>
+                  </label>
+                  <button
+                    onClick={async () => {
+                      // An editor's refresh re-reads the table's schema from the source
+                      // (Preview alone never rewrites the shared column cache).
+                      if (resPerms.canEdit && selectedTableId) {
+                        try {
+                          await refreshTableSchema.mutateAsync(selectedTableId);
+                        } catch (error) {
+                          toast.error(extractDatasetErrorMessage(error, t('datasets.detail.refreshPreview')));
+                        }
+                      }
+                      refetchPreview();
+                    }}
+                    disabled={loadingPreview || refreshTableSchema.isPending}
+                    className="p-1 text-text-quaternary hover:text-text-secondary hover:bg-surface-2 rounded transition-colors disabled:opacity-40"
+                    title={t('datasets.detail.refreshPreview')}
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${loadingPreview ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+              </div>
               {/* Grid Body */}
               <div className="flex-1 overflow-auto p-4">
                 {selectedTableSourceIssueMessage && (

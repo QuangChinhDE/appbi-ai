@@ -45,7 +45,10 @@ import { WorkboardPublishToggle } from '@/components/workboards/WorkboardPublish
 import WorkboardImportModal from '@/components/workboards/WorkboardImportModal';
 import { DefaultOwnerCredentialsDialog } from '@/components/workboards/DefaultOwnerCredentialsDialog';
 import type { Workboard } from '@/lib/api/workboards';
-import { storeWorkboardDefaultOwnerNotice } from '@/lib/workboard-default-owner-notice';
+import {
+  clearWorkboardDefaultOwnerNotice,
+  storeWorkboardDefaultOwnerNotice,
+} from '@/lib/workboard-default-owner-notice';
 import { useI18n } from '@/providers/LanguageProvider';
 
 type WorkboardListFilters = {
@@ -623,6 +626,7 @@ export default function WorkboardsPage() {
           pin={pendingCredentials.pin}
           onConfirm={() => {
             const target = pendingCredentials.workboardId;
+            clearWorkboardDefaultOwnerNotice(target);
             setPendingCredentials(null);
             router.push(`/workboards/${target}`);
           }}

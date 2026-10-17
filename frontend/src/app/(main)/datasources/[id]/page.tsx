@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, startTransition } from 'react';
 import Link from 'next/link';
 import { useRouter, useParams, useSearchParams } from 'next/navigation';
-import { ArrowLeft, Loader2, Settings, Pencil } from 'lucide-react';
+import { Loader2, Settings, Pencil } from 'lucide-react';
 import { useDataSource, useUpdateDataSource } from '@/hooks/use-datasources';
 import DataSourceForm from '@/components/datasources/DataSourceForm';
 import type { DataSourceCreate } from '@/types/api';
@@ -11,6 +11,8 @@ import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { SourceHealthBadge } from '@/components/datasources/SourceHealth';
 import { toast } from '@/lib/toast';
+import { DetailHeader } from '@/components/common/DetailHeader';
+import { useI18n } from '@/providers/LanguageProvider';
 
 type Tab = 'connection';
 
@@ -38,6 +40,7 @@ const TYPE_COLORS: Record<string, string> = {
 
 export default function DataSourceDetailPage() {
   const router = useRouter();
+  const { t, locale } = useI18n();
   const { id } = useParams<{ id: string }>();
   const searchParams = useSearchParams();
   const datasourceId = parseInt(id, 10);
@@ -102,9 +105,9 @@ export default function DataSourceDetailPage() {
   if (!dataSource) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-surface-2 gap-4">
-        <p className="text-text-tertiary">Data source not found.</p>
+        <p className="text-text-tertiary">{t('datasources.detail.notFound')}</p>
         <Link href="/datasources" className="text-brand hover:underline">
-          Back to Data Sources
+          {t('datasources.detail.backToList')}
         </Link>
       </div>
     );
@@ -112,7 +115,7 @@ export default function DataSourceDetailPage() {
 
   const typeLabel = TYPE_LABELS[dataSource.type] ?? dataSource.type;
   const typeColor = TYPE_COLORS[dataSource.type] ?? 'bg-surface-2 text-text-secondary';
-  const createdAt = new Date(dataSource.created_at).toLocaleDateString('vi-VN', {
+  const createdAt = new Date(dataSource.created_at).toLocaleDateString(locale, {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
@@ -121,67 +124,59 @@ export default function DataSourceDetailPage() {
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     {
       id: 'connection',
-      label: 'Connection',
+      label: t('datasources.detail.connection'),
       icon: <Settings className="w-3.5 h-3.5" />,
     },
   ];
 
   return (
     <div className="h-full flex flex-col">
-      {/* Breadcrumb + Header */}
-      <div className="px-8 pt-6 flex-shrink-0">
-        <div className="mb-3">
-          <Link
-            href="/datasources"
-            className="inline-flex items-center text-sm text-brand hover:text-brand"
-          >
-            <ArrowLeft className="w-4 h-4 mr-1" />
-            Back to Data Sources
-          </Link>
-        </div>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-text-primary">{dataSource.name}</h1>
-              <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${typeColor}`}>
-                {typeLabel}
-              </span>
-              {dataSource.description && (
-                <span className="text-sm text-text-quaternary">{dataSource.description}</span>
-              )}
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-text-tertiary">
-              <SourceHealthBadge source={dataSource} />
-              <span className="text-text-quaternary">•</span>
-              <span>Created {createdAt}</span>
-              {dataSource.owner_email && (
-                <>
-                  <span className="text-text-quaternary">•</span>
-                  <span>Created by</span>
-                  <OwnerBadge email={dataSource.owner_email} />
-                </>
-              )}
-            </div>
-          </div>
-          {resPerms.canEdit && (
-          <Link
-            href={`/datasources/${datasourceId}/edit`}
-            className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-2"
-          >
-            <Pencil className="w-3.5 h-3.5" />
-            Edit
-          </Link>
-          )}
-        </div>
-      </div>
+      <DetailHeader
+        testId="datasource-header"
+        back={{ label: t('datasources.detail.back'), onClick: () => router.push('/datasources') }}
+        title={<h1 className="truncate text-sm font-medium" title={dataSource.name}>{dataSource.name}</h1>}
+        status={<SourceHealthBadge source={dataSource} />}
+        meta={
+          <span className="inline-flex items-center gap-2">
+            <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${typeColor}`}>{typeLabel}</span>
+            <span>{t('datasources.detail.created', { date: createdAt })}</span>
+            {dataSource.owner_email && (
+              <>
+                <span>{t('datasources.detail.createdBy')}</span>
+                <OwnerBadge email={dataSource.owner_email} />
+              </>
+            )}
+          </span>
+        }
+        actions={
+          resPerms.canEdit ? (
+            <Link
+              href={`/datasources/${datasourceId}/edit`}
+              data-testid="datasource-edit"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 text-xs text-text-secondary hover:bg-surface-2"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              {t('datasources.detail.edit')}
+            </Link>
+          ) : null
+        }
+      />
+      {dataSource.description && (
+        <p className="shrink-0 truncate px-4 pt-3 text-sm text-text-tertiary sm:px-8" title={dataSource.description}>
+          {dataSource.description}
+        </p>
+      )}
 
       {/* Tabs card — stretches to fill remaining viewport height */}
-      <div className="mx-8 mb-6 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+      <div className="mx-3 mb-4 mt-3 flex min-h-0 flex-1 sm:mx-8 sm:mb-6 flex-col overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
         {/* Tab nav */}
-        <div className="flex border-b border-[rgb(var(--border-line))] flex-shrink-0">
+        {tabs.length > 1 && (
+        <div role="tablist" className="flex border-b border-[rgb(var(--border-line))] flex-shrink-0">
           {tabs.map((tab) => (
             <button
               key={tab.id}
+              role="tab"
+              aria-selected={activeTab === tab.id}
               onClick={() => switchTab(tab.id)}
               className={`flex items-center gap-2 px-5 py-3 text-sm font-medium border-b-2 transition-colors ${
                 activeTab === tab.id
@@ -194,6 +189,7 @@ export default function DataSourceDetailPage() {
             </button>
           ))}
         </div>
+        )}
 
         {/* Tab content */}
         <div className="flex-1 overflow-hidden min-h-0">

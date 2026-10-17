@@ -200,7 +200,11 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
     return (
       <>
         <div className="inline-flex items-center gap-2">
-          <StatePill status={status} />
+          {/* On phones the primary button already names the next step; the pill
+              stays only when there is nothing to do (live). */}
+          <span className={action ? 'hidden sm:inline-flex' : 'inline-flex'}>
+            <StatePill status={status} />
+          </span>
           {action ? (
             <Button
               variant="primary"
@@ -210,8 +214,9 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
               disabled={busy}
               leadingIcon={<UploadCloud className="h-3.5 w-3.5" />}
               title={action.title}
+              aria-label={action.label}
             >
-              {action.label}
+              <span className="hidden sm:inline">{action.label}</span>
             </Button>
           ) : null}
         </div>
