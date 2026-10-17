@@ -80,7 +80,7 @@ export function ExportPdfDialog({ isOpen, onClose, pages, defaultPageId, isExpor
 
   const segBtn = (active: boolean) =>
     `flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-      active ? 'bg-brand text-white' : 'bg-surface-2 text-text-secondary hover:bg-surface-3'
+      active ? 'bg-brand-container text-brand-on-container' : 'bg-surface-2 text-text-secondary hover:bg-surface-3'
     }`;
 
   return (

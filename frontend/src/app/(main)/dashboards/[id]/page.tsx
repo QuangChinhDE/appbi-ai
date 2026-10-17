@@ -4445,9 +4445,9 @@ function DashboardDetailPageInner() {
       {!studioPreview && (
       <div
         ref={builderHeaderRef}
-        className={`sticky top-0 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8 ${isMoreMenuOpen || isPagesMenuOpen || isAddElementOpen ? 'z-50' : 'z-20'}`}
+        className={`app-chrome sticky top-0 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8 ${isMoreMenuOpen || isPagesMenuOpen || isAddElementOpen ? 'z-50' : 'z-20'}`}
       >
-        <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-surface-1 shadow-linear-sm overflow-visible">
+        <div className="rounded-xl border border-stroke-strong bg-surface-1 shadow-linear-sm overflow-visible">
 
           {/* One row at every width. It used to wrap to 2-3 rows (74px at
               768-1024, 108px at 390 with six tools off-screen); now the tools
@@ -4456,13 +4456,13 @@ function DashboardDetailPageInner() {
             {/* Back */}
             <Link
               href="/dashboards"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-secondary"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-secondary"
               title={t('dashboards.detail.backToDashboards')}
             >
               <ArrowLeft className="h-4 w-4" />
             </Link>
 
-            <div className="hidden h-4 w-px bg-[rgba(255,255,255,0.08)] sm:block" />
+            <div className="hidden h-4 w-px bg-surface-3 sm:block" />
 
             {/* Title (inline edit) */}
             <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -4476,7 +4476,7 @@ function DashboardDetailPageInner() {
                       if (e.key === 'Enter') handleSaveName();
                       if (e.key === 'Escape') handleCancelEditName();
                     }}
-                    className="min-w-0 flex-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 py-1 text-[14px] font-[590] text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
+                    className="min-w-0 flex-1 rounded-md border border-stroke-strong bg-surface-1 px-2 py-1 text-[14px] font-[590] text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                     autoFocus
                   />
                   <button
@@ -4489,7 +4489,7 @@ function DashboardDetailPageInner() {
                   </button>
                   <button
                     onClick={handleCancelEditName}
-                    className="rounded-md p-1 text-text-tertiary hover:bg-[rgba(255,255,255,0.04)]"
+                    className="rounded-md p-1 text-text-tertiary hover:bg-surface-2"
                     title={t('common.cancel')}
                   >
                     <X className="h-3.5 w-3.5" />
@@ -4505,7 +4505,7 @@ function DashboardDetailPageInner() {
                   {canEditResource && inline.rename && (
                     <button
                       onClick={handleStartEditName}
-                      className="rounded-md p-1 text-text-quaternary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-secondary"
+                      className="rounded-md p-1 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-secondary"
                       title={t('dashboards.detail.renameDashboard')}
                     >
                       <Edit2 className="h-3 w-3" />
@@ -4523,7 +4523,7 @@ function DashboardDetailPageInner() {
                           if (e.key === 'Enter') handleSavePageName();
                           if (e.key === 'Escape') handleCancelRenamePage();
                         }}
-                        className="min-w-[140px] rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 py-0.5 text-[12px] font-[510] text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
+                        className="min-w-[140px] rounded-md border border-stroke-strong bg-surface-1 px-2 py-0.5 text-[12px] font-[510] text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                         autoFocus
                       />
                       <button
@@ -4537,7 +4537,7 @@ function DashboardDetailPageInner() {
                       <button
                         type="button"
                         onClick={handleCancelRenamePage}
-                        className="rounded-md p-1 text-text-tertiary hover:bg-[rgba(255,255,255,0.04)]"
+                        className="rounded-md p-1 text-text-tertiary hover:bg-surface-2"
                         title={t('common.cancel')}
                       >
                         <X className="h-3 w-3" />
@@ -4556,7 +4556,7 @@ function DashboardDetailPageInner() {
                         aria-expanded={isPagesMenuOpen}
                         aria-label={`${t('dashboards.detail.switchPage')}: ${currentPage?.name ?? t('dashboards.detail.pageFallback')}`}
                         onClick={() => { setIsPagesMenuOpen((v) => !v); setIsMoreMenuOpen(false); }}
-                        className="relative z-50 inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                        className="relative z-50 inline-flex h-7 items-center gap-1 rounded-md border border-stroke-strong bg-surface-1 px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                         title={t('dashboards.detail.switchPage')}
                       >
                         <span className={`hidden max-w-[10rem] truncate ${pendingRow ? 'lg:inline' : 'sm:inline'}`}>{currentPage?.name ?? t('dashboards.detail.pageFallback')}</span>
@@ -4566,7 +4566,7 @@ function DashboardDetailPageInner() {
                       {isPagesMenuOpen && (
                         <>
                           <div className="fixed inset-0 z-40" onClick={() => setIsPagesMenuOpen(false)} />
-                          <div className="absolute left-0 z-50 mt-1.5 w-64 overflow-hidden rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-1 py-1 shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]">
+                          <div className="absolute left-0 z-50 mt-1.5 w-64 overflow-hidden rounded-lg border border-stroke-strong bg-surface-1 py-1 shadow-popover">
                             <div className="max-h-[60vh] overflow-y-auto">
                               {dashboardPages.map((page) => {
                                 const isActive = page.id === activePageId;
@@ -4600,7 +4600,7 @@ function DashboardDetailPageInner() {
                                     className={`group/pagerow flex w-full items-center gap-1.5 border-t-2 px-2 py-2 text-[13px] font-[510] transition-colors ${
                                       isActive
                                         ? 'bg-[rgba(94,106,210,0.15)] text-brand'
-                                        : 'text-text-secondary hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary'
+                                        : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
                                     } ${isDragging ? 'opacity-40' : ''} ${isDragOver ? 'border-brand' : 'border-transparent'}`}
                                     title={canEditResource ? t('dashboards.detail.dragToReorderPage') : undefined}
                                   >
@@ -4625,10 +4625,10 @@ function DashboardDetailPageInner() {
                             </div>
                             {canEditResource && (
                               <>
-                                <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
+                                <div className="mx-3 my-1 border-t border-stroke-line" />
                                 <button
                                   onClick={() => { handleStartRenamePage(); setIsPagesMenuOpen(false); }}
-                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                                 >
                                   <Edit2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                                   {t('dashboards.detail.renameCurrentPage')}
@@ -4643,7 +4643,7 @@ function DashboardDetailPageInner() {
                                 </button>
                                 <button
                                   onClick={() => { handleAddPage(); setIsPagesMenuOpen(false); }}
-                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                                 >
                                   <Plus className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                                   {t('dashboards.detail.addPage')}
@@ -4701,7 +4701,7 @@ function DashboardDetailPageInner() {
                         type="button"
                         onClick={doUndo}
                         disabled={!canUndo || isCommittingPresentation}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-stroke-strong bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-40"
                         title={t('dashboards.detail.undo')}
                       >
                         <Undo2 className="h-3.5 w-3.5" />
@@ -4710,7 +4710,7 @@ function DashboardDetailPageInner() {
                         type="button"
                         onClick={doRedo}
                         disabled={!canRedo || isCommittingPresentation}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-stroke-strong bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-40"
                         title={t('dashboards.detail.redo')}
                       >
                         <Redo2 className="h-3.5 w-3.5" />
@@ -4746,13 +4746,13 @@ function DashboardDetailPageInner() {
                           || isCommittingPresentation
                           || updateDraftLayoutMutation.isPending
                         }
-                        className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
+                        className="inline-flex h-7 items-center gap-1 rounded-md border border-stroke-strong bg-surface-1 px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
                         title={t('dashboards.detail.saveDraftTooltip')}
                         aria-label={t('dashboards.detail.saveDraft')}
                       >
                         {isStagingDraft || updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3 sm:hidden" />}
                         <span className="hidden sm:inline">{t('dashboards.detail.saveDraft')}</span>
-                        <kbd className="ml-1 hidden rounded bg-[rgba(255,255,255,0.08)] px-1 text-[9px] text-text-tertiary xl:inline">⌘S</kbd>
+                        <kbd className="ml-1 hidden rounded bg-surface-3 px-1 text-[9px] text-text-tertiary xl:inline">⌘S</kbd>
                       </button>
                       )}
                       <button
@@ -4778,7 +4778,7 @@ function DashboardDetailPageInner() {
                         onClick={() => setIsDiscardConfirmOpen(true)}
                         data-testid="dashboard-discard"
                         disabled={discardDraftMutation.isPending}
-                        className="inline-flex h-7 items-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
+                        className="inline-flex h-7 items-center rounded-md border border-stroke-strong bg-surface-1 px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
                         title={t('dashboards.detail.discardTooltip')}
                       >
                         {t('dashboards.detail.discard')}
@@ -4801,7 +4801,7 @@ function DashboardDetailPageInner() {
               {snapshotAsOf && inline.asOf && (
                 <span
                   data-testid="dashboard-data-as-of"
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[11px] font-[510] text-text-tertiary"
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-stroke-strong bg-surface-1 px-2 text-[11px] font-[510] text-text-tertiary"
                   title={t('dashboards.detail.dataAsOfHint')}
                 >
                   <Clock className="h-3 w-3 text-text-quaternary" />
@@ -4825,8 +4825,8 @@ function DashboardDetailPageInner() {
                     isFilterPaneOpen
                       ? 'border-brand/40 bg-brand/15 text-brand'
                       : appliedGlobalFilters.length > 0
-                        ? 'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-brand hover:bg-[rgba(255,255,255,0.04)]'
-                        : 'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary hover:bg-[rgba(255,255,255,0.04)]'
+                        ? 'border-stroke-strong bg-surface-1 text-brand hover:bg-surface-2'
+                        : 'border-stroke-strong bg-surface-1 text-text-secondary hover:bg-surface-2'
                   }`}
                   title={isFilterPaneOpen ? t('dashboards.detail.hideFilterPane') : t('dashboards.detail.showFilterPane')}
                 >
@@ -4855,7 +4855,7 @@ function DashboardDetailPageInner() {
                   aria-expanded={isMoreMenuOpen}
                   aria-label={t('dashboards.detail.moreOptions')}
                   onClick={() => { setIsMoreMenuOpen((v) => !v); setIsFilterPopoverOpen(false); setIsPagesMenuOpen(false); }}
-                  className="relative z-50 inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)]"
+                  className="relative z-50 inline-flex h-7 w-7 items-center justify-center rounded-md border border-stroke-strong bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2"
                   title={t('dashboards.detail.moreOptions')}
                 >
                   <MoreHorizontal className="h-3.5 w-3.5" />
@@ -4864,7 +4864,7 @@ function DashboardDetailPageInner() {
                 {isMoreMenuOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => { setIsMoreMenuOpen(false); }} />
-                    <div className="absolute right-0 z-50 mt-1.5 w-56 overflow-y-auto max-h-[80vh] rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-1 py-1 shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]">
+                    <div className="absolute right-0 z-50 mt-1.5 w-56 overflow-y-auto max-h-[80vh] rounded-lg border border-stroke-strong bg-surface-1 py-1 shadow-popover">
                       {/* Collapsed header tools (narrow screens): the same actions,
                           one copy — they are inline from their breakpoint up. */}
                       {anyCollapsed && (
@@ -4880,7 +4880,7 @@ function DashboardDetailPageInner() {
                                 || isCommittingPresentation
                                 || updateDraftLayoutMutation.isPending
                               }
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary disabled:opacity-50"
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:opacity-50"
                               title={t('dashboards.detail.saveDraftTooltip')}
                             >
                               <Save className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
@@ -4890,7 +4890,7 @@ function DashboardDetailPageInner() {
                           {canEditResource && !inline.rename && (
                             <button
                               onClick={() => { setIsMoreMenuOpen(false); handleStartEditName(); }}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                             >
                               <Edit2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                               {t('dashboards.detail.renameDashboard')}
@@ -4921,7 +4921,7 @@ function DashboardDetailPageInner() {
                               <button
                                 onClick={() => { setIsMoreMenuOpen(false); doUndo(); }}
                                 disabled={!canUndo || isCommittingPresentation}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary disabled:opacity-40"
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:opacity-40"
                               >
                                 <Undo2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                                 {t('dashboards.detail.undo')}
@@ -4929,7 +4929,7 @@ function DashboardDetailPageInner() {
                               <button
                                 onClick={() => { setIsMoreMenuOpen(false); doRedo(); }}
                                 disabled={!canRedo || isCommittingPresentation}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary disabled:opacity-40"
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:opacity-40"
                               >
                                 <Redo2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                                 {t('dashboards.detail.redo')}
@@ -4940,7 +4940,7 @@ function DashboardDetailPageInner() {
                             <button
                               data-testid="studio-preview-open"
                               onClick={() => { setIsMoreMenuOpen(false); setStudioOpen(true); }}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                               title={t('dashboards.studio.openFull')}
                             >
                               <Eye className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
@@ -4958,7 +4958,7 @@ function DashboardDetailPageInner() {
                                 if (mode === 'manual' && aiDesign.pending) aiDesign.discard();
                                 setDesignMode(mode);
                               }}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                             >
                               {mode === 'ai' ? <Sparkles className="h-3.5 w-3.5 shrink-0 text-text-quaternary" /> : <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />}
                               <span className="flex-1 text-left">{t(mode === 'manual' ? 'dashboards.aiDesign.modeManual' : 'dashboards.aiDesign.modeAi')}</span>
@@ -4969,7 +4969,7 @@ function DashboardDetailPageInner() {
                             <button
                               data-testid="add-slicer-open"
                               onClick={() => { setIsMoreMenuOpen(false); setIsAddSlicerOpen(true); }}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                               title={t('dashboards.addSlicer.title')}
                             >
                               <Filter className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
@@ -4986,21 +4986,21 @@ function DashboardDetailPageInner() {
                               data-testid="inspector-toggle"
                               aria-pressed={inspectorOpen}
                               onClick={() => { setIsMoreMenuOpen(false); setInspectorOpen((v) => !v); }}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                               title={t('dashboards.inspector.openHint')}
                             >
                               <PanelRight className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                               {t('dashboards.inspector.title')}
                             </button>
                           )}
-                          <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
+                          <div className="mx-3 my-1 border-t border-stroke-line" />
                         </>
                       )}
                       {/* Export */}
                       <button
                         onClick={() => { setIsExportDialogOpen(true); setIsMoreMenuOpen(false); }}
                         disabled={isExportingPdf || !allChartsReady}
-                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
                         title={!allChartsReady ? t('dashboards.detail.loadingChartData') : t('dashboards.detail.exportAsPdf')}
                       >
                         {isExportingPdf || !allChartsReady ? (
@@ -5015,7 +5015,7 @@ function DashboardDetailPageInner() {
                       {canShare && (
                         <button
                           onClick={() => { setIsShareDialogOpen(true); setIsMoreMenuOpen(false); }}
-                          className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                          className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                         >
                           <Share2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                           {t('dashboards.detail.shareWithTeam')}
@@ -5031,7 +5031,7 @@ function DashboardDetailPageInner() {
                           <button
                             onClick={() => { setIsPublicShareOpen(true); setIsMoreMenuOpen(false); }}
                             data-testid="dashboard-open-public-links"
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                           >
                             <Globe className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             {t('dashboards.detail.publicLinks')}
@@ -5039,19 +5039,19 @@ function DashboardDetailPageInner() {
 
                           <button
                             onClick={() => { setIsFilterMapOpen(true); setIsMoreMenuOpen(false); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                             title={t('dashboards.detail.filterMapTooltip')}
                           >
                             <Filter className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             {t('dashboards.detail.filterMap')}
                           </button>
 
-                          <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
+                          <div className="mx-3 my-1 border-t border-stroke-line" />
 
                           {(
                             <button
                               onClick={() => { handleTidyLayout(); setIsMoreMenuOpen(false); }}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                               title={t('dashboards.detail.tidyTooltip')}
                             >
                               <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
@@ -5062,7 +5062,7 @@ function DashboardDetailPageInner() {
                           {(
                             <button
                               onClick={() => { handleCompactUp(); setIsMoreMenuOpen(false); }}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                               title={t('dashboards.detail.compactUpTooltip')}
                             >
                               <ArrowUpToLine className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
@@ -5072,7 +5072,7 @@ function DashboardDetailPageInner() {
 
                           <button
                             onClick={() => { setIsThemeOpen(true); setIsMoreMenuOpen(false); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                           >
                             <Palette className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             {t('dashboards.detail.theme')}
@@ -5083,7 +5083,7 @@ function DashboardDetailPageInner() {
 
                           <button
                             onClick={() => { setIsChartManagerOpen(true); setIsMoreMenuOpen(false); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                           >
                             <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             {t('dashboards.detail.manageCharts')}
@@ -5091,17 +5091,17 @@ function DashboardDetailPageInner() {
 
                           <button
                             onClick={() => { setIsHtmlImportOpen(true); setIsMoreMenuOpen(false); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                           >
                             <Sparkles className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             {t('dashboards.detail.importHtml')}
                           </button>
 
                           {/* Adding content: the same palette as the toolbar's Add. */}
-                          <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
+                          <div className="mx-3 my-1 border-t border-stroke-line" />
                           <button
                             onClick={() => { setIsMoreMenuOpen(false); setIsAddElementOpen(true); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                           >
                             <Plus className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             <span className="flex-1 text-left">{t('dashboards.detail.addWidget')}</span>
@@ -5123,7 +5123,7 @@ function DashboardDetailPageInner() {
                   type="button"
                   data-testid="studio-preview-open"
                   onClick={() => setStudioOpen(true)}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary"
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                   title={t('dashboards.studio.openFull')}
                 >
                   <Eye className="h-3 w-3" />
@@ -5154,8 +5154,9 @@ function DashboardDetailPageInner() {
                         }}
                         className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[12px] font-[510] transition-colors ${
                           active
-                            ? 'bg-brand text-white'
-                            : 'text-text-secondary hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary'
+                            // selected segment = tonal; solid brand is reserved for the primary action
+                            ? 'bg-brand-container text-brand-on-container'
+                            : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
                         }`}
                       >
                         {mode === 'ai' && <Sparkles className="h-3 w-3" />}
@@ -5171,7 +5172,7 @@ function DashboardDetailPageInner() {
                   type="button"
                   data-testid="add-slicer-open"
                   onClick={() => setIsAddSlicerOpen(true)}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary"
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                   title={t('dashboards.addSlicer.title')}
                 >
                   <Filter className="h-3 w-3" />
@@ -5270,7 +5271,7 @@ function DashboardDetailPageInner() {
             <button
               type="button"
               onClick={() => setCrossFilterState(null)}
-              className="ml-auto inline-flex items-center rounded border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 py-1 text-[12px] font-[510] text-text-secondary transition-colors hover:text-text-primary"
+              className="ml-auto inline-flex items-center rounded border border-stroke-strong bg-surface-1 px-2.5 py-1 text-[12px] font-[510] text-text-secondary transition-colors hover:text-text-primary"
             >
               {t('dashboards.detail.clear')}
             </button>
@@ -5385,7 +5386,7 @@ function DashboardDetailPageInner() {
                   <button
                     type="button"
                     onClick={() => respondEditRequest(activePageId, r.requester_key, false)}
-                    className="rounded-md bg-[rgba(255,255,255,0.08)] px-2.5 py-1 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.12)]"
+                    className="rounded-md bg-surface-3 px-2.5 py-1 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-3"
                   >
                     {t('dashboards.detail.deny')}
                   </button>

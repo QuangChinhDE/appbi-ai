@@ -546,7 +546,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
                 onClick={() => upd({ textCase: tc })}
                 className={`py-1 border rounded text-[10px] font-medium transition-colors ${
                   draft.textCase === tc
-                    ? 'bg-brand text-white border-brand'
+                    ? 'bg-brand-container text-brand-on-container border-brand'
                     : 'border-[rgb(var(--border-strong))] text-text-secondary hover:border-brand/50 hover:text-brand'
                 }`}
               >
