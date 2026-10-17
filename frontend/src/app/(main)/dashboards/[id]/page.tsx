@@ -353,6 +353,22 @@ function DashboardDetailPageInner() {
   const [isWidgetMenuOpen, setIsWidgetMenuOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [isPagesMenuOpen, setIsPagesMenuOpen] = useState(false);
+  const moreTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const pagesTriggerRef = React.useRef<HTMLButtonElement>(null);
+  // Header menus close on Escape and hand focus back to their trigger (the
+  // click-away backdrop alone left keyboard users with no way out).
+  useEffect(() => {
+    if (!isMoreMenuOpen && !isPagesMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const trigger = isMoreMenuOpen ? moreTriggerRef.current : pagesTriggerRef.current;
+      setIsMoreMenuOpen(false);
+      setIsPagesMenuOpen(false);
+      trigger?.focus();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isMoreMenuOpen, isPagesMenuOpen]);
   // Drag-to-reorder page tabs in the Pages dropdown.
   const [draggingPageId, setDraggingPageId] = useState<string | null>(null);
   const [dragOverPageId, setDragOverPageId] = useState<string | null>(null);
@@ -4534,10 +4550,13 @@ function DashboardDetailPageInner() {
                     <div className="relative shrink-0">
                       <button
                         type="button"
+                        ref={pagesTriggerRef}
                         data-testid="builder-pages-menu"
+                        aria-haspopup="menu"
+                        aria-expanded={isPagesMenuOpen}
                         aria-label={`${t('dashboards.detail.switchPage')}: ${currentPage?.name ?? t('dashboards.detail.pageFallback')}`}
                         onClick={() => { setIsPagesMenuOpen((v) => !v); setIsMoreMenuOpen(false); }}
-                        className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                        className="relative z-50 inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                         title={t('dashboards.detail.switchPage')}
                       >
                         <span className={`hidden max-w-[10rem] truncate ${pendingRow ? 'lg:inline' : 'sm:inline'}`}>{currentPage?.name ?? t('dashboards.detail.pageFallback')}</span>
@@ -4830,9 +4849,13 @@ function DashboardDetailPageInner() {
               {/* More menu — gathers Export, Share, Public links, Theme, Switch layout, Manage, Import, Widgets */}
               <div className="relative">
                 <button
+                  ref={moreTriggerRef}
                   data-testid="dashboard-more"
+                  aria-haspopup="menu"
+                  aria-expanded={isMoreMenuOpen}
+                  aria-label={t('dashboards.detail.moreOptions')}
                   onClick={() => { setIsMoreMenuOpen((v) => !v); setIsFilterPopoverOpen(false); setIsPagesMenuOpen(false); }}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)]"
+                  className="relative z-50 inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)]"
                   title={t('dashboards.detail.moreOptions')}
                 >
                   <MoreHorizontal className="h-3.5 w-3.5" />

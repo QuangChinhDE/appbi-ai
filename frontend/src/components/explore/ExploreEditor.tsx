@@ -3024,9 +3024,10 @@ export function ExploreEditor({
     ? (customQueryState?.columns?.length ?? 0)
     : previewColumns.length;
 
-  // Query controls sit inline in the header from 1280px (one 48px row); below
+  // Query controls sit inline in the header from 1440px (one 48px row — with a
+  // run's row-count chip they need it: at 1280 they ran into the title); below
   // that they get their own bar instead of wrapping the header.
-  const queryInline = useMinWidth(1280);
+  const queryInline = useMinWidth(1440);
 
   // Show loading skeleton while fetching existing chart
   if (!isNew && isChartLoading) {
@@ -3106,12 +3107,12 @@ export function ExploreEditor({
         // dedicated bar under it — never a 3-4 line wrapped header.
         const queryControls = (
           <>
-            {/* In the bar (narrow screens) nothing shrinks — the bar scrolls. */}
-            <div className={`flex items-center gap-2 ${queryInline ? 'min-w-0' : 'shrink-0'}`}>
+            {/* In the bar (narrow screens) the controls wrap — every one stays on screen. */}
+            <div className={`flex items-center gap-2 ${queryInline ? 'min-w-0' : 'min-w-0 max-w-full flex-wrap gap-y-1.5'}`}>
             {!isDashboardModal && (
                 <>
                   {/* Decorative labels: the controls say what they are; they yield their width first. */}
-                  <span className="hidden shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary min-[1440px]:inline">{t('explore.editor.mode')}</span>
+                  <span className="hidden shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary min-[1680px]:inline">{t('explore.editor.mode')}</span>
                   <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
                     <button
                       onClick={handleUseGeneratedQuery}
@@ -3141,8 +3142,8 @@ export function ExploreEditor({
                   <div className="hidden h-5 w-px bg-[rgb(var(--border-line))] lg:block" />
                 </>
               )}
-              <span className="hidden shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary min-[1440px]:inline">{t('explore.editor.dataset')}</span>
-              <div className="min-w-[14rem] max-w-[22rem] flex-1">
+              <span className="hidden shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary min-[1680px]:inline">{t('explore.editor.dataset')}</span>
+              <div className="min-w-0 max-w-[22rem] flex-1 sm:min-w-[14rem]">
                 <ExploreSourceSelector
                   selectedDatasetId={selectedDatasetId}
                   selectedTableId={selectedTableId}
@@ -3354,7 +3355,7 @@ export function ExploreEditor({
             below={queryInline ? undefined : (
               <div
                 data-testid="explore-query-bar"
-                className="flex min-h-11 items-center gap-3 overflow-x-auto border-t border-[rgb(var(--border-line))] px-3 py-1.5 sm:px-4 [scrollbar-width:none]"
+                className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-[rgb(var(--border-line))] px-3 py-1.5 sm:px-4"
               >
                 {queryControls}
               </div>
