@@ -248,16 +248,17 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                   <li key={item.href}>
                     <Link
                       href={item.href}
+                      aria-current={active ? 'page' : undefined}
                       className={cn(
                         'group flex items-center rounded-md transition-colors',
                         isCollapsed ? 'h-8 w-8 mx-auto justify-center' : 'h-8 px-2.5 gap-2',
                         active
-                          ? 'bg-surface-2 text-text-primary'
-                          : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary',
+                          ? 'bg-brand-container text-brand-on-container hover:bg-brand-container-hover'
+                          : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary',
                       )}
                       title={isCollapsed ? label : undefined}
                     >
-                      <span className={cn('flex-shrink-0', active ? 'text-brand' : 'text-text-tertiary group-hover:text-text-secondary')}>
+                      <span className={cn('flex-shrink-0', active ? 'text-brand' : 'text-text-tertiary group-hover:text-text-primary')}>
                         {item.icon}
                       </span>
                       {!isCollapsed && (
