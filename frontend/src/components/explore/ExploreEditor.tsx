@@ -3322,7 +3322,7 @@ export function ExploreEditor({
                     type="button"
                     onClick={() => setIsEditingName(true)}
                     aria-label={t('explore.editor.renameChart')}
-                    className="rounded-md p-1 text-text-quaternary opacity-0 transition-opacity hover:bg-surface-2 hover:text-text-secondary group-hover/name:opacity-100"
+                    className="hidden rounded-md p-1 sm:block text-text-quaternary opacity-0 transition-opacity hover:bg-surface-2 hover:text-text-secondary group-hover/name:opacity-100"
                   >
                     <Pencil className="h-3 w-3" />
                   </button>

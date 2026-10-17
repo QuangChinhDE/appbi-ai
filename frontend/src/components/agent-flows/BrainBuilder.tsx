@@ -664,12 +664,14 @@ export function BrainBuilder({
           severity: 'warning' as const,
           persistent: true,
           title: t('agentFlows.builder.keylessCount', { count: keyless.length }),
-          detail: keyless.map((n) => n.name || n.key).join(', '),
           action: (
             <span className="flex items-center gap-2">
               <button
                 type="button"
                 data-testid="builder-keyless"
+                // Step names stay in the tooltip: visible text here would
+                // duplicate the canvas labels (and catch clicks meant for them).
+                title={`${t('agentFlows.builder.keylessCount', { count: keyless.length })}: ${keyless.map((n) => n.name || n.key).join(', ')}`}
                 onClick={goToKeyless}
                 className="flex items-center gap-1 rounded-full border border-warning/25 bg-warning/5 px-2 py-px text-tiny text-warning hover:bg-warning/10"
               >
@@ -761,7 +763,7 @@ export function BrainBuilder({
           </span>
         }
         tabs={
-          <div role="tablist" className="inline-flex flex-shrink-0 items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
+          <div className="inline-flex flex-shrink-0 items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
             {([
               ['design', 'agentFlows.builder.tab.design'],
               ['runs', 'agentFlows.builder.tab.runs'],
@@ -770,7 +772,7 @@ export function BrainBuilder({
               ['feedback', 'agentFlows.builder.tab.feedback'],
               ['activity', 'agentFlows.builder.tab.activity'],
             ] as const).map(([key, labelKey]) => (
-              <button key={key} type="button" role="tab" aria-selected={mode === key} tabIndex={mode === key ? 0 : -1}
+              <button key={key} type="button" aria-pressed={mode === key}
                 onClick={() => setMode(key as Mode)}
                 className={cn('h-6 whitespace-nowrap rounded-md px-2.5 text-caption font-medium transition',
                   mode === key ? 'bg-surface-1 text-brand shadow-linear-sm' : 'text-text-tertiary')}>

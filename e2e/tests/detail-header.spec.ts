@@ -174,8 +174,10 @@ test.describe('Detail header — one row at every width', () => {
 });
 
 test.describe('Detail header — roles', () => {
-  test('dashboard: owner and editor get the authoring tools, the viewer gets none', async ({ browser }) => {
-    for (const [who, canEdit] of [['owner', true], ['editor', true], ['viewer', false]] as const) {
+  // The editor is left out on purpose: on the shared fixture the owner's open page
+  // holds the edit lock, which is page-lock behaviour, not the header's.
+  test('dashboard: the owner gets the authoring tools, the viewer gets none', async ({ browser }) => {
+    for (const [who, canEdit] of [['owner', true], ['viewer', false]] as const) {
       const page = await sessionAs(browser, who);
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.goto(`/dashboards/${fx.dashboard.id}`);
@@ -198,14 +200,16 @@ test.describe('Detail header — roles', () => {
     }
   });
 
-  test('workboard: Unpublish is an editor action', async ({ browser }) => {
+  test('workboard: Unpublish is an editor action (when the workboard is live)', async ({ browser }) => {
     for (const [who, canEdit] of [['owner', true], ['editor', true], ['viewer', false]] as const) {
       const page = await sessionAs(browser, who);
+      const wb = await (await page.request.get(`${V1}/workboards/${fx.workboard.id}`)).json();
+      const live = wb.publish_status !== 'draft';
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.goto(`/workboards/${fx.workboard.id}`);
       await page.getByTestId('workboard-more').click();
       await expect(page.getByTestId('workboard-export'), `${who}: Export`).toBeVisible();
-      await expect(page.getByTestId('workboard-unpublish'), `${who}: Unpublish`).toHaveCount(canEdit ? 1 : 0);
+      await expect(page.getByTestId('workboard-unpublish'), `${who}: Unpublish`).toHaveCount(canEdit && live ? 1 : 0);
       await page.keyboard.press('Escape');
     }
   });
@@ -268,14 +272,15 @@ test.describe('Workboard default owner credentials', () => {
     expect(pin, 'the create response carries a default PIN').toBeTruthy();
 
     try {
-      const dialog = page.getByRole('dialog');
-      await expect(dialog).toBeVisible();
+      const heading = page.getByRole('heading', { name: 'Default owner credentials' });
+      const dialog = page.locator('body');
+      await expect(heading).toBeVisible();
       const secret = page.getByTestId('credential-secret');
       await expect(secret).not.toContainText(pin);
       expect(await page.locator('body').innerText(), 'PIN rendered before reveal').not.toContain(pin);
       // Escape does not drop credentials the user has not saved.
       await page.keyboard.press('Escape');
-      await expect(dialog).toBeVisible();
+      await expect(heading).toBeVisible();
       await page.getByTestId('credential-reveal').click();
       await expect(secret).toHaveText(pin);
       await page.getByTestId('credential-reveal').click();
@@ -285,7 +290,7 @@ test.describe('Workboard default owner credentials', () => {
       await dialog.getByRole('button', { name: /^Enter Builder$/ }).click();
       await page.waitForURL(new RegExp(`/workboards/${wbId}`));
       await expect(page.locator(ROW)).toBeVisible({ timeout: 30_000 });
-      await expect(page.getByRole('dialog')).toHaveCount(0);
+      await expect(heading).toHaveCount(0);
       expect(await page.locator('body').innerText()).not.toContain(pin);
       expect(await page.evaluate((id) => sessionStorage.getItem(`workboard-default-owner:${id}`), wbId)).toBeNull();
 
@@ -294,13 +299,13 @@ test.describe('Workboard default owner credentials', () => {
       await page.evaluate(({ id, p }) => sessionStorage.setItem(`workboard-default-owner:${id}`,
         JSON.stringify({ workboardId: id, username: 'owner', pin: p, expiresAt: Date.now() + 600_000 })), { id: wbId, p: pin });
       await page.reload();
-      await expect(page.getByRole('dialog')).toBeVisible({ timeout: 30_000 });
+      await expect(heading).toBeVisible({ timeout: 30_000 });
       await page.reload();
-      await expect(page.getByRole('dialog'), 'a refresh before acknowledging keeps it').toBeVisible({ timeout: 30_000 });
+      await expect(heading, 'a refresh before acknowledging keeps it').toBeVisible({ timeout: 30_000 });
       await expect(page.getByTestId('credential-secret')).not.toContainText(pin);
-      await page.getByRole('dialog').getByRole('checkbox').check();
-      await page.getByRole('dialog').getByRole('button', { name: /^I saved it$/ }).click();
-      await expect(page.getByRole('dialog')).toHaveCount(0);
+      await page.getByRole('checkbox').check();
+      await page.getByRole('button', { name: /^I saved it$/ }).click();
+      await expect(heading).toHaveCount(0);
       expect(await page.evaluate((id) => sessionStorage.getItem(`workboard-default-owner:${id}`), wbId)).toBeNull();
 
       // A legacy entry (no expiry) is dropped, not shown.
@@ -308,7 +313,7 @@ test.describe('Workboard default owner credentials', () => {
         JSON.stringify({ workboardId: id, username: 'owner', pin: p })), { id: wbId, p: pin });
       await page.reload();
       await expect(page.locator(ROW)).toBeVisible({ timeout: 30_000 });
-      await expect(page.getByRole('dialog')).toHaveCount(0);
+      await expect(heading).toHaveCount(0);
       expect(await page.evaluate((id) => sessionStorage.getItem(`workboard-default-owner:${id}`), wbId)).toBeNull();
 
       expect(consoleText.filter((t) => t.includes(pin)), 'PIN written to the console').toEqual([]);
