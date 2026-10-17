@@ -286,7 +286,7 @@ test.describe('Workboard default owner credentials', () => {
       await page.getByTestId('credential-reveal').click();
       await expect(secret).not.toContainText(pin);
       // Acknowledge, enter the builder: no second disclosure, nothing left behind.
-      await dialog.getByRole('checkbox').check();
+      await page.getByRole('checkbox', { name: /I have saved these/ }).check();
       await dialog.getByRole('button', { name: /^Enter Builder$/ }).click();
       await page.waitForURL(new RegExp(`/workboards/${wbId}`));
       await expect(page.locator(ROW)).toBeVisible({ timeout: 30_000 });
@@ -303,7 +303,7 @@ test.describe('Workboard default owner credentials', () => {
       await page.reload();
       await expect(heading, 'a refresh before acknowledging keeps it').toBeVisible({ timeout: 30_000 });
       await expect(page.getByTestId('credential-secret')).not.toContainText(pin);
-      await page.getByRole('checkbox').check();
+      await page.getByRole('checkbox', { name: /I have saved these/ }).check();
       await page.getByRole('button', { name: /^I saved it$/ }).click();
       await expect(heading).toHaveCount(0);
       expect(await page.evaluate((id) => sessionStorage.getItem(`workboard-default-owner:${id}`), wbId)).toBeNull();

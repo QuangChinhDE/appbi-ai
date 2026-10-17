@@ -124,6 +124,7 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
   return (
     <div className="flex h-full flex-col">
       <DetailHeader
+        tabsInlineFrom="xl"
         testId="workboard-header"
         back={{ label: t('workboards.layout.workboards'), onClick: () => router.push('/workboards') }}
         title={<span title={workboard.name}>{workboard.name}</span>}
