@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Check, Copy, KeyRound, ShieldAlert } from 'lucide-react';
+import { Check, Copy, Eye, EyeOff, KeyRound, ShieldAlert } from 'lucide-react';
 
 import { Modal } from '@/components/common/Modal';
 import { Button } from '@/components/ui/Button';
@@ -15,6 +15,8 @@ interface Props {
   pin: string;
   /** Confirmed: user clicked the "I saved this" button. */
   onConfirm: () => void;
+  /** Label of the confirm button; defaults to "enter builder". */
+  confirmLabel?: string;
 }
 
 type CopyKey = 'username' | 'pin' | 'both';
@@ -25,6 +27,7 @@ export function DefaultOwnerCredentialsDialog({
   username,
   pin,
   onConfirm,
+  confirmLabel,
 }: Props) {
   const { t } = useI18n();
   const [confirmed, setConfirmed] = React.useState(false);
@@ -91,7 +94,7 @@ export function DefaultOwnerCredentialsDialog({
                 : t('workboards.credentials.confirmSaveTitle')
             }
           >
-            {t('workboards.credentials.enterBuilder')}
+            {confirmLabel ?? t('workboards.credentials.enterBuilder')}
           </Button>
         </>
       }
@@ -128,6 +131,7 @@ export function DefaultOwnerCredentialsDialog({
             onCopy={() => copy('pin', pin)}
             copied={copied === 'pin'}
             mono
+            secret
           />
         </div>
 
@@ -154,6 +158,7 @@ function CredentialField({
   copied,
   mono,
   icon,
+  secret,
 }: {
   label: string;
   value: string;
@@ -161,8 +166,12 @@ function CredentialField({
   copied: boolean;
   mono?: boolean;
   icon?: React.ReactNode;
+  /** Masked until the user reveals it; Copy works either way. */
+  secret?: boolean;
 }) {
   const { t } = useI18n();
+  const [revealed, setRevealed] = React.useState(!secret);
+  const masked = secret && !revealed;
   return (
     <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2.5">
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-emphasis text-text-tertiary">
@@ -171,12 +180,33 @@ function CredentialField({
       </div>
       <div className="flex items-center gap-2">
         <code
-          className={`flex-1 select-all rounded bg-surface-1 px-2 py-1.5 text-body text-text-primary ${
+          data-testid={secret ? 'credential-secret' : undefined}
+          aria-label={masked ? t('workboards.credentials.hiddenValue', { label }) : undefined}
+          className={`flex-1 ${masked ? 'select-none' : 'select-all'} rounded bg-surface-1 px-2 py-1.5 text-body text-text-primary ${
             mono ? 'font-mono tracking-wider' : ''
           }`}
         >
-          {value}
+          {masked ? '•'.repeat(Math.max(value.length, 4)) : value}
         </code>
+        {secret && (
+          <button
+            type="button"
+            data-testid="credential-reveal"
+            onClick={() => setRevealed((v) => !v)}
+            aria-pressed={revealed}
+            className="flex shrink-0 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-tiny font-medium text-text-secondary hover:border-brand hover:text-brand"
+          >
+            {revealed ? (
+              <>
+                <EyeOff className="h-3.5 w-3.5" /> {t('workboards.credentials.hide')}
+              </>
+            ) : (
+              <>
+                <Eye className="h-3.5 w-3.5" /> {t('workboards.credentials.reveal')}
+              </>
+            )}
+          </button>
+        )}
         <button
           type="button"
           onClick={onCopy}
