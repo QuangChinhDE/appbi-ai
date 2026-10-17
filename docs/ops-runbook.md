@@ -107,6 +107,42 @@ the signal to rebuild, not a fault in the report.
 that source is the running process, which is what makes this an objective test of
 whether a deploy took effect rather than a report of what someone intended.
 
+### The frontend is a separate build — check it separately
+
+The backend health above says nothing about the UI. The frontend image is built on
+its own and keeps serving the bundle it was built with until it is rebuilt, so
+"I merged it but the page looks old" is almost always a frontend image that was
+not rebuilt (or a different working copy was built). Check it from the artifact,
+never from the source tree:
+
+```bash
+python scripts/ops/verify_frontend_runtime.py          # exit 1 on any mismatch
+```
+
+It compares the deploy working copy's HEAD with, in order: the single `frontend`
+container of the project, the owner of the entry port (the `edge` with the edge
+overlay, else `frontend` — a stray `next dev` or second frontend shows here), the
+image label `org.opencontainers.image.revision`, `<meta name="appbi-build">` in the
+served HTML, and the SHA inside a served JS chunk (what the browser runs). The
+backend SHA is printed beside it: the two are allowed to differ.
+
+`appbi-pipeline-frontend` (port 3100) is a different product, and the `edge`
+(nginx) is a proxy in front of the one AppBI frontend — neither is a second AppBI
+frontend. `Dockerfile.dev` / `docker-compose.dev.yml` are the hot-reload mode of the
+same app; never run them on the main port while the production-style stack is up.
+
+To rebuild only the frontend at the deploy commit (no backend/DB restart):
+
+```bash
+GIT_SHA=$(git rev-parse HEAD) docker compose -p appbi-ai -f docker-compose.yml   -f docker-compose.edge.yml build frontend
+docker compose -p appbi-ai -f docker-compose.yml -f docker-compose.edge.yml   up -d --no-build --no-deps --force-recreate frontend
+python scripts/ops/verify_frontend_runtime.py
+```
+
+The admin app is never served by the service worker (`public/sw.js` only handles
+the public mini-app `/m`, `/ws/**` and content-hashed static assets), so a correct
+image is what the browser gets — no hard reload is needed.
+
 ---
 
 ## Logs

@@ -183,6 +183,9 @@ services:
         # Home ("Trang chủ") module. Off = no sidebar row, `/` lands on
         # Dashboards, and /overview redirects instead of loading.
         NEXT_PUBLIC_HOME_MODULE_ENABLED: ${NEXT_PUBLIC_HOME_MODULE_ENABLED:-false}
+        # Same build identity the backend bakes (APPBI_BUILD_SHA): the bundle
+        # can then say which commit it was built from, however it is started.
+        APPBI_BUILD_SHA: ${GIT_SHA:-}
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000/api/v1
