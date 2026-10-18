@@ -891,7 +891,9 @@ test('16 · deleting a tile in the Builder: gone from every surface, no ghost, n
   const tile = page.locator(`${CANVAS} .react-grid-layout > [data-grid-item-id="${gone}"]`);
   await tile.scrollIntoViewIfNeeded();
   await tile.hover();
-  await tile.getByTitle(/remove chart|gỡ biểu đồ|xóa biểu đồ/i).click();
+  // Remove lives in the tile's menu (the hover X was retired with the Builder UX simplification).
+  await tile.getByTestId('tile-menu-open').click();
+  await tile.getByTestId('tile-remove').click();
   await page.getByRole('button', { name: /^remove$/i }).click();
   await expect(page.locator(`${CANVAS} [data-grid-item-id="${gone}"]`)).toHaveCount(0);
   await saveDraft(page);
