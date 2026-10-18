@@ -4458,6 +4458,7 @@ function DashboardDetailPageInner() {
               href="/dashboards"
               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-secondary"
               title={t('dashboards.detail.backToDashboards')}
+              aria-label={t('dashboards.detail.backToDashboards')}
             >
               <ArrowLeft className="h-4 w-4" />
             </Link>
@@ -4504,11 +4505,14 @@ function DashboardDetailPageInner() {
                   </h1>
                   {canEditResource && inline.rename && (
                     <button
+                      type="button"
+                      data-testid="dashboard-rename"
                       onClick={handleStartEditName}
-                      className="rounded-md p-1 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-secondary"
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
                       title={t('dashboards.detail.renameDashboard')}
+                      aria-label={t('dashboards.detail.renameDashboard')}
                     >
-                      <Edit2 className="h-3 w-3" />
+                      <Edit2 className="h-3.5 w-3.5" />
                     </button>
                   )}
 
@@ -4599,7 +4603,7 @@ function DashboardDetailPageInner() {
                                     onDragEnd={() => { setDraggingPageId(null); setDragOverPageId(null); }}
                                     className={`group/pagerow flex w-full items-center gap-1.5 border-t-2 px-2 py-2 text-[13px] font-[510] transition-colors ${
                                       isActive
-                                        ? 'bg-[rgba(94,106,210,0.15)] text-brand'
+                                        ? 'bg-brand-container text-brand-on-container'
                                         : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
                                     } ${isDragging ? 'opacity-40' : ''} ${isDragOver ? 'border-brand' : 'border-transparent'}`}
                                     title={canEditResource ? t('dashboards.detail.dragToReorderPage') : undefined}
@@ -5198,7 +5202,12 @@ function DashboardDetailPageInner() {
                     aria-expanded={isAddElementOpen}
                     onClick={() => setIsAddElementOpen((v) => !v)}
                     aria-label={t('dashboards.addElement.open')}
-                    className="inline-flex h-7 items-center gap-1.5 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white shadow-sm transition-colors hover:bg-brand-hover"
+                    data-emphasis={pendingRow ? 'secondary' : 'primary'}
+                    className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-[510] transition-colors ${
+                      pendingRow
+                        ? 'border border-stroke-strong bg-surface-1 text-text-primary hover:border-stroke-control hover:bg-surface-2'
+                        : 'bg-brand text-text-inverse shadow-sm hover:bg-brand-hover active:bg-brand-active'
+                    }`}
                   >
                     <Plus className="h-3 w-3" />
                     <span className="hidden sm:inline">{t('dashboards.addElement.open')}</span>
