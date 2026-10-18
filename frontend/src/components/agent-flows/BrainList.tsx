@@ -451,7 +451,7 @@ export function BrainList({
         }
         confirmLabel={t('agentFlows.list.deleteConfirm')}
         variant="danger"
-        onConfirm={() => { if (confirmDelete) void removeDraft(confirmDelete); }}
+        onConfirm={() => (confirmDelete ? removeDraft(confirmDelete) : undefined)}
         onClose={() => setConfirmDelete(null)}
       />
 

@@ -231,7 +231,7 @@ export function AlertChannelsModal({ onClose, defaultDatasetId }: { onClose: () 
       <ConfirmDialog
         isOpen={!!deleting}
         onClose={() => setDeleting(null)}
-        onConfirm={() => { if (deleting) run(deleting, () => deleteAlertChannel(deleting.id), 'observability.alertChannels.deletedToast'); }}
+        onConfirm={() => (deleting ? run(deleting, () => deleteAlertChannel(deleting.id), 'observability.alertChannels.deletedToast') : undefined)}
         title={t('observability.alertChannels.deleteTitle')}
         description={t('observability.alertChannels.deleteConfirm', { name: deleting?.name ?? '' })}
         confirmLabel={t('observability.action.delete')}

@@ -377,7 +377,7 @@ export function PersonalTokensPanel() {
       <ConfirmDialog
         isOpen={!!tokenToDelete}
         onClose={() => setTokenToDelete(null)}
-        onConfirm={() => { if (tokenToDelete) deleteMutation.mutate(tokenToDelete.id); }}
+        onConfirm={() => (tokenToDelete ? deleteMutation.mutateAsync(tokenToDelete.id) : undefined)}
         title={tokenToDelete ? t('settings.tokens.deleteConfirmTitle', { name: tokenToDelete.name }) : t('settings.tokens.deletePermanently')}
         description={t('settings.tokens.deleteConfirmBody')}
         confirmLabel={t('settings.tokens.deletePermanently')}
@@ -387,7 +387,7 @@ export function PersonalTokensPanel() {
       <ConfirmDialog
         isOpen={!!tokenToRotate}
         onClose={() => setTokenToRotate(null)}
-        onConfirm={() => { if (tokenToRotate) rotateMutation.mutate(tokenToRotate.id); }}
+        onConfirm={() => (tokenToRotate ? rotateMutation.mutateAsync(tokenToRotate.id) : undefined)}
         title={t('settings.tokens.rotateConfirmTitle')}
         description={t('settings.tokens.rotateConfirmBody')}
         confirmLabel={t('settings.tokens.rotate')}
@@ -511,7 +511,7 @@ function AdminTokensPanel() {
       <ConfirmDialog
         isOpen={!!toRevoke}
         onClose={() => setToRevoke(null)}
-        onConfirm={() => { if (toRevoke) revokeMutation.mutate(toRevoke.id); }}
+        onConfirm={() => (toRevoke ? revokeMutation.mutateAsync(toRevoke.id) : undefined)}
         title={t('settings.tokens.revokeConfirmTitle')}
         description={t('settings.tokens.revokeConfirmBody')}
         confirmLabel={t('settings.tokens.revoke')}
@@ -521,7 +521,7 @@ function AdminTokensPanel() {
       <ConfirmDialog
         isOpen={!!toRotate}
         onClose={() => setToRotate(null)}
-        onConfirm={() => { if (toRotate) rotateMutation.mutate(toRotate.id); }}
+        onConfirm={() => (toRotate ? rotateMutation.mutateAsync(toRotate.id) : undefined)}
         title={t('settings.tokens.rotateConfirmTitle')}
         description={t('settings.tokens.rotateConfirmBody')}
         confirmLabel={t('settings.tokens.rotate')}
