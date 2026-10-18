@@ -662,6 +662,11 @@ function ChartTileBase({
   // Frame + surface: one resolver shared with the published tile, so a tile
   // looks the same in the builder and on /d and /embed.
   const ringActive = isCrossFilterSource || isHighlightSource || isFocused;
+  // The tile's own tools show while it is hovered, selected or keyboard-focused,
+  // and always on touch screens — never as hidden-until-hover there.
+  const tileToolsReveal = isFocused
+    ? 'opacity-100'
+    : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100';
   const tileEmphasis = emphasisOf(currentLayout);
   const tileFrame = resolveTileFrameStyle({ style: effectiveStyleConfig as any, theme: dashTheme, ringActive });
   const transparentTile = tileFrame.frame !== 'card';
@@ -1115,21 +1120,8 @@ function ChartTileBase({
           {editingBy.name.trim().charAt(0) || '?'}
         </div>
       )}
-      {/* Remove button Ã¢â‚¬â€ outside drag handle so clicks always register */}
-      {onRemove && (
-      <button
-        onMouseDown={e => e.stopPropagation()}
-        onClick={() => onRemove(dashboardChartId)}
-        disabled={isRemoving}
-        className="absolute top-2 right-2 z-10 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1.5 shadow-linear-sm opacity-0 transition-opacity group-hover:opacity-100 hover:border-danger/40 hover:bg-danger/10 disabled:opacity-50"
-        title={t('dashboards.tile.removeChart')}
-      >
-        {isRemoving ? (
-          <Loader2 className="h-4 w-4 text-danger animate-spin" />
-        ) : (
-          <X className="h-4 w-4 text-danger" />
-        )}
-      </button>
+      {isRemoving && (
+        <Loader2 className="absolute top-2 right-2 z-10 h-4 w-4 animate-spin text-danger" aria-hidden />
       )}
 
       {/* Drag handle + editable title + parameter chips. In AI Design mode the
@@ -1187,17 +1179,6 @@ function ChartTileBase({
             {/* A live result re-served from the cache says when it was read —
                 never presented as the source right now. */}
             <CachedLiveBadge debug={chartData?.debug} />
-            <a
-              href={`/explore/${chartId}?fromReport=${dashboardId}&tile=${dashboardChartId}`}
-              target="_blank"
-              rel="noreferrer"
-              data-export-hide=""
-              onMouseDown={e => e.stopPropagation()}
-              className="flex-shrink-0 rounded-md p-1 text-text-quaternary opacity-0 transition hover:bg-surface-2 hover:text-brand focus:opacity-100 group-hover:opacity-100"
-              title={t('dashboards.tile.openInExploreNewTab')}
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-            </a>
 
             {/* HAVING badge stays separate; it has active state and opens the inline editor. */}
             {canEdit && exploreConfig && havingOptions.length > 0 && (
@@ -1206,12 +1187,12 @@ function ChartTileBase({
                 onClick={() => setIsHavingOpen(v => !v)}
                 /* Phase-B9 — match the toolbar icons: muted gray even when
                    active; the blue dot signals the active filter. */
-                className={`relative flex-shrink-0 transition-opacity text-text-quaternary hover:text-brand ${
-                  isHavingOpen || havingFilters.length > 0
-                    ? 'opacity-100'
-                    : 'opacity-0 group-hover:opacity-100'
+                className={`relative inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-surface-2 hover:text-brand ${
+                  isHavingOpen || havingFilters.length > 0 ? 'opacity-100' : tileToolsReveal
                 }`}
                 title={t('dashboards.tile.perChartFilters')}
+                aria-label={t('dashboards.tile.perChartFilters')}
+                data-export-hide=""
               >
                 <SlidersHorizontal className="h-3.5 w-3.5" />
                 {havingFilters.length > 0 && (
@@ -1226,10 +1207,16 @@ function ChartTileBase({
             {/* Single overflow menu for View, Appearance, Rename, and Move to page. */}
             <div ref={tileMenuAnchorRef} className="relative flex-shrink-0">
               <button
+                type="button"
+                data-testid="tile-menu-open"
+                data-export-hide=""
+                aria-haspopup="menu"
+                aria-expanded={isTileMenuOpen}
+                aria-label={t('dashboards.tile.moreOptions')}
                 onMouseDown={e => e.stopPropagation()}
                 onClick={() => { setIsTileMenuOpen(v => !v); setIsMovePageOpen(false); }}
-                className={`transition-opacity text-text-quaternary hover:text-brand ${
-                  isTileMenuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                className={`inline-flex h-6 w-6 items-center justify-center rounded-md text-text-tertiary transition hover:bg-surface-2 hover:text-brand ${
+                  isTileMenuOpen ? 'bg-surface-2 opacity-100' : tileToolsReveal
                 }`}
                 title={t('dashboards.tile.moreOptions')}
               >
@@ -1402,6 +1389,21 @@ function ChartTileBase({
                             ))}
                           </div>
                         )}
+                      </>
+                    )}
+                    {onRemove && (
+                      <>
+                        <div className="my-1 border-t border-[rgb(var(--border-line))]" />
+                        <button
+                          type="button"
+                          data-testid="tile-remove"
+                          disabled={isRemoving}
+                          onClick={() => { setIsTileMenuOpen(false); onRemove(dashboardChartId); }}
+                          className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
+                        >
+                          <X className="h-3.5 w-3.5 shrink-0" />
+                          {t('dashboards.tile.removeChart')}
+                        </button>
                       </>
                     )}
                   </div>

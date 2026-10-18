@@ -198,6 +198,7 @@ export const dashboardsDetailCatalog: ModuleCatalog = {
     'dashboards.detail.draftSaved': 'Draft saved.',
     // device layouts (Desktop authored; Tablet/Phone AUTO or CUSTOM)
     'dashboards.device.label': 'Device layout',
+    'dashboards.device.menuHint': 'Preview the full report, or check and customise its layout on tablet and phone',
     'dashboards.device.desktop': 'Desktop',
     'dashboards.device.tablet': 'Tablet',
     'dashboards.device.phone': 'Phone',
@@ -465,6 +466,7 @@ export const dashboardsDetailCatalog: ModuleCatalog = {
     'dashboards.detail.draftSaved': 'Đã lưu bản nháp.',
     // bố cục theo thiết bị (Desktop là bản gốc; Tablet/Phone tự động hoặc tuỳ chỉnh)
     'dashboards.device.label': 'Bố cục theo thiết bị',
+    'dashboards.device.menuHint': 'Xem trước toàn bộ báo cáo, hoặc kiểm tra và tuỳ chỉnh bố cục trên tablet và điện thoại',
     'dashboards.device.desktop': 'Desktop',
     'dashboards.device.tablet': 'Tablet',
     'dashboards.device.phone': 'Điện thoại',
