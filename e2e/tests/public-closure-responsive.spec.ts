@@ -3,6 +3,7 @@ import {
   addChartTile, collectTiles, DASH, deleteTestPats, dropReport, freeze, freshReport, settle, V1, waitForTiles,
   type Fixture,
 } from './_public-closure';
+import { chooseBuilderDevice } from './_helpers';
 
 /**
  * Device-specific layouts (docs/responsive-dashboard-layouts.md), proven in a
@@ -97,7 +98,7 @@ async function builderDevice(page: Page, id: number, mode: 'desktop' | 'tablet' 
     await page.goto(`/dashboards/${id}`);
     await settle(page, '[data-dashboard-canvas-root]');
   }
-  await page.getByTestId(`device-mode-${mode}`).click();
+  await chooseBuilderDevice(page, mode);
   const want = mode === 'desktop' ? 'lg' : mode === 'tablet' ? 'md' : 'xs';
   await expect.poll(async () => (await readDrawn(page, '[data-dashboard-canvas-root]'))?.breakpoint, { message: `builder never reached ${mode}` }).toBe(want);
   await settle(page, '[data-dashboard-canvas-root]');
@@ -483,7 +484,7 @@ test('L — AI design changes desktop: an AUTO tablet follows it, a CUSTOM table
     const bar = g.tile('BAR');
     const plan = { layer: 'structure', direction: {}, structure: { operations: [{ op: 'move_to_top', visuals: [bar] }] } };
     const askAi = async () => {
-      await page.getByTestId('device-mode-desktop').click();
+      await chooseBuilderDevice(page, 'desktop');
       await page.getByTestId('design-mode-ai').click();
       await expect(page.getByTestId('ai-design-input')).toBeVisible();
       // Only the planner — the call that would spend a model — answers a fixed plan.
@@ -516,7 +517,7 @@ test('L — AI design changes desktop: an AUTO tablet follows it, a CUSTOM table
     // A second redesign: move the PIE to the top.
     plan.structure.operations[0].visuals = [g.tile('PIE')];
     await askAi();
-    await page.getByTestId('device-mode-tablet').click();
+    await chooseBuilderDevice(page, 'tablet');
     await expect(page.getByTestId('device-status-stale')).toBeVisible();
     const builderTablet = await stableDrawn(page, '[data-dashboard-canvas-root]');
     expect(byId(builderTablet.layout), 'AI rewrote the custom tablet layout').toEqual(byId(custom.layout));
