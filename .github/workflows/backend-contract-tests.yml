@@ -272,6 +272,7 @@ jobs:
             tests/test_dataset_sync_failure_alerts.py \
             tests/test_quality_run_overlap.py \
             tests/test_refresh_follows_publish_lifecycle.py \
+            tests/test_preview_partition_lookback.py \
             tests/test_semantic_health.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
       # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
       #
