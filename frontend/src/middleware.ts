@@ -210,7 +210,9 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/m/') ||
     pathname === '/manifest.webmanifest' ||
     pathname === '/sw.js' ||
-    pathname.startsWith('/icon-')
+    pathname.startsWith('/icon') ||
+    pathname.startsWith('/apple-icon') ||
+    pathname.startsWith('/brand/')
   ) {
     return NextResponse.next();
   }
