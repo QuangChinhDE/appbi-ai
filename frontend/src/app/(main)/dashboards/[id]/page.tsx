@@ -32,7 +32,7 @@ import { buildPresentationSnapshot, tilesOnPage } from '@/lib/dashboard-presenta
 import { buildPresentationMutation, tilesWithLocalEdits, toLocalLayoutOverrides } from '@/lib/dashboard-presentation/executor';
 import { useAiDesign } from '@/components/dashboards/ai-design/useAiDesign';
 import { DashboardThemeModal } from '@/components/dashboards/DashboardThemeModal';
-import { Palette, Undo2, Redo2, ArrowUpToLine, Eye, Save, Send } from 'lucide-react';
+import { Palette, Undo2, Redo2, ArrowUpToLine, Eye, Save, Send, Monitor, Tablet as TabletIcon, Smartphone } from 'lucide-react';
 import { ChartTile } from '@/components/dashboards/ChartTile';
 import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
@@ -352,6 +352,9 @@ function DashboardDetailPageInner() {
   const [isThemeOpen, setIsThemeOpen] = useState(false);
   const [isWidgetMenuOpen, setIsWidgetMenuOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
+  // The Preview menu: full-report preview and the device layouts (Tablet/Phone)
+  // — opened on demand, never a permanent bar on the canvas.
+  const [isDeviceMenuOpen, setIsDeviceMenuOpen] = useState(false);
   const [isPagesMenuOpen, setIsPagesMenuOpen] = useState(false);
   const moreTriggerRef = React.useRef<HTMLButtonElement>(null);
   const pagesTriggerRef = React.useRef<HTMLButtonElement>(null);
@@ -4423,19 +4426,28 @@ function DashboardDetailPageInner() {
     discard: headerXl,
     design: pendingRow ? headerXl : headerLg,
     inspector: pendingRow ? headerXl : headerLg,
-    studio: pendingRow ? header2xl : headerXl,
-    slicer: pendingRow ? header2xl : headerXl,
+    slicer: false,
     asOf: pendingRow ? header2xl : headerXl,
     saveDraft: headerSm,
     add: headerSm,
+  };
+  // Leaving AI mode drops a preview rather than keeping it invisibly pending —
+  // an unapplied design that survives a mode switch is a change nobody can see.
+  const toggleAiDesign = () => {
+    if (designMode === 'ai') {
+      if (aiDesign.pending) aiDesign.discard();
+      setDesignMode('manual');
+    } else {
+      setDesignMode('ai');
+    }
   };
   const anyCollapsed =
     (canEditResource && !inline.rename)
     || (canEditResource && (canUndo || canRedo) && !inline.undo)
     || (pendingRow && (!inline.discard || !inline.saveDraft))
     || (canEditThisPage && (!inline.design || !inline.slicer || (designMode === 'manual' && !inline.inspector)))
-    || !inline.studio
-    || (Boolean(snapshotAsOf) && !inline.asOf);
+    || (Boolean(snapshotAsOf) && !inline.asOf)
+    || !headerSm;
 
   return (
     <DashboardThemeProvider theme={previewTheme} className="min-h-full bg-surface-2">
@@ -4445,7 +4457,7 @@ function DashboardDetailPageInner() {
       {!studioPreview && (
       <div
         ref={builderHeaderRef}
-        className={`app-chrome sticky top-0 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8 ${isMoreMenuOpen || isPagesMenuOpen || isAddElementOpen ? 'z-50' : 'z-20'}`}
+        className={`app-chrome sticky top-0 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8 ${isMoreMenuOpen || isPagesMenuOpen || isAddElementOpen || isDeviceMenuOpen ? 'z-50' : 'z-20'}`}
       >
         <div className="rounded-xl border border-stroke-strong bg-surface-1 shadow-linear-sm overflow-visible">
 
@@ -4873,6 +4885,36 @@ function DashboardDetailPageInner() {
                           one copy — they are inline from their breakpoint up. */}
                       {anyCollapsed && (
                         <>
+                          {!headerSm && (
+                            <>
+                              <button
+                                data-testid="studio-preview-open"
+                                onClick={() => { setIsMoreMenuOpen(false); setStudioOpen(true); }}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                              >
+                                <Eye className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                                {t('dashboards.studio.openFull')}
+                              </button>
+                              {(['desktop', 'tablet', 'phone'] as const).map((m) => {
+                                const Icon = m === 'tablet' ? TabletIcon : m === 'phone' ? Smartphone : Monitor;
+                                return (
+                                  <button
+                                    key={m}
+                                    role="menuitemradio"
+                                    aria-checked={deviceMode === m}
+                                    data-testid={`device-menu-${m}`}
+                                    onClick={() => { setIsMoreMenuOpen(false); setDeviceMode(m); }}
+                                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                                  >
+                                    <Icon className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                                    <span className="flex-1 text-left">{t(`dashboards.device.${m}`)}</span>
+                                    {deviceMode === m && <Check className="h-3 w-3 shrink-0 text-brand" />}
+                                  </button>
+                                );
+                              })}
+                              <div className="mx-3 my-1 border-t border-stroke-line" />
+                            </>
+                          )}
                           {pendingRow && !inline.saveDraft && (
                             <button
                               onClick={() => { setIsMoreMenuOpen(false); void handleSaveDraft(); }}
@@ -4940,35 +4982,19 @@ function DashboardDetailPageInner() {
                               </button>
                             </>
                           )}
-                          {!inline.studio && (
+                          {canEditThisPage && !inline.design && (
                             <button
-                              data-testid="studio-preview-open"
-                              onClick={() => { setIsMoreMenuOpen(false); setStudioOpen(true); }}
+                              role="menuitemcheckbox"
+                              aria-checked={designMode === 'ai'}
+                              data-testid="design-mode-ai"
+                              onClick={() => { setIsMoreMenuOpen(false); toggleAiDesign(); }}
                               className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
-                              title={t('dashboards.studio.openFull')}
                             >
-                              <Eye className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                              {t('dashboards.studio.open')}
+                              <Sparkles className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              <span className="flex-1 text-left">{t('dashboards.aiDesign.modeAi')}</span>
+                              {designMode === 'ai' && <Check className="h-3 w-3 shrink-0 text-brand" />}
                             </button>
                           )}
-                          {canEditThisPage && !inline.design && (['manual', 'ai'] as const).map((mode) => (
-                            <button
-                              key={mode}
-                              role="menuitemradio"
-                              aria-checked={designMode === mode}
-                              data-testid={`design-mode-${mode}`}
-                              onClick={() => {
-                                setIsMoreMenuOpen(false);
-                                if (mode === 'manual' && aiDesign.pending) aiDesign.discard();
-                                setDesignMode(mode);
-                              }}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
-                            >
-                              {mode === 'ai' ? <Sparkles className="h-3.5 w-3.5 shrink-0 text-text-quaternary" /> : <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />}
-                              <span className="flex-1 text-left">{t(mode === 'manual' ? 'dashboards.aiDesign.modeManual' : 'dashboards.aiDesign.modeAi')}</span>
-                              {designMode === mode && <Check className="h-3 w-3 shrink-0 text-brand" />}
-                            </button>
-                          ))}
                           {canEditThisPage && !inline.slicer && (
                             <button
                               data-testid="add-slicer-open"
@@ -5122,53 +5148,104 @@ function DashboardDetailPageInner() {
                   and a person needs to see which mode they are in without
                   opening anything. Grid only — a canvas dashboard has no grid
                   for a composition to compile onto. */}
-              {inline.studio && (
+              {/* Preview: the full-report preview and the device layouts behind one
+                  trigger. Tablet/Phone are a deliberate step — the canvas is the
+                  Desktop report unless the author asks for another device. The
+                  trigger shows the device being viewed, so the mode is never hidden. */}
+              {headerSm && (
+              <div className="relative">
                 <button
                   type="button"
-                  data-testid="studio-preview-open"
-                  onClick={() => setStudioOpen(true)}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
-                  title={t('dashboards.studio.openFull')}
+                  data-testid="device-menu-open"
+                  data-device={deviceMode}
+                  aria-haspopup="menu"
+                  aria-expanded={isDeviceMenuOpen}
+                  aria-label={deviceMode === 'desktop' ? t('dashboards.studio.open') : `${t('dashboards.studio.open')}: ${t(`dashboards.device.${deviceMode}`)}`}
+                  title={t('dashboards.device.menuHint')}
+                  onClick={() => { setIsDeviceMenuOpen((v) => !v); setIsMoreMenuOpen(false); setIsPagesMenuOpen(false); }}
+                  className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[12px] font-[510] transition-colors ${
+                    deviceMode !== 'desktop' || isDeviceMenuOpen
+                      ? 'border-brand/40 bg-brand-container text-brand-on-container'
+                      : 'border-stroke-strong bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+                  }`}
                 >
-                  <Eye className="h-3 w-3" />
-                  {t('dashboards.studio.open')}
+                  {deviceMode === 'tablet' ? <TabletIcon className="h-3.5 w-3.5" /> : deviceMode === 'phone' ? <Smartphone className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  {/* Labelled where the old Preview button was inline; an icon
+                      (named, with a tooltip) where the row is full. */}
+                  <span className={pendingRow ? 'hidden 2xl:inline' : 'hidden xl:inline'}>{deviceMode === 'desktop' ? t('dashboards.studio.open') : t(`dashboards.device.${deviceMode}`)}</span>
+                  <ChevronDown className={`h-3 w-3 opacity-70 ${pendingRow ? 'hidden 2xl:inline' : 'hidden xl:inline'}`} />
                 </button>
-              )}
-              {canEditThisPage && inline.design && (
-                <div
-                  className="inline-flex h-7 items-center rounded-md border border-[rgb(var(--border-line))] p-0.5"
-                  role="radiogroup"
-                  aria-label={t('dashboards.aiDesign.modeLabel')}
-                >
-                  {(['manual', 'ai'] as const).map((mode) => {
-                    const active = designMode === mode;
-                    return (
+                {isDeviceMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setIsDeviceMenuOpen(false)} />
+                    <div
+                      role="menu"
+                      aria-label={t('dashboards.studio.open')}
+                      className="absolute right-0 z-50 mt-1.5 w-60 rounded-lg border border-stroke-strong bg-surface-1 py-1 shadow-popover"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') { e.stopPropagation(); setIsDeviceMenuOpen(false); return; }
+                        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+                        e.preventDefault();
+                        const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled)'));
+                        const i = items.indexOf(document.activeElement as HTMLElement);
+                        items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+                      }}
+                    >
                       <button
-                        key={mode}
                         type="button"
-                        role="radio"
-                        aria-checked={active}
-                        data-testid={`design-mode-${mode}`}
-                        onClick={() => {
-                          // Leaving AI mode drops a preview rather than keeping
-                          // it invisibly pending — an unapplied design that
-                          // survives a mode switch is a change nobody can see.
-                          if (mode === 'manual' && aiDesign.pending) aiDesign.discard();
-                          setDesignMode(mode);
-                        }}
-                        className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[12px] font-[510] transition-colors ${
-                          active
-                            // selected segment = tonal; solid brand is reserved for the primary action
-                            ? 'bg-brand-container text-brand-on-container'
-                            : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
-                        }`}
+                        role="menuitem"
+                        autoFocus
+                        data-testid="studio-preview-open"
+                        onClick={() => { setIsDeviceMenuOpen(false); setStudioOpen(true); }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary focus-visible:bg-surface-2 focus-visible:outline-none"
                       >
-                        {mode === 'ai' && <Sparkles className="h-3 w-3" />}
-                        {t(mode === 'manual' ? 'dashboards.aiDesign.modeManual' : 'dashboards.aiDesign.modeAi')}
+                        <Eye className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                        {t('dashboards.studio.openFull')}
                       </button>
-                    );
-                  })}
-                </div>
+                      <div className="mx-3 my-1 border-t border-stroke-line" />
+                      <div className="px-3 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.device.label')}</div>
+                      {(['desktop', 'tablet', 'phone'] as const).map((m) => {
+                        const Icon = m === 'tablet' ? TabletIcon : m === 'phone' ? Smartphone : Monitor;
+                        return (
+                          <button
+                            key={m}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={deviceMode === m}
+                            data-testid={`device-menu-${m}`}
+                            onClick={() => { setIsDeviceMenuOpen(false); setDeviceMode(m); }}
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary focus-visible:bg-surface-2 focus-visible:outline-none"
+                          >
+                            <Icon className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                            <span className="flex-1 text-left">{t(`dashboards.device.${m}`)}</span>
+                            {deviceMode === m && <Check className="h-3 w-3 shrink-0 text-brand" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+              )}
+              {/* AI Design is a mode the author turns on and off: one toggle whose
+                  pressed state says which mode the screen is in (tonal while on;
+                  solid brand stays reserved for the primary action). */}
+              {canEditThisPage && inline.design && (
+                <button
+                  type="button"
+                  data-testid="design-mode-ai"
+                  aria-pressed={designMode === 'ai'}
+                  onClick={toggleAiDesign}
+                  title={t('dashboards.aiDesign.modeLabel')}
+                  className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[12px] font-[510] transition-colors ${
+                    designMode === 'ai'
+                      ? 'border-brand/40 bg-brand-container text-brand-on-container'
+                      : 'border-stroke-strong bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+                  }`}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {t('dashboards.aiDesign.modeAi')}
+                </button>
               )}
 
               {canEditThisPage && inline.slicer && (
@@ -5408,8 +5485,9 @@ function DashboardDetailPageInner() {
         {/* Device layouts: Desktop is the authored layout; Tablet and Phone are
             AUTO (derived from desktop) until customised. The canvas renders at
             the device's representative width; the resolver decides the layout. */}
-        {!studioPreview && !isExportingPdf && (
-          <div data-testid="device-bar" className="mb-2 flex flex-wrap items-center gap-2 text-[12.5px]">
+        {!studioPreview && !isExportingPdf && deviceMode !== 'desktop' && (
+          <div data-testid="device-bar" className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-brand/25 bg-brand-container/40 px-2 py-1.5 text-[12.5px]">
+            <span className="px-1 text-[12px] font-medium text-text-secondary">{t('dashboards.device.label')}</span>
             <div className="inline-flex rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-0.5" role="group" aria-label={t('dashboards.device.label')}>
               {(['desktop', 'tablet', 'phone'] as const).map((m) => (
                 <button

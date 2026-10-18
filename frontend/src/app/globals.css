@@ -1878,6 +1878,11 @@
 .dashboard-tile-title-row[data-kpi]:focus-within > a,
 .dashboard-tile-title-row[data-kpi]:focus-within > button,
 .dashboard-tile-title-row[data-kpi]:focus-within > div { display: inline-flex; }
+/* Touch screens have no hover: keep the menu (the only way to Remove) reachable. */
+@media (hover: none) {
+  .dashboard-tile-title-row[data-kpi] > button,
+  .dashboard-tile-title-row[data-kpi] > div { display: inline-flex; }
+}
 
 /* KPI context: the span the number covers, then a comparison that carries its
    own window and value, so a change is never read as the total's change. */

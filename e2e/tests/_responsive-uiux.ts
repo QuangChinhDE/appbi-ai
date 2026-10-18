@@ -1,6 +1,7 @@
 import { expect, type Frame, type Page, type Request } from '@playwright/test';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { chooseBuilderDevice } from './_helpers';
 
 /**
  * Shared helpers for the device-layout UI/UX acceptance suite
@@ -212,11 +213,9 @@ export async function openBuilder(page: Page, id: number) {
 const BP = { desktop: 'lg', tablet: 'md', phone: 'xs' } as const;
 export type Device = keyof typeof BP;
 
-/** Switch the Builder's device with its visible control; wait for the canvas to draw it. */
+/** Switch the Builder's device through its controls; wait for the canvas to draw it. */
 export async function switchDevice(page: Page, mode: Device): Promise<Drawn> {
-  const button = page.getByTestId(`device-mode-${mode}`);
-  await button.click();
-  await expect(button).toHaveAttribute('aria-pressed', 'true');
+  await chooseBuilderDevice(page, mode);
   await expect.poll(async () => (await readDrawn(page, CANVAS))?.breakpoint, { message: `the Builder never drew ${mode}` }).toBe(BP[mode]);
   return stableDrawn(page, CANVAS);
 }

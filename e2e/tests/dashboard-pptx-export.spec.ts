@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { API } from './_helpers';
+import { API, chooseBuilderDevice } from './_helpers';
 import { MIN_CHART_INK, readDeck, type Deck } from './_pptx';
 
 /**
@@ -290,8 +290,7 @@ test('a refused deck names the charts, keeps the dialog for Retry, never says "d
   // The author is on page "Chi tiết", in Tablet mode.
   await page.getByTestId('builder-pages-menu').click();
   await page.getByTestId('builder-page-p2').click();
-  await page.getByTestId('device-mode-tablet').click();
-  await expect(page.getByTestId('device-mode-tablet')).toHaveAttribute('aria-pressed', 'true');
+  await chooseBuilderDevice(page, 'tablet');
   // A controlled server refusal of the DECK (the chart data is real).
   await page.route('**/export-pptx', (route) => route.fulfill({
     status: 422, contentType: 'application/json',

@@ -8,6 +8,7 @@ import {
   TABLET, visitAll,
   type Drawn, type Geo,
 } from './_responsive-uiux';
+import { openStudioPreview } from './_helpers';
 
 /**
  * Device-specific layouts — UI/UX ACCEPTANCE of what VIEWERS get: /d, the
@@ -242,7 +243,10 @@ test('25 · no unintended horizontal overflow: /d at 820, 390, 639, 640, 1023, 1
   await page.setViewportSize({ width: 1024, height: 900 });
   await stableDrawn(page, CANVAS);
   await expectNoHorizontalOverflow(page, 'Builder in a 1024px window', CANVAS);
-  // The device bar's controls stay on screen in a 1024px window.
+  // The device controls stay on screen in a 1024px window: the Preview trigger,
+  // and — once a device is open — every button of its device bar.
+  await expect(page.getByTestId('device-menu-open')).toBeInViewport();
+  await switchDevice(page, 'tablet');
   for (const m of ['desktop', 'tablet', 'phone'] as const) await expect(page.getByTestId(`device-mode-${m}`)).toBeInViewport();
 });
 
@@ -348,7 +352,7 @@ test('44 · parity matrix on a published report with custom Tablet and Phone: Bu
     const b = await switchDevice(page, mode);
     if (mode !== 'desktop') row.Builder = await domGeometry(page, CANVAS);
     // Studio frame at the device width.
-    await page.getByTestId('studio-preview-open').click();
+    await openStudioPreview(page);
     await page.getByTestId(`studio-device-${mode}`).click();
     const handle = await page.waitForSelector('[data-testid="studio-preview"] iframe');
     const sf = (await handle.contentFrame())!;

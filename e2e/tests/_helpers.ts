@@ -1,4 +1,33 @@
-import { expect } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+
+/** Open the full-report Studio preview: an item of the header's Preview menu. */
+export async function openStudioPreview(page: Page) {
+  await page.getByTestId('device-menu-open').click();
+  await page.getByTestId('studio-preview-open').click();
+}
+
+/**
+ * Put the Builder canvas on a device. Desktop is the canvas by default and has
+ * no device bar; Tablet/Phone are opened from the header's Preview menu, and
+ * while one is shown its device bar switches between all three (Desktop leaves
+ * the device view). Asserts the control's own state, not just the click.
+ */
+export async function chooseBuilderDevice(page: Page, mode: 'desktop' | 'tablet' | 'phone') {
+  const inBar = page.getByTestId(`device-mode-${mode}`);
+  if (await inBar.isVisible()) {
+    await inBar.click();
+  } else if (mode !== 'desktop') {
+    await page.getByTestId('device-menu-open').click();
+    await page.getByTestId(`device-menu-${mode}`).click();
+  }
+  if (mode === 'desktop') {
+    await expect(page.getByTestId('device-bar')).toHaveCount(0);
+    await expect(page.getByTestId('device-menu-open')).toHaveAttribute('data-device', 'desktop');
+  } else {
+    await expect(page.getByTestId(`device-mode-${mode}`)).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('device-menu-open')).toHaveAttribute('data-device', mode);
+  }
+}
 
 /**
  * Shared helpers. Chiefly: a suite must leave the database as it found it.
