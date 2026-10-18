@@ -209,7 +209,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
             href={DEFAULT_LANDING_PATH}
             className="flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-surface-2"
           >
-            <img src="/brand/bexai-icon.png" alt="" className="h-6 w-6 rounded-md" />
+            <img src="/brand/bexai-icon.png" alt="" className="h-6 w-6 shrink-0 rounded-md" />
             <span className="text-small font-strong tracking-[-0.011em] text-text-primary">
               BEXAI
             </span>
@@ -217,10 +217,10 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         ) : (
           <Link
             href={DEFAULT_LANDING_PATH}
-            className="mx-auto flex h-8 w-8 items-center justify-center rounded-md"
+            className="mx-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
             aria-label="BEXAI"
           >
-            <img src="/brand/bexai-icon.png" alt="" className="h-8 w-8 rounded-md" />
+            <img src="/brand/bexai-icon.png" alt="" className="h-8 w-8 shrink-0 rounded-md" />
           </Link>
         )}
       </div>
