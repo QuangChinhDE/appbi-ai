@@ -673,7 +673,7 @@ export function BrainBuilder({
                 // duplicate the canvas labels (and catch clicks meant for them).
                 title={`${t('agentFlows.builder.keylessCount', { count: keyless.length })}: ${keyless.map((n) => n.name || n.key).join(', ')}`}
                 onClick={goToKeyless}
-                className="flex items-center gap-1 rounded-full border border-warning/25 bg-warning/5 px-2 py-px text-tiny text-warning hover:bg-warning/10"
+                className="flex min-h-6 items-center gap-1 rounded-full border border-warning/30 bg-warning-bg px-2 py-px text-tiny text-warning hover:bg-warning/10"
               >
                 <KeyRound className="h-3 w-3" /> {t('agentFlows.builder.keylessShort', { count: keyless.length })}
               </button>
@@ -1212,8 +1212,8 @@ function IconBtn({
       title={label}
       aria-label={label}
       className={cn(
-        'flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition',
-        disabled ? 'cursor-default opacity-35' : 'hover:bg-surface-2 hover:text-text-primary',
+        'flex h-7 w-7 items-center justify-center rounded-md border border-stroke-strong bg-surface-1 text-text-secondary transition',
+        disabled ? 'cursor-not-allowed text-text-quaternary opacity-60' : 'hover:border-stroke-control hover:bg-surface-2 hover:text-text-primary',
       )}
     >
       {children}
@@ -1245,7 +1245,7 @@ function FlowTypeChip({
       aria-label={t('agentFlows.builder.type.' + flowType + '.chip')}
       title={broken ? blockers.join('\n\n') : t('agentFlows.builder.type.' + flowType + '.hint')}
       className={cn(
-        'inline-flex flex-shrink-0 items-center gap-1 rounded-full border px-2 py-px text-tiny font-medium transition',
+        'inline-flex min-h-6 flex-shrink-0 items-center gap-1 rounded-full border px-2 py-px text-tiny font-medium transition',
         broken
           ? 'border-warning/30 bg-warning/5 text-warning'
           : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary',
