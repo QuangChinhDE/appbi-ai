@@ -3,7 +3,6 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Script from 'next/script';
-import { BarChart3 } from 'lucide-react';
 
 import { authConfig } from '@/lib/auth-config';
 import { DEFAULT_LANDING_PATH } from '@/lib/feature-flags';
@@ -116,10 +115,9 @@ function LoginForm() {
 
       <div className="bg-surface-1 rounded-xl border border-[rgb(var(--border-line))] shadow-linear-lg p-7">
         <div className="flex flex-col items-center mb-7">
-          <div className="w-10 h-10 bg-brand rounded-lg flex items-center justify-center mb-3">
-            <BarChart3 className="h-5 w-5 text-text-inverse" />
-          </div>
-          <h1 className="text-h2 font-strong text-text-primary">AppBI</h1>
+          <img src="/brand/bexai-wordmark.png" alt="BEXAI" className="h-16 w-auto mb-2" />
+          <h1 className="sr-only">BEXAI</h1>
+          <p className="text-text-secondary text-caption">Business Explorer &amp; X-factor Agent</p>
           <p className="text-text-tertiary text-caption mt-1">
             {canUseGoogle ? 'Sign in with your Google account' : 'Sign in to your account'}
           </p>
@@ -140,7 +138,7 @@ function LoginForm() {
         {canUseGoogle && (
           <div className="space-y-3">
             <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary">
-              Continue with the Google account that matches your AppBI user email.
+              Continue with the Google account that matches your BEXAI user email.
             </div>
             <div className="flex justify-center">
               <div ref={googleButtonRef} className="min-h-11" />
