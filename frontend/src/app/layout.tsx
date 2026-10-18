@@ -1,5 +1,6 @@
 import '@xyflow/react/dist/style.css';
 import './globals.css';
+import { APPBI_BUILD_SHA } from '@/lib/build-info';
 import type { Metadata, Viewport } from 'next';
 import { Be_Vietnam_Pro, DM_Sans, Inter, JetBrains_Mono, Plus_Jakarta_Sans, Roboto, Source_Serif_4, Space_Grotesk } from 'next/font/google';
 import { AppProviders } from './providers';
@@ -10,6 +11,8 @@ import { AppProviders } from './providers';
 // (standalone) when opened from the home screen.
 export const metadata: Metadata = {
   applicationName: 'AppBI',
+  // Which build is serving this page (scripts/ops/verify_frontend_runtime.py).
+  other: { 'appbi-build': APPBI_BUILD_SHA },
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',

@@ -119,7 +119,7 @@ export function OverflowMenu({
           }
         }}
         className={cn(
-          'inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40',
+          'inline-flex h-8 items-center gap-1.5 rounded-md border border-stroke-strong bg-surface-1 px-2 text-xs text-text-secondary transition-colors hover:border-stroke-control hover:bg-surface-2 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40',
           open && 'bg-surface-2 text-text-primary',
           triggerClassName,
         )}
