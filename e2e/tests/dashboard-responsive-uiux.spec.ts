@@ -893,8 +893,12 @@ test('16 · deleting a tile in the Builder: gone from every surface, no ghost, n
   await tile.evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await tile.hover();
   // Remove lives in the tile's menu (the hover X was retired with the Builder UX simplification).
-  await tile.getByTestId('tile-menu-open').click();
-  await tile.getByTestId('tile-remove').click();
+  // Keyboard, not a pointer click: when the canvas is scrolled the sticky Builder header
+  // sits over the top row, and a KPI's tools show only while hovered or focused.
+  await tile.getByTestId('tile-menu-open').focus();
+  await page.keyboard.press('Enter');
+  await tile.getByTestId('tile-remove').focus();
+  await page.keyboard.press('Enter');
   await page.getByRole('button', { name: /^remove$/i }).click();
   await expect(page.locator(`${CANVAS} [data-grid-item-id="${gone}"]`)).toHaveCount(0);
   await saveDraft(page);
