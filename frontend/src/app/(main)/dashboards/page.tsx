@@ -12,7 +12,7 @@ import { getResourcePermissions, accessTier } from '@/hooks/use-resource-permiss
 import { DashboardList } from '@/components/dashboards/DashboardList';
 import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
-import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { ConfirmDialog, ConfirmTargets } from '@/components/common/ConfirmDialog';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
@@ -206,7 +206,6 @@ export default function DashboardsPage() {
 
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
-    setShowBulkConfirm(false);
     setIsBulkDeleting(true);
     let successCount = 0;
     let failCount = 0;
@@ -218,8 +217,10 @@ export default function DashboardsPage() {
         failCount++;
       }
     }
-    setSelectedIds(new Set());
     setIsBulkDeleting(false);
+    // Nothing deleted: an error the confirm dialog shows (it stays open), not a toast after it closed.
+    if (successCount === 0 && failCount > 0) throw new Error(`Failed to delete ${failCount} dashboard(s)`);
+    setSelectedIds(new Set());
     if (successCount > 0) toast.success(`Deleted ${successCount} dashboard(s)`);
     if (failCount > 0) toast.error(`Failed to delete ${failCount} dashboard(s)`);
   };
@@ -513,8 +514,9 @@ export default function DashboardsPage() {
         isOpen={showBulkConfirm}
         onClose={() => setShowBulkConfirm(false)}
         onConfirm={handleBulkDelete}
-        title={`Delete ${selectedIds.size} dashboard${selectedIds.size === 1 ? '' : 's'}?`}
-        description="This action cannot be undone."
+        title={t('common.bulkDelete.dashboards', { count: selectedIds.size })}
+        description={t('common.cannotUndo')}
+        details={<ConfirmTargets names={(dashboards ?? []).filter((d) => selectedIds.has(d.id)).map((d) => d.name)} />}
         confirmLabel="Delete"
         variant="danger"
       />

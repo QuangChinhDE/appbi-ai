@@ -212,7 +212,7 @@ export function AiKeysModal({ credentials, loaded, canEdit, initialProvider, onC
       <ConfirmDialog
         isOpen={deleting !== null}
         onClose={() => setDeleting(null)}
-        onConfirm={() => { if (deleting) void remove(deleting.row); }}
+        onConfirm={() => (deleting ? remove(deleting.row) : undefined)}
         title={t('agentFlows.aiKeys.deleteTitle', { name: deleting?.row.name ?? '' })}
         description={
           deleting && deleting.usage.length > 0
