@@ -3117,7 +3117,7 @@ export function ExploreEditor({
                     <button
                       onClick={handleUseGeneratedQuery}
                       disabled={!resPerms.canEdit}
-                      className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      className={`inline-flex min-h-6 items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                         isConfigBuilderMode
                           ? 'bg-surface-1 text-brand shadow-linear-sm'
                           : 'text-text-secondary hover:bg-surface-1'
@@ -3129,7 +3129,7 @@ export function ExploreEditor({
                     <span className="group/csql relative inline-flex">
                       <button
                         disabled
-                        className="inline-flex cursor-not-allowed items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-text-quaternary opacity-50"
+                        className="inline-flex min-h-6 cursor-not-allowed items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-text-quaternary opacity-60"
                       >
                         <Code2 className="h-3 w-3" />
                         {t('explore.editor.sql')}
@@ -3323,9 +3323,10 @@ export function ExploreEditor({
                     type="button"
                     onClick={() => setIsEditingName(true)}
                     aria-label={t('explore.editor.renameChart')}
-                    className="hidden rounded-md p-1 sm:block text-text-quaternary opacity-0 transition-opacity hover:bg-surface-2 hover:text-text-secondary group-hover/name:opacity-100"
+                    title={t('explore.editor.renameChart')}
+                    className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary sm:inline-flex"
                   >
-                    <Pencil className="h-3 w-3" />
+                    <Pencil className="h-3.5 w-3.5" />
                   </button>
                 )}
               </div>

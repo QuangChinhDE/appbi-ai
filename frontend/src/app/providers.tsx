@@ -1,8 +1,9 @@
 'use client';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
+import { APPBI_BUILD_SHA } from '@/lib/build-info';
 import { Toaster } from '@/lib/toast';
 import { LanguageProvider } from '@/providers/LanguageProvider';
 
@@ -18,6 +19,12 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       },
     })
   );
+
+  // The bundle the browser is RUNNING says which build it is (the <meta> only
+  // says which server rendered the HTML) — a stale cached bundle shows here.
+  useEffect(() => {
+    document.documentElement.dataset.appbiBuild = APPBI_BUILD_SHA;
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>
