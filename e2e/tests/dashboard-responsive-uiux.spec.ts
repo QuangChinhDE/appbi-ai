@@ -889,7 +889,8 @@ test('16 · deleting a tile in the Builder: gone from every surface, no ghost, n
   await openBuilder(page, f!.id);
   const gone = String(f!.charts.filter((c) => c.type === 'KPI')[1].tile);
   const tile = page.locator(`${CANVAS} .react-grid-layout > [data-grid-item-id="${gone}"]`);
-  await tile.scrollIntoViewIfNeeded();
+  // Centre it: at the top edge the sticky Builder header covers the tile's menu button.
+  await tile.evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await tile.hover();
   // Remove lives in the tile's menu (the hover X was retired with the Builder UX simplification).
   await tile.getByTestId('tile-menu-open').click();
