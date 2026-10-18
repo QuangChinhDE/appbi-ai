@@ -30,6 +30,7 @@ export function BulkActionBar({ selectedCount, onDelete, onClear, isDeleting }: 
           leadingIcon={isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
           onClick={onDelete}
           disabled={isDeleting}
+          data-testid="bulk-delete"
         >
           {isDeleting ? t('common.deleting') : t('common.delete')}
         </Button>

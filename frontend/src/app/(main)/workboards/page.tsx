@@ -30,7 +30,7 @@ import {
 } from '@/hooks/use-workboards';
 import { useDatasets } from '@/hooks/use-datasets';
 import { BulkActionBar } from '@/components/common/BulkActionBar';
-import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { ConfirmDialog, ConfirmTargets } from '@/components/common/ConfirmDialog';
 import { Modal } from '@/components/common/Modal';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
@@ -219,7 +219,6 @@ export default function WorkboardsPage() {
 
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
-    setShowBulkConfirm(false);
     setIsBulkDeleting(true);
     let ok = 0;
     let fail = 0;
@@ -231,8 +230,10 @@ export default function WorkboardsPage() {
         fail++;
       }
     }
-    setSelectedIds(new Set());
     setIsBulkDeleting(false);
+    // Nothing deleted: an error the confirm dialog shows (it stays open), not a toast after it closed.
+    if (ok === 0 && fail > 0) throw new Error(t('workboards.toast.bulkDeleteFailed', { count: fail }));
+    setSelectedIds(new Set());
     if (ok > 0) toast.success(t('workboards.toast.bulkDeleted', { count: ok }));
     if (fail > 0) toast.error(t('workboards.toast.bulkDeleteFailed', { count: fail }));
   };
@@ -497,6 +498,7 @@ export default function WorkboardsPage() {
         onConfirm={handleBulkDelete}
         title={t('workboards.confirm.bulkDeleteTitle', { count: selectedIds.size })}
         description={t('workboards.confirm.cannotUndo')}
+        details={<ConfirmTargets names={(workboards ?? []).filter((w) => selectedIds.has(w.id)).map((w) => w.name)} />}
         confirmLabel={t('common.delete')}
         variant="danger"
       />

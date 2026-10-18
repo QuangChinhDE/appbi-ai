@@ -1906,3 +1906,33 @@
   font-size: calc(var(--dash-font-chartTitle, 13px) * 0.92);
   color: rgb(var(--text-secondary));
 }
+
+/*
+ * Toasts (sonner, richColors) on the app's status tokens instead of sonner's
+ * own palette. Unlayered on purpose: sonner's CSS is unlayered, and a layered
+ * rule would lose to it whatever its specificity. `html` lifts specificity
+ * above sonner's [data-sonner-toaster][data-sonner-theme='light'].
+ */
+html [data-sonner-toaster][data-sonner-theme='light'] {
+  --normal-bg: rgb(var(--surface-1));
+  --normal-border: rgb(var(--border-strong));
+  --normal-text: rgb(var(--text-primary));
+  --success-bg: rgb(var(--success-bg));
+  --success-border: rgb(var(--success) / 0.3);
+  --success-text: rgb(var(--success));
+  --info-bg: rgb(var(--info-bg));
+  --info-border: rgb(var(--info) / 0.3);
+  --info-text: rgb(var(--on-brand-container));
+  --warning-bg: rgb(var(--warning-bg));
+  --warning-border: rgb(var(--warning) / 0.35);
+  --warning-text: rgb(var(--warning));
+  --error-bg: rgb(var(--danger-bg));
+  --error-border: rgb(var(--danger) / 0.3);
+  --error-text: rgb(var(--danger));
+}
+/* An action inside a toast reads as a button, not as text. */
+html [data-sonner-toast] [data-button] {
+  border: 1px solid currentColor;
+  border-radius: 0.375rem;
+  font-weight: 600;
+}

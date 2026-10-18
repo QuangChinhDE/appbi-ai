@@ -25,7 +25,7 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 }
 
 const base =
-  'inline-flex items-center justify-center gap-1.5 font-emphasis whitespace-nowrap rounded-md transition-[background-color,box-shadow,border-color,color] duration-150 ease-out select-none disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:shadow-focus-brand';
+  'relative inline-flex items-center justify-center gap-1.5 font-emphasis whitespace-nowrap rounded-md transition-[background-color,box-shadow,border-color,color] duration-150 ease-out select-none disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:shadow-focus-brand';
 
 const sizes: Record<ButtonSize, string> = {
   xs: 'h-7 px-2.5 text-label gap-1',
@@ -76,6 +76,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         ref={ref}
         type={type}
         disabled={disabled || loading}
+        aria-busy={loading || undefined}
         className={cn(
           base,
           sizes[size],
@@ -86,12 +87,25 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         {...props}
       >
         {loading ? (
-          <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          // Layout-stable: the label keeps its space (invisible) and the spinner
+          // sits on top, so a loading button never changes width.
+          <>
+            <span className="absolute inset-0 flex items-center justify-center" aria-hidden>
+              <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            </span>
+            <span className="invisible inline-flex items-center gap-[inherit]">
+              {leadingIcon}
+              {children}
+              {trailingIcon}
+            </span>
+          </>
         ) : (
-          leadingIcon
+          <>
+            {leadingIcon}
+            {children}
+            {trailingIcon}
+          </>
         )}
-        {children}
-        {!loading && trailingIcon}
       </button>
     );
   },

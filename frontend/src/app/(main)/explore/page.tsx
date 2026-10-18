@@ -21,7 +21,7 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { BulkActionBar } from '@/components/common/BulkActionBar';
-import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { ConfirmDialog, ConfirmTargets } from '@/components/common/ConfirmDialog';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { Button, IconButton } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -291,7 +291,6 @@ export default function ExplorePage() {
 
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
-    setIsBulkDeleteOpen(false);
     setIsBulkDeleting(true);
     let successCount = 0;
     let failCount = 0;
@@ -303,8 +302,10 @@ export default function ExplorePage() {
         failCount++;
       }
     }
-    setSelectedIds(new Set());
     setIsBulkDeleting(false);
+    // Nothing deleted: an error the confirm dialog shows (it stays open), not a toast after it closed.
+    if (successCount === 0 && failCount > 0) throw new Error(t('explore.list.bulkDeleteFailed', { count: failCount }));
+    setSelectedIds(new Set());
     if (successCount > 0) toast.success(t('explore.list.bulkDeleteSuccess', { count: successCount }));
     if (failCount > 0) toast.error(t('explore.list.bulkDeleteFailed', { count: failCount }));
   };
@@ -737,6 +738,7 @@ export default function ExplorePage() {
         onConfirm={handleBulkDelete}
         title={t('explore.list.bulkDeleteTitle', { count: selectedIds.size })}
         description={t('explore.list.bulkDeleteDescription')}
+        details={<ConfirmTargets names={allCharts.filter((c) => selectedIds.has(c.id)).map((c) => c.name)} />}
         confirmLabel={t('common.delete')}
         cancelLabel={t('common.cancel')}
         variant="danger"

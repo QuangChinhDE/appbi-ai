@@ -1287,6 +1287,28 @@ def _build_preview_sql(
 
 # ── Main execution entry point ───────────────────────────────────────────────
 
+def preview_partition_lookback_steps(max_lookback_days: int) -> List[int]:
+    """How far back each preview attempt looks: 0, 1, 3, 7, 15, … days, ending
+    exactly at ``max_lookback_days``.
+
+    The partition window is cumulative (``[today - N, tomorrow)``), so every step
+    returns a superset of the previous one and the stop rule ("enough rows, or the
+    whole history") is unchanged. Widening one day per attempt cost one dry-run
+    plus one query per day: a table whose recent partitions are empty made ~120
+    BigQuery round trips (~200 s cold) and the preview never answered within the
+    proxy's 120 s — Explore's Run stayed disabled. Doubling keeps a 365-day
+    history to 10 attempts.
+    """
+    max_days = max(int(max_lookback_days), 0)
+    steps: List[int] = []
+    n = 0
+    while n < max_days:
+        steps.append(n)
+        n = n * 2 + 1
+    steps.append(max_days)
+    return steps
+
+
 class LiveQueryService:
     """Execute aggregated chart queries directly against source databases."""
 
@@ -1362,7 +1384,8 @@ class LiveQueryService:
             result: Dict[str, Any] | None = None
             if max_lookback_days is not None:
                 partition_target = _describe_bigquery_partition_target(partition_metadata)
-                for partition_days_ago in range(max_lookback_days + 1):
+                lookback_steps = preview_partition_lookback_steps(max_lookback_days)
+                for step_index, partition_days_ago in enumerate(lookback_steps):
                     plan = build_live_base_query_plan(
                         datasource,
                         db_table,
@@ -1412,7 +1435,7 @@ class LiveQueryService:
 
                     logger.info(
                         "BigQuery preview widened to %d day(s) on %s for ds=%d table=%s offset=%d rows=%d/%d",
-                        partition_days_ago + 2,
+                        lookback_steps[step_index + 1] + 1,
                         partition_target,
                         datasource.id,
                         table_identifier,
