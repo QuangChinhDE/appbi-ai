@@ -141,8 +141,34 @@ const MIN_FIT_COLUMN_WIDTH = 80;
 /** Insert <wbr> break opportunities into a header label so long snake_case /
  *  camelCase / dotted names wrap at word PARTS ("revenue_" / "band") instead of
  *  breaking mid-token character-by-character when the column is squeezed. */
+function headerLabelParts(label: string): string[] {
+  return String(label).split(/(?<=[_\-.])|(?<=[a-z0-9])(?=[A-Z])/);
+}
+
+let headerMeasureCtx: CanvasRenderingContext2D | null | undefined;
+/** Px width of a header's widest unbreakable piece (the same cut points as the
+ *  <wbr>s), in the font the header is actually drawn with — weight, size,
+ *  letter-spacing, text-transform. A per-character estimate tuned for body text
+ *  fell short on bold, tracked, upper-case headers and split "TRANSACTION_ID"
+ *  into "TRANSACTI / ON_ID". */
+function measureHeaderWordPx(label: string, el: HTMLElement): number | null {
+  if (headerMeasureCtx === undefined) {
+    headerMeasureCtx = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d');
+  }
+  const ctx = headerMeasureCtx;
+  if (!ctx) return null;
+  const cs = getComputedStyle(el);
+  ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  const spacing = Number.parseFloat(cs.letterSpacing) || 0;
+  const transform = (s: string) => (cs.textTransform === 'uppercase' ? s.toUpperCase() : cs.textTransform === 'lowercase' ? s.toLowerCase() : s);
+  return headerLabelParts(label).reduce((max, part) => {
+    const text = transform(part);
+    return Math.max(max, ctx.measureText(text).width + spacing * text.length);
+  }, 0);
+}
+
 function renderWrappableHeaderLabel(label: string): React.ReactNode {
-  const parts = String(label).split(/(?<=[_\-.])|(?<=[a-z0-9])(?=[A-Z])/);
+  const parts = headerLabelParts(label);
   if (parts.length <= 1) return label;
   return parts.map((part, index) => (
     <React.Fragment key={index}>
@@ -605,6 +631,25 @@ export function TableVisualization({
     });
   }, [cols, numericColumns, resolvedSummaryLabelColumn, resolvedSummaryRows, filteredRows]);
 
+  // Header word widths, measured once the headers are drawn (their font comes from
+  // the theme); until then the column floor falls back to a per-character estimate.
+  const [headerWordPx, setHeaderWordPx] = useState<Record<string, number>>({});
+  useLayoutEffect(() => {
+    const box = containerRef.current;
+    if (!box) return;
+    const next: Record<string, number> = {};
+    box.querySelectorAll<HTMLElement>('[data-table-header-label]').forEach((el) => {
+      const col = el.getAttribute('data-table-header-label') || '';
+      const px = measureHeaderWordPx(String(lookupColumnLabel(col, columnLabels) ?? col), el);
+      if (px != null) next[col] = Math.ceil(px);
+    });
+    setHeaderWordPx((prev) => {
+      const keys = Object.keys(next);
+      return keys.length === Object.keys(prev).length && keys.every((k) => prev[k] === next[k]) ? prev : next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colsKey, columnLabels, exporting, rows.length]);
+
   if (cols.length === 0 || rows.length === 0) {
     return (
       <div className={clsx("p-8", className)}>
@@ -737,15 +782,21 @@ export function TableVisualization({
       // (12px + gap) and, since it has its own slot, the filter button (16px +
       // gap) — so budget them in px: a 2-char allowance split "region" into
       // "regio / n" once the filter stopped overlapping the arrow.
-      const headerPx = Math.ceil(headerWord * charPx) + 18 + (enableColumnFilters ? 22 : 0);
+      const headerPx = (headerWordPx[col] ?? Math.ceil(headerWord * charPx)) + 18 + (enableColumnFilters ? 22 : 0);
       out[col] = Math.min(240, Math.max(MIN_FIT_COLUMN_WIDTH - (16 - cellPadX) * 2,
         Math.max(headerPx, Math.ceil(valueLen * charPx)) + cellPadX * 2));
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [colsKey, rows, columnLabels, decimalPlaces, currencySymbol, cellPadX, enableColumnFilters]);
+  }, [colsKey, rows, columnLabels, decimalPlaces, currencySymbol, cellPadX, enableColumnFilters, headerWordPx]);
   const renderColumnWidths = useMemo(() => {
-    if (!shouldFitToContainer) return liveColumnWidths;
+    if (!shouldFitToContainer) {
+      // Room to spare: still never narrower than a column's own unbreakable content.
+      if (!allColumnWidthsResolved) return liveColumnWidths;
+      const out: Record<string, number> = { ...liveColumnWidths };
+      for (const col of cols) out[col] = Math.max(liveColumnWidths[col], columnFloors[col] ?? 0);
+      return out;
+    }
     // Water-fill so the total lands ON the container width even with a floor:
     // repeatedly freeze the columns that would drop below MIN_FIT at the current
     // scale (pin them to the floor), then re-distribute the remaining width to
@@ -868,6 +919,7 @@ export function TableVisualization({
                       <span
                         className="min-w-0 flex-1 whitespace-normal break-words"
                         title={col}
+                        data-table-header-label={col}
                       >
                         {renderWrappableHeaderLabel(lookupColumnLabel(col, columnLabels))}
                       </span>
