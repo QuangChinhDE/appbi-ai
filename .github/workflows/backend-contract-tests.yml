@@ -106,10 +106,14 @@ jobs:
       # this step fails until the marker is removed in the same change, so a
       # defect can neither be fixed silently nor "closed" without its lock.
       # The matrix: docs/features/intelligence-foundation/security-matrix.md
+      # The sealed-eval harness rides in the same step: its guarantees (oracle
+      # equals hand-computed values, runtime cannot import it, leaks excluded)
+      # are part of the same foundation and must be read the same way.
       - name: Phase 0 security reproduction ledger (xfail = reproduced defect)
         run: |
           python -m pytest -q --tb=short -rxX -p no:cacheprovider \
-            tests/test_intelligence_phase0_security_repro.py
+            tests/test_intelligence_phase0_security_repro.py \
+            tests/test_intelligence_eval_harness.py
 
       - name: Run semantic-contract + engine unit tests (no BigQuery)
         # THE FAILURE HAS TO BE READABLE BY WHOEVER SEES IT GO RED.

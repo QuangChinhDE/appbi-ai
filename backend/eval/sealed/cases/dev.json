@@ -1,0 +1,64 @@
+[
+  {
+    "id": "dev-001-net-revenue-month",
+    "split": "dev",
+    "question": "Doanh thu thuần tháng 9/2026 là bao nhiêu?",
+    "locale": "vi",
+    "fixture": "retail_vn",
+    "answer_kind": "scalar",
+    "tags": ["deterministic_sql", "business_metric_meaning", "no_dashboard"],
+    "note": "Doanh thu thuần excludes cancelled orders. Orders 4+5+6+7 = 150+120+150+80.",
+    "hand_expected": 500,
+    "oracle_sql": "SELECT SUM(i.quantity * i.unit_price) AS net_revenue FROM orders o JOIN order_items i ON i.order_id = o.id WHERE o.status = 'delivered' AND o.order_date >= DATE '2026-09-01' AND o.order_date < DATE '2026-10-01'"
+  },
+  {
+    "id": "dev-002-mom-growth",
+    "split": "dev",
+    "question": "Doanh thu thuần tháng 9/2026 tăng bao nhiêu phần trăm so với tháng 8/2026?",
+    "locale": "vi",
+    "fixture": "retail_vn",
+    "answer_kind": "scalar",
+    "tags": ["time_comparison", "business_metric_meaning"],
+    "tolerance": 1e-6,
+    "note": "August delivered = 130+120 = 250 (order 3 is cancelled); September = 500. (500-250)/250.",
+    "hand_expected": 100.0,
+    "oracle_sql": "WITH m AS (SELECT date_trunc('month', o.order_date) AS mon, SUM(i.quantity * i.unit_price) AS rev FROM orders o JOIN order_items i ON i.order_id = o.id WHERE o.status = 'delivered' GROUP BY 1) SELECT ROUND(100.0 * (s.rev - a.rev) / a.rev, 6) AS growth_pct FROM m s, m a WHERE s.mon = DATE '2026-09-01' AND a.mon = DATE '2026-08-01'"
+  },
+  {
+    "id": "dev-003-region-share",
+    "split": "dev",
+    "question": "Khách hàng miền Nam đóng góp bao nhiêu doanh thu thuần?",
+    "locale": "vi",
+    "fixture": "retail_vn",
+    "answer_kind": "scalar",
+    "tags": ["multi_table", "vi_en_terminology"],
+    "note": "Nam = customers 2 and 3. Their delivered orders are 2, 5 and 7 (order 3 is cancelled): 120+120+80.",
+    "hand_expected": 320,
+    "oracle_sql": "SELECT SUM(i.quantity * i.unit_price) AS net_revenue FROM orders o JOIN order_items i ON i.order_id = o.id JOIN customers c ON c.id = o.customer_id WHERE o.status = 'delivered' AND c.region = 'Nam'"
+  },
+  {
+    "id": "dev-004-shipping-fanout",
+    "split": "dev",
+    "question": "Tổng phí vận chuyển của các đơn đã giao là bao nhiêu?",
+    "locale": "vi",
+    "fixture": "retail_vn",
+    "answer_kind": "scalar",
+    "tags": ["incorrect_join", "deterministic_sql"],
+    "note": "The fee is per ORDER. Summing it after joining order_items fans it out to 80 (orders 1 and 4 have several lines). The correct value is 50.",
+    "hand_expected": 50,
+    "oracle_sql": "SELECT SUM(shipping_fee) AS shipping FROM orders WHERE status = 'delivered'"
+  },
+  {
+    "id": "dev-005-top-category",
+    "split": "dev",
+    "question": "Which product category had the highest net revenue in September 2026?",
+    "locale": "en",
+    "fixture": "retail_vn",
+    "answer_kind": "table",
+    "ordered": true,
+    "tags": ["multi_table", "vi_en_terminology", "evidence_backed"],
+    "note": "Đồ uống: 50+40+150+80 = 320. Đồ ăn: 60+120 = 180.",
+    "hand_expected": [["Đồ uống", 320]],
+    "oracle_sql": "SELECT p.category, SUM(i.quantity * i.unit_price) AS net_revenue FROM orders o JOIN order_items i ON i.order_id = o.id JOIN products p ON p.id = i.product_id WHERE o.status = 'delivered' AND o.order_date >= DATE '2026-09-01' AND o.order_date < DATE '2026-10-01' GROUP BY 1 ORDER BY 2 DESC LIMIT 1"
+  }
+]
