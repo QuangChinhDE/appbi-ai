@@ -124,6 +124,7 @@ def test_sec02_table_preview_is_bounded(monkeypatch):
     monkeypatch.setattr(api.DataSourceCRUDService, "get_by_id", staticmethod(lambda db, i: ds))
     monkeypatch.setattr(api, "require_view_access", lambda *a, **k: None)
     monkeypatch.setattr(api, "_require_tabular", lambda *a, **k: None)
+    monkeypatch.setattr(api._authz, "can", lambda *a, **k: True)  # an editor of the source
 
     def fake_detail(ds_type, config, schema, table, preview_rows):
         seen["rows"] = preview_rows
@@ -142,6 +143,30 @@ def test_sec02_table_preview_is_bounded(monkeypatch):
     assert seen["rows"] <= PREVIEW_ROW_CEILING
 
 
+def test_sec02_a_viewer_of_the_source_gets_no_rows(monkeypatch):
+    """Closure (unit half; the HTTP/Postgres half is
+    test_intelligence_table_preview_http_pg.py): rows need `use_secret`."""
+    from app.api import datasources as api
+
+    seen: dict = {}
+    ds = SimpleNamespace(id=1, type=SimpleNamespace(value="postgresql"), config={})
+    monkeypatch.setattr(api.DataSourceCRUDService, "get_by_id", staticmethod(lambda db, i: ds))
+    monkeypatch.setattr(api, "require_view_access", lambda *a, **k: None)
+    monkeypatch.setattr(api, "_require_tabular", lambda *a, **k: None)
+    monkeypatch.setattr(api._authz, "can", lambda db, user, action, res: action != api._authz.Action.USE_SECRET)
+
+    def fake_detail(t, c, s, n, preview_rows):
+        seen["rows"] = preview_rows
+        return {"columns": [{"name": "salary"}], "preview": [{"salary": "secret"}] if preview_rows else []}
+
+    monkeypatch.setattr(api.DataSourceConnectionService, "get_table_detail", staticmethod(fake_detail))
+    out = api.get_table_detail(1, "public", "payroll", preview_rows=5, db=None,
+                               current_user=SimpleNamespace(id=1))
+    assert seen["rows"] == 0
+    assert out["preview"] == [] and out["preview_refused"]
+    assert out["columns"] == [{"name": "salary"}]
+
+
 def test_sec02_the_default_preview_is_unchanged(monkeypatch):
     """The allow half: the schema browser's own request (5 rows) passes through."""
     from app.api import datasources as api
@@ -151,6 +176,7 @@ def test_sec02_the_default_preview_is_unchanged(monkeypatch):
     monkeypatch.setattr(api.DataSourceCRUDService, "get_by_id", staticmethod(lambda db, i: ds))
     monkeypatch.setattr(api, "require_view_access", lambda *a, **k: None)
     monkeypatch.setattr(api, "_require_tabular", lambda *a, **k: None)
+    monkeypatch.setattr(api._authz, "can", lambda *a, **k: True)  # an editor of the source
     monkeypatch.setattr(
         api.DataSourceConnectionService, "get_table_detail",
         staticmethod(lambda t, c, s, n, preview_rows: seen.setdefault("rows", preview_rows) and {}),
