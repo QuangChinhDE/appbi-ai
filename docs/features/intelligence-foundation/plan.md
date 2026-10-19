@@ -70,7 +70,7 @@ protected semantic layer. **It needs plan approval before PR-1A starts.**
 
 | PR | Scope | P | M | A |
 |---|---|---|---|---|
-| **1A** | `EffectivePrincipal` + `AuthorizationContext` over `core/authz`; delegation per I-3; unit + property tests (PAT ⊆ human; no owner-borrowing; unknown → deny) | – | – | A (phase) |
+| **1A** | `EffectivePrincipal` + `AuthorizationContext` over `core/authz`; one intersection-only formula (I-1), no delegation term (I-3); unit + property tests (PAT ⊆ human; no owner-borrowing; a delegation row never widens; unknown → deny) | – | – | A (phase) |
 | **1B** | GQS core (T1): request/result/evidence/refusals per spec §2; calls the existing sequence; `filter_would_drop`; `column_excluded`; `unsupported_expression` for AI calc fields | calls the protected path, does not edit it | – | A |
 | **1C** | Bounds and budgets (spec §2.5): server-clamped; per run/user/datasource; BQ dry-run estimate | – | – | A |
 | **1D** | Cancellation: Postgres/MySQL/BigQuery cancellers + ledger-driven cross-worker cancel | – | – | A |
@@ -109,7 +109,11 @@ protected semantic layer. **It needs plan approval before PR-1A starts.**
 
 - Every Phase 0 PR is code-only and revertible by `git revert`. The ledger tests turn
   back into `xfail` on revert, which is correct.
-- 1E (migration) is additive. A downgrade drops the new table only.
+- 1E (migration) is additive.
+  - **Code rollback and schema rollback are distinct.** Reverting code leaves the audit
+    table and its rows.
+  - `downgrade()` refuses on a non-empty ledger (spec §2.4).
+  - Production rollback is code-only.
 
 ## Verification log (append per PR)
 
