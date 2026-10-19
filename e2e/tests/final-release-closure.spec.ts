@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { expect, test, type APIRequestContext } from '@playwright/test';
-import { API } from './_helpers';
+import { API, fixtureLogicalDay } from './_helpers';
 
 async function dashboardByName(request: APIRequestContext, name: string) {
   const response = await request.get(`${API}/api/v1/dashboards/`);
@@ -65,9 +65,9 @@ test('exact 007 replay keeps KPI, bar and table in one North page scope', async 
   await expect(table).not.toContainText('South');
 });
 
-test('public relative-date batch sends one anchor and renders its hand-computed value', async ({ page }) => {
+test('public relative-date batch sends one anchor and renders its hand-computed value', async ({ page, request }) => {
   test.setTimeout(90_000);
-  const anchor = `${new Date().toISOString().slice(0, 10)}T12:00:00.000Z`;
+  const anchor = `${await fixtureLogicalDay(request)}T12:00:00.000Z`;
   let batch: { headers: Record<string, string>; body: any } | null = null;
   page.on('request', req => {
     if (!req.url().includes('/public/dashboards/e2e-closure-pdf/charts/data')) return;
