@@ -57,7 +57,7 @@ python scripts/ci/guardrail_check.py --plan "Phase 0 security containment for AI
 |---|---|---|---|---|---|---|
 | **0A** | Contracts, ADRs, threat model, security ledger (tests only), CI wiring of the ledger | `docs/features/intelligence-foundation/**`, `backend/tests/test_intelligence_phase0_security_repro.py`, `.gitignore`, `.github/workflows/backend-contract-tests.yml` | infra (declared) | – | – | READY FOR REVIEW |
 | **0B1** | Agent Flow containment. **SEC-03:** the studio preview keeps `caller`. **SEC-04:** Studio Test declares the binding's capabilities; the default flip is BLOCKED (see the matrix). **SEC-05:** AI-scope lookup fails closed. | `services/agent_flows/dispatch.py`, `tools/registry.py`, `tools/context.py`, `tools/result.py`, `runtime/agent_runtime.py`, `modules/agent_flows/api.py` | – | – | – (small) | READY FOR REVIEW |
-| **0B2** | Knowledge authority, first slice. **SEC-07:** Draft KPI not presented as official. **DEF-07b:** citation NameError. **SEC-08:** no auto-promotion of bot findings; existing self-promoted rows stop being injected as validated. | `dashboard_ai_bot/knowledge_context.py`, `dashboard_ai_bot/knowledge.py` | – | – | – (small) | PLANNED |
+| **0B2** | Knowledge authority, first slice. **SEC-07:** Draft KPI not presented as official. **DEF-07b:** citation NameError. **SEC-08:** no auto-promotion of bot findings; existing self-promoted rows stop being injected as validated. | `dashboard_ai_bot/knowledge_context.py`, `dashboard_ai_bot/knowledge.py` | – | – | – (small) | READY FOR REVIEW |
 | **0B3** | Data-access gates. **SEC-02:** preview row ceiling. **SEC-09:** `/semantic/query` requires `explore`. | `api/datasources.py`, `routers/semantic.py` | – | – | – (small; security-behaviour change declared) | PLANNED |
 | **0C** | **SEC-01:** calculated-field AST allow-list (relations and columns of the view only; no subqueries, set ops or DDL/DML; dialect-correct). **SEC-01b:** false positives. **DEF-06:** triage. | `services/semantic_query_engine.py` | **P** | – | **A** | PLANNED: needs plan approval + golden gates |
 | **0D** | **SEC-10/ADR-014:** inventory of orphaned Approved knowledge (a service plus an admin-only read endpoint, not an ad-hoc DB script) and an injection-time quarantine flag | `services/governance_ai_service.py`, `dashboard_ai_bot/knowledge_context.py`, new admin route | – | – | **A** (PO default, intent Q2) | BLOCKED on PO decision Q2 |
@@ -124,3 +124,9 @@ protected semantic layer. **It needs plan approval before PR-1A starts.**
   - the first `verify.py task` FAILED (`agent_flow_container`, `agent_flow_surface`, `tier1_oracles`). All three came from flipping the SEC-04 default, which existing tests lock. The flip was reverted and reported, not worked around;
   - the second run PASSED: import smoke, `agent_flow_container` / `contract` / `credentials` / `evidence` / `replay` / `surface`, `tier1_oracles_execute`;
   - note: `check_tier1_oracles.py` crashes on Windows unless `PYTHONUTF8=1` is set (cp1252 decode of subprocess output). This affects local environments only; CI runs on Linux.
+- **2026-10-19, 0B2:**
+  - ledger: 21 passed, 6 xfailed;
+  - fail-first: 6 SEC-07/DEF-07b/SEC-08 tests fail on base and pass with the fix; the allow halves pass on both;
+  - `verify.py task` PASSED;
+  - `dashboard_ai_bot` has no feature in the guardrail rule base. The guardrail keyword-matched `dashboard_build_render` (frontend), which is noise. Coverage is therefore UNKNOWN, not safe;
+  - every backend test importing the changed modules was run by hand: 6 files, 126 passed, 6 xfailed.
