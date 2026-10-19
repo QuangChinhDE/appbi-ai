@@ -987,12 +987,18 @@ def _capability_refusal(ctx: Any, spec: ToolSpec) -> dict | None:
             "liệu khi chưa có bước duyệt",
             code="risk_unknown" if spec.risk == "unknown" else "needs_approval",
         )
-    if spec.reaches_outside and getattr(ctx, "web_search", True) is False:
+    # FAIL CLOSED (SEC-04, PO decision 2026-10-20). These read
+    # `getattr(ctx, cap, True) is False`, so a context that never declared a
+    # capability was GRANTED it — the Studio Test path was one. A capability is now
+    # held only when the context declares it, `True`; every live surface does
+    # (dispatch: link, chat, Studio Test). Only the two EXPOSURE capabilities are
+    # gated here: a computing (`derived`) tool still runs on any context.
+    if spec.reaches_outside and getattr(ctx, "web_search", False) is not True:
         return R.err(
             f"công cụ '{spec.name}' cần quyền tìm kiếm web, link này không bật",
             code="not_granted",
         )
-    if spec.data_exposure == "raw_rows" and getattr(ctx, "read_rows", True) is False:
+    if spec.data_exposure == "raw_rows" and getattr(ctx, "read_rows", False) is not True:
         return R.err(
             f"công cụ '{spec.name}' trả về dữ liệu dòng thô, link này không cho "
             "đưa dòng thô vào ngữ cảnh — dùng công cụ tính sẵn để lấy con số",

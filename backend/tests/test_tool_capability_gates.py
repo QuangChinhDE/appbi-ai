@@ -92,13 +92,40 @@ def test_rows_are_allowed_when_the_binding_allows_them():
     assert out.get("error_code") != "not_granted"
 
 
-def test_a_context_that_never_heard_of_the_capability_is_not_punished():
-    """Ephemeral and preview contexts do not carry every binding field. Absent
-    must mean permitted, or the builder's preview starts refusing tools the run
-    would allow."""
-    out = execute(_Ctx(dashboard=None), "get_chart_data", {"chart_id": 1}, use_cache=False)
+#: REPLACED (SEC-04, PO decision 2026-10-20, declared in the PR). This used to be
+#: `test_a_context_that_never_heard_of_the_capability_is_not_punished`, locking
+#: "absent means permitted" so that the builder's preview would not refuse tools
+#: the run allows. The preview now declares the binding's capabilities like every
+#: live surface (dispatch.run_preview), so the reason is gone. What it locked was
+#: the fail-open: a context that forgot a capability was handed it.
 
-    assert out.get("error_code") != "not_granted"
+
+@pytest.mark.parametrize("name", RAW)
+def test_a_context_that_never_declared_rows_does_not_get_them(name):
+    out = execute(_Ctx(dashboard=None), name, {"chart_id": 1}, use_cache=False)
+
+    assert out["ok"] is False
+    assert out["error_code"] == "not_granted"
+
+
+@pytest.mark.parametrize("name", EXTERNAL)
+def test_a_context_that_never_declared_web_does_not_reach_outside(name):
+    out = execute(_Ctx(dashboard=None), name, {"query": "gdp vietnam"},
+                  allowed=set(all_tools()), use_cache=False)
+
+    assert out["ok"] is False
+    assert out["error_code"] == "not_granted"
+
+
+@pytest.mark.parametrize("name", ["rank_values", "total_measure", "share_of",
+                                  "compare_periods", "forecast_measure",
+                                  "aggregate_chart_data"])
+def test_a_computing_tool_runs_on_a_context_that_declared_nothing(name):
+    """Derived compute is not an exposure capability: failing closed on rows and
+    web must not take analysis down with it."""
+    out = execute(_Ctx(dashboard=None), name, {"chart_id": 1}, use_cache=False)
+
+    assert out.get("error_code") != "not_granted", name
 
 
 # ── web_search ──────────────────────────────────────────────────────────────
