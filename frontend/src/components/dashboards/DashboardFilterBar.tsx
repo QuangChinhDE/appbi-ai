@@ -1299,8 +1299,18 @@ function FilterCard({
         setPopoverOpen(false);
       }
     };
+    // Escape closes it too and hands focus back to the control that opened it.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setPopoverOpen(false);
+      popoverWrapRef.current?.querySelector<HTMLElement>('button[aria-expanded]')?.focus();
+    };
     document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [popoverOpen]);
 
   // Direction A (2026-06) — the everyday slicer card is a CLEAN control: just
