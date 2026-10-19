@@ -550,6 +550,11 @@ def _cache_key(ctx: Any, name: str, args: dict) -> str | None:
     dashboard = getattr(getattr(ctx, "dashboard", None), "id", None)
     if dashboard is None:
         return None
+    # A context whose AI-scope lookup failed carries an EMPTY exclusion set, which
+    # is the same key as "nothing is excluded" (SEC-05). It is never cached, so no
+    # warm entry can answer it past the `policy_unavailable` refusal.
+    if getattr(ctx, "ai_scope_unavailable", False):
+        return None
     try:
         payload = json.dumps(
             [

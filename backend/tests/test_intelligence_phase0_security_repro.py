@@ -162,15 +162,8 @@ def _run_scope_calls(fn) -> list[ast.Call]:
     return out
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=REPRODUCED,
-    reason="REPRODUCED SEC-03 (structural): run_preview recomputes the "
-    "knowledge scope without `caller`, overwriting the caller-bounded scope "
-    "the endpoint set. A shared EDITOR testing a flow reaches the OWNER's data, "
-    "more than the same person reaches in live chat",
-)
 def test_sec03_studio_preview_scope_keeps_the_caller_term():
+    """FIXED in PR-0B1 (was REPRODUCED SEC-03, structural)."""
     from app.services.agent_flows import dispatch
 
     calls = _run_scope_calls(dispatch.run_preview)
@@ -209,8 +202,12 @@ def _registered_tool(kind: str):
     strict=True,
     raises=REPRODUCED,
     reason="REPRODUCED SEC-04 (unit-level): `getattr(ctx, cap, True)` admits a "
-    "web or raw-row tool on any context that never set the capability — the "
-    "studio preview path is one",
+    "web or raw-row tool on any context that never set the capability. PR-0B1 "
+    "closed the known production path (Studio Test now declares the binding's "
+    "capabilities); flipping the DEFAULT is blocked: "
+    "test_tool_capability_gates.py::test_a_context_that_never_heard_of_the_"
+    "capability_is_not_punished locks 'absent means permitted' and needs an "
+    "explicit decision to replace",
 )
 @pytest.mark.parametrize("capability", ["web_search", "read_rows"])
 def test_sec04_an_undeclared_capability_is_denied(capability):
@@ -244,13 +241,8 @@ def _broken_scope_lookup(monkeypatch):
     monkeypatch.setattr(GovernanceAIService, "scope_exclusions", boom)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=REPRODUCED,
-    reason="REPRODUCED SEC-05 (unit-level): a failed GovernAIScope lookup "
-    "returns 'nothing excluded', so the AI sees the columns the business hid",
-)
 def test_sec05_a_failed_scope_lookup_does_not_mean_nothing_is_excluded(monkeypatch):
+    """FIXED in PR-0B1 (was REPRODUCED SEC-05): the lookup raises."""
     from app.services.agent_flows.tools import context as C
 
     _broken_scope_lookup(monkeypatch)
@@ -259,6 +251,102 @@ def test_sec05_a_failed_scope_lookup_does_not_mean_nothing_is_excluded(monkeypat
     except Exception:  # refusing the turn is the fail-closed answer
         return
     pytest.fail(f"lookup failure returned {out!r}: every column is exposed")
+
+
+def test_sec03_studio_preview_derives_the_scope_for_the_person_testing(monkeypatch):
+    """Behavioural half of SEC-03: the scope `run_preview` computes is the
+    caller's, the datasets it adds are the caller-bounded ones, and the capability
+    ceiling is the binding's — not whatever the context defaulted to."""
+    import asyncio
+
+    from app.services.agent_flows import dispatch, permissions
+    from app.services.agent_flows.tools.context import ToolContext
+
+    class _Stop(Exception):
+        pass
+
+    caller = SimpleNamespace(id="editor", email="editor@appbi.io")
+    seen: dict = {}
+    caps = SimpleNamespace(max_rows_per_call=50, max_result_tokens=900,
+                           read_rows=False, web_search=False)
+    info = SimpleNamespace(
+        knowledge=SimpleNamespace(model_dump=lambda: {}, dataset_ids=[1, 2]),
+        allowed_chart_ids=[], capabilities=caps,
+    )
+
+    def fake_run_scope(db, row, flow, binding_scope=None, caller=None):
+        seen["caller"] = caller
+        return {"doc_ids": [], "dataset_ids": [2], "metric_names": []}
+
+    def stop(_binding):
+        raise _Stop()
+
+    monkeypatch.setattr(dispatch, "build_report_info", lambda *_a, **_k: None)
+    monkeypatch.setattr(dispatch.binding_service, "build_binding_info", lambda *_a, **_k: info)
+    monkeypatch.setattr(dispatch.binding_service, "contract_of", stop)
+    monkeypatch.setattr(permissions, "run_scope", fake_run_scope)
+    monkeypatch.setattr(permissions, "chart_scope", lambda *_a, **_k: set())
+
+    ctx = ToolContext(db=None, dashboard=None, public_filters=[])
+    adopted: dict = {}
+    monkeypatch.setattr(ctx, "adopt_scope", lambda charts, ds: adopted.setdefault("ds", list(ds)))
+
+    gen = dispatch.run_preview(
+        None, flow=SimpleNamespace(), version=1, binding=object(), link=None,
+        dashboard=None, ctx=ctx, brain_row=object(), caller=caller, question="q",
+    )
+    with pytest.raises(_Stop):
+        asyncio.run(gen.__anext__())
+
+    assert seen["caller"] is caller
+    assert adopted["ds"] == [2], "the flow attached [1, 2]; the caller may read [2]"
+    assert ctx.read_rows is False and ctx.web_search is False
+    assert ctx.max_rows_per_call == 50
+
+
+def test_sec03_run_preview_cannot_be_called_without_a_caller():
+    """No default: an omitted caller is a TypeError, never 'run as the owner'."""
+    import inspect as _inspect
+
+    from app.services.agent_flows import dispatch
+
+    param = _inspect.signature(dispatch.run_preview).parameters["caller"]
+    assert param.default is _inspect.Parameter.empty
+
+
+def test_sec04_the_studio_test_path_declares_the_binding_capabilities():
+    """The part of SEC-04 PR-0B1 does close: the one known production context
+    that never declared its capabilities (Studio Test) now carries the binding's,
+    so it no longer depends on the registry's default. Asserted on the source of
+    `run_preview` because the behavioural test above stubs the binding."""
+    from app.services.agent_flows import dispatch
+
+    src = inspect.getsource(dispatch.run_preview)
+    for cap in ("read_rows", "web_search", "max_rows_per_call", "max_result_tokens"):
+        assert f"ctx.{cap} = binding_info.capabilities.{cap}" in src, cap
+
+
+def test_sec05_a_context_with_an_unknown_scope_reads_no_chart():
+    from app.services.agent_flows.tools.context import ToolContext, ToolError, _fetch_chart_data
+
+    ctx = ToolContext(db=None, dashboard=None, public_filters=[],
+                      allowed_chart_ids={5}, ai_scope_unavailable=True)
+    with pytest.raises(ToolError) as exc:
+        _fetch_chart_data(ctx, 5)
+    assert exc.value.code == "policy_unavailable"
+
+
+def test_sec05_a_context_with_an_unknown_scope_is_never_cached():
+    """Its exclusion set is empty, the same key as 'nothing excluded': a warm
+    entry would otherwise answer it past the refusal."""
+    from app.services.agent_flows.tools import registry as reg
+    from app.services.agent_flows.tools.context import ToolContext
+
+    known = ToolContext(db=None, dashboard=SimpleNamespace(id=3), public_filters=[])
+    unknown = ToolContext(db=None, dashboard=SimpleNamespace(id=3), public_filters=[],
+                          ai_scope_unavailable=True)
+    assert reg._cache_key(known, "get_chart_data", {"chart_id": 5}) is not None
+    assert reg._cache_key(unknown, "get_chart_data", {"chart_id": 5}) is None
 
 
 # ── SEC-06  pivot value discovery runs on the METADATA session ───────────────
