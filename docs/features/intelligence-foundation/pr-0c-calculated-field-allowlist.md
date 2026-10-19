@@ -1,7 +1,6 @@
 # PR-0C — calculated-field AST allow-list (SEC-01) — plan for approval
 
-**Status:** PLANNED. This touches the protected `semantic_layer`, so it needs explicit
-approval before any code.
+**Status:** IMPLEMENTED (READY FOR REVIEW). The PO approved it on 2026-10-20 with a revised rollout: enforce immediately, with no report-only default.
 
 **Baseline:** `origin/demo` @ `1bac25e8`.
 
@@ -87,3 +86,38 @@ production data cannot be read from here.
    `/semantic/query` only (no saved-chart risk there) and report for saved charts?
 2. Is the function allow-list above sufficient for current calculated fields? Telemetry
    from step 1 answers this.
+
+## As built (2026-10-20): the PO-revised rollout
+
+### No report-only step
+Evidence from the call graph: engine `calculated_fields` are fed ONLY by `compile_from_semantic_request` (Direct Semantic API).
+- `chart_service`, dataset previews and the public paths never set them, so no saved chart or public link can break.
+- HTML-import calc fields are a different mechanism (`TransformationCompiler.validate_expression`: word-boundary `SELECT`/`FROM`/`JOIN` deny plus a function whitelist). It blocks subqueries; it is noted as a sibling, not changed here.
+So the allow-list is enforced for every caller from the first commit.
+
+### Independent review (semantic-guard agent, 2 rounds)
+
+**Round 1 found a real bypass.** sqlglot nests block comments for BigQuery and MySQL, and those engines do not. Two payloads hid a subquery from the AST while the warehouse would run it:
+- `/* /* */ (SELECT …) + # */ 1`;
+- MySQL's executable `/*! … */`.
+
+Fix: refuse every lexer hazard outright before parsing:
+- `--`, `/*`, `*/`, `#`, backslash, `'''`, `"""`, `$$`;
+- `"` on MySQL (ANSI_QUOTES).
+
+Round 1 also found:
+- unit-word columns (`SUM(year)`);
+- hand-typed placeholders;
+- `regclass` casts.
+
+**Round 2 found no read of another relation.** It found that a unit word still passed outside the unit slot. It is now allowed only in the function's unit argument.
+
+### Known strictness
+- A string literal containing `#` or `--` is refused.
+- Rare legitimate templates may need rewriting.
+
+### Gates
+- `test_intelligence_calc_field_policy.py`: allow/refuse matrix on default/postgres/bigquery/mysql (+duckdb casts), with every payload the review found.
+- Engine delegation test.
+- All 17 `semantic_layer.required_tests` PASS on a disposable Postgres (alembic head, bcfix seeded).
+- NOT VERIFIED: execution on a real BigQuery or MySQL warehouse.
