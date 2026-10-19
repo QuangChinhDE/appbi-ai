@@ -759,6 +759,7 @@ jobs:
             tests/test_authz_audit_http_pg.py \
             tests/test_authz_workboard_rows_rls_pg.py \
             tests/test_intelligence_studio_test_scope_http_pg.py \
+            tests/test_intelligence_table_preview_http_pg.py \
             --junitxml=/tmp/authz-pg.xml
 
       # EVERY MANDATORY SECURITY SUITE, NOT JUST THE FIRST.
