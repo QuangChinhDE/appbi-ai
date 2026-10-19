@@ -520,3 +520,4 @@ integrations/appbi-mcp/.venv/
 
 # AppBI Intelligence Phase 0: security reproduction ledger (xfail = reproduced).
 !backend/tests/test_intelligence_phase0_security_repro.py
+!backend/tests/test_intelligence_eval_harness.py
