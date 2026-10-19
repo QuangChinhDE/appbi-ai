@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page, type Request } from '@playwright/test';
-import { API } from './_helpers';
+import { API, fixtureLogicalDay } from './_helpers';
 
 /**
  * Final independent release verification — the high-risk contracts that the
@@ -11,12 +11,6 @@ import { API } from './_helpers';
  *    pending Inspector content incl. a failed save).
  * Fixtures: backend/scripts/ci/seed_e2e_data_state.py.
  */
-
-const utcDay = (offsetDays: number) => {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() + offsetDays);
-  return d.toISOString().slice(0, 10);
-};
 
 async function dashboardIdByName(request: APIRequestContext, name: string) {
   const response = await request.get(`${API}/api/v1/dashboards/`);
@@ -42,9 +36,9 @@ async function handleDialogWhile(page: Page, action: () => Promise<unknown>, dec
 
 // ── Relative-date anchor lifecycle ─────────────────────────────────────────
 
-test('fixed public asOf stays immutable across A→B→C page reads', async ({ page }) => {
+test('fixed public asOf stays immutable across A→B→C page reads', async ({ page, request }) => {
   test.setTimeout(120_000);
-  const anchor = `${utcDay(0)}T12:00:00.000Z`;
+  const anchor = `${await fixtureLogicalDay(request)}T12:00:00.000Z`;
   const seen: string[] = [];
   page.on('request', (req: Request) => {
     if (req.url().includes('/public/dashboards/e2e-closure-pdf/charts')) seen.push(req.headers()['x-appbi-as-of'] ?? '<none>');
@@ -59,12 +53,12 @@ test('fixed public asOf stays immutable across A→B→C page reads', async ({ p
   expect(new Set(seen)).toEqual(new Set([anchor]));
 });
 
-test('next logical day changes the visible value (D-1 vs D)', async ({ page }) => {
+test('next logical day changes the visible value (D-1 vs D)', async ({ page, request }) => {
   test.setTimeout(90_000);
-  await page.goto(`/d/e2e-closure-pdf?asOf=${encodeURIComponent(`${utcDay(-1)}T12:00:00.000Z`)}`);
+  await page.goto(`/d/e2e-closure-pdf?asOf=${encodeURIComponent(`${await fixtureLogicalDay(request, -1)}T12:00:00.000Z`)}`);
   await expect(tile(page, 'E2E PDF A Today')).toContainText('11', { timeout: 60_000 });
   await expect(tile(page, 'E2E PDF A Today')).not.toContainText('300');
-  await page.goto(`/d/e2e-closure-pdf?asOf=${encodeURIComponent(`${utcDay(0)}T12:00:00.000Z`)}`);
+  await page.goto(`/d/e2e-closure-pdf?asOf=${encodeURIComponent(`${await fixtureLogicalDay(request)}T12:00:00.000Z`)}`);
   await expect(tile(page, 'E2E PDF A Today')).toContainText('300', { timeout: 60_000 });
 });
 
