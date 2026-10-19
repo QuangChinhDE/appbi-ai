@@ -1,4 +1,4 @@
-import { expect, type Page } from '@playwright/test';
+import { expect, type APIRequestContext, type Page } from '@playwright/test';
 
 /** Open the full-report Studio preview: an item of the header's Preview menu. */
 export async function openStudioPreview(page: Page) {
@@ -38,6 +38,22 @@ export async function chooseBuilderDevice(page: Page, mode: 'desktop' | 'tablet'
  * view — a product failure reported by a suite that had caused it.
  */
 export const API = process.env.E2E_API_URL || 'http://localhost:8000';
+
+/** The calendar day (UTC, `YYYY-MM-DD`) seed_e2e_data_state.py fixed its relative-date
+ *  rows on, shifted by `offsetDays`. Read from the fixture, never from this process's
+ *  clock: a CI run that crosses UTC midnight would otherwise ask for a day not seeded. */
+export async function fixtureLogicalDay(request: APIRequestContext, offsetDays = 0): Promise<string> {
+  const response = await request.get(`${API}/api/v1/dashboards/`);
+  expect(response.status(), await response.text()).toBe(200);
+  const body = await response.json();
+  const rows = Array.isArray(body) ? body : body.items ?? body.dashboards ?? [];
+  const note = rows.find((row: any) => row.name === 'E2E Closure PDF — Báo cáo')?.description ?? '';
+  const day = /logical day \(UTC\): (\d{4}-\d{2}-\d{2})/.exec(note)?.[1];
+  expect(day, `closure fixture carries no logical day (${JSON.stringify(note)}) — run seed_e2e_data_state.py`).toBeTruthy();
+  const d = new Date(`${day}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + offsetDays);
+  return d.toISOString().slice(0, 10);
+}
 export const BRAINS = `${API}/api/v1/agent-flows/brains`;
 
 /** Upsert a draft through the real write route. */
