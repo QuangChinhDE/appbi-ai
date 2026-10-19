@@ -517,3 +517,6 @@ backend/ci_security.db
 !integrations/appbi-mcp/tests/**/*.py
 !integrations/appbi-mcp/tests/live/rig/*
 integrations/appbi-mcp/.venv/
+
+# AppBI Intelligence Phase 0: security reproduction ledger (xfail = reproduced).
+!backend/tests/test_intelligence_phase0_security_repro.py
