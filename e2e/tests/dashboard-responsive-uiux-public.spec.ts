@@ -388,3 +388,72 @@ test('44 · parity matrix on a published report with custom Tablet and Phone: Bu
   }
   console.log(`[evidence] parity matrix: ${Object.entries(matrix).map(([m, r]) => `${m}: ${Object.keys(r).join('=')}`).join(' | ')}`);
 });
+
+test('47 · wide screens: 1920, 2560 and 3440 draw one centred report frame — same layout, masthead aligned, readable, no sideways overflow', async ({ browser }) => {
+  const v = await viewer(browser, 1440);
+  try {
+    const frameOf = () => v.page.evaluate(() => {
+      const box = (sel: string) => { const r = document.querySelector(sel)!.getBoundingClientRect(); return { x: Math.round(r.x), w: Math.round(r.width) }; };
+      return { vw: document.documentElement.clientWidth, masthead: box('[data-report-frame="masthead"]'), canvas: box('[data-report-frame="canvas"]') };
+    });
+    // A laptop is not capped: the report keeps using the window's width.
+    await v.page.goto(`/d/${f!.token}`);
+    await v.page.waitForSelector('[data-report-layout] [data-tile-id]', { timeout: 60_000 });
+    await stableDrawn(v.page);
+    const laptop = await frameOf();
+    // Only the page gutters (≤ 24px a side at lg) separate the frame from the window.
+    expect(laptop.canvas.w, 'a 1440px window must not be capped').toBeGreaterThanOrEqual(laptop.vw - 48);
+    let wide: Drawn | null = null;
+    for (const width of [1920, 2560, 3440]) {
+      await v.page.setViewportSize({ width, height: 1000 });
+      await v.page.goto(`/d/${f!.token}`);
+      await v.page.waitForSelector('[data-report-layout] [data-tile-id]', { timeout: 60_000 });
+      const d = await stableDrawn(v.page);
+      const fr = await frameOf();
+      expect(fr.canvas.w, `@${width}: the report frame stretched past its readable width`).toBeLessThanOrEqual(1600);
+      const left = fr.canvas.x;
+      const right = fr.vw - (fr.canvas.x + fr.canvas.w);
+      expect(Math.abs(left - right), `@${width}: the frame is not centred (${left} | ${right})`).toBeLessThanOrEqual(2);
+      expect(fr.masthead, `@${width}: the masthead drifts away from the canvas`).toEqual(fr.canvas);
+      expect(d.breakpoint).toBe('lg');
+      if (wide) expect(JSON.stringify(byId(d.layout)), `@${width}: a wider screen re-laid the report`).toBe(JSON.stringify(byId(wide.layout)));
+      wide = d;
+      await visitAll(v.page);
+      await readability(v.page, `/d@${width}`);
+      await expectNoHorizontalOverflow(v.page, `/d@${width}`);
+      await v.page.screenshot({ path: `${SHOTS}/47-wide-${width}.png` });
+    }
+  } finally {
+    await v.ctx.close();
+  }
+});
+
+test('48 · embed auto-resize: a host honouring appbi:resize fits the report after its data, shrinks when the frame widens, settles without a loop', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const heights = async () => page.evaluate(() => ((window as any).__appbiResize ?? []) as Array<[number, number]>);
+  const frameH = () => page.$eval('#report', (el) => (el as HTMLElement).clientHeight);
+  const reportH = (frame: Frame) => frame.evaluate(() => Math.ceil(document.querySelector('main')!.getBoundingClientRect().bottom + window.scrollY));
+  for (const [label, src] of [['/embed', `${base()}/embed/${f!.token}`], ['emb_', `${base()}${f!.emb}`]] as const) {
+    await page.goto(host!.url(src, PHONE, { autoResize: true }));
+    const frame = (await (await page.waitForSelector('#report')).contentFrame())!;
+    await frame.waitForSelector('[data-report-layout] [data-tile-id]', { timeout: 60_000 });
+    await stableDrawn(frame);
+    // The phone stack is far taller than the host's initial 1000px: the host grows to it.
+    await expect.poll(frameH, { message: `${label}@390: the host never grew to the report`, timeout: 20_000 }).toBeGreaterThan(1000);
+    await expect.poll(async () => Math.abs((await frameH()) - (await reportH(frame))), { message: `${label}@390: frame and report heights differ`, timeout: 20_000 }).toBeLessThanOrEqual(2);
+    // Nothing scrolls inside the frame: the host page does the scrolling.
+    expect(await frame.evaluate(() => document.documentElement.scrollHeight - innerHeight), `${label}@390: the frame scrolls inside`).toBeLessThanOrEqual(2);
+    const tall = await frameH();
+    // A wider frame lays the report out shorter: the host must follow it DOWN too.
+    await page.$eval('#report', (el) => { (el as HTMLElement).style.width = '1300px'; });
+    await expect.poll(frameH, { message: `${label}@1300: the host frame never shrank`, timeout: 20_000 }).toBeLessThan(tall);
+    await expect.poll(async () => Math.abs((await frameH()) - (await reportH(frame))), { message: `${label}@1300: frame and report heights differ`, timeout: 20_000 }).toBeLessThanOrEqual(2);
+    // Settled: a quiet second sends nothing more (no resize loop) and repeats no height.
+    const before = (await heights()).length;
+    await page.waitForTimeout(1500);
+    const all = await heights();
+    expect(all.length, `${label}: messages kept coming after the report settled`).toBe(before);
+    for (let i = 1; i < all.length; i += 1) expect(all[i][1], `${label}: the same height was sent twice in a row`).not.toBe(all[i - 1][1]);
+    await page.screenshot({ path: `${SHOTS}/48-autoresize-${label.replace(/[^a-z_]/gi, '')}.png`, fullPage: true });
+  }
+});

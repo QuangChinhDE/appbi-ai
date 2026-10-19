@@ -332,21 +332,34 @@ export function guardErrors(page: Page) {
 
 const servers: http.Server[] = [];
 
-/** A host page on 127.0.0.1:<port> framing `src` in an iframe `width` CSS px wide. */
-export async function iframeHost(): Promise<{ origin: string; url: (src: string, width: number) => string }> {
+/** A host page on 127.0.0.1:<port> framing `src` in an iframe `width` CSS px wide.
+ *  With `autoResize` the host behaves like a documented integration: it sizes the
+ *  iframe to every `appbi:resize` height and records the messages on
+ *  `window.__appbiResize` (`[ms since load, height]`). Without it the iframe stays
+ *  1000px tall, as every other test expects. */
+export async function iframeHost(): Promise<{ origin: string; url: (src: string, width: number, opts?: { autoResize?: boolean }) => string }> {
   const server = http.createServer((req, res) => {
     const q = new URL(req.url || '/', 'http://x').searchParams;
     const src = q.get('src') || 'about:blank';
     const width = Number(q.get('w') || 820);
+    const listener = q.get('resize') === '1'
+      ? `<script>window.__appbiResize=[];var t0=Date.now();addEventListener('message',function(e){
+          if(!e.data||e.data.type!=='appbi:resize'||typeof e.data.height!=='number')return;
+          window.__appbiResize.push([Date.now()-t0,e.data.height]);
+          document.getElementById('report').style.height=e.data.height+'px';});</script>`
+      : '';
     res.writeHead(200, { 'content-type': 'text/html' });
-    res.end(`<!doctype html><html><body style="margin:0;background:#888">
+    res.end(`<!doctype html><html><body style="margin:0;background:#888">${listener}
       <iframe id="report" src="${src.replace(/"/g, '&quot;')}" style="width:${width}px;height:1000px;border:0;display:block"
         referrerpolicy="strict-origin-when-cross-origin"></iframe></body></html>`);
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
   servers.push(server);
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  return { origin, url: (src, width) => `${origin}/?w=${width}&src=${encodeURIComponent(src)}` };
+  return {
+    origin,
+    url: (src, width, opts) => `${origin}/?w=${width}${opts?.autoResize ? '&resize=1' : ''}&src=${encodeURIComponent(src)}`,
+  };
 }
 
 export function closeHosts() {
