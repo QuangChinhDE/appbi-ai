@@ -230,19 +230,9 @@ def _registered_tool(kind: str):
     pytest.fail(f"no registered read-only tool needs {kind}; re-check SEC-04")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=REPRODUCED,
-    reason="REPRODUCED SEC-04 (unit-level): `getattr(ctx, cap, True)` admits a "
-    "web or raw-row tool on any context that never set the capability. PR-0B1 "
-    "closed the known production path (Studio Test now declares the binding's "
-    "capabilities); flipping the DEFAULT is blocked: "
-    "test_tool_capability_gates.py::test_a_context_that_never_heard_of_the_"
-    "capability_is_not_punished locks 'absent means permitted' and needs an "
-    "explicit decision to replace",
-)
 @pytest.mark.parametrize("capability", ["web_search", "read_rows"])
 def test_sec04_an_undeclared_capability_is_denied(capability):
+    """FIXED (was REPRODUCED SEC-04): only an explicit True grants."""
     from app.services.agent_flows.tools import registry as reg
     from app.services.agent_flows.tools.context import ToolContext
 
