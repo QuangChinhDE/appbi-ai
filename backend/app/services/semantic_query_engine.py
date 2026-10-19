@@ -3868,16 +3868,16 @@ class SemanticQueryEngine:
         return f"({result})"
     
     def _validate_calculated_field_safety(self, sql: str):
-        """Validate calculated field SQL for safety"""
-        sql_upper = sql.upper()
-        dangerous_keywords = [
-            'DROP', 'DELETE', 'INSERT', 'UPDATE', 'CREATE', 'ALTER', 
-            'TRUNCATE', 'EXEC', 'EXECUTE', ';'
-        ]
-        
-        for keyword in dangerous_keywords:
-            if keyword in sql_upper:
-                raise ValueError(f"Calculated field contains forbidden keyword: {keyword}")
+        """Validate calculated field SQL against the AST allow-list (SEC-01).
+
+        Was a substring list of DDL/DML words: a scalar subquery reading any table
+        the source credential can read passed it, and `updated_at` failed it.
+        The policy lives in `calculated_field_policy`; it raises a ValueError
+        (400 at the API) before anything is rendered.
+        """
+        from app.services.calculated_field_policy import validate_calculated_field
+
+        validate_calculated_field(sql, dialect=getattr(self, "database_type", None))
     
     def _snapshot_renamed_columns(self, tid) -> Dict[str, str]:
         """``{original_name: safe_name}`` for columns of dataset_table ``tid``

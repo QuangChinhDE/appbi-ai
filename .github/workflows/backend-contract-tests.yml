@@ -113,7 +113,8 @@ jobs:
         run: |
           python -m pytest -q --tb=short -rxX -p no:cacheprovider \
             tests/test_intelligence_phase0_security_repro.py \
-            tests/test_intelligence_eval_harness.py
+            tests/test_intelligence_eval_harness.py \
+            tests/test_intelligence_calc_field_policy.py
 
       - name: Run semantic-contract + engine unit tests (no BigQuery)
         # THE FAILURE HAS TO BE READABLE BY WHOEVER SEES IT GO RED.
