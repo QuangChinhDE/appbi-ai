@@ -362,6 +362,13 @@ export function deriveStackedLayout<T extends { i?: string; x: number; y: number
   return out;
 }
 
+/** Widest a published report frame (masthead + canvas) is drawn on /d and /embed.
+ *  Rows have a fixed pixel height, so past this width every tile only gets wider and
+ *  flatter (3440px drew 13:1 tiles) and the masthead drifts to the screen edges.
+ *  The frame centres instead; the layout still resolves from the measured canvas
+ *  width, so equal canvas widths keep resolving equally on every surface. */
+export const REPORT_FRAME_MAX_WIDTH = 1600;
+
 /** Tablet band: between the phone stack and a layout wide enough to show the
  *  authored grid as-is. */
 export const REPORT_TABLET_BREAKPOINT = 1024;

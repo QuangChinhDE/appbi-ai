@@ -60,6 +60,7 @@ import {
   dashboardRowHeight,
   DASHBOARD_GRID_COLS,
   normalizeDashboardGridForRender,
+  REPORT_FRAME_MAX_WIDTH,
   REPORT_STACK_BREAKPOINT,
 } from '@/lib/dashboard-pages';
 import { resolveStyleTokens } from '@/lib/dashboard-theme-tokens';
@@ -150,24 +151,67 @@ function hexToRgbaString(hex: string | null | undefined, alpha: number): string 
 
 // Embed-only: report our content height to the parent frame so the host page
 // can auto-size the <iframe> to fit its content (no inner scrollbar; the parent
-// page scrolls). No-op when not embedded. Mirrors the old embed page's
-// useEmbedHeight so host integrations keep receiving `appbi:resize`.
-function useParentResize(enabled: boolean) {
+// page scrolls). No-op when not embedded. Host integrations keep receiving
+// `appbi:resize` with the same shape.
+//
+// The height is the REPORT's own box, not the document's: `scrollHeight` never
+// drops below the iframe's current height (a shorter page or a wider frame could
+// never shrink the host) and <body> stays one viewport tall, so observing it
+// missed the report growing after its data arrived. The report's height does not
+// depend on the iframe height, so honouring a message cannot feed back into the
+// next one. Equal heights are sent once, and a burst (the grid animates a
+// relayout over ~300ms) is coalesced into its settled height, so the host frame
+// resizes once instead of following every animation step.
+function useParentResize(enabled: boolean, rootRef: React.RefObject<HTMLElement | null>) {
   useEffect(() => {
     if (!enabled) return;
-    const report = () => {
-      const height = document.documentElement.scrollHeight;
+    let last = -1;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pendingSince = 0;
+    const send = () => {
+      timer = undefined;
+      pendingSince = 0;
+      // The report (or, before it exists, the password/loading card) from the top of
+      // the document to its bottom edge.
+      const root = rootRef.current;
+      const boxes = root ? [root] : Array.from(document.body.children) as HTMLElement[];
+      let bottom = 0;
+      for (const el of boxes) {
+        if (getComputedStyle(el).position === 'fixed') continue;
+        bottom = Math.max(bottom, el.getBoundingClientRect().bottom + window.scrollY);
+      }
+      const height = Math.ceil(bottom);
+      if (height <= 0 || height === last) return;
+      last = height;
       try {
         window.parent.postMessage({ type: 'appbi:resize', height }, '*');
       } catch {
         // Cross-origin access can be blocked by the browser.
       }
     };
-    report();
-    const observer = new ResizeObserver(report);
+    // Trailing 150ms, but never held back more than 600ms by a DOM that keeps changing.
+    const schedule = () => {
+      const now = Date.now();
+      if (!pendingSince) pendingSince = now;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(send, Math.max(0, Math.min(150, pendingSince + 600 - now)));
+    };
+    send();
+    const observer = new ResizeObserver(schedule);
+    // The report box is replaced as the view moves from loading to the report,
+    // so watch it whenever it changes, and the body as the fallback.
+    let watched: HTMLElement | null = null;
+    const rewatch = () => {
+      const root = rootRef.current;
+      if (root && root !== watched) { if (watched) observer.unobserve(watched); watched = root; observer.observe(root); }
+      schedule();
+    };
     observer.observe(document.body);
-    return () => observer.disconnect();
-  }, [enabled]);
+    rewatch();
+    const mutations = new MutationObserver(rewatch);
+    mutations.observe(document.body, { childList: true, subtree: true });
+    return () => { observer.disconnect(); mutations.disconnect(); if (timer) clearTimeout(timer); };
+  }, [enabled, rootRef]);
 }
 
 function PasswordGate({
@@ -342,7 +386,6 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // reports that height to the parent (which then scrolls), instead of the
   // full-viewport app-shell the standalone /d page uses.
   const isEmbed = variant === 'embed';
-  useParentResize(isEmbed);
   const { t, locale } = useI18n();
 
   const [mounted, setMounted] = useState(false);
@@ -468,6 +511,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // chart below the fold.
   const citedTileIds = useMemo(() => citedTilesOf(dashboard?.dashboard_charts), [dashboard?.dashboard_charts]);
   const publicContentRef = useRef<HTMLElement>(null);
+  useParentResize(isEmbed, publicContentRef);
   const gridSectionRef = useRef<HTMLElement>(null);
   // "Fit to width": measure the grid wrapper and scale the react-grid row height
   // with it, so tiles keep their authored aspect ratio from phone to TV. The
@@ -1751,7 +1795,14 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // read-only, already filter/permission-scoped). Admin toggle, default on.
   const dataExportEnabled = appearance.allow_data_export;
   const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
-  const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
+  // Lasting state only (a cross-filter, a load error). Transient progress (opening a
+  // page, charts loading) is drawn over the canvas instead: inserted into the
+  // masthead it pushed the whole report down and pulled it back a second later,
+  // the page's largest layout shift.
+  const showLiveState = Boolean(crossFilterState || chartLoadError);
+  const transientStatus = pendingPageId
+    ? 'Đang mở trang…'
+    : chartsLoading && !isApplyingFilters ? 'Đang tải biểu đồ…' : null;
 
   const handleApplyFilters = useCallback(() => {
     setIsApplyingFilters(true);
@@ -2383,6 +2434,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
             level toward the PBI "flat canvas" feel. */}
         <section
           className="mx-auto w-full shrink-0 overflow-visible px-4 pt-2.5 pb-0.5 sm:px-5 sm:pt-3"
+          style={{ maxWidth: REPORT_FRAME_MAX_WIDTH }}
+          data-report-frame="masthead"
         >
           {/* Report masthead — row 1: brand mark + title + Export. Title is no
               longer clamped to 36%/cramped beside the tabs; tabs drop to their
@@ -2605,14 +2658,6 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
 
               {showLiveState && (
                 <div className="flex flex-col gap-3">
-                  {pendingPageId && (
-                    <div
-                      className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-tiny text-text-tertiary"
-                      style={publicTheme.neutralPillStyle}
-                    >
-                      <Loader2 className="h-3 w-3 animate-spin" /> Đang mở trang…
-                    </div>
-                  )}
 
                   {crossFilterState && (
                     <div
@@ -2646,15 +2691,6 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                       {chartLoadError}
                     </div>
                   )}
-
-                  {chartsLoading && !isApplyingFilters && (
-                    <div
-                      className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-tiny text-text-tertiary"
-                      style={publicTheme.neutralPillStyle}
-                    >
-                      <Loader2 className="h-3 w-3 animate-spin" /> Đang tải biểu đồ…
-                    </div>
-                  )}
                 </div>
               )}
             </div>
@@ -2663,7 +2699,19 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
 
         {/* Only the chart region scrolls; the header above stays pinned. */}
         <div className={isEmbed ? 'pb-4' : 'min-h-0 flex-1 overflow-y-auto pb-4'}>
-        <div className="mx-auto w-full">
+        <div className="relative mx-auto w-full" style={{ maxWidth: REPORT_FRAME_MAX_WIDTH }} data-report-frame="canvas">
+        {transientStatus && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-export-hide=""
+            data-testid="public-transient-status"
+            className="pointer-events-none absolute right-3 top-0 z-20 inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-tiny text-text-tertiary shadow-sm"
+            style={publicTheme.neutralPillStyle}
+          >
+            <Loader2 className="h-3 w-3 animate-spin" /> {transientStatus}
+          </div>
+        )}
         {/* Phase-B7 — FLUSH canvas (no card frame): tiles sit directly on the
             page background like a PBI report canvas, not inside a second
             bordered panel. */}
