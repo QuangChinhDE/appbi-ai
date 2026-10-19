@@ -12,26 +12,19 @@ These are the engineering contracts Phase 0–1 builds and Phase 3+ consumes.
 
 **Reuses:**
 - `app/core/authz/decision.py`: `can`, `require`, `scope`, `Action`;
-- the Dataset policy `services/dataset_grants_service.dataset_capabilities`;
-- delegations `models/agent_flow_delegation.py` with `permissions.active_delegations`.
+- the Dataset policy `services/dataset_grants_service.dataset_capabilities`.
 
-It does NOT introduce a second policy engine.
+It does NOT introduce a second policy engine. It does NOT read Agent Flow delegations
+(`models/agent_flow_delegation.py`) in the first release. See I-3.
 
 ```python
 # backend/app/services/governed_query/principal.py
 @dataclass(frozen=True)
 class EffectivePrincipal:
     user_id: UUID                     # the live user the decision is made for
-    kind: Literal["human", "pat", "delegated", "system"]
+    kind: Literal["human", "pat", "system"]      # no "delegated" kind in the first release (I-3)
     surface: Literal["analyst", "agent_flow", "studio_test", "chart", "preview", "profile"]
-    delegation: Delegation | None     # only for kind="delegated"; see I-3
     request_id: str                   # correlation id carried into audit + evidence
-
-@dataclass(frozen=True)
-class Delegation:
-    brain_key: str
-    delegation_ids: tuple[int, ...]   # agent_flow_delegations rows consulted this turn
-    resources: frozenset[tuple[str, int]]   # (resource_type, id) lent explicitly
 
 class AuthorizationContext:
     """The ONE object GQS asks. Built per request, never cached across requests."""
@@ -42,18 +35,32 @@ class AuthorizationContext:
 
 **Invariants:**
 
-- **I-1** `decide(action, r)` = `authz.can(db, live_user, action, r)`, then:
-  - **narrowed** by the surface ceiling (e.g. `studio_test` may not exceed the flow's
-    attached resources);
-  - **extended** only by I-3.
+- **I-1** ONE formula, intersection only:
+
+  ```
+  effective(action, r) = authz.can(db, live_user, action, r)
+                         ∧ surface_ceiling(surface, r)
+                         ∧ policy_constraints(r)
+  ```
+
+  - `surface_ceiling` narrows: `studio_test` cannot exceed the flow's attached
+    resources; a link cannot exceed what it declared.
+  - `policy_constraints`: GovernAIScope exclusions, row/column restrictions
+    (ADR-002), `policy_unavailable` when a lookup fails.
+  - **Nothing extends it.** No term is OR-ed in.
 - **I-2** There is no constructor path from an owner, an assigner or a datasource owner
   identity. A `System` principal exists only for scheduler entry points (authz spec §1).
   It is refused by GQS for `surface="analyst"`.
-- **I-3** Delegation:
-  - authority = (caller's live decision) ∪ (resources the owner explicitly delegated to
-    this caller, for this flow, not revoked, which the owner still holds);
-  - each lent resource is audited as `via=delegation:<id>`;
-  - **no implicit delegation** ("the flow owner may read it" is not a delegation).
+- **I-3** No delegation in GQS or the default Analyst (first release).
+  - The asker's own live rights are the ceiling, for every surface GQS serves. No flow
+    owner's, assigner's or datasource owner's rights are added: not implicitly, and not
+    through `agent_flow_delegations`.
+  - Agent Flow today has an explicit, audited delegation mechanism that can lend an
+    owner's resource to a grantee (`permissions.run_scope`: caller ∪ delegated). That
+    mechanism stays where it is. **GQS does not honour it.**
+  - If a flow must act beyond its asker's rights, that needs its own ADR, threat model,
+    grant lifecycle and tests (proposed: ADR-018) before GQS may accept any term that
+    widens I-1.
 - **I-4** A principal that cannot be resolved means refusal (`not_authenticated`). There
   is no anonymous principal in the first release (public/embed Analyst is out of
   scope).
@@ -135,7 +142,7 @@ class QueryEvidence:
     bytes_processed: int | None      # BigQuery job stats; None where the engine cannot say
     duration_ms: int
     freshness: Freshness             # live | snapshot(as_of) | published(generation)
-    policy_fingerprint: str          # hash of the policy inputs (grants, AI scope, delegation)
+    policy_fingerprint: str          # hash of the policy inputs (grants, AI scope, surface ceiling)
 ```
 
 ### 2.3 Refusals
@@ -148,10 +155,10 @@ machine-readable, and every refusal is audited.
 | `not_authenticated` | no principal |
 | `not_a_governed_relation` | catalog-only table; ephemeral relations disabled |
 | `not_authorized` | a relation lacks the required action (§1) |
-| `policy_unavailable` | a policy lookup (AI scope, grants, delegation) failed: **fail closed** (fixes the SEC-05 class) |
+| `policy_unavailable` | a policy lookup (AI scope, grants) failed: **fail closed** (fixes the SEC-05 class) |
 | `policy_unenforceable` | a row/column restriction applies, and this adapter cannot enforce it (ADR-002) |
 | `column_excluded` | the spec references a GovernAIScope-excluded column for an AI surface |
-| `filter_would_drop` | the engine reports a propagation drop for a security- or business-tagged filter |
+| `filter_would_drop` | the engine would drop ANY filter of the request: security, business, or a user filter that shapes what the question means (I-6) |
 | `unsupported_expression` | `calculated_fields` or window SQL from an AI surface, until PR-0C lands the AST allow-list |
 | `budget_exceeded` / `cost_estimate_exceeded` | run, user or datasource budget; BQ dry-run estimate over cap |
 | `foreign_live_source` / `key_probe_failed` | from `execution_plan` / `relationship_key_guard`, passed through unchanged |
@@ -162,9 +169,16 @@ machine-readable, and every refusal is audited.
 
 - **I-5** GQS never executes caller-supplied SQL text. T3 is a future, separate contract
   (ADR-005).
-- **I-6** A user-tagged filter the engine drops is returned in `filters_dropped`, and
-  the answer layer must disclose it. A security- or business-tagged one is a refusal,
-  never a silent answer.
+- **I-6** A dropped filter is a refusal by default, not a warning.
+  - **Security- or business-tagged:** always `filter_would_drop`. It cannot be
+    overridden.
+  - **User filter** (it changes what the question means: a region, a period, a
+    segment): also `filter_would_drop` by default. The refusal names the filters and
+    the scope the answer would actually have.
+  - The Analyst must ask the USER to accept that wider scope. Only a re-submission
+    carrying `accept_dropped_filters=[<filter ids>]`, recorded from that user's
+    confirmation, may run. The evidence then lists the accepted drop.
+  - Answering unfiltered and attaching a warning is not permitted.
 - **I-7** Audit is written BEFORE execution (`status=running`) and finalized after. If
   the first write fails, the query is refused. That is why the existing best-effort
   `audit_service.audit` is not the GQS ledger.
@@ -186,15 +200,25 @@ machine-readable, and every refusal is audited.
 It is additive, single head, with no backfill. It never stores result rows or literal
 filter values beyond their tags.
 
+**Rollback: code and schema are separate decisions.**
+- **Code rollback** (revert GQS) leaves the table and its rows in place. The ledger is
+  audit evidence and outlives the code that wrote it.
+- **The migration's `downgrade()`** may drop the table only while it is empty. When it
+  holds rows, it must refuse with an error that names the row count. Removing audit
+  records is a separate, explicitly approved data operation, never a side effect of a
+  rollback.
+- **Production rollback is code-only.**
+
 ### 2.5 Bounds and budgets: engineering proposal, calibrate in the Phase 3 benchmark
 
 | Bound | Proposed default | Existing anchor |
 |---|---|---|
 | rows per query (AI context) | 5,000 fetched; what reaches the model is still `max_rows_per_call` | `SOURCE_QUERY_MAX_ROWS`, binding `max_rows_per_call` |
 | timeout per query | 60 s | Query Runner caps at 300 s |
-| BigQuery bytes per query | `settings.BQ_MAX_BYTES_BILLED` | existing |
+| BigQuery bytes per AI query | `AI_BQ_MAX_BYTES_PER_QUERY`, a separate hard limit (proposed 1 GiB), always `min(this, settings.BQ_MAX_BYTES_BILLED)` | the warehouse ceiling is NOT inherited as the AI limit |
+| BigQuery bytes per AI run | `AI_BQ_MAX_BYTES_PER_RUN` (proposed 5 GiB) | n/a |
+| BigQuery bytes per user per day | `AI_BQ_MAX_BYTES_PER_USER_DAY` (proposed 50 GiB) | n/a |
 | queries per Analyst run | 12 | `BudgetContract` (12 LLM calls, 40 tools) |
-| bytes per run | 5 × per-query cap | n/a |
 | per user per day | 300 queries | n/a |
 | concurrent queries per datasource | 4 | n/a |
 

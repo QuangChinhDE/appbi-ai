@@ -72,9 +72,13 @@ That sequence is in `routers/semantic.py:880-914`.
 Every Analyst/GQS execution carries one `EffectivePrincipal` (see `spec.md` §1). Rules:
 - **No owner-borrowing.** It is never widened to the rights of a flow owner, a link
   assigner or a datasource owner.
-  - A flow owner's explicit delegation (`agent_flow_delegations`) is the only way
-    authority is lent, and it is intersected with the caller's live rights, never
-    unioned.
+  - The effective scope is one formula, intersection only (`spec.md` §1, I-1):
+    the asker's live rights ∧ the surface ceiling ∧ policy constraints.
+  - **No delegation term in GQS or the default Analyst.** Agent Flow's existing explicit
+    delegation (`agent_flow_delegations`, `permissions.run_scope`) can lend an owner's
+    resource beyond the grantee's own rights. GQS does not honour it. Any mechanism
+    that acts beyond the asker's rights needs its own ADR (proposed ADR-018), threat
+    model, grant lifecycle and tests first.
 - **Metadata, aggregates and raw rows are distinct grants:**
   - `datasets: view` = metadata, plus aggregated reads through charts the caller may
     read;
@@ -336,6 +340,10 @@ exploit. No penetration attempts on production or customer data.
 **Status:** ACCEPTED (PO). The values are PROPOSED (`spec.md` §2.5).
 
 Bounds are configured per deployment and workspace. A request cannot raise them.
+
+AI execution has its OWN hard limits (for example `AI_BQ_MAX_BYTES_PER_QUERY`). They are
+always the minimum of the AI limit and the warehouse ceiling. The AI never inherits the
+whole warehouse ceiling (`BQ_MAX_BYTES_BILLED`) as its budget.
 
 ## ADR-017 — Strangler migration; one reasoning engine in the end
 
