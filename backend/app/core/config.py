@@ -330,6 +330,13 @@ class Settings(BaseSettings):
     # Hard cap BigQuery enforces on the job itself (QueryJobConfig.maximum_bytes_billed)
     # for user-submitted Query Runner SQL — bounds cost even when the dry run fails.
     BQ_MAX_BYTES_BILLED: int = 60 * 1024**3
+    # ── Governed Query Service bounds (intelligence-foundation spec §2.5) ───────
+    # A request may only LOWER these. The AI BigQuery bytes limit is its OWN hard
+    # limit, not the warehouse ceiling above: the job carries min(this, ceiling).
+    # Per-run / per-user-day BigQuery budgets need the audit ledger (PR-1C/1E).
+    GQS_MAX_ROWS: int = 5_000
+    GQS_TIMEOUT_SECONDS: int = 60
+    AI_BQ_MAX_BYTES_PER_QUERY: int = 1 * 1024**3
 
     # ── Source hardening (docs/features/source-core-hardening/spec.md) ──────────
     # Outbound policy for PostgreSQL/MySQL sources. Private addresses are refused
