@@ -115,13 +115,8 @@ def test_sec01b_a_column_named_updated_at_is_not_a_forbidden_keyword():
 PREVIEW_ROW_CEILING = 100
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=REPRODUCED,
-    reason="REPRODUCED SEC-02 (handler-level): preview_rows reaches the "
-    "connector unbounded, so `data_sources: view` reads a whole table",
-)
 def test_sec02_table_preview_is_bounded(monkeypatch):
+    """FIXED in PR-0B3 (was REPRODUCED SEC-02)."""
     from app.api import datasources as api
 
     seen: dict = {}
@@ -129,6 +124,7 @@ def test_sec02_table_preview_is_bounded(monkeypatch):
     monkeypatch.setattr(api.DataSourceCRUDService, "get_by_id", staticmethod(lambda db, i: ds))
     monkeypatch.setattr(api, "require_view_access", lambda *a, **k: None)
     monkeypatch.setattr(api, "_require_tabular", lambda *a, **k: None)
+    monkeypatch.setattr(api._authz, "can", lambda *a, **k: True)  # an editor of the source
 
     def fake_detail(ds_type, config, schema, table, preview_rows):
         seen["rows"] = preview_rows
@@ -145,6 +141,68 @@ def test_sec02_table_preview_is_bounded(monkeypatch):
     except Exception:  # a refusal is an acceptable fix
         return
     assert seen["rows"] <= PREVIEW_ROW_CEILING
+
+
+def test_sec02_a_viewer_of_the_source_gets_no_rows(monkeypatch):
+    """Closure (unit half; the HTTP/Postgres half is
+    test_intelligence_table_preview_http_pg.py): rows need `use_secret`."""
+    from app.api import datasources as api
+
+    seen: dict = {}
+    ds = SimpleNamespace(id=1, type=SimpleNamespace(value="postgresql"), config={})
+    monkeypatch.setattr(api.DataSourceCRUDService, "get_by_id", staticmethod(lambda db, i: ds))
+    monkeypatch.setattr(api, "require_view_access", lambda *a, **k: None)
+    monkeypatch.setattr(api, "_require_tabular", lambda *a, **k: None)
+    monkeypatch.setattr(api._authz, "can", lambda db, user, action, res: action != api._authz.Action.USE_SECRET)
+
+    def fake_detail(t, c, s, n, preview_rows):
+        seen["rows"] = preview_rows
+        return {"columns": [{"name": "salary"}], "preview": [{"salary": "secret"}] if preview_rows else []}
+
+    monkeypatch.setattr(api.DataSourceConnectionService, "get_table_detail", staticmethod(fake_detail))
+    out = api.get_table_detail(1, "public", "payroll", preview_rows=5, db=None,
+                               current_user=SimpleNamespace(id=1))
+    assert seen["rows"] == 0
+    assert out["preview"] == [] and out["preview_refused"]
+    assert out["columns"] == [{"name": "salary"}]
+
+
+def test_sec02_the_default_preview_is_unchanged(monkeypatch):
+    """The allow half: the schema browser's own request (5 rows) passes through."""
+    from app.api import datasources as api
+
+    seen: dict = {}
+    ds = SimpleNamespace(id=1, type=SimpleNamespace(value="postgresql"), config={})
+    monkeypatch.setattr(api.DataSourceCRUDService, "get_by_id", staticmethod(lambda db, i: ds))
+    monkeypatch.setattr(api, "require_view_access", lambda *a, **k: None)
+    monkeypatch.setattr(api, "_require_tabular", lambda *a, **k: None)
+    monkeypatch.setattr(api._authz, "can", lambda *a, **k: True)  # an editor of the source
+    monkeypatch.setattr(
+        api.DataSourceConnectionService, "get_table_detail",
+        staticmethod(lambda t, c, s, n, preview_rows: seen.setdefault("rows", preview_rows) and {}),
+    )
+    api.get_table_detail(1, "public", "orders", db=None, current_user=SimpleNamespace(id=1))
+    assert seen["rows"] == 5
+
+
+def test_sec09_a_stranger_is_still_told_the_explore_does_not_exist():
+    """No relation at all is a 404 with existence hidden, before the 403 gate."""
+    import uuid
+
+    from fastapi import HTTPException
+
+    from app.routers import semantic as api
+    from app.schemas.semantic import SemanticQueryRequest
+
+    db, _user = _semantic_db("explore")
+    stranger = SimpleNamespace(id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
+                               email="nobody@appbi.io", permissions={"datasets": "edit"})
+    with pytest.raises(HTTPException) as exc:
+        api.execute_semantic_query(
+            SemanticQueryRequest(explore="orders", dimensions=["orders.status"], measures=[]),
+            db, stranger,
+        )
+    assert exc.value.status_code == 404
 
 
 # ── SEC-03  studio "test as chat" drops the caller from the scope ────────────
@@ -587,8 +645,10 @@ def _semantic_db(verb: str):
 
 
 def _semantic_query_refused_by_authorization(db, user) -> bool:
-    """True when the request is refused AT THE AUTHORIZATION GATE (existence
-    hidden), False when it gets past it — whatever fails afterwards."""
+    """True when the request is refused AT THE AUTHORIZATION GATE — 404 with
+    existence hidden (no relation), or 403 (may read the explore, may not run
+    it: authz error semantics) — False when it gets past it, whatever fails
+    afterwards."""
     from fastapi import HTTPException
 
     from app.routers import semantic as api
@@ -598,18 +658,14 @@ def _semantic_query_refused_by_authorization(db, user) -> bool:
     try:
         api.execute_semantic_query(req, db, user)
     except HTTPException as exc:
-        return exc.status_code in (403, 404) and "Explore not found" in str(exc.detail)
+        if exc.status_code == 403:
+            return True
+        return exc.status_code == 404 and "Explore not found" in str(exc.detail)
     return False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=REPRODUCED,
-    reason="REPRODUCED SEC-09 (handler-level, real policy on SQLite): a "
-    "dataset grant of verb `view` passes the gate of /semantic/query, which "
-    "returns warehouse rows; the Dataset policy reserves query for `explore`",
-)
 def test_sec09_a_view_only_grant_cannot_run_a_semantic_query():
+    """FIXED in PR-0B3 (was REPRODUCED SEC-09)."""
     from app.core.authz.decision import Action, can
     from app.models.dataset import Dataset
 

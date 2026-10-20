@@ -58,7 +58,7 @@ python scripts/ci/guardrail_check.py --plan "Phase 0 security containment for AI
 | **0A** | Contracts, ADRs, threat model, security ledger (tests only), CI wiring of the ledger | `docs/features/intelligence-foundation/**`, `backend/tests/test_intelligence_phase0_security_repro.py`, `.gitignore`, `.github/workflows/backend-contract-tests.yml` | infra (declared) | – | – | READY FOR REVIEW |
 | **0B1** | Agent Flow containment. **SEC-03:** the studio preview keeps `caller`. **SEC-04:** Studio Test declares the binding's capabilities; the default flip is BLOCKED (see the matrix). **SEC-05:** AI-scope lookup fails closed. | `services/agent_flows/dispatch.py`, `tools/registry.py`, `tools/context.py`, `tools/result.py`, `runtime/agent_runtime.py`, `modules/agent_flows/api.py` | – | – | – (small) | READY FOR REVIEW |
 | **0B2** | Knowledge authority, first slice. **SEC-07:** Draft KPI not presented as official. **DEF-07b:** citation NameError. **SEC-08:** no auto-promotion of bot findings; existing self-promoted rows stop being injected as validated. | `dashboard_ai_bot/knowledge_context.py`, `dashboard_ai_bot/knowledge.py` | – | – | – (small) | READY FOR REVIEW |
-| **0B3** | Data-access gates. **SEC-02:** preview row ceiling. **SEC-09:** `/semantic/query` requires `explore`. | `api/datasources.py`, `routers/semantic.py` | – | – | – (small; security-behaviour change declared) | PLANNED |
+| **0B3** | Data-access gates. **SEC-02:** preview row ceiling. **SEC-09:** `/semantic/query` requires `explore`. | `api/datasources.py`, `routers/semantic.py` | – | – | – (small; security-behaviour change declared) | READY FOR REVIEW |
 | **0C** | **SEC-01:** calculated-field AST allow-list (relations and columns of the view only; no subqueries, set ops or DDL/DML; dialect-correct). **SEC-01b:** false positives. **DEF-06:** triage. | `services/semantic_query_engine.py` | **P** | – | **A** | PLANNED: needs plan approval + golden gates |
 | **0D** | **SEC-10/ADR-014:** inventory of orphaned Approved knowledge (a service plus an admin-only read endpoint, not an ad-hoc DB script) and an injection-time quarantine flag | `services/governance_ai_service.py`, `dashboard_ai_bot/knowledge_context.py`, new admin route | – | – | **A** (PO default, intent Q2) | BLOCKED on PO decision Q2 |
 | **0E** | Sealed eval harness, minimal: YAML case store, deterministic oracle runner on a seeded fixture, leakage check, import-boundary test | `backend/eval/cases/**`, `backend/eval/sealed_harness.py`, test | – | – | – (new, isolated) | PLANNED |
@@ -134,3 +134,8 @@ protected semantic layer. **It needs plan approval before PR-1A starts.**
   - `verify.py task` PASSED;
   - `dashboard_ai_bot` has no feature in the guardrail rule base. The guardrail keyword-matched `dashboard_build_render` (frontend), which is noise. Coverage is therefore UNKNOWN, not safe;
   - every backend test importing the changed modules was run by hand: 6 files, 126 passed, 6 xfailed.
+- **2026-10-19, 0B3:**
+  - ledger: 24 passed, 3 xfailed (SEC-01, SEC-01b, SEC-04);
+  - fail-first: SEC-02 and SEC-09 fail on base and pass with the fix;
+  - `verify.py task` PASSED: `error_contracts`, `relationship_contract`, `semantic_router_access`;
+  - `relationship_contract_pg` was run on a disposable `pgvector:pg16` container (alembic head): 10 passed. 3 tests are NOT VERIFIED locally: they need CI's `bcfix` seed, and `scripts/seed_snowflake_ci_fixture.py` hard-codes `localhost:5432`, so it was not pointed at any non-disposable database. CI runs it.
