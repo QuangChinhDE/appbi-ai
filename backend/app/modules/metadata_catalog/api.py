@@ -357,6 +357,21 @@ def govern_change_log(
     return {"entries": GovernanceService.list_change_log(db, entity_type, entity_fqn, limit)}
 
 
+@router.get("/govern/knowledge-quarantine")
+def govern_knowledge_quarantine(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Inventory of quarantined AI knowledge (ADR-014, SEC-10): Approved rules,
+    playbooks, Verified Q&A and active AI instructions whose management screens were
+    removed. They are not used as model context until re-reviewed. Read-only; names
+    and ids only. Global: Govern administrators only."""
+    _require_govern_admin(user)
+    from app.services.governance_ai_service import knowledge_quarantine_inventory
+
+    return knowledge_quarantine_inventory(db)
+
+
 # ════════════ GOVERN: KNOWLEDGE HUB (Cẩm nang tri thức) ══════════════════════
 # Rich-text knowledge articles organized into spaces + a page tree — the
 # onboarding "kho tàng" where a business records how its whole reporting system
