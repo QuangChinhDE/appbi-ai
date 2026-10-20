@@ -116,7 +116,8 @@ jobs:
             tests/test_intelligence_eval_harness.py \
             tests/test_intelligence_calc_field_policy.py \
             tests/test_intelligence_knowledge_quarantine.py \
-            tests/test_intelligence_effective_principal.py
+            tests/test_intelligence_effective_principal.py \
+            tests/test_intelligence_gqs_core.py
 
       # WHAT THE ANALYST IS SHOWN AS EVIDENCE, AND WHAT A METRIC MEANS.
       #
@@ -778,6 +779,7 @@ jobs:
             tests/test_intelligence_studio_test_scope_http_pg.py \
             tests/test_intelligence_table_preview_http_pg.py \
             tests/test_intelligence_knowledge_quarantine_http_pg.py \
+            tests/test_intelligence_gqs_execution_pg.py \
             --junitxml=/tmp/authz-pg.xml
 
       # EVERY MANDATORY SECURITY SUITE, NOT JUST THE FIRST.

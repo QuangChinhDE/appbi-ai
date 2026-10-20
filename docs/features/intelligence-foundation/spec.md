@@ -132,7 +132,7 @@ class QueryEvidence:
     principal_ref: str               # user id + kind + surface (no PII beyond id)
     relations: list[RelationRef]
     datasets: list[int]
-    semantic_epoch: str              # the cache epoch the registry already computes
+    semantic_epoch: str              # hash of the definitions read (model, explore, the dataset's views, engine cache version); no registry epoch exists, GQS computes it
     dialect: str
     sql_fingerprint: str             # sha256 of the compiled SQL; the SQL itself only for `explore`+
     filters_applied: list[AppliedFilter]   # each tagged security | business | user
@@ -159,7 +159,8 @@ machine-readable, and every refusal is audited.
 | `policy_unenforceable` | a row/column restriction applies, and this adapter cannot enforce it (ADR-002) |
 | `column_excluded` | the spec references a GovernAIScope-excluded column for an AI surface |
 | `filter_would_drop` | the engine would drop ANY filter of the request: security, business, or a user filter that shapes what the question means (I-6) |
-| `unsupported_expression` | `calculated_fields` or window SQL from an AI surface, until PR-0C lands the AST allow-list |
+| `unsupported_expression` | `calculated_fields`, `window_functions` or `measure_agg_overrides` in a request. First release: refused for EVERY principal, not only AI (I-5). PR-0C's AST allow-list protects the Direct Semantic API; it does not make AI-authored expression text acceptable here |
+| `semantic_refusal` | the engine refused the question on purpose (`SemanticRefusal.category`: FANOUT_RISK, UNRELATED_GRAIN, AMBIGUOUS_ROUTE, …). The grain and key guards are kept, not bypassed |
 | `budget_exceeded` / `cost_estimate_exceeded` | run, user or datasource budget; BQ dry-run estimate over cap |
 | `foreign_live_source` / `key_probe_failed` | from `execution_plan` / `relationship_key_guard`, passed through unchanged |
 | `timeout` / `cancelled` | execution bounds |
@@ -224,6 +225,39 @@ filter values beyond their tags.
 
 These are configured per deployment and workspace (ADR-016). Exceeding one returns
 `budget_exceeded`, with the bound named.
+
+### 2.5a As built in PR-1B (not live)
+
+`backend/app/services/governed_query/`: `contracts.py`, `bounds.py`, `audit.py`, `service.py`.
+
+- **The request carries a `SemanticAsk`, not a raw `SemanticQuerySpec`.** It holds
+  qualified refs, filters, sorts, time grains and a limit. GQS builds the
+  `SemanticQuerySpec` itself, pinned to the explore's id and model. The SQL-bearing
+  fields exist on `SemanticAsk` only so that a caller sending them is refused by name.
+- **`accept_dropped_filters`** is on the request (I-6). Each accepted drop appears in
+  `filters_dropped` with `accepted_by_user: true`.
+- **`plan()` touches no warehouse.** It runs: principal; relation (semantic explore
+  only); a Dataset must own it; an operational Dataset gives `policy_unenforceable`;
+  `explore` authorization (I-1); AI-scope exclusions on every requested, filtered or
+  sorted ref, by field name and by the physical columns its SQL reads; strict
+  datasource; compile on the existing engine; dropped filters; foreign live sources.
+- **`execute()`:**
+  - no `AuditSink` gives `audit_unavailable` before anything runs;
+  - then the audit row is written before execution, and a failed write is refused;
+  - then key probes;
+  - then the executor with `timeout_seconds`, `max_rows = bound + 1` (truncation is
+    detected) and, on BigQuery only, `maximum_bytes_billed = min(AI_BQ_MAX_BYTES_PER_QUERY, BQ_MAX_BYTES_BILLED)`;
+  - then a second AI-scope check on the output columns;
+  - then the audit row is finalized (`ok`, `refused`, `timeout` or `error`).
+- **The bounds enforced now** are rows, timeout and BigQuery bytes per query.
+- **Not yet enforced:**
+  - BigQuery bytes per run and per user per day (PR-1C, which needs the 1E ledger);
+  - queries per run, per user per day, and concurrency per datasource (PR-1C);
+  - cancellation (PR-1D).
+  - `bytes_processed` is `None`: the executor does not report job bytes.
+- **Not live.** Nothing outside the package imports it (`test_intelligence_gqs_core.py`
+  fails if anything does). The durable ledger sink is PR-1E. Wiring a route or tool
+  to it is PR-1G, after the Phase 1 gate.
 
 ### 2.6 Cancellation (PR-1D)
 

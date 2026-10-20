@@ -78,7 +78,7 @@ protected semantic layer. **It needs plan approval before PR-1A starts.**
 | PR | Scope | P | M | A |
 |---|---|---|---|---|
 | **1A** | `EffectivePrincipal` + `AuthorizationContext` over `core/authz`; one intersection-only formula (I-1), no delegation term (I-3); unit + property tests (PAT ⊆ human; no owner-borrowing; a delegation row never widens; unknown → deny). #61: CODE COMPLETE; CI re-running on the static-rule fix | – | – | A (phase) |
-| **1B** | GQS core (T1): request/result/evidence/refusals per spec §2; calls the existing sequence; `filter_would_drop`; `column_excluded`; `unsupported_expression` for AI calc fields | calls the protected path, does not edit it | – | A |
+| **1B** | GQS core (T1): request/result/evidence/refusals per spec §2 (as built: §2.5a); calls the existing sequence; `filter_would_drop` + `accept_dropped_filters`; `column_excluded`; `unsupported_expression` for every principal; AI BigQuery bytes per query as its own limit; NOT LIVE. CODE COMPLETE | calls the protected path, does not edit it | – | A |
 | **1C** | Bounds and budgets (spec §2.5): server-clamped; per run/user/datasource; BQ dry-run estimate | – | – | A |
 | **1D** | Cancellation: Postgres/MySQL/BigQuery cancellers + ledger-driven cross-worker cancel | – | – | A |
 | **1E** | `governed_query_executions` ledger: migration (additive, single head) + pre-write/finalize (I-7) | – | **M** | A + migration-checker |
@@ -202,3 +202,24 @@ These are not closed by Phase 0. Each names where it is decided.
 - **2026-10-20, 0G:** the three suites PASS locally (34 + 20 + 15); `--health`: 66
   runnable, 0 gaps; `knowledge_hit.py` / `govern_doc_answerability.py` now resolve to
   `ai_knowledge_authority` (was UNKNOWN).
+- **2026-10-20, 1B (GQS core, not live):**
+  - `test_intelligence_gqs_execution_pg.py`: 24 passed on a disposable `pgvector:pg16`
+    (alembic head; real metadata, a real Postgres source and the real engine). The
+    oracle is hand-computed (Bắc 150, Nam 30, Trung 20).
+  - `test_intelligence_gqs_core.py`, `test_intelligence_effective_principal.py` and
+    `test_authz_static_rules.py`: 30 passed.
+  - Mutation controls, 6 of 7 killed:
+    - M1: authorization removed;
+    - M2: a drop answered;
+    - M3b: no ledger AND the begin failure ignored;
+    - M4: AI scope on refs skipped;
+    - M5: a request raises a bound;
+    - M6: escape hatch accepted.
+  - M3 (only the `audit is None` guard removed) survives, because the begin-failure
+    path independently refuses `audit_unavailable`. It is an equivalent mutant, and
+    M3b shows the property is locked.
+  - The I-6 test adds one drop record to the REAL engine's output in the engine's own
+    shape. A real-engine `unreachable_view` drop over a multi-fact model is not
+    exercised here: NOT VERIFIED.
+  - BigQuery execution of the bytes limit: NOT VERIFIED (no warehouse). The unit test
+    proves the job argument only.

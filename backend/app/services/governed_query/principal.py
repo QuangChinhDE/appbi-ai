@@ -131,19 +131,25 @@ class AuthorizationContext:
 
     # ── policy constraints ──────────────────────────────────────────────────
     def excluded_columns(self, dataset_ids: Iterable[int]) -> set[str]:
-        """GovernAIScope exclusions for an AI surface. A failed lookup is a REFUSAL
-        (`policy_unavailable`): unknown is not empty (SEC-05 class)."""
+        """GovernAIScope column exclusions for an AI surface. A failed lookup is a
+        REFUSAL (`policy_unavailable`): unknown is not empty (SEC-05 class)."""
+        cols, _measures = self.ai_scope_exclusions(dataset_ids)
+        return cols
+
+    def ai_scope_exclusions(self, dataset_ids: Iterable[int]) -> tuple[set[str], set[str]]:
+        """(columns, measures) GovernAIScope hides from an AI surface, folded the
+        same way the store folds them. Fails closed like `excluded_columns`."""
         ids = {int(d) for d in dataset_ids}
         if not ids:
-            return set()
+            return set(), set()
         try:
             from app.services.governance_ai_service import GovernanceAIService
 
-            cols, _measures = GovernanceAIService.scope_exclusions(self.db, ids)
+            cols, measures = GovernanceAIService.scope_exclusions(self.db, ids)
         except Exception as exc:  # noqa: BLE001 - any failure means "unknown"
             raise GovernedRefusal(
                 "policy_unavailable",
                 "Không đọc được phạm vi dữ liệu AI được phép dùng; tạm không truy vấn.",
                 {"dataset_ids": sorted(ids), "error": type(exc).__name__},
             ) from exc
-        return {str(c).strip().lower() for c in cols}
+        return {str(c).strip().lower() for c in cols}, {str(m).strip().lower() for m in measures}
