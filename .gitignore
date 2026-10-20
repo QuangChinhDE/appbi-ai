@@ -214,6 +214,7 @@ backend/scripts/regression_*.py
 !backend/tests/test_query_duration_monotonic.py
 !backend/tests/test_phase2_filter_propagation.py
 !backend/tests/test_phase4_symmetric_aggregates.py
+!backend/tests/test_time_grain_whitelist.py
 !backend/tests/test_filter_entry_schemas.py
 !backend/tests/test_phase1_relationship_metadata.py
 !backend/tests/test_distinct_self_target.py
