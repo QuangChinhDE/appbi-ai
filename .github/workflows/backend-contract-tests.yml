@@ -115,7 +115,8 @@ jobs:
             tests/test_intelligence_phase0_security_repro.py \
             tests/test_intelligence_eval_harness.py \
             tests/test_intelligence_calc_field_policy.py \
-            tests/test_intelligence_knowledge_quarantine.py
+            tests/test_intelligence_knowledge_quarantine.py \
+            tests/test_intelligence_effective_principal.py
 
       - name: Run semantic-contract + engine unit tests (no BigQuery)
         # THE FAILURE HAS TO BE READABLE BY WHOEVER SEES IT GO RED.

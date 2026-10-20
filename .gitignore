@@ -526,3 +526,4 @@ integrations/appbi-mcp/.venv/
 !backend/tests/test_intelligence_knowledge_quarantine_http_pg.py
 !backend/tests/test_intelligence_studio_test_scope_http_pg.py
 !backend/tests/test_intelligence_table_preview_http_pg.py
+!backend/tests/test_intelligence_effective_principal.py
