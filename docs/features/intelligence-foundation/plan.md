@@ -223,3 +223,24 @@ These are not closed by Phase 0. Each names where it is decided.
     exercised here: NOT VERIFIED.
   - BigQuery execution of the bytes limit: NOT VERIFIED (no warehouse). The unit test
     proves the job argument only.
+- **2026-10-20, 1B independent review (semantic-guard, on 96472cd6):**
+  - Confirmed by reading the code, and each item now has a fail-first regression test
+    (22 tests fail on the draft and pass after the fix):
+    - a grain was interpolated into `DATE_TRUNC` (SQL injection on Postgres/DuckDB);
+    - composed parents were not authorized;
+    - AI-scope bypasses through `expression`, formulas, measure filters, bare
+      `${col}`, aliases, unqualified refs and labels;
+    - filters were silently skipped, through `top_n` and empty values;
+    - internal filter keys were forwarded;
+    - existence was disclosed before authorization;
+    - Sheets/Manual sources had no timeout.
+  - The output gate that could never fire was replaced by an identity gate.
+  - Mutation controls on the hardened core: 11/12 killed. M11 (`depends_on` not
+    followed) is an equivalent mutant: a formula names its dependencies in
+    `expression`, and the placeholder walk follows them.
+  - Open, because it needs a protected change: relationship key probes are not
+    bounded by GQS. BigQuery is refused until PR-1C; Postgres/MySQL keep the guard's
+    30-second timeout.
+  - The review's trace of EXISTING paths found the same grain injection outside GQS
+    (SEC-13, security-matrix.md). It is not fixed here: it is a protected
+    semantic-engine change that needs approval.

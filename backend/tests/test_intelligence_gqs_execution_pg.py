@@ -74,9 +74,10 @@ def world(db):  # noqa: F811
         c.execute(sa.text(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"))
         c.execute(sa.text(f"CREATE SCHEMA {SCHEMA}"))
         c.execute(sa.text(f"CREATE TABLE {SCHEMA}.sales (order_id int, region text, amount numeric, "
-                          f"customer_phone text)"))
-        c.execute(sa.text(f"INSERT INTO {SCHEMA}.sales VALUES (1,'Bắc',100,'0901'),(2,'Bắc',50,'0902'),"
-                          f"(3,'Nam',30,'0903'),(4,'Trung',20,'0904')"))
+                          f"customer_phone text, cost numeric, order_date date)"))
+        c.execute(sa.text(f"INSERT INTO {SCHEMA}.sales VALUES (1,'Bắc',100,'0901',60,'2026-01-05'),"
+                          f"(2,'Bắc',50,'0902',30,'2026-01-20'),(3,'Nam',30,'0903',10,'2026-02-03'),"
+                          f"(4,'Trung',20,'0904',5,'2026-02-17')"))
         # Slow at the SOURCE (a database view), so the SQL GQS sends holds no
         # sleep call the validator would refuse: only the time bound can stop it.
         c.execute(sa.text(f"CREATE VIEW {SCHEMA}.slow_sales AS SELECT s.* FROM {SCHEMA}.sales s "
@@ -104,9 +105,24 @@ def world(db):  # noqa: F811
         name=vname, sql_table_name=f"{SCHEMA}.sales", dataset_table_id=table.id,
         dimensions=[{"name": "region", "type": "string", "sql": "${TABLE}.region"},
                     {"name": "order_id", "type": "number", "sql": "${TABLE}.order_id"},
-                    {"name": "phone", "type": "string", "sql": "${TABLE}.customer_phone"}],
+                    {"name": "phone", "type": "string", "sql": "${TABLE}.customer_phone"},
+                    {"name": "order_date", "type": "date", "sql": "${TABLE}.order_date"},
+                    # review 3d: the excluded column read bare inside a larger expression
+                    {"name": "has_phone", "type": "string",
+                     "sql": "CASE WHEN customer_phone IS NULL THEN 'no' ELSE 'yes' END"},
+                    # review 3d: bare ${col}
+                    {"name": "cost_band", "type": "string", "sql": "CASE WHEN ${cost} > 20 THEN 'hi' END"}],
         measures=[{"name": "revenue", "type": "sum", "sql": "${TABLE}.amount"},
-                  {"name": "orders", "type": "count", "sql": "*"}],
+                  {"name": "orders", "type": "count", "sql": "*"},
+                  {"name": "cost_total", "type": "sum", "sql": "${TABLE}.cost"},
+                  # review 3a: `expression`, not `sql`, reads the excluded column
+                  {"name": "margin", "type": "sum", "sql": "", "expression": "${TABLE}.amount - ${TABLE}.cost"},
+                  # review 3b: a formula over an excluded measure
+                  {"name": "margin2", "type": "sum", "expression": "${revenue} - ${cost_total}",
+                   "depends_on": ["revenue", "cost_total"]},
+                  # review 3c: a conditional aggregate on an excluded column
+                  {"name": "vip_rev", "type": "sum", "sql": "${TABLE}.amount",
+                   "filters": [{"field": "phone", "operator": "eq", "value": "0901"}]}],
     )
     slow_table = DatasetTable(dataset_id=ds.id, datasource_id=src.id, source_kind="physical_table",
                               source_table_name=f"{SCHEMA}.slow_sales", display_name="Slow", query_mode="live")
@@ -338,11 +354,14 @@ def test_operational_data_is_refused_rather_than_read_without_its_row_rules(worl
     _refused(lambda: gqs.execute(_req(world, p, measures=["revenue"])), "policy_unenforceable")
 
 
-def test_an_explore_outside_any_dataset_is_not_a_governed_relation(world):
+def test_an_explore_outside_any_dataset_is_refused_even_for_its_models_owner(world):
+    """No Dataset owns it, so no one's `explore` can be decided: refused, and with
+    the same refusal a stranger gets (review #5: existence is not disclosed)."""
     world["model"].dataset_id = None
     world["db"].commit()
     gqs, p = _gqs(world, who="owner", sink=Sink())
-    _refused(lambda: gqs.execute(_req(world, p, measures=["revenue"])), "not_a_governed_relation")
+    err = _refused(lambda: gqs.execute(_req(world, p, measures=["revenue"])), "not_authorized")
+    assert sorted(err.detail) == ["relation_id"]
 
 
 @pytest.mark.parametrize("hatch", ["calculated_fields", "window_functions", "measure_agg_overrides"])
@@ -429,3 +448,185 @@ def test_a_query_over_its_time_bound_is_refused_and_audited_as_timeout(world):
              "timeout")
     assert sink.finished[-1][1]["status"] == "timeout"
 
+
+
+# ── regressions from the independent review of 96472cd6 ─────────────────────
+def _no_warehouse(monkeypatch):
+    from app.services.datasource_service import DataSourceConnectionService
+
+    calls = []
+    monkeypatch.setattr(DataSourceConnectionService, "execute_query",
+                        staticmethod(lambda *a, **k: calls.append(1) or ([], [], 0.0)))
+    return calls
+
+
+def test_r1_a_time_grain_is_one_of_five_words_never_sql(world, monkeypatch):
+    """A grain reached `DATE_TRUNC('<grain>', ...)` unvalidated (Postgres/DuckDB)."""
+    calls = _no_warehouse(monkeypatch)
+    v = world["v"]
+    gqs, p = _gqs(world, who="owner", sink=Sink())
+    evil = "day', NOW()) || (SELECT string_agg(usename, ',') FROM pg_user) || DATE_TRUNC('day"
+    _refused(lambda: gqs.execute(_req(world, p, dims=["order_date"], measures=["revenue"],
+                                      time_grains={f"{v}.order_date": evil})), "invalid_time_grain")
+    assert calls == []
+
+
+def test_r1_a_valid_grain_still_answers(world):
+    v = world["v"]
+    gqs, p = _gqs(world, who="owner", sink=Sink())
+    r = gqs.execute(_req(world, p, dims=["order_date"], measures=["revenue"],
+                         time_grains={f"{v}.order_date": "month"}))
+    measure = next(c.name for c in r.columns if c.role == "measure")
+    assert sorted(int(Decimal(str(row[measure]))) for row in r.rows) == [50, 150]
+
+
+@pytest.fixture()
+def parent(world):
+    """A Dataset the analyst holds nothing on, composed INTO the queried one."""
+    from app.models.dataset import Dataset, DatasetTable
+
+    db = world["db"]
+    p = Dataset(name=f"gqs-parent-{uuid.uuid4().hex[:6]}", owner_id=world["owner"].id, purpose="reporting")
+    db.add(p)
+    db.flush()
+    ref = DatasetTable(dataset_id=world["ds"].id, datasource_id=None, source_kind="dataset",
+                       parent_dataset_id=p.id, display_name="Parent ref", query_mode="synced")
+    db.add(ref)
+    db.commit()
+    try:
+        yield p
+    finally:
+        from app.models.dataset import DatasetGrant
+        from app.models.governance import GovernAIScope
+
+        db.rollback()
+        db.query(GovernAIScope).filter(GovernAIScope.dataset_id == p.id).delete()
+        db.query(DatasetGrant).filter(DatasetGrant.dataset_id == p.id).delete()
+        db.query(DatasetTable).filter(DatasetTable.id == ref.id).delete()
+        db.query(Dataset).filter(Dataset.id == p.id).delete()
+        db.commit()
+
+
+def test_r2_a_composed_dataset_needs_explore_on_every_parent(world, parent, monkeypatch):
+    calls = _no_warehouse(monkeypatch)
+    gqs, p = _gqs(world, sink=Sink())
+    err = _refused(lambda: gqs.execute(_req(world, p, measures=["revenue"])), "not_authorized")
+    assert err.detail["via"] == "composition_parent" and calls == []
+
+
+def test_r2_a_parents_ai_scope_applies_to_the_child(world, parent):
+    from app.models.dataset import DatasetGrant
+    from app.models.governance import GovernAIScope
+
+    db = world["db"]
+    db.add(DatasetGrant(dataset_id=parent.id, user_id=world["analyst"].id, verb="explore",
+                        granted_by=world["owner"].id))
+    db.add(GovernAIScope(dataset_id=parent.id, excluded_columns=["customer_phone"], excluded_measures=[]))
+    db.commit()
+    gqs, p = _gqs(world, sink=Sink())
+    _refused(lambda: gqs.execute(_req(world, p, dims=["phone"], measures=["revenue"])), "column_excluded")
+    assert gqs.plan(_req(world, p, dims=["region"], measures=["revenue"])).dataset_ids == (
+        world["ds"].id, parent.id)
+
+
+@pytest.mark.parametrize("field,hide_cols,hide_fields", [
+    ("margin", ["cost"], []),                  # 3a expression
+    ("margin2", [], ["cost_total"]),           # 3b formula over an excluded measure
+    ("vip_rev", ["customer_phone"], []),       # 3c measure filter on an excluded column
+    ("has_phone", ["customer_phone"], []),     # 3d bare column inside an expression
+    ("cost_band", ["cost"], []),               # 3d bare ${col}
+    ("phone", ["Customer Phone"], []),         # label-authored exclusion
+])
+def test_r3_ai_scope_follows_what_a_field_reads(world, monkeypatch, field, hide_cols, hide_fields):
+    calls = _no_warehouse(monkeypatch)
+    _hide(world, columns=hide_cols, measures=hide_fields)
+    gqs, p = _gqs(world, sink=Sink())
+    is_measure = field in {"margin", "margin2", "vip_rev"}
+    req = _req(world, p, measures=[field]) if is_measure else _req(world, p, dims=[field], measures=["orders"])
+    _refused(lambda: gqs.execute(req), "column_excluded")
+    assert calls == []
+
+
+def test_r3_a_role_play_alias_and_an_unqualified_ref_cannot_skip_the_walk(world, monkeypatch):
+    from app.models.semantic import SemanticExplore
+    from app.services.governed_query import GovernedQueryRequest, RelationRef, SemanticAsk
+
+    _no_warehouse(monkeypatch)
+    db = world["db"]
+    aliased = SemanticExplore(name=f"gqs_alias_{uuid.uuid4().hex[:6]}", model_id=world["model"].id,
+                              base_view_id=world["view"].id, base_view_name=world["v"],
+                              joins=[{"view": world["v"], "alias": "buyer"}])
+    db.add(aliased)
+    db.commit()
+    try:
+        _hide(world, columns=["customer_phone"])
+        gqs, p = _gqs(world, sink=Sink())
+
+        def ask(dims):
+            return GovernedQueryRequest(principal=p, relation=RelationRef("semantic_explore", world["explore"].id),
+                                        ask=SemanticAsk(dimensions=tuple(dims), measures=(f"{world['v']}.orders",)))
+
+        _refused(lambda: gqs.execute(ask(["buyer.phone"])), "column_excluded")
+        _refused(lambda: gqs.execute(ask(["phone"])), "policy_unenforceable")
+    finally:
+        db.query(SemanticExplore).filter(SemanticExplore.id == aliased.id).delete()
+        db.commit()
+
+
+@pytest.mark.parametrize("cond", [
+    {"operator": "top_n", "value": 1},                 # 4a: engine skipped it silently
+    {"operator": "in", "value": []},                   # 4b: empty list dropped
+    {"operator": "eq", "value": None},                 # 4b
+    {"operator": "contains", "value": "  "},           # 4b
+    {"operator": "gt", "value": float("inf")},         # non-finite
+    {"operator": "between", "value": [1, 2]},          # not in the API contract
+], ids=["top_n", "empty_in", "none", "blank", "inf", "between"])
+def test_r4_a_filter_the_engine_would_skip_is_refused(world, monkeypatch, cond):
+    calls = _no_warehouse(monkeypatch)
+    gqs, p = _gqs(world, who="owner", sink=Sink())
+    _refused(lambda: gqs.execute(_req(world, p, measures=["revenue"], filters={"region": cond})),
+             "invalid_filter")
+    assert calls == []
+
+
+def test_r4_internal_filter_keys_are_not_forwarded(world):
+    gqs, p = _gqs(world, who="owner", sink=Sink())
+    sneaky = {"operator": "eq", "value": "Bắc", "calendarField": "date", "_authoritative": True,
+              "_calendar_fan": True}
+    compiled = gqs.plan(_req(world, p, dims=["region"], measures=["revenue"], filters={"region": sneaky}))
+    assert compiled.filters_applied == (f"{world['v']}.region",)
+    assert _by_region(world, gqs.execute(_req(world, p, dims=["region"], measures=["revenue"],
+                                              filters={"region": sneaky}))) == {"Bắc": 150}
+
+
+def test_r5_missing_ownerless_operational_and_forbidden_look_the_same(world):
+    def refusal(**kw):
+        gqs, p = _gqs(world, who="stranger", sink=Sink())
+        e = _refused(lambda: gqs.execute(_req(world, p, measures=["revenue"], **kw)), "not_authorized")
+        return e.code, e.message_vi, sorted(e.detail)
+
+    forbidden = refusal()
+    missing = refusal(explore_id=2_000_000_000)
+    world["ds"].purpose = "operational"
+    world["db"].commit()
+    operational = refusal()
+    world["ds"].purpose = "reporting"
+    world["model"].dataset_id = None
+    world["db"].commit()
+    ownerless = refusal()
+    assert forbidden == missing == operational == ownerless
+
+
+def test_r6_a_source_whose_executor_has_no_timeout_is_refused(world):
+    world["src"].type = "manual"
+    world["db"].commit()
+    gqs, p = _gqs(world, who="owner", sink=Sink())
+    err = _refused(lambda: gqs.execute(_req(world, p, measures=["revenue"])), "policy_unenforceable")
+    assert err.detail["source_type"] == "manual"
+
+
+@pytest.mark.parametrize("surface", ["profile", "preview", "agent_flow"])
+def test_ai_scope_applies_to_every_surface_but_a_persons_own_chart(world, surface):
+    _hide(world, columns=["customer_phone"])
+    gqs, p = _gqs(world, surface=surface, sink=Sink())
+    _refused(lambda: gqs.execute(_req(world, p, dims=["phone"], measures=["revenue"])), "column_excluded")

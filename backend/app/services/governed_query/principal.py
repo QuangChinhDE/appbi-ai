@@ -34,6 +34,10 @@ Surface = Literal["analyst", "agent_flow", "studio_test", "chart", "preview", "p
 #: person is made with that person's rights, not the service's (I-2).
 _HUMAN_ONLY_SURFACES = frozenset({"analyst", "studio_test", "chart", "preview"})
 
+#: Surfaces whose reach is defined by an attachment list, never by the caller's
+#: whole rights: a context for them without a ceiling is refused.
+_CEILING_REQUIRED = frozenset({"studio_test"})
+
 
 class GovernedRefusal(Exception):
     """A typed refusal (spec §2.3). `code` is what a caller branches on;
@@ -101,6 +105,15 @@ class AuthorizationContext:
     def __post_init__(self) -> None:
         if self.user is None or getattr(self.user, "id", None) != self.principal.user_id:
             raise GovernedRefusal("not_authenticated", "Phiên đăng nhập không khớp yêu cầu.")
+        if self.principal.surface in _CEILING_REQUIRED and self.ceiling.dataset_ids is None:
+            # Studio Test answers over the flow's attached datasets only. A context
+            # built without that ceiling would silently mean "everything the
+            # tester can read": refuse instead (fail closed).
+            raise GovernedRefusal(
+                "not_authorized",
+                "Bề mặt này cần phạm vi dữ liệu được gắn; không có phạm vi thì không truy vấn.",
+                {"surface": self.principal.surface},
+            )
         if self.principal.kind == "system" and self.principal.surface in _HUMAN_ONLY_SURFACES:
             raise GovernedRefusal(
                 "not_authorized",

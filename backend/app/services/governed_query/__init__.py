@@ -30,4 +30,4 @@ from app.services.governed_query.contracts import (  # noqa: F401
     RelationRef,
     SemanticAsk,
 )
-from app.services.governed_query.service import AI_SURFACES, GovernedQueryService  # noqa: F401
+from app.services.governed_query.service import HUMAN_RENDER_SURFACES, GovernedQueryService  # noqa: F401

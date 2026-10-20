@@ -132,7 +132,18 @@ def test_an_agent_flow_delegation_never_widens_a_governed_decision(db):
                                resource_id=2, action="read", created_by=OWNER))
     db.commit()
     for surface in ("analyst", "agent_flow", "studio_test"):
-        assert not _ctx(db, _user(ASKER), surface=surface).decide(Action.EXPLORE, _ds(db, 2)).allowed
+        # Studio Test requires its attachment ceiling; dataset 2 is IN it, so only
+        # the delegation could make it reachable - and it does not.
+        ceiling = [1, 2] if surface == "studio_test" else None
+        assert not _ctx(db, _user(ASKER), surface=surface, ceiling=ceiling).decide(Action.EXPLORE, _ds(db, 2)).allowed
+
+
+def test_studio_test_without_its_attachment_ceiling_is_refused(db):
+    """A Studio Test context built without the flow's attached datasets would mean
+    'everything the tester can read'. Refused (review of PR-1B, fail closed)."""
+    with pytest.raises(GovernedRefusal) as exc:
+        _ctx(db, _user(OWNER), surface="studio_test")
+    assert exc.value.code == "not_authorized"
 
 
 def test_the_owner_queries_their_own_dataset(db):

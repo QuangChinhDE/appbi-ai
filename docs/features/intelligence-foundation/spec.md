@@ -160,6 +160,7 @@ machine-readable, and every refusal is audited.
 | `column_excluded` | the spec references a GovernAIScope-excluded column for an AI surface |
 | `filter_would_drop` | the engine would drop ANY filter of the request: security, business, or a user filter that shapes what the question means (I-6) |
 | `unsupported_expression` | `calculated_fields`, `window_functions` or `measure_agg_overrides` in a request. First release: refused for EVERY principal, not only AI (I-5). PR-0C's AST allow-list protects the Direct Semantic API; it does not make AI-authored expression text acceptable here |
+| `invalid_filter` / `invalid_time_grain` | a filter outside the API contract or one the engine would skip; a grain outside day/week/month/quarter/year |
 | `semantic_refusal` | the engine refused the question on purpose (`SemanticRefusal.category`: FANOUT_RISK, UNRELATED_GRAIN, AMBIGUOUS_ROUTE, …). The grain and key guards are kept, not bypassed |
 | `budget_exceeded` / `cost_estimate_exceeded` | run, user or datasource budget; BQ dry-run estimate over cap |
 | `foreign_live_source` / `key_probe_failed` | from `execution_plan` / `relationship_key_guard`, passed through unchanged |
@@ -255,6 +256,35 @@ These are configured per deployment and workspace (ADR-016). Exceeding one retur
   - queries per run, per user per day, and concurrency per datasource (PR-1C);
   - cancellation (PR-1D).
   - `bytes_processed` is `None`: the executor does not report job bytes.
+- **Hardened after an independent review of the first draft (96472cd6).** Each item
+  below has a regression test that failed on the draft:
+  - **Grains:** a time grain is one of day, week, month, quarter or year. Anything
+    else is `invalid_time_grain`, because the engine interpolates the grain into
+    `DATE_TRUNC('<grain>', ...)` on Postgres and DuckDB.
+  - **Filters:** each filter is rebuilt as exactly `{operator, value}`. Internal
+    engine keys are never forwarded. Only the Direct Semantic API operators are
+    accepted. A None or blank value, an empty list or a non-finite number is
+    `invalid_filter`, because the engine would skip such a filter without recording
+    a drop.
+  - **Existence is not disclosed:** a missing explore, an explore no Dataset owns,
+    an operational Dataset and a forbidden one all get the same `not_authorized`
+    code, message and detail. No relation fact is decided before `explore` holds.
+  - **Composition:** a composed Dataset requires `explore` on every ancestor, and the
+    ancestors' AI-scope rules apply too.
+  - **AI scope is a closure walk (`ai_scope.py`), not a name check.** The walk reads
+    `sql`, `expression`, `where_sql`, `depends_on`, `source_columns`, measure
+    `filters`, `${x}`, bare identifiers, and role-play aliases. Exclusions authored as
+    labels are normalized (for example, "Giá vốn" matches `gia_von`). A ref the walk
+    cannot resolve is `policy_unenforceable`.
+  - **Output gate:** on any surface whose rows may reach a model, the result gate is
+    by identity. Every output column must be the alias of a requested ref.
+  - **Surfaces:** AI scope applies to every surface except `chart` (a person's own
+    render). Studio Test without its attachment ceiling is refused.
+  - **Bounds:** only Postgres, MySQL and BigQuery sources, whose executors enforce
+    the bounds. BigQuery queries that need relationship key probes are refused until
+    PR-1C bounds the probes; the probes run under the warehouse ceiling inside the
+    protected key guard. On Postgres and MySQL the probes keep the guard's own
+    30-second timeout.
 - **Not live.** Nothing outside the package imports it (`test_intelligence_gqs_core.py`
   fails if anything does). The durable ledger sink is PR-1E. Wiring a route or tool
   to it is PR-1G, after the Phase 1 gate.

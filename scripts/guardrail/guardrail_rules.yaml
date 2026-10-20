@@ -615,7 +615,7 @@ tests:
   intelligence_gqs_pg:
     requires: postgres
     run: "pytest backend/tests/test_intelligence_gqs_execution_pg.py"
-    locks: "a new question compiled by the existing engine returns the hand-computed answer with evidence; view/stranger/missing relation refused alike before any warehouse call; AI scope refuses selecting or filtering an excluded column; operational data and dataset-less explores refused; SQL escape hatches refused by name; a dropped filter refuses unless the user accepted it; no ledger or a failed audit write means nothing executes; a time bound is enforced and audited as timeout"
+    locks: "a new question compiled by the existing engine returns the hand-computed answer with evidence; view/stranger/missing relation refused alike before any warehouse call; AI scope refuses selecting or filtering an excluded column; operational data and dataset-less explores refused; SQL escape hatches refused by name; a dropped filter refuses unless the user accepted it; no ledger or a failed audit write means nothing executes; a time bound is enforced and audited as timeout; review regressions: a grain is one of five words (never SQL), filters are rebuilt as {operator, value} and an engine-skippable filter is refused, missing/ownerless/operational/forbidden relations look identical, composed parents need explore and carry their AI scope, the AI-scope walk follows expression/formulas/measure filters/bare refs/aliases, unbounded sources are refused"
   source_contracts:
     run: "pytest backend/tests/test_source_security.py backend/tests/test_source_invalidation.py"
     locks: "source outbound policy, stored-secret handling and cache invalidation on credential change"
