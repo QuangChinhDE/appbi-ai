@@ -35,6 +35,33 @@ import re
 logger = logging.getLogger(__name__)
 
 
+#: The ONLY time grains that may reach SQL generation. A grain is rendered as a
+#: SQL fragment (DATE_TRUNC / TIMESTAMP_TRUNC / DATE_FORMAT), so any value that is
+#: not one of these would be SQL syntax, not data. This is the render-boundary
+#: authority; `app.schemas.chart_config.check_role_config_shape` enforces the same
+#: five at the API layer, but the engine never trusts that an input was validated.
+VALID_TIME_GRAINS = frozenset({"day", "week", "month", "quarter", "year"})
+
+
+class InvalidTimeGrainError(ValueError):
+    """A time grain that is not one of VALID_TIME_GRAINS reached SQL generation.
+    A ValueError, so the chart/semantic layer surfaces it as a 400 refusal and
+    never a silent fall-back to another grain (which would answer a different
+    question than the one asked)."""
+
+
+def normalize_time_grain(grain: Any) -> str:
+    """Canonical lower-case grain, or raise. The one gate every render path for a
+    time grain passes through. It never maps an unknown value to a default."""
+    g = str(grain).strip().lower() if grain is not None else ""
+    if g not in VALID_TIME_GRAINS:
+        raise InvalidTimeGrainError(
+            f"Độ chi tiết thời gian không hợp lệ: {grain!r}. "
+            f"Chỉ chấp nhận: {', '.join(sorted(VALID_TIME_GRAINS))}."
+        )
+    return g
+
+
 class AmbiguousFieldError(ValueError):
     """Raised when a bare field reference (no view prefix) matches multiple
     views in the dataset. The chart layer catches this to surface a
@@ -1310,8 +1337,10 @@ class SemanticQueryEngine:
 
     @staticmethod
     def _truncate_date_sql(date_sql: str, grain: str, dialect: str) -> str:
-        """Start of the `grain` bucket of a DATE expression (ISO Monday weeks)."""
-        g = (grain or "day").lower()
+        """Start of the `grain` bucket of a DATE expression (ISO Monday weeks).
+        `grain` is validated here (not mapped to a default) so this helper is
+        safe even if a future caller reaches it without pre-validating."""
+        g = normalize_time_grain(grain)
         if dialect == "bigquery":
             if g == "day":
                 return date_sql
@@ -1327,8 +1356,6 @@ class SemanticQueryEngine:
             if g == "year":
                 return f"MAKEDATE(YEAR({date_sql}), 1)"
             return date_sql
-        if g not in {"day", "week", "month", "quarter", "year"}:
-            g = "day"
         return f"DATE_TRUNC('{g}', {date_sql})"
 
     def _render_dimension_with_time_grain(
@@ -1348,6 +1375,12 @@ class SemanticQueryEngine:
         start, matching ISO-8601 (which is what DATE_TRUNC('week', ...)
         does on PG/DuckDB).
         """
+        # THE render boundary for a time grain (SEC-13). Every path that turns a
+        # grain into SQL — dimension SELECT, WHERE, the instant/timezone path
+        # below, every dialect — passes here first. Validate once, up front, and
+        # use the normalized value everywhere: an unknown grain is a refusal, not
+        # a silent fall-back, and never reaches a SQL fragment.
+        grain = normalize_time_grain(grain)
         base_sql = self._render_dimension(field_ref, view_alias)
         dialect = (self.database_type or "").lower()
         # A time grain over a column that is PHYSICALLY TEXT is invalid SQL, not a
