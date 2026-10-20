@@ -56,8 +56,9 @@ class EffectivePrincipal:
     @classmethod
     def for_user(cls, user: Any, *, surface: Surface, request_id: Optional[str] = None) -> "EffectivePrincipal":
         """The principal of an authenticated request. A PAT is recognised by the
-        marker the auth layer stamps (`core.dependencies`); its caps are already
-        applied to `user.permissions`, so `authz.can` honours them."""
+        marker the auth layer stamps (`core.dependencies`). The auth layer has
+        already applied the PAT's caps to the caller's permission row, so
+        `authz.can` honours them; nothing here reads that row."""
         if user is None or getattr(user, "id", None) is None:
             raise GovernedRefusal("not_authenticated", "Cần đăng nhập để truy vấn dữ liệu.")
         from app.core.dependencies import PERSONAL_ACCESS_TOKEN_ID_ATTR
