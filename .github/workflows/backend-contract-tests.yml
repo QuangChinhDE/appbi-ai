@@ -114,7 +114,8 @@ jobs:
           python -m pytest -q --tb=short -rxX -p no:cacheprovider \
             tests/test_intelligence_phase0_security_repro.py \
             tests/test_intelligence_eval_harness.py \
-            tests/test_intelligence_calc_field_policy.py
+            tests/test_intelligence_calc_field_policy.py \
+            tests/test_intelligence_knowledge_quarantine.py
 
       - name: Run semantic-contract + engine unit tests (no BigQuery)
         # THE FAILURE HAS TO BE READABLE BY WHOEVER SEES IT GO RED.
@@ -761,6 +762,7 @@ jobs:
             tests/test_authz_workboard_rows_rls_pg.py \
             tests/test_intelligence_studio_test_scope_http_pg.py \
             tests/test_intelligence_table_preview_http_pg.py \
+            tests/test_intelligence_knowledge_quarantine_http_pg.py \
             --junitxml=/tmp/authz-pg.xml
 
       # EVERY MANDATORY SECURITY SUITE, NOT JUST THE FIRST.

@@ -72,6 +72,58 @@ def _check_status(status: str | None) -> str:
     return s
 
 
+#: Knowledge whose management and revocation surface no longer exists (ADR-014,
+#: PO decision 2026-10-20: QUARANTINE).
+#:
+#: The screens for Rules, Playbooks, Verified Q&A and AI Instructions were removed
+#: and their routes answer 404 (`metadata_catalog/api.py: _DELETED_PREFIXES`).
+#: Their Approved/active rows were still injected into every prompt as authoritative
+#: ("PHẢI neo", "TUÂN THỦ"), and nobody could edit or revoke them (SEC-10).
+#:
+#: While a kind is listed here it is NOT used as model context. Nothing is deleted:
+#: the rows stay, and `knowledge_quarantine_inventory` lists them for review. A kind
+#: leaves this set only in the change that ships a governed surface able to review
+#: and revoke it (Business Context Studio, Phase 4) — and that change re-reviews
+#: the rows; it does not simply re-enable them.
+#:
+#: NOT quarantined, on purpose: GovernAIScope (`scope_exclusions`) is a SECURITY
+#: policy that hides columns from the AI. It keeps being enforced, fail-closed;
+#: quarantining it would WIDEN what the AI reads. Data caveats are governed on the
+#: dataset screens and keep being injected.
+QUARANTINED_KINDS = frozenset({"rule", "playbook", "qa", "instruction"})
+
+
+def is_quarantined(kind: str) -> bool:
+    return kind in QUARANTINED_KINDS
+
+
+def knowledge_quarantine_inventory(db: Session) -> dict[str, Any]:
+    """Every row that WOULD be authoritative AI context but is quarantined.
+
+    Read-only, for review. Names and ids only, never answer bodies or rule text,
+    so the listing cannot itself become a second injection path."""
+    def rows(model, status_col, live):
+        return db.query(model).filter(status_col.in_(live)).order_by(model.id).all()
+
+    kinds = {
+        "rule": (GovernRule, GovernRule.status, ("Approved",), lambda r: r.name),
+        "playbook": (GovernPlaybook, GovernPlaybook.status, ("Approved",), lambda r: r.name),
+        "qa": (GovernVerifiedQA, GovernVerifiedQA.status, ("Approved",), lambda r: (r.question or "")[:120]),
+        "instruction": (GovernAIInstruction, GovernAIInstruction.status, ("active",),
+                        lambda r: f"{r.scope}:{r.scope_id or 0} v{r.version}"),
+    }
+    out: dict[str, Any] = {"quarantined_kinds": sorted(QUARANTINED_KINDS), "items": {}, "counts": {}}
+    for kind, (model, col, live, label) in kinds.items():
+        found = rows(model, col, live)
+        out["counts"][kind] = len(found)
+        out["items"][kind] = [
+            {"id": r.id, "label": label(r), "status": r.status, "quarantined": is_quarantined(kind)}
+            for r in found
+        ]
+    out["total"] = sum(out["counts"].values())
+    return out
+
+
 class GovernanceAIService:
     # ═══ serializers ════════════════════════════════════════════════════════
     @staticmethod
@@ -853,6 +905,8 @@ class GovernanceAIService:
     # ═══ Bot-injection helpers (called from knowledge_context; all fail-open) ═
     @staticmethod
     def active_instructions(db: Session, dataset_ids: set[int], dashboard_id: int | None) -> list[GovernAIInstruction]:
+        if is_quarantined("instruction"):
+            return []
         q = db.query(GovernAIInstruction).filter(GovernAIInstruction.status == "active")
         rows = q.all()
         out = []
@@ -869,7 +923,11 @@ class GovernanceAIService:
 
     @staticmethod
     def guidance_for(db: Session, dataset_ids: set[int], metric_names: set[str]) -> tuple[list[GovernRule], list[GovernPlaybook]]:
-        """Approved rules/playbooks whose bindings overlap this dashboard's data."""
+        """Approved rules/playbooks whose bindings overlap this dashboard's data.
+
+        Quarantined kinds contribute nothing (ADR-014): see `QUARANTINED_KINDS`."""
+        if is_quarantined("rule") and is_quarantined("playbook"):
+            return [], []
         folded_metrics = {_fold(m) for m in metric_names}
         rules: list[GovernRule] = []
         for r in db.query(GovernRule).filter(GovernRule.status == "Approved").all():
@@ -918,7 +976,9 @@ class GovernanceAIService:
     @staticmethod
     def qa_match(db: Session, dashboard_id: int | None, question: str) -> GovernVerifiedQA | None:
         """Trigger-phrase match (folded substring, phrase >= 4 chars). Dashboard-
-        scoped rows win over global rows."""
+        scoped rows win over global rows. None while Verified Q&A is quarantined."""
+        if is_quarantined("qa"):
+            return None
         fq = _fold(question)
         if not fq:
             return None
