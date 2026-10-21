@@ -259,3 +259,29 @@ def test_naming_the_dataset_is_not_a_missing_field():
     assert is_function_phrase("slow archive", has_time=False, source_words=syllables("Rig Slow Archive"))
     p, why = ground(_plan(["l.net_sales"], ["c.region"]), "Doanh số theo vùng trong Commerce")
     assert p is not None, why
+
+
+def test_an_identifier_or_a_numeric_column_is_not_a_breakdown_unless_named():
+    ex = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="c",
+                        source_type="postgresql", label="C", fields=[
+                            CatalogField("c.customer_count", "measure", "count_distinct", "Số khách hàng"),
+                            CatalogField("c.segment", "dimension", "string", "Phân khúc khách hàng"),
+                            CatalogField("c.customer_id", "dimension", "string", "customer id"),
+                            CatalogField("l.quantity", "dimension", "number", "quantity")])
+    p = Plan(explore=ex, dimensions=["c.segment", "c.customer_id"], measures=["c.customer_count"],
+             covered={"khách": "c.customer_id"})
+    out, why = ground(p, "Mỗi phân khúc khách hàng có bao nhiêu khách?", covered=p.covered)
+    assert out is not None and out.dimensions == ["c.segment"], why
+    p = Plan(explore=ex, dimensions=["c.segment", "l.quantity"], measures=["c.customer_count"],
+             covered={"bao nhiêu cái": "l.quantity"})
+    out, _ = ground(p, "Số khách hàng theo phân khúc khách hàng", covered=p.covered)
+    assert out.dimensions == ["c.segment"]
+
+
+def test_a_value_inside_a_breakdown_phrase_is_a_filter():
+    p = _plan(["l.net_sales"], ["o.channel", "p.category"],
+              covered={"kênh Online": "o.channel", "ngành hàng": "p.category", "doanh số": "l.net_sales"})
+    out, why = ground(p, "Doanh số kênh Online theo ngành hàng", covered=p.covered,
+                      value_lookup=lambda q, words, used: ("o.channel", "Online") if "online" in words else None)
+    assert out is not None, why
+    assert out.dimensions == ["p.category"] and out.filters == {"o.channel": {"operator": "eq", "value": "Online"}}
