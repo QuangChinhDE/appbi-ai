@@ -251,3 +251,11 @@ def test_a_value_that_exists_nowhere_is_a_choice_before_anything_runs():
     p = _plan(["c.customer_count"], filters={"c.segment": {"operator": "eq", "value": "Đối tác"}})
     fixed, options = _check_filter_values(p, _values(["Cá nhân", "Doanh nghiệp"]))
     assert fixed is None and options == ["Cá nhân", "Doanh nghiệp"]
+
+
+def test_naming_the_dataset_is_not_a_missing_field():
+    from app.services.analyst.grounding import is_function_phrase, syllables
+
+    assert is_function_phrase("slow archive", has_time=False, source_words=syllables("Rig Slow Archive"))
+    p, why = ground(_plan(["l.net_sales"], ["c.region"]), "Doanh số theo vùng trong Commerce")
+    assert p is not None, why

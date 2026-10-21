@@ -225,7 +225,10 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
             ref = None
             from app.services.analyst.grounding import is_function_phrase
 
-            if is_function_phrase(phrase, has_time=bool(grains)):
+            from app.services.analyst.grounding import syllables as _syl
+
+            if is_function_phrase(phrase, has_time=bool(grains),
+                                  source_words=_syl(explore.dataset_name) | _syl(explore.label)):
                 continue  # "biến động ra sao", "tổng cộng", "theo tháng" name no field
         if ref is None or ref not in in_plan:
             return Unsupported(f"Dữ liệu bạn được dùng không có trường cho “{str(phrase)[:80]}”, "
