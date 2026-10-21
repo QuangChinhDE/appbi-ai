@@ -201,7 +201,7 @@ def test_a_turn_id_must_be_plain_hex(client, db, world):  # noqa: F811
     assert r.status_code == 422
 
 
-def test_a_consent_is_issued_to_the_caller_only(client, db, world):  # noqa: F811
+def test_a_consent_is_issued_to_the_caller_only(client, db, world, consent_on):  # noqa: F811
     from app.services.governed_query import GovernedRefusal, consent
 
     _grant_module(db, world["analyst"])
@@ -284,6 +284,31 @@ def test_no_preset_but_admin_grants_the_analyst():
 
 # ── PO gate 5: accepting a dropped filter re-runs the SAME validated plan ──────
 
+@pytest.fixture()
+def consent_on(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ANALYST_DROP_CONSENT_ENABLED", True)
+
+
+def test_accepting_a_dropped_filter_is_off_by_default(client, db, world, model, one_drop):  # noqa: F811
+    """The pilot default: a dropped filter is a plain refusal; no consent can be
+    issued or spent until the consent journey is certified."""
+    _grant_module(db, world["analyst"])
+    v = world["v"]
+    model(_planner(world, dims=("order_date",), extra={"filters": {f"{v}.region": {"operator": "eq", "value": "Bắc"}}}))
+    refused = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                          json={"question": "Doanh thu miền Bắc theo tháng?"}).json()
+    assert refused["code"] == "filter_would_drop" and refused["consent_available"] is False
+    d = refused["detail"]
+    r = client.post("/api/v1/analyst/consents", headers=world["analyst"].headers,
+                    json={"query_fingerprint": d["query_fingerprint"], "fields": [x["field"] for x in d["dropped"]]})
+    assert r.status_code == 403
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "x", "drop_consent": "v1.a.b", "consented_plan": refused["plan"]}).json()
+    assert body["status"] == "unsupported" and "rows" not in body
+
+
 def _drop_turn(client, world, model):  # noqa: F811
     v = world["v"]
     model(_planner(world, dims=("order_date",), extra={"filters": {f"{v}.region": {"operator": "eq", "value": "Bắc"}}}))
@@ -301,7 +326,7 @@ def _never_called(*_a, **_k):
     raise AssertionError("the model must not be asked again when a consent is spent")
 
 
-def test_an_accepted_drop_runs_the_refused_plan_without_asking_the_model(client, db, world, model, one_drop):  # noqa: F811
+def test_an_accepted_drop_runs_the_refused_plan_without_asking_the_model(client, db, world, model, one_drop, consent_on):  # noqa: F811
     _grant_module(db, world["analyst"])
     refused, token = _drop_turn(client, world, model)
     model(_never_called)
@@ -319,7 +344,7 @@ def test_an_accepted_drop_runs_the_refused_plan_without_asking_the_model(client,
     assert again["status"] == "refused" and "rows" not in again
 
 
-def test_a_changed_plan_cannot_spend_the_consent(client, db, world, model, one_drop):  # noqa: F811
+def test_a_changed_plan_cannot_spend_the_consent(client, db, world, model, one_drop, consent_on):  # noqa: F811
     _grant_module(db, world["analyst"])
     refused, token = _drop_turn(client, world, model)
     model(_never_called)
@@ -330,7 +355,7 @@ def test_a_changed_plan_cannot_spend_the_consent(client, db, world, model, one_d
     assert body["status"] == "refused" and body["code"] == "consent_invalid" and "rows" not in body, body
 
 
-def test_a_plan_outside_the_catalog_is_refused_even_with_a_consent(client, db, world, model, one_drop):  # noqa: F811
+def test_a_plan_outside_the_catalog_is_refused_even_with_a_consent(client, db, world, model, one_drop, consent_on):  # noqa: F811
     _grant_module(db, world["analyst"])
     refused, token = _drop_turn(client, world, model)
     model(_never_called)
@@ -341,7 +366,7 @@ def test_a_plan_outside_the_catalog_is_refused_even_with_a_consent(client, db, w
         assert body["status"] == "unsupported" and "rows" not in body, body
 
 
-def test_a_consented_plan_after_the_grant_is_revoked_returns_nothing(client, db, world, model, one_drop):  # noqa: F811
+def test_a_consented_plan_after_the_grant_is_revoked_returns_nothing(client, db, world, model, one_drop, consent_on):  # noqa: F811
     from app.models.dataset import DatasetGrant
 
     _grant_module(db, world["analyst"])
@@ -355,7 +380,7 @@ def test_a_consented_plan_after_the_grant_is_revoked_returns_nothing(client, db,
     assert body["status"] == "unsupported" and "rows" not in body
 
 
-def test_another_persons_consent_is_refused(client, db, world, model, one_drop):  # noqa: F811
+def test_another_persons_consent_is_refused(client, db, world, model, one_drop, consent_on):  # noqa: F811
     _grant_module(db, world["analyst"], world["owner"])
     refused, _mine = _drop_turn(client, world, model)
     d = refused["detail"]

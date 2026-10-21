@@ -73,6 +73,8 @@ export interface AnalystTurn {
   message?: string;
   options?: string[];
   code?: string;
+  /** The server allows accepting this dropped filter (ANALYST_DROP_CONSENT_ENABLED). */
+  consent_available?: boolean;
   detail?: { dropped?: { field: string; reason: string }[]; query_fingerprint?: string; [k: string]: unknown };
   plan?: Record<string, unknown>;
   answer?: AnalystAnswer;

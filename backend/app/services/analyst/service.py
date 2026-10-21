@@ -57,6 +57,9 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     question = (question or "").strip()
     if not question:
         return {"status": "unsupported", "message": "Hãy nhập câu hỏi."}
+    consent_enabled = bool(getattr(settings, "ANALYST_DROP_CONSENT_ENABLED", False))
+    if not consent_enabled and (drop_consent or consented_plan is not None):
+        return {"status": "unsupported", "message": "Chấp nhận bỏ bộ lọc chưa được bật trong giai đoạn thử nghiệm."}
     turn_id = turn_id or uuid.uuid4().hex
     principal = EffectivePrincipal.for_user(user, surface="analyst", request_id=turn_id)
     authz = AuthorizationContext(db=db, principal=principal, user=user,
@@ -159,7 +162,8 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     except GovernedRefusal as refusal:
         steps.append({"step": "governed_query", "detail": f"Từ chối: {refusal.code}"})
         return {"status": "refused", "turn_id": turn_id, "steps": steps, "code": refusal.code,
-                "message": refusal.message_vi, "detail": _safe_detail(refusal), "plan": p.as_dict()}
+                "message": refusal.message_vi, "detail": _safe_detail(refusal), "plan": p.as_dict(),
+                "consent_available": consent_enabled and refusal.code == "filter_would_drop"}
     ev = result.evidence
     steps.append({"step": "governed_query", "detail": f"{ev.rows_returned} dòng · {ev.duration_ms} ms",
                   "query_id": ev.query_id})

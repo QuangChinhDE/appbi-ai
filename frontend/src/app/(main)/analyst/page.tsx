@@ -287,9 +287,11 @@ function ExchangeCard({ ex, locale, onAccept, onOption }: {
                   {turn.detail.dropped.map((d) => <li key={d.field}>{d.field} — {d.reason}</li>)}
                 </ul>
                 <p className="mt-2 text-xs text-[#5f6368]">{t('analyst.dropBody')}</p>
-                <button type="button" onClick={onAccept} data-testid="analyst-accept-drop"
+                {turn.consent_available ? (
+                  <button type="button" onClick={onAccept} data-testid="analyst-accept-drop"
                         className="mt-2 rounded-md border border-[#1a73e8] px-3 py-1.5 text-sm text-[#1a73e8] hover:bg-[#e8f0fe]">
                   {t('analyst.dropAccept')}</button>
+                ) : null}
               </>
             ) : null}
           </div>
