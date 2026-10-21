@@ -14,7 +14,8 @@ from typing import Any, Callable, Optional
 
 from app.services.analyst import narrative
 from app.services.analyst.catalog import discover
-from app.services.analyst.planner import Clarify, Plan, Unsupported, describe_plan, plan as make_plan, validate
+from app.services.analyst.planner import (Clarify, Plan, Unsupported, describe_plan, plan as make_plan, retarget,
+                                          validate)
 from app.services.governed_query.principal import GovernedRefusal
 
 
@@ -63,13 +64,15 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     steps = []
 
     catalog = discover(authz)
+    full_catalog = list(catalog)
     prev_explore = (previous or {}).get("explore_id") if isinstance(previous, dict) else None
     if prev_explore is not None:
         # A follow-up refines the previous answer. Real-model run: "and by quarter?"
         # jumped to an unrelated dataset. The follow-up is held to the previous
         # explore (still re-authorised: it must be in THIS turn's catalog); a new
         # topic is a new question, not a follow-up.
-        same = [c for c in catalog if c.explore_id == prev_explore]
+        prev_ds = next((c.dataset_id for c in catalog if c.explore_id == prev_explore), None)
+        same = [c for c in catalog if c.dataset_id == prev_ds]  # the same Dataset, any of its explores
         if not same:
             return {"status": "unsupported", "turn_id": turn_id, "steps": steps,
                     "message": "Nguồn dữ liệu của câu hỏi trước không còn trong phạm vi bạn được dùng."}
@@ -93,7 +96,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
                 "options": outcome.options}
     if isinstance(outcome, Unsupported):
         return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": outcome.reason}
-    p: Plan = outcome
+    p: Plan = retarget(outcome, full_catalog)
     if consented_plan is None:
         # The plan must answer THE QUESTION, not just use permitted fields.
         from app.services.analyst.grounding import ground
@@ -101,7 +104,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         carried = [*(previous or {}).get("dimensions", []), *(previous or {}).get("measures", []),
                    *((previous or {}).get("filters") or {}).keys()] if isinstance(previous, dict) else []
         p, why = ground(p, question, carried=carried, covered=p.covered,
-                        value_lookup=lambda q, words, used: _find_value_filter(authz, principal, outcome, q, words,
+                        value_lookup=lambda q, words, used: _find_value_filter(authz, principal, p, q, words,
                                                                                used, settings, turn_id, deps))
         if p is None:
             return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": why}

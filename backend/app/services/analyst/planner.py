@@ -83,8 +83,38 @@ SYSTEM = (
 )
 
 
+def prompt_catalog(catalog: list[CatalogExplore]) -> list[CatalogExplore]:
+    """ONE entry per dataset for the model. With multi-hop reach every explore of a
+    dataset offers nearly the same fields; making the model pick among five
+    look-alikes was a source of wrong picks (holdout). The server picks the
+    explore afterwards (`retarget`)."""
+    best: dict[int, CatalogExplore] = {}
+    for c in catalog:
+        cur = best.get(c.dataset_id)
+        if cur is None or (len(c.fields), -c.explore_id) > (len(cur.fields), -cur.explore_id):
+            best[c.dataset_id] = c
+    return sorted(best.values(), key=lambda c: c.explore_id)
+
+
+def retarget(p: "Plan", catalog: list[CatalogExplore]) -> "Plan":
+    """Run the plan from the explore whose BASE is the fact that owns its measure,
+    when that explore reaches every field the plan uses. From a dimension base
+    (customers) the engine left-joins the facts and returns empty groups for
+    customers without orders (holdout D03/D04); from the fact base it does not."""
+    from dataclasses import replace as _replace
+
+    if not p.measures:
+        return p
+    fact = p.measures[0].rsplit(".", 1)[0]
+    used = {*p.dimensions, *p.measures, *p.filters}
+    for c in sorted(catalog, key=lambda c: c.explore_id):
+        if c.dataset_id == p.explore.dataset_id and c.base_view == fact and used <= {f.ref for f in c.fields}:
+            return p if c.explore_id == p.explore.explore_id else _replace(p, explore=c)
+    return p
+
+
 def build_prompt(question: str, catalog: list[CatalogExplore], previous: Optional[dict]) -> str:
-    body = {"question": question, "catalog": [c.as_prompt() for c in catalog]}
+    body = {"question": question, "catalog": [c.as_prompt() for c in prompt_catalog(catalog)]}
     if previous:
         body["previous_plan"] = previous  # a follow-up refines the last answer
     return json.dumps(body, ensure_ascii=False)

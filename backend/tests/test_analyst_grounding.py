@@ -162,3 +162,31 @@ def test_a_value_the_plan_left_out_becomes_its_filter_only_when_one_field_has_it
     p, why = ground(_plan(["l.net_sales"], ["c.region"]), "Doanh số theo vùng của ngành Nội thất",
                     value_lookup=lambda *_a: None)
     assert p is None and "Nội" in why
+
+
+def _ex(eid, base, refs, ds=1):
+    return CatalogExplore(explore_id=eid, model_id=1, dataset_id=ds, dataset_name=f"D{ds}", dataset_table_id=eid,
+                          base_view=base, source_type="postgresql", label=f"D{ds}",
+                          fields=[CatalogField(r, "measure" if r.endswith(("sales", "count")) else "dimension",
+                                               "sum", r) for r in refs])
+
+
+def test_the_model_sees_one_entry_per_dataset():
+    from app.services.analyst.planner import prompt_catalog
+
+    cat = [_ex(4, "c", ["c.region", "l.net_sales"]), _ex(6, "o", ["o.channel", "c.region", "l.net_sales"]),
+           _ex(9, "m", ["m.spend_sales"], ds=2)]
+    assert [c.explore_id for c in prompt_catalog(cat)] == [6, 9]
+
+
+def test_the_plan_runs_from_the_explore_whose_base_owns_the_measure():
+    from app.services.analyst.planner import retarget
+
+    cust = _ex(4, "c", ["c.region", "o.order_date", "l.net_sales"])
+    lines = _ex(7, "l", ["c.region", "o.order_date", "l.net_sales", "p.category"])
+    p = Plan(explore=cust, dimensions=["c.region"], measures=["l.net_sales"])
+    assert retarget(p, [cust, lines]).explore.explore_id == 7
+    # not when the fact explore cannot reach a field the plan uses
+    p2 = Plan(explore=cust, dimensions=["c.only_here"], measures=["l.net_sales"])
+    cust.fields.append(CatalogField("c.only_here", "dimension", "string", "x"))
+    assert retarget(p2, [cust, lines]).explore.explore_id == 4
