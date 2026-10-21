@@ -159,13 +159,23 @@ def _ancestors(db, dataset_id: int) -> list[int]:
 
 
 def _joined_views(db, explore, dataset_ids: list[int]) -> list:
-    """Views the explore joins, resolved inside its own Dataset lineage only (a
-    view name is not unique across models)."""
+    """Every view the explore's base can reach through the model's relationships
+    (multi-hop, the same graph the query engine and the chart builder walk), resolved
+    inside its own Dataset lineage only (a view name is not unique across models).
+
+    Holdout run: listing only the explore's DIRECT joins hid `customers.region`
+    from an order-lines explore (order_lines -> orders -> customers), so "sales by
+    region" was answered "not in the data" although the engine can answer it."""
     from app.models.dataset import DatasetTable
     from app.models.semantic import SemanticView
+    from app.services.semantic_join_resolver import SemanticJoinResolver
 
-    names = [str(j.get("view") or j.get("name") or "") for j in (explore.joins or []) if isinstance(j, dict)]
-    names = [n for n in names if n]
+    base = db.get(SemanticView, explore.base_view_id) if explore.base_view_id else None
+    if base is None or explore.model is None:
+        return []
+    resolver = SemanticJoinResolver(db, explore.model, base.name, bidirectional=True)
+    # Role-played aliases are left out: a catalog ref is `<view>.<field>`.
+    names = [n for n in resolver.reachable_nodes() if resolver.view_for_node(n) == n and n != base.name]
     if not names:
         return []
     return (db.query(SemanticView).join(DatasetTable, DatasetTable.id == SemanticView.dataset_table_id)

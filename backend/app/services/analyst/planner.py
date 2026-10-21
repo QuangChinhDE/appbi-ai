@@ -69,6 +69,9 @@ SYSTEM = (
     "covered (or return unsupported); never answer a different question. "
     "When previous_plan is given, the question refines it: keep its measures, dimensions and filters and "
     "change only what the question changes. "
+    "An explicit period in the question (năm 2025, quý 1/2026, tháng 3/2025) is answered by grouping: include the "
+    "time dimension in dimensions with that grain (year, quarter or month); the answer then names that period. "
+    "Do not filter dates: a date range is not available in governed queries yet. "
     "Do not invent date filters for words like 'recent'; return the trend and say so in interpretation."
 )
 
@@ -139,7 +142,9 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
     grains = {}
     for raw_ref, g in (raw.get("time_grains") or {}).items():
         ref = resolve(raw_ref, dims)
-        if ref is None or g not in GRAINS or ref not in d:
+        if ref is not None and g in GRAINS and ref not in d:
+            continue  # a grain on a field only used as a filter (holdout: "năm 2025") groups nothing
+        if ref is None or g not in GRAINS:
             return Unsupported("Độ chi tiết thời gian của kế hoạch không hợp lệ.")
         if not is_time(dims[ref]):
             return Unsupported(f"Trường “{dims[ref].label}” chưa được khai báo kiểu ngày/giờ trong mô hình ngữ nghĩa, "

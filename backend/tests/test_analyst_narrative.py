@@ -99,3 +99,11 @@ def test_daily_grain_is_not_collapsed_into_months():
     story = describe(COLS, rows, time_ref="v.order_date", truncated=False, grain="day", today=AFTER)
     assert story["periods"]["window"] == ["2026-10-01", "2026-10-02", "2026-10-03"]
     assert "1 → 4" in story["headline"]
+
+
+def test_one_complete_period_with_groups_ranks_the_groups_in_it():
+    rows = [{"d": "2025-01-01", "c": "Nam", "r": 30.0}, {"d": "2025-01-01", "c": "Bắc", "r": 10.0},
+            {"d": "2026-01-01", "c": "Nam", "r": 1.0}]
+    story = describe(COLS, rows, time_ref="v.order_date", truncated=False, grain="year", today=date(2026, 10, 21))
+    assert story["periods"]["window"] == ["2025"] and story["periods"]["partial"] == ["2026"]
+    assert story["bullets"][:2] == ["Nam: 30 (75.0%)", "Bắc: 10 (25.0%)"]

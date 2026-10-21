@@ -187,6 +187,13 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date) -> dict:
                     + (f" ({change:+.1f}%)." if change is not None else "."))
     facts = [{"claim": f"total {L0}", "value": t0}, {"claim": f"total {L1}", "value": t1}]
     bullets = []
+    if ccol and len(window) == 1:
+        # One complete period asked for ("theo vùng năm 2025"): rank the groups in it.
+        known = sorted(((k, s[last]) for k, s in series.items() if s.get(last) is not None),
+                       key=lambda kv: kv[1], reverse=True)
+        for k, v in known[:5]:
+            bullets.append(f"{k}: {fmt(v)}" + (f" ({v / t1 * 100:.1f}%)" if t1 else ""))
+            facts.append({"claim": f"{k} {L1}", "value": v})
     if ccol and len(window) >= 2:
         moves = []
         for k, s in series.items():

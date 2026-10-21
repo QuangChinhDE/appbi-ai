@@ -107,3 +107,16 @@ def test_a_breakdown_the_model_could_not_map_is_refused_by_name():
 def test_a_covered_phrase_must_point_into_the_plan():
     out = validate(_raw(dimensions=["items.seller_id"], covered={"tỉnh": "orders.status"}), [_explore()])
     assert isinstance(out, Unsupported) and "tỉnh" in out.reason
+
+
+def test_a_grain_on_a_field_used_only_as_a_filter_is_ignored_not_a_refusal():
+    """Holdout: "doanh số theo vùng năm 2025" — the model put a year grain on the
+    date it filtered by but did not group by; the whole question was refused."""
+    out = validate(_raw(dimensions=["items.seller_id"], time_grains={"orders.purchased_at": "year"}), [_explore()])
+    assert isinstance(out, Plan) and out.time_grains == {}
+
+
+def test_a_date_range_operator_is_not_in_the_governed_contract():
+    out = validate(_raw(filters={"orders.purchased_at": {"operator": "between", "value": ["2025-01-01", "2025-12-31"]}}),
+                   [_explore()])
+    assert isinstance(out, Unsupported)

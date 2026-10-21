@@ -639,6 +639,9 @@ tests:
   analyst_planner:
     run: "pytest backend/tests/test_analyst_planner.py"
     locks: "the server validates the model's plan against the person's catalog: a wrongly view-qualified field is resolved only when its name is unique in the explore, an ambiguous or unknown field is refused, a grain on a string-typed field is refused naming the field, and an empty result under a filter is reported as no match (naming field and values), never as an answer (all from the real-model BigQuery evaluation)"
+  analyst_catalog_reach:
+    run: "pytest backend/tests/test_analyst_catalog_reach.py"
+    locks: "the Analyst catalog offers every view the base can reach through the model relationships (multi-hop, the engine's own resolver), inside the explore's Dataset lineage only"
   analyst_http_pg:
     requires: postgres
     run: "pytest backend/tests/test_analyst_http_pg.py"
