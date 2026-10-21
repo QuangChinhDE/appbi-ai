@@ -556,7 +556,7 @@ features:
                "surface ceiling", refusal]
     invariants: []
     required_tests: [intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_cancel_pg,
-                     intelligence_gqs_ledger_schema_pg, intelligence_security_ledger]
+                     intelligence_gqs_ledger_schema_pg, intelligence_gqs_mysql, intelligence_security_ledger]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -613,6 +613,10 @@ tests:
   intelligence_gqs:
     run: "pytest backend/tests/test_intelligence_effective_principal.py backend/tests/test_intelligence_gqs_core.py"
     locks: "one intersection-only scope formula on the real authz core: querying needs explore (view is not enough), the surface ceiling only narrows, an Agent Flow delegation never widens a governed decision, PAT is a subset of the person, a system principal cannot answer for a person, a failed AI-scope lookup refuses; bounds are min(policy, requested); the AI BigQuery bytes limit is its own and only a BigQuery job carries it; GQS is imported by nothing outside its package (not live)"
+  intelligence_gqs_mysql:
+    requires: mysql
+    run: "pytest backend/tests/test_intelligence_gqs_mysql_runtime.py"
+    locks: "on a real MySQL: the executor's server-side row cap holds, the READ ONLY transaction refuses a write, KILL QUERY from a second connection stops a running statement early, and a different MySQL user cannot kill it"
   intelligence_gqs_ledger_schema_pg:
     requires: postgres
     run: "pytest backend/tests/test_intelligence_gqs_ledger_schema_pg.py"

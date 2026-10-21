@@ -460,7 +460,7 @@ class GovernedQueryService:
 
     def _run(self, compiled: CompiledQuery):
         from app.services.datasource_service import DataSourceConnectionService
-        from app.services.governed_query.cancellation import REGISTRY, PostgresCanceller
+        from app.services.governed_query.cancellation import REGISTRY, MySQLCanceller, PostgresCanceller
         from app.services.relationship_key_guard import verify_key_probes
 
         ds = compiled.datasource
@@ -479,7 +479,11 @@ class GovernedQueryService:
         def _register(backend_id):
             # The engine reports which backend runs the statement; from here a
             # cancel arriving on another request can stop it (PR-1D).
-            registry.register(qid, PostgresCanceller(ds.config, backend_id))
+            if compiled.ds_type == "mysql":
+                cid = backend_id.get("connection_id") if isinstance(backend_id, dict) else None
+                registry.register(qid, MySQLCanceller(ds.config, cid))
+            else:
+                registry.register(qid, PostgresCanceller(ds.config, backend_id))
 
         try:
             columns, rows, _elapsed = DataSourceConnectionService.execute_query(
@@ -490,7 +494,7 @@ class GovernedQueryService:
                 timeout_seconds=b.timeout_seconds,
                 max_rows=b.max_rows + 1,
                 maximum_bytes_billed=b.bq_max_bytes if compiled.ds_type == "bigquery" else None,
-                on_backend_id=_register if compiled.ds_type == "postgresql" else None,
+                on_backend_id=_register if compiled.ds_type in ("postgresql", "mysql") else None,
             )
         except Exception as exc:  # noqa: BLE001 - classify, then re-raise
             # A cancelled statement surfaces as the driver's "query cancelled"

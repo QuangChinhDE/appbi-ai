@@ -1105,6 +1105,7 @@ class DataSourceConnectionService:
             elif ds_type == DataSourceType.MYSQL.value:
                 result = DataSourceConnectionService._execute_mysql(
                     config, sql_query, limit, timeout_seconds, query_params, max_rows=max_rows,
+                    on_backend_id=on_backend_id,
                 )
             elif ds_type == DataSourceType.BIGQUERY.value:
                 result = DataSourceConnectionService._execute_bigquery(
@@ -1612,8 +1613,13 @@ class DataSourceConnectionService:
         timeout_seconds: int = 30,
         query_params: list = None,
         max_rows: Optional[int] = None,
+        on_backend_id: Optional[Callable[[Any], None]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Execute a (validated) SELECT against MySQL in a READ ONLY transaction."""
+        """Execute a (validated) SELECT against MySQL in a READ ONLY transaction.
+
+        ``on_backend_id`` (optional) receives this connection's CONNECTION_ID()
+        so the Governed Query Service can KILL QUERY it from another connection.
+        Default ``None`` — unchanged for every other caller."""
         conn = None
         cursor = None
         try:
@@ -1628,6 +1634,10 @@ class DataSourceConnectionService:
                 write_timeout=timeout_seconds
             )
             cursor = conn.cursor()
+            if on_backend_id is not None:
+                cursor.execute("SELECT CONNECTION_ID()")
+                _cid_row = cursor.fetchone()
+                on_backend_id({"connection_id": _cid_row[0]} if _cid_row else None)
             cursor.execute("START TRANSACTION READ ONLY")
 
             # Apply limit if specified

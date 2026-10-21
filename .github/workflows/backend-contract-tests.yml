@@ -669,6 +669,17 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_semantic_cross_view_formula_mysql_pg.py
+      # GQS executor bounds + cancellation on this job's real MySQL 8.4: the row
+      # cap, the READ ONLY refusal, KILL QUERY stopping a running statement, and
+      # another MySQL user unable to kill it. GQS_MYSQL_REQUIRED makes a missing
+      # MySQL a failure, never a skip.
+      - name: "GATE — GQS bounds + cancellation on MySQL"
+        env:
+          GQS_MYSQL_ROOT_URL: "mysql://root:appbi@127.0.0.1:3306"
+          GQS_MYSQL_REQUIRED: "1"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_intelligence_gqs_mysql_runtime.py
   # ── Authorization / security gate ─────────────────────────────────────────
   #
   # EVERY MODULE MOUNTED, PINNED DEPENDENCIES, REAL POSTGRES ROLES.
