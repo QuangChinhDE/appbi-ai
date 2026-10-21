@@ -190,3 +190,31 @@ def test_the_plan_runs_from_the_explore_whose_base_owns_the_measure():
     p2 = Plan(explore=cust, dimensions=["c.only_here"], measures=["l.net_sales"])
     cust.fields.append(CatalogField("c.only_here", "dimension", "string", "x"))
     assert retarget(p2, [cust, lines]).explore.explore_id == 4
+
+
+def test_a_bridged_identifier_yields_to_the_field_the_question_names():
+    ex = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="l",
+                        source_type="postgresql", label="C", fields=[
+                            CatalogField("l.units", "measure", "sum", "Số lượng bán"),
+                            CatalogField("p.product_id", "dimension", "string", "product id"),
+                            CatalogField("p.product_name", "dimension", "string", "Tên sản phẩm")])
+    p = Plan(explore=ex, dimensions=["p.product_id"], measures=["l.units"],
+             covered={"sản phẩm": "p.product_id", "số lượng bán": "l.units"})
+    out, why = ground(p, "Số lượng bán theo sản phẩm", covered=p.covered)
+    assert out is not None and out.dimensions == ["p.product_name"], why
+
+
+def test_a_metric_another_dataset_names_word_for_word_is_a_choice():
+    from app.services.analyst.grounding import other_source_named
+
+    sales = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="Sales", dataset_table_id=1,
+                           base_view="i", source_type="postgresql", label="Sales",
+                           fields=[CatalogField("i.revenue", "measure", "sum", "Revenue")])
+    commerce = CatalogExplore(explore_id=2, model_id=2, dataset_id=2, dataset_name="Commerce", dataset_table_id=2,
+                              base_view="l", source_type="postgresql", label="Commerce",
+                              fields=[CatalogField("l.net_sales", "measure", "sum", "Doanh số")])
+    p = Plan(explore=sales, dimensions=[], measures=["i.revenue"])
+    assert other_source_named(p, "Xu hướng doanh số theo tháng", [sales, commerce]) == \
+        ["Revenue — Sales", "Doanh số — Commerce"]
+    # "doanh thu" only shares a word with "Doanh số": not a second match
+    assert other_source_named(p, "Doanh thu các nhóm sản phẩm theo tháng", [sales, commerce]) == []

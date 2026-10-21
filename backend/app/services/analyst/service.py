@@ -108,6 +108,13 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
                                                                                used, settings, turn_id, deps))
         if p is None:
             return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": why}
+        from app.services.analyst.grounding import other_source_named
+        from app.services.analyst.planner import prompt_catalog
+
+        both = other_source_named(p, question, prompt_catalog(full_catalog)) if prev_explore is None else []
+        if both:
+            return {"status": "clarify", "turn_id": turn_id, "steps": steps, "options": both[:6],
+                    "message": "Câu hỏi khớp với chỉ số ở nhiều nguồn dữ liệu. Bạn muốn dùng chỉ số nào?"}
     steps.append({"step": "plan", "detail": p.interpretation or "Đã chọn chỉ số, chiều và độ chi tiết thời gian.",
                   "source": p.explore.dataset_name})
 

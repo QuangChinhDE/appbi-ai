@@ -34,6 +34,7 @@ giup hay hien hoi hon khac khi khong kia la lam lai luon ma moi mot muon nao nay
 nhat nua o phai qua ra roi sang sao se so sanh ta tai tat the theo thi thu thuc tinh to toan trong tu tung
 va van ve vi voi xem xin tong cong hang tach them rieng bang danh sach liet ke the nao the hien bao nhieu
 dang ky tu den gan day nhat cao thap lon nho manh yeu tang giam bien dong xu huong ket qua phan tich thay
+mang lai dem nhieu it
 """.split())
 # Words that are explained by grouping on a time field.
 _TIME = set("ngay tuan thang quy nam thoi gian gan day xu huong bien dong".split())
@@ -104,6 +105,68 @@ def _vietnamese(field) -> bool:
     return any(fold(t) != str(t or "").lower() for t in texts)
 
 
+def _lexical(field, q: set[str], qf: str) -> bool:
+    return _mentioned(field, q, qf)
+
+
+def _swap_bridged(plan, q, qf, phrases, carried):
+    """A field reached only through the model's bridge yields to the ONE field of the
+    same kind the question names word for word (holdout: "sản phẩm" bridged to the
+    identifier `product id` while the explore has "Tên sản phẩm")."""
+    from dataclasses import replace as _replace
+
+    by_ref = {f.ref: f for f in plan.explore.fields}
+    used = {*plan.dimensions, *plan.measures, *plan.filters}
+
+    def swap(refs, kind):
+        out = []
+        for ref in refs:
+            f = by_ref.get(ref)
+            if f is None or ref in carried or _lexical(f, q, qf) or ref not in phrases:
+                out.append(ref)
+                continue
+            cands = [c for c in plan.explore.fields if c.kind == kind and c.ref not in used and c.ref != ref
+                     and _lexical(c, q, qf) and (_field_words(c) - _GENERIC) & phrases[ref]]
+            if kind == "dimension":
+                from app.services.analyst.catalog import is_identifier
+
+                cands = [c for c in cands if not is_identifier(c)]
+            out.append(cands[0].ref if len(cands) == 1 else ref)
+        return out
+
+    dims, meas = swap(plan.dimensions, "dimension"), swap(plan.measures, "measure")
+    if dims == plan.dimensions and meas == plan.measures:
+        return plan
+    grains = {(dims[plan.dimensions.index(r)] if r in plan.dimensions else r): g for r, g in plan.time_grains.items()}
+    return _replace(plan, dimensions=dims, measures=meas, time_grains=grains)
+
+
+def other_source_named(plan, question: str, others) -> list[str]:
+    """When the plan's metric is reached only through the model's bridge and ANOTHER
+    dataset has a metric the question names word for word, the question fits both:
+    the person chooses (holdout set 2: "doanh số" answered from "Revenue" of one
+    dataset while another dataset has "Doanh số")."""
+    q = syllables(question)
+    qf = " ".join(re.split(r"[^0-9a-z]+", fold(question))).strip()
+    by_ref = {f.ref: f for f in plan.explore.fields}
+    if any(m in by_ref and _lexical(by_ref[m], q, qf) for m in plan.measures):
+        return []
+    named = []
+    for ex in others:
+        if ex.dataset_id == plan.explore.dataset_id:
+            continue
+        for f in ex.fields:
+            label = " ".join(w for w in re.split(r"[^0-9a-z]+", fold(f.label)) if w)
+            # the WHOLE label, as written, is in the question ("doanh số" in "xu hướng
+            # doanh số"; not "doanh thu", which only shares a word)
+            if f.kind == "measure" and label and f" {label} " in f" {qf} ":
+                named.append(f"{f.label} — {ex.dataset_name}")
+    if not named:
+        return []
+    mine = [f"{by_ref[m].label} — {plan.explore.dataset_name}" for m in plan.measures if m in by_ref]
+    return list(dict.fromkeys(mine + named))
+
+
 def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | None = None,
            value_lookup=None):
     """Return (plan, None) when the plan answers the question, possibly with unasked
@@ -117,6 +180,7 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
     carried = set(carried)
     by_ref = {f.ref: f for f in plan.explore.fields}
     phrases = _valid_phrases(covered or {}, question, q, by_ref)
+    plan = _swap_bridged(plan, q, qf, phrases, carried)
     has_time_words = bool(q & _TIME)
 
     def mentioned(ref):
