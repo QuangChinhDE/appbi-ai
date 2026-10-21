@@ -104,6 +104,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         carried = [*(previous or {}).get("dimensions", []), *(previous or {}).get("measures", []),
                    *((previous or {}).get("filters") or {}).keys()] if isinstance(previous, dict) else []
         p, why = ground(p, question, carried=carried, covered=p.covered,
+                        previous=previous if isinstance(previous, dict) else None,
                         value_lookup=lambda q, words, used: _find_value_filter(authz, principal, p, q, words,
                                                                                used, settings, turn_id, deps))
         if p is None:
@@ -137,23 +138,24 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
 
     gqs = GovernedQueryService(authz, audit=deps.ledger, cancel_registry=deps.registry)
     try:
-        result = gqs.execute(main_request(p))
-        if not result.rows and p.filters and consented_plan is None:
-            # The model writes a filter value as the question says it ("bị huỷ",
-            # "hoàn tất"); the data says "Huỷ" / "Hoàn tất". Look the field's real
-            # values up through GQS (this person's rights, ledgered) and re-run only
-            # when EVERY filter has exactly one real value that matches it.
-            repaired, options = _repair_filter_values(
+        if p.filters and consented_plan is None:
+            # A filter value must EXIST in the data before the query runs. The model
+            # writes values as the question says them ("bị huỷ", "khách hàng cá nhân");
+            # a value that matches nothing returns COUNT 0 / an empty SUM that reads
+            # like a fact (holdout set 3: "Số khách hàng: 0"). The field's real values
+            # are read through GQS (this person's rights, ledgered): each filter value
+            # is replaced by the ONE real value matching it, or the person chooses.
+            checked, options = _check_filter_values(
                 p, lambda ref: gqs.execute(governed([ref], p.measures[:1], {}, [], {}, 200)))
-            if repaired is not None:
-                steps.append({"step": "verify", "detail": "Giá trị bộ lọc được khớp với dữ liệu: " + "; ".join(
-                    f"{labels_of(p).get(r, r)} = {c['value']}" for r, c in repaired.filters.items())})
-                p = repaired
-                result = gqs.execute(main_request(p))
-            elif options:
+            if checked is None:
                 return {"status": "clarify", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
                         "message": "Giá trị bạn lọc không có trong dữ liệu. Bạn muốn chọn giá trị nào?",
                         "options": options[:10]}
+            if checked.filters != p.filters:
+                steps.append({"step": "verify", "detail": "Giá trị bộ lọc được khớp với dữ liệu: " + "; ".join(
+                    f"{labels_of(p).get(r, r)} = {c['value']}" for r, c in checked.filters.items())})
+            p = checked
+        result = gqs.execute(main_request(p))
     except GovernedRefusal as refusal:
         steps.append({"step": "governed_query", "detail": f"Từ chối: {refusal.code}"})
         return {"status": "refused", "turn_id": turn_id, "steps": steps, "code": refusal.code,
@@ -166,7 +168,9 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     columns = [{"name": c.name, "ref": c.ref, "role": c.role, "label": labels.get(c.ref or "", c.name)}
                for c in result.columns]
     rows = [{c["name"]: _jsonable(r.get(c["name"])) for c in columns} for r in result.rows]
-    if not rows and p.filters:
+    measure_cols = [c["name"] for c in columns if c["role"] == "measure"]
+    no_value = all(r.get(n) is None for r in rows for n in measure_cols)  # SUM over nothing is one NULL row
+    if p.filters and (not rows or no_value):
         # Zero rows under a filter is not "the answer is nothing": the model may
         # have put the question's words on a field that does not mean them
         # (real-model eval: ad channels written into seller_id). Say exactly what
@@ -247,9 +251,10 @@ def labels_of(p: Plan) -> dict:
     return {f.ref: f.label for f in p.explore.fields}
 
 
-def _repair_filter_values(p: Plan, values_of):
-    """(plan with every eq/in filter value replaced by the ONE real value matching it
-    after folding case and tone marks, or None; the real values when none matched)."""
+def _check_filter_values(p: Plan, values_of):
+    """(plan with every text eq/in filter value replaced by the ONE real value matching
+    it after folding case and tone marks; or None and the field's real values when a
+    value matches none or several). Non-text and other operators pass unchanged."""
     from dataclasses import replace as _replace
 
     from app.services.analyst.grounding import fold
@@ -259,8 +264,15 @@ def _repair_filter_values(p: Plan, values_of):
         op, value = cond.get("operator"), cond.get("value")
         wanted = value if isinstance(value, list) else [value]
         if op not in ("eq", "in") or not all(isinstance(v, str) for v in wanted):
-            return None, []
-        res = values_of(ref)
+            new_filters[ref] = cond
+            continue
+        try:
+            res = values_of(ref)
+        except GovernedRefusal:
+            # The lookup could not run (budget, a refusal of its own): the value is
+            # kept as written and the empty-result check after the query still holds.
+            new_filters[ref] = cond
+            continue
         col = next((c.name for c in res.columns if c.ref == ref), None)
         real = sorted({str(r.get(col)) for r in res.rows if r.get(col) is not None}) if col else []
         fixed = []
@@ -272,7 +284,7 @@ def _repair_filter_values(p: Plan, values_of):
             fixed.append(near[0])
         new_filters[ref] = {"operator": op, "value": fixed if isinstance(value, list) else fixed[0]}
     if new_filters == p.filters:
-        return None, []
+        return p, []
     out = _replace(p, filters=new_filters)
     out.interpretation = describe_plan(out)
     return out, []
