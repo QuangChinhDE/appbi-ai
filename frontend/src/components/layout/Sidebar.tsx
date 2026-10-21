@@ -98,7 +98,7 @@ const NAV_GROUPS: NavGroup[] = [
     labelKey: 'sidebar.group.intelligence',
     items: [
       ...(ANALYST_MODULE_ENABLED
-        ? [{ labelKey: 'sidebar.nav.analyst', href: '/analyst', icon: <Sparkles className="h-4 w-4" />, module: 'explore_charts' as const }]
+        ? [{ labelKey: 'sidebar.nav.analyst', href: '/analyst', icon: <Sparkles className="h-4 w-4" />, module: 'analyst' as const }]
         : []),
       { labelKey: 'sidebar.nav.knowledgeHub', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
       { labelKey: 'sidebar.nav.agentFlows', href: '/agent-flows', icon: <Workflow className="h-4 w-4" />, module: 'agent_flows' },

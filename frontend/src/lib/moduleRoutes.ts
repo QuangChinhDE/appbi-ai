@@ -23,7 +23,7 @@ export const ROUTE_MODULES: ReadonlyArray<readonly [string, ModuleKey]> = [
   ['/datasets', 'datasets'],
   ['/explore', 'explore_charts'],
   // The Analyst answers through GQS; its module gate is exploration.
-  ['/analyst', 'explore_charts'],
+  ['/analyst', 'analyst'],
   ['/dashboards', 'dashboards'],
   ['/observability', 'observability'],
   ['/govern', 'govern'],

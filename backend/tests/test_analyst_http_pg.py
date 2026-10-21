@@ -60,7 +60,17 @@ def model(monkeypatch):
 
 def _grant_module(db, *who):  # noqa: F811
     for p in who:
-        set_permissions(db, p, datasets="edit", explore_charts="view")
+        set_permissions(db, p, datasets="edit", explore_charts="view", analyst="view")
+
+
+@pytest.fixture(autouse=True)
+def pilot(monkeypatch, world):  # noqa: F811
+    """Every person in the world is on the pilot allowlist unless a test says otherwise."""
+    from app.core.config import settings
+
+    emails = [p.email for p in world.values() if hasattr(p, "email") and hasattr(p, "headers")]
+    monkeypatch.setattr(settings, "ANALYST_PILOT_ALLOWLIST", ",".join(e.upper() for e in emails))
+    return emails
 
 
 def _ledger_rows(run_id):
@@ -214,3 +224,52 @@ def test_a_follow_up_stays_on_the_previous_source(client, db, world, model):  # 
     again = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
                         json={"question": "Còn theo quý?", "previous_plan": first["plan"]}).json()
     assert again["status"] == "answered" and again["plan"]["explore_id"] == world["explore"].id
+
+
+# ── PO gate 4: a dedicated, fail-closed pilot permission ─────────────────────
+
+def _ask(client, who):  # noqa: F811
+    return client.post("/api/v1/analyst/ask", headers=who.headers, json={"question": "Doanh thu theo vùng?"})
+
+
+def test_explore_without_the_analyst_permission_is_403(client, db, world, model):  # noqa: F811
+    set_permissions(db, world["analyst"], datasets="edit", explore_charts="full")
+    model(_planner(world))
+    assert _ask(client, world["analyst"]).status_code == 403
+    assert client.get("/api/v1/analyst/catalog", headers=world["analyst"].headers).status_code == 403
+
+
+def test_the_analyst_permission_without_explore_is_403(client, db, world, model):  # noqa: F811
+    set_permissions(db, world["analyst"], datasets="edit", analyst="view")
+    model(_planner(world))
+    assert _ask(client, world["analyst"]).status_code == 403
+
+
+def test_off_the_allowlist_is_403_and_an_empty_allowlist_admits_nobody(client, db, world, model, monkeypatch):  # noqa: F811
+    from app.core.config import settings
+
+    _grant_module(db, world["analyst"])
+    model(_planner(world))
+    assert _ask(client, world["analyst"]).json()["status"] == "answered"
+    monkeypatch.setattr(settings, "ANALYST_PILOT_ALLOWLIST", "someone-else@x.test")
+    assert _ask(client, world["analyst"]).status_code == 403
+    monkeypatch.setattr(settings, "ANALYST_PILOT_ALLOWLIST", "")
+    r = _ask(client, world["analyst"])
+    assert r.status_code == 403 and "rows" not in r.text
+
+
+def test_revoking_the_analyst_permission_applies_to_the_next_request(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    model(_planner(world))
+    assert _ask(client, world["analyst"]).json()["status"] == "answered"
+    set_permissions(db, world["analyst"], datasets="edit", explore_charts="view", analyst="none")
+    assert _ask(client, world["analyst"]).status_code == 403
+    turn = uuid.uuid4().hex
+    assert client.post(f"/api/v1/analyst/turns/{turn}/cancel", headers=world["analyst"].headers).status_code == 403
+
+
+def test_no_preset_but_admin_grants_the_analyst():
+    from app.api.permissions import PRESETS
+
+    assert PRESETS["admin"].get("analyst") == "view"
+    assert all(PRESETS[p].get("analyst", "none") == "none" for p in ("editor", "viewer", "minimal"))

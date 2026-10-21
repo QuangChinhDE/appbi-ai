@@ -1,8 +1,9 @@
 """AppBI Analyst API (M2 MVP). Mounted only when ANALYST_ENABLED.
 
-Authenticated only. The module gate is `explore_charts: view` (the Analyst is
-exploration); the per-Dataset decision is made by the Governed Query Service on
-every read. Nothing here executes SQL: `ask` goes through GQS, the ledger and the
+Gate (every route, router level): `analyst: view` AND `explore_charts: view` AND
+the e-mail in ANALYST_PILOT_ALLOWLIST (empty = nobody). The per-Dataset decision
+(EXPLORE relation, GovernAIScope) is made by the Governed Query Service on every
+read. Nothing here executes SQL: `ask` goes through GQS, the ledger and the
 server's budgets.
 
   GET  /analyst/catalog                 what this person may ask about
@@ -24,7 +25,26 @@ from app.core.database import get_db
 from app.core.dependencies import require_permission
 from app.models.user import User
 
-router = APIRouter(prefix="/analyst", tags=["analyst"])
+def _pilot_allowlist() -> set[str]:
+    from app.core.config import settings
+
+    raw = str(getattr(settings, "ANALYST_PILOT_ALLOWLIST", "") or "")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def require_analyst(user: User = Depends(require_permission("analyst", "view")),
+                    _explore: User = Depends(require_permission("explore_charts", "view"))) -> User:
+    """Who may use the Analyst at all: the `analyst` module permission AND
+    `explore_charts: view` AND the pilot allowlist. Read from the stored user on
+    every request, so a revocation applies to the next request. Which DATA a
+    question may touch is decided after this, per dataset (EXPLORE relation and
+    GovernAIScope in services/analyst/catalog.py)."""
+    if str(getattr(user, "email", "") or "").strip().lower() not in _pilot_allowlist():
+        raise HTTPException(status_code=403, detail="The Analyst pilot is not enabled for this account.")
+    return user
+
+
+router = APIRouter(prefix="/analyst", tags=["analyst"], dependencies=[Depends(require_analyst)])
 
 _TURN = re.compile(r"^[0-9a-f]{32}$")
 _lock = threading.Lock()
@@ -66,7 +86,7 @@ def _turn(turn_id: Optional[str]) -> Optional[str]:
 
 @router.get("/catalog")
 def catalog(db: Session = Depends(get_db),
-            user: User = Depends(require_permission("explore_charts", "view"))) -> dict[str, Any]:
+            user: User = Depends(require_analyst)) -> dict[str, Any]:
     from app.services.analyst.catalog import discover
     from app.services.governed_query import AuthorizationContext, EffectivePrincipal
 
@@ -80,7 +100,7 @@ def catalog(db: Session = Depends(get_db),
 
 @router.post("/ask")
 def ask(body: AskBody, db: Session = Depends(get_db),
-        user: User = Depends(require_permission("explore_charts", "view"))) -> dict[str, Any]:
+        user: User = Depends(require_analyst)) -> dict[str, Any]:
     from app.services.analyst.service import ask as run_turn
 
     previous = body.previous_plan if isinstance(body.previous_plan, dict) else None
@@ -90,7 +110,7 @@ def ask(body: AskBody, db: Session = Depends(get_db),
 
 @router.post("/consents")
 def consent(body: ConsentBody,
-            user: User = Depends(require_permission("explore_charts", "view"))) -> dict[str, Any]:
+            user: User = Depends(require_analyst)) -> dict[str, Any]:
     """Called by the person's own click in the UI. The token is bound to this
     user and this exact query; GQS verifies it and the ledger spends it once."""
     from app.services.governed_query import consent as c
@@ -100,7 +120,7 @@ def consent(body: ConsentBody,
 
 
 @router.post("/turns/{turn_id}/cancel")
-def cancel(turn_id: str, user: User = Depends(require_permission("explore_charts", "view"))) -> dict[str, Any]:
+def cancel(turn_id: str, user: User = Depends(require_analyst)) -> dict[str, Any]:
     _turn(turn_id)
     marked = _analyst_deps().ledger.request_cancel_run(turn_id, requested_by=user.id)
     return {"cancel_requested": marked}

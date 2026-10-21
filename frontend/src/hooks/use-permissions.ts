@@ -10,6 +10,7 @@ export type ModuleKey =
   | 'agent_flows'
   | 'chat'
   | 'observability'
+  | 'analyst'
   | 'explore_charts'
   | 'dashboards'
   | 'workboards'
