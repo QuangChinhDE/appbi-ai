@@ -45,10 +45,10 @@ def _jsonb_on_sqlite(_type, _compiler, **_kw):
 
 OWNER = uuid.UUID(int=1)
 COLS = [
-    {"name": "order_id", "type": "string"},
-    {"name": "order_date", "type": "string"},  # a date stored as text
-    {"name": "category", "type": "string"},
-    {"name": "revenue", "type": "number"},
+    {"name": "order_id", "type": "string", "source_type": "STRING"},
+    {"name": "order_date", "type": "string", "source_type": "STRING"},  # a date stored as text (BigQuery)
+    {"name": "category", "type": "string", "source_type": "STRING"},
+    {"name": "revenue", "type": "number", "source_type": "NUMERIC"},
 ]
 
 
@@ -181,3 +181,54 @@ def test_a_schema_round_trip_is_not_an_edit():
     stored = [{"name": "store_id", "type": "string", "sql": "${TABLE}.store_id"}]
     dumped = [DimensionDefinition(**d).model_dump() for d in stored]
     assert "user_edited" not in dms.stamp_authored_dimensions(dumped, stored)[0]
+
+
+# ── a declared DATE over a physically STRING column (PO: fail closed) ─────────
+
+def _engine_over(dims, dialect):
+    from types import SimpleNamespace
+
+    from app.services.semantic_query_engine import SemanticQueryEngine
+
+    engine = SemanticQueryEngine(db=None, database_type=dialect)  # type: ignore[arg-type]
+    engine.views_cache = {"orders": SimpleNamespace(measures=[], dimensions=dims, table_name="orders", name="orders")}
+    return engine
+
+
+def test_a_declared_date_on_a_text_column_keeps_its_physical_type_through_put_and_sync(db):
+    before = _dims(db)["order_date"].get("source_type")
+    assert before, "the generator records the physical type"
+    _author(db, order_date={"type": "date", "label": "Ngày đặt"})
+    assert _dims(db)["order_date"]["source_type"] == before  # the PUT schema dropped it; carried over
+    _resync(db)
+    d = _dims(db)["order_date"]
+    assert d["type"] == "date" and d["source_type"] == before and d.get("user_edited") is True
+
+
+@pytest.mark.parametrize("grain", ["day", "week", "month", "quarter", "year"])
+def test_bigquery_never_truncates_a_text_column_without_the_safe_conversion(db, grain):
+    _author(db, order_date={"type": "date"})
+    for moment in ("right after the edit", "after the next sync"):
+        if moment == "after the next sync":
+            _resync(db)
+        sql = _engine_over(_view(db).dimensions, "bigquery")._render_dimension_with_time_grain(
+            "orders.order_date", "orders", grain)
+        inner = sql.split("TIMESTAMP_TRUNC(", 1)[1]
+        assert "SAFE" in inner and not inner.startswith("orders.order_date"), (moment, sql)
+
+
+def test_the_physical_type_follows_the_source_even_for_an_edited_dimension(db):
+    _author(db, order_date={"type": "date"})
+    _set_columns(db, [{**c, "type": "date", "source_type": "DATE"} if c["name"] == "order_date" else c for c in COLS])
+    _resync(db)
+    d = _dims(db)["order_date"]
+    gen = {x["name"]: x for x in dms._classify_columns(db.get(DatasetTable, 11).columns_cache)[0]}["order_date"]
+    assert d.get("source_type") == gen.get("source_type")
+
+
+def test_legacy_unflagged_metadata_is_kept_but_its_type_follows_the_source():
+    generated = [{"name": "c", "type": "string", "sql": "c", "label": "C", "source_type": "string"}]
+    legacy = [{"name": "c", "type": "date", "sql": "c", "label": "Nhóm", "description": "do người viết"}]
+    [m] = dms.merge_synced_dimensions(generated, legacy)
+    assert m["label"] == "Nhóm" and m["description"] == "do người viết"
+    assert m["type"] == "string" and m["source_type"] == "string" and "user_edited" not in m

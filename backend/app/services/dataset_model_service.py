@@ -1092,6 +1092,9 @@ def _allocate_unique_semantic_model_name(
 # dimension's authored keys change; sync then keeps that definition instead of
 # regenerating it. Column visibility stays with the dataset table.
 _AUTHORABLE_DIMENSION_KEYS = ("type", "sql", "label", "description", "parent")
+# Facts about the physical column: always the generator's, edited or not.
+_GENERATOR_OWNED_DIMENSION_KEYS = ("hidden", "source_type")
+_LEGACY_DESCRIPTIVE_KEYS = ("label", "description", "parent")
 
 
 def _authored_part(dim: dict) -> dict:
@@ -1122,6 +1125,13 @@ def stamp_authored_dimensions(incoming: list[dict], stored: list[dict] | None) -
             continue
         dim = {k: v for k, v in dim.items() if k != "user_edited"}
         prev = stored_by_name.get(str(dim.get("name") or ""))
+        # The PUT schema drops generator-owned keys; carry them over from the
+        # stored dimension. `source_type` is how the engine knows a column is
+        # physically text and must be converted before a time grain — losing
+        # it sent TIMESTAMP_TRUNC(STRING) to BigQuery.
+        for k in _GENERATOR_OWNED_DIMENSION_KEYS:
+            if k != "hidden" and prev is not None and k in prev:
+                dim[k] = prev[k]
         if prev is None or prev.get("user_edited") or _authored_part(prev) != _authored_part(dim):
             dim["user_edited"] = True
         out.append(dim)
@@ -1138,12 +1148,24 @@ def merge_synced_dimensions(generated: list[dict], existing: list[dict] | None) 
     merged: list[dict] = []
     for item in generated:
         kept = existing_by_name.get(str(item.get("name") or ""))
-        if kept is None or not kept.get("user_edited"):
+        if kept is None:
             merged.append(item)
             continue
+        if not kept.get("user_edited"):
+            # Stored before the flag existed. Every earlier sync rewrote the
+            # generated label/description/parent, so one that differs now was
+            # written by a person: keep it. Its type stays the generator's —
+            # a legacy type difference cannot be told apart from a source change.
+            legacy = {k: kept[k] for k in _LEGACY_DESCRIPTIVE_KEYS
+                      if kept.get(k) not in (None, "") and kept.get(k) != item.get(k)}
+            merged.append({**item, **legacy} if legacy else item)
+            continue
         kept = dict(kept)
-        if "hidden" in item:
-            kept["hidden"] = item["hidden"]
+        for k in _GENERATOR_OWNED_DIMENSION_KEYS:
+            if k in item:
+                kept[k] = item[k]
+            else:
+                kept.pop(k, None)
         merged.append(kept)
     return merged
 

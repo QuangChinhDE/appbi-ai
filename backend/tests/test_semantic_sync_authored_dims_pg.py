@@ -89,3 +89,30 @@ def test_authored_dimensions_survive_generate_model_on_every_surface(pg, http):
         r = client.get(f"/api/v1/public/dashboards/{tokens['plain']}/charts/{chart.id}/data")
         assert r.status_code == 200, r.text
         assert _month_rows(r.json()["data"]) == MONTHLY
+
+
+def test_a_declared_date_over_text_buckets_parseable_values_and_never_guesses(pg):
+    """PO gate 1.2, executed on Postgres: a DATE declared over a TEXT column is
+    bucketed through the engine's safe conversion; a malformed, empty or NULL
+    value lands in the NULL bucket (counted, visible), never in a guessed period
+    and never as a query error."""
+    from types import SimpleNamespace
+
+    import sqlalchemy as sa
+
+    from app.services.semantic_query_engine import SemanticQueryEngine
+
+    dims = [{"name": "order_date", "type": "date", "sql": "order_date", "source_type": "text", "user_edited": True}]
+    eng = SemanticQueryEngine(db=None, database_type="postgresql")  # type: ignore[arg-type]
+    eng.views_cache = {"orders": SimpleNamespace(measures=[], dimensions=dims, table_name="orders", name="orders")}
+    values = ["2024-03-15", "2024-03-15T23:30:00", "2024-03-31 23:59:59", "15/03/2024", "not a date", "", None,
+              " 2024-04-01 "]
+    with pg.connect() as c:
+        c.execute(sa.text("CREATE TEMP TABLE orders (order_date text)"))
+        for v in values:
+            c.execute(sa.text("INSERT INTO orders VALUES (:v)"), {"v": v})
+        expr = eng._render_dimension_with_time_grain("orders.order_date", "orders", "month")
+        rows = dict(c.execute(sa.text(f"SELECT {expr} AS b, COUNT(*) FROM orders GROUP BY 1")).all())
+    months = {str(k)[:7]: n for k, n in rows.items() if k is not None}
+    assert months == {"2024-03": 3, "2024-04": 1}, rows
+    assert rows.get(None) == 4  # 15/03/2024, 'not a date', '' and NULL: unknown, not a month
