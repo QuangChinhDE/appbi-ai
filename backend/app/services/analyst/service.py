@@ -120,7 +120,8 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
                 "message": no_match_message(p), "evidence": {"query_id": ev.query_id}}
     time_ref = next(iter(p.time_grains), None)
-    story = narrative.describe(columns, rows, time_ref=time_ref, truncated=result.truncated)
+    story = narrative.describe(columns, rows, time_ref=time_ref, truncated=result.truncated,
+                               grain=p.time_grains.get(time_ref) if time_ref else None)
     steps.append({"step": "verify", "detail": "; ".join(c["detail"] for c in story["checks"])})
     draft = None if p.filters else narrative.chart_draft(p, draft_title(question))
     return {
