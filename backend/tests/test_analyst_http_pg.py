@@ -31,7 +31,7 @@ import pytest
 import sqlalchemy as sa
 
 from tests.authz_http import client, db, make_user, set_permissions  # noqa: F401 - fixtures
-from tests.test_intelligence_gqs_execution_pg import SCHEMA, _owner_url, world  # noqa: F401 - fixtures
+from tests.test_intelligence_gqs_execution_pg import SCHEMA, _owner_url, one_drop, world  # noqa: F401 - fixtures
 
 pytestmark = pytest.mark.pg
 
@@ -273,3 +273,98 @@ def test_no_preset_but_admin_grants_the_analyst():
 
     assert PRESETS["admin"].get("analyst") == "view"
     assert all(PRESETS[p].get("analyst", "none") == "none" for p in ("editor", "viewer", "minimal"))
+
+
+# ── PO gate 5: accepting a dropped filter re-runs the SAME validated plan ──────
+
+def _drop_turn(client, world, model):  # noqa: F811
+    v = world["v"]
+    model(_planner(world, dims=("order_date",), extra={"filters": {f"{v}.region": {"operator": "eq", "value": "Bắc"}}}))
+    refused = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                          json={"question": "Doanh thu miền Bắc theo tháng?"}).json()
+    assert refused["status"] == "refused" and refused["code"] == "filter_would_drop", refused
+    d = refused["detail"]
+    token = client.post("/api/v1/analyst/consents", headers=world["analyst"].headers,
+                        json={"query_fingerprint": d["query_fingerprint"],
+                              "fields": [x["field"] for x in d["dropped"]]}).json()["drop_consent"]
+    return refused, token
+
+
+def _never_called(*_a, **_k):
+    raise AssertionError("the model must not be asked again when a consent is spent")
+
+
+def test_an_accepted_drop_runs_the_refused_plan_without_asking_the_model(client, db, world, model, one_drop):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    refused, token = _drop_turn(client, world, model)
+    model(_never_called)
+    turn = uuid.uuid4().hex
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Doanh thu miền Bắc theo tháng?", "turn_id": turn,
+                             "drop_consent": token, "consented_plan": refused["plan"]}).json()
+    assert body["status"] == "answered", body
+    dropped = body["evidence"]["filters_dropped"]
+    assert [x["field"] for x in dropped] == [one_drop] and all(x["accepted_by_user"] for x in dropped)
+    # the same consent cannot be spent twice
+    again = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                        json={"question": "Doanh thu miền Bắc theo tháng?", "drop_consent": token,
+                              "consented_plan": refused["plan"]}).json()
+    assert again["status"] == "refused" and "rows" not in again
+
+
+def test_a_changed_plan_cannot_spend_the_consent(client, db, world, model, one_drop):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    refused, token = _drop_turn(client, world, model)
+    model(_never_called)
+    wider = {**refused["plan"], "dimensions": [f"{world['v']}.order_date", f"{world['v']}.region"],
+             "time_grains": {f"{world['v']}.order_date": "month"}}
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "x", "drop_consent": token, "consented_plan": wider}).json()
+    assert body["status"] == "refused" and body["code"] == "consent_invalid" and "rows" not in body, body
+
+
+def test_a_plan_outside_the_catalog_is_refused_even_with_a_consent(client, db, world, model, one_drop):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    refused, token = _drop_turn(client, world, model)
+    model(_never_called)
+    for bad in ({**refused["plan"], "explore_id": 999999999},
+                {**refused["plan"], "measures": ["other_view.secret"]}):
+        body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                           json={"question": "x", "drop_consent": token, "consented_plan": bad}).json()
+        assert body["status"] == "unsupported" and "rows" not in body, body
+
+
+def test_a_consented_plan_after_the_grant_is_revoked_returns_nothing(client, db, world, model, one_drop):  # noqa: F811
+    from app.models.dataset import DatasetGrant
+
+    _grant_module(db, world["analyst"])
+    refused, token = _drop_turn(client, world, model)
+    model(_never_called)
+    db.query(DatasetGrant).filter(DatasetGrant.dataset_id == world["ds"].id,
+                                  DatasetGrant.user_id == world["analyst"].id).delete()
+    db.commit()
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "x", "drop_consent": token, "consented_plan": refused["plan"]}).json()
+    assert body["status"] == "unsupported" and "rows" not in body
+
+
+def test_another_persons_consent_is_refused(client, db, world, model, one_drop):  # noqa: F811
+    _grant_module(db, world["analyst"], world["owner"])
+    refused, _mine = _drop_turn(client, world, model)
+    d = refused["detail"]
+    owners = client.post("/api/v1/analyst/consents", headers=world["owner"].headers,
+                         json={"query_fingerprint": d["query_fingerprint"],
+                               "fields": [x["field"] for x in d["dropped"]]}).json()["drop_consent"]
+    model(_never_called)
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "x", "drop_consent": owners, "consented_plan": refused["plan"]}).json()
+    assert body["status"] == "refused" and body["code"] == "consent_invalid"
+
+
+def test_a_plan_without_a_consent_is_not_a_way_around_the_model(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    model(_never_called)
+    plan = {"explore_id": world["explore"].id, "dimensions": [], "measures": [f"{world['v']}.revenue"]}
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "x", "consented_plan": plan}).json()
+    assert body["status"] == "unsupported" and "rows" not in body

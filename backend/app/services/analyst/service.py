@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional
 
 from app.services.analyst import narrative
 from app.services.analyst.catalog import discover
-from app.services.analyst.planner import Clarify, Plan, Unsupported, plan as make_plan
+from app.services.analyst.planner import Clarify, Plan, Unsupported, plan as make_plan, validate
 from app.services.governed_query.principal import GovernedRefusal
 
 
@@ -44,7 +44,7 @@ def ledger_from_settings():
 
 def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] = None,
         drop_consent: Optional[str] = None, turn_id: Optional[str] = None,
-        ceiling_dataset_ids: Optional[list[int]] = None) -> dict:
+        ceiling_dataset_ids: Optional[list[int]] = None, consented_plan: Optional[dict] = None) -> dict:
     """One turn. `ceiling_dataset_ids` scopes the Analyst to a set of Datasets
     (a workspace); it can only NARROW what the person may read, never widen it."""
     from app.core.config import settings
@@ -75,7 +75,19 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
                     "message": "Nguồn dữ liệu của câu hỏi trước không còn trong phạm vi bạn được dùng."}
         catalog = same
     steps.append({"step": "discovery", "detail": f"{len(catalog)} nguồn ngữ nghĩa bạn được phép khai thác"})
-    outcome = make_plan(question, catalog, previous=previous, complete=deps.complete)
+    if consented_plan is not None:
+        # Accepting a dropped filter re-runs THE plan the person saw, not a new
+        # one: the model is not asked again (it could plan something else and
+        # spend the consent on it). The echoed plan is untrusted input, so it is
+        # re-validated against THIS turn's catalog (a revoked grant or another
+        # explore is refused here) and GQS then binds the consent to the exact
+        # query fingerprint (a changed plan or semantic model does not match).
+        if not drop_consent:
+            return {"status": "unsupported", "turn_id": turn_id, "steps": steps,
+                    "message": "Thiếu xác nhận của bạn cho phần bộ lọc không áp được."}
+        outcome = validate({**consented_plan, "status": "plan"}, catalog)
+    else:
+        outcome = make_plan(question, catalog, previous=previous, complete=deps.complete)
     if isinstance(outcome, Clarify):
         return {"status": "clarify", "turn_id": turn_id, "steps": steps, "message": outcome.question,
                 "options": outcome.options}

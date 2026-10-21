@@ -117,7 +117,7 @@ export default function AnalystPage() {
     return null;
   }, [history, topicStart]);
 
-  const ask = useCallback(async (q: string, opts: { followUp?: boolean; consent?: string } = {}) => {
+  const ask = useCallback(async (q: string, opts: { followUp?: boolean; consent?: string; plan?: Record<string, unknown> } = {}) => {
     const text = q.trim();
     if (!text || running) return;
     const turnId = newTurnId();
@@ -128,6 +128,7 @@ export default function AnalystPage() {
         question: text, turn_id: turnId,
         previous_plan: opts.followUp ? lastPlan : null,
         drop_consent: opts.consent ?? null,
+        consented_plan: opts.plan ?? null,
       });
       setHistory((h) => [...h, { question: text, turn }]);
     } catch (err) {
@@ -153,7 +154,8 @@ export default function AnalystPage() {
     if (!d?.query_fingerprint || !d.dropped?.length) return;
     try {
       const token = await analystApi.consent(d.query_fingerprint, d.dropped.map((x) => x.field));
-      await ask(ex.question, { consent: token });
+      // Re-run exactly the plan that was refused; the server re-validates it.
+      await ask(ex.question, { consent: token, plan: ex.turn?.plan ?? undefined });
     } catch (err) {
       setHistory((h) => [...h, { question: ex.question, turn: null, error: errorText(err) }]);
     }

@@ -101,6 +101,7 @@ export const analystApi = {
     turn_id: string;
     previous_plan?: Record<string, unknown> | null;
     drop_consent?: string | null;
+    consented_plan?: Record<string, unknown> | null;
   }): Promise<AnalystTurn> => {
     const response = await apiClient.post('/analyst/ask', body, { timeout: 180_000 });
     return response.data;
