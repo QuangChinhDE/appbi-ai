@@ -293,3 +293,16 @@ def test_a_modifier_in_a_metric_phrase_is_not_explained_by_the_metric():
                     "Doanh số dự kiến quý 3 năm 2027",
                     covered={"doanh số dự kiến": "l.net_sales", "quý 3 năm 2027": "o.order_date"})
     assert p is None and "dự" in why
+
+
+def test_a_metric_is_trended_by_its_own_facts_date_unless_another_is_named():
+    ex = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="r",
+                        source_type="postgresql", label="C", fields=[
+                            CatalogField("r.refund_total", "measure", "sum", "Tiền hoàn trả"),
+                            CatalogField("r.return_date", "dimension", "date", "Ngày trả hàng"),
+                            CatalogField("o.order_date", "dimension", "date", "Ngày đặt hàng")])
+    p = Plan(explore=ex, dimensions=["o.order_date"], measures=["r.refund_total"], time_grains={"o.order_date": "month"})
+    out, why = ground(p, "Tiền hoàn trả theo tháng")
+    assert out is not None and out.dimensions == ["r.return_date"] and out.time_grains == {"r.return_date": "month"}, why
+    out, _ = ground(p, "Tiền hoàn trả theo ngày đặt hàng, từng tháng")
+    assert out.dimensions == ["o.order_date"]
