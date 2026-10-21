@@ -246,6 +246,20 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
     dims = [d for d in plan.dimensions
             if (mentioned(d) or (d in plan.time_grains and has_time_words and d in by_ref))
             and not one_value(d) and breakdown_ok(d)]  # grouping by a field filtered to one value is one group
+    # "Tiền hoàn trả theo tháng" is by the RETURN's date, not the order's (holdout
+    # sets 4-5): when the question does not name the time field, the time breakdown
+    # is the date of the fact that owns the metric, if that fact has exactly one.
+    if measures:
+        fact = measures[0].rsplit(".", 1)[0]
+        own_dates = [f.ref for f in plan.explore.fields
+                     if f.kind == "dimension" and f.ref.rsplit(".", 1)[0] == fact
+                     and str(f.type).lower() in ("date", "datetime", "timestamp")]
+        for d in list(dims):
+            if (d in plan.time_grains and d.rsplit(".", 1)[0] != fact and len(own_dates) == 1
+                    and d not in carried and not _mentioned(by_ref[d], q, qf) and own_dates[0] not in dims):
+                dims[dims.index(d)] = own_dates[0]
+                plan = replace(plan, time_grains={(own_dates[0] if r == d else r): g
+                                                  for r, g in plan.time_grains.items()})
     if value_lookup is not None:
         # "kênh Online" is a FILTER on the channel, not a breakdown by channel
         # (holdout set 3): words of a breakdown's phrase beyond its label are looked
