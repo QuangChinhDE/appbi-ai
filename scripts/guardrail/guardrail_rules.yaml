@@ -563,7 +563,7 @@ features:
     files: [backend/app/services/analyst/**, backend/app/api/analyst.py]
     keywords: [analyst, "ai analyst", discovery, planner, "chart draft"]
     invariants: []
-    required_tests: [analyst_http_pg, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg]
+    required_tests: [analyst_http_pg, analyst_narrative, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -633,6 +633,9 @@ tests:
     requires: postgres
     run: "pytest backend/tests/test_intelligence_gqs_ledger_pg.py"
     locks: "the PR-1E ledger SERVICE writing as the least-privilege app role: a governed read leaves a committed running->ok row with fingerprints and no SQL text; an unreachable ledger refuses audit_unavailable before the warehouse; a second begin is a conflict; the first terminal status wins (idempotent repeat, no flip); N concurrent begins on separate connections against a budget admit exactly the budget (advisory-locked reservation, mutation-tested); per-datasource concurrency frees on finish; BigQuery bytes reserved per user/day; an over-budget GQS request refuses budget_exceeded and is recorded refused; cross-worker cancel from another worker identity AND from a separate OS process is performed by the owning worker, refuses cancelled, records cancelled and clears pg_stat_activity; only the owner may request a cancel; a stale lease is recovered to abandoned and cannot be finalized"
+  analyst_narrative:
+    run: "pytest backend/tests/test_analyst_narrative.py"
+    locks: "the Analyst's words never claim more than the governed rows support: a complete result reports the trend computed from the rows; a TRUNCATED result (row bound hit) draws no trend, ranking, total or facts and says it is incomplete (found by the real-model browser run: a mid-period cut read as -98.9%)"
   analyst_http_pg:
     requires: postgres
     run: "pytest backend/tests/test_analyst_http_pg.py"

@@ -58,6 +58,12 @@ def describe(columns: list[dict], rows: list[dict], *, time_ref: Optional[str], 
         return {"headline": "Không có dữ liệu cho câu hỏi này trong phạm vi được phép.", "bullets": [],
                 "facts": [], "checks": checks}
     m = measures[0]
+    if truncated:
+        # Rows stop at the bound mid-way (a period or a ranking cut short): any
+        # trend, ranking or total read from them would be an artefact of the cut.
+        return {"headline": (f"Kết quả vượt giới hạn {len(rows)} dòng nên chưa kết luận về {m['label']}. "
+                             "Hãy thu hẹp câu hỏi (ví dụ theo nhóm thay vì từng mục, hoặc một khoảng thời gian)."),
+                "bullets": [], "facts": [], "checks": checks, "incomplete": True}
     if time_col is not None:
         return _over_time(rows, m, time_col, cat_col, checks)
     if cat_col is not None:
