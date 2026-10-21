@@ -68,10 +68,15 @@ def test_only_a_bigquery_job_carries_the_bytes_limit(monkeypatch, ds_type, expec
 
     monkeypatch.setattr(DataSourceConnectionService, "execute_query", staticmethod(fake_execute))
     monkeypatch.setattr(relationship_key_guard, "verify_key_probes", lambda *a, **k: None)
+    from app.services.governed_query import CancelRegistry
+
     compiled = types.SimpleNamespace(
+        query_id="unit-q1",
         datasource=types.SimpleNamespace(id=1, config={}), ds_type=ds_type, sql="SELECT 1",
         key_probes=(), bounds=QueryBounds(max_rows=10, timeout_seconds=7, bq_max_bytes=12345))
-    GovernedQueryService._run(object.__new__(GovernedQueryService), compiled)
+    service = object.__new__(GovernedQueryService)
+    service.cancel_registry = CancelRegistry()   # isolated; never the process registry
+    GovernedQueryService._run(service, compiled)
     assert seen["maximum_bytes_billed"] == expected
     assert seen["max_rows"] == 11 and seen["timeout_seconds"] == 7 and seen["limit"] is None
 

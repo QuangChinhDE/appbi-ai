@@ -46,6 +46,12 @@ _FILTER_OPERATORS = frozenset({"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_
                                "contains", "starts_with", "ends_with"})
 _GRAINS = frozenset({"day", "week", "month", "quarter", "year"})
 
+#: Refusal code -> the status the audit ledger records. Anything not named here
+#: is a plain refusal; `timeout` and `cancelled` are their own outcomes because
+#: an operator reading the ledger needs to tell "we stopped it" from "it was
+#: refused" (spec §2.4).
+_AUDIT_STATUS = {"timeout": "timeout", "cancelled": "cancelled"}
+
 
 def _sha(obj: Any) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode("utf-8")).hexdigest()
@@ -55,10 +61,14 @@ class GovernedQueryService:
     """Built per request around ONE `AuthorizationContext` (never cached across
     requests, so a revoked grant is honoured on the next question)."""
 
-    def __init__(self, authz: AuthorizationContext, *, audit: Optional[AuditSink] = None):
+    def __init__(self, authz: AuthorizationContext, *, audit: Optional[AuditSink] = None,
+                 cancel_registry: Optional[Any] = None):
         self.authz = authz
         self.db = authz.db
         self.audit = audit
+        #: Where a running statement registers its canceller (PR-1D). None uses
+        #: the process registry; a test passes its own.
+        self.cancel_registry = cancel_registry
 
     # ── plan: nothing here reaches a warehouse ──────────────────────────────
     def plan(self, request: GovernedQueryRequest) -> CompiledQuery:
@@ -238,7 +248,7 @@ class GovernedQueryService:
             columns, rows = self._run(compiled)
             self._refuse_unexpected_output(compiled, columns)
         except GovernedRefusal as refusal:
-            self._finish(compiled, "timeout" if refusal.code == "timeout" else "refused",
+            self._finish(compiled, _AUDIT_STATUS.get(refusal.code, "refused"),
                          refusal_code=refusal.code, started=started)
             raise
         except Exception:
@@ -450,6 +460,7 @@ class GovernedQueryService:
 
     def _run(self, compiled: CompiledQuery):
         from app.services.datasource_service import DataSourceConnectionService
+        from app.services.governed_query.cancellation import REGISTRY, PostgresCanceller
         from app.services.relationship_key_guard import verify_key_probes
 
         ds = compiled.datasource
@@ -459,6 +470,17 @@ class GovernedQueryService:
         except ValueError as exc:
             raise GovernedRefusal("key_probe_failed", str(exc), {"category": getattr(exc, "category", None)}) from exc
         b = compiled.bounds
+        qid = compiled.query_id
+        registry = self.cancel_registry if self.cancel_registry is not None else REGISTRY
+        # A cancel that arrived while this was still planning stops the query
+        # before it reaches the warehouse at all.
+        self._refuse_if_cancelled(registry, qid)
+
+        def _register(backend_id):
+            # The engine reports which backend runs the statement; from here a
+            # cancel arriving on another request can stop it (PR-1D).
+            registry.register(qid, PostgresCanceller(ds.config, backend_id))
+
         try:
             columns, rows, _elapsed = DataSourceConnectionService.execute_query(
                 ds_type=compiled.ds_type,
@@ -468,14 +490,28 @@ class GovernedQueryService:
                 timeout_seconds=b.timeout_seconds,
                 max_rows=b.max_rows + 1,
                 maximum_bytes_billed=b.bq_max_bytes if compiled.ds_type == "bigquery" else None,
+                on_backend_id=_register if compiled.ds_type == "postgresql" else None,
             )
         except Exception as exc:  # noqa: BLE001 - classify, then re-raise
+            # A cancelled statement surfaces as the driver's "query cancelled"
+            # error. It is reported as cancelled, not as a timeout.
+            self._refuse_if_cancelled(registry, qid)
             name = type(exc).__name__.lower()
             if "querycanceled" in name or "timeout" in name or "statement timeout" in str(exc).lower():
                 raise GovernedRefusal("timeout", "Truy vấn vượt quá thời gian cho phép.",
                                       {"timeout_seconds": b.timeout_seconds}) from exc
             raise
+        finally:
+            registry.unregister(qid)
+        # Rows can arrive a moment after the cancel was asked for: a cancelled
+        # query never returns a completed result.
+        self._refuse_if_cancelled(registry, qid)
         return list(columns or []), list(rows or [])
+
+    @staticmethod
+    def _refuse_if_cancelled(registry, query_id: str) -> None:
+        if registry.is_cancelled(query_id):
+            raise GovernedRefusal("cancelled", "Truy vấn đã được huỷ.", {"query_id": query_id})
 
     # ── evidence helpers ────────────────────────────────────────────────────
     def _semantic_epoch(self, explore, model, dataset_id: int) -> str:

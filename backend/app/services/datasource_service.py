@@ -7,7 +7,7 @@ import hashlib
 import os
 import re
 import time
-from typing import Generator, Iterator, List, Dict, Any, Tuple, Optional
+from typing import Callable, Generator, Iterator, List, Dict, Any, Tuple, Optional
 import pymysql
 import psycopg2
 from psycopg2 import sql as pg_sql
@@ -1064,6 +1064,7 @@ class DataSourceConnectionService:
         skip_bigquery_cost_check: bool = False,
         max_rows: Optional[int] = None,
         maximum_bytes_billed: Optional[int] = None,
+        on_backend_id: Optional[Callable[[Any], None]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]], float]:
         """
         Execute a SQL query against a data source.
@@ -1099,6 +1100,7 @@ class DataSourceConnectionService:
             if ds_type == DataSourceType.POSTGRESQL.value:
                 result = DataSourceConnectionService._execute_postgresql(
                     config, sql_query, limit, timeout_seconds, query_params, max_rows=max_rows,
+                    on_backend_id=on_backend_id,
                 )
             elif ds_type == DataSourceType.MYSQL.value:
                 result = DataSourceConnectionService._execute_mysql(
@@ -1543,8 +1545,14 @@ class DataSourceConnectionService:
         timeout_seconds: int = 30,
         query_params: list = None,
         max_rows: Optional[int] = None,
+        on_backend_id: Optional[Callable[[Any], None]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Execute a (validated) SELECT against PostgreSQL in a READ ONLY transaction."""
+        """Execute a (validated) SELECT against PostgreSQL in a READ ONLY transaction.
+
+        ``on_backend_id`` (optional) receives this statement's backend pid as soon
+        as the connection is open, so a caller that must be able to CANCEL the
+        running statement (the Governed Query Service) can do it from another
+        connection. Default ``None`` — unchanged for every other caller."""
         conn = None
         cursor = None
         try:
@@ -1559,6 +1567,10 @@ class DataSourceConnectionService:
             # SELECT path: the database itself refuses any write the validator missed.
             conn.set_session(readonly=True)
             cursor = conn.cursor()
+            if on_backend_id is not None:
+                cursor.execute("SELECT pg_backend_pid()")
+                _pid_row = cursor.fetchone()
+                on_backend_id(_pid_row[0] if _pid_row else None)
 
             # Set statement timeout
             cursor.execute("SET statement_timeout = %s", (int(timeout_seconds) * 1000,))

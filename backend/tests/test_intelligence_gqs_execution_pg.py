@@ -164,7 +164,7 @@ def world(db):  # noqa: F811
         engine.dispose()
 
 
-def _gqs(w, who="analyst", surface="analyst", sink=None, ceiling=None):
+def _gqs(w, who="analyst", surface="analyst", sink=None, ceiling=None, registry=None):
     from app.models.user import User
     from app.services.governed_query import (
         AuthorizationContext, EffectivePrincipal, GovernedQueryService, SurfaceCeiling,
@@ -174,7 +174,7 @@ def _gqs(w, who="analyst", surface="analyst", sink=None, ceiling=None):
     p = EffectivePrincipal.for_user(user, surface=surface)
     ctx = AuthorizationContext(db=w["db"], principal=p, user=user,
                                ceiling=SurfaceCeiling.of(ceiling) if ceiling is not None else SurfaceCeiling())
-    return GovernedQueryService(ctx, audit=sink), p
+    return GovernedQueryService(ctx, audit=sink, cancel_registry=registry), p
 
 
 def _req(w, p, *, dims=(), measures=(), filters=None, bounds=None, accept=(), explore_id=None,

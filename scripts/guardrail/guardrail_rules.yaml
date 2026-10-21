@@ -612,6 +612,10 @@ tests:
   intelligence_gqs:
     run: "pytest backend/tests/test_intelligence_effective_principal.py backend/tests/test_intelligence_gqs_core.py"
     locks: "one intersection-only scope formula on the real authz core: querying needs explore (view is not enough), the surface ceiling only narrows, an Agent Flow delegation never widens a governed decision, PAT is a subset of the person, a system principal cannot answer for a person, a failed AI-scope lookup refuses; bounds are min(policy, requested); the AI BigQuery bytes limit is its own and only a BigQuery job carries it; GQS is imported by nothing outside its package (not live)"
+  intelligence_gqs_cancel_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_cancel_pg.py"
+    locks: "cancelling a governed read stops the statement IN POSTGRES (pg_stat_activity is clear), refuses `cancelled` (not timeout), never returns a completed result - including rows that arrived after the cancel - and the ledger records cancelled; cancel is idempotent, an unknown id is harmless, a cancel before execution touches no data source, and an uncancelled query is unaffected with a clean registry"
   intelligence_gqs_pg:
     requires: postgres
     run: "pytest backend/tests/test_intelligence_gqs_execution_pg.py"
