@@ -54,7 +54,8 @@ SYSTEM = (
     "Return one of:\n"
     '{"status":"plan","explore_id":<int>,"dimensions":[ref],"measures":[ref],'
     '"time_grains":{ref:"day|week|month|quarter|year"},"filters":{ref:{"operator":op,"value":v}},'
-    '"sorts":[{"field":ref,"direction":"asc|desc"}],"interpretation":"<one sentence, user language>"}\n'
+    '"sorts":[{"field":ref,"direction":"asc|desc"}],"covered":{"<question phrase>":ref|null},'
+    '"interpretation":"<one sentence, user language>"}\n'
     '{"status":"clarify","question":"<user language>","options":["..."]}  when two catalog meanings fit equally\n'
     '{"status":"unsupported","reason":"<user language>"}  when the catalog cannot answer.\n'
     "Allowed filter operators: " + ", ".join(OPERATORS) + ". "
@@ -64,6 +65,8 @@ SYSTEM = (
     "Match the question's words against each field's label AND synonyms. Every breakdown the question asks "
     "for (by X, per X, theo X, các X, từng X) must appear in dimensions; list them in a \"covered\" object "
     "mapping the question's phrase to the ref you used. "
+    "If a breakdown or filter the question asks for has no matching field, map that phrase to null in "
+    "covered (or return unsupported); never answer a different question. "
     "When previous_plan is given, the question refines it: keep its measures, dimensions and filters and "
     "change only what the question changes. "
     "Do not invent date filters for words like 'recent'; return the trend and say so in interpretation."
@@ -155,5 +158,33 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
                 or str(s.get("direction") or "asc").lower() not in ("asc", "desc"):
             return Unsupported("Cách sắp xếp của kế hoạch không hợp lệ.")
         sorts.append({"field": field_ref, "direction": str(s.get("direction") or "asc").lower()})
-    return Plan(explore=explore, dimensions=d, measures=m, time_grains=grains, filters=filters, sorts=sorts,
-                interpretation=str(raw.get("interpretation") or "")[:400])
+    # What the model says it covered must be in the plan: a phrase it could not
+    # map (None) or mapped outside the plan is a breakdown/filter the answer would
+    # silently not have (real-model run: "channel and province" answered by month).
+    covered = raw.get("covered") if isinstance(raw.get("covered"), dict) else {}
+    in_plan = set(d) | set(m) | set(filters)
+    for phrase, target in covered.items():
+        ref = resolve(target, {**dims, **meas}) if isinstance(target, str) else None
+        if ref is None or ref not in in_plan:
+            return Unsupported(f"Dữ liệu bạn được dùng không có trường cho “{str(phrase)[:80]}”, "
+                               "nên không trả lời phần đó thay vì trả lời sai.")
+    plan_ = Plan(explore=explore, dimensions=d, measures=m, time_grains=grains, filters=filters, sorts=sorts)
+    # The interpretation shown to the person is the SERVER's reading of the
+    # validated plan, never the model's prose (which can claim what was not done).
+    plan_.interpretation = describe_plan(plan_)
+    return plan_
+
+
+def describe_plan(p: Plan) -> str:
+    labels = {f.ref: f.label for f in p.explore.fields}
+    text = ", ".join(labels.get(r, r) for r in p.measures)
+    parts = []
+    for r in p.dimensions:
+        grain = p.time_grains.get(r)
+        parts.append(f"{labels.get(r, r)} ({grain})" if grain else labels.get(r, r))
+    if parts:
+        text += " theo " + ", ".join(parts)
+    if p.filters:
+        text += "; lọc " + "; ".join(f"{labels.get(r, r)} {c.get('operator')} {c.get('value')}"
+                                     for r, c in p.filters.items())
+    return f"{text} — nguồn {p.explore.dataset_name}"

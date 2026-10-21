@@ -84,3 +84,26 @@ def test_the_same_question_twice_gives_two_savable_draft_names():
     a = draft_title(q, dt.datetime(2026, 10, 21, 9, 0, 0))
     b = draft_title(q, dt.datetime(2026, 10, 21, 9, 0, 1))
     assert a != b and a.startswith(q) and len(draft_title("x" * 500)) <= 130
+
+
+def test_the_interpretation_is_written_by_the_server_from_the_plan():
+    """Real-model browser run: a question about sales channel and province (no such
+    fields) was answered by month while the model's interpretation CLAIMED the
+    channel/province breakdown. The interpretation shown is derived from the
+    validated plan, never the model's prose."""
+    p = validate(_raw(dimensions=["orders.purchased_at"], time_grains={"orders.purchased_at": "month"},
+                      interpretation="Revenue by sales channel and province"), [_explore()])
+    assert isinstance(p, Plan)
+    assert "channel" not in p.interpretation and "Revenue" in p.interpretation
+    assert "Purchased at" in p.interpretation and "month" in p.interpretation
+
+
+def test_a_breakdown_the_model_could_not_map_is_refused_by_name():
+    out = validate(_raw(dimensions=["items.seller_id"],
+                        covered={"kênh bán hàng": None, "người bán": "items.seller_id"}), [_explore()])
+    assert isinstance(out, Unsupported) and "kênh bán hàng" in out.reason
+
+
+def test_a_covered_phrase_must_point_into_the_plan():
+    out = validate(_raw(dimensions=["items.seller_id"], covered={"tỉnh": "orders.status"}), [_explore()])
+    assert isinstance(out, Unsupported) and "tỉnh" in out.reason
