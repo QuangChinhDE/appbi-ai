@@ -366,7 +366,11 @@ def update_view(
 
     # Convert Pydantic models to dicts if present
     if "dimensions" in update_data and update_data["dimensions"] is not None:
-        update_data["dimensions"] = [dim.model_dump() for dim in view_update.dimensions]
+        from app.services.dataset_model_service import stamp_authored_dimensions
+
+        update_data["dimensions"] = stamp_authored_dimensions(
+            [dim.model_dump() for dim in view_update.dimensions], db_view.dimensions
+        )
     if "measures" in update_data and update_data["measures"] is not None:
         update_data["measures"] = [measure.model_dump() for measure in view_update.measures]
 
