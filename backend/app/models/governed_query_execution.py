@@ -11,8 +11,8 @@ Only fingerprints, ids, bounds, counters and outcomes.
 Design decisions. The table contract (status/finish constraints, the primary
 key, the app role's missing DELETE/TRUNCATE) is locked by
 tests/test_intelligence_gqs_ledger_schema_pg.py; the write contracts below
-(begin/finish/recovery/cancel requests) belong to the ledger service, which is
-NOT yet implemented:
+(begin/finish/recovery/cancel requests) belong to the GQS ledger service,
+``PostgresLedger`` (locked by test_intelligence_gqs_ledger_pg.py):
 
 * ``query_id`` is the primary key, minted by GQS (uuid4 hex). ``begin`` is
   insert-only: a second ``begin`` for the same id is a conflict, never an

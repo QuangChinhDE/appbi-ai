@@ -556,7 +556,7 @@ features:
                "surface ceiling", refusal]
     invariants: []
     required_tests: [intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_cancel_pg,
-                     intelligence_gqs_ledger_schema_pg, intelligence_gqs_mysql, intelligence_gqs_bigquery, intelligence_security_ledger]
+                     intelligence_gqs_ledger_schema_pg, intelligence_gqs_ledger_pg, intelligence_gqs_mysql, intelligence_gqs_bigquery, intelligence_security_ledger]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -622,6 +622,10 @@ tests:
     requires: bigquery-qa
     run: "GQS_BQ_DATASOURCE_ID=<qa datasource> pytest backend/tests/test_intelligence_gqs_bigquery_runtime.py"
     locks: "on REAL BigQuery, only the approved QA project/tables (refuses otherwise): dry-run estimates before running, a scan over maximum_bytes_billed is refused by BigQuery, the row cap holds and every job carries attribution labels, a BigQueryCanceller cancel stops a running job AT THE WAREHOUSE (job ends DONE/stopped, no rows returned), and a cancel for a nonexistent job is harmless. Manual: CI has no warehouse credential; run with the QA datasource and report it NOT VERIFIED when not run"
+  intelligence_gqs_ledger_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_ledger_pg.py"
+    locks: "the PR-1E ledger SERVICE writing as the least-privilege app role: a governed read leaves a committed running->ok row with fingerprints and no SQL text; an unreachable ledger refuses audit_unavailable before the warehouse; a second begin is a conflict; the first terminal status wins (idempotent repeat, no flip); N concurrent begins on separate connections against a budget admit exactly the budget (advisory-locked reservation, mutation-tested); per-datasource concurrency frees on finish; BigQuery bytes reserved per user/day; an over-budget GQS request refuses budget_exceeded and is recorded refused; cross-worker cancel from another worker identity AND from a separate OS process is performed by the owning worker, refuses cancelled, records cancelled and clears pg_stat_activity; only the owner may request a cancel; a stale lease is recovered to abandoned and cannot be finalized"
   intelligence_gqs_ledger_schema_pg:
     requires: postgres
     run: "pytest backend/tests/test_intelligence_gqs_ledger_schema_pg.py"

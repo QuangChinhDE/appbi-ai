@@ -530,6 +530,8 @@ integrations/appbi-mcp/.venv/
 !backend/tests/test_intelligence_gqs_core.py
 !backend/tests/test_intelligence_gqs_execution_pg.py
 !backend/tests/test_intelligence_gqs_cancel_pg.py
+!backend/tests/test_intelligence_gqs_ledger_pg.py
+!backend/tests/test_intelligence_gqs_bigquery_runtime.py
 !backend/tests/test_intelligence_gqs_ledger_schema_pg.py
 !backend/tests/test_intelligence_gqs_mysql_runtime.py
 # AppBI Intelligence 0G: evidence/answerability and metric-meaning suites that were

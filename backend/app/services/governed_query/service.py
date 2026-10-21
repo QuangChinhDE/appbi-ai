@@ -242,6 +242,8 @@ class GovernedQueryService:
         compiled = self.plan(request)
         try:
             self.audit.begin(compiled)
+        except GovernedRefusal:
+            raise  # a budget refusal: the ledger recorded it as refused
         except Exception as exc:  # noqa: BLE001 - any failure: the row is not there
             raise GovernedRefusal(
                 "audit_unavailable",
