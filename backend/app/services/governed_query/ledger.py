@@ -97,6 +97,7 @@ class PostgresLedger:
             "dialect": compiled.dialect, "sql_fingerprint": compiled.sql_fingerprint,
             "policy_fingerprint": compiled.policy_fingerprint, "bounds": compiled.bounds.as_dict(),
             "reserved_bq_bytes": reserved, "worker_id": self.worker_id,
+            "consent_nonce": getattr(compiled, "consent_nonce", None),
         }
         over = None
         with self.engine.begin() as conn:
@@ -108,7 +109,8 @@ class PostgresLedger:
                 self._insert(conn, row, status="running")
         if over is not None:
             with self.engine.begin() as conn:
-                self._insert(conn, row, status="refused", refusal_code="budget_exceeded")
+                # A refused row does not consume the consent: it did not run.
+                self._insert(conn, {**row, "consent_nonce": None}, status="refused", refusal_code="budget_exceeded")
             raise BudgetExceeded(*over)
 
     def _budget_scopes(self, row: dict) -> Iterable[str]:
@@ -154,14 +156,17 @@ class PostgresLedger:
             conn.execute(sa.text(
                 "INSERT INTO governed_query_executions (query_id, run_id, user_id, principal_kind, surface, "
                 "relation_kind, relation_id, dataset_ids, datasource_id, dialect, sql_fingerprint, "
-                "policy_fingerprint, bounds, reserved_bq_bytes, status, refusal_code, worker_id, heartbeat_at, "
-                "finished_at) VALUES (:query_id, :run_id, CAST(:user_id AS uuid), :principal_kind, :surface, "
+                "policy_fingerprint, bounds, reserved_bq_bytes, status, refusal_code, worker_id, consent_nonce, "
+                "heartbeat_at, finished_at) VALUES (:query_id, :run_id, CAST(:user_id AS uuid), :principal_kind, :surface, "
                 ":relation_kind, :relation_id, CAST(:dataset_ids AS jsonb), :datasource_id, :dialect, "
                 ":sql_fingerprint, :policy_fingerprint, CAST(:bounds AS jsonb), :reserved_bq_bytes, :status, "
-                ":refusal_code, :worker_id, now(), " + ("now()" if terminal else "NULL") + ")"),
+                ":refusal_code, :worker_id, :consent_nonce, now(), " + ("now()" if terminal else "NULL") + ")"),
                 {**row, "dataset_ids": _json(row["dataset_ids"]), "bounds": _json(row["bounds"]),
                  "status": status, "refusal_code": refusal_code})
         except sa.exc.IntegrityError as exc:
+            if "uq_gqe_consent_nonce" in str(exc):
+                raise GovernedRefusal("consent_replayed", "Xác nhận này đã được dùng; cần xác nhận lại.",
+                                      {}) from exc
             raise LedgerConflict(f"query {row['query_id']} already has a ledger row") from exc
 
     # ── finish: first terminal write wins ───────────────────────────────────
@@ -194,7 +199,7 @@ class PostgresLedger:
                "surface": surface or "unknown", "relation_kind": getattr(relation, "kind", None),
                "relation_id": getattr(relation, "id", None), "dataset_ids": None, "datasource_id": None,
                "dialect": None, "sql_fingerprint": None, "policy_fingerprint": None, "bounds": None,
-               "reserved_bq_bytes": None, "worker_id": self.worker_id}
+               "reserved_bq_bytes": None, "worker_id": self.worker_id, "consent_nonce": None}
         with self.engine.begin() as conn:
             self._insert(conn, row, status="refused", refusal_code=code)
 

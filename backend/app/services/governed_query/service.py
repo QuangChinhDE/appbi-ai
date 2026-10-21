@@ -167,18 +167,26 @@ class GovernedQueryService:
         bounds = effective_bounds(request.requested_bounds)
 
         sql, out_columns, engine = self._compile(explore, ask, filters, time_grains, dialect, bounds)
-        accepted = {str(a) for a in request.accept_dropped_filters}
+        from app.services.governed_query import consent as _consent
+
         dropped = [dict(d) for d in (getattr(engine, "_propagation_drops", None) or []) if isinstance(d, dict)]
-        unaccepted = [d for d in dropped if str(d.get("field") or "") not in accepted]
-        if unaccepted:
-            # I-6: never answer unfiltered with a warning. The refusal names each
-            # filter so the Analyst can ask the USER to accept the wider scope.
-            raise GovernedRefusal(
-                "filter_would_drop",
-                "Không áp được một số bộ lọc của câu hỏi; kết quả sẽ rộng hơn điều bạn hỏi. "
-                "Cần bạn xác nhận chấp nhận phạm vi rộng hơn trước khi chạy.",
-                {"dropped": [{"field": d.get("field"), "reason": d.get("reason")} for d in unaccepted]},
-            )
+        consent = None
+        if dropped:
+            query_fp = _consent.query_fingerprint(request)
+            if not request.drop_consent:
+                # I-6: never answer unfiltered with a warning. The refusal names each
+                # filter so the Analyst can ask the USER to accept the wider scope;
+                # the consent the person gives is bound to this exact query.
+                raise GovernedRefusal(
+                    "filter_would_drop",
+                    "Không áp được một số bộ lọc của câu hỏi; kết quả sẽ rộng hơn điều bạn hỏi. "
+                    "Cần bạn xác nhận chấp nhận phạm vi rộng hơn trước khi chạy.",
+                    {"dropped": [{"field": d.get("field"), "reason": d.get("reason")} for d in dropped],
+                     "query_fingerprint": query_fp},
+                )
+            consent = _consent.verify(request.drop_consent, user_id=principal.user_id, query_fp=query_fp,
+                                      dropped_fields=[str(d.get("field") or "") for d in dropped])
+        accepted = set(consent.fields) if consent else set()
 
         from app.services.execution_plan import refuse_foreign_live_sources
         from app.services.semantic_join_resolver import SemanticRefusal
@@ -226,6 +234,7 @@ class GovernedQueryService:
             columns=self._column_meta(out_columns, ask, engine),
             freshness=Freshness(mode=str(getattr(table, "query_mode", None) or "unknown")),
             key_probes=key_probes,
+            consent_nonce=consent.nonce if consent else None,
             warnings=tuple(str(w) for w in (engine.warnings or [])),
         )
 

@@ -307,3 +307,35 @@ def test_a_live_lease_is_not_recovered(app_engine):
     led.heartbeat([c.query_id])
     assert c.query_id not in led.recover_stale_running(older_than_seconds=120)
     led.finish(c.query_id, status="ok")
+
+
+def test_a_consent_runs_once(world, app_engine):  # noqa: F811
+    """The nonce is consumed in the ledger in the same transaction as begin."""
+    from app.services.governed_query import GovernedRefusal, consent
+    from app.services.semantic_query_engine import SemanticQueryEngine
+
+    real = SemanticQueryEngine.run
+    field = f"{world['v']}.region"
+
+    def run(self, spec):
+        out = real(self, spec)
+        self._propagation_drops = list(self._propagation_drops) + [
+            {"field": field, "reason": "unreachable_view", "detail": "test"}]
+        return out
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(SemanticQueryEngine, "run", run)
+    try:
+        gqs, p = _gqs(world, who="owner", sink=_ledger(app_engine))
+        ask = dict(measures=["revenue"], filters={"region": {"operator": "eq", "value": "Bắc"}})
+        with pytest.raises(GovernedRefusal) as first:
+            gqs.execute(_req(world, p, **ask))
+        token = consent.issue(user_id=p.user_id, query_fp=first.value.detail["query_fingerprint"], fields=[field])
+        res = gqs.execute(_req(world, p, consent=token, **ask))
+        row = _row(app_engine, res.evidence.query_id)
+        assert row["status"] == "ok" and row["consent_nonce"]
+        with pytest.raises(GovernedRefusal) as again:
+            gqs.execute(_req(world, p, consent=token, **ask))
+        assert again.value.code == "consent_replayed"
+    finally:
+        mp.undo()

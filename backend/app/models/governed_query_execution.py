@@ -73,6 +73,9 @@ class GovernedQueryExecution(Base):
     duration_ms = Column(Integer, nullable=True)
     cancel_requested_at = Column(DateTime(timezone=True), nullable=True)
     cancel_requested_by = Column(UUID(as_uuid=True), nullable=True)
+    #: The nonce of the user's drop-filter consent this execution consumed
+    #: (PR-1F). Unique: a consent runs at most once.
+    consent_nonce = Column(String(64), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -86,4 +89,6 @@ class GovernedQueryExecution(Base):
         Index("ix_gqe_user_started", "user_id", "started_at"),
         Index("ix_gqe_run", "run_id"),
         Index("ix_gqe_running_worker", "worker_id", postgresql_where=text("status = 'running'")),
+        Index("uq_gqe_consent_nonce", "consent_nonce", unique=True,
+              postgresql_where=text("consent_nonce IS NOT NULL")),
     )

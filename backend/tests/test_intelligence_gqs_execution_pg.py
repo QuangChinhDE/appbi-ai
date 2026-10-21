@@ -177,7 +177,7 @@ def _gqs(w, who="analyst", surface="analyst", sink=None, ceiling=None, registry=
     return GovernedQueryService(ctx, audit=sink, cancel_registry=registry), p
 
 
-def _req(w, p, *, dims=(), measures=(), filters=None, bounds=None, accept=(), explore_id=None,
+def _req(w, p, *, dims=(), measures=(), filters=None, bounds=None, consent=None, explore_id=None,
          view=None, **ask):
     from app.services.governed_query import GovernedQueryRequest, RelationRef, SemanticAsk
 
@@ -189,7 +189,7 @@ def _req(w, p, *, dims=(), measures=(), filters=None, bounds=None, accept=(), ex
                         measures=tuple(f"{v}.{m}" for m in measures),
                         filters={f"{v}.{k}": c for k, c in (filters or {}).items()}, **ask),
         requested_bounds=bounds,
-        accept_dropped_filters=tuple(accept),
+        drop_consent=consent,
     )
 
 
@@ -405,10 +405,18 @@ def test_a_dropped_filter_refuses_and_names_the_filter(world, one_drop):
     assert sink.begun == []
 
 
+def _consent_for(err, p, fields=None, **kw):
+    from app.services.governed_query import consent
+
+    return consent.issue(user_id=p.user_id, query_fp=err.detail["query_fingerprint"],
+                         fields=fields or [d["field"] for d in err.detail["dropped"]], **kw)
+
+
 def test_a_drop_the_user_accepted_runs_and_is_in_the_evidence(world, one_drop):
     gqs, p = _gqs(world, sink=Sink())
-    result = gqs.execute(_req(world, p, measures=["revenue"], accept=[one_drop],
-                              filters={"region": {"operator": "eq", "value": "Bắc"}}))
+    ask = dict(measures=["revenue"], filters={"region": {"operator": "eq", "value": "Bắc"}})
+    err = _refused(lambda: gqs.execute(_req(world, p, **ask)), "filter_would_drop")
+    result = gqs.execute(_req(world, p, consent=_consent_for(err, p), **ask))
     assert result.evidence.filters_dropped == (
         {"field": one_drop, "reason": "unreachable_view", "accepted_by_user": True},)
     assert one_drop not in result.evidence.filters_applied
@@ -630,3 +638,61 @@ def test_ai_scope_applies_to_every_surface_but_a_persons_own_chart(world, surfac
     _hide(world, columns=["customer_phone"])
     gqs, p = _gqs(world, surface=surface, sink=Sink())
     _refused(lambda: gqs.execute(_req(world, p, dims=["phone"], measures=["revenue"])), "column_excluded")
+
+
+# ── PR-1F: the consent to drop a filter is the USER's, bound and single-use ──
+_ASK_BAC = dict(measures=["revenue"], filters={"region": {"operator": "eq", "value": "Bắc"}})
+
+
+def test_a_consent_cannot_be_forged(world, one_drop):
+    gqs, p = _gqs(world, sink=Sink())
+    err = _refused(lambda: gqs.execute(_req(world, p, **_ASK_BAC)), "filter_would_drop")
+    good = _consent_for(err, p)
+    version, body, sig = good.split(".")
+    forged = f"{version}.{body}.{'A' * len(sig)}"
+    assert _refused(lambda: gqs.execute(_req(world, p, consent=forged, **_ASK_BAC)),
+                    "consent_invalid").detail["reason"] == "signature"
+    assert _refused(lambda: gqs.execute(_req(world, p, consent="not_a_token", **_ASK_BAC)),
+                    "consent_invalid").detail["reason"] == "malformed"
+
+
+def test_a_consent_is_bound_to_its_user(world, one_drop):
+    gqs, p = _gqs(world, who="analyst", sink=Sink())
+    err = _refused(lambda: gqs.execute(_req(world, p, **_ASK_BAC)), "filter_would_drop")
+    gqs_o, p_o = _gqs(world, who="owner", sink=Sink())
+    owners = _consent_for(err, p_o)  # the owner's consent, for the analyst's identical question
+    assert _refused(lambda: gqs.execute(_req(world, p, consent=owners, **_ASK_BAC)),
+                    "consent_invalid").detail["reason"] == "other_user"
+
+
+def test_a_consent_is_bound_to_the_exact_query(world, one_drop):
+    gqs, p = _gqs(world, sink=Sink())
+    err = _refused(lambda: gqs.execute(_req(world, p, **_ASK_BAC)), "filter_would_drop")
+    token = _consent_for(err, p)
+    other = dict(measures=["orders"], filters=_ASK_BAC["filters"])
+    assert _refused(lambda: gqs.execute(_req(world, p, consent=token, **other)),
+                    "consent_invalid").detail["reason"] == "other_query"
+
+
+def test_a_consent_expires(world, one_drop):
+    import time as _t
+
+    gqs, p = _gqs(world, sink=Sink())
+    err = _refused(lambda: gqs.execute(_req(world, p, **_ASK_BAC)), "filter_would_drop")
+    stale = _consent_for(err, p, now=_t.time() - 3600)
+    assert _refused(lambda: gqs.execute(_req(world, p, consent=stale, **_ASK_BAC)),
+                    "consent_invalid").detail["reason"] == "expired"
+
+
+def test_a_consent_covers_exactly_the_filters_it_names(world, one_drop):
+    gqs, p = _gqs(world, sink=Sink())
+    err = _refused(lambda: gqs.execute(_req(world, p, **_ASK_BAC)), "filter_would_drop")
+    wrong = _consent_for(err, p, fields=[f"{world['v']}.order_id"])
+    assert _refused(lambda: gqs.execute(_req(world, p, consent=wrong, **_ASK_BAC)),
+                    "consent_invalid").detail["reason"] == "other_filters"
+
+
+def test_the_model_cannot_pass_bare_filter_ids():
+    from app.services.governed_query import GovernedQueryRequest
+
+    assert "accept_dropped_filters" not in GovernedQueryRequest.__dataclass_fields__
