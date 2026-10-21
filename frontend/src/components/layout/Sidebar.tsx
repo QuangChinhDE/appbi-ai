@@ -33,11 +33,12 @@ import {
   X,
   Workflow,
   MessagesSquare,
+  Sparkles,
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { cn } from '@/lib/utils';
-import { DEFAULT_LANDING_PATH, HOME_MODULE_ENABLED } from '@/lib/feature-flags';
+import { ANALYST_MODULE_ENABLED, DEFAULT_LANDING_PATH, HOME_MODULE_ENABLED } from '@/lib/feature-flags';
 import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { authApi } from '@/lib/api-client';
@@ -96,6 +97,9 @@ const NAV_GROUPS: NavGroup[] = [
     // one job each; all gated by the existing 'govern' permission key.
     labelKey: 'sidebar.group.intelligence',
     items: [
+      ...(ANALYST_MODULE_ENABLED
+        ? [{ labelKey: 'sidebar.nav.analyst', href: '/analyst', icon: <Sparkles className="h-4 w-4" />, module: 'analyst' as const }]
+        : []),
       { labelKey: 'sidebar.nav.knowledgeHub', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
       { labelKey: 'sidebar.nav.agentFlows', href: '/agent-flows', icon: <Workflow className="h-4 w-4" />, module: 'agent_flows' },
       // The reading side, and its OWN key. It shared `agent_flows` until this
