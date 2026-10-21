@@ -55,9 +55,17 @@ def _field_words(field) -> set[str]:
     return words
 
 
-def _mentioned(field, q: set[str]) -> bool:
-    # "so" (số) is in half the measure labels; it identifies nothing on its own.
-    return bool((_field_words(field) - {"so", "id", "ma"}) & q)
+_GENERIC = {"so", "id", "ma", "hang", "don"}
+
+
+def _mentioned(field, q: set[str], question_folded: str = "") -> bool:
+    """The question names this field: its whole label (or a synonym) appears in it,
+    or it shares a word that is not generic — "số", "hàng", "đơn" are in half the
+    labels of a commerce model ("Ngày đặt hàng" is not asked by "số đơn hàng")."""
+    texts = [field.label, *(field.synonyms or ())]
+    if question_folded and any(fold(t).strip() and f" {fold(t).strip()} " in f" {question_folded} " for t in texts):
+        return True
+    return bool((_field_words(field) - _GENERIC) & q)
 
 
 def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> dict[str, set[str]]:
@@ -96,6 +104,7 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
     Vietnamese question over English labels) but is only believed where the phrase
     really is in the question."""
     q = syllables(question)
+    qf = " ".join(re.split(r"[^0-9a-z]+", fold(question))).strip()
     carried = set(carried)
     by_ref = {f.ref: f for f in plan.explore.fields}
     phrases = _valid_phrases(covered or {}, question, q, by_ref)
@@ -103,16 +112,13 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
 
     def mentioned(ref):
         f = by_ref.get(ref)
-        return f is not None and (ref in carried or ref in phrases or _mentioned(f, q))
+        return f is not None and (ref in carried or ref in phrases or _mentioned(f, q, qf))
 
     measures = [m for m in plan.measures if mentioned(m)]
     if not measures:
         asked = ", ".join(sorted(q - _STOP - _TIME)[:6])
         return None, (f"Dữ liệu bạn được dùng không có chỉ số cho “{asked}”, nên không trả lời "
                       "thay vì trả lời bằng một chỉ số khác.")
-    dims = [d for d in plan.dimensions
-            if mentioned(d) or (d in plan.time_grains and has_time_words and d in by_ref)]
-    grains = {r: g for r, g in plan.time_grains.items() if r in dims}
     filters = {}
     for ref, cond in plan.filters.items():
         f = by_ref.get(ref)
@@ -120,6 +126,16 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
         if f is not None and all(syllables(v) <= _field_words(f) for v in vals if isinstance(v, str)):
             continue  # "Trạng thái đơn eq Trạng thái đơn": the label, not a value
         filters[ref] = cond
+
+    def one_value(ref):
+        cond = filters.get(ref) or {}
+        v = cond.get("value")
+        return cond.get("operator") == "eq" or (cond.get("operator") == "in" and isinstance(v, list) and len(v) == 1)
+
+    dims = [d for d in plan.dimensions
+            if (mentioned(d) or (d in plan.time_grains and has_time_words and d in by_ref))
+            and not one_value(d)]  # grouping by a field filtered to one value is one group
+    grains = {r: g for r, g in plan.time_grains.items() if r in dims}
 
     explained = set(_STOP)
     for ref in [*measures, *dims, *filters, *carried]:
