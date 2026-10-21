@@ -41,7 +41,14 @@ def _planner(world, *, view=None, explore=None, dims=("region", "order_date"), g
     raw = {"status": "plan", "explore_id": (explore or world["explore"]).id,
            "dimensions": [f"{v}.{d}" for d in dims], "measures": [f"{v}.revenue"],
            "time_grains": {f"{v}.order_date": grain} if "order_date" in dims else {},
-           "interpretation": "Doanh thu theo vùng theo tháng"}
+           "interpretation": "Doanh thu theo vùng theo tháng",
+           # what a real model returns: each question phrase -> the ref it names
+           # (services/analyst/grounding.py only believes phrases that are in the question)
+           "covered": {"doanh thu": f"{v}.revenue", "chậm": f"{v}.revenue", "vùng": f"{v}.region",
+                       "các vùng": f"{v}.region", "miền bắc": f"{v}.region", "theo tháng": f"{v}.order_date"}}
+    raw["covered"] = {k: r for k, r in raw["covered"].items()
+                      if r.rsplit(".", 1)[-1] in {*dims, "revenue"}
+                      or (k == "miền bắc" and (extra or {}).get("filters"))}
     raw.update(extra or {})
     return lambda prompt, system=None, max_tokens=None: raw
 
