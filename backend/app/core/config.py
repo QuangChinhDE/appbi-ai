@@ -155,6 +155,10 @@ class Settings(BaseSettings):
     # Pilot allowlist: comma-separated e-mails allowed to use the Analyst. EMPTY
     # MEANS NOBODY (fail closed) - the module permission alone does not open it.
     ANALYST_PILOT_ALLOWLIST: str = ""
+    # Accepting a dropped filter (a wider answer than asked). OFF until the consent
+    # journey is certified in the browser: with it off a dropped filter is a plain
+    # refusal, the consent endpoint answers 403 and a consent token is never spent.
+    ANALYST_DROP_CONSENT_ENABLED: bool = False
     ANALYST_MAX_QUERIES_PER_USER_DAY: int = 200
     ANALYST_MAX_CONCURRENT_PER_DATASOURCE: int = 4
     ANALYST_MAX_BQ_BYTES_PER_USER_DAY: int = 20 * 1024**3
