@@ -215,6 +215,17 @@ class PostgresLedger:
                 {"q": query_id, "u": str(requested_by)}).first()
         return hit is not None
 
+    def request_cancel_run(self, run_id: str, *, requested_by: Any) -> int:
+        """Mark every RUNNING query of one run (an Analyst turn) owned by
+        `requested_by`. Returns how many were marked."""
+        with self.engine.begin() as conn:
+            rows = conn.execute(sa.text(
+                "UPDATE governed_query_executions SET cancel_requested_at = coalesce(cancel_requested_at, now()), "
+                "cancel_requested_by = coalesce(cancel_requested_by, CAST(:u AS uuid)) "
+                "WHERE run_id = :r AND status = 'running' AND user_id = CAST(:u AS uuid) RETURNING query_id"),
+                {"r": str(run_id), "u": str(requested_by)}).all()
+        return len(rows)
+
     def heartbeat(self, query_ids: Iterable[str]) -> list[str]:
         """Renew this worker's leases; return the ids whose cancel was requested."""
         ids = list(query_ids)
@@ -242,11 +253,15 @@ class CancelWatcher:
     worker is running and cancels, locally, those another worker marked."""
 
     def __init__(self, ledger: PostgresLedger, registry: Any, *, interval_seconds: float = 1.0,
-                 on_error: Optional[Callable[[BaseException], None]] = None):
+                 on_error: Optional[Callable[[BaseException], None]] = None,
+                 recover_after_seconds: Optional[int] = None):
         self.ledger = ledger
         self.registry = registry
         self.interval = interval_seconds
         self.on_error = on_error
+        #: Leases older than this (any worker's) are recovered to `abandoned`.
+        #: Must be far above `interval`, or a live but slow worker is reaped.
+        self.recover_after = recover_after_seconds
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -254,6 +269,8 @@ class CancelWatcher:
         marked = self.ledger.heartbeat(self.registry.running_ids())
         for qid in marked:
             self.registry.cancel(qid)
+        if self.recover_after:
+            self.ledger.recover_stale_running(older_than_seconds=self.recover_after)
         return marked
 
     def start(self) -> "CancelWatcher":

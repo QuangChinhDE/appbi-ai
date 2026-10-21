@@ -728,6 +728,7 @@ jobs:
       GOVERN_ENABLED: "true"
       WORKBOARDS_ENABLED: "true"
       OBSERVABILITY_ENABLED: "true"
+      ANALYST_ENABLED: "true"
       AUTHZ_PG_REQUIRED: "1"
       AUTHZ_PG_OWNER_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
       AUTHZ_PG_APP_URL: "postgresql://appbi_app:appbi_app@localhost:5432/appbi"
@@ -801,6 +802,7 @@ jobs:
             tests/test_intelligence_gqs_execution_pg.py \
             tests/test_intelligence_gqs_cancel_pg.py \
             tests/test_intelligence_gqs_ledger_pg.py \
+            tests/test_analyst_http_pg.py \
             tests/test_intelligence_gqs_ledger_schema_pg.py \
             --junitxml=/tmp/authz-pg.xml
 

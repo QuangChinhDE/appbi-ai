@@ -39,12 +39,12 @@ from app.services.governed_query.principal import AuthorizationContext, Governed
 #: that declares an unexpected surface is held to the AI scope).
 HUMAN_RENDER_SURFACES = frozenset({"chart"})
 
-#: Sources whose executor enforces the bounds (timeout, rows, BigQuery bytes).
 def _bq_label(value: str) -> str:
     """A BigQuery label value: lowercase letters, digits, `_`/`-`, max 63."""
     return re.sub(r"[^a-z0-9_-]", "_", str(value).lower())[:63]
 
 
+#: Sources whose executor enforces the bounds (timeout, rows, BigQuery bytes).
 _BOUNDED_SOURCES = frozenset({"postgresql", "mysql", "bigquery"})
 
 #: The Direct Semantic API's filter contract (schemas/semantic.py FilterCondition).

@@ -1,0 +1,106 @@
+"""AppBI Analyst API (M2 MVP). Mounted only when ANALYST_ENABLED.
+
+Authenticated only. The module gate is `explore_charts: view` (the Analyst is
+exploration); the per-Dataset decision is made by the Governed Query Service on
+every read. Nothing here executes SQL: `ask` goes through GQS, the ledger and the
+server's budgets.
+
+  GET  /analyst/catalog                 what this person may ask about
+  POST /analyst/ask                     one turn: plan -> governed read -> answer
+  POST /analyst/consents                the PERSON accepts a dropped filter
+  POST /analyst/turns/{turn_id}/cancel  stop this person's running turn
+"""
+from __future__ import annotations
+
+import re
+import threading
+from typing import Any, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.core.dependencies import require_permission
+from app.models.user import User
+
+router = APIRouter(prefix="/analyst", tags=["analyst"])
+
+_TURN = re.compile(r"^[0-9a-f]{32}$")
+_lock = threading.Lock()
+_deps = None
+
+
+def _analyst_deps():
+    """One ledger + one cancel watcher per worker process, started on first use."""
+    global _deps
+    with _lock:
+        if _deps is None:
+            from app.services.analyst.service import AnalystDeps, ledger_from_settings
+            from app.services.governed_query.cancellation import REGISTRY
+            from app.services.governed_query.ledger import CancelWatcher
+
+            ledger = ledger_from_settings()
+            CancelWatcher(ledger, REGISTRY, interval_seconds=1.0, recover_after_seconds=600).start()
+            _deps = AnalystDeps(ledger=ledger, registry=REGISTRY)
+        return _deps
+
+
+class AskBody(BaseModel):
+    question: str = Field(..., min_length=1, max_length=1000)
+    turn_id: Optional[str] = None
+    previous_plan: Optional[dict] = None
+    drop_consent: Optional[str] = Field(None, max_length=2000)
+
+
+class ConsentBody(BaseModel):
+    query_fingerprint: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    fields: list[str] = Field(..., min_length=1, max_length=20)
+
+
+def _turn(turn_id: Optional[str]) -> Optional[str]:
+    if turn_id is not None and not _TURN.match(turn_id):
+        raise HTTPException(status_code=422, detail="turn_id must be 32 lowercase hex characters")
+    return turn_id
+
+
+@router.get("/catalog")
+def catalog(db: Session = Depends(get_db),
+            user: User = Depends(require_permission("explore_charts", "view"))) -> dict[str, Any]:
+    from app.services.analyst.catalog import discover
+    from app.services.governed_query import AuthorizationContext, EffectivePrincipal
+
+    p = EffectivePrincipal.for_user(user, surface="analyst")
+    items = discover(AuthorizationContext(db=db, principal=p, user=user))
+    return {"sources": [{"explore_id": c.explore_id, "dataset": c.dataset_name, "source_type": c.source_type,
+                         "measures": [f.label for f in c.fields if f.kind == "measure"][:12],
+                         "dimensions": [f.label for f in c.fields if f.kind == "dimension"][:12]}
+                        for c in items]}
+
+
+@router.post("/ask")
+def ask(body: AskBody, db: Session = Depends(get_db),
+        user: User = Depends(require_permission("explore_charts", "view"))) -> dict[str, Any]:
+    from app.services.analyst.service import ask as run_turn
+
+    previous = body.previous_plan if isinstance(body.previous_plan, dict) else None
+    return run_turn(db, user, body.question, _analyst_deps(), previous=previous,
+                    drop_consent=body.drop_consent, turn_id=_turn(body.turn_id))
+
+
+@router.post("/consents")
+def consent(body: ConsentBody,
+            user: User = Depends(require_permission("explore_charts", "view"))) -> dict[str, Any]:
+    """Called by the person's own click in the UI. The token is bound to this
+    user and this exact query; GQS verifies it and the ledger spends it once."""
+    from app.services.governed_query import consent as c
+
+    return {"drop_consent": c.issue(user_id=user.id, query_fp=body.query_fingerprint, fields=body.fields),
+            "expires_in": c.DEFAULT_TTL_SECONDS}
+
+
+@router.post("/turns/{turn_id}/cancel")
+def cancel(turn_id: str, user: User = Depends(require_permission("explore_charts", "view"))) -> dict[str, Any]:
+    _turn(turn_id)
+    marked = _analyst_deps().ledger.request_cancel_run(turn_id, requested_by=user.id)
+    return {"cancel_requested": marked}

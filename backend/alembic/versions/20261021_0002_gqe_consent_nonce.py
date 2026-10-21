@@ -7,7 +7,8 @@ second use of the same consent fail instead of running again.
 
 Additive: one nullable column and one partial unique index. No existing row is
 read, changed or backfilled (every existing row keeps NULL, which the index
-ignores).
+ignores). The index is built non-concurrently: a brief SHARE lock blocks
+ledger writes while it scans; the table is new this release, so the scan is short.
 
 DOWNGRADE REFUSES while any row carries a consent nonce: that column is audit
 evidence of what a person accepted. Rolling the CODE back leaves it in place.

@@ -81,7 +81,12 @@ def test_only_a_bigquery_job_carries_the_bytes_limit(monkeypatch, ds_type, expec
     assert seen["max_rows"] == 11 and seen["timeout_seconds"] == 7 and seen["limit"] is None
 
 
-def test_gqs_is_not_live_nothing_outside_its_package_imports_it():
+#: PR-1G: the ONLY code outside the package that may reach GQS. A new consumer
+#: is a reviewed change to this set, not a side effect.
+APPROVED_CONSUMERS = {"api/analyst.py", "services/analyst/service.py", "services/analyst/catalog.py"}
+
+
+def test_only_the_approved_consumers_reach_gqs():
     rx = re.compile(r"\bgoverned_query\b")
     hits = []
     for path in APP.rglob("*.py"):
@@ -90,6 +95,13 @@ def test_gqs_is_not_live_nothing_outside_its_package_imports_it():
             continue
         if rx.search(path.read_text(encoding="utf-8-sig")):
             hits.append(rel)
-    assert hits == [], (
-        "GQS is wired into " + ", ".join(hits) + ". Wiring a query path is PR-1G, after the "
-        "ledger (1E), budgets (1C), cancellation (1D) and refusal tests are accepted.")
+    assert sorted(set(hits) - APPROVED_CONSUMERS) == [], (
+        "GQS is wired into " + ", ".join(sorted(set(hits) - APPROVED_CONSUMERS)) + " outside the approved "
+        "consumers. A new query path through GQS is a reviewed PR that extends APPROVED_CONSUMERS.")
+
+
+def test_the_analyst_is_mounted_only_behind_its_flag():
+    text = (APP / "api" / "__init__.py").read_text(encoding="utf-8")
+    block = text[text.index("if settings.ANALYST_ENABLED:"):]
+    assert "analyst_router" in block.split("\n\n")[0]
+    assert text.count("analyst_router") == 2, "the Analyst router is included outside its flag"
