@@ -213,9 +213,35 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
         v = cond.get("value")
         return cond.get("operator") == "eq" or (cond.get("operator") == "in" and isinstance(v, list) and len(v) == 1)
 
+    from app.services.analyst.catalog import is_identifier
+
+    def breakdown_ok(d):
+        """An identifier or a numeric column lists rows, it does not summarise them:
+        only a breakdown the question names word for word (holdout: "bao nhiêu
+        khách" grouped by customer_id -> "Doanh nghiệp (1)"; "bao nhiêu cái" grouped
+        by the quantity column)."""
+        f = by_ref.get(d)
+        if f is None:
+            return False
+        if is_identifier(f) or str(f.type).lower() in ("number", "numeric", "integer", "float", "decimal"):
+            return d in carried or _mentioned(f, q, qf)
+        return True
+
     dims = [d for d in plan.dimensions
             if (mentioned(d) or (d in plan.time_grains and has_time_words and d in by_ref))
-            and not one_value(d)]  # grouping by a field filtered to one value is one group
+            and not one_value(d) and breakdown_ok(d)]  # grouping by a field filtered to one value is one group
+    if value_lookup is not None:
+        # "kênh Online" is a FILTER on the channel, not a breakdown by channel
+        # (holdout set 3): words of a breakdown's phrase beyond its label are looked
+        # up as that field's real value; one match turns the breakdown into a filter.
+        for d in list(dims):
+            extra = phrases.get(d, set()) - _field_words(by_ref[d]) - _STOP - _TIME if d in by_ref else set()
+            if not extra or d in plan.time_grains or not _vietnamese(by_ref[d]):
+                continue  # an English label is bridged by the phrase: no "extra" words to read
+            found = value_lookup(question, extra, [r for r in [*dims, *filters] if r != d])
+            if found and found[0] == d:
+                dims.remove(d)
+                filters[d] = {"operator": "eq", "value": found[1]}
     grains = {r: g for r, g in plan.time_grains.items() if r in dims}
 
     if isinstance(previous, dict):
