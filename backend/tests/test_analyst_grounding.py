@@ -285,3 +285,11 @@ def test_a_value_inside_a_breakdown_phrase_is_a_filter():
                       value_lookup=lambda q, words, used: ("o.channel", "Online") if "online" in words else None)
     assert out is not None, why
     assert out.dimensions == ["p.category"] and out.filters == {"o.channel": {"operator": "eq", "value": "Online"}}
+
+
+def test_a_modifier_in_a_metric_phrase_is_not_explained_by_the_metric():
+    # holdout set 5 N04: "Doanh số dự kiến quý 3 năm 2027" answered with history
+    p, why = ground(_plan(["l.net_sales"], ["o.order_date"], {"o.order_date": "quarter"}),
+                    "Doanh số dự kiến quý 3 năm 2027",
+                    covered={"doanh số dự kiến": "l.net_sales", "quý 3 năm 2027": "o.order_date"})
+    assert p is None and "dự" in why

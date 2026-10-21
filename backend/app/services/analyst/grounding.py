@@ -90,13 +90,29 @@ def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> d
         if content and len(words & content) >= max(3, 0.7 * len(content)):
             continue
         f = fields.get(ref)
-        if f is not None and _vietnamese(f) and not ((words - {"so", "id", "ma"}) & _field_words(f)):
+        if f is not None and _vietnamese(f):
             # A field the owner named in Vietnamese can be compared word for word:
             # a phrase sharing nothing with it is the model's guess, not a mapping
-            # (holdout: "lợi nhuận" -> "Doanh số"). Only a field named in another
-            # language ("Revenue") needs the model's bridge.
-            continue
+            # (holdout: "lợi nhuận" -> "Doanh số"), and only the SHARED words are
+            # explained by it — "dự kiến" in "doanh số dự kiến" (holdout set 5: a
+            # forecast answered with history) or "Online" in "kênh Online" stay to be
+            # explained by a real value or refused. Only a field named in another
+            # language ("Revenue") needs the model's whole phrase as the bridge.
+            shared = words & _field_words(f)
+            if not (shared - {"so", "id", "ma"}):
+                continue
+            words = shared
         out.setdefault(ref, set()).update(words)
+    return out
+
+
+def _phrase_words(covered: dict, ref: str, q: set[str]) -> set[str]:
+    """All words of the question phrases the model mapped to `ref` (in the question)."""
+    out: set[str] = set()
+    for phrase, target in (covered or {}).items():
+        words = syllables(phrase)
+        if target == ref and words and words <= q:
+            out |= words
     return out
 
 
@@ -235,7 +251,7 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
         # (holdout set 3): words of a breakdown's phrase beyond its label are looked
         # up as that field's real value; one match turns the breakdown into a filter.
         for d in list(dims):
-            extra = phrases.get(d, set()) - _field_words(by_ref[d]) - _STOP - _TIME if d in by_ref else set()
+            extra = _phrase_words(covered or {}, d, q) - _field_words(by_ref[d]) - _STOP - _TIME if d in by_ref else set()
             if not extra or d in plan.time_grains or not _vietnamese(by_ref[d]):
                 continue  # an English label is bridged by the phrase: no "extra" words to read
             found = value_lookup(question, extra, [r for r in [*dims, *filters] if r != d])
