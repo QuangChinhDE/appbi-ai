@@ -118,6 +118,7 @@ jobs:
             tests/test_intelligence_knowledge_quarantine.py \
             tests/test_intelligence_effective_principal.py \
             tests/test_analyst_narrative.py \
+            tests/test_analyst_planner.py \
             tests/test_intelligence_gqs_core.py
 
       # WHAT THE ANALYST IS SHOWN AS EVIDENCE, AND WHAT A METRIC MEANS.

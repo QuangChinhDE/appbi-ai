@@ -43,11 +43,14 @@ def ledger_from_settings():
 
 
 def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] = None,
-        drop_consent: Optional[str] = None, turn_id: Optional[str] = None) -> dict:
+        drop_consent: Optional[str] = None, turn_id: Optional[str] = None,
+        ceiling_dataset_ids: Optional[list[int]] = None) -> dict:
+    """One turn. `ceiling_dataset_ids` scopes the Analyst to a set of Datasets
+    (a workspace); it can only NARROW what the person may read, never widen it."""
     from app.core.config import settings
     from app.services.governed_query import (
         AuthorizationContext, EffectivePrincipal, GovernedQueryRequest, GovernedQueryService, QueryBounds,
-        RelationRef, SemanticAsk,
+        RelationRef, SemanticAsk, SurfaceCeiling,
     )
 
     question = (question or "").strip()
@@ -55,7 +58,8 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         return {"status": "unsupported", "message": "Hãy nhập câu hỏi."}
     turn_id = turn_id or uuid.uuid4().hex
     principal = EffectivePrincipal.for_user(user, surface="analyst", request_id=turn_id)
-    authz = AuthorizationContext(db=db, principal=principal, user=user)
+    authz = AuthorizationContext(db=db, principal=principal, user=user,
+                                 ceiling=SurfaceCeiling.of(ceiling_dataset_ids))
     steps = []
 
     catalog = discover(authz)
@@ -96,6 +100,14 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     columns = [{"name": c.name, "ref": c.ref, "role": c.role, "label": labels.get(c.ref or "", c.name)}
                for c in result.columns]
     rows = [{c["name"]: _jsonable(r.get(c["name"])) for c in columns} for r in result.rows]
+    if not rows and p.filters:
+        # Zero rows under a filter is not "the answer is nothing": the model may
+        # have put the question's words on a field that does not mean them
+        # (real-model eval: ad channels written into seller_id). Say exactly what
+        # was filtered and draw no conclusion; the read stays in the ledger.
+        steps.append({"step": "verify", "detail": "0 dòng khớp bộ lọc"})
+        return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
+                "message": no_match_message(p), "evidence": {"query_id": ev.query_id}}
     time_ref = next(iter(p.time_grains), None)
     story = narrative.describe(columns, rows, time_ref=time_ref, truncated=result.truncated)
     steps.append({"step": "verify", "detail": "; ".join(c["detail"] for c in story["checks"])})
@@ -116,6 +128,17 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         "chart_draft_unavailable": (None if draft else
                                     "Câu trả lời có bộ lọc; bản nháp biểu đồ chưa mang được bộ lọc nên không đề xuất lưu."),
     }
+
+
+def no_match_message(p: Plan) -> str:
+    labels = {f.ref: f.label for f in p.explore.fields}
+    parts = []
+    for ref, cond in p.filters.items():
+        value = cond.get("value")
+        shown = ", ".join(str(v) for v in value) if isinstance(value, list) else str(value)
+        parts.append(f"{labels.get(ref, ref)} {cond.get('operator')} {shown}")
+    return ("Không có dòng nào khớp bộ lọc: " + "; ".join(parts) + ". Có thể trường này không mang nghĩa như "
+            "trong câu hỏi; hệ thống không suy diễn thêm. Hãy kiểm tra lại cách hiểu câu hỏi.")
 
 
 def _safe_detail(refusal: GovernedRefusal) -> dict:

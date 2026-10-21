@@ -563,7 +563,7 @@ features:
     files: [backend/app/services/analyst/**, backend/app/api/analyst.py]
     keywords: [analyst, "ai analyst", discovery, planner, "chart draft"]
     invariants: []
-    required_tests: [analyst_http_pg, analyst_narrative, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg]
+    required_tests: [analyst_http_pg, analyst_narrative, analyst_planner, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -636,6 +636,9 @@ tests:
   analyst_narrative:
     run: "pytest backend/tests/test_analyst_narrative.py"
     locks: "the Analyst's words never claim more than the governed rows support: a complete result reports the trend computed from the rows; a TRUNCATED result (row bound hit) draws no trend, ranking, total or facts and says it is incomplete (found by the real-model browser run: a mid-period cut read as -98.9%)"
+  analyst_planner:
+    run: "pytest backend/tests/test_analyst_planner.py"
+    locks: "the server validates the model's plan against the person's catalog: a wrongly view-qualified field is resolved only when its name is unique in the explore, an ambiguous or unknown field is refused, a grain on a string-typed field is refused naming the field, and an empty result under a filter is reported as no match (naming field and values), never as an answer (all from the real-model BigQuery evaluation)"
   analyst_http_pg:
     requires: postgres
     run: "pytest backend/tests/test_analyst_http_pg.py"

@@ -105,30 +105,48 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
     dims = {f.ref: f for f in explore.fields if f.kind == "dimension"}
     meas = {f.ref: f for f in explore.fields if f.kind == "measure"}
 
+    def resolve(ref, allowed):
+        """A catalog ref as written, or the ONE catalog field of that name when the
+        model qualified it with the wrong view. Ambiguous or unknown: None."""
+        if not isinstance(ref, str):
+            return None
+        if ref in allowed:
+            return ref
+        name = ref.rsplit(".", 1)[-1]
+        hits = [r for r in allowed if r.rsplit(".", 1)[-1] == name]
+        return hits[0] if len(hits) == 1 else None
+
     def refs(key, allowed):
         vals = raw.get(key) or []
-        if not isinstance(vals, list) or any(not isinstance(v, str) or v not in allowed for v in vals):
+        if not isinstance(vals, list):
             return None
-        return list(dict.fromkeys(vals))
+        out = [resolve(v, allowed) for v in vals]
+        return None if any(o is None for o in out) else list(dict.fromkeys(out))
 
     d, m = refs("dimensions", dims), refs("measures", meas)
     if d is None or m is None or not m:
         return Unsupported("Kế hoạch dùng trường không có trong mô hình dữ liệu được phép.")
     grains = {}
-    for ref, g in (raw.get("time_grains") or {}).items():
-        if ref not in dims or not is_time(dims[ref]) or g not in GRAINS or ref not in d:
+    for raw_ref, g in (raw.get("time_grains") or {}).items():
+        ref = resolve(raw_ref, dims)
+        if ref is None or g not in GRAINS or ref not in d:
             return Unsupported("Độ chi tiết thời gian của kế hoạch không hợp lệ.")
+        if not is_time(dims[ref]):
+            return Unsupported(f"Trường “{dims[ref].label}” chưa được khai báo kiểu ngày/giờ trong mô hình ngữ nghĩa, "
+                               "nên chưa nhóm theo thời gian được. Cần chủ sở hữu mô hình khai báo đúng kiểu.")
         grains[ref] = g
     filters = {}
-    for ref, cond in (raw.get("filters") or {}).items():
-        if ref not in dims or not isinstance(cond, dict) or cond.get("operator") not in OPERATORS:
+    for raw_ref, cond in (raw.get("filters") or {}).items():
+        ref = resolve(raw_ref, dims)
+        if ref is None or not isinstance(cond, dict) or cond.get("operator") not in OPERATORS:
             return Unsupported("Bộ lọc của kế hoạch không hợp lệ.")
         filters[ref] = {"operator": cond["operator"], "value": cond.get("value")}
     sorts = []
     for s in raw.get("sorts") or []:
-        if not isinstance(s, dict) or s.get("field") not in set(d) | set(m) \
+        field_ref = resolve(s.get("field"), {**dims, **meas}) if isinstance(s, dict) else None
+        if field_ref is None or field_ref not in set(d) | set(m) \
                 or str(s.get("direction") or "asc").lower() not in ("asc", "desc"):
             return Unsupported("Cách sắp xếp của kế hoạch không hợp lệ.")
-        sorts.append({"field": s["field"], "direction": str(s.get("direction") or "asc").lower()})
+        sorts.append({"field": field_ref, "direction": str(s.get("direction") or "asc").lower()})
     return Plan(explore=explore, dimensions=d, measures=m, time_grains=grains, filters=filters, sorts=sorts,
                 interpretation=str(raw.get("interpretation") or "")[:400])

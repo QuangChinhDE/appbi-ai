@@ -128,7 +128,7 @@ def test_a_revoked_grant_is_honoured_on_the_next_turn(client, db, world, model):
 
 
 @pytest.mark.parametrize("bad", [
-    {"measures": ["other_view.revenue"]},
+    {"measures": ["other_view.not_a_measure"]},
     {"dimensions": ["{v}.customer_phone_raw"]},
     {"explore_id": 999999999},
     {"time_grains": {"{v}.order_date": "not_a_grain"}},
