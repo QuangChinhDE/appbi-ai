@@ -556,7 +556,7 @@ features:
                "surface ceiling", refusal]
     invariants: []
     required_tests: [intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_cancel_pg,
-                     intelligence_gqs_ledger_schema_pg, intelligence_gqs_mysql, intelligence_security_ledger]
+                     intelligence_gqs_ledger_schema_pg, intelligence_gqs_mysql, intelligence_gqs_bigquery, intelligence_security_ledger]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -617,6 +617,11 @@ tests:
     requires: mysql
     run: "pytest backend/tests/test_intelligence_gqs_mysql_runtime.py"
     locks: "on a real MySQL: the executor's server-side row cap holds, the READ ONLY transaction refuses a write, KILL QUERY from a second connection stops a running statement early, and a different MySQL user cannot kill it"
+  intelligence_gqs_bigquery:
+    status: manual
+    requires: bigquery-qa
+    run: "GQS_BQ_DATASOURCE_ID=<qa datasource> pytest backend/tests/test_intelligence_gqs_bigquery_runtime.py"
+    locks: "on REAL BigQuery, only the approved QA project/tables (refuses otherwise): dry-run estimates before running, a scan over maximum_bytes_billed is refused by BigQuery, the row cap holds and every job carries attribution labels, a BigQueryCanceller cancel stops a running job AT THE WAREHOUSE (job ends DONE/stopped, no rows returned), and a cancel for a nonexistent job is harmless. Manual: CI has no warehouse credential; run with the QA datasource and report it NOT VERIFIED when not run"
   intelligence_gqs_ledger_schema_pg:
     requires: postgres
     run: "pytest backend/tests/test_intelligence_gqs_ledger_schema_pg.py"

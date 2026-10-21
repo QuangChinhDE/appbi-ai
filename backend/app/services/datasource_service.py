@@ -1065,6 +1065,7 @@ class DataSourceConnectionService:
         max_rows: Optional[int] = None,
         maximum_bytes_billed: Optional[int] = None,
         on_backend_id: Optional[Callable[[Any], None]] = None,
+        job_labels: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]], float]:
         """
         Execute a SQL query against a data source.
@@ -1116,6 +1117,8 @@ class DataSourceConnectionService:
                     skip_cost_check=skip_bigquery_cost_check,
                     max_rows=max_rows,
                     maximum_bytes_billed=maximum_bytes_billed,
+                    on_backend_id=on_backend_id,
+                    job_labels=job_labels,
                 )
             elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
                 result = DataSourceConnectionService._execute_google_sheets(config, sql_query, limit)
@@ -1673,8 +1676,14 @@ class DataSourceConnectionService:
         skip_cost_check: bool = False,
         max_rows: Optional[int] = None,
         maximum_bytes_billed: Optional[int] = None,
+        on_backend_id: Optional[Callable[[Any], None]] = None,
+        job_labels: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
         """Execute query against BigQuery.
+
+        ``on_backend_id`` receives ``{"job_id", "project", "location"}`` of every
+        job this call submits, so a cancel arriving on another request can stop
+        exactly that job (GQS 1D). ``job_labels`` tag the job for attribution.
 
         Cost control (F14): unless an INTERNAL caller skipped the cost check, the
         real job always carries ``maximum_bytes_billed`` — so a dry run that
@@ -1694,6 +1703,13 @@ class DataSourceConnectionService:
                 bigquery.QueryJobConfig(maximum_bytes_billed=int(maximum_bytes_billed))
                 if maximum_bytes_billed else None
             )
+            if job_labels:
+                job_config = job_config or bigquery.QueryJobConfig()
+                job_config.labels = dict(job_labels)
+
+            def _report(job):
+                if on_backend_id is not None:
+                    on_backend_id({"job_id": job.job_id, "project": job.project, "location": job.location})
 
             if not skip_cost_check:
                 # Phase-15.59b — cost-check dry-run hits the SAME
@@ -1728,6 +1744,7 @@ class DataSourceConnectionService:
 
             try:
                 query_job = client.query(query, job_config=job_config) if job_config else client.query(query)
+                _report(query_job)
                 results = query_job.result(timeout=timeout_seconds, max_results=max_rows) if max_rows else query_job.result(timeout=timeout_seconds)
             except Exception as first_err:
                 # Phase-15.58/59 — retry-with-dedup for ambiguous-column
@@ -1755,6 +1772,7 @@ class DataSourceConnectionService:
                     raise
                 logger.info("[bq_sql_retry] retrying with deduplicated outer SELECT")
                 query_job = client.query(rewritten, job_config=job_config) if job_config else client.query(rewritten)
+                _report(query_job)
                 results = query_job.result(timeout=timeout_seconds, max_results=max_rows) if max_rows else query_job.result(timeout=timeout_seconds)
             
             # Get column names

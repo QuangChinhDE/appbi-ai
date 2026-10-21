@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import uuid
 from typing import Any, Iterable, Optional
@@ -39,6 +40,11 @@ from app.services.governed_query.principal import AuthorizationContext, Governed
 HUMAN_RENDER_SURFACES = frozenset({"chart"})
 
 #: Sources whose executor enforces the bounds (timeout, rows, BigQuery bytes).
+def _bq_label(value: str) -> str:
+    """A BigQuery label value: lowercase letters, digits, `_`/`-`, max 63."""
+    return re.sub(r"[^a-z0-9_-]", "_", str(value).lower())[:63]
+
+
 _BOUNDED_SOURCES = frozenset({"postgresql", "mysql", "bigquery"})
 
 #: The Direct Semantic API's filter contract (schemas/semantic.py FilterCondition).
@@ -460,7 +466,9 @@ class GovernedQueryService:
 
     def _run(self, compiled: CompiledQuery):
         from app.services.datasource_service import DataSourceConnectionService
-        from app.services.governed_query.cancellation import REGISTRY, MySQLCanceller, PostgresCanceller
+        from app.services.governed_query.cancellation import (
+            REGISTRY, BigQueryCanceller, MySQLCanceller, PostgresCanceller,
+        )
         from app.services.relationship_key_guard import verify_key_probes
 
         ds = compiled.datasource
@@ -482,6 +490,8 @@ class GovernedQueryService:
             if compiled.ds_type == "mysql":
                 cid = backend_id.get("connection_id") if isinstance(backend_id, dict) else None
                 registry.register(qid, MySQLCanceller(ds.config, cid))
+            elif compiled.ds_type == "bigquery":
+                registry.register(qid, BigQueryCanceller(ds.config, backend_id))
             else:
                 registry.register(qid, PostgresCanceller(ds.config, backend_id))
 
@@ -494,7 +504,10 @@ class GovernedQueryService:
                 timeout_seconds=b.timeout_seconds,
                 max_rows=b.max_rows + 1,
                 maximum_bytes_billed=b.bq_max_bytes if compiled.ds_type == "bigquery" else None,
-                on_backend_id=_register if compiled.ds_type in ("postgresql", "mysql") else None,
+                on_backend_id=_register,
+                # Attribution on the warehouse side: which governed query ran it.
+                job_labels={"appbi_surface": "gqs", "appbi_query": _bq_label(qid)}
+                if compiled.ds_type == "bigquery" else None,
             )
         except Exception as exc:  # noqa: BLE001 - classify, then re-raise
             # A cancelled statement surfaces as the driver's "query cancelled"

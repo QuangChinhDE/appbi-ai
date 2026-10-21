@@ -127,14 +127,27 @@ class MySQLCanceller:
 
 
 class BigQueryCanceller:
-    """`job.cancel()` on the running query job."""
+    """Cancel ONE BigQuery job, named by the identity the executor reported:
+    ``{"job_id", "project", "location"}``. The cancel goes through a client built
+    from the same datasource config, so it carries the same credential that
+    started the job and can only reach jobs in that project. A job id is a
+    random UUID per submission, so a finished job's id is never reused."""
 
-    def __init__(self, job: Any):
-        self.job = job
+    def __init__(self, config: Dict[str, Any], backend: Any):
+        self.config = config
+        self.backend = backend if isinstance(backend, dict) else {}
 
     def cancel(self) -> bool:
+        job_id = self.backend.get("job_id")
+        if not job_id:
+            return False
         try:
-            self.job.cancel()
+            from app.core.crypto import decrypt_config
+            from app.services.datasource_service import _build_bigquery_client
+
+            client = _build_bigquery_client(decrypt_config(self.config))
+            client.cancel_job(job_id, project=self.backend.get("project"),
+                              location=self.backend.get("location"))
             return True
         except Exception:  # noqa: BLE001
             logger.warning("governed query: bigquery job cancel failed", exc_info=True)
