@@ -69,11 +69,11 @@ def _mentioned(field, q: set[str], question_folded: str = "") -> bool:
     return bool((_field_words(field) - _GENERIC) & q)
 
 
-def is_function_phrase(phrase: str, *, has_time: bool) -> bool:
+def is_function_phrase(phrase: str, *, has_time: bool, source_words: set[str] | None = None) -> bool:
     """A question phrase that names no data: only function/analysis words, or only
     time words when the plan groups by time (holdout: the model mapped "biến động
     ra sao", "tổng cộng" and "theo tháng" to null and the turn was refused)."""
-    words = syllables(phrase) - _STOP
+    words = syllables(phrase) - _STOP - (source_words or set())  # naming the dataset names no field
     return not words or (has_time and words <= _TIME)
 
 
@@ -240,7 +240,7 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
                 if g and d not in grains:
                     grains[d] = g
 
-    explained = set(_STOP)
+    explained = set(_STOP) | syllables(plan.explore.dataset_name) | syllables(plan.explore.label)
     for ref in [*measures, *dims, *filters, *carried]:
         if ref in by_ref:
             explained |= _field_words(by_ref[ref])
