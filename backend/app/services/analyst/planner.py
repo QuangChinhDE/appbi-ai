@@ -67,7 +67,8 @@ SYSTEM = (
     "Match the question's words against each field's label AND synonyms. Every breakdown the question asks "
     "for (by X, per X, theo X, các X, từng X) must appear in dimensions. In \"covered\" map EACH short phrase "
     "of the question, copied exactly from it, to the ONE ref it names - the metric phrase, every breakdown "
-    "phrase, every filter phrase - e.g. {\"doanh thu\": m, \"nhóm sản phẩm\": d, \"khách hàng doanh nghiệp\": f}. "
+    "phrase, every filter phrase - e.g. {\"doanh thu\": \"sales.revenue\", \"nhóm sản phẩm\": \"products.category\", "
+    "\"khách hàng doanh nghiệp\": \"customers.segment\"} (values are refs from the catalog). "
     "Never map the whole question to one ref. A metric the catalog does not have (profit, conversion rate, a "
     "forecast) maps to null; never substitute a different metric. Filter values must be written exactly as the "
     "data writes them; a measure is never listed in dimensions. "
@@ -182,7 +183,12 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
     covered = raw.get("covered") if isinstance(raw.get("covered"), dict) else {}
     in_plan = set(d) | set(m) | set(filters)
     for phrase, target in covered.items():
-        ref = resolve(target, {**dims, **meas}) if isinstance(target, str) else None
+        if isinstance(target, str):
+            ref = resolve(target, {**dims, **meas})
+            if ref is None:
+                continue  # not a catalog ref (a label, a placeholder): no claim either way
+        else:
+            ref = None
         if ref is None or ref not in in_plan:
             return Unsupported(f"Dữ liệu bạn được dùng không có trường cho “{str(phrase)[:80]}”, "
                                "nên không trả lời phần đó thay vì trả lời sai.")
