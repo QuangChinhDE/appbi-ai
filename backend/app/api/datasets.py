@@ -5369,7 +5369,11 @@ def update_dataset_view(
 
     update_payload = validated.model_dump(exclude_unset=True)
     if "dimensions" in update_payload and update_payload["dimensions"] is not None:
-        update_payload["dimensions"] = [dim.model_dump() for dim in validated.dimensions or []]
+        from app.services.dataset_model_service import stamp_authored_dimensions
+
+        update_payload["dimensions"] = stamp_authored_dimensions(
+            [dim.model_dump() for dim in validated.dimensions or []], view.dimensions
+        )
     if "measures" in update_payload and update_payload["measures"] is not None:
         # Phase-15.63 — re-merge the legacy-shape measures we skipped from
         # Pydantic validation. They keep their original (possibly invalid)
