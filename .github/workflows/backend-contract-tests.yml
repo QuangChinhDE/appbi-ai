@@ -680,6 +680,14 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_intelligence_gqs_mysql_runtime.py
+      # BigQuery runtime evidence needs the QA warehouse credential, which CI does
+      # not have: here the module SKIPS, and a skip is not coverage. The gate is
+      # registered `manual` (intelligence_gqs_bigquery) and reported NOT VERIFIED
+      # unless run locally with GQS_BQ_DATASOURCE_ID on the approved QA project.
+      - name: "GQS BigQuery runtime (skips without the QA credential)"
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            tests/test_intelligence_gqs_bigquery_runtime.py
   # ── Authorization / security gate ─────────────────────────────────────────
   #
   # EVERY MODULE MOUNTED, PINNED DEPENDENCIES, REAL POSTGRES ROLES.
