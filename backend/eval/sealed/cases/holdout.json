@@ -1,0 +1,27 @@
+[
+  {
+    "id": "hold-001-cancelled-q3",
+    "split": "holdout",
+    "question": "Có bao nhiêu đơn hàng bị huỷ trong quý 3 năm 2026?",
+    "locale": "vi",
+    "fixture": "retail_vn",
+    "answer_kind": "scalar",
+    "tags": ["deterministic_sql", "time_comparison"],
+    "note": "Orders 3 and 8.",
+    "hand_expected": 2,
+    "oracle_sql": "SELECT COUNT(*) AS cancelled FROM orders WHERE status = 'cancelled' AND order_date >= DATE '2026-07-01' AND order_date < DATE '2026-10-01'"
+  },
+  {
+    "id": "hold-002-aov-august",
+    "split": "holdout",
+    "question": "What was the average net revenue per delivered order in August 2026?",
+    "locale": "en",
+    "fixture": "retail_vn",
+    "answer_kind": "scalar",
+    "tags": ["business_metric_meaning", "incorrect_join"],
+    "tolerance": 1e-9,
+    "note": "Average per ORDER, not per line: (130+120)/2. Averaging line amounts gives (100+30+120)/3 = 83.33.",
+    "hand_expected": 125.0,
+    "oracle_sql": "SELECT AVG(order_rev) AS aov FROM (SELECT o.id, SUM(i.quantity * i.unit_price) AS order_rev FROM orders o JOIN order_items i ON i.order_id = o.id WHERE o.status = 'delivered' AND o.order_date >= DATE '2026-08-01' AND o.order_date < DATE '2026-09-01' GROUP BY o.id)"
+  }
+]

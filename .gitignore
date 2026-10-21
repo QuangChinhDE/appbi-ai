@@ -521,3 +521,21 @@ backend/ci_security.db
 !integrations/appbi-mcp/tests/**/*.py
 !integrations/appbi-mcp/tests/live/rig/*
 integrations/appbi-mcp/.venv/
+
+# AppBI Intelligence Phase 0: security reproduction ledger (xfail = reproduced).
+!backend/tests/test_intelligence_phase0_security_repro.py
+!backend/tests/test_intelligence_eval_harness.py
+!backend/tests/test_intelligence_calc_field_policy.py
+!backend/tests/test_intelligence_knowledge_quarantine.py
+!backend/tests/test_intelligence_knowledge_quarantine_http_pg.py
+!backend/tests/test_intelligence_studio_test_scope_http_pg.py
+!backend/tests/test_intelligence_table_preview_http_pg.py
+!backend/tests/test_intelligence_effective_principal.py
+!backend/tests/test_intelligence_gqs_core.py
+!backend/tests/test_intelligence_gqs_execution_pg.py
+!backend/tests/test_intelligence_sec13_grain_injection_http_pg.py
+# AppBI Intelligence 0G: evidence/answerability and metric-meaning suites that were
+# committed with `git add -f`, never allow-listed, and run by no workflow.
+!backend/tests/test_govern_doc_answerability.py
+!backend/tests/test_knowledge_hit_contract.py
+!backend/tests/test_semantic_level0.py

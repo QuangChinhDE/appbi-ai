@@ -1348,6 +1348,7 @@ async def test_flow(
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
         brain_row=row,
+        caller=user,
     ):
         if ev.type == "result":
             envelope = ev.extra.get("envelope")
@@ -1446,6 +1447,7 @@ async def test_flow_on_report(
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
         brain_row=row,
+        caller=user,
     ):
         if ev.type == "result":
             envelope = ev.extra.get("envelope")
@@ -1553,6 +1555,7 @@ async def test_flow_as_chat(
         history=[t.model_dump() for t in body.history],
         base_system_prompt=chat_base_prompt(ctx),
         brain_row=row,
+        caller=user,
     ):
         if ev.type == "result":
             envelope = ev.extra.get("envelope")

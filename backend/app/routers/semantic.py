@@ -815,6 +815,18 @@ def execute_semantic_query(
                 ),
             )
         explore = _explores[0]
+        # QUERYING IS `explore`, NOT `view` (SEC-09). Reading the explore's
+        # definition needs any relation to its dataset — the filter above, which
+        # keeps existence hidden from strangers. Running it returns warehouse rows
+        # and accepts calculated fields, and the Dataset policy reserves that for
+        # the `explore` verb (as /charts preview does: api/charts.py). A `view`-
+        # only grant may see the explore and is refused here with 403. A legacy
+        # explore with no dataset stays module-admin-only, as the filter decided.
+        _dataset = _dataset_of_explore(db, explore)
+        if _dataset is not None:
+            from app.core.authz import decision as _authz
+
+            _authz.require(db, current_user, _authz.Action.EXPLORE, _dataset)
         # Pin the engine to THIS explore's model: it resolves the explore by
         # name again, and a same-named explore in a model the caller cannot
         # read must not be the one it finds.

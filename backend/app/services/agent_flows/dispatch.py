@@ -814,12 +814,17 @@ async def run_preview(
     #: through to nothing at all, which is narrower. Both make the Test panel
     #: describe a run that does not happen.
     brain_row: Any = None,
+    #: WHO IS TESTING. Required, with no default: the Test button is reachable by
+    #: anyone who may EDIT the flow — a shared editor as well as the owner — and a
+    #: test must not reach more than that person reaches in live chat. A missing
+    #: caller is a TypeError, never "run as the owner".
+    caller: Any,
     question: str,
     session_key: str = "",
     history: list[dict] | None = None,
     base_system_prompt: str = "",
 ) -> AsyncGenerator[AgentEvent, None]:
-    """Test the DRAFT against a real binding, as the author.
+    """Test the DRAFT against a real binding, as the person testing it.
 
     Runs on each step's stored key, like a real run. The endpoints refuse with
     `missing_credential` before calling this, so an author learns which step lacks
@@ -855,23 +860,40 @@ async def run_preview(
     if brain_row is not None:
         from app.services.agent_flows.permissions import run_scope as _run_scope
 
+        # THE CALLER IS A TERM, exactly as in live chat (`run_for_chat_thread`).
+        # Without it this recomputed the scope as the OWNER and overwrote the
+        # caller-bounded scope the endpoint had just derived, so a shared editor
+        # pressing Test reached the owner's data (SEC-03).
         ctx.knowledge_scope = _run_scope(
-            db, brain_row, flow, binding_info.knowledge.model_dump()
+            db, brain_row, flow, binding_info.knowledge.model_dump(), caller=caller
         )
         ctx.run_scope_ceiling = dict(ctx.knowledge_scope)
 
     ctx.allowed_chart_ids = set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
+    # THE SAME CAPABILITY CEILING THE LIVE PATHS SET (SEC-04). The registry's
+    # call-time gate reads these off the context, and a context that never declared
+    # them was treated as granted — so a Test of a chat flow (read_rows=False live)
+    # put raw rows into the model's context. Declared here exactly as the link and
+    # chat paths declare them, so the Test panel runs what the live surface runs.
+    ctx.max_rows_per_call = binding_info.capabilities.max_rows_per_call
+    ctx.max_result_tokens = binding_info.capabilities.max_result_tokens
+    ctx.read_rows = binding_info.capabilities.read_rows
+    ctx.web_search = binding_info.capabilities.web_search
     # THE SAME ADDON THE LIVE LINK GETS, so the Test button answers the question an
     # author is actually asking it. Without this, attaching a dataset changed what a
     # viewer could reach and changed nothing in the panel the author checks it in —
     # and the honest reading of that gap is "the attachment did not work".
     #
-    # Taken from the contract rather than re-derived: this path's contract is
-    # `knowledge.mode = flow_all`, so it already lists exactly what the flow
-    # attached, and the author testing is the owner whose rights those are.
+    # Bounded by the person testing: the datasets the caller-bounded scope kept, or,
+    # for a caller without a stored row, the attached datasets that caller may read.
     from app.services.agent_flows.permissions import chart_scope as _chart_scope
+    from app.services.agent_flows.permissions import readable_datasets as _readable
 
-    _attached = list(binding_info.knowledge.dataset_ids or [])
+    if brain_row is not None:
+        _attached = list((ctx.knowledge_scope or {}).get("dataset_ids") or [])
+    else:
+        _mine = _readable(db, caller)
+        _attached = [d for d in (binding_info.knowledge.dataset_ids or []) if d in _mine]
     if _attached:
         ctx.adopt_scope(
             set(ctx.allowed_chart_ids or set())
