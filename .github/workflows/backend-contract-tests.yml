@@ -781,6 +781,7 @@ jobs:
             tests/test_intelligence_knowledge_quarantine_http_pg.py \
             tests/test_intelligence_gqs_execution_pg.py \
             tests/test_intelligence_gqs_cancel_pg.py \
+            tests/test_intelligence_gqs_ledger_schema_pg.py \
             --junitxml=/tmp/authz-pg.xml
 
       # EVERY MANDATORY SECURITY SUITE, NOT JUST THE FIRST.

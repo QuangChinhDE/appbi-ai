@@ -40,14 +40,28 @@ class Canceller(Protocol):
 
 
 class PostgresCanceller:
-    """`pg_cancel_backend(pid)` from a second connection."""
+    """`pg_cancel_backend(pid)` from a second connection, aimed at ONE session.
 
-    def __init__(self, config: Dict[str, Any], pid: Any):
+    The target is identified by ``(pid, backend_start)``, never by pid alone: once
+    our statement's session ends, Postgres can hand the same pid to another
+    session — another user's, another tenant's. The cancel is a single statement
+    that only fires if the session with that pid still has the backend_start we
+    captured, so a late cancel can never stop someone else's query.
+
+    Postgres itself only lets a non-superuser cancel sessions of its own role (or
+    with pg_signal_backend). The canceller connects with the same source
+    credential that ran the statement, which is exactly the role allowed to stop
+    it — and no other."""
+
+    def __init__(self, config: Dict[str, Any], backend: Any):
         self.config = config
-        self.pid = pid
+        # Accept the executor's {"pid", "backend_start"} (the only safe form). A
+        # bare pid is not enough to cancel safely and is treated as unknown.
+        self.pid = backend.get("pid") if isinstance(backend, dict) else None
+        self.backend_start = backend.get("backend_start") if isinstance(backend, dict) else None
 
     def cancel(self) -> bool:
-        if self.pid is None:
+        if self.pid is None or self.backend_start is None:
             return False
         conn = None
         try:
@@ -59,7 +73,11 @@ class PostgresCanceller:
                 password=self.config.get("password"), connect_timeout=5,
             )
             with conn.cursor() as cur:
-                cur.execute("SELECT pg_cancel_backend(%s)", (int(self.pid),))
+                cur.execute(
+                    "SELECT pg_cancel_backend(pid) FROM pg_stat_activity "
+                    "WHERE pid = %s AND backend_start = %s",
+                    (int(self.pid), self.backend_start),
+                )
                 row = cur.fetchone()
             conn.commit()
             return bool(row and row[0])

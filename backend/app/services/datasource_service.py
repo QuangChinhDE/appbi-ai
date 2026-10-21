@@ -1568,9 +1568,13 @@ class DataSourceConnectionService:
             conn.set_session(readonly=True)
             cursor = conn.cursor()
             if on_backend_id is not None:
-                cursor.execute("SELECT pg_backend_pid()")
-                _pid_row = cursor.fetchone()
-                on_backend_id(_pid_row[0] if _pid_row else None)
+                # (pid, backend_start) identifies THIS session; a pid alone can be
+                # reused by another session once this one ends.
+                cursor.execute(
+                    "SELECT pid, backend_start FROM pg_stat_activity WHERE pid = pg_backend_pid()"
+                )
+                _id_row = cursor.fetchone()
+                on_backend_id({"pid": _id_row[0], "backend_start": _id_row[1]} if _id_row else None)
 
             # Set statement timeout
             cursor.execute("SET statement_timeout = %s", (int(timeout_seconds) * 1000,))

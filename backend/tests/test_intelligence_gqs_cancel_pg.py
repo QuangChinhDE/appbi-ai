@@ -201,3 +201,31 @@ def test_a_query_that_is_not_cancelled_is_unaffected(world, registry):  # noqa: 
     result = gqs.execute(_req(world, p, dims=["region"], measures=["revenue"]))
     assert result.rows and sink.finished[-1][1]["status"] == "ok"
     assert registry.running_ids() == set(), "the registry kept a finished query"
+
+
+def test_a_reused_pid_is_never_cancelled(world, registry):  # noqa: F811
+    """PO 1D: a pid can be reused by another session after ours ends. The
+    canceller targets (pid, backend_start); the right pid with a different
+    backend_start (i.e. a different session) must not be stopped."""
+    import datetime as _dt
+
+    from app.services.governed_query import PostgresCanceller
+
+    gqs, p = _gqs(world, who="owner", sink=Sink(), registry=registry)
+    th, box = _run_in_thread(lambda: gqs.execute(_slow_request(world, p)))
+    deadline = time.time() + 20
+    while not registry.running_ids() and time.time() < deadline:
+        time.sleep(0.05)
+    qid = next(iter(registry.running_ids()))
+    real = registry._cancellers[qid]
+    # Same pid, a backend_start that is NOT this session's: a stand-in for the
+    # session that would own the pid after reuse.
+    impostor = PostgresCanceller(real.config, {"pid": real.pid,
+                                               "backend_start": real.backend_start - _dt.timedelta(days=1)})
+    assert impostor.cancel() is False, "a canceller aimed at a different session stopped this one"
+    time.sleep(0.5)
+    assert th.is_alive(), "the statement stopped although only an impostor cancel was sent"
+    # The real identity still cancels it.
+    assert registry.cancel(qid) is True
+    th.join(timeout=30)
+    assert getattr(box.get("error"), "code", None) == "cancelled"
