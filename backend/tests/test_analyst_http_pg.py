@@ -195,3 +195,22 @@ def test_a_consent_is_issued_to_the_caller_only(client, db, world):  # noqa: F81
     assert consent.verify(token, user_id=world["analyst"].id, query_fp=fp, dropped_fields=["x.region"])
     with pytest.raises(GovernedRefusal):
         consent.verify(token, user_id=world["owner"].id, query_fp=fp, dropped_fields=["x.region"])
+
+
+def test_a_follow_up_stays_on_the_previous_source(client, db, world, model):  # noqa: F811
+    """Real-model browser run: "and by quarter?" jumped to another dataset. A
+    follow-up is held to the previous explore; a plan elsewhere is not run."""
+    _grant_module(db, world["analyst"])
+    model(_planner(world))
+    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": "Doanh thu?"}).json()
+    assert first["status"] == "answered"
+    model(_planner(world, view=world["slow_view"].name, explore=world["slow_explore"], dims=()))
+    turn = uuid.uuid4().hex
+    follow = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                         json={"question": "Còn theo quý?", "turn_id": turn, "previous_plan": first["plan"]}).json()
+    assert follow["status"] == "unsupported", follow
+    assert _ledger_rows(turn) == []
+    model(_planner(world, grain="quarter"))
+    again = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                        json={"question": "Còn theo quý?", "previous_plan": first["plan"]}).json()
+    assert again["status"] == "answered" and again["plan"]["explore_id"] == world["explore"].id

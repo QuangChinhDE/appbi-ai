@@ -63,6 +63,17 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     steps = []
 
     catalog = discover(authz)
+    prev_explore = (previous or {}).get("explore_id") if isinstance(previous, dict) else None
+    if prev_explore is not None:
+        # A follow-up refines the previous answer. Real-model run: "and by quarter?"
+        # jumped to an unrelated dataset. The follow-up is held to the previous
+        # explore (still re-authorised: it must be in THIS turn's catalog); a new
+        # topic is a new question, not a follow-up.
+        same = [c for c in catalog if c.explore_id == prev_explore]
+        if not same:
+            return {"status": "unsupported", "turn_id": turn_id, "steps": steps,
+                    "message": "Nguồn dữ liệu của câu hỏi trước không còn trong phạm vi bạn được dùng."}
+        catalog = same
     steps.append({"step": "discovery", "detail": f"{len(catalog)} nguồn ngữ nghĩa bạn được phép khai thác"})
     outcome = make_plan(question, catalog, previous=previous, complete=deps.complete)
     if isinstance(outcome, Clarify):

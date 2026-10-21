@@ -67,7 +67,7 @@ test('analyst: question -> governed answer -> evidence -> save chart -> reopen -
   await expect(page.getByTestId('analyst-query-id')).toHaveText(/^[0-9a-f]{32}$/);
   await expect(page.getByTestId('analyst-evidence')).toContainText('Rig Sales');
   await expect(page.getByTestId('analyst-table').locator('tbody tr')).toHaveCount(96);
-  await expect(page.getByTestId('analyst-chart').locator('.recharts-line')).not.toHaveCount(0);
+  await expect(page.getByTestId('analyst-chart').locator('.recharts-line')).toHaveCount(8);
   await page.screenshot({ path: `${SHOTS}/${info.project.name}-01-answer.png`, fullPage: true });
 
   await page.getByTestId('analyst-save-chart').click();
@@ -77,6 +77,10 @@ test('analyst: question -> governed answer -> evidence -> save chart -> reopen -
 
   await ask(page, 'Còn theo quý thì sao?');
   await expect(page.getByTestId('analyst-answer')).toHaveCount(2, { timeout: 120_000 });
+  // The follow-up refines the same question: same source, still by category.
+  const second = page.getByTestId('analyst-answer').nth(1);
+  await expect(second.getByTestId('analyst-evidence')).toContainText('Rig Sales');
+  await expect(second.getByTestId('analyst-table').locator('thead')).toContainText(/category/i);
   await page.screenshot({ path: `${SHOTS}/${info.project.name}-02-follow-up.png`, fullPage: true });
 
   // Reopen the saved chart in the existing chart surface.

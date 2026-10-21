@@ -64,6 +64,8 @@ SYSTEM = (
     "Match the question's words against each field's label AND synonyms. Every breakdown the question asks "
     "for (by X, per X, theo X, các X, từng X) must appear in dimensions; list them in a \"covered\" object "
     "mapping the question's phrase to the ref you used. "
+    "When previous_plan is given, the question refines it: keep its measures, dimensions and filters and "
+    "change only what the question changes. "
     "Do not invent date filters for words like 'recent'; return the trend and say so in interpretation."
 )
 

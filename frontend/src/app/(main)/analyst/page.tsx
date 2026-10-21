@@ -93,6 +93,9 @@ export default function AnalystPage() {
   const [history, setHistory] = useState<Exchange[]>([]);
   const [running, setRunning] = useState<{ turnId: string; question: string } | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  /** Index from which the conversation is a new topic: follow-ups refine only
+   *  answers after it (the server holds a follow-up to the previous source). */
+  const [topicStart, setTopicStart] = useState(0);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -107,12 +110,12 @@ export default function AnalystPage() {
   }, [history, running]);
 
   const lastPlan = useMemo(() => {
-    for (let i = history.length - 1; i >= 0; i -= 1) {
+    for (let i = history.length - 1; i >= topicStart; i -= 1) {
       const turn = history[i].turn;
       if (turn?.status === 'answered' && turn.plan) return turn.plan;
     }
     return null;
-  }, [history]);
+  }, [history, topicStart]);
 
   const ask = useCallback(async (q: string, opts: { followUp?: boolean; consent?: string } = {}) => {
     const text = q.trim();
@@ -197,16 +200,22 @@ export default function AnalystPage() {
           </section>
         ) : null}
 
-        <form onSubmit={(e) => { e.preventDefault(); ask(question, { followUp: history.length > 0 && !!lastPlan }); }}
+        <form onSubmit={(e) => { e.preventDefault(); ask(question, { followUp: !!lastPlan }); }}
               className="sticky bottom-0 rounded-lg border border-[#dadce0] bg-white p-3 shadow-sm">
-          <label htmlFor="analyst-question" className="mb-1 block text-xs font-medium text-[#5f6368]">
-            {history.length ? t('analyst.followUp') : t('analyst.ask')}
-          </label>
+          <div className="mb-1 flex items-center justify-between">
+            <label htmlFor="analyst-question" className="block text-xs font-medium text-[#5f6368]">
+              {lastPlan ? t('analyst.followUp') : t('analyst.ask')}
+            </label>
+            {lastPlan ? (
+              <button type="button" onClick={() => setTopicStart(history.length)} data-testid="analyst-new-topic"
+                      className="text-xs font-medium text-[#1a73e8] hover:underline">{t('analyst.newTopic')}</button>
+            ) : null}
+          </div>
           <div className="flex items-end gap-2">
             <textarea id="analyst-question" data-testid="analyst-question" value={question} rows={2} maxLength={1000}
                       onChange={(e) => setQuestion(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(question, { followUp: history.length > 0 && !!lastPlan }); } }}
-                      placeholder={history.length ? t('analyst.followUpPlaceholder') : t('analyst.placeholder')}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(question, { followUp: !!lastPlan }); } }}
+                      placeholder={lastPlan ? t('analyst.followUpPlaceholder') : t('analyst.placeholder')}
                       className="min-h-[44px] flex-1 resize-y rounded-md border border-[#dadce0] px-3 py-2 text-sm focus:border-[#1a73e8] focus:outline-none focus:ring-1 focus:ring-[#1a73e8]" />
             <button type="submit" disabled={!question.trim() || !!running || disabled} data-testid="analyst-ask"
                     className="inline-flex h-10 items-center gap-1.5 rounded-md bg-[#1a73e8] px-4 text-sm font-medium text-white hover:bg-[#1765cc] disabled:bg-[#dadce0] disabled:text-[#80868b]">
@@ -334,7 +343,7 @@ function AnswerView({ turn, locale }: { turn: AnalystTurn; locale: string }) {
                     <Tooltip formatter={(v) => fmt(v, locale)} />
                     <Legend wrapperStyle={{ fontSize: 11 }} />
                     {model.series.map((s, i) => (
-                      <Line key={s} type="monotone" dataKey={s} stroke={SERIES_COLORS[i % SERIES_COLORS.length]} dot={false} strokeWidth={2} />
+                      <Line key={s} type="monotone" dataKey={s} stroke={SERIES_COLORS[i % SERIES_COLORS.length]} dot={false} strokeWidth={2} isAnimationActive={false} />
                     ))}
                   </LineChart>
                 ) : (
@@ -343,7 +352,7 @@ function AnswerView({ turn, locale }: { turn: AnalystTurn; locale: string }) {
                     <XAxis dataKey="period" tick={{ fontSize: 11 }} />
                     <YAxis tick={{ fontSize: 11 }} width={72} tickFormatter={(v) => Number(v).toLocaleString(locale, { notation: 'compact' })} />
                     <Tooltip formatter={(v) => fmt(v, locale)} />
-                    <Bar dataKey={model.measure} fill="#1a73e8" />
+                    <Bar dataKey={model.measure} fill="#1a73e8" isAnimationActive={false} />
                   </BarChart>
                 )}
               </ResponsiveContainer>
