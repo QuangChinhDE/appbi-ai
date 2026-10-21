@@ -120,3 +120,8 @@ def test_a_date_range_operator_is_not_in_the_governed_contract():
     out = validate(_raw(filters={"orders.purchased_at": {"operator": "between", "value": ["2025-01-01", "2025-12-31"]}}),
                    [_explore()])
     assert isinstance(out, Unsupported)
+
+
+def test_a_measure_listed_only_among_dimensions_is_the_measure():
+    out = validate(_raw(dimensions=["items.seller_id", "items.revenue"], measures=[]), [_explore()])
+    assert isinstance(out, Plan) and out.measures == ["items.revenue"] and out.dimensions == ["items.seller_id"]

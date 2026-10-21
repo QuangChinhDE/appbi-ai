@@ -175,6 +175,10 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
 
     # Holdout: the model listed the measure among the dimensions too ("segment,
     # customer_count"); a measure is never a breakdown, so it is taken out first.
+    if isinstance(raw.get("dimensions"), list) and not raw.get("measures"):
+        # Holdout A09: the measure was listed ONLY among the dimensions.
+        raw = {**raw, "measures": [x for x in raw["dimensions"] if isinstance(x, str)
+                                   and resolve(x, meas) is not None and resolve(x, dims) is None]}
     raw = {**raw, "dimensions": [x for x in (raw.get("dimensions") or []) if not (
         isinstance(x, str) and resolve(x, meas) is not None and resolve(x, dims) is None)]} \
         if isinstance(raw.get("dimensions"), list) else raw
