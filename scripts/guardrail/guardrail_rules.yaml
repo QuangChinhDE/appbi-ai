@@ -639,6 +639,9 @@ tests:
   analyst_planner:
     run: "pytest backend/tests/test_analyst_planner.py"
     locks: "the server validates the model's plan against the person's catalog: a wrongly view-qualified field is resolved only when its name is unique in the explore, an ambiguous or unknown field is refused, a grain on a string-typed field is refused naming the field, and an empty result under a filter is reported as no match (naming field and values), never as an answer (all from the real-model BigQuery evaluation)"
+  analyst_grounding:
+    run: "pytest backend/tests/test_analyst_grounding.py"
+    locks: "a validated plan must answer the QUESTION: a metric the data lacks is refused, never substituted (profit, conversion rate, forecast); a filter the plan dropped is refused naming the words; an unasked breakdown (month, a numeric column) is removed; a label-as-value filter is removed; the model's phrase map bridges languages only for phrases really in the question and never against a Vietnamese label it shares nothing with; a follow-up keeps what it refines; a filter value is matched to exactly one real value (case/tone folded) or offered as a choice"
   analyst_catalog_reach:
     run: "pytest backend/tests/test_analyst_catalog_reach.py"
     locks: "the Analyst catalog offers every view the base can reach through the model relationships (multi-hop, the engine's own resolver), inside the explore's Dataset lineage only"

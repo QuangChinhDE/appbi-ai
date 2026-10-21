@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional
 
 from app.services.analyst import narrative
 from app.services.analyst.catalog import discover
-from app.services.analyst.planner import Clarify, Plan, Unsupported, plan as make_plan, validate
+from app.services.analyst.planner import Clarify, Plan, Unsupported, describe_plan, plan as make_plan, validate
 from app.services.governed_query.principal import GovernedRefusal
 
 
@@ -94,23 +94,54 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     if isinstance(outcome, Unsupported):
         return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": outcome.reason}
     p: Plan = outcome
+    if consented_plan is None:
+        # The plan must answer THE QUESTION, not just use permitted fields.
+        from app.services.analyst.grounding import ground
+
+        carried = [*(previous or {}).get("dimensions", []), *(previous or {}).get("measures", []),
+                   *((previous or {}).get("filters") or {}).keys()] if isinstance(previous, dict) else []
+        p, why = ground(p, question, carried=carried, covered=p.covered)
+        if p is None:
+            return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": why}
     steps.append({"step": "plan", "detail": p.interpretation or "Đã chọn chỉ số, chiều và độ chi tiết thời gian.",
                   "source": p.explore.dataset_name})
 
-    request = GovernedQueryRequest(
-        principal=principal,
-        relation=RelationRef(kind="semantic_explore", id=p.explore.explore_id, model_id=p.explore.model_id),
-        ask=SemanticAsk(dimensions=tuple(p.dimensions), measures=tuple(p.measures), filters=dict(p.filters),
-                        sorts=tuple(p.sorts) or tuple({"field": t, "direction": "asc"} for t in p.time_grains),
-                        time_grains=dict(p.time_grains)),
-        requested_bounds=QueryBounds(max_rows=int(settings.ANALYST_MAX_ROWS), timeout_seconds=60,
-                                     bq_max_bytes=int(settings.ANALYST_MAX_BQ_BYTES_PER_USER_DAY)),
-        run_id=turn_id,
-        drop_consent=drop_consent,
-    )
+    def governed(dims, measures, filters, sorts, grains, max_rows):
+        return GovernedQueryRequest(
+            principal=principal,
+            relation=RelationRef(kind="semantic_explore", id=p.explore.explore_id, model_id=p.explore.model_id),
+            ask=SemanticAsk(dimensions=tuple(dims), measures=tuple(measures), filters=dict(filters),
+                            sorts=tuple(sorts), time_grains=dict(grains)),
+            requested_bounds=QueryBounds(max_rows=max_rows, timeout_seconds=60,
+                                         bq_max_bytes=int(settings.ANALYST_MAX_BQ_BYTES_PER_USER_DAY)),
+            run_id=turn_id,
+            drop_consent=drop_consent,
+        )
+
+    def main_request(plan):
+        return governed(plan.dimensions, plan.measures, plan.filters,
+                        plan.sorts or [{"field": t, "direction": "asc"} for t in plan.time_grains],
+                        plan.time_grains, int(settings.ANALYST_MAX_ROWS))
+
     gqs = GovernedQueryService(authz, audit=deps.ledger, cancel_registry=deps.registry)
     try:
-        result = gqs.execute(request)
+        result = gqs.execute(main_request(p))
+        if not result.rows and p.filters and consented_plan is None:
+            # The model writes a filter value as the question says it ("bị huỷ",
+            # "hoàn tất"); the data says "Huỷ" / "Hoàn tất". Look the field's real
+            # values up through GQS (this person's rights, ledgered) and re-run only
+            # when EVERY filter has exactly one real value that matches it.
+            repaired, options = _repair_filter_values(
+                p, lambda ref: gqs.execute(governed([ref], p.measures[:1], {}, [], {}, 200)))
+            if repaired is not None:
+                steps.append({"step": "verify", "detail": "Giá trị bộ lọc được khớp với dữ liệu: " + "; ".join(
+                    f"{labels_of(p).get(r, r)} = {c['value']}" for r, c in repaired.filters.items())})
+                p = repaired
+                result = gqs.execute(main_request(p))
+            elif options:
+                return {"status": "clarify", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
+                        "message": "Giá trị bạn lọc không có trong dữ liệu. Bạn muốn chọn giá trị nào?",
+                        "options": options[:10]}
     except GovernedRefusal as refusal:
         steps.append({"step": "governed_query", "detail": f"Từ chối: {refusal.code}"})
         return {"status": "refused", "turn_id": turn_id, "steps": steps, "code": refusal.code,
@@ -161,6 +192,41 @@ def draft_title(question: str, now=None) -> str:
 
     stamp = (now or _dt.datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
     return f"{question.strip()[:100]} · {stamp}"
+
+
+def labels_of(p: Plan) -> dict:
+    return {f.ref: f.label for f in p.explore.fields}
+
+
+def _repair_filter_values(p: Plan, values_of):
+    """(plan with every eq/in filter value replaced by the ONE real value matching it
+    after folding case and tone marks, or None; the real values when none matched)."""
+    from dataclasses import replace as _replace
+
+    from app.services.analyst.grounding import fold
+
+    new_filters, options = {}, []
+    for ref, cond in p.filters.items():
+        op, value = cond.get("operator"), cond.get("value")
+        wanted = value if isinstance(value, list) else [value]
+        if op not in ("eq", "in") or not all(isinstance(v, str) for v in wanted):
+            return None, []
+        res = values_of(ref)
+        col = next((c.name for c in res.columns if c.ref == ref), None)
+        real = sorted({str(r.get(col)) for r in res.rows if r.get(col) is not None}) if col else []
+        fixed = []
+        for v in wanted:
+            exact = [x for x in real if fold(x).strip() == fold(v).strip()]
+            near = exact or [x for x in real if fold(v).strip() and (fold(v).strip() in fold(x) or fold(x) in fold(v))]
+            if len(near) != 1:
+                return None, real
+            fixed.append(near[0])
+        new_filters[ref] = {"operator": op, "value": fixed if isinstance(value, list) else fixed[0]}
+    if new_filters == p.filters:
+        return None, []
+    out = _replace(p, filters=new_filters)
+    out.interpretation = describe_plan(out)
+    return out, []
 
 
 def no_match_message(p: Plan) -> str:

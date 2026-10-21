@@ -30,6 +30,8 @@ class Plan:
     filters: dict[str, dict] = field(default_factory=dict)
     sorts: list[dict] = field(default_factory=list)
     interpretation: str = ""
+    #: question phrase -> plan ref, as the model mapped it (checked by grounding.py)
+    covered: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {"explore_id": self.explore.explore_id, "dimensions": self.dimensions, "measures": self.measures,
@@ -63,8 +65,12 @@ SYSTEM = (
     "Pick the dimension whose label matches the user's words (a group/category/type means a category field). "
     "Do not group by a dimension marked identifier unless the question asks about individual items. "
     "Match the question's words against each field's label AND synonyms. Every breakdown the question asks "
-    "for (by X, per X, theo X, các X, từng X) must appear in dimensions; list them in a \"covered\" object "
-    "mapping the question's phrase to the ref you used. "
+    "for (by X, per X, theo X, các X, từng X) must appear in dimensions. In \"covered\" map EACH short phrase "
+    "of the question, copied exactly from it, to the ONE ref it names - the metric phrase, every breakdown "
+    "phrase, every filter phrase - e.g. {\"doanh thu\": m, \"nhóm sản phẩm\": d, \"khách hàng doanh nghiệp\": f}. "
+    "Never map the whole question to one ref. A metric the catalog does not have (profit, conversion rate, a "
+    "forecast) maps to null; never substitute a different metric. Filter values must be written exactly as the "
+    "data writes them; a measure is never listed in dimensions. "
     "If a breakdown or filter the question asks for has no matching field, map that phrase to null in "
     "covered (or return unsupported); never answer a different question. "
     "When previous_plan is given, the question refines it: keep its measures, dimensions and filters and "
@@ -136,15 +142,22 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
         out = [resolve(v, allowed) for v in vals]
         return None if any(o is None for o in out) else list(dict.fromkeys(out))
 
+    # Holdout: the model listed the measure among the dimensions too ("segment,
+    # customer_count"); a measure is never a breakdown, so it is taken out first.
+    raw = {**raw, "dimensions": [x for x in (raw.get("dimensions") or []) if not (
+        isinstance(x, str) and resolve(x, meas) is not None and resolve(x, dims) is None)]} \
+        if isinstance(raw.get("dimensions"), list) else raw
     d, m = refs("dimensions", dims), refs("measures", meas)
     if d is None or m is None or not m:
         return Unsupported("Kế hoạch dùng trường không có trong mô hình dữ liệu được phép.")
     grains = {}
     for raw_ref, g in (raw.get("time_grains") or {}).items():
         ref = resolve(raw_ref, dims)
-        if ref is not None and g in GRAINS and ref not in d:
-            continue  # a grain on a field only used as a filter (holdout: "năm 2025") groups nothing
-        if ref is None or g not in GRAINS:
+        if ref is None or ref not in d:
+            # A grain on a field the plan does not group by groups nothing (holdout:
+            # a filter-only date; the literal placeholder "ref"): ignored, not refused.
+            continue
+        if g not in GRAINS:
             return Unsupported("Độ chi tiết thời gian của kế hoạch không hợp lệ.")
         if not is_time(dims[ref]):
             return Unsupported(f"Trường “{dims[ref].label}” chưa được khai báo kiểu ngày/giờ trong mô hình ngữ nghĩa, "
@@ -173,7 +186,8 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
         if ref is None or ref not in in_plan:
             return Unsupported(f"Dữ liệu bạn được dùng không có trường cho “{str(phrase)[:80]}”, "
                                "nên không trả lời phần đó thay vì trả lời sai.")
-    plan_ = Plan(explore=explore, dimensions=d, measures=m, time_grains=grains, filters=filters, sorts=sorts)
+    plan_ = Plan(explore=explore, dimensions=d, measures=m, time_grains=grains, filters=filters, sorts=sorts,
+                 covered={str(k): resolve(v, {**dims, **meas}) for k, v in covered.items() if isinstance(v, str)})
     # The interpretation shown to the person is the SERVER's reading of the
     # validated plan, never the model's prose (which can claim what was not done).
     plan_.interpretation = describe_plan(plan_)
