@@ -229,3 +229,25 @@ def test_a_reused_pid_is_never_cancelled(world, registry):  # noqa: F811
     assert registry.cancel(qid) is True
     th.join(timeout=30)
     assert getattr(box.get("error"), "code", None) == "cancelled"
+
+
+def test_a_cancel_works_when_the_source_config_is_encrypted_at_rest(world, registry):  # noqa: F811
+    """The API stores a source's secrets encrypted. The canceller connected with the
+    stored (encrypted) password and failed silently, so the statement kept
+    running; found by the MySQL full-path run, locked here for Postgres."""
+    from app.core.crypto import encrypt_config
+    from app.services.governed_query import GovernedRefusal
+
+    src = world["src"]
+    src.config = encrypt_config(dict(src.config))
+    world["db"].commit()
+    gqs, p = _gqs(world, who="owner", sink=Sink(), registry=registry)
+    th, box = _run_in_thread(lambda: gqs.execute(_slow_request(world, p)))
+    deadline = time.time() + 20
+    while not registry.running_ids() and time.time() < deadline:
+        time.sleep(0.05)
+    qid = next(iter(registry.running_ids()))
+    time.sleep(0.3)
+    assert registry.cancel(qid) is True, "the canceller could not reach Postgres with the stored config"
+    th.join(timeout=30)
+    assert isinstance(box.get("error"), GovernedRefusal) and box["error"].code == "cancelled"

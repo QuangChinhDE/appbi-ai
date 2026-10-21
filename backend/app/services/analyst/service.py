@@ -111,7 +111,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     time_ref = next(iter(p.time_grains), None)
     story = narrative.describe(columns, rows, time_ref=time_ref, truncated=result.truncated)
     steps.append({"step": "verify", "detail": "; ".join(c["detail"] for c in story["checks"])})
-    draft = None if p.filters else narrative.chart_draft(p, question)
+    draft = None if p.filters else narrative.chart_draft(p, draft_title(question))
     return {
         "status": "answered", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
         "answer": story, "columns": columns, "rows": rows, "truncated": result.truncated,
@@ -128,6 +128,15 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         "chart_draft_unavailable": (None if draft else
                                     "Câu trả lời có bộ lọc; bản nháp biểu đồ chưa mang được bộ lọc nên không đề xuất lưu."),
     }
+
+
+def draft_title(question: str, now=None) -> str:
+    """A chart name is unique per owner; the same question asked twice must still
+    be savable twice (acceptance run: the second save was refused as a duplicate)."""
+    import datetime as _dt
+
+    stamp = (now or _dt.datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    return f"{question.strip()[:100]} · {stamp}"
 
 
 def no_match_message(p: Plan) -> str:

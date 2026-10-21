@@ -39,6 +39,12 @@ class Canceller(Protocol):
         ...
 
 
+def _plain(config: Dict[str, Any]) -> Dict[str, Any]:
+    from app.core.crypto import decrypt_config
+
+    return decrypt_config(dict(config or {}))
+
+
 class PostgresCanceller:
     """`pg_cancel_backend(pid)` from a second connection, aimed at ONE session.
 
@@ -54,7 +60,10 @@ class PostgresCanceller:
     it — and no other."""
 
     def __init__(self, config: Dict[str, Any], backend: Any):
-        self.config = config
+        # The datasource config as stored: secrets are encrypted at rest. The
+        # executor decrypts before connecting and so must the canceller, or the
+        # cancel fails to log in and the statement keeps running.
+        self.config = _plain(config)
         # Accept the executor's {"pid", "backend_start"} (the only safe form). A
         # bare pid is not enough to cancel safely and is treated as unknown.
         self.pid = backend.get("pid") if isinstance(backend, dict) else None
@@ -96,7 +105,7 @@ class MySQLCanceller:
     """`KILL QUERY <connection id>` from a second connection."""
 
     def __init__(self, config: Dict[str, Any], connection_id: Any):
-        self.config = config
+        self.config = _plain(config)  # encrypted at rest, like PostgresCanceller
         self.connection_id = connection_id
 
     def cancel(self) -> bool:

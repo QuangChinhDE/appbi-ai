@@ -73,3 +73,14 @@ def test_the_prompt_marks_identifiers_and_carries_synonyms():
                        synonyms=("nhóm sản phẩm", "danh mục")).as_prompt()
     assert key.get("identifier") is True and "identifier" not in cat
     assert cat["synonyms"] == ["nhóm sản phẩm", "danh mục"]
+
+
+def test_the_same_question_twice_gives_two_savable_draft_names():
+    import datetime as dt
+
+    from app.services.analyst.service import draft_title
+
+    q = "Doanh thu theo tháng?"
+    a = draft_title(q, dt.datetime(2026, 10, 21, 9, 0, 0))
+    b = draft_title(q, dt.datetime(2026, 10, 21, 9, 0, 1))
+    assert a != b and a.startswith(q) and len(draft_title("x" * 500)) <= 130

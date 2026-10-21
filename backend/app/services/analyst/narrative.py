@@ -157,8 +157,8 @@ def chart_draft(plan, title: str) -> dict:
         chart_type = "KPI"
         role = {"metrics": metrics}
     return {
-        "name": title[:120], "chart_type": chart_type, "dataset_table_id": plan.explore.dataset_table_id,
+        "name": title[:140], "chart_type": chart_type, "dataset_table_id": plan.explore.dataset_table_id,
         "config": {"chartType": chart_type, "queryMode": "generated", "roleConfig": role,
                    "generatedRoleConfig": role, "customRoleConfig": {"metrics": []}, "filters": [],
-                   "baseFilters": [], "styleConfig": {"chartTitle": title[:120]}},
+                   "baseFilters": [], "styleConfig": {"chartTitle": title[:140]}},
     }

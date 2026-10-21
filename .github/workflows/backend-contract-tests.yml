@@ -723,9 +723,25 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      # GQS end to end on a MySQL source (metadata + ledger in the Postgres above,
+      # data in MySQL): test_intelligence_gqs_mysql_fullpath_pg.py. Root is used
+      # only by the fixture to create a read-only user and the source tables.
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: appbi
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -pappbi --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
     env:
       PYTHONPATH: ${{ github.workspace }}/backend
       ENVIRONMENT: test
+      GQS_MYSQL_ROOT_URL: "mysql://root:appbi@127.0.0.1:3306"
+      GQS_MYSQL_REQUIRED: "1"
       METADATA_CATALOG_ENABLED: "true"
       GOVERN_ENABLED: "true"
       WORKBOARDS_ENABLED: "true"
@@ -805,6 +821,7 @@ jobs:
             tests/test_intelligence_gqs_cancel_pg.py \
             tests/test_intelligence_gqs_ledger_pg.py \
             tests/test_analyst_http_pg.py \
+            tests/test_intelligence_gqs_mysql_fullpath_pg.py \
             tests/test_intelligence_gqs_ledger_schema_pg.py \
             --junitxml=/tmp/authz-pg.xml
 

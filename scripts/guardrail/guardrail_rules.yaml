@@ -556,7 +556,7 @@ features:
                "surface ceiling", refusal]
     invariants: []
     required_tests: [intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_cancel_pg,
-                     intelligence_gqs_ledger_schema_pg, intelligence_gqs_ledger_pg, intelligence_gqs_mysql, intelligence_gqs_bigquery, intelligence_security_ledger]
+                     intelligence_gqs_ledger_schema_pg, intelligence_gqs_ledger_pg, intelligence_gqs_mysql, intelligence_gqs_mysql_fullpath, intelligence_gqs_bigquery, intelligence_security_ledger]
 
   - id: analyst
     label: "AppBI Analyst (M2 MVP): discovery, planner, verified answer - the first GQS consumer"
@@ -643,6 +643,10 @@ tests:
     requires: postgres
     run: "pytest backend/tests/test_analyst_http_pg.py"
     locks: "the Analyst over HTTP on real Postgres, model replaced by a fixed planner only: an explore-grant answer equals an independent SQL oracle with evidence, a ledger row (surface analyst, run = turn) and a chart draft; view-only sees no source and gets no rows; no module -> 403; a revoked grant is honoured on the next turn; a plan naming a foreign measure/unknown dimension/foreign explore/bad grain/bad operator is unsupported and nothing reaches the ledger; no SQL text in the response; another person cannot cancel my turn, my cancel stops it and it is recorded cancelled; a consent token is bound to its caller"
+  intelligence_gqs_mysql_fullpath:
+    requires: postgres+mysql
+    run: "pytest backend/tests/test_intelligence_gqs_mysql_fullpath_pg.py"
+    locks: "GQS end to end on a REAL MySQL source (semantic explore -> GQS -> durable ledger -> MySQL), with the source config stored plain AND encrypted at rest: the answer equals an independent oracle, the ledger row is ok with the mysql dialect, the row bound is enforced and reported truncated, a cancel through GQS stops the running statement at MySQL (KILL QUERY) and is recorded cancelled, and a person without explore is refused before MySQL is touched"
   intelligence_gqs_ledger_schema_pg:
     requires: postgres
     run: "pytest backend/tests/test_intelligence_gqs_ledger_schema_pg.py"
