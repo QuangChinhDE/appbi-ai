@@ -189,6 +189,10 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
                 continue  # not a catalog ref (a label, a placeholder): no claim either way
         else:
             ref = None
+            from app.services.analyst.grounding import is_function_phrase
+
+            if is_function_phrase(phrase, has_time=bool(grains)):
+                continue  # "biến động ra sao", "tổng cộng", "theo tháng" name no field
         if ref is None or ref not in in_plan:
             return Unsupported(f"Dữ liệu bạn được dùng không có trường cho “{str(phrase)[:80]}”, "
                                "nên không trả lời phần đó thay vì trả lời sai.")

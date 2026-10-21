@@ -100,7 +100,9 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
 
         carried = [*(previous or {}).get("dimensions", []), *(previous or {}).get("measures", []),
                    *((previous or {}).get("filters") or {}).keys()] if isinstance(previous, dict) else []
-        p, why = ground(p, question, carried=carried, covered=p.covered)
+        p, why = ground(p, question, carried=carried, covered=p.covered,
+                        value_lookup=lambda q, words, used: _find_value_filter(authz, principal, outcome, q, words,
+                                                                               used, settings, turn_id, deps))
         if p is None:
             return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": why}
     steps.append({"step": "plan", "detail": p.interpretation or "Đã chọn chỉ số, chiều và độ chi tiết thời gian.",
@@ -192,6 +194,41 @@ def draft_title(question: str, now=None) -> str:
 
     stamp = (now or _dt.datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
     return f"{question.strip()[:100]} · {stamp}"
+
+
+def _find_value_filter(authz, principal, p: Plan, question: str, unexplained: set, used: list, settings, turn_id,
+                       deps):
+    """(ref, real value) when exactly one text field of the explore has a real value
+    whose words are in the question and cover an unexplained word; else None.
+    Each field's values are read through GQS (this person, ledgered, bounded)."""
+    from app.services.analyst.catalog import is_identifier
+    from app.services.analyst.grounding import fold, syllables
+    from app.services.governed_query import (GovernedQueryRequest, GovernedQueryService, QueryBounds,
+                                             RelationRef, SemanticAsk)
+
+    qtext = " " + " ".join(w for w in __import__("re").split(r"[^0-9a-z]+", fold(question)) if w) + " "
+    candidates = [f for f in p.explore.fields if f.kind == "dimension" and f.type == "string"
+                  and not is_identifier(f) and f.ref not in used][:8]
+    hits = []
+    gqs = GovernedQueryService(authz, audit=deps.ledger, cancel_registry=deps.registry)
+    for f in candidates:
+        try:
+            res = gqs.execute(GovernedQueryRequest(
+                principal=principal,
+                relation=RelationRef(kind="semantic_explore", id=p.explore.explore_id, model_id=p.explore.model_id),
+                ask=SemanticAsk(dimensions=(f.ref,), measures=tuple(p.measures[:1]), filters={}, sorts=(), time_grains={}),
+                requested_bounds=QueryBounds(max_rows=200, timeout_seconds=30,
+                                             bq_max_bytes=int(settings.ANALYST_MAX_BQ_BYTES_PER_USER_DAY)),
+                run_id=turn_id))
+        except Exception:  # a refused lookup only means no value from this field
+            continue
+        col = next((c.name for c in res.columns if c.ref == f.ref), None)
+        for r in res.rows if col else []:
+            v = r.get(col)
+            words = syllables(v) if isinstance(v, str) else set()
+            if words and words & unexplained and f" {' '.join(w for w in __import__('re').split(r'[^0-9a-z]+', fold(v)) if w)} " in qtext:
+                hits.append((f.ref, v))
+    return hits[0] if len({h[0] for h in hits}) == 1 and len(hits) == 1 else None
 
 
 def labels_of(p: Plan) -> dict:

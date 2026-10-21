@@ -125,3 +125,40 @@ def test_no_or_several_matching_values_is_a_choice_for_the_person():
     p = _plan(["o.order_count"], filters={"c.region": {"operator": "eq", "value": "miền"}})
     fixed, options = _repair_filter_values(p, _values(["Miền Bắc", "Miền Nam"]))
     assert fixed is None and options == ["Miền Bắc", "Miền Nam"]
+
+
+def test_a_phrase_that_names_no_data_is_not_a_missing_field():
+    from app.services.analyst.grounding import is_function_phrase
+
+    assert is_function_phrase("biến động ra sao", has_time=True)
+    assert is_function_phrase("tổng cộng", has_time=False)
+    assert is_function_phrase("theo tháng", has_time=True) and not is_function_phrase("theo tháng", has_time=False)
+    assert not is_function_phrase("lợi nhuận", has_time=True)
+
+
+def test_a_measure_is_named_by_a_shared_word_a_breakdown_is_not():
+    # F02 "Số đơn bị huỷ theo kênh": "đơn" names the order count ...
+    p, why = ground(_plan(["o.order_count"], ["o.channel"], filters={"o.status": {"operator": "eq", "value": "Huỷ"}}),
+                    "Số đơn bị huỷ theo kênh")
+    assert p is not None and p.measures == ["o.order_count"], why
+    # ... but "đặt hàng" is not asked by "số đơn hàng" (A06 grew an order-date breakdown)
+    p, _ = ground(_plan(["o.order_count"], ["o.status", "o.order_date"], {"o.order_date": "month"}),
+                  "Số đơn hàng theo trạng thái")
+    assert p.dimensions == ["o.status"]
+
+
+def test_a_value_the_plan_left_out_becomes_its_filter_only_when_one_field_has_it():
+    calls = []
+
+    def lookup(question, unexplained, used):
+        calls.append(sorted(unexplained))
+        return ("p.category", "Nội thất")
+
+    p, why = ground(_plan(["l.net_sales"], ["c.region"]), "Doanh số theo vùng của ngành Nội thất",
+                    covered={"ngành": "p.category"}, value_lookup=lookup)
+    assert p is not None, why
+    assert p.filters == {"p.category": {"operator": "eq", "value": "Nội thất"}} and p.dimensions == ["c.region"]
+    assert calls and "noi" in calls[0]
+    p, why = ground(_plan(["l.net_sales"], ["c.region"]), "Doanh số theo vùng của ngành Nội thất",
+                    value_lookup=lambda *_a: None)
+    assert p is None and "Nội" in why
