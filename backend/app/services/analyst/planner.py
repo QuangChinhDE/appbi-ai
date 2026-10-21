@@ -59,6 +59,11 @@ SYSTEM = (
     '{"status":"unsupported","reason":"<user language>"}  when the catalog cannot answer.\n'
     "Allowed filter operators: " + ", ".join(OPERATORS) + ". "
     "For a trend over time include the time dimension in dimensions and give it a grain. "
+    "Pick the dimension whose label matches the user's words (a group/category/type means a category field). "
+    "Do not group by a dimension marked identifier unless the question asks about individual items. "
+    "Match the question's words against each field's label AND synonyms. Every breakdown the question asks "
+    "for (by X, per X, theo X, các X, từng X) must appear in dimensions; list them in a \"covered\" object "
+    "mapping the question's phrase to the ref you used. "
     "Do not invent date filters for words like 'recent'; return the trend and say so in interpretation."
 )
 

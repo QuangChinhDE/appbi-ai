@@ -61,3 +61,15 @@ def test_an_empty_result_under_a_filter_is_not_an_answer():
                  [_explore()])
     msg = no_match_message(p)
     assert "Seller" in msg and "Facebook" in msg
+
+
+def test_the_prompt_marks_identifiers_and_carries_synonyms():
+    """Real-model run: grouping by a key column listed items instead of the category
+    the person asked for; identifiers are marked and business synonyms reach the model."""
+    from app.services.analyst.catalog import CatalogField
+
+    key = CatalogField("items.product_id", "dimension", "string", "Product").as_prompt()
+    cat = CatalogField("products.category", "dimension", "string", "category",
+                       synonyms=("nhóm sản phẩm", "danh mục")).as_prompt()
+    assert key.get("identifier") is True and "identifier" not in cat
+    assert cat["synonyms"] == ["nhóm sản phẩm", "danh mục"]

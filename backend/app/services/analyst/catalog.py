@@ -28,6 +28,19 @@ class CatalogField:
     type: str
     label: str
     description: str = ""
+    #: Business words people use for this field (semantic definition key
+    #: `synonyms`), e.g. "nhóm sản phẩm" for a category column.
+    synonyms: tuple[str, ...] = ()
+
+    def as_prompt(self) -> dict:
+        out = {"ref": self.ref, "type": self.type, "label": self.label}
+        if self.kind == "dimension" and is_identifier(self):
+            out["identifier"] = True
+        if self.synonyms:
+            out["synonyms"] = list(self.synonyms)
+        if self.description:
+            out["description"] = self.description
+        return out
 
 
 @dataclass
@@ -45,11 +58,16 @@ class CatalogExplore:
     def as_prompt(self) -> dict:
         return {
             "explore_id": self.explore_id, "dataset": self.dataset_name, "label": self.label,
-            "dimensions": [{"ref": f.ref, "type": f.type, "label": f.label, **({"description": f.description} if f.description else {})}
-                           for f in self.fields if f.kind == "dimension"],
-            "measures": [{"ref": f.ref, "type": f.type, "label": f.label, **({"description": f.description} if f.description else {})}
-                         for f in self.fields if f.kind == "measure"],
+            "dimensions": [f.as_prompt() for f in self.fields if f.kind == "dimension"],
+            "measures": [f.as_prompt() for f in self.fields if f.kind == "measure"],
         }
+
+
+def _synonyms(defn: dict) -> tuple[str, ...]:
+    raw = defn.get("synonyms")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(str(x).strip()[:60] for x in raw if isinstance(x, str) and str(x).strip())[:8]
 
 
 def _label(defn: dict) -> str:
@@ -100,11 +118,11 @@ def discover(authz: Any, *, limit: int = 40) -> list[CatalogExplore]:
             for d in v.dimensions or []:
                 if isinstance(d, dict) and d.get("name") and norm(d["name"]) not in ex_cols:
                     fields.append(CatalogField(f"{v.name}.{d['name']}", "dimension", str(d.get("type") or "string"),
-                                               _label(d), str(d.get("description") or "")[:200]))
+                                               _label(d), str(d.get("description") or "")[:200], _synonyms(d)))
             for m in v.measures or []:
                 if isinstance(m, dict) and m.get("name") and norm(m["name"]) not in ex_measures:
                     fields.append(CatalogField(f"{v.name}.{m['name']}", "measure", str(m.get("type") or "sum"),
-                                               _label(m), str(m.get("description") or "")[:200]))
+                                               _label(m), str(m.get("description") or "")[:200], _synonyms(m)))
         if not any(f.kind == "measure" for f in fields):
             continue
         out.append(CatalogExplore(
@@ -112,6 +130,13 @@ def discover(authz: Any, *, limit: int = 40) -> list[CatalogExplore]:
             dataset_name=str(dataset.name), dataset_table_id=base.dataset_table_id, base_view=base.name,
             source_type=str(stype), label=str(getattr(explore, "label", None) or dataset.name), fields=fields))
     return out
+
+
+def is_identifier(f: CatalogField) -> bool:
+    """A key column (one value per row/entity): grouping by it lists items, it
+    does not summarise them."""
+    name = f.ref.rsplit(".", 1)[-1].lower()
+    return f.kind == "dimension" and (name == "id" or name.endswith("_id"))
 
 
 def is_time(f: CatalogField) -> bool:
