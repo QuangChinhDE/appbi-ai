@@ -68,6 +68,14 @@ def _mentioned(field, q: set[str], question_folded: str = "") -> bool:
     return bool((_field_words(field) - _GENERIC) & q)
 
 
+def is_function_phrase(phrase: str, *, has_time: bool) -> bool:
+    """A question phrase that names no data: only function/analysis words, or only
+    time words when the plan groups by time (holdout: the model mapped "biến động
+    ra sao", "tổng cộng" and "theo tháng" to null and the turn was refused)."""
+    words = syllables(phrase) - _STOP
+    return not words or (has_time and words <= _TIME)
+
+
 def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> dict[str, set[str]]:
     """ref -> the question words the model says that field answers. A phrase counts
     only if every word of it is in the question and it is not (nearly) the whole
@@ -96,7 +104,8 @@ def _vietnamese(field) -> bool:
     return any(fold(t) != str(t or "").lower() for t in texts)
 
 
-def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | None = None):
+def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | None = None,
+           value_lookup=None):
     """Return (plan, None) when the plan answers the question, possibly with unasked
     fields removed, or (None, reason) when it cannot. `carried`: the refs of the
     previous plan a follow-up refines ("chỉ tính đơn hoàn tất" keeps its breakdown).
@@ -114,7 +123,10 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
         f = by_ref.get(ref)
         return f is not None and (ref in carried or ref in phrases or _mentioned(f, q, qf))
 
-    measures = [m for m in plan.measures if mentioned(m)]
+    # Measures are named more loosely than breakdowns: "đơn" names "Số đơn hàng" in
+    # "số đơn bị huỷ", while it must not make "Ngày đặt hàng" a breakdown.
+    measures = [m for m in plan.measures
+                if mentioned(m) or (m in by_ref and (_field_words(by_ref[m]) - {"so", "id", "ma"}) & q)]
     if not measures:
         asked = ", ".join(sorted(q - _STOP - _TIME)[:6])
         return None, (f"Dữ liệu bạn được dùng không có chỉ số cho “{asked}”, nên không trả lời "
@@ -149,6 +161,21 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
     if grains:
         explained |= _TIME | {w for w in q if w.isdigit()}
     unexplained = q - explained
+    if unexplained and value_lookup is not None:
+        # The model may have left a value out ("doanh số theo tên sản phẩm của ngành
+        # Nội thất" without the filter). Look the explore's text fields' real values
+        # up (through GQS); a phrase of the question equal to exactly ONE field's
+        # value becomes that filter, and the interpretation says so.
+        found = value_lookup(question, unexplained, [*dims, *filters])
+        if found:
+            ref, value = found
+            filters = {**filters, ref: {"operator": "eq", "value": value}}
+            explained |= syllables(value) | phrases.get(ref, set())
+            if ref in by_ref:
+                explained |= _field_words(by_ref[ref])
+            dims = [d for d in dims if d != ref]
+            grains = {r: g for r, g in grains.items() if r in dims}
+            unexplained = q - explained
     if unexplained:
         shown = [w for w in re.findall(r"\w+", str(question)) if fold(w) in unexplained]
         shown = list(dict.fromkeys(shown))[:6] or sorted(unexplained)[:6]
