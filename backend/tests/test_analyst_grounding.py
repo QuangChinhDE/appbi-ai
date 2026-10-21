@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from app.services.analyst.catalog import CatalogExplore, CatalogField
 from app.services.analyst.grounding import fold, ground
 from app.services.analyst.planner import Plan
-from app.services.analyst.service import _repair_filter_values
+from app.services.analyst.service import _check_filter_values
 
 FIELDS = [
     CatalogField("o.order_count", "measure", "count_distinct", "Số đơn hàng"),
@@ -111,19 +111,19 @@ def _values(real):
 def test_a_filter_value_is_matched_to_the_one_real_value():
     # F02 "đơn bị huỷ" -> status eq "bị huỷ"; the data says "Huỷ"
     p = _plan(["o.order_count"], ["o.channel"], filters={"o.status": {"operator": "eq", "value": "huỷ"}})
-    fixed, options = _repair_filter_values(p, _values(["Hoàn tất", "Huỷ"]))
+    fixed, options = _check_filter_values(p, _values(["Hoàn tất", "Huỷ"]))
     assert fixed.filters == {"o.status": {"operator": "eq", "value": "Huỷ"}} and options == []
     # tone mark placed differently (hủy / huỷ) is the same word
     p = _plan(["o.order_count"], filters={"o.status": {"operator": "eq", "value": "Hủy"}})
-    assert _repair_filter_values(p, _values(["Hoàn tất", "Huỷ"]))[0].filters["o.status"]["value"] == "Huỷ"
+    assert _check_filter_values(p, _values(["Hoàn tất", "Huỷ"]))[0].filters["o.status"]["value"] == "Huỷ"
 
 
 def test_no_or_several_matching_values_is_a_choice_for_the_person():
     p = _plan(["o.order_count"], filters={"o.status": {"operator": "eq", "value": "đang giao"}})
-    fixed, options = _repair_filter_values(p, _values(["Hoàn tất", "Huỷ"]))
+    fixed, options = _check_filter_values(p, _values(["Hoàn tất", "Huỷ"]))
     assert fixed is None and options == ["Hoàn tất", "Huỷ"]
     p = _plan(["o.order_count"], filters={"c.region": {"operator": "eq", "value": "miền"}})
-    fixed, options = _repair_filter_values(p, _values(["Miền Bắc", "Miền Nam"]))
+    fixed, options = _check_filter_values(p, _values(["Miền Bắc", "Miền Nam"]))
     assert fixed is None and options == ["Miền Bắc", "Miền Nam"]
 
 
@@ -218,3 +218,36 @@ def test_a_metric_another_dataset_names_word_for_word_is_a_choice():
         ["Revenue — Sales", "Doanh số — Commerce"]
     # "doanh thu" only shares a word with "Doanh số": not a second match
     assert other_source_named(p, "Doanh thu các nhóm sản phẩm theo tháng", [sales, commerce]) == []
+
+
+def test_a_filter_value_made_of_field_labels_is_dropped_and_the_breakdown_kept():
+    # holdout set 3 A03: "Tiền hoàn trả theo trạng thái đơn" -> status eq "đơn hoàn trả", no breakdown
+    ex = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="r",
+                        source_type="postgresql", label="C", fields=[
+                            CatalogField("r.refund_total", "measure", "sum", "Tiền hoàn trả"),
+                            CatalogField("o.status", "dimension", "string", "Trạng thái đơn")])
+    p = Plan(explore=ex, dimensions=["o.status"], measures=["r.refund_total"],
+             filters={"o.status": {"operator": "eq", "value": "đơn hoàn trả"}})
+    out, why = ground(p, "Tiền hoàn trả theo trạng thái đơn")
+    assert out is not None and out.filters == {} and out.dimensions == ["o.status"], why
+
+
+def test_a_follow_up_filter_does_not_change_the_metric_or_lose_the_breakdown():
+    # holdout set 3 U01: "Chỉ khách hàng cá nhân" after "Doanh số theo ngành hàng"
+    previous = {"dimensions": ["p.category"], "measures": ["l.net_sales"], "time_grains": {}, "filters": {}}
+    p = _plan(["c.customer_count"], [], filters={"c.segment": {"operator": "eq", "value": "Khách hàng cá nhân"}})
+    by = {f.ref for f in p.explore.fields}
+    if "c.customer_count" not in by:
+        p.explore.fields.append(CatalogField("c.customer_count", "measure", "count_distinct", "Số khách hàng"))
+    out, why = ground(p, "Chỉ khách hàng cá nhân", carried=["p.category", "l.net_sales"], previous=previous)
+    assert out is not None, why
+    assert out.measures == ["l.net_sales"] and out.dimensions == ["p.category"]
+
+
+def test_a_value_that_exists_nowhere_is_a_choice_before_anything_runs():
+    p = _plan(["c.customer_count"], filters={"c.segment": {"operator": "eq", "value": "Khách hàng cá nhân"}})
+    fixed, _ = _check_filter_values(p, _values(["Cá nhân", "Doanh nghiệp"]))
+    assert fixed.filters["c.segment"]["value"] == "Cá nhân"
+    p = _plan(["c.customer_count"], filters={"c.segment": {"operator": "eq", "value": "Đối tác"}})
+    fixed, options = _check_filter_values(p, _values(["Cá nhân", "Doanh nghiệp"]))
+    assert fixed is None and options == ["Cá nhân", "Doanh nghiệp"]

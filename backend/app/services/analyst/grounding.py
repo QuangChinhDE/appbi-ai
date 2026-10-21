@@ -168,7 +168,7 @@ def other_source_named(plan, question: str, others) -> list[str]:
 
 
 def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | None = None,
-           value_lookup=None):
+           value_lookup=None, previous: dict | None = None):
     """Return (plan, None) when the plan answers the question, possibly with unasked
     fields removed, or (None, reason) when it cannot. `carried`: the refs of the
     previous plan a follow-up refines ("chỉ tính đơn hoàn tất" keeps its breakdown).
@@ -195,12 +195,17 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
         asked = ", ".join(sorted(q - _STOP - _TIME)[:6])
         return None, (f"Dữ liệu bạn được dùng không có chỉ số cho “{asked}”, nên không trả lời "
                       "thay vì trả lời bằng một chỉ số khác.")
+    label_words: set[str] = set()
+    for ref in [*plan.dimensions, *plan.measures, *plan.filters]:
+        if ref in by_ref:
+            label_words |= _field_words(by_ref[ref])
     filters = {}
     for ref, cond in plan.filters.items():
-        f = by_ref.get(ref)
         vals = cond.get("value") if isinstance(cond.get("value"), list) else [cond.get("value")]
-        if f is not None and all(syllables(v) <= _field_words(f) for v in vals if isinstance(v, str)):
-            continue  # "Trạng thái đơn eq Trạng thái đơn": the label, not a value
+        if ref in by_ref and all(syllables(v) <= label_words for v in vals if isinstance(v, str)):
+            # The value is made of field LABELS, not data: "Trạng thái đơn eq Trạng thái
+            # đơn"; holdout set 3: "đơn hoàn trả" from "Tiền hoàn trả" + "Trạng thái đơn".
+            continue
         filters[ref] = cond
 
     def one_value(ref):
@@ -212,6 +217,28 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
             if (mentioned(d) or (d in plan.time_grains and has_time_words and d in by_ref))
             and not one_value(d)]  # grouping by a field filtered to one value is one group
     grains = {r: g for r, g in plan.time_grains.items() if r in dims}
+
+    if isinstance(previous, dict):
+        # A follow-up REFINES the previous answer (holdout set 3: "Chỉ khách hàng cá
+        # nhân" after "doanh số theo ngành hàng" came back as a customer count with no
+        # breakdown). The previous metric stays unless the question names a new one
+        # in words that are not the new filter's; the previous breakdowns stay.
+        filter_words = set()
+        for ref, cond in filters.items():
+            filter_words |= _field_words(by_ref[ref]) if ref in by_ref else set()
+            for v in (cond.get("value") if isinstance(cond.get("value"), list) else [cond.get("value")]):
+                filter_words |= syllables(v)
+        prev_meas = [m for m in previous.get("measures") or [] if m in by_ref]
+        new_metric = any(m not in prev_meas and (_field_words(by_ref[m]) - _GENERIC - filter_words) & q
+                         for m in measures)
+        if prev_meas and not new_metric:
+            measures = prev_meas
+        for d in previous.get("dimensions") or []:
+            if d in by_ref and d not in dims and d not in filters:
+                dims.append(d)
+                g = (previous.get("time_grains") or {}).get(d)
+                if g and d not in grains:
+                    grains[d] = g
 
     explained = set(_STOP)
     for ref in [*measures, *dims, *filters, *carried]:
