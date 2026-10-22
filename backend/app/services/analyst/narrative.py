@@ -218,8 +218,10 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
                 facts.append({"claim": f"{k} change {L0}->{L1}", "value": dlt})
         known = [(k, s[last]) for k, s in series.items() if s.get(last) is not None]
         if known:
-            lead = max(known, key=lambda kv: kv[1])
-            bullets.append(f"Lớn nhất {word} {L1}: {lead[0]} ({fmt(lead[1])}).")
+            lead = _leaders(known)
+            top = max(v for _, v in known)
+            bullets.append(f"Lớn nhất {word} {L1}: {', '.join(lead)} ({fmt(top)})"
+                           + (" - bằng nhau." if len(lead) > 1 else "."))
         one_end = sorted(k for k, s in series.items() if (first in s) != (last in s))
         if one_end:
             bullets.append(f"Không so sánh được (chỉ có dữ liệu ở một đầu): {', '.join(one_end[:5])}.")
@@ -235,12 +237,34 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
                         "partial": [_label(p, grain) for p in partial]}}
 
 
+def _leaders(known: list[tuple[str, float]]) -> list[str]:
+    """Every group holding the top value: a tie has no single "highest"."""
+    if not known:
+        return []
+    top = max(v for _, v in known)
+    return [k for k, v in known if abs(v - top) <= 1e-9 * max(1.0, abs(top))]
+
+
 def _ranking(rows, m, ccol, checks) -> dict:
-    vals = [(str(r.get(ccol["name"])), _num(r.get(m["name"])) or 0.0) for r in rows]
-    vals.sort(key=lambda kv: kv[1], reverse=True)
+    # A NULL measure is UNKNOWN, not zero: it is neither ranked nor summed.
+    known = [(str(r.get(ccol["name"])), _num(r.get(m["name"]))) for r in rows]
+    unknown = [k for k, v in known if v is None]
+    vals = sorted(((k, v) for k, v in known if v is not None), key=lambda kv: kv[1], reverse=True)
+    if not vals:
+        return {"headline": f"Không có giá trị {m['label']} nào để so sánh.", "bullets": [], "facts": [],
+                "checks": checks}
     total = sum(v for _, v in vals) or None
     bullets = [f"{k}: {fmt(v)}" + (f" ({v / total * 100:.1f}%)" if total else "") for k, v in vals[:5]]
-    return {"headline": f"{m['label']} cao nhất: {vals[0][0]} ({fmt(vals[0][1])}).", "bullets": bullets,
+    if unknown:
+        bullets.append(f"Không có giá trị (không tính là 0): {', '.join(unknown[:5])}.")
+    lead = _leaders(vals)
+    if len(lead) == len(vals) and len(vals) > 1:
+        headline = f"{m['label']} bằng nhau ở tất cả {len(vals)} nhóm ({fmt(vals[0][1])} mỗi nhóm)."
+    elif len(lead) > 1:
+        headline = f"{m['label']} cao nhất (bằng nhau): {', '.join(lead)} ({fmt(vals[0][1])})."
+    else:
+        headline = f"{m['label']} cao nhất: {vals[0][0]} ({fmt(vals[0][1])})."
+    return {"headline": headline, "bullets": bullets,
             "facts": [{"claim": k, "value": v} for k, v in vals[:5]], "checks": checks}
 
 
