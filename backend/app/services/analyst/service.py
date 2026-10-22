@@ -46,7 +46,7 @@ def ledger_from_settings():
 def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] = None,
         drop_consent: Optional[str] = None, turn_id: Optional[str] = None,
         ceiling_dataset_ids: Optional[list[int]] = None, consented_plan: Optional[dict] = None,
-        dataset_id: Optional[int] = None) -> dict:
+        dataset_id: Optional[int] = None, value_choice: Optional[dict] = None) -> dict:
     """One turn. `ceiling_dataset_ids` scopes the Analyst to a set of Datasets
     (a workspace); it can only NARROW what the person may read, never widen it."""
     from app.core.config import settings
@@ -100,6 +100,13 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
             return {"status": "unsupported", "turn_id": turn_id, "steps": steps,
                     "message": "Thiếu xác nhận của bạn cho phần bộ lọc không áp được."}
         outcome = validate({**consented_plan, "status": "plan"}, catalog)
+    elif value_choice is not None:
+        # The person picked one of the REAL values offered for a filter that matched
+        # none (dogfood: re-asking "<question> — <value>" was refused by grounding on
+        # the very word the pick replaced). The echoed plan is untrusted input: it is
+        # re-validated against THIS turn's catalog, only the named filter's value
+        # changes, and the value is checked against the data again before the query.
+        outcome = _apply_value_choice(value_choice, catalog)
     else:
         outcome = make_plan(question, catalog, previous=previous, complete=deps.complete)
     if isinstance(outcome, Clarify):
@@ -108,7 +115,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     if isinstance(outcome, Unsupported):
         return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": outcome.reason}
     p: Plan = retarget(outcome, full_catalog)
-    if consented_plan is None:
+    if consented_plan is None and value_choice is None:
         # The plan must answer THE QUESTION, not just use permitted fields.
         from app.services.analyst.grounding import ground
 
@@ -172,7 +179,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
             if checked is None:
                 return {"status": "clarify", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
                         "message": "Giá trị bạn lọc không có trong dữ liệu. Bạn muốn chọn giá trị nào?",
-                        "options": options[:10]}
+                        "options": options[:10], "choice_field": _unmatched_filter(p, options)}
             if checked.filters != p.filters:
                 steps.append({"step": "verify", "detail": "Giá trị bộ lọc được khớp với dữ liệu: " + "; ".join(
                     f"{labels_of(p).get(r, r)} = {c['value']}" for r, c in checked.filters.items())})
@@ -303,6 +310,36 @@ def _can_save_chart(authz, user, p: Plan) -> bool:
 
 def labels_of(p: Plan) -> dict:
     return {f.ref: f.label for f in p.explore.fields}
+
+
+def _unmatched_filter(p: Plan, real: list) -> Optional[str]:
+    """The text filter whose value is not one of `real` (the values offered)."""
+    from app.services.analyst.grounding import fold
+
+    folded = {fold(str(x)).strip() for x in real}
+    for ref, cond in p.filters.items():
+        vals = cond.get("value") if isinstance(cond.get("value"), list) else [cond.get("value")]
+        if cond.get("operator") in ("eq", "in") and any(
+                isinstance(v, str) and fold(v).strip() not in folded for v in vals):
+            return ref
+    return None
+
+
+def _apply_value_choice(choice: dict, catalog):
+    """The previous turn's plan with ONE filter set to the value the person picked."""
+    plan, field_ref, value = choice.get("plan"), choice.get("field"), choice.get("value")
+    if not (isinstance(plan, dict) and isinstance(field_ref, str) and isinstance(value, str)
+            and 0 < len(value.strip()) <= 200):
+        return Unsupported("Lựa chọn không hợp lệ.")
+    outcome = validate({**plan, "status": "plan"}, catalog)
+    if not isinstance(outcome, Plan):
+        return outcome
+    cond = outcome.filters.get(field_ref)
+    if not isinstance(cond, dict) or cond.get("operator") not in ("eq", "in"):
+        return Unsupported("Lựa chọn không khớp với bộ lọc của câu hỏi trước.")
+    outcome.filters = {**outcome.filters, field_ref: {"operator": "eq", "value": value.strip()}}
+    outcome.interpretation = describe_plan(outcome)
+    return outcome
 
 
 def _check_filter_values(p: Plan, values_of, search_of=None):

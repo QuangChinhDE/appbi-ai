@@ -75,6 +75,8 @@ class AskBody(BaseModel):
     consented_plan: Optional[dict] = None
     # The Dataset the person chose in a clarification between sources.
     dataset_id: Optional[int] = None
+    # A real value picked for a filter that matched none: {plan, field, value}.
+    value_choice: Optional[dict] = None
 
 
 class ConsentBody(BaseModel):
@@ -118,7 +120,8 @@ def ask(body: AskBody, request: Request, db: Session = Depends(get_db),
     return run_turn(db, user, body.question, _analyst_deps(), previous=previous,
                     drop_consent=body.drop_consent, turn_id=_turn(body.turn_id),
                     consented_plan=body.consented_plan if isinstance(body.consented_plan, dict) else None,
-                    dataset_id=body.dataset_id)
+                    dataset_id=body.dataset_id,
+                    value_choice=body.value_choice if isinstance(body.value_choice, dict) else None)
 
 
 @router.post("/consents")

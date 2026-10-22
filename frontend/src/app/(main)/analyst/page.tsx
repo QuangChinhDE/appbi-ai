@@ -117,7 +117,8 @@ export default function AnalystPage() {
     return null;
   }, [history, topicStart]);
 
-  const ask = useCallback(async (q: string, opts: { followUp?: boolean; consent?: string; plan?: Record<string, unknown>; datasetId?: number } = {}) => {
+  const ask = useCallback(async (q: string, opts: { followUp?: boolean; consent?: string; plan?: Record<string, unknown>; datasetId?: number;
+                                          valueChoice?: { plan: Record<string, unknown>; field: string; value: string } } = {}) => {
     const text = q.trim();
     if (!text || running) return;
     const turnId = newTurnId();
@@ -130,6 +131,7 @@ export default function AnalystPage() {
         drop_consent: opts.consent ?? null,
         consented_plan: opts.plan ?? null,
         dataset_id: opts.datasetId ?? null,
+        value_choice: opts.valueChoice ?? null,
       });
       setHistory((h) => [...h, { question: text, turn }]);
     } catch (err) {
@@ -188,7 +190,13 @@ export default function AnalystPage() {
                         onOption={(opt) => {
                           // A choice between datasets re-asks the SAME question pinned to that source.
                           const src = ex.turn?.sources?.find((s) => s.label === opt);
-                          return src ? ask(ex.question, { datasetId: src.dataset_id }) : ask(`${ex.question} — ${opt}`);
+                          if (src) return ask(ex.question, { datasetId: src.dataset_id });
+                          // A real value picked for a filter that matched none: the same plan, that value.
+                          if (ex.turn?.choice_field && ex.turn.plan) {
+                            return ask(`${ex.question} — ${opt}`, {
+                              valueChoice: { plan: ex.turn.plan, field: ex.turn.choice_field, value: opt } });
+                          }
+                          return ask(`${ex.question} — ${opt}`);
                         }} />
         ))}
 

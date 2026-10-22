@@ -79,6 +79,8 @@ export interface AnalystTurn {
   can_save?: boolean;
   /** A clarification between datasets: each option and the Dataset it pins. */
   sources?: { label: string; dataset_id: number }[];
+  /** A clarification of a filter value: the field the offered values belong to. */
+  choice_field?: string | null;
   detail?: { dropped?: { field: string; reason: string }[]; query_fingerprint?: string; [k: string]: unknown };
   plan?: Record<string, unknown>;
   answer?: AnalystAnswer;
@@ -109,6 +111,7 @@ export const analystApi = {
     drop_consent?: string | null;
     consented_plan?: Record<string, unknown> | null;
     dataset_id?: number | null;
+    value_choice?: { plan: Record<string, unknown>; field: string; value: string } | null;
   }): Promise<AnalystTurn> => {
     const response = await apiClient.post('/analyst/ask', body, { timeout: 180_000 });
     return response.data;
