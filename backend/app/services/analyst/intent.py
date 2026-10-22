@@ -33,8 +33,10 @@ _HEAD = re.compile(
 # sentence-final particles and polite tails
 _TAIL = re.compile(rf"(?:\s+(?:a|nhe|nha|nhi|voi|di|oi|vay|the|giup {_PRON}|duoc khong|nhe {_PRON}|{_PRON} nhe))+\s*$")
 _TOP = re.compile(r"\btop\s*(\d{1,3})\b")
-_N_SUPER = re.compile(r"\b(\d{1,3})\s+(?:\w+\s+){0,4}?(cao|lon|nhieu|chay|thap|nho|it)\s+nhat\b(?!\s+\d)")
-_SUPER = re.compile(r"\b(?:ban\s+)?(cao|lon|nhieu|chay|thap|nho|it)\s+nhat\b(?!\s+\d)")
+# the metric may sit between the adjective and "nhất" ("2 miền ... NHIỀU đơn hàng NHẤT",
+# sealed set 9 S9-023): only the number, the adjective and "nhất" are the construction
+_N_SUPER = re.compile(r"\b(\d{1,3})\s+(?:\w+\s+){0,4}?(cao|lon|nhieu|chay|thap|nho|it)\s+(?:\w+\s+){0,3}?nhat\b(?!\s+\d)")
+_SUPER = re.compile(r"\b(?:ban\s+)?(cao|lon|nhieu|chay|thap|nho|it)\s+(?:\w+\s+){0,3}?nhat\b(?!\s+\d)")
 _RANK = re.compile(r"\bxep hang\b")
 _ORDER_DESC = re.compile(r"\btu (?:cao|lon|nhieu) (?:xuong|den|toi) (?:thap|nho|it)\b")
 _ORDER_ASC = re.compile(r"\btu (?:thap|nho|it) (?:len|den|toi) (?:cao|lon|nhieu)\b")
@@ -86,14 +88,22 @@ def extract(question: str, *, chosen_metric: bool = False) -> Intent:
         # between them ("vùng có doanh số") are what is ranked and stay
         n = n or int(m.group(1))
         direction = "desc" if m.group(2) in _DESC_WORDS else "asc"
-        sup = re.search(rf"\b{m.group(2)}\s+nhat\b", text[m.start():m.end()])
-        consumed.append(f"{m.group(1)} … {m.group(2)} nhat")
-        text = (text[:m.start()] + text[m.start():m.end()][len(m.group(1)):m.start(2) - m.start()]
-                + text[m.start() + sup.end():]).strip() if sup else text
+        consumed.append(f"{m.group(1)} … {m.group(2)} … nhat")
+        span = text[m.start():m.end()]
+        rel = m.start(2) - m.start()
+        middle = span[rel + len(m.group(2)):]
+        middle = middle[:middle.rfind("nhat")]
+        # keep what is ranked and the metric; drop the number, the adjective, "nhất"
+        text = " ".join((text[:m.start()] + span[len(m.group(1)):rel] + middle + text[m.end():]).split())
     else:
-        text, m = cut(_SUPER, text)
+        m = _SUPER.search(text)
         if m:
             direction = direction or ("desc" if m.group(1) in _DESC_WORDS else "asc")
+            consumed.append(f"{m.group(1)} … nhat")
+            span = text[m.start():m.end()]
+            middle = span[span.find(m.group(1)) + len(m.group(1)):]
+            middle = middle[:middle.rfind("nhat")]
+            text = " ".join((text[:m.start()] + middle + text[m.end():]).split())
     if chosen_metric and direction is None:
         text, m = cut(_EVAL_SUPER, text)
         if m:

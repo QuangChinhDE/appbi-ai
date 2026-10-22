@@ -609,3 +609,22 @@ def test_a_metric_named_by_generic_words_is_not_a_bridged_source():
     p = Plan(explore=a, dimensions=[], measures=["o.order_count"])
     assert other_source_named(p, "Miền Trung tháng 3/2025 có bao nhiêu đơn hàng?", [a, b]) == []
 
+
+def test_a_follow_up_keeps_the_previous_period_it_does_not_name():
+    """Sealed set 9 S9-031: "Còn riêng miền Trung thì sao?" after a 2025 question
+    answered with all-time numbers (the year was silently dropped)."""
+    y25 = {"operator": "date_range", "value": {"from": "2025-01-01", "to": "2026-01-01"}}
+    previous = {"dimensions": ["o.channel"], "measures": ["l.net_sales"], "time_grains": {},
+                "filters": {"o.order_date": y25}}
+    p = _plan(["l.net_sales"], ["o.channel"], filters={"c.region": {"operator": "eq", "value": "Miền Trung"}},
+              covered={"miền Trung": "c.region"})
+    out, why = ground(p, "Còn riêng miền Trung thì sao?", covered=p.covered, previous=previous,
+                      carried=["o.channel", "l.net_sales", "o.order_date"])
+    assert out is not None, why
+    assert out.filters == {"c.region": {"operator": "eq", "value": "Miền Trung"}, "o.order_date": y25}
+    # a filter on the same field is replaced, not doubled
+    prev2 = {**previous, "filters": {"c.region": {"operator": "eq", "value": "Miền Bắc"}}}
+    out, why = ground(p, "Còn riêng miền Trung thì sao?", covered=p.covered, previous=prev2,
+                      carried=["o.channel", "l.net_sales", "c.region"])
+    assert out.filters == {"c.region": {"operator": "eq", "value": "Miền Trung"}}, why
+
