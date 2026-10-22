@@ -76,14 +76,19 @@ def test_a_model_without_a_verified_price_is_never_called(budget, monkeypatch):
     assert calls == []
 
 
-def test_an_error_after_sending_is_charged_at_its_worst_case(budget, monkeypatch):
+def test_an_error_after_sending_is_unknown_and_charged_at_its_worst_case(budget, monkeypatch):
+    # PO 2026-10-22: a timeout has no usage evidence - its cost is UNKNOWN, counted
+    # at the reservation's worst case (not a computed estimate, never zero).
     def boom(*a, **k):
         raise llm_client.httpx.ReadTimeout("t")
 
     monkeypatch.setattr(llm_client.httpx, "post", boom)
     assert llm_client.LLMClient.complete_json("p" * 10, system="s", max_tokens=100) is None
-    settle = [r for r in _rows(budget) if r["kind"] == "settle"][0]
-    assert settle["error"] == "ReadTimeout" and settle["cost_usd"] > 0 and settle["measured"] is True
+    reserve = [r for r in _rows(budget) if r["kind"] == "reserve"][0]
+    unknown = [r for r in _rows(budget) if r["kind"] == "unknown"][0]
+    assert unknown["error"] == "ReadTimeout" and unknown["measured"] is False
+    assert unknown["cost_usd"] == pytest.approx(reserve["worst_case_usd"])
+    assert B.ledger_state(str(budget))["spent"] == pytest.approx(reserve["worst_case_usd"])
 
 
 def test_the_budget_is_cumulative_across_calls(budget, monkeypatch):
@@ -124,3 +129,102 @@ def test_the_planner_replays_a_recorded_output_without_calling_a_model(tmp_path,
     assert isinstance(out, planner.Plan) and out.measures == ["items.revenue"]
     miss = planner.plan("Câu khác?", [_explore()], complete=boom)
     assert isinstance(miss, planner.Unsupported)
+
+
+# ── PO 2026-10-22: the cap must hold across processes, crashes and every paid path ──
+
+def _child_reserve(ledger, n, out):
+    """One runner process: try n reservations against the SHARED ledger."""
+    import json as _json
+
+    from app.core.config import settings
+    from app.services import llm_test_budget as b
+
+    settings.LLM_TEST_BUDGET_USD = "0.05"
+    settings.LLM_TEST_LEDGER_PATH = ledger
+    settings.LLM_TEST_PRICES_JSON = _json.dumps({"m": [0.0, 0.0, 1000.0]})  # 10 output tokens = 0.01 USD
+    settings.ENVIRONMENT = "test"
+    ok = 0
+    for _ in range(n):
+        try:
+            b.reserve("openai", "m", "", "", 10)
+            ok += 1
+        except b.BudgetRefused:
+            pass
+    out.put(ok)
+
+
+def test_concurrent_processes_never_reserve_past_the_cap(tmp_path):
+    import multiprocessing as mp
+
+    ledger = str(tmp_path / "shared.jsonl")
+    ctx = mp.get_context("spawn")
+    out = ctx.Queue()
+    procs = [ctx.Process(target=_child_reserve, args=(ledger, 5, out)) for _ in range(6)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(120)
+    granted = sum(out.get(timeout=5) for _ in procs)
+    state = B.ledger_state(ledger)
+    # cap 0.05, each worst case 0.01 (+ the empty prompt's overhead at price 0): exactly 5 fit
+    assert granted == 5 and state["open"] == 5 and state["reserved"] == pytest.approx(0.05)
+
+
+def test_an_unsettled_reservation_survives_a_restart(budget, monkeypatch):
+    rid = B.reserve("openai", "gpt-4o-mini", "s", "p" * 100, 100)  # the process then "dies"
+    assert rid
+    # a fresh process reads the same ledger: the reservation still counts
+    state = B.ledger_state(str(budget))
+    assert state["open"] == 1 and state["reserved"] > 0
+
+
+def test_a_response_without_usage_is_unknown_not_free(budget, monkeypatch):
+    monkeypatch.setattr(llm_client.httpx, "post", lambda *a, **k: _Resp(None))
+    assert llm_client.LLMClient.complete_json("p" * 10, system="s", max_tokens=100) == {"status": "plan"}
+    rows = _rows(budget)
+    assert rows[-1]["kind"] == "unknown" and rows[-1]["cost_usd"] == pytest.approx(rows[0]["worst_case_usd"])
+    assert B.ledger_state(str(budget))["unknown"] > 0
+
+
+def test_only_evidence_reconciles_an_unknown_cost(budget, monkeypatch):
+    monkeypatch.setattr(llm_client.httpx, "post", lambda *a, **k: _Resp(None))
+    llm_client.LLMClient.complete_json("p" * 10, system="s", max_tokens=100)
+    rid = _rows(budget)[0]["id"]
+    with pytest.raises(ValueError):
+        B.reconcile(rid, "gpt-4o-mini", {"prompt_tokens": 20, "completion_tokens": 5}, evidence="")
+    before = B.ledger_state(str(budget))["spent"]
+    cost = B.reconcile(rid, "gpt-4o-mini", {"prompt_tokens": 20, "completion_tokens": 5},
+                       evidence="usage export row 2026-10-22")
+    after = B.ledger_state(str(budget))
+    assert after["spent"] == pytest.approx(cost) and cost < before and after["unknown"] == 0
+
+
+def test_an_unmetered_paid_request_is_refused_while_a_budget_is_active(budget, monkeypatch):
+    import httpx
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(httpx.Client, "send", httpx.Client.send)          # restored after the test
+    monkeypatch.setattr(httpx.AsyncClient, "send", httpx.AsyncClient.send)
+    monkeypatch.setattr(B, "_INSTALLED", False)
+    assert B.install_guard() is True
+    assert settings.GEMINI_API_KEY == "" and settings.ANTHROPIC_API_KEY == ""   # SDK paths cannot run
+    ok = httpx.MockTransport(lambda req: httpx.Response(200, json={}))
+    with httpx.Client(transport=ok) as c:
+        with pytest.raises(B.BudgetRefused):                              # e.g. embeddings, OCR, AI bot
+            c.post("https://api.openai.com/v1/embeddings", json={})
+        with pytest.raises(B.BudgetRefused):
+            c.post("https://api.anthropic.com/v1/messages", json={})
+        assert c.get("https://api.openai.com/v1/models").status_code == 200   # free key check
+        assert c.get("http://localhost/health").status_code == 200           # not a provider
+        with B.metered("rid-1"):
+            assert c.post("https://api.openai.com/v1/chat/completions", json={}).status_code == 200
+
+
+def test_the_guard_is_inert_without_a_budget(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LLM_TEST_BUDGET_USD", "", raising=False)
+    monkeypatch.setattr(B, "_INSTALLED", False)
+    assert B.install_guard() is False
