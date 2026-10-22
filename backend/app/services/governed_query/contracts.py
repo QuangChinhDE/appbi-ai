@@ -65,9 +65,10 @@ class GovernedQueryRequest:
     purpose: Purpose = "answer"
     requested_bounds: Optional[QueryBounds] = None
     run_id: Optional[str] = None
-    #: I-6: filter ids (the `field` a refusal named) the USER accepted to drop,
-    #: recorded from that user's confirmation. Never set by the model on its own.
-    accept_dropped_filters: tuple[str, ...] = ()
+    #: I-6: a server-issued consent token (governed_query.consent) by which the
+    #: USER accepted that the named filters are dropped from THIS exact query.
+    #: A bare list of filter ids is not accepted: the model cannot mint a token.
+    drop_consent: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -136,4 +137,5 @@ class CompiledQuery:
     columns: tuple[ColumnMeta, ...]
     freshness: Freshness
     key_probes: tuple = ()
+    consent_nonce: Optional[str] = None
     warnings: tuple[str, ...] = ()

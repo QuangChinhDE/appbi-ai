@@ -147,6 +147,26 @@ class Settings(BaseSettings):
     # NEXT_PUBLIC_* flags) to restore it exactly as it was.
     WORKBOARDS_ENABLED: bool = False
 
+    # ── AppBI Analyst (M2 MVP, the first GQS consumer) ──────────────────
+    # Default OFF: /api/v1/analyst/* is not even mounted until enabled. Every
+    # query it runs goes through the Governed Query Service, the durable ledger
+    # and these SERVER-SIDE budgets (never taken from a request). 0 = unlimited.
+    ANALYST_ENABLED: bool = False
+    # Pilot allowlist: comma-separated e-mails allowed to use the Analyst. EMPTY
+    # MEANS NOBODY (fail closed) - the module permission alone does not open it.
+    ANALYST_PILOT_ALLOWLIST: str = ""
+    # Accepting a dropped filter (a wider answer than asked). OFF until the consent
+    # journey is certified in the browser: with it off a dropped filter is a plain
+    # refusal, the consent endpoint answers 403 and a consent token is never spent.
+    ANALYST_DROP_CONSENT_ENABLED: bool = False
+    # Planner model tier: "default" (gpt-4o-mini, the certified baseline) or
+    # "strong" (the provider's larger model). Changed only on benchmark evidence.
+    ANALYST_PLANNER_MODEL: str = "default"
+    ANALYST_MAX_QUERIES_PER_USER_DAY: int = 200
+    ANALYST_MAX_CONCURRENT_PER_DATASOURCE: int = 4
+    ANALYST_MAX_BQ_BYTES_PER_USER_DAY: int = 20 * 1024**3
+    ANALYST_MAX_ROWS: int = 500
+
     # ── Metadata Catalog / Governance (DB-backed) ───────────────────────
     # Default OFF — the catalog module is fully INERT until enabled (not even
     # imported while off; see app/api/__init__.py). When True, /api/v1/catalog/*

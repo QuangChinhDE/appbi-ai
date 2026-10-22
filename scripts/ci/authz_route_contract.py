@@ -34,7 +34,8 @@ KINDS = ("resource", "scope", "cross", "public_capability", "identity", "global"
 def api_routes() -> list[str]:
     sys.path.insert(0, str(ROOT / "backend"))
     for k, v in (("ENVIRONMENT", "test"), ("METADATA_CATALOG_ENABLED", "true"), ("GOVERN_ENABLED", "true"),
-                 ("WORKBOARDS_ENABLED", "true"), ("OBSERVABILITY_ENABLED", "true")):
+                 ("WORKBOARDS_ENABLED", "true"), ("OBSERVABILITY_ENABLED", "true"),
+                 ("ANALYST_ENABLED", "true")):
         os.environ.setdefault(k, v)
     os.environ.setdefault("DATABASE_URL", "sqlite:///./_route_contract.db")
     from app.main import app

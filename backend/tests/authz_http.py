@@ -54,7 +54,8 @@ if not os.environ.get("DATASOURCE_ENCRYPTION_KEY"):
     from cryptography.fernet import Fernet
 
     os.environ["DATASOURCE_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
-for _flag in ("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED", "WORKBOARDS_ENABLED", "OBSERVABILITY_ENABLED"):
+for _flag in ("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED", "WORKBOARDS_ENABLED", "OBSERVABILITY_ENABLED",
+              "ANALYST_ENABLED"):
     os.environ.setdefault(_flag, "true")
 
 from fastapi.testclient import TestClient  # noqa: E402
