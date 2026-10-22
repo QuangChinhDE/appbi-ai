@@ -306,3 +306,28 @@ def test_a_metric_is_trended_by_its_own_facts_date_unless_another_is_named():
     assert out is not None and out.dimensions == ["r.return_date"] and out.time_grains == {"r.return_date": "month"}, why
     out, _ = ground(p, "Tiền hoàn trả theo ngày đặt hàng, từng tháng")
     assert out.dimensions == ["o.order_date"]
+
+
+def test_a_value_past_the_first_page_is_found_by_a_bounded_search_not_called_absent():
+    first_page = [f"Sản phẩm {i:03d}" for i in range(200)]
+
+    def values_of(ref):
+        return SimpleNamespace(columns=[SimpleNamespace(name="v", ref=ref)], rows=[{"v": x} for x in first_page],
+                               truncated=True)
+
+    searched = []
+
+    def search_of(ref, text):
+        searched.append(text)
+        hits = ["Laptop 14"] if text == "Laptop 14" else []
+        return SimpleNamespace(columns=[SimpleNamespace(name="v", ref=ref)], rows=[{"v": x} for x in hits])
+
+    p = _plan(["l.net_sales"], filters={"p.category": {"operator": "eq", "value": "laptop 14"}})
+    fixed, _ = _check_filter_values(p, values_of, search_of)
+    assert fixed is not None and fixed.filters["p.category"]["value"] == "Laptop 14"
+    assert searched == ["laptop 14", "Laptop 14"]          # as typed, then title-cased; each bounded
+    # a field whose values fit one page is never searched
+    searched.clear()
+    _check_filter_values(_plan(["l.net_sales"], filters={"o.status": {"operator": "eq", "value": "Huỷ"}}),
+                         _values(["Huỷ"]), search_of)
+    assert searched == []

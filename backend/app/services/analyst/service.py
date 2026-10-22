@@ -149,7 +149,9 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
             # are read through GQS (this person's rights, ledgered): each filter value
             # is replaced by the ONE real value matching it, or the person chooses.
             checked, options = _check_filter_values(
-                p, lambda ref: gqs.execute(governed([ref], p.measures[:1], {}, [], {}, 200)))
+                p, lambda ref: gqs.execute(governed([ref], p.measures[:1], {}, [], {}, 200)),
+                lambda ref, text: gqs.execute(governed([ref], p.measures[:1],
+                                                       {ref: {"operator": "contains", "value": text}}, [], {}, 50)))
             if checked is None:
                 return {"status": "clarify", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
                         "message": "Giá trị bạn lọc không có trong dữ liệu. Bạn muốn chọn giá trị nào?",
@@ -255,7 +257,7 @@ def labels_of(p: Plan) -> dict:
     return {f.ref: f.label for f in p.explore.fields}
 
 
-def _check_filter_values(p: Plan, values_of):
+def _check_filter_values(p: Plan, values_of, search_of=None):
     """(plan with every text eq/in filter value replaced by the ONE real value matching
     it after folding case and tone marks; or None and the field's real values when a
     value matches none or several). Non-text and other operators pass unchanged."""
@@ -278,7 +280,21 @@ def _check_filter_values(p: Plan, values_of):
             new_filters[ref] = cond
             continue
         col = next((c.name for c in res.columns if c.ref == ref), None)
-        real = sorted({str(r.get(col)) for r in res.rows if r.get(col) is not None}) if col else []
+        real = {str(r.get(col)) for r in res.rows if r.get(col) is not None} if col else set()
+        if search_of is not None and getattr(res, "truncated", False):
+            # A field with more values than one bounded read holds (product names,
+            # cities): a value past the first page is not "absent". Search for it
+            # by the person's own words, as typed and title-cased (the pattern
+            # match is case-sensitive), each read bounded and ledgered.
+            for v in wanted:
+                for text in dict.fromkeys([v.strip(), v.strip().title()]):
+                    try:
+                        hit = search_of(ref, text)
+                    except GovernedRefusal:
+                        continue
+                    hcol = next((c.name for c in hit.columns if c.ref == ref), None)
+                    real |= {str(r.get(hcol)) for r in hit.rows if hcol and r.get(hcol) is not None}
+        real = sorted(real)
         fixed = []
         for v in wanted:
             exact = [x for x in real if fold(x).strip() == fold(v).strip()]
