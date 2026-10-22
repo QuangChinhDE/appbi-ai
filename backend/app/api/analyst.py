@@ -17,7 +17,7 @@ import re
 import threading
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -103,9 +103,16 @@ def catalog(db: Session = Depends(get_db),
 
 
 @router.post("/ask")
-def ask(body: AskBody, db: Session = Depends(get_db),
+def ask(body: AskBody, request: Request, db: Session = Depends(get_db),
         user: User = Depends(require_analyst)) -> dict[str, Any]:
+    from app.services import llm_test_budget as _budget
     from app.services.analyst.service import ask as run_turn
+
+    if _budget.active():
+        # Test harness labels for the spending ledger (ignored unless a test budget is set).
+        _budget.PURPOSE.set(request.headers.get("x-appbi-test-purpose", "")[:60])
+        _budget.CASE_ID.set(request.headers.get("x-appbi-test-case", "")[:60])
+        _budget.RC_SHA.set(request.headers.get("x-appbi-test-rc", "")[:40])
 
     previous = body.previous_plan if isinstance(body.previous_plan, dict) else None
     return run_turn(db, user, body.question, _analyst_deps(), previous=previous,

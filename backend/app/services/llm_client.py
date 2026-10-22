@@ -90,20 +90,35 @@ def _call_openai(
         ]
     else:
         content = prompt
-    resp = httpx.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    return _parse_json_object(resp.json()["choices"][0]["message"]["content"])
+    from app.services import llm_test_budget as _budget
+
+    rid = _budget.reserve("openai", model, system, prompt, max_tokens)  # inert unless a test budget is set
+    try:
+        resp = httpx.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
+                "max_tokens": max_tokens,
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+    except Exception as exc:
+        # An error after sending may still be billed: the reservation is settled
+        # at its WORST case rather than released (no measured usage exists).
+        if rid is not None:
+            _budget.settle(rid, "openai", model, {"prompt_tokens": int(
+                (len(system or "") + len(prompt or "")) / _budget.CHARS_PER_TOKEN_FLOOR),
+                "completion_tokens": max_tokens}, error=type(exc).__name__)
+        raise
+    body = resp.json()
+    parsed = _parse_json_object(body["choices"][0]["message"]["content"])
+    _budget.settle(rid, "openai", model, body.get("usage") or {}, raw=parsed, model_returned=str(body.get("model") or ""))
+    return parsed
 
 
 def _call_gemini(
@@ -202,6 +217,12 @@ class LLMClient:
         # `strong` selects the providers' larger model (the one the design surfaces
         # already use); every caller that does not ask for it is unchanged.
         providers = _providers(design=strong)
+        from app.services import llm_test_budget as _budget
+
+        if _budget.active():
+            # Under a test budget there is no automatic fallback to another provider
+            # (PO policy: no fallback to a model whose cost was not reserved).
+            providers = providers[:1]
         if not providers:
             logger.debug("LLMClient: no AI provider key configured (OPENAI/GEMINI/ANTHROPIC)")
             return None

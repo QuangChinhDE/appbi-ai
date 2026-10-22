@@ -126,6 +126,16 @@ def plan(question: str, catalog: list[CatalogExplore], *, previous: Optional[dic
          complete: Optional[Callable[..., Optional[dict]]] = None):
     if not catalog:
         return Unsupported("Bạn chưa có quyền khai thác dữ liệu nào phù hợp để trả lời câu hỏi này.")
+    from app.core.config import settings as _settings
+    from app.services import llm_test_budget as _budget
+
+    if str(getattr(_settings, "ANALYST_PLANNER_REPLAY_PATH", "") or ""):
+        raw = _budget.replay_lookup(question, bool(previous))
+        if raw is None:
+            return Unsupported("Không có kết quả mô hình đã ghi cho câu hỏi này (chế độ phát lại).")
+        return validate(raw, catalog)
+    _budget.QUESTION.set(question)
+    _budget.FOLLOWUP.set(bool(previous))
     if complete is None:
         from app.core.config import settings
         from app.services.llm_client import LLMClient

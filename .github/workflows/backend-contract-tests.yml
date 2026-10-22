@@ -122,6 +122,7 @@ jobs:
             tests/test_analyst_catalog_reach.py \
             tests/test_analyst_grounding.py \
             tests/test_analyst_intent_obligations.py \
+            tests/test_llm_test_budget.py \
             tests/test_intelligence_gqs_core.py
 
       # WHAT THE ANALYST IS SHOWN AS EVIDENCE, AND WHAT A METRIC MEANS.
