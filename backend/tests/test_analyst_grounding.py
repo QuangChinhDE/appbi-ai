@@ -450,3 +450,51 @@ def test_counting_words_are_not_data_but_a_seller_is_not_a_channel():
     p, why = ground(_plan(["l.net_sales"], ["o.channel"]), "Doanh số theo người bán",
                     covered={"doanh số": "l.net_sales", "người bán": "o.channel"})
     assert p is None and "người" in why  # "người" is not filler: the seller is not the sales channel
+
+
+# ── Sealed set 8 (2026-10-22): a value lookup inverted two negations ─────────
+# The model planned the exclusion correctly; the server's value lookup then wrote
+# "eq <real value>" over it and answered the opposite question.
+
+def test_a_value_lookup_corrects_an_excluded_value_and_keeps_the_exclusion():
+    p = _plan(["l.net_sales"], filters={"o.status": {"operator": "ne", "value": "Cancelled"}},
+              covered={"doanh số": "l.net_sales", "đơn bị huỷ": "o.status"})
+    out, why = ground(p, "Doanh số không tính các đơn bị huỷ là bao nhiêu?", covered=p.covered,
+                      value_lookup=lambda q, words, used: ("o.status", "Huỷ") if "huy" in words else None)
+    assert out is not None, why
+    assert out.filters == {"o.status": {"operator": "ne", "value": "Huỷ"}}
+
+
+def test_an_excluded_breakdown_value_stays_excluded_and_the_breakdown_stays():
+    prev = {"explore_id": 1, "dimensions": ["c.region"], "measures": ["o.order_count"], "filters": {}}
+    p = _plan(["o.order_count"], ["c.region"], filters={"c.region": {"operator": "ne", "value": "Miền Nam"}},
+              covered={"Bỏ Miền Nam ra": "c.region"})
+    out, why = ground(p, "Bỏ Miền Nam ra", covered=p.covered, previous=prev, carried=["c.region", "o.order_count"],
+                      value_lookup=lambda q, words, used: ("c.region", "Miền Nam"))
+    assert out is not None, why
+    assert out.dimensions == ["c.region"] and out.filters == {"c.region": {"operator": "ne", "value": "Miền Nam"}}
+
+
+def test_exclusion_verbs_oblige_an_exclusion():
+    p = _plan(["l.net_sales"], ["c.region"], filters={"c.region": {"operator": "eq", "value": "Miền Nam"}},
+              covered={"doanh số": "l.net_sales", "vùng": "c.region"})
+    for q in ("Doanh số theo vùng, bỏ Miền Nam", "Doanh số theo vùng bỏ qua Miền Nam", "Doanh số theo vùng loại bỏ Miền Nam"):
+        out, why = ground(p, q, covered=p.covered, value_lookup=lambda *_a: None)
+        assert out is None and "phủ định" in why, (q, why)
+
+
+def test_a_period_filters_the_metrics_own_date_unless_another_is_named():
+    ex = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="r",
+                        source_type="postgresql", label="C", fields=[
+                            CatalogField("r.return_count", "measure", "count", "Số lượt trả hàng"),
+                            CatalogField("r.return_date", "dimension", "date", "Ngày trả hàng"),
+                            CatalogField("o.order_date", "dimension", "date", "Ngày đặt hàng"),
+                            CatalogField("o.channel", "dimension", "string", "Kênh bán")])
+    rng = {"operator": "date_range", "value": {"from": "2025-01-01", "to": "2026-01-01"}}
+    p = Plan(explore=ex, dimensions=["o.channel"], measures=["r.return_count"], time_grains={},
+             filters={"o.order_date": rng})
+    out, why = ground(p, "Số lượt trả hàng của từng kênh bán năm 2025")
+    assert out is not None and out.filters == {"r.return_date": rng}, why
+    out, why = ground(p, "Số lượt trả hàng của từng kênh bán theo ngày đặt hàng năm 2025")
+    assert out is not None and out.filters == {"o.order_date": rng}, why
+
