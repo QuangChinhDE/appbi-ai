@@ -232,3 +232,31 @@ def test_legacy_unflagged_metadata_is_kept_but_its_type_follows_the_source():
     [m] = dms.merge_synced_dimensions(generated, legacy)
     assert m["label"] == "Nhóm" and m["description"] == "do người viết"
     assert m["type"] == "string" and m["source_type"] == "string" and "user_edited" not in m
+
+
+def test_a_renamed_column_is_a_removed_and_a_new_column_without_a_mapping(db):
+    """No evidence links an old column to a new name, so an edited dimension on the
+    old name is not carried over to the new one (PO, Track C)."""
+    _author(db, category={"label": "Nhóm"})
+    _set_columns(db, [{**c, "name": "product_group"} if c["name"] == "category" else c for c in COLS])
+    _resync(db)
+    dims = _dims(db)
+    assert "category" not in dims and "product_group" in dims
+    assert dims["product_group"].get("label") != "Nhóm" and "user_edited" not in dims["product_group"]
+
+
+def test_a_template_import_does_not_carry_user_edited_in(db):
+    """`user_edited` is decided by the server on its write paths; a template file
+    (exported, or written by hand) cannot set it."""
+    from app.modules.workboards.services.template_service import _rebuild_semantic_from_bundle
+
+    db.add(Dataset(id=2, name="imported", owner_id=OWNER))
+    db.add(DatasetTable(id=21, dataset_id=2, display_name="o2", source_table_name="o2", columns_cache=[]))
+    db.commit()
+    bundle = {"views": [{"old_table_id": 11, "name": "o2", "measures": [], "dimensions": [
+        {"name": "region", "type": "string", "sql": "region", "label": "Vùng", "user_edited": True}]}],
+        "explores": [{"base_view_old_table_id": 11, "base_view_name": "o2", "joins": []}]}
+    _rebuild_semantic_from_bundle(db, 2, {11: 21}, bundle)
+    db.commit()
+    view = db.query(SemanticView).filter(SemanticView.dataset_table_id == 21).one()
+    assert view.dimensions == [{"name": "region", "type": "string", "sql": "region", "label": "Vùng"}]
