@@ -49,6 +49,7 @@ from app.models.ai_chat_session import AiChatSession
 from app.models.ai_chat_turn_log import AiChatTurnLog
 from app.models.agent_brain import AgentBrainVersion
 from app.models.governed_query_execution import GovernedQueryExecution
+from app.models.analyst_feedback import AnalystFeedback  # noqa: E402
 from app.models.agent_flow_chat_thread import AgentFlowChatThread
 from app.models.agent_flow_delegation import AgentFlowDelegation  # noqa: F401
 from app.models.ai_provider_credential import AiProviderCredential

@@ -136,6 +136,33 @@ def consent(body: ConsentBody,
             "expires_in": c.DEFAULT_TTL_SECONDS}
 
 
+class FeedbackBody(BaseModel):
+    turn_id: str = Field(..., pattern=r"^[0-9a-f]{32}$")
+    verdict: str = Field(..., pattern=r"^(up|down)$")
+    comment: Optional[str] = Field(None, max_length=1000)
+
+
+@router.post("/feedback", status_code=201)
+def feedback(body: FeedbackBody, db: Session = Depends(get_db),
+             user: User = Depends(require_analyst)) -> dict[str, Any]:
+    """The person's verdict on one of THEIR answers (engineering dogfood / pilot).
+    Only a turn this person ran (its ledger run id) can be rated."""
+    import os
+
+    from app.models.analyst_feedback import AnalystFeedback
+
+    ledger = _analyst_deps().ledger
+    owner = getattr(ledger, "run_owner", None)
+    if owner is not None and str(owner(body.turn_id) or "") != str(user.id):
+        raise HTTPException(status_code=404, detail="Unknown answer.")
+    row = AnalystFeedback(user_id=user.id, turn_id=body.turn_id, verdict=body.verdict,
+                          comment=(body.comment or "").strip() or None,
+                          rc_sha=(os.environ.get("APPBI_BUILD_SHA") or "")[:40] or None)
+    db.add(row)
+    db.commit()
+    return {"id": row.id}
+
+
 @router.post("/turns/{turn_id}/cancel")
 def cancel(turn_id: str, user: User = Depends(require_analyst)) -> dict[str, Any]:
     _turn(turn_id)
