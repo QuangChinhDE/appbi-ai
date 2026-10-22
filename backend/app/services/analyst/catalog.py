@@ -104,6 +104,27 @@ def governed_aliases(db, dataset_ids: list[int]) -> dict[str, tuple[str, ...]]:
     return {k: tuple(dict.fromkeys(v))[:8] for k, v in out.items()}
 
 
+def glossary_words(db, fqns: set[str]) -> dict[str, tuple[str, ...]]:
+    """{term fqn: (display name, synonyms...)} for APPROVED glossary terms. A Draft
+    or Deprecated term is not official vocabulary and adds nothing."""
+    from app.models.governance import Glossary, GlossaryTerm
+
+    if not fqns:
+        return {}
+    out: dict[str, tuple[str, ...]] = {}
+    for term, gname in (db.query(GlossaryTerm, Glossary.name).join(Glossary, Glossary.id == GlossaryTerm.glossary_id)
+                        .filter(GlossaryTerm.status == "Approved").all()):
+        fqn = f"{gname}.{term.name}"
+        if fqn in fqns:
+            words = [term.display_name, *(term.synonyms or [])]
+            out[fqn] = tuple(str(w).strip()[:60] for w in words if isinstance(w, str) and str(w).strip())
+    return out
+
+
+def _term_refs(defn: dict) -> list[str]:
+    return [str(r.get("fqn")) for r in defn.get("glossary_terms") or [] if isinstance(r, dict) and r.get("fqn")]
+
+
 def _label(defn: dict) -> str:
     return str(defn.get("label") or defn.get("name") or "").replace("_", " ").strip()
 
@@ -148,18 +169,26 @@ def discover(authz: Any, *, limit: int = 40) -> list[CatalogExplore]:
         ex_cols, ex_measures = authz.ai_scope_exclusions([dataset.id, *parents])
         aliases = governed_aliases(db, [dataset.id, *parents])
         views = [base] + [v for v in _joined_views(db, explore, [dataset.id, *parents]) if v.id != base.id]
+        terms = glossary_words(db, {t for v in views for defn in [*(v.dimensions or []), *(v.measures or [])]
+                                    if isinstance(defn, dict) for t in _term_refs(defn)})
+
+        def vocab(defn, extra=()):
+            words = [*_synonyms(defn), *extra]
+            for t in _term_refs(defn):
+                words.extend(terms.get(t, ()))
+            return tuple(dict.fromkeys(words))[:12]
+
         fields: list[CatalogField] = []
         for v in views:
             for d in v.dimensions or []:
                 if isinstance(d, dict) and d.get("name") and norm(d["name"]) not in ex_cols:
                     fields.append(CatalogField(f"{v.name}.{d['name']}", "dimension", str(d.get("type") or "string"),
-                                               _label(d), str(d.get("description") or "")[:200], _synonyms(d)))
+                                               _label(d), str(d.get("description") or "")[:200], vocab(d)))
             for m in v.measures or []:
                 if isinstance(m, dict) and m.get("name") and norm(m["name"]) not in ex_measures:
                     gov = aliases.get(f"{v.name}.{m['name']}") or aliases.get(str(m["name"])) or ()
                     fields.append(CatalogField(f"{v.name}.{m['name']}", "measure", str(m.get("type") or "sum"),
-                                               _label(m), str(m.get("description") or "")[:200],
-                                               tuple(dict.fromkeys([*_synonyms(m), *gov]))[:8]))
+                                               _label(m), str(m.get("description") or "")[:200], vocab(m, gov)))
         if not any(f.kind == "measure" for f in fields):
             continue
         out.append(CatalogExplore(

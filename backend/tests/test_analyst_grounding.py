@@ -216,9 +216,18 @@ def test_a_metric_another_dataset_names_word_for_word_is_a_choice():
     p = Plan(explore=sales, dimensions=[], measures=["i.revenue"])
     # each choice carries the Dataset it pins, so the person's pick re-asks THAT source
     assert other_source_named(p, "Xu hướng doanh số theo tháng", [sales, commerce]) == [
-        {"label": "Revenue — Sales", "dataset_id": 1}, {"label": "Doanh số — Commerce", "dataset_id": 2}]
-    # "doanh thu" only shares a word with "Doanh số": not a second match
-    assert other_source_named(p, "Doanh thu các nhóm sản phẩm theo tháng", [sales, commerce]) == []
+        {"label": "Revenue — Sales", "dataset_id": 1, "verbatim": False},
+        {"label": "Doanh số — Commerce", "dataset_id": 2, "verbatim": True}]
+    # PO 2026-10-22 (changed on purpose): "doanh thu" names NEITHER metric word for
+    # word; the plan reached "Revenue" only through the model's bridge while the
+    # person can read another sum metric - the source is not picked silently.
+    both = other_source_named(p, "Doanh thu các nhóm sản phẩm theo tháng", [sales, commerce])
+    assert [o["dataset_id"] for o in both] == [1, 2] and not any(o["verbatim"] for o in both)
+    # a metric the question names word for word stays: nothing to ask
+    named = Plan(explore=commerce, dimensions=[], measures=["l.net_sales"])
+    assert other_source_named(named, "Doanh số theo tháng", [sales, commerce]) == []
+    # no other Dataset with a metric of that kind: nothing to ask
+    assert other_source_named(p, "Doanh thu theo tháng", [sales]) == []
 
 
 def test_a_filter_value_made_of_field_labels_is_dropped_and_the_breakdown_kept():
@@ -527,3 +536,45 @@ def test_a_narrower_period_is_left_as_planned():
               "Doanh số từ 2024 đến 2025", "Doanh số"):
         assert whole_year(q) is None, q
 
+
+
+# ── Intent constructions in grounding (sealed set 8 refusal classes) ───────────
+
+def test_request_framing_does_not_block_an_answerable_question():
+    p = _plan(["l.net_sales"], filters={"o.channel": {"operator": "eq", "value": "Cửa hàng"}},
+              covered={"doanh số": "l.net_sales", "kênh Cửa hàng": "o.channel"})
+    out, why = ground(p, "Anh chị cho em hỏi doanh số kênh Cửa hàng được bao nhiêu ạ?", covered=p.covered)
+    assert out is not None, why
+
+
+def test_top_n_becomes_an_ordered_limited_plan():
+    p = _plan(["l.net_sales"], ["c.region"], covered={"vùng": "c.region", "doanh số": "l.net_sales"})
+    out, why = ground(p, "Top 2 vùng có doanh số cao nhất", covered=p.covered)
+    assert out is not None, why
+    assert out.sorts == [{"field": "l.net_sales", "direction": "desc"}] and out.limit == 2
+    out, _ = ground(p, "3 vùng có doanh số thấp nhất", covered=p.covered)
+    assert out.sorts == [{"field": "l.net_sales", "direction": "asc"}] and out.limit == 3
+
+
+def test_a_ranking_without_exactly_one_breakdown_is_refused_not_listed():
+    none = _plan(["l.net_sales"], covered={"doanh số": "l.net_sales"})
+    out, why = ground(none, "Top 3 doanh số cao nhất", covered=none.covered)
+    assert out is None and "xếp hạng" in why
+    two = _plan(["l.net_sales"], ["c.region", "o.channel"],
+                covered={"vùng": "c.region", "kênh": "o.channel", "doanh số": "l.net_sales"})
+    out, why = ground(two, "Top 3 vùng và kênh có doanh số cao nhất", covered=two.covered)
+    assert out is None and "xếp hạng" in why
+
+
+def test_a_governed_synonym_names_a_breakdown_and_an_ungoverned_one_does_not():
+    gov = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="l",
+                         source_type="postgresql", label="C", fields=[
+                             CatalogField("l.net_sales", "measure", "sum", "Doanh số"),
+                             CatalogField("c.region", "dimension", "string", "Vùng", synonyms=("miền", "khu vực"))])
+    p = Plan(explore=gov, dimensions=["c.region"], measures=["l.net_sales"],
+             covered={"doanh số": "l.net_sales", "miền": "c.region"})
+    out, why = ground(p, "Doanh số theo miền", covered=p.covered)
+    assert out is not None and out.dimensions == ["c.region"], why
+    p2 = _plan(["l.net_sales"], ["c.region"], covered={"doanh số": "l.net_sales", "miền": "c.region"})
+    out, why = ground(p2, "Doanh số theo miền", covered=p2.covered)     # FIELDS has no governed "miền"
+    assert out is None and "miền" in why

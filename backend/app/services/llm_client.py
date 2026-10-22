@@ -94,28 +94,26 @@ def _call_openai(
 
     rid = _budget.reserve("openai", model, system, prompt, max_tokens)  # inert unless a test budget is set
     try:
-        resp = httpx.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={
-                "model": model,
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
-                "max_tokens": max_tokens,
-                "temperature": 0.2,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=timeout,
-        )
+        with _budget.metered(rid):
+            resp = httpx.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
+                    "max_tokens": max_tokens,
+                    "temperature": 0.2,
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=timeout,
+            )
         resp.raise_for_status()
+        body = resp.json()
     except Exception as exc:
-        # An error after sending may still be billed: the reservation is settled
-        # at its WORST case rather than released (no measured usage exists).
-        if rid is not None:
-            _budget.settle(rid, "openai", model, {"prompt_tokens": int(
-                (len(system or "") + len(prompt or "")) / _budget.CHARS_PER_TOKEN_FLOOR),
-                "completion_tokens": max_tokens}, error=type(exc).__name__)
+        # An error after sending may still be billed and no usage exists: the
+        # call is recorded UNKNOWN at its worst case, never as free.
+        _budget.settle(rid, "openai", model, {}, error=type(exc).__name__)
         raise
-    body = resp.json()
     parsed = _parse_json_object(body["choices"][0]["message"]["content"])
     _budget.settle(rid, "openai", model, body.get("usage") or {}, raw=parsed, model_returned=str(body.get("model") or ""))
     return parsed

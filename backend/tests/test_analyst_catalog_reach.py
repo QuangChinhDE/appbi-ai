@@ -100,3 +100,36 @@ def test_governed_metric_names_are_the_measures_synonyms_only_when_approved():
     assert "order_items.orders" not in got and "orders" not in got     # Draft: not official
     assert got["units"] == ("Số lượng", "sản lượng")                     # scalar fallback
     assert "Khác" not in got.get("revenue", ())                          # another Dataset's metric
+
+
+def test_only_approved_glossary_terms_are_a_fields_vocabulary():
+    """PO 2026-10-22: "miền" must come from GOVERNED business metadata, not from a
+    guess that every region means the same. A dimension or measure links glossary
+    terms; only Approved terms add words."""
+    from app.models.governance import Glossary, GlossaryTerm
+    from app.services.analyst.catalog import glossary_words
+
+    engine = create_engine("sqlite://", future=True)
+    Base.metadata.create_all(engine, tables=[Glossary.__table__, GlossaryTerm.__table__])
+    with Session(engine) as s:
+        g = Glossary(name="sales", display_name="Sales")
+        s.add(g)
+        s.flush()
+        s.add_all([GlossaryTerm(glossary_id=g.id, name="region", display_name="Vùng", synonyms=["miền", "khu vực"],
+                                status="Approved"),
+                   GlossaryTerm(glossary_id=g.id, name="draft", display_name="Nháp", synonyms=["thử"], status="Draft"),
+                   GlossaryTerm(glossary_id=g.id, name="old", display_name="Cũ", synonyms=["xưa"], status="Deprecated")])
+        s.commit()
+        got = glossary_words(s, {"sales.region", "sales.draft", "sales.old", "sales.missing"})
+    assert got == {"sales.region": ("Vùng", "miền", "khu vực")}
+
+
+def test_a_dimension_keeps_its_glossary_link_and_others_stay_unchanged():
+    from app.schemas.semantic import SemanticViewUpdate
+
+    u = SemanticViewUpdate(dimensions=[{"name": "region", "type": "string",
+                                        "glossary_terms": [{"fqn": "sales.region", "label": "Vùng"}]},
+                                       {"name": "channel", "type": "string"}])
+    dumped = u.model_dump(exclude_unset=True)["dimensions"]
+    assert dumped[0]["glossary_terms"] == [{"fqn": "sales.region", "label": "Vùng"}]
+    assert "glossary_terms" not in dumped[1]     # an unlinked dimension's stored shape is unchanged

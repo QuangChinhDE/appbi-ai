@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional
 
 from app.services.analyst import narrative
 from app.services.analyst.catalog import discover
-from app.services.analyst.planner import (Clarify, Plan, Unsupported, describe_plan, plan as make_plan, retarget,
+from app.services.analyst.planner import (_describe_filter, Clarify, Plan, Unsupported, describe_plan, plan as make_plan, retarget,
                                           validate)
 from app.services.governed_query.principal import GovernedRefusal
 
@@ -46,7 +46,8 @@ def ledger_from_settings():
 def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] = None,
         drop_consent: Optional[str] = None, turn_id: Optional[str] = None,
         ceiling_dataset_ids: Optional[list[int]] = None, consented_plan: Optional[dict] = None,
-        dataset_id: Optional[int] = None, value_choice: Optional[dict] = None) -> dict:
+        dataset_id: Optional[int] = None, value_choice: Optional[dict] = None,
+        choice_token: Optional[str] = None) -> dict:
     """One turn. `ceiling_dataset_ids` scopes the Analyst to a set of Datasets
     (a workspace); it can only NARROW what the person may read, never widen it."""
     from app.core.config import settings
@@ -68,6 +69,16 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     steps = []
 
     catalog = discover(authz)
+    chosen = None
+    if choice_token:
+        # A metric/source the person picked from THIS server's clarification. The
+        # token binds user, question, Dataset, explore, metric and the catalog
+        # version, and expires; the pick is re-authorised against THIS turn's
+        # catalog, so replaying it can never widen what the person may read.
+        chosen, why = verify_choice(choice_token, user_id=str(user.id), question=question, catalog=catalog)
+        if chosen is None:
+            return {"status": "unsupported", "turn_id": turn_id or uuid.uuid4().hex, "steps": [], "message": why}
+        dataset_id = chosen["dataset_id"]
     if dataset_id is not None:
         # The person chose the source (a clarification between datasets): only that
         # Dataset's entries, and only if this turn's catalog still offers it.
@@ -108,10 +119,15 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         # changes, and the value is checked against the data again before the query.
         outcome = _apply_value_choice(value_choice, catalog)
     else:
-        outcome = make_plan(question, catalog, previous=previous, complete=deps.complete)
+        outcome = make_plan(question, catalog, previous=previous, complete=deps.complete,
+                            chosen=({"explore_id": chosen["explore_id"], "measure": chosen["measure"]}
+                                    if chosen and chosen.get("measure") else None))
     if isinstance(outcome, Clarify):
+        choices = [{"label": c["label"], "token": sign_choice(
+                        user_id=str(user.id), question=question, catalog=full_catalog,
+                        explore_id=c["explore_id"], measure=c["measure"])} for c in outcome.choices]
         return {"status": "clarify", "turn_id": turn_id, "steps": steps, "message": outcome.question,
-                "options": outcome.options}
+                "options": outcome.options, "choices": [c for c in choices if c["token"]]}
     if isinstance(outcome, Unsupported):
         return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": outcome.reason}
     p: Plan = retarget(outcome, full_catalog)
@@ -122,6 +138,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         carried = [*(previous or {}).get("dimensions", []), *(previous or {}).get("measures", []),
                    *((previous or {}).get("filters") or {}).keys()] if isinstance(previous, dict) else []
         p, why = ground(p, question, carried=carried, covered=p.covered,
+                        chosen_measure=(chosen or {}).get("measure"),
                         previous=previous if isinstance(previous, dict) else None,
                         value_lookup=lambda q, words, used: _find_value_filter(authz, principal, p, q, words,
                                                                                used, settings, turn_id, deps))
@@ -132,14 +149,17 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
 
         both = (other_source_named(p, question, prompt_catalog(full_catalog))
                 if prev_explore is None and dataset_id is None else [])
-        verbatim = {o["dataset_id"] for o in both[1:]}
-        if len(verbatim) == 1:
+        verbatim = {o["dataset_id"] for o in both[1:] if o.get("verbatim")}
+        if len(verbatim) == 1 and all(o.get("verbatim") for o in both[1:]):
             # Another Dataset names the metric WORD FOR WORD while this plan reached
             # its metric only through the model's bridge: plan again on that Dataset
             # (holdout set 6: "doanh số" answered from another source's "Revenue").
             return ask(db, user, question, deps, turn_id=turn_id, ceiling_dataset_ids=ceiling_dataset_ids,
                        dataset_id=next(iter(verbatim)))
         if both:
+            for o in both[:6]:
+                o["token"] = sign_choice(user_id=str(user.id), question=question, catalog=full_catalog,
+                                         dataset_id=o["dataset_id"])
             return {"status": "clarify", "turn_id": turn_id, "steps": steps,
                     "options": [o["label"] for o in both[:6]], "sources": both[:6],
                     "message": "Câu hỏi khớp với chỉ số ở nhiều nguồn dữ liệu. Bạn muốn dùng nguồn nào?"}
@@ -172,10 +192,21 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
             # like a fact (holdout set 3: "Số khách hàng: 0"). The field's real values
             # are read through GQS (this person's rights, ledgered): each filter value
             # is replaced by the ONE real value matching it, or the person chooses.
+            values_of = lambda ref: gqs.execute(governed([ref], p.measures[:1], {}, [], {}, 200))  # noqa: E731
             checked, options = _check_filter_values(
-                p, lambda ref: gqs.execute(governed([ref], p.measures[:1], {}, [], {}, 200)),
+                p, values_of,
                 lambda ref, text: gqs.execute(governed([ref], p.measures[:1],
                                                        {ref: {"operator": "contains", "value": text}}, [], {}, 50)))
+            if checked is None:
+                moved = _relocate_values(p, values_of)
+                if moved is not None:
+                    # Sealed set 8: "Laptop 14" written on the product ID; it is a real
+                    # value of the product NAME, the one field that has it exactly.
+                    steps.append({"step": "verify", "detail": "Giá trị lọc thuộc trường khác: " + "; ".join(
+                        f"{labels_of(moved).get(r, r)} = {c['value']}" for r, c in moved.filters.items()
+                        if r not in p.filters)})
+                    p = moved
+                    checked, options = _check_filter_values(p, values_of)
             if checked is None:
                 return {"status": "clarify", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
                         "message": "Giá trị bạn lọc không có trong dữ liệu. Bạn muốn chọn giá trị nào?",
@@ -209,11 +240,20 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
                 "message": no_match_message(p), "evidence": {"query_id": ev.query_id}}
     time_ref = next(iter(p.time_grains), None)
+    order = _ranking_order(p)
+    if p.limit and result.truncated:
+        # A top N read from a result cut at the row bound is not the top N.
+        steps.append({"step": "verify", "detail": "kết quả vượt giới hạn dòng"})
+        return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
+                "message": "Kết quả vượt giới hạn dòng nên không xếp hạng được chính xác; hãy thu hẹp câu hỏi.",
+                "evidence": {"query_id": ev.query_id}}
+    if order and not time_ref and len([c for c in columns if c["role"] == "dimension"]) == 1:
+        rows = _ordered(rows, columns, p, order)
     story = narrative.describe(columns, rows, time_ref=time_ref, truncated=result.truncated,
                                grain=p.time_grains.get(time_ref) if time_ref else None,
-                               period=_asked_period(p, time_ref))
+                               period=_asked_period(p, time_ref), order=order, top=p.limit)
     steps.append({"step": "verify", "detail": "; ".join(c["detail"] for c in story["checks"])})
-    draft = None if p.filters else narrative.chart_draft(p, draft_title(question))
+    draft = None if (p.filters or p.limit) else narrative.chart_draft(p, draft_title(question))
     return {
         "status": "answered", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
         "answer": story, "columns": columns, "rows": rows, "truncated": result.truncated,
@@ -222,6 +262,8 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
             "explore_id": p.explore.explore_id, "datasets": list(ev.datasets), "dialect": ev.dialect,
             "sql_fingerprint": ev.sql_fingerprint[:16], "policy_fingerprint": ev.policy_fingerprint[:16],
             "semantic_epoch": ev.semantic_epoch, "filters_applied": list(ev.filters_applied),
+            # the same filters as the person reads them (label, operator, value), not internal refs
+            "filters_described": [_describe_filter(labels_of(p).get(r, r), c) for r, c in p.filters.items()],
             "filters_dropped": list(ev.filters_dropped), "bounds": ev.bounds.as_dict(),
             "rows_returned": ev.rows_returned, "duration_ms": ev.duration_ms, "freshness": ev.freshness.mode,
             "measures": [labels.get(m, m) for m in p.measures],
@@ -279,6 +321,27 @@ def _find_value_filter(authz, principal, p: Plan, question: str, unexplained: se
     return hits[0] if len({h[0] for h in hits}) == 1 and len(hits) == 1 else None
 
 
+def _ranking_order(p) -> Optional[str]:
+    """'desc'/'asc' when the plan orders its groups by a measure (an asked ranking),
+    'desc' for a plain one-breakdown answer (the table reads in ranking order), else None."""
+    s = next((s for s in p.sorts if s.get("field") in p.measures), None)
+    if s is not None:
+        return "asc" if s.get("direction") == "asc" else "desc"
+    return "desc" if p.measures and len(p.dimensions) == 1 and not p.time_grains else None
+
+
+def _ordered(rows: list, columns: list, p, order: str) -> list:
+    """Rows ordered by the first measure (a NULL last, never as 0), cut to the asked N."""
+    m = next((c["name"] for c in columns if c["role"] == "measure"), None)
+    if m is None:
+        return rows
+    known = [r for r in rows if isinstance(r.get(m), (int, float))]
+    unknown = [r for r in rows if not isinstance(r.get(m), (int, float))]
+    known.sort(key=lambda r: r[m], reverse=(order == "desc"))
+    out = known + unknown
+    return out[:p.limit] if p.limit else out
+
+
 def _asked_period(p, time_ref):
     """The [from, to) range the question put on the trend's own time field, if any."""
     from datetime import date
@@ -310,6 +373,134 @@ def _can_save_chart(authz, user, p: Plan) -> bool:
 
 def labels_of(p: Plan) -> dict:
     return {f.ref: f.label for f in p.explore.fields}
+
+
+CHOICE_TTL_SECONDS = 15 * 60
+
+
+def _catalog_epoch(entries) -> str:
+    """A fingerprint of what the catalog offers for these explores: a renamed,
+    removed or retyped field makes an earlier pick stale."""
+    import hashlib
+    import json as _json
+
+    body = sorted((e.explore_id, e.dataset_id, sorted((f.ref, f.kind, f.type, f.label) for f in e.fields))
+                  for e in entries)
+    return hashlib.sha256(_json.dumps(body, ensure_ascii=False, default=str).encode()).hexdigest()[:24]
+
+
+def _qhash(question: str) -> str:
+    import hashlib
+    import unicodedata
+
+    return hashlib.sha256(unicodedata.normalize("NFC", question.strip()).encode()).hexdigest()[:24]
+
+
+def _mac(body: bytes) -> str:
+    import hashlib
+    import hmac
+
+    from app.core.config import settings
+
+    key = ("analyst-choice:" + str(settings.SECRET_KEY)).encode()
+    return hmac.new(key, body, hashlib.sha256).hexdigest()
+
+
+def sign_choice(*, user_id: str, question: str, catalog, dataset_id: Optional[int] = None,
+                explore_id: Optional[int] = None, measure: Optional[str] = None) -> Optional[str]:
+    """A signed, expiring handle for one clarification option."""
+    import base64
+    import json as _json
+    import time
+
+    if explore_id is not None:
+        ex = next((c for c in catalog if c.explore_id == explore_id), None)
+        if ex is None:
+            return None
+        dataset_id = ex.dataset_id
+        entries = [ex]
+    else:
+        entries = [c for c in catalog if c.dataset_id == dataset_id]
+        if not entries:
+            return None
+    payload = {"u": user_id, "q": _qhash(question), "d": int(dataset_id), "e": explore_id, "m": measure,
+               "v": _catalog_epoch(entries), "x": int(time.time()) + CHOICE_TTL_SECONDS}
+    body = base64.urlsafe_b64encode(_json.dumps(payload, separators=(",", ":")).encode())
+    return body.decode() + "." + _mac(body)
+
+
+def verify_choice(token: str, *, user_id: str, question: str, catalog):
+    """(choice, None) or (None, reason). Checks signature, owner, question, expiry,
+    that the Dataset/explore/metric are still in THIS turn's catalog, and that the
+    catalog has not changed since the option was offered."""
+    import base64
+    import hmac
+    import json as _json
+    import time
+
+    try:
+        body, mac = str(token).rsplit(".", 1)
+        if not hmac.compare_digest(mac, _mac(body.encode())):
+            raise ValueError
+        payload = _json.loads(base64.urlsafe_b64decode(body.encode()))
+    except (ValueError, TypeError):
+        return None, "Lựa chọn không hợp lệ."
+    if payload.get("u") != user_id or payload.get("q") != _qhash(question):
+        return None, "Lựa chọn không thuộc câu hỏi này của bạn."
+    if int(payload.get("x") or 0) < time.time():
+        return None, "Lựa chọn đã hết hạn; hãy hỏi lại."
+    if payload.get("e") is not None:
+        entries = [c for c in catalog if c.explore_id == payload["e"]]
+        if not entries or payload.get("m") not in {f.ref for f in entries[0].fields if f.kind == "measure"}:
+            return None, "Nguồn hoặc chỉ số bạn chọn không còn trong phạm vi bạn được dùng."
+    else:
+        entries = [c for c in catalog if c.dataset_id == payload.get("d")]
+        if not entries:
+            return None, "Nguồn bạn chọn không còn trong phạm vi bạn được dùng."
+    if _catalog_epoch(entries) != payload.get("v"):
+        return None, "Mô hình dữ liệu đã thay đổi từ lúc bạn được hỏi lại; hãy hỏi lại."
+    return {"dataset_id": int(payload["d"]), "explore_id": payload.get("e"), "measure": payload.get("m")}, None
+
+
+def _relocate_values(p: Plan, values_of) -> Optional[Plan]:
+    """The plan with each text filter whose values are not real on ITS field moved to
+    the ONE other text field of the explore where every value is real exactly
+    (operator kept), or None. Each field read is governed and bounded."""
+    from dataclasses import replace as _replace
+
+    from app.services.analyst.catalog import is_identifier
+    from app.services.analyst.grounding import fold
+
+    def real(ref) -> set:
+        try:
+            res = values_of(ref)
+        except GovernedRefusal:
+            return set()
+        col = next((c.name for c in res.columns if c.ref == ref), None)
+        return {fold(str(r.get(col))).strip() for r in res.rows if col and r.get(col) is not None}
+
+    filters, moved_any = {}, False
+    for ref, cond in p.filters.items():
+        vals = cond.get("value") if isinstance(cond.get("value"), list) else [cond.get("value")]
+        if cond.get("operator") not in ("eq", "in", "ne", "not_in") or not all(isinstance(v, str) for v in vals):
+            filters[ref] = cond
+            continue
+        wanted = {fold(v).strip() for v in vals}
+        if wanted <= real(ref):
+            filters[ref] = cond
+            continue
+        homes = [f.ref for f in p.explore.fields[:60] if f.kind == "dimension" and f.type == "string"
+                 and f.ref != ref and f.ref not in p.filters and not is_identifier(f)][:8]
+        hits = [h for h in homes if wanted <= real(h)]
+        if len(hits) != 1:
+            return None
+        filters[hits[0]] = cond
+        moved_any = True
+    if not moved_any:
+        return None
+    out = _replace(p, filters=filters, dimensions=[d for d in p.dimensions if d not in p.filters or d in filters])
+    out.interpretation = describe_plan(out)
+    return out
 
 
 def _unmatched_filter(p: Plan, real: list) -> Optional[str]:

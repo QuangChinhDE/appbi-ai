@@ -45,7 +45,8 @@ def pct(a: Optional[float], b: Optional[float]) -> Optional[float]:
 
 def describe(columns: list[dict], rows: list[dict], *, time_ref: Optional[str], truncated: bool,
              grain: Optional[str] = None, today: Optional[date] = None,
-             period: Optional[tuple[date, date]] = None) -> dict:
+             period: Optional[tuple[date, date]] = None, order: Optional[str] = None,
+             top: Optional[int] = None) -> dict:
     """columns: [{name, ref, role, label}] in result order. `period` is the
     explicit range the question asked for ([from, to) on the time field): the
     trend then spans THAT range, not the default "recent" window."""
@@ -67,7 +68,7 @@ def describe(columns: list[dict], rows: list[dict], *, time_ref: Optional[str], 
     if time_col is not None:
         return _over_time(rows, m, time_col, cat_col, checks, grain or "month", today or date.today(), period)
     if cat_col is not None:
-        return _ranking(rows, m, cat_col, checks)
+        return _ranking(rows, m, cat_col, checks, order or "desc", top)
     total = _num(rows[0].get(m["name"]))
     return {"headline": f"{m['label']}: {fmt(total)}.", "bullets": [],
             "facts": [{"claim": m["label"], "value": total}], "checks": checks}
@@ -237,19 +238,19 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
                         "partial": [_label(p, grain) for p in partial]}}
 
 
-def _leaders(known: list[tuple[str, float]]) -> list[str]:
-    """Every group holding the top value: a tie has no single "highest"."""
+def _leaders(known: list[tuple[str, float]], lowest: bool = False) -> list[str]:
+    """Every group holding the top (or bottom) value: a tie has no single "highest"."""
     if not known:
         return []
-    top = max(v for _, v in known)
+    top = (min if lowest else max)(v for _, v in known)
     return [k for k, v in known if abs(v - top) <= 1e-9 * max(1.0, abs(top))]
 
 
-def _ranking(rows, m, ccol, checks) -> dict:
+def _ranking(rows, m, ccol, checks, order: str = "desc", top: Optional[int] = None) -> dict:
     # A NULL measure is UNKNOWN, not zero: it is neither ranked nor summed.
     known = [(str(r.get(ccol["name"])), _num(r.get(m["name"]))) for r in rows]
     unknown = [k for k, v in known if v is None]
-    vals = sorted(((k, v) for k, v in known if v is not None), key=lambda kv: kv[1], reverse=True)
+    vals = sorted(((k, v) for k, v in known if v is not None), key=lambda kv: kv[1], reverse=(order != "asc"))
     if not vals:
         return {"headline": f"Không có giá trị {m['label']} nào để so sánh.", "bullets": [], "facts": [],
                 "checks": checks}
@@ -257,13 +258,19 @@ def _ranking(rows, m, ccol, checks) -> dict:
     bullets = [f"{k}: {fmt(v)}" + (f" ({v / total * 100:.1f}%)" if total else "") for k, v in vals[:5]]
     if unknown:
         bullets.append(f"Không có giá trị (không tính là 0): {', '.join(unknown[:5])}.")
-    lead = _leaders(vals)
-    if len(lead) == len(vals) and len(vals) > 1:
+    word = "thấp nhất" if order == "asc" else "cao nhất"
+    lead = _leaders(vals, lowest=(order == "asc"))
+    if top:
+        headline = (f"{len(vals)} {ccol['label']} có {m['label']} {word}: "
+                    + ", ".join(f"{k} ({fmt(v)})" for k, v in vals) + ".")
+        if len(vals) < top:
+            headline += f" Dữ liệu chỉ có {len(vals)} nhóm."
+    elif len(lead) == len(vals) and len(vals) > 1:
         headline = f"{m['label']} bằng nhau ở tất cả {len(vals)} nhóm ({fmt(vals[0][1])} mỗi nhóm)."
     elif len(lead) > 1:
-        headline = f"{m['label']} cao nhất (bằng nhau): {', '.join(lead)} ({fmt(vals[0][1])})."
+        headline = f"{m['label']} {word} (bằng nhau): {', '.join(lead)} ({fmt(vals[0][1])})."
     else:
-        headline = f"{m['label']} cao nhất: {vals[0][0]} ({fmt(vals[0][1])})."
+        headline = f"{m['label']} {word}: {vals[0][0]} ({fmt(vals[0][1])})."
     return {"headline": headline, "bullets": bullets,
             "facts": [{"claim": k, "value": v} for k, v in vals[:5]], "checks": checks}
 

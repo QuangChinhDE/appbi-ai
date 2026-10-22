@@ -34,6 +34,10 @@ async def lifespan(app: FastAPI):
     import logging
     logging.getLogger(__name__).info("Data directory: %s", settings.data_dir_path)
 
+    # Test-only AI spending cap: refuse unmetered paid AI requests (inert without a budget)
+    from app.services.llm_test_budget import install_guard
+    install_guard()
+
     # Anomaly detection daily scheduler (Phase 4)
     from app.services.anomaly_scheduler import startup as anomaly_scheduler_startup
     anomaly_scheduler_startup()

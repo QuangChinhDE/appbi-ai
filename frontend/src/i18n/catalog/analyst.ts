@@ -6,6 +6,8 @@ export const analystCatalog: ModuleCatalog = {
   en: {
     'analyst.title': 'Analyst',
     'analyst.previewLabel': 'Engineering Preview — NOT CERTIFIED',
+    'analyst.showEarlier': 'Show earlier questions ({{n}})',
+    'analyst.hideEarlier': 'Hide earlier questions',
     'analyst.feedback': 'Was this answer right?',
     'analyst.feedbackUp': 'Correct',
     'analyst.feedbackDown': 'Wrong or misleading',
@@ -61,6 +63,8 @@ export const analystCatalog: ModuleCatalog = {
   vi: {
     'analyst.title': 'Phân tích AI',
     'analyst.previewLabel': 'Bản xem trước kỹ thuật — CHƯA CHỨNG NHẬN',
+    'analyst.showEarlier': 'Xem các câu hỏi trước ({{n}})',
+    'analyst.hideEarlier': 'Ẩn các câu hỏi trước',
     'analyst.feedback': 'Câu trả lời này có đúng không?',
     'analyst.feedbackUp': 'Đúng',
     'analyst.feedbackDown': 'Sai hoặc gây hiểu nhầm',
