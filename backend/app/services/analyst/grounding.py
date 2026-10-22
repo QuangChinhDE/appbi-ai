@@ -224,7 +224,8 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
     filters = {}
     for ref, cond in plan.filters.items():
         vals = cond.get("value") if isinstance(cond.get("value"), list) else [cond.get("value")]
-        if ref in by_ref and all(syllables(v) <= label_words for v in vals if isinstance(v, str)):
+        texts = [v for v in vals if isinstance(v, str)]
+        if ref in by_ref and texts and all(syllables(v) <= label_words for v in texts):
             # The value is made of field LABELS, not data: "Trạng thái đơn eq Trạng thái
             # đơn"; holdout set 3: "đơn hoàn trả" from "Tiền hoàn trả" + "Trạng thái đơn".
             continue
