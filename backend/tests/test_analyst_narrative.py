@@ -146,3 +146,30 @@ def test_without_an_asked_range_recent_is_still_the_last_three_complete_periods(
     rows = [{"d": f"2025-{mo:02d}-01", "c": "a", "r": 10.0} for mo in range(1, 13)]
     story = describe(COLS, rows, time_ref="v.order_date", truncated=False, grain="month", today=AFTER)
     assert story["periods"]["window"] == ["2025-10", "2025-11", "2025-12"]
+
+
+RANK = [{"name": "c", "ref": "v.channel", "role": "dimension", "label": "Channel"},
+        {"name": "r", "ref": "v.orders", "role": "measure", "label": "Orders"}]
+
+
+def test_a_tie_has_no_single_highest():
+    """Dogfood real-model smoke 2026-10-22: three channels with 498 orders each were
+    headlined "highest: Cửa hàng (498)" - a winner that does not exist."""
+    story = describe(RANK, [{"c": "Cửa hàng", "r": 498}, {"c": "Đại lý", "r": 498}, {"c": "Online", "r": 498}],
+                     time_ref=None, truncated=False)
+    assert "cao nhất:" not in story["headline"] and "bằng nhau" in story["headline"]
+    story = describe(RANK, [{"c": "A", "r": 5}, {"c": "B", "r": 5}, {"c": "C", "r": 1}], time_ref=None, truncated=False)
+    assert "A, B" in story["headline"] and "bằng nhau" in story["headline"]
+
+
+def test_a_null_group_is_not_ranked_as_zero():
+    story = describe(RANK, [{"c": "A", "r": 5}, {"c": "B", "r": None}], time_ref=None, truncated=False)
+    assert story["headline"].startswith("Orders cao nhất: A")
+    assert all(f["claim"] != "B" for f in story["facts"])
+    assert any("B" in b and "không tính là 0" in b for b in story["bullets"])
+
+
+def test_a_clear_leader_is_still_named():
+    story = describe(RANK, [{"c": "A", "r": 5}, {"c": "B", "r": 3}], time_ref=None, truncated=False)
+    assert story["headline"] == "Orders cao nhất: A (5)."
+
