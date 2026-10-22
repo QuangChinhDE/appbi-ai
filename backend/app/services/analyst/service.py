@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from app.services.analyst import narrative
-from app.services.analyst.catalog import discover
+from app.services.analyst.catalog import datasets_named, discover
 from app.services.analyst.planner import (_describe_filter, Clarify, Plan, Unsupported, describe_plan, plan as make_plan, retarget,
                                           validate)
 from app.services.governed_query.principal import GovernedRefusal
@@ -119,6 +119,11 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         # changes, and the value is checked against the data again before the query.
         outcome = _apply_value_choice(value_choice, catalog)
     else:
+        named = datasets_named(catalog, question) if prev_explore is None and dataset_id is None else set()
+        if named and len(named) < len({c.dataset_id for c in catalog}):
+            # the person named these Datasets' metrics (or the Dataset): the planner
+            # chooses among them only; the rest of the catalog is not offered
+            catalog = [c for c in catalog if c.dataset_id in named]
         outcome = make_plan(question, catalog, previous=previous, complete=deps.complete,
                             chosen=({"explore_id": chosen["explore_id"], "measure": chosen["measure"]}
                                     if chosen and chosen.get("measure") else None))
@@ -338,8 +343,15 @@ def _ordered(rows: list, columns: list, p, order: str) -> list:
     known = [r for r in rows if isinstance(r.get(m), (int, float))]
     unknown = [r for r in rows if not isinstance(r.get(m), (int, float))]
     known.sort(key=lambda r: r[m], reverse=(order == "desc"))
+    if p.limit and len(known) > p.limit:
+        edge = known[p.limit - 1][m]
+        cut = p.limit
+        while cut < len(known) and known[cut][m] == edge:
+            cut += 1  # a tie at the cut is kept: "top 1" of a tie is every tied group
+        known = known[:cut]
+        return known
     out = known + unknown
-    return out[:p.limit] if p.limit else out
+    return out
 
 
 def _asked_period(p, time_ref):

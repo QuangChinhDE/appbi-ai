@@ -198,6 +198,28 @@ def discover(authz: Any, *, limit: int = 40) -> list[CatalogExplore]:
     return out
 
 
+def datasets_named(catalog: list[CatalogExplore], question: str) -> set[int]:
+    """Datasets the question names WORD FOR WORD: one of their metrics (label or
+    governed synonym, as a whole phrase) or the Dataset itself. Set 9 root cause:
+    for "doanh số" the model kept planning on another Dataset's English "Revenue"
+    and mixing fields of two Datasets; the person had named Rig Commerce's metric."""
+    import re as _re
+
+    from app.services.analyst.grounding import fold
+
+    q = " " + " ".join(w for w in _re.split(r"[^0-9a-z]+", fold(question)) if w) + " "
+
+    def phrase(t: str) -> str:
+        return " ".join(w for w in _re.split(r"[^0-9a-z]+", fold(t)) if w)
+
+    out: set[int] = set()
+    for e in catalog:
+        texts = [e.dataset_name] + [t for f in e.fields if f.kind == "measure" for t in (f.label, *f.synonyms)]
+        if any(p and f" {p} " in q for p in map(phrase, texts)):
+            out.add(e.dataset_id)
+    return out
+
+
 def is_identifier(f: CatalogField) -> bool:
     """A key column (one value per row/entity): grouping by it lists items, it
     does not summarise them."""

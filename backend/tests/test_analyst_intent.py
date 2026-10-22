@@ -32,7 +32,9 @@ def test_request_framing_is_removed_and_nothing_else(question, content):
     ("3 vùng có doanh số thấp nhất", {"direction": "asc", "n": 3}),
     ("Xếp hạng các sản phẩm theo số lượng bán năm 2025, từ cao xuống thấp", {"direction": "desc", "n": None}),
     ("Xếp hạng vùng theo doanh số từ thấp lên cao", {"direction": "asc", "n": None}),
-    ("Kênh nào tốn chi phí marketing nhiều nhất năm 2025?", {"direction": "desc", "n": None}),
+    # "kênh NÀO ... nhiều nhất" asks for one winner (PO 2026-10-22: a Top-N the question
+    # implies must be met; the server keeps ties at the cut)
+    ("Kênh nào tốn chi phí marketing nhiều nhất năm 2025?", {"direction": "desc", "n": 1}),
     ("Sản phẩm bán chạy nhất", {"direction": "desc", "n": None}),
 ])
 def test_a_ranking_is_an_obligation_with_direction_and_count(question, ranking):
@@ -67,6 +69,17 @@ def test_a_superlative_split_by_the_metric_is_still_a_ranking():
     assert i.ranking == {"direction": "desc", "n": 2}
     assert "don hang" in i.content and "nhat" not in i.content.split() and "nhieu" not in i.content.split()
     i = extract("Kênh nào có ít đơn hàng nhất")
-    assert i.ranking == {"direction": "asc", "n": None} and "don hang" in i.content
+    assert i.ranking == {"direction": "asc", "n": 1} and "don hang" in i.content
     assert extract("Số đơn có ít nhất 5 sản phẩm").ranking is None
+
+
+def test_constructions_with_no_data_meaning_are_recognised():
+    assert extract("Tổng doanh số từ trước tới nay là bao nhiêu?").content == "tong doanh so la bao nhieu"
+    assert "ty" not in extract("Năm 2025 công ty có tổng cộng bao nhiêu đơn hàng?").content.split()
+    assert "ngoai" not in extract("Doanh số các kênh ngoại trừ Đại lý").content.split()
+    # follow-up continuation words only count in a follow-up
+    assert extract("Chia tiếp theo nhóm hàng giúp mình", followup=True).content == "chia theo nhom hang"
+    assert "tiep" in extract("Chia tiếp theo nhóm hàng giúp mình").content.split()
+    # "doanh nghiệp" as a customer segment value is not the company
+    assert "doanh nghiep" in extract("Doanh số khách doanh nghiệp").content
 

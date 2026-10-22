@@ -133,3 +133,22 @@ def test_a_dimension_keeps_its_glossary_link_and_others_stay_unchanged():
     dumped = u.model_dump(exclude_unset=True)["dimensions"]
     assert dumped[0]["glossary_terms"] == [{"fqn": "sales.region", "label": "Vùng"}]
     assert "glossary_terms" not in dumped[1]     # an unlinked dimension's stored shape is unchanged
+
+
+def test_the_planner_is_offered_only_the_datasets_the_question_names():
+    """Set 9 root cause: "doanh số" questions were planned on another Dataset's English
+    "Revenue" (and mixed two Datasets' fields). A Dataset whose metric (label or governed
+    synonym, whole phrase) or whose name the question says is what the planner sees."""
+    from app.services.analyst.catalog import CatalogExplore, CatalogField, datasets_named
+
+    def ex(i, ds, name, label, syn=()):
+        return CatalogExplore(explore_id=i, model_id=i, dataset_id=ds, dataset_name=name, dataset_table_id=i,
+                              base_view="v", source_type="postgresql", label=name,
+                              fields=[CatalogField(f"v{i}.m", "measure", "sum", label, synonyms=syn)])
+    cat = [ex(1, 1, "Rig Sales", "Revenue"), ex(2, 2, "Rig Commerce", "Doanh số"),
+           ex(3, 3, "Rig Marketing", "Chi phí marketing", ("ngân sách quảng cáo",))]
+    assert datasets_named(cat, "Doanh số theo vùng năm 2025") == {2}
+    assert datasets_named(cat, "Revenue Rig Sales theo quý") == {1}
+    assert datasets_named(cat, "Ngân sách quảng cáo theo tháng") == {3}          # a governed synonym
+    assert datasets_named(cat, "Doanh thu theo tháng") == set()                   # names none: all offered
+    assert datasets_named(cat, "Doanh số và chi phí marketing") == {2, 3}         # several: the planner/clarify decide

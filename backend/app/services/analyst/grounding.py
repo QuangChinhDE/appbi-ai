@@ -337,7 +337,7 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
 
     # Constructions of the request (framing, ranking, quantity) are recognised as a
     # whole; what grounding must explain is the rest. A ranking is an obligation.
-    intent = extract(question, chosen_metric=bool(chosen_measure))
+    intent = extract(question, chosen_metric=bool(chosen_measure), followup=isinstance(previous, dict))
     q = syllables(intent.content)
     qf = intent.content
     carried = set(carried)

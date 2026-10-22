@@ -40,6 +40,14 @@ _SUPER = re.compile(r"\b(?:ban\s+)?(cao|lon|nhieu|chay|thap|nho|it)\s+(?:\w+\s+)
 _RANK = re.compile(r"\bxep hang\b")
 _ORDER_DESC = re.compile(r"\btu (?:cao|lon|nhieu) (?:xuong|den|toi) (?:thap|nho|it)\b")
 _ORDER_ASC = re.compile(r"\btu (?:thap|nho|it) (?:len|den|toi) (?:cao|lon|nhieu)\b")
+# "từ trước tới nay", "từ đầu đến giờ", "toàn thời gian": the whole history, i.e. no period
+_ALL_TIME = re.compile(r"\b(?:tu (?:truoc|dau|xua) (?:toi|den) (?:nay|gio)|toan (?:thoi gian|bo thoi gian)|tat ca cac nam)\b")
+# who the figures are about: the company itself ("của công ty", "bên mình") - not a field
+_SUBJECT = re.compile(r"\b(?:cua )?(?:cong ty|ben minh|chung ta|doanh nghiep minh)\b(?! \w+ (?:nghiep|hang))")
+# exclusion markers: the negation obligation (grounding) checks the plan carries them
+_EXCLUDE = re.compile(r"\b(?:ngoai tru|loai tru|loai bo)\b")
+# follow-up continuation: "chia tiếp", "thêm ... vào (nữa)", "còn ... thì sao"
+_CONTINUE = re.compile(r"\b(?:tiep|them|vao|nua|thi sao|con lai|con)\b")
 _QUANTITY = re.compile(r"\b(?:bao nhieu|may|so)\s+(?:tien|cai|chiec|lan|luot)\b")
 _DESC_WORDS = {"cao", "lon", "nhieu", "chay"}
 # An evaluative superlative ("tốt nhất", "kém nhất") has no meaning of its own: only
@@ -59,12 +67,17 @@ class Intent:
     consumed: list[str] = field(default_factory=list)
 
 
+def m_kind_superlative(consumed: list[str]) -> bool:
+    return any("nhat" in c for c in consumed)
+
+
 def _norm(question: str) -> str:
     return " ".join(w for w in re.split(r"[^0-9a-z]+", fold(question)) if w)
 
 
-def extract(question: str, *, chosen_metric: bool = False) -> Intent:
+def extract(question: str, *, chosen_metric: bool = False, followup: bool = False) -> Intent:
     text = _norm(question)
+    which_one = bool(re.search(r"\bnao\b", text))  # "kênh NÀO ... nhiều nhất": one winner asked
     consumed: list[str] = []
 
     def cut(rx, s):
@@ -118,7 +131,16 @@ def extract(question: str, *, chosen_metric: bool = False) -> Intent:
     if m:
         direction = direction or "desc"
     if direction:
+        if not n and which_one and m_kind_superlative(consumed):
+            n = 1  # "which X ... most": the top one (ties kept by the server)
         ranking = {"direction": direction, "n": n if n and n > 0 else None}
+    for rx in (_ALL_TIME, _SUBJECT, _EXCLUDE):
+        while True:
+            text, m = cut(rx, text)
+            if not m:
+                break
+    if followup:
+        text = " ".join(w for w in text.split() if not _CONTINUE.fullmatch(w) and w != "sao")
     quantity = False
     while True:
         text, m = cut(_QUANTITY, text)

@@ -628,3 +628,17 @@ def test_a_follow_up_keeps_the_previous_period_it_does_not_name():
                       carried=["o.channel", "l.net_sales", "c.region"])
     assert out.filters == {"c.region": {"operator": "eq", "value": "Miền Trung"}}, why
 
+
+
+def test_a_tie_at_the_top_n_cut_is_kept_never_an_arbitrary_winner():
+    from app.services.analyst.service import _ordered
+
+    cols = [{"name": "c", "ref": "v.c", "role": "dimension"}, {"name": "m", "ref": "v.m", "role": "measure"}]
+    rows = [{"c": "A", "m": 5}, {"c": "B", "m": 9}, {"c": "C", "m": 9}, {"c": "D", "m": None}]
+    p = _plan(["l.net_sales"], ["o.channel"])
+    p.limit = 1
+    assert [r["c"] for r in _ordered(rows, cols, p, "desc")] == ["B", "C"]      # both tied winners
+    p.limit = 2
+    assert [r["c"] for r in _ordered(rows, cols, p, "desc")] == ["B", "C"]
+    p.limit = None
+    assert [r["c"] for r in _ordered(rows, cols, p, "desc")] == ["B", "C", "A", "D"]  # NULL last, never as 0
