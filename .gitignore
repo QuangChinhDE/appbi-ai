@@ -537,6 +537,7 @@ integrations/appbi-mcp/.venv/
 !backend/tests/test_analyst_planner.py
 !backend/tests/test_analyst_catalog_reach.py
 !backend/tests/test_analyst_grounding.py
+!backend/tests/test_intelligence_gqs_date_range_pg.py
 !backend/tests/test_intelligence_gqs_bigquery_runtime.py
 !backend/tests/test_intelligence_gqs_ledger_schema_pg.py
 !backend/tests/test_intelligence_gqs_mysql_runtime.py

@@ -206,3 +206,28 @@ def test_without_explore_mysql_is_never_touched(mysql_world, monkeypatch):
     with pytest.raises(GovernedRefusal) as exc:
         gqs.execute(_req(mysql_world, p))
     assert exc.value.code == "not_authorized" and not touched
+
+
+def test_a_date_range_on_mysql_includes_from_and_excludes_to(mysql_world):
+    """The governed `date_range` on a real MySQL DATE column: [2026-03-01,
+    2026-05-15) holds the 03-15 and 04-15 rows and NOT the 05-15 one."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.governed_query import GovernedQueryRequest, RelationRef, SemanticAsk
+
+    view = mysql_world["views"]["sales"]
+    view.dimensions = [{**d, "source_type": "date"} if d["name"] == "order_date" else d for d in view.dimensions]
+    flag_modified(view, "dimensions")
+    mysql_world["db"].commit()
+    gqs, p = _service(mysql_world, "owner")
+    v = view.name
+    res = gqs.execute(GovernedQueryRequest(
+        principal=p, relation=RelationRef(kind="semantic_explore", id=mysql_world["explores"]["sales"].id),
+        ask=SemanticAsk(dimensions=(f"{v}.region",), measures=(f"{v}.revenue",), filters={
+            f"{v}.order_date": {"operator": "date_range", "value": {"from": "2026-03-01", "to": "2026-05-15"}}})))
+    oracle = {}
+    for _id, region, amount, d in ROWS:
+        if "2026-03-01" <= d < "2026-05-15":
+            oracle[region] = oracle.get(region, 0.0) + amount
+    got = {r[f"{v}_region"]: float(r[f"{v}_revenue"]) for r in res.rows}
+    assert got == oracle and sum(oracle.values()) > 0

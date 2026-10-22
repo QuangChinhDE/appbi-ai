@@ -51,6 +51,13 @@ _BOUNDED_SOURCES = frozenset({"postgresql", "mysql", "bigquery"})
 _FILTER_OPERATORS = frozenset({"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in",
                                "contains", "starts_with", "ends_with"})
 _GRAINS = frozenset({"day", "week", "month", "quarter", "year"})
+#: The one governed time-range operator. `between` stays refused (test_r4): the
+#: engine's BETWEEN is inclusive on both ends over the raw value, which drops most
+#: of the last day of a TIMESTAMP and ignores the calendar timezone. `date_range`
+#: has ONE meaning: {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}, `from` included,
+#: `to` EXCLUDED, on a CERTIFIED date field only (declared date, physically DATE).
+DATE_RANGE = "date_range"
+DATE_RANGE_MAX_DAYS = 366 * 10
 
 #: Refusal code -> the status the audit ledger records. Anything not named here
 #: is a plain refusal; `timeout` and `cancelled` are their own outcomes because
@@ -61,6 +68,24 @@ _AUDIT_STATUS = {"timeout": "timeout", "cancelled": "cancelled"}
 
 def _sha(obj: Any) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _checked_date_range(ref, value) -> dict:
+    """{"from": ISO date, "to": ISO date}, from < to (to excluded), a bounded span.
+    Nothing else is accepted: no times, no open ends, no extra keys."""
+    import datetime as _dt
+
+    bad = GovernedRefusal("invalid_filter", "Khoảng thời gian không hợp lệ.", {"field": str(ref), "operator": DATE_RANGE})
+    if not isinstance(value, dict) or set(value) != {"from", "to"}:
+        raise bad
+    try:
+        lo, hi = (_dt.date.fromisoformat(str(value["from"])), _dt.date.fromisoformat(str(value["to"])))
+    except ValueError:
+        raise bad from None
+    if len(str(value["from"])) != 10 or len(str(value["to"])) != 10 or not lo < hi \
+            or (hi - lo).days > DATE_RANGE_MAX_DAYS:
+        raise bad
+    return {"from": lo.isoformat(), "to": hi.isoformat()}
 
 
 class GovernedQueryService:
@@ -166,7 +191,8 @@ class GovernedQueryService:
         dialect = _dialect_for_ds_type(ds_type)
         bounds = effective_bounds(request.requested_bounds)
 
-        sql, out_columns, engine = self._compile(explore, ask, filters, time_grains, dialect, bounds)
+        compile_filters = self._certified_date_ranges(filters, dataset_ids)
+        sql, out_columns, engine = self._compile(explore, ask, compile_filters, time_grains, dialect, bounds)
         from app.services.governed_query import consent as _consent
 
         dropped = [dict(d) for d in (getattr(engine, "_propagation_drops", None) or []) if isinstance(d, dict)]
@@ -335,6 +361,9 @@ class GovernedQueryService:
             if not isinstance(ref, str) or not isinstance(cond, dict):
                 raise GovernedRefusal("invalid_filter", "Bộ lọc không hợp lệ.", {"field": str(ref)})
             op, value = cond.get("operator"), cond.get("value")
+            if op == DATE_RANGE:
+                out[ref] = {"operator": DATE_RANGE, "value": _checked_date_range(ref, value)}
+                continue
             if op not in _FILTER_OPERATORS:
                 raise GovernedRefusal("invalid_filter", "Phép lọc này không được hỗ trợ trong truy vấn có quản trị.",
                                       {"field": ref, "operator": str(op)})
@@ -426,6 +455,42 @@ class GovernedQueryService:
                 {"explore_id": explore.id},
             )
         return ds, table
+
+    def _certified_date_ranges(self, filters: dict, dataset_ids) -> dict:
+        """Each `date_range` becomes the engine's inclusive `date_between`
+        [from, to - 1 day], which is EXACT for a DATE value and only for one. The
+        field must be a dimension of a view of these Datasets, declared `date` and
+        physically DATE; anything else (a TIMESTAMP, whose day depends on the
+        calendar timezone; a date declared over text; an unknown physical type) is
+        refused, never approximated."""
+        import datetime as _dt
+
+        from app.models.dataset import DatasetTable
+        from app.models.semantic import SemanticView
+        from app.services.physical_type_map import family
+
+        out = {}
+        for ref, cond in filters.items():
+            if cond.get("operator") != DATE_RANGE:
+                out[ref] = cond
+                continue
+            view_name, _, col = str(ref).rpartition(".")
+            view = (self.db.query(SemanticView).join(DatasetTable, DatasetTable.id == SemanticView.dataset_table_id)
+                    .filter(SemanticView.name == view_name, DatasetTable.dataset_id.in_(list(dataset_ids))).first())
+            dim = next((d for d in (getattr(view, "dimensions", None) or [])
+                        if isinstance(d, dict) and d.get("name") == col), None)
+            declared = str((dim or {}).get("type") or "").lower()
+            physical = family((dim or {}).get("source_type"))
+            if dim is None or declared != "date" or physical != "date":
+                raise GovernedRefusal(
+                    "time_range_unsupported",
+                    "Khoảng thời gian chỉ áp được trên trường ngày đã chứng nhận (kiểu ngày, lưu dạng DATE).",
+                    {"field": ref, "declared": declared or None, "physical": physical},
+                )
+            lo = cond["value"]["from"]
+            hi = (_dt.date.fromisoformat(cond["value"]["to"]) - _dt.timedelta(days=1)).isoformat()
+            out[ref] = {"operator": "date_between", "value": [lo, hi]}
+        return out
 
     def _compile(self, explore, ask, filters: dict, time_grains: dict, dialect: str, bounds):
         """The SAME compile path chart and preview use, fed only the normalized

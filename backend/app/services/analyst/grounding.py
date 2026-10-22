@@ -305,8 +305,9 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
         vals = cond.get("value") if isinstance(cond.get("value"), list) else [cond.get("value")]
         for v in vals:
             explained |= syllables(v)
-    if grains:
-        explained |= _TIME | {w for w in q if w.isdigit()}
+    if grains or any(c.get("operator") == "date_range" for c in filters.values()):
+        # a period the plan groups by or filters to explains the time words and numbers
+        explained |= _TIME | {w for w in q if w.isdigit()} | {"den", "tu"}
     unexplained = q - explained
     if unexplained and value_lookup is not None:
         # The model may have left a value out ("doanh số theo tên sản phẩm của ngành

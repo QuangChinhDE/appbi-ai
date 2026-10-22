@@ -642,6 +642,10 @@ tests:
   analyst_grounding:
     run: "pytest backend/tests/test_analyst_grounding.py"
     locks: "a validated plan must answer the QUESTION: a metric the data lacks is refused, never substituted (profit, conversion rate, forecast); a filter the plan dropped is refused naming the words; an unasked breakdown (month, a numeric column) is removed; a label-as-value filter is removed; the model's phrase map bridges languages only for phrases really in the question and never against a Vietnamese label it shares nothing with; a follow-up keeps what it refines; a filter value is matched to exactly one real value (case/tone folded) or offered as a choice"
+  gqs_date_range_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_date_range_pg.py"
+    locks: "GQS date_range: {from, to} ISO dates, from INCLUDED, to EXCLUDED, only on a certified date field (declared date AND physically DATE); month, quarter, year, single day, year boundary and an empty year give the hand-computed totals; malformed, reversed, open, timed, non-ISO, impossible, over-span and between-shaped values are invalid_filter; an unknown, timestamp, datetime or text-backed field is time_range_unsupported; no access is not_authorized; between stays refused"
   analyst_catalog_reach:
     run: "pytest backend/tests/test_analyst_catalog_reach.py"
     locks: "the Analyst catalog offers every view the base can reach through the model relationships (multi-hop, the engine's own resolver), inside the explore's Dataset lineage only"

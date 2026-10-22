@@ -820,6 +820,7 @@ jobs:
             tests/test_intelligence_table_preview_http_pg.py \
             tests/test_intelligence_knowledge_quarantine_http_pg.py \
             tests/test_intelligence_gqs_execution_pg.py \
+            tests/test_intelligence_gqs_date_range_pg.py \
             tests/test_intelligence_gqs_cancel_pg.py \
             tests/test_intelligence_gqs_ledger_pg.py \
             tests/test_analyst_http_pg.py \

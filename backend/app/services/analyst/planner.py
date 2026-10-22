@@ -18,7 +18,8 @@ from typing import Any, Callable, Optional
 from app.services.analyst.catalog import CatalogExplore, is_time
 
 GRAINS = ("day", "week", "month", "quarter", "year")
-OPERATORS = ("eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains", "starts_with", "ends_with")
+OPERATORS = ("eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains", "starts_with", "ends_with",
+             "date_range")
 
 
 @dataclass
@@ -76,9 +77,10 @@ SYSTEM = (
     "covered (or return unsupported); never answer a different question. "
     "When previous_plan is given, the question refines it: keep its measures, dimensions and filters and "
     "change only what the question changes. "
-    "An explicit period in the question (năm 2025, quý 1/2026, tháng 3/2025) is answered by grouping: include the "
-    "time dimension in dimensions with that grain (year, quarter or month); the answer then names that period. "
-    "Do not filter dates: a date range is not available in governed queries yet. "
+    "An explicit period in the question (năm 2025, quý 2/2026, tháng 3/2025, từ 05/01/2025 đến 20/01/2025) is a "
+    "filter on the metric's date field: {ref:{\"operator\":\"date_range\",\"value\":{\"from\":\"2025-01-01\","
+    "\"to\":\"2026-01-01\"}}} where from is the first day INCLUDED and to is the day AFTER the last one (excluded). "
+    "Do not also group by that date unless the question asks for a breakdown over time. "
     "Do not invent date filters for words like 'recent'; return the trend and say so in interpretation."
 )
 
@@ -203,6 +205,8 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
         ref = resolve(raw_ref, dims)
         if ref is None or not isinstance(cond, dict) or cond.get("operator") not in OPERATORS:
             return Unsupported("Bộ lọc của kế hoạch không hợp lệ.")
+        if cond["operator"] == "date_range" and not is_time(dims[ref]):
+            return Unsupported(f"Trường “{dims[ref].label}” không phải trường ngày nên không lọc theo khoảng thời gian được.")
         filters[ref] = {"operator": cond["operator"], "value": cond.get("value")}
     sorts = []
     for s in raw.get("sorts") or []:
