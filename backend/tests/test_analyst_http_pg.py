@@ -539,7 +539,9 @@ def test_top_n_returns_exactly_n_groups_in_order_and_names_them(client, db, worl
     assert body["status"] == "answered", body
     col = {c["role"]: c["name"] for c in body["columns"]}
     assert [r[col["dimension"]] for r in body["rows"]] == ["Bắc", "Nam"]          # oracle: Bắc 150, Nam 30, Trung 20
-    assert body["plan"]["limit"] == 2 and body["chart_draft"] is None
+    assert body["plan"]["limit"] == 2
+    # no tie at the cut, one metric, one breakdown: the chart's LIMIT gives the same rows
+    assert body["chart_draft"]["config"]["styleConfig"]["dataLimit"] == 2
     assert "Bắc" in body["answer"]["headline"] and "Trung" not in body["answer"]["headline"]
     low = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
                       json={"question": "1 vùng có doanh thu thấp nhất"}).json()
