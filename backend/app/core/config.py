@@ -159,6 +159,9 @@ class Settings(BaseSettings):
     # journey is certified in the browser: with it off a dropped filter is a plain
     # refusal, the consent endpoint answers 403 and a consent token is never spent.
     ANALYST_DROP_CONSENT_ENABLED: bool = False
+    # Planner model tier: "default" (gpt-4o-mini, the certified baseline) or
+    # "strong" (the provider's larger model). Changed only on benchmark evidence.
+    ANALYST_PLANNER_MODEL: str = "default"
     ANALYST_MAX_QUERIES_PER_USER_DAY: int = 200
     ANALYST_MAX_CONCURRENT_PER_DATASOURCE: int = 4
     ANALYST_MAX_BQ_BYTES_PER_USER_DAY: int = 20 * 1024**3

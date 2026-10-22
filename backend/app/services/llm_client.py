@@ -197,8 +197,11 @@ class LLMClient:
         system: str = "You are a helpful AI assistant. Always respond with valid JSON.",
         model: Optional[str] = None,  # accepted for backward-compat; models are fixed per provider
         max_tokens: int = 512,
+        strong: bool = False,
     ) -> Optional[dict]:
-        providers = _providers()
+        # `strong` selects the providers' larger model (the one the design surfaces
+        # already use); every caller that does not ask for it is unchanged.
+        providers = _providers(design=strong)
         if not providers:
             logger.debug("LLMClient: no AI provider key configured (OPENAI/GEMINI/ANTHROPIC)")
             return None

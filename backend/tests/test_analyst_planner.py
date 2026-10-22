@@ -136,3 +136,17 @@ def test_a_date_range_is_validated_and_described_with_its_inclusive_days():
     out = validate(_raw(filters={"items.status": {"operator": "date_range",
                                                   "value": {"from": "2025-01-01", "to": "2026-01-01"}}}), [_explore()])
     assert isinstance(out, Unsupported)  # not a date field
+
+
+def test_the_planner_model_tier_is_a_setting_with_the_baseline_by_default(monkeypatch):
+    from app.core.config import settings
+    from app.services import llm_client
+    from app.services.analyst import planner
+
+    seen = []
+    monkeypatch.setattr(llm_client.LLMClient, "complete_json",
+                        staticmethod(lambda *a, strong=False, **k: seen.append(strong) or None))
+    planner.plan("Doanh thu?", [_explore()])
+    monkeypatch.setattr(settings, "ANALYST_PLANNER_MODEL", "strong", raising=False)
+    planner.plan("Doanh thu?", [_explore()])
+    assert seen == [False, True]

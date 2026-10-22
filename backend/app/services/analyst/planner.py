@@ -127,9 +127,12 @@ def plan(question: str, catalog: list[CatalogExplore], *, previous: Optional[dic
     if not catalog:
         return Unsupported("Bạn chưa có quyền khai thác dữ liệu nào phù hợp để trả lời câu hỏi này.")
     if complete is None:
+        from app.core.config import settings
         from app.services.llm_client import LLMClient
 
-        complete = LLMClient.complete_json
+        strong = str(getattr(settings, "ANALYST_PLANNER_MODEL", "default")).strip().lower() == "strong"
+        complete = (lambda prompt, system=None, max_tokens=900:
+                    LLMClient.complete_json(prompt, system=system, max_tokens=max_tokens, strong=strong))
     raw = complete(build_prompt(question, catalog, previous), system=SYSTEM, max_tokens=900)
     if raw is None:
         return Unsupported("Chưa kết nối được mô hình AI để hiểu câu hỏi.")
