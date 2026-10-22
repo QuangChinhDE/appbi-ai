@@ -62,5 +62,5 @@ at this freeze.
 | Analyst services | tree `0ca9435c` (planner `693d6fcf`, grounding `e186bb98`, intent `801649f2`) |
 | GQS policies | tree `0d21869c` |
 | Test budget controller | `llm_test_budget.py` `ef46b7ee` |
-| Grader | `holdout.py` sha256 `0e575cac`, `holdout2.py` `79edfdfa` (unchanged by this round) |
+| Grader | `holdout.py` sha256 `bf95312e` (adds `filt_not`: an exclusion must be a ne/not_in filter on that value; the oracle still checks numbers), `holdout2.py` `79edfdfa` |
 | Governed vocabulary fixture | `seed_vocab.py` sha256 `dfb372d1` (written before set 9) |
