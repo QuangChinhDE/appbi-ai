@@ -105,6 +105,7 @@
  "GET /api/v1/catalog/govern/intelligence/overview": "scope",
  "GET /api/v1/catalog/govern/knowledge": "scope",
  "GET /api/v1/catalog/govern/knowledge-map": "scope",
+ "GET /api/v1/catalog/govern/knowledge-quarantine": "global",
  "GET /api/v1/catalog/govern/knowledge/insights": "scope",
  "GET /api/v1/catalog/govern/knowledge/{doc_id}": "resource",
  "GET /api/v1/catalog/govern/knowledge/{doc_id}/egress-log": "resource",

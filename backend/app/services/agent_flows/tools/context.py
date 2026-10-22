@@ -322,6 +322,10 @@ class ToolContext:
     # column never reaches ANY tool — filtering only the prompt's field list
     # (the pre-P0-05 behaviour) left the raw values readable via get_chart_data.
     excluded_columns: set[str] = field(default_factory=set)
+    #: True when the GovernAIScope lookup FAILED for this context (SEC-05). The
+    #: exclusion set is then unknown, not empty, so every chart read refuses with
+    #: `policy_unavailable` instead of serving columns the business may have hidden.
+    ai_scope_unavailable: bool = False
     #: The surface's snapshot freshness (a public link's ``cache_ttl_minutes``:
     #: None = current snapshot, 0 = realtime) — the AI reads a chart exactly as
     #: the viewer's tile does, never a different execution state.
@@ -475,6 +479,10 @@ class ToolContext:
                 "chart_ids": cids,
             })
 
+        try:
+            excluded, scope_unavailable = _resolve_excluded_columns(db, dashboard), False
+        except AIScopeUnavailable:
+            excluded, scope_unavailable = set(), True
         return cls(
             db=db,
             dashboard=dashboard,
@@ -484,7 +492,8 @@ class ToolContext:
             pages=pages,
             actor_type=actor_type,
             actor_ref=actor_ref,
-            excluded_columns=_resolve_excluded_columns(db, dashboard),
+            excluded_columns=excluded,
+            ai_scope_unavailable=scope_unavailable,
             served_table_ids=served_tables,
             page_scope_by_chart=dict(page_scope_by_chart or {}),
             exposed_fields=exposed_fields,
@@ -570,9 +579,12 @@ class ToolContext:
         # UNION, never replace. On a report this context already carries the
         # exclusions for the datasets behind its tiles; the attached datasets are
         # additional, and a chart is hidden if EITHER source hides it.
-        self.excluded_columns = set(self.excluded_columns or set()) | (
-            _exclusions_for_datasets(self.db, dataset_ids)
-        )
+        try:
+            added = _exclusions_for_datasets(self.db, dataset_ids)
+        except AIScopeUnavailable:
+            added = set()
+            self.ai_scope_unavailable = True
+        self.excluded_columns = set(self.excluded_columns or set()) | added
 
     def assert_chart_in_scope(self, chart_id: int) -> None:
         if chart_id not in self.allowed_chart_ids:
@@ -653,11 +665,20 @@ def resolve_value(ctx: Any, value: Any, values: list[Any]) -> Any:
     return value
 
 
+class AIScopeUnavailable(Exception):
+    """The GovernAIScope exclusions could not be read. Unknown is not empty."""
+
+
 def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:
     """Columns GovernAIScope hides from the AI, for the datasets behind this
-    dashboard's charts. Best-effort: a resolve failure must never break a turn,
-    but it MUST fail OPEN-with-a-log rather than silently pretend nothing is
-    excluded on a partial read — so we log loudly.
+    dashboard's charts.
+
+    FAILS CLOSED (SEC-05). This used to return an empty set on any error — the
+    same value as "nothing is hidden" — so a governance lookup that broke handed
+    the AI every column the business had excluded. It now raises
+    `AIScopeUnavailable`; the context records that the scope is unknown and every
+    chart read refuses with `policy_unavailable`. The turn still runs: it just
+    cannot read data it cannot prove it may read.
     """
     if db is None or getattr(dashboard, "id", None) is None:
         # Unit-test / synthetic context with no metadata store to consult.
@@ -690,11 +711,11 @@ def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:
     except Exception:  # noqa: BLE001
         logger.warning(
             "dashboard_ai_bot: AI-scope resolve failed dashboard_id=%s — "
-            "no column exclusion applied this turn",
+            "chart reads refused this turn (policy_unavailable)",
             getattr(dashboard, "id", None),
             exc_info=True,
         )
-        return set()
+        raise AIScopeUnavailable(f"dashboard {getattr(dashboard, 'id', None)}")
 
 
 def _exclusions_for_datasets(db: Session, dataset_ids: list[int]) -> set[str]:
@@ -702,9 +723,9 @@ def _exclusions_for_datasets(db: Session, dataset_ids: list[int]) -> set[str]:
 
     That one starts from a dashboard and walks tiles → charts → tables → datasets to
     reach the same question. Direct Chat already knows the datasets, so it asks
-    directly. Fails OPEN with a loud log, exactly as its sibling does: a governance
-    lookup that breaks must not take the turn down with it, and must not quietly
-    look like "nothing is excluded".
+    directly. Fails CLOSED exactly as its sibling does (SEC-05): a lookup that
+    breaks raises `AIScopeUnavailable` — it must not look like "nothing is
+    excluded", and it does not take the turn down with it either.
     """
     ids = [int(x) for x in (dataset_ids or []) if str(x).strip().lstrip("-").isdigit()]
     if db is None or not ids:
@@ -716,10 +737,10 @@ def _exclusions_for_datasets(db: Session, dataset_ids: list[int]) -> set[str]:
         return {fold_column(c) for c in cols}
     except Exception:  # noqa: BLE001
         logger.warning(
-            "chat: AI-scope resolve failed dataset_ids=%s — no column exclusion "
-            "applied this turn", ids, exc_info=True,
+            "chat: AI-scope resolve failed dataset_ids=%s — chart reads refused "
+            "this turn (policy_unavailable)", ids, exc_info=True,
         )
-        return set()
+        raise AIScopeUnavailable(f"datasets {ids}")
 
 
 def _ok(data: Any) -> dict:
@@ -780,6 +801,14 @@ def _fetch_chart_data(
     Returns ``{columns: list[str], rows: list[list], filters_applied: list[dict]}``.
     """
     ctx.assert_chart_in_scope(chart_id)
+    # Before every cache: an entry read while the scope WAS known must not answer
+    # a context whose scope is not (SEC-05).
+    if getattr(ctx, "ai_scope_unavailable", False):
+        raise ToolError(
+            f"chart {chart_id}: không xác định được phạm vi dữ liệu AI được phép đọc "
+            "(GovernAIScope) nên không đọc dữ liệu biểu đồ này — thử lại sau",
+            code="policy_unavailable",
+        )
 
     merged: list[dict] = []
     for f in ctx.public_filters:

@@ -417,11 +417,18 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
                 if t.dataset_id:
                     dsids.add(t.dataset_id)
 
-        # Managed KPIs bound to this dashboard's datasets/tables (authoritative).
-        metrics = [
-            m for m in db.query(GovernMetric).filter(GovernMetric.status != "Deprecated").all()
+        # Managed KPIs bound to this dashboard's datasets/tables. ONLY an Approved
+        # metric is the business's official definition (ADR-007, SEC-07). This
+        # filtered out Deprecated alone, and a new metric is created as Draft, so
+        # an unreviewed definition was injected under "ĐỊNH NGHĨA CHÍNH THỐNG".
+        # A Draft is still shown — the AI should know it exists — but in its own
+        # block, labelled as not approved, and never as the official answer.
+        bound = [
+            m for m in db.query(GovernMetric).filter(GovernMetric.status.in_(("Approved", "Draft"))).all()
             if GovernanceService.metric_dataset_ids(db, m, resolved_only=True) & dsids
         ]
+        metrics = [m for m in bound if m.status == "Approved"]
+        drafts = [m for m in bound if m.status == "Draft"]
         if metrics:
             lines.append(
                 "• Chỉ số quản trị (KPI — ĐỊNH NGHĨA CHÍNH THỐNG do doanh nghiệp khai báo; "
@@ -437,6 +444,16 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
                 owner = f" · Chủ sở hữu: {m.owner}" if m.owner else ""
                 lines.append(f"   - {m.display_name}{unit}: {m.definition or ''}{how}{tgt}{owner}")
                 refs.append({"kind": "metric", "ref": m.name, "name": m.display_name})
+        if drafts:
+            lines.append(
+                "• Chỉ số ĐANG SOẠN THẢO (Draft — CHƯA DUYỆT, KHÔNG phải định nghĩa chính "
+                "thức; nếu dùng phải nói rõ đây là định nghĩa nháp chưa được duyệt):"
+            )
+            for m in drafts[:8]:
+                unit = f" ({m.unit})" if m.unit else ""
+                how = f" · Cách tính (nháp): {m.formula}" if m.formula else ""
+                lines.append(f"   - [NHÁP] {m.display_name}{unit}: {m.definition or ''}{how}")
+                refs.append({"kind": "metric", "ref": m.name, "name": m.display_name, "status": "Draft"})
 
         # Knowledge docs describing this report. PREFER embedding retrieval (RAG):
         # pull the passages most relevant to the question from the full doc bodies.
@@ -463,7 +480,10 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
                 title = str(source.get("title") or "")
                 if title and title not in seen_docs:
                     seen_docs.add(title)
-                    refs.append({"kind": "doc", "ref": str(c.get("doc_id") or title), "name": title})
+                    # `c` was an undefined name here: the NameError was swallowed by the
+                    # block's except, and every RAG citation vanished from the refs
+                    # (DEF-07b). The source carries its own doc id.
+                    refs.append({"kind": "doc", "ref": str(source.get("doc_id") or title), "name": title})
         else:
             links = (
                 db.query(GovernDocAssetLink)

@@ -103,6 +103,7 @@ ErrorCode = Literal[
     "risk_unknown",        # the tool never declared what it does to the world
     "needs_approval",      # side_effect / destructive: no approval step exists yet
     "capability_not_visible",  # granted, but not offered this turn — discover it first
+    "policy_unavailable",      # a governance policy (AI scope) could not be read: fail closed
     # ── compute provenance (V3) ──
     "evidence_ref_unknown",    # no result in this run carries that reference
     "evidence_path_missing",   # the reference exists; nothing sits at that path
