@@ -227,6 +227,10 @@ def other_source_named(plan, question: str, others) -> list[str]:
         # Datasets with a metric of the same kind: the model must not pick the
         # source silently - the person chooses.
         kinds = {by_ref[m].type for m in plan.measures if m in by_ref}
+        if any(m in by_ref and syllables(by_ref[m].label) & q for m in plan.measures):
+            # the question shares words with the metric's own label ("bao nhiêu ĐƠN HÀNG"
+            # for "Số đơn hàng", all of them generic): it names it; nothing was bridged
+            kinds = set()
         for ex in others:
             if ex.dataset_id == plan.explore.dataset_id:
                 continue
