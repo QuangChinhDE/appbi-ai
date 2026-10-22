@@ -120,3 +120,29 @@ def test_a_shape_a_line_cannot_carry_is_drafted_as_a_table_of_every_column():
     d = chart_draft(plan, "Doanh số theo vùng và kênh hằng quý")
     assert d["chart_type"] == "TABLE"
     assert d["config"]["roleConfig"]["selectedColumns"] == ["c.region", "o.channel", "o.order_date", "l.net_sales"]
+
+
+def test_an_asked_year_spans_the_whole_year_not_the_recent_window():
+    """Dogfood 2026-10-22: "Số đơn hàng theo tháng năm 2025" was headlined
+    "2025-10 -> 2025-12" and called that "gần đây" though the person asked for
+    the whole of 2025. An explicit range is compared first-to-last month."""
+    rows = [{"d": f"2025-{mo:02d}-01", "c": "a", "r": float(100 + mo)} for mo in range(1, 13)]
+    story = describe(COLS, rows, time_ref="v.order_date", truncated=False, grain="month", today=AFTER,
+                     period=(date(2025, 1, 1), date(2026, 1, 1)))
+    assert story["periods"]["window"][0] == "2025-01" and story["periods"]["window"][-1] == "2025-12"
+    assert "2025-01 → 2025-12" in story["headline"]
+    assert "Gần đây" not in story["note"]
+
+
+def test_an_asked_range_reports_a_missing_edge_month_instead_of_shrinking():
+    rows = [{"d": f"2025-{mo:02d}-01", "c": "a", "r": 10.0} for mo in range(2, 13)]  # January absent
+    story = describe(COLS, rows, time_ref="v.order_date", truncated=False, grain="month", today=AFTER,
+                     period=(date(2025, 1, 1), date(2026, 1, 1)))
+    assert "2025-01" in story["periods"]["missing"]
+    assert "Thiếu dữ liệu" in story["headline"]  # never compared as zero
+
+
+def test_without_an_asked_range_recent_is_still_the_last_three_complete_periods():
+    rows = [{"d": f"2025-{mo:02d}-01", "c": "a", "r": 10.0} for mo in range(1, 13)]
+    story = describe(COLS, rows, time_ref="v.order_date", truncated=False, grain="month", today=AFTER)
+    assert story["periods"]["window"] == ["2025-10", "2025-11", "2025-12"]

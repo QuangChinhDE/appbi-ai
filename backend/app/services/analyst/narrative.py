@@ -44,8 +44,11 @@ def pct(a: Optional[float], b: Optional[float]) -> Optional[float]:
 
 
 def describe(columns: list[dict], rows: list[dict], *, time_ref: Optional[str], truncated: bool,
-             grain: Optional[str] = None, today: Optional[date] = None) -> dict:
-    """columns: [{name, ref, role, label}] in result order."""
+             grain: Optional[str] = None, today: Optional[date] = None,
+             period: Optional[tuple[date, date]] = None) -> dict:
+    """columns: [{name, ref, role, label}] in result order. `period` is the
+    explicit range the question asked for ([from, to) on the time field): the
+    trend then spans THAT range, not the default "recent" window."""
     measures = [c for c in columns if c["role"] == "measure"]
     dims = [c for c in columns if c["role"] == "dimension"]
     time_col = next((c for c in dims if c["ref"] == time_ref), None) if time_ref else None
@@ -62,7 +65,7 @@ def describe(columns: list[dict], rows: list[dict], *, time_ref: Optional[str], 
                              "Hãy thu hẹp câu hỏi (ví dụ theo nhóm thay vì từng mục, hoặc một khoảng thời gian)."),
                 "bullets": [], "facts": [], "checks": checks, "incomplete": True}
     if time_col is not None:
-        return _over_time(rows, m, time_col, cat_col, checks, grain or "month", today or date.today())
+        return _over_time(rows, m, time_col, cat_col, checks, grain or "month", today or date.today(), period)
     if cat_col is not None:
         return _ranking(rows, m, cat_col, checks)
     total = _num(rows[0].get(m["name"]))
@@ -126,7 +129,8 @@ def _label(d: date, grain: str) -> str:
     return d.isoformat()
 
 
-def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date) -> dict:
+def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
+               period: Optional[tuple[date, date]] = None) -> dict:
     grain = grain if grain in GRAIN_WORD else "month"
     word = GRAIN_WORD[grain]
     # A period with no row is MISSING; a row whose measure is NULL is UNKNOWN.
@@ -147,8 +151,11 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date) -> dict:
         return {"headline": f"Không đọc được mốc thời gian của {m['label']} để nói về xu hướng.",
                 "bullets": [], "facts": [], "checks": checks}
     calendar: list[date] = []  # every calendar period first..last, gaps included
-    d = min(present)
-    while d <= max(present) and len(calendar) < 5000:
+    # An asked range ("năm 2025") spans the whole range, so a period at either
+    # edge with no row is reported missing instead of silently shortening it.
+    d = _start(period[0], grain) if period else min(present)
+    end_ok = (lambda p: p < period[1]) if period else (lambda p: p <= max(present))
+    while end_ok(d) and len(calendar) < 5000:
         calendar.append(d)
         d = _next(d, grain)
     # A period that has not ended yet (today falls inside it, or it is in the
@@ -161,7 +168,7 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date) -> dict:
     if not complete:
         return {"headline": f"Dữ liệu {m['label']} mới có ở {word} chưa kết thúc, chưa đủ để nói về xu hướng.",
                 "bullets": [], "facts": [], "checks": checks, "note": " ".join(notes), "incomplete": True}
-    window = complete[-RECENT:]
+    window = complete if period else complete[-RECENT:]
     missing = [p for p in window if p not in present]
     if missing:
         notes.append(f"Không có dữ liệu ở {word} {', '.join(_label(p, grain) for p in missing)} "
@@ -216,8 +223,11 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date) -> dict:
         one_end = sorted(k for k, s in series.items() if (first in s) != (last in s))
         if one_end:
             bullets.append(f"Không so sánh được (chỉ có dữ liệu ở một đầu): {', '.join(one_end[:5])}.")
-    notes.insert(0, f"“Gần đây” là {len(window)} {word} đầy đủ cuối cùng ({L0} → {L1}); "
-                    f"dữ liệu trải từ {_label(calendar[0], grain)} đến {_label(calendar[-1], grain)}.")
+    if period:
+        notes.insert(0, f"So sánh {word} đầu và cuối của kỳ được hỏi ({L0} → {L1}).")
+    else:
+        notes.insert(0, f"“Gần đây” là {len(window)} {word} đầy đủ cuối cùng ({L0} → {L1}); "
+                        f"dữ liệu trải từ {_label(calendar[0], grain)} đến {_label(calendar[-1], grain)}.")
     return {"headline": headline, "bullets": bullets, "facts": facts, "checks": checks, "note": " ".join(notes),
             "periods": {"first": _label(calendar[0], grain), "last": _label(calendar[-1], grain),
                         "window": [_label(p, grain) for p in window],
