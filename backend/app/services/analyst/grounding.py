@@ -30,6 +30,7 @@ from typing import Iterable, Optional
 # Function words, question words and analysis verbs that carry no data meaning.
 _STOP = set("""
 a ai bao bi bieu bo cac cach chi cho chua co con cua cung da dang dau de den di do doi duoc gi gia giai giup hay hien hoi hon khac khi khong kia la lam lai luon ma moi mot muon nao nay neu nhieu nhu nhung nhat nua o phai qua ra roi sang sao so sanh ta tai tat the theo thi thu thuc tinh to toan trong tu tung va van ve vi voi xem xin tong cong hang tach them rieng bang danh sach liet ke the nao the hien bao nhieu dang ky tu den gan day nhat cao thap lon nho manh yeu tang giam bien dong xu huong ket qua phan tich thay mang lai dem nhieu it minh toi chia ben thoi nhe vay oi a
+cai chiec het du lieu lay gio
 """.split())
 # Words that are explained by grouping on a time field.
 _TIME = set("ngay tuan thang quy nam thoi gian gan day xu huong bien dong".split())
@@ -102,17 +103,11 @@ def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> d
             if not (shared - {"so", "id", "ma"}):
                 continue
             extra = words - shared - _STOP
-            if f.kind == "dimension":
-                # "vùng miền", "theo từng miền": lower-case words beside a breakdown's
-                # label describe it. A Capitalised word ("kênh Online", "ngành Thiết
-                # bị") reads as a data VALUE and must be explained by a real one.
-                lower = {fold(t) for t in re.findall(r"\w+", str(phrase)) if t == t.lower()}
-                words = shared | (extra & lower)
-            else:
-                # A metric phrase keeps only words that are themselves catalog
-                # vocabulary ("số lượng SẢN PHẨM bán ra"); a modifier no field knows
-                # ("dự kiến", "lợi nhuận") stays unexplained and is refused.
-                words = shared | (extra & vocab)
+            # A phrase keeps only extra words that are themselves catalog vocabulary
+            # ("số lượng SẢN PHẨM bán ra"). A word no field knows stays unexplained:
+            # a modifier ("dự kiến"), another entity ("NGƯỜI bán" is not "Kênh bán")
+            # or a synonym the model has not got governed metadata for ("vùng MIỀN").
+            words = shared | (extra & vocab)
         out.setdefault(ref, set()).update(words)
     return out
 
