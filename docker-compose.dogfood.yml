@@ -77,10 +77,12 @@ services:
       GEMINI_API_KEY: ""
       ANTHROPIC_API_KEY: ""
       LLM_TEST_BUDGET_USD: ${LLM_TEST_BUDGET_USD:-}
-      LLM_TEST_LEDGER_PATH: /var/appbi-test/ledger.jsonl
+      # ONE ledger for every test runner (bind mount of the shared budget directory)
+      LLM_TEST_LEDGER_PATH: /ledger/ledger.jsonl
       LLM_TEST_PRICES_JSON: ${LLM_TEST_PRICES_JSON:-}
     volumes:
       - dogfood_testdata:/var/appbi-test
+      - ${LLM_TEST_LEDGER_DIR:-./.dogfood-ledger}:/ledger
     ports:
       - "127.0.0.1:${DOGFOOD_BE_PORT:-8341}:8000"
 

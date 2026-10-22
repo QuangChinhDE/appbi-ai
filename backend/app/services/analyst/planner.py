@@ -33,11 +33,17 @@ class Plan:
     interpretation: str = ""
     #: question phrase -> plan ref, as the model mapped it (checked by grounding.py)
     covered: dict = field(default_factory=dict)
+    #: at most this many groups, ordered by `sorts` (a "top N" the QUESTION asked for;
+    #: set by grounding from intent, never taken from the model)
+    limit: Optional[int] = None
 
     def as_dict(self) -> dict:
-        return {"explore_id": self.explore.explore_id, "dimensions": self.dimensions, "measures": self.measures,
-                "time_grains": self.time_grains, "filters": self.filters, "sorts": self.sorts,
-                "interpretation": self.interpretation}
+        out = {"explore_id": self.explore.explore_id, "dimensions": self.dimensions, "measures": self.measures,
+               "time_grains": self.time_grains, "filters": self.filters, "sorts": self.sorts,
+               "interpretation": self.interpretation}
+        if self.limit:
+            out["limit"] = self.limit
+        return out
 
 
 @dataclass
@@ -259,6 +265,9 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
                                "nên không trả lời phần đó thay vì trả lời sai.")
     plan_ = Plan(explore=explore, dimensions=d, measures=m, time_grains=grains, filters=filters, sorts=sorts,
                  covered={str(k): resolve(v, {**dims, **meas}) for k, v in covered.items() if isinstance(v, str)})
+    lim = raw.get("limit")
+    if isinstance(lim, int) and not isinstance(lim, bool) and 1 <= lim <= 100 and len(d) == 1 and sorts:
+        plan_.limit = lim  # an echoed plan (a pick, a consent) keeps the ranking it was shown with
     # The interpretation shown to the person is the SERVER's reading of the
     # validated plan, never the model's prose (which can claim what was not done).
     plan_.interpretation = describe_plan(plan_)
@@ -289,4 +298,8 @@ def describe_plan(p: Plan) -> str:
         text += " theo " + ", ".join(parts)
     if p.filters:
         text += "; lọc " + "; ".join(_describe_filter(labels.get(r, r), c) for r, c in p.filters.items())
+    if p.sorts and p.dimensions and any(s.get("field") in p.measures for s in p.sorts):
+        s = next(s for s in p.sorts if s.get("field") in p.measures)
+        order = "giảm dần" if s.get("direction") == "desc" else "tăng dần"
+        text += f"; xếp {order} theo {labels.get(s['field'], s['field'])}" + (f", lấy {p.limit} nhóm đầu" if p.limit else "")
     return f"{text} — nguồn {p.explore.dataset_name}"

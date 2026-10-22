@@ -172,10 +172,21 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
             # like a fact (holdout set 3: "Số khách hàng: 0"). The field's real values
             # are read through GQS (this person's rights, ledgered): each filter value
             # is replaced by the ONE real value matching it, or the person chooses.
+            values_of = lambda ref: gqs.execute(governed([ref], p.measures[:1], {}, [], {}, 200))  # noqa: E731
             checked, options = _check_filter_values(
-                p, lambda ref: gqs.execute(governed([ref], p.measures[:1], {}, [], {}, 200)),
+                p, values_of,
                 lambda ref, text: gqs.execute(governed([ref], p.measures[:1],
                                                        {ref: {"operator": "contains", "value": text}}, [], {}, 50)))
+            if checked is None:
+                moved = _relocate_values(p, values_of)
+                if moved is not None:
+                    # Sealed set 8: "Laptop 14" written on the product ID; it is a real
+                    # value of the product NAME, the one field that has it exactly.
+                    steps.append({"step": "verify", "detail": "Giá trị lọc thuộc trường khác: " + "; ".join(
+                        f"{labels_of(moved).get(r, r)} = {c['value']}" for r, c in moved.filters.items()
+                        if r not in p.filters)})
+                    p = moved
+                    checked, options = _check_filter_values(p, values_of)
             if checked is None:
                 return {"status": "clarify", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
                         "message": "Giá trị bạn lọc không có trong dữ liệu. Bạn muốn chọn giá trị nào?",
@@ -209,11 +220,20 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
                 "message": no_match_message(p), "evidence": {"query_id": ev.query_id}}
     time_ref = next(iter(p.time_grains), None)
+    order = _ranking_order(p)
+    if p.limit and result.truncated:
+        # A top N read from a result cut at the row bound is not the top N.
+        steps.append({"step": "verify", "detail": "kết quả vượt giới hạn dòng"})
+        return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
+                "message": "Kết quả vượt giới hạn dòng nên không xếp hạng được chính xác; hãy thu hẹp câu hỏi.",
+                "evidence": {"query_id": ev.query_id}}
+    if order and not time_ref and len([c for c in columns if c["role"] == "dimension"]) == 1:
+        rows = _ordered(rows, columns, p, order)
     story = narrative.describe(columns, rows, time_ref=time_ref, truncated=result.truncated,
                                grain=p.time_grains.get(time_ref) if time_ref else None,
-                               period=_asked_period(p, time_ref))
+                               period=_asked_period(p, time_ref), order=order, top=p.limit)
     steps.append({"step": "verify", "detail": "; ".join(c["detail"] for c in story["checks"])})
-    draft = None if p.filters else narrative.chart_draft(p, draft_title(question))
+    draft = None if (p.filters or p.limit) else narrative.chart_draft(p, draft_title(question))
     return {
         "status": "answered", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
         "answer": story, "columns": columns, "rows": rows, "truncated": result.truncated,
@@ -279,6 +299,27 @@ def _find_value_filter(authz, principal, p: Plan, question: str, unexplained: se
     return hits[0] if len({h[0] for h in hits}) == 1 and len(hits) == 1 else None
 
 
+def _ranking_order(p) -> Optional[str]:
+    """'desc'/'asc' when the plan orders its groups by a measure (an asked ranking),
+    'desc' for a plain one-breakdown answer (the table reads in ranking order), else None."""
+    s = next((s for s in p.sorts if s.get("field") in p.measures), None)
+    if s is not None:
+        return "asc" if s.get("direction") == "asc" else "desc"
+    return "desc" if p.measures and len(p.dimensions) == 1 and not p.time_grains else None
+
+
+def _ordered(rows: list, columns: list, p, order: str) -> list:
+    """Rows ordered by the first measure (a NULL last, never as 0), cut to the asked N."""
+    m = next((c["name"] for c in columns if c["role"] == "measure"), None)
+    if m is None:
+        return rows
+    known = [r for r in rows if isinstance(r.get(m), (int, float))]
+    unknown = [r for r in rows if not isinstance(r.get(m), (int, float))]
+    known.sort(key=lambda r: r[m], reverse=(order == "desc"))
+    out = known + unknown
+    return out[:p.limit] if p.limit else out
+
+
 def _asked_period(p, time_ref):
     """The [from, to) range the question put on the trend's own time field, if any."""
     from datetime import date
@@ -310,6 +351,47 @@ def _can_save_chart(authz, user, p: Plan) -> bool:
 
 def labels_of(p: Plan) -> dict:
     return {f.ref: f.label for f in p.explore.fields}
+
+
+def _relocate_values(p: Plan, values_of) -> Optional[Plan]:
+    """The plan with each text filter whose values are not real on ITS field moved to
+    the ONE other text field of the explore where every value is real exactly
+    (operator kept), or None. Each field read is governed and bounded."""
+    from dataclasses import replace as _replace
+
+    from app.services.analyst.catalog import is_identifier
+    from app.services.analyst.grounding import fold
+
+    def real(ref) -> set:
+        try:
+            res = values_of(ref)
+        except GovernedRefusal:
+            return set()
+        col = next((c.name for c in res.columns if c.ref == ref), None)
+        return {fold(str(r.get(col))).strip() for r in res.rows if col and r.get(col) is not None}
+
+    filters, moved_any = {}, False
+    for ref, cond in p.filters.items():
+        vals = cond.get("value") if isinstance(cond.get("value"), list) else [cond.get("value")]
+        if cond.get("operator") not in ("eq", "in", "ne", "not_in") or not all(isinstance(v, str) for v in vals):
+            filters[ref] = cond
+            continue
+        wanted = {fold(v).strip() for v in vals}
+        if wanted <= real(ref):
+            filters[ref] = cond
+            continue
+        homes = [f.ref for f in p.explore.fields[:60] if f.kind == "dimension" and f.type == "string"
+                 and f.ref != ref and f.ref not in p.filters and not is_identifier(f)][:8]
+        hits = [h for h in homes if wanted <= real(h)]
+        if len(hits) != 1:
+            return None
+        filters[hits[0]] = cond
+        moved_any = True
+    if not moved_any:
+        return None
+    out = _replace(p, filters=filters, dimensions=[d for d in p.dimensions if d not in p.filters or d in filters])
+    out.interpretation = describe_plan(out)
+    return out
 
 
 def _unmatched_filter(p: Plan, real: list) -> Optional[str]:

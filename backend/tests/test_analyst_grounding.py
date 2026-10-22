@@ -527,3 +527,31 @@ def test_a_narrower_period_is_left_as_planned():
               "Doanh số từ 2024 đến 2025", "Doanh số"):
         assert whole_year(q) is None, q
 
+
+
+# ── Intent constructions in grounding (sealed set 8 refusal classes) ───────────
+
+def test_request_framing_does_not_block_an_answerable_question():
+    p = _plan(["l.net_sales"], filters={"o.channel": {"operator": "eq", "value": "Cửa hàng"}},
+              covered={"doanh số": "l.net_sales", "kênh Cửa hàng": "o.channel"})
+    out, why = ground(p, "Anh chị cho em hỏi doanh số kênh Cửa hàng được bao nhiêu ạ?", covered=p.covered)
+    assert out is not None, why
+
+
+def test_top_n_becomes_an_ordered_limited_plan():
+    p = _plan(["l.net_sales"], ["c.region"], covered={"vùng": "c.region", "doanh số": "l.net_sales"})
+    out, why = ground(p, "Top 2 vùng có doanh số cao nhất", covered=p.covered)
+    assert out is not None, why
+    assert out.sorts == [{"field": "l.net_sales", "direction": "desc"}] and out.limit == 2
+    out, _ = ground(p, "3 vùng có doanh số thấp nhất", covered=p.covered)
+    assert out.sorts == [{"field": "l.net_sales", "direction": "asc"}] and out.limit == 3
+
+
+def test_a_ranking_without_exactly_one_breakdown_is_refused_not_listed():
+    none = _plan(["l.net_sales"], covered={"doanh số": "l.net_sales"})
+    out, why = ground(none, "Top 3 doanh số cao nhất", covered=none.covered)
+    assert out is None and "xếp hạng" in why
+    two = _plan(["l.net_sales"], ["c.region", "o.channel"],
+                covered={"vùng": "c.region", "kênh": "o.channel", "doanh số": "l.net_sales"})
+    out, why = ground(two, "Top 3 vùng và kênh có doanh số cao nhất", covered=two.covered)
+    assert out is None and "xếp hạng" in why

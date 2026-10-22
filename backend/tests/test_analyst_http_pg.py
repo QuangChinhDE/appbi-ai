@@ -526,3 +526,67 @@ def test_a_pick_for_an_excluded_value_stays_an_exclusion(client, db, world, mode
     regions = {r[c["name"]] for r in body["rows"] for c in body["columns"] if c["ref"] == f"{v}.region"}
     assert regions == {"Bắc", "Trung"}
 
+
+
+# ── Ranking / Top-N contract (sealed set 8 class) ──────────────────────────────
+
+def test_top_n_returns_exactly_n_groups_in_order_and_names_them(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    v = world["v"]
+    model(_planner(world, dims=("region",), extra={"covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region"}}))
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Top 2 vùng có doanh thu cao nhất"}).json()
+    assert body["status"] == "answered", body
+    col = {c["role"]: c["name"] for c in body["columns"]}
+    assert [r[col["dimension"]] for r in body["rows"]] == ["Bắc", "Nam"]          # oracle: Bắc 150, Nam 30, Trung 20
+    assert body["plan"]["limit"] == 2 and body["chart_draft"] is None
+    assert "Bắc" in body["answer"]["headline"] and "Trung" not in body["answer"]["headline"]
+    low = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                      json={"question": "1 vùng có doanh thu thấp nhất"}).json()
+    assert [r[col["dimension"]] for r in low["rows"]] == ["Trung"], low
+
+
+def test_a_plain_breakdown_reads_in_ranking_order(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    v = world["v"]
+    model(_planner(world, dims=("region",), extra={"sorts": [{"field": f"{v}.region", "direction": "asc"}],
+                                                   "covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region"}}))
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Doanh thu theo vùng"}).json()
+    col = {c["role"]: c["name"] for c in body["columns"]}
+    assert [r[col["dimension"]] for r in body["rows"]] == ["Bắc", "Nam", "Trung"]  # by value, as the headline ranks
+
+
+# ── Value resolution (sealed set 8 class: product names with numbers, model codes) ──
+
+def _revenue_of(body):
+    return [float(r[c["name"]]) for r in body["rows"] for c in body["columns"] if c["role"] == "measure"]
+
+
+def test_a_real_value_written_on_the_wrong_field_moves_to_the_field_that_has_it(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    v = world["v"]
+    model(_planner(world, dims=(), extra={"filters": {f"{v}.has_phone": {"operator": "eq", "value": "Nam"}},
+                                          "covered": {"doanh thu": f"{v}.revenue", "Nam": f"{v}.has_phone"}}))
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Doanh thu của Nam"}).json()
+    assert body["status"] == "answered", body
+    assert body["plan"]["filters"] == {f"{v}.region": {"operator": "eq", "value": "Nam"}}
+    assert _revenue_of(body) == [30.0]
+
+
+def test_a_value_the_question_never_says_is_re_resolved_from_its_words_or_refused(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    v = world["v"]
+    # the model wrote a code ("N-02") for "vùng Nam": re-resolved from the question's words
+    model(_planner(world, dims=(), extra={"filters": {f"{v}.region": {"operator": "eq", "value": "N-02"}},
+                                          "covered": {"doanh thu": f"{v}.revenue", "vùng Nam": f"{v}.region"}}))
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Doanh thu vùng Nam"}).json()
+    assert body["status"] == "answered" and _revenue_of(body) == [30.0], body
+    # adversarial: the question names no real value at all -> refused, never another value's number
+    model(_planner(world, dims=(), extra={"filters": {f"{v}.region": {"operator": "eq", "value": "Bắc"}},
+                                          "covered": {"doanh thu": f"{v}.revenue"}}))
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Doanh thu vùng Atlantis"}).json()
+    assert body["status"] != "answered" and "rows" not in body, body

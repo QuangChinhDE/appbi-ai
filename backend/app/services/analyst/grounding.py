@@ -69,7 +69,10 @@ def is_function_phrase(phrase: str, *, has_time: bool, source_words: set[str] | 
     """A question phrase that names no data: only function/analysis words, or only
     time words when the plan groups by time (holdout: the model mapped "biến động
     ra sao", "tổng cộng" and "theo tháng" to null and the turn was refused)."""
-    words = syllables(phrase) - _STOP - (source_words or set())  # naming the dataset names no field
+    from app.services.analyst.intent import extract
+
+    # request framing, a ranking or a quantity question is a construction, not a field
+    words = syllables(extract(phrase).content) - _STOP - (source_words or set())  # naming the dataset names no field
     return not words or (has_time and {w for w in words if not w.isdigit()} <= _TIME)
 
 
@@ -290,8 +293,13 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
     if is_forecast(question):
         return None, ("Câu hỏi hỏi về tương lai (dự báo). Phân tích AI chỉ trả lời từ dữ liệu đã có, "
                       "không dự báo.")
-    q = syllables(question)
-    qf = " ".join(re.split(r"[^0-9a-z]+", fold(question))).strip()
+    from app.services.analyst.intent import extract
+
+    # Constructions of the request (framing, ranking, quantity) are recognised as a
+    # whole; what grounding must explain is the rest. A ranking is an obligation.
+    intent = extract(question)
+    q = syllables(intent.content)
+    qf = intent.content
     carried = set(carried)
     by_ref = {f.ref: f for f in plan.explore.fields}
     phrases = _valid_phrases(covered or {}, question, q, by_ref)
@@ -315,9 +323,21 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
         if ref in by_ref:
             label_words |= _field_words(by_ref[ref])
     filters = {}
+    asked_words = syllables(question)
+    #: ref -> operator of a filter whose VALUE the question never says: the value is
+    #: re-resolved from the question's own words (value lookup) with that operator
+    ungrounded: dict[str, str] = {}
     for ref, cond in plan.filters.items():
         vals = cond.get("value") if isinstance(cond.get("value"), list) else [cond.get("value")]
         texts = [v for v in vals if isinstance(v, str)]
+        if (texts and cond.get("operator") in ("eq", "in", "ne", "not_in") and ref not in carried
+                and any(not (syllables(v) - _GENERIC <= asked_words) for v in texts)):
+            # Sealed set 8: "Màn hình 27" was planned as product_id = "p027", a value
+            # the question never says (and another product). A value must come from
+            # the question's words; the model's own (a code, a translation such as
+            # "Cancelled" for "huỷ") is looked up again below or the turn is refused.
+            ungrounded[ref] = str(cond.get("operator"))
+            continue
         if ref in by_ref and texts and all(syllables(v) - _GENERIC <= label_words for v in texts):
             # The value is made of field LABELS, not data: "Trạng thái đơn eq Trạng thái
             # đơn"; holdout set 3: "đơn hoàn trả" from "Tiền hoàn trả" + "Trạng thái đơn".
@@ -419,9 +439,6 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
                     grains[d] = g
 
     carried_filters = list(((previous or {}).get("filters") or {}).keys()) if isinstance(previous, dict) else []
-    broken = check_obligations(question, filters, carried_filters)
-    if broken:
-        return None, broken
 
     explained = set(_STOP) | syllables(plan.explore.dataset_name) | syllables(plan.explore.label)
     for ref in [*measures, *dims, *filters, *carried]:
@@ -444,7 +461,9 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
         found = value_lookup(question, unexplained, [*dims, *filters])
         if found:
             ref, value = found
-            prior = (filters.get(ref) or {}).get("operator")
+            prior = (filters.get(ref) or {}).get("operator") or ungrounded.pop(ref, None)
+            if prior is None and len(ungrounded) == 1:
+                prior = ungrounded.popitem()[1]  # the written value was on another field ("p027" on the id)
             if prior in ("ne", "not_in"):
                 # Sealed set 8: "không tính các đơn bị huỷ" was planned "status ne
                 # Cancelled" and this lookup rewrote it to "status eq Huỷ" - the
@@ -459,9 +478,13 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
                 explained |= _field_words(by_ref[ref])
             grains = {r: g for r, g in grains.items() if r in dims}
             unexplained = q - explained
-            broken = check_obligations(question, filters, carried_filters)  # the FINAL filters honour the words
-            if broken:
-                return None, broken
+    if ungrounded:
+        names = ", ".join(by_ref[r].label if r in by_ref else r for r in ungrounded)
+        return None, (f"Giá trị lọc cho “{names}” không có trong câu hỏi và không tìm được giá trị thật khớp với "
+                      "lời bạn hỏi, nên không trả lời thay vì lọc theo một giá trị khác.")
+    broken = check_obligations(question, filters, carried_filters)  # the FINAL filters honour the words
+    if broken:
+        return None, broken
     if unexplained:
         shown = [w for w in re.findall(r"\w+", str(question)) if fold(w) in unexplained]
         shown = list(dict.fromkeys(shown))[:6] or sorted(unexplained)[:6]
@@ -469,7 +492,19 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
                       "Hệ thống không bỏ qua phần đó; hãy diễn đạt lại theo tên trường hoặc giá trị có trong dữ liệu.")
     from app.services.analyst.planner import describe_plan
 
+    sorts = [s for s in plan.sorts if s.get("field") in set(dims) | set(measures)]
+    limit = None
+    if intent.ranking:
+        # "Top 3 ...", "xếp hạng ... từ cao xuống thấp", "... nhiều nhất": ordered by
+        # the metric over ONE breakdown, at most N groups. A ranking with nothing
+        # to rank, or within several breakdowns ("top 3 sản phẩm mỗi tháng"), is not
+        # in the approved contract: refused, never answered as an unordered list.
+        if not measures or len(dims) != 1:
+            return None, ("Câu hỏi yêu cầu xếp hạng (top/cao nhất) theo đúng một nhóm; kế hoạch truy vấn không "
+                          "có đúng một nhóm để xếp hạng, nên không trả lời.")
+        sorts = [{"field": measures[0], "direction": intent.ranking["direction"]}]
+        limit = intent.ranking["n"]
     out = replace(plan, measures=measures, dimensions=dims, time_grains=grains, filters=filters,
-                  sorts=[s for s in plan.sorts if s.get("field") in set(dims) | set(measures)])
+                  sorts=sorts, limit=limit)
     out.interpretation = describe_plan(out)
     return out, None
