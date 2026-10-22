@@ -507,3 +507,22 @@ def test_a_pick_cannot_change_another_field_or_leave_the_catalog(client, db, wor
         body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
                            json={"question": "x", "value_choice": choice}).json()
         assert body["status"] == "unsupported" and "rows" not in body, (choice, body)
+
+
+def test_a_pick_for_an_excluded_value_stays_an_exclusion(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    v = world["v"]
+    model(_planner(world, dims=("region",), extra={
+        "filters": {f"{v}.region": {"operator": "ne", "value": "Atlantis"}},
+        "covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region", "không tính vùng Atlantis": f"{v}.region"}}))
+    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                        json={"question": "Doanh thu theo vùng không tính vùng Atlantis"}).json()
+    assert first["status"] == "clarify" and first["choice_field"] == f"{v}.region", first
+    model(_never_called)
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={
+        "question": "x", "value_choice": {"plan": first["plan"], "field": f"{v}.region", "value": "Nam"}}).json()
+    assert body["status"] == "answered", body
+    assert body["plan"]["filters"] == {f"{v}.region": {"operator": "ne", "value": "Nam"}}
+    regions = {r[c["name"]] for r in body["rows"] for c in body["columns"] if c["ref"] == f"{v}.region"}
+    assert regions == {"Bắc", "Trung"}
+

@@ -498,3 +498,14 @@ def test_a_period_filters_the_metrics_own_date_unless_another_is_named():
     out, why = ground(p, "Số lượt trả hàng của từng kênh bán theo ngày đặt hàng năm 2025")
     assert out is not None and out.filters == {"o.order_date": rng}, why
 
+
+def test_an_excluded_value_is_matched_to_the_real_value_or_asked():
+    """Sealed set 8 rerun: "ne huỷ" (lower case) matched no row, excluded nothing,
+    and the total of ALL orders was reported as the total without cancelled ones."""
+    p = _plan(["l.net_sales"], filters={"o.status": {"operator": "ne", "value": "huỷ"}})
+    fixed, options = _check_filter_values(p, _values(["Hoàn tất", "Huỷ"]))
+    assert fixed.filters == {"o.status": {"operator": "ne", "value": "Huỷ"}} and options == []
+    p = _plan(["l.net_sales"], filters={"o.status": {"operator": "not_in", "value": ["Atlantis"]}})
+    fixed, options = _check_filter_values(p, _values(["Hoàn tất", "Huỷ"]))
+    assert fixed is None and options == ["Hoàn tất", "Huỷ"]
+

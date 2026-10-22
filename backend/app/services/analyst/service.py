@@ -319,7 +319,7 @@ def _unmatched_filter(p: Plan, real: list) -> Optional[str]:
     folded = {fold(str(x)).strip() for x in real}
     for ref, cond in p.filters.items():
         vals = cond.get("value") if isinstance(cond.get("value"), list) else [cond.get("value")]
-        if cond.get("operator") in ("eq", "in") and any(
+        if cond.get("operator") in ("eq", "in", "ne", "not_in") and any(
                 isinstance(v, str) and fold(v).strip() not in folded for v in vals):
             return ref
     return None
@@ -335,9 +335,10 @@ def _apply_value_choice(choice: dict, catalog):
     if not isinstance(outcome, Plan):
         return outcome
     cond = outcome.filters.get(field_ref)
-    if not isinstance(cond, dict) or cond.get("operator") not in ("eq", "in"):
+    if not isinstance(cond, dict) or cond.get("operator") not in ("eq", "in", "ne", "not_in"):
         return Unsupported("Lựa chọn không khớp với bộ lọc của câu hỏi trước.")
-    outcome.filters = {**outcome.filters, field_ref: {"operator": "eq", "value": value.strip()}}
+    op = "ne" if cond.get("operator") in ("ne", "not_in") else "eq"  # an exclusion stays an exclusion
+    outcome.filters = {**outcome.filters, field_ref: {"operator": op, "value": value.strip()}}
     outcome.interpretation = describe_plan(outcome)
     return outcome
 
@@ -354,7 +355,10 @@ def _check_filter_values(p: Plan, values_of, search_of=None):
     for ref, cond in p.filters.items():
         op, value = cond.get("operator"), cond.get("value")
         wanted = value if isinstance(value, list) else [value]
-        if op not in ("eq", "in") or not all(isinstance(v, str) for v in wanted):
+        # An EXCLUSION is checked too (sealed set 8: "ne huỷ" matched no real value,
+        # excluded nothing, and the total of ALL orders was reported as the total
+        # without cancelled ones).
+        if op not in ("eq", "in", "ne", "not_in") or not all(isinstance(v, str) for v in wanted):
             new_filters[ref] = cond
             continue
         try:
