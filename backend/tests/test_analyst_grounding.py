@@ -342,3 +342,52 @@ def test_a_date_range_filter_is_kept_and_explains_the_period():
     out, why = ground(p, "Doanh số theo vùng năm 2025?", covered={"năm 2025": "o.order_date"})
     assert out is not None, why
     assert out.filters == p.filters and out.dimensions == ["c.region"]
+
+
+# ── sealed holdout set 6 (now a development set): rules, not question patches ──
+
+def test_conversational_words_and_a_described_breakdown_are_explained():
+    p, why = ground(_plan(["l.net_sales"], ["c.region"]), "Cho mình xem doanh số theo từng vùng miền nhé",
+                    covered={"doanh số": "l.net_sales", "vùng miền": "c.region"})
+    assert p is not None, why
+
+
+def test_a_capitalised_word_in_a_breakdown_phrase_still_needs_a_real_value():
+    p, why = ground(_plan(["l.net_sales"], ["o.channel"]), "Doanh số kênh Online",
+                    covered={"doanh số": "l.net_sales", "kênh Online": "o.channel"},
+                    value_lookup=lambda *_a: None)
+    assert p is None and "Online" in why
+
+
+def test_a_metric_phrase_keeps_catalog_words_and_refuses_unknown_modifiers():
+    ex = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="l",
+                        source_type="postgresql", label="C", fields=[*FIELDS,
+                            CatalogField("p.product_name", "dimension", "string", "Tên sản phẩm"),
+                            CatalogField("l.units", "measure", "sum", "Số lượng bán")])
+    p0 = Plan(explore=ex, dimensions=["p.category"], measures=["l.units"])
+    p, why = ground(p0, "Số lượng sản phẩm bán ra theo category",
+                    covered={"số lượng sản phẩm bán ra": "l.units", "category": "p.category"})
+    assert p is not None, why  # "sản phẩm" is a word of another field ("Tên sản phẩm"): catalog vocabulary
+    p, why = ground(_plan(["l.net_sales"], ["p.category"]), "Doanh số dự kiến theo category",
+                    covered={"doanh số dự kiến": "l.net_sales", "category": "p.category"})
+    assert p is None and "dự" in why
+
+
+def test_a_date_range_needs_a_year_and_is_not_also_a_breakdown_unless_asked():
+    rng = {"o.order_date": {"operator": "date_range", "value": {"from": "2023-01-01", "to": "2024-01-01"}}}
+    p, _ = ground(_plan(["o.order_count"], ["o.channel"], filters=rng), "Số đơn hàng mới theo kênh bán")
+    assert p is None or p.filters == {}  # no year in the question: the invented range is not applied
+    rng = {"o.order_date": {"operator": "date_range", "value": {"from": "2025-01-01", "to": "2026-01-01"}}}
+    p, why = ground(_plan(["l.net_sales"], ["c.region", "o.order_date"], {"o.order_date": "year"}, filters=rng),
+                    "Doanh số năm 2025 theo vùng")
+    assert p is not None and p.dimensions == ["c.region"], why
+    p, why = ground(_plan(["l.net_sales"], ["o.order_date"], {"o.order_date": "month"}, filters=rng),
+                    "Doanh số theo tháng trong năm 2025")
+    assert p is not None and p.dimensions == ["o.order_date"], why
+
+
+def test_a_period_phrase_the_model_left_unmapped_is_not_a_missing_field():
+    from app.services.analyst.grounding import is_function_phrase
+
+    assert is_function_phrase("Quý 1/2026", has_time=True)
+    assert not is_function_phrase("Quý 1/2026", has_time=False)

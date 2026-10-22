@@ -35,6 +35,7 @@ nhat nua o phai qua ra roi sang sao se so sanh ta tai tat the theo thi thu thuc 
 va van ve vi voi xem xin tong cong hang tach them rieng bang danh sach liet ke the nao the hien bao nhieu
 dang ky tu den gan day nhat cao thap lon nho manh yeu tang giam bien dong xu huong ket qua phan tich thay
 mang lai dem nhieu it
+minh toi chia ben thoi nhe vay oi a
 """.split())
 # Words that are explained by grouping on a time field.
 _TIME = set("ngay tuan thang quy nam thoi gian gan day xu huong bien dong".split())
@@ -74,7 +75,7 @@ def is_function_phrase(phrase: str, *, has_time: bool, source_words: set[str] | 
     time words when the plan groups by time (holdout: the model mapped "biến động
     ra sao", "tổng cộng" and "theo tháng" to null and the turn was refused)."""
     words = syllables(phrase) - _STOP - (source_words or set())  # naming the dataset names no field
-    return not words or (has_time and words <= _TIME)
+    return not words or (has_time and {w for w in words if not w.isdigit()} <= _TIME)
 
 
 def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> dict[str, set[str]]:
@@ -83,12 +84,16 @@ def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> d
     question — holdout: the model mapped the entire question to one field."""
     out: dict[str, set[str]] = {}
     content = q - _STOP
+    vocab: set[str] = set()
+    for fld in fields.values():
+        vocab |= _field_words(fld)
+    vocab -= _GENERIC
     for phrase, ref in (covered or {}).items():
         words = syllables(phrase)
         if not isinstance(ref, str) or not words or not words <= q:
             continue
-        if content and len(words & content) >= max(3, 0.7 * len(content)):
-            continue
+        if len(content) >= 3 and content <= words:
+            continue  # the whole question mapped to one field is not a mapping
         f = fields.get(ref)
         if f is not None and _vietnamese(f):
             # A field the owner named in Vietnamese can be compared word for word:
@@ -101,7 +106,18 @@ def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> d
             shared = words & _field_words(f)
             if not (shared - {"so", "id", "ma"}):
                 continue
-            words = shared
+            extra = words - shared - _STOP
+            if f.kind == "dimension":
+                # "vùng miền", "theo từng miền": lower-case words beside a breakdown's
+                # label describe it. A Capitalised word ("kênh Online", "ngành Thiết
+                # bị") reads as a data VALUE and must be explained by a real one.
+                lower = {fold(t) for t in re.findall(r"\w+", str(phrase)) if t == t.lower()}
+                words = shared | (extra & lower)
+            else:
+                # A metric phrase keeps only words that are themselves catalog
+                # vocabulary ("số lượng SẢN PHẨM bán ra"); a modifier no field knows
+                # ("dự kiến", "lợi nhuận") stays unexplained and is refused.
+                words = shared | (extra & vocab)
         out.setdefault(ref, set()).update(words)
     return out
 
@@ -114,6 +130,14 @@ def _phrase_words(covered: dict, ref: str, q: set[str]) -> set[str]:
         if target == ref and words and words <= q:
             out |= words
     return out
+
+
+def _capitalised(question: str) -> set[str]:
+    return {fold(t) for t in re.findall(r"\w+", str(question))[1:] if t[:1].isupper() or t.isdigit()}
+
+
+_YEAR = re.compile(r"\b(19|20)\d\d\b")
+_GRAIN_ASKED = re.compile(r"\b(theo|moi|tung|hang|qua|cac)\s+(ngay|tuan|thang|quy|nam)\b")
 
 
 def _vietnamese(field) -> bool:
@@ -225,9 +249,12 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
     for ref, cond in plan.filters.items():
         vals = cond.get("value") if isinstance(cond.get("value"), list) else [cond.get("value")]
         texts = [v for v in vals if isinstance(v, str)]
-        if ref in by_ref and texts and all(syllables(v) <= label_words for v in texts):
+        if ref in by_ref and texts and all(syllables(v) - _GENERIC <= label_words for v in texts):
             # The value is made of field LABELS, not data: "Trạng thái đơn eq Trạng thái
             # đơn"; holdout set 3: "đơn hoàn trả" from "Tiền hoàn trả" + "Trạng thái đơn".
+            continue
+        if cond.get("operator") == "date_range" and not _YEAR.search(str(question)):
+            # holdout set 6: "khách hàng MỚI đăng ký" became a 2023 range nobody asked for
             continue
         filters[ref] = cond
 
@@ -273,12 +300,16 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
         # up as that field's real value; one match turns the breakdown into a filter.
         for d in list(dims):
             extra = _phrase_words(covered or {}, d, q) - _field_words(by_ref[d]) - _STOP - _TIME if d in by_ref else set()
+            extra &= _capitalised(question)  # only value-like words are looked up (each lookup is a governed read)
             if not extra or d in plan.time_grains or not _vietnamese(by_ref[d]):
                 continue  # an English label is bridged by the phrase: no "extra" words to read
             found = value_lookup(question, extra, [r for r in [*dims, *filters] if r != d])
             if found and found[0] == d:
                 dims.remove(d)
                 filters[d] = {"operator": "eq", "value": found[1]}
+    asked_grain = bool(_GRAIN_ASKED.search(qf))
+    dims = [d for d in dims if not (d in plan.time_grains and (filters.get(d) or {}).get("operator") == "date_range"
+                                    and not asked_grain)]  # "năm 2025" filters the year; it is not a breakdown
     grains = {r: g for r, g in plan.time_grains.items() if r in dims}
 
     if isinstance(previous, dict):

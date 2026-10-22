@@ -234,9 +234,16 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
 
             from app.services.analyst.grounding import syllables as _syl
 
-            if is_function_phrase(phrase, has_time=bool(grains),
+            if is_function_phrase(phrase, has_time=bool(grains) or any(
+                    c.get("operator") == "date_range" for c in filters.values()),
                                   source_words=_syl(explore.dataset_name) | _syl(explore.label)):
                 continue  # "biến động ra sao", "tổng cộng", "theo tháng" name no field
+            if any(t[:1].isupper() for t in str(phrase).split()[1:]) or (
+                    str(phrase)[:1].isupper() and len(str(phrase).split()) > 1 and
+                    any(t[:1].isupper() for t in str(phrase).split()[1:])):
+                # "khách Doanh nghiệp": a Capitalised value the model could not place.
+                # Grounding looks it up among real values or refuses naming it.
+                continue
         if ref is None or ref not in in_plan:
             return Unsupported(f"Dữ liệu bạn được dùng không có trường cho “{str(phrase)[:80]}”, "
                                "nên không trả lời phần đó thay vì trả lời sai.")
