@@ -555,3 +555,17 @@ def test_a_ranking_without_exactly_one_breakdown_is_refused_not_listed():
                 covered={"vùng": "c.region", "kênh": "o.channel", "doanh số": "l.net_sales"})
     out, why = ground(two, "Top 3 vùng và kênh có doanh số cao nhất", covered=two.covered)
     assert out is None and "xếp hạng" in why
+
+
+def test_a_governed_synonym_names_a_breakdown_and_an_ungoverned_one_does_not():
+    gov = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="l",
+                         source_type="postgresql", label="C", fields=[
+                             CatalogField("l.net_sales", "measure", "sum", "Doanh số"),
+                             CatalogField("c.region", "dimension", "string", "Vùng", synonyms=("miền", "khu vực"))])
+    p = Plan(explore=gov, dimensions=["c.region"], measures=["l.net_sales"],
+             covered={"doanh số": "l.net_sales", "miền": "c.region"})
+    out, why = ground(p, "Doanh số theo miền", covered=p.covered)
+    assert out is not None and out.dimensions == ["c.region"], why
+    p2 = _plan(["l.net_sales"], ["c.region"], covered={"doanh số": "l.net_sales", "miền": "c.region"})
+    out, why = ground(p2, "Doanh số theo miền", covered=p2.covered)     # FIELDS has no governed "miền"
+    assert out is None and "miền" in why
