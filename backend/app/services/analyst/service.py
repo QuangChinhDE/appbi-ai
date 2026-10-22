@@ -45,7 +45,8 @@ def ledger_from_settings():
 
 def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] = None,
         drop_consent: Optional[str] = None, turn_id: Optional[str] = None,
-        ceiling_dataset_ids: Optional[list[int]] = None, consented_plan: Optional[dict] = None) -> dict:
+        ceiling_dataset_ids: Optional[list[int]] = None, consented_plan: Optional[dict] = None,
+        dataset_id: Optional[int] = None) -> dict:
     """One turn. `ceiling_dataset_ids` scopes the Analyst to a set of Datasets
     (a workspace); it can only NARROW what the person may read, never widen it."""
     from app.core.config import settings
@@ -67,6 +68,13 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     steps = []
 
     catalog = discover(authz)
+    if dataset_id is not None:
+        # The person chose the source (a clarification between datasets): only that
+        # Dataset's entries, and only if this turn's catalog still offers it.
+        catalog = [c for c in catalog if c.dataset_id == int(dataset_id)]
+        if not catalog:
+            return {"status": "unsupported", "turn_id": turn_id, "steps": steps,
+                    "message": "Nguồn bạn chọn không còn trong phạm vi bạn được dùng."}
     full_catalog = list(catalog)
     prev_explore = (previous or {}).get("explore_id") if isinstance(previous, dict) else None
     if prev_explore is not None:
@@ -115,10 +123,12 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         from app.services.analyst.grounding import other_source_named
         from app.services.analyst.planner import prompt_catalog
 
-        both = other_source_named(p, question, prompt_catalog(full_catalog)) if prev_explore is None else []
+        both = (other_source_named(p, question, prompt_catalog(full_catalog))
+                if prev_explore is None and dataset_id is None else [])
         if both:
-            return {"status": "clarify", "turn_id": turn_id, "steps": steps, "options": both[:6],
-                    "message": "Câu hỏi khớp với chỉ số ở nhiều nguồn dữ liệu. Bạn muốn dùng chỉ số nào?"}
+            return {"status": "clarify", "turn_id": turn_id, "steps": steps,
+                    "options": [o["label"] for o in both[:6]], "sources": both[:6],
+                    "message": "Câu hỏi khớp với chỉ số ở nhiều nguồn dữ liệu. Bạn muốn dùng nguồn nào?"}
     steps.append({"step": "plan", "detail": p.interpretation or "Đã chọn chỉ số, chiều và độ chi tiết thời gian.",
                   "source": p.explore.dataset_name})
 

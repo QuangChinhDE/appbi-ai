@@ -214,8 +214,9 @@ def test_a_metric_another_dataset_names_word_for_word_is_a_choice():
                               base_view="l", source_type="postgresql", label="Commerce",
                               fields=[CatalogField("l.net_sales", "measure", "sum", "Doanh số")])
     p = Plan(explore=sales, dimensions=[], measures=["i.revenue"])
-    assert other_source_named(p, "Xu hướng doanh số theo tháng", [sales, commerce]) == \
-        ["Revenue — Sales", "Doanh số — Commerce"]
+    # each choice carries the Dataset it pins, so the person's pick re-asks THAT source
+    assert other_source_named(p, "Xu hướng doanh số theo tháng", [sales, commerce]) == [
+        {"label": "Revenue — Sales", "dataset_id": 1}, {"label": "Doanh số — Commerce", "dataset_id": 2}]
     # "doanh thu" only shares a word with "Doanh số": not a second match
     assert other_source_named(p, "Doanh thu các nhóm sản phẩm theo tháng", [sales, commerce]) == []
 

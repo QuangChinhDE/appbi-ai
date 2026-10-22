@@ -400,3 +400,17 @@ def test_a_plan_without_a_consent_is_not_a_way_around_the_model(client, db, worl
     body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
                        json={"question": "x", "consented_plan": plan}).json()
     assert body["status"] == "unsupported" and "rows" not in body
+
+
+# ── PO A4: a source the person chose is the only source of the turn ──────────
+
+def test_a_chosen_source_pins_the_turn_and_an_unavailable_one_is_refused(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    model(_planner(world))
+    ok = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                     json={"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?",
+                           "dataset_id": world["ds"].id}).json()
+    assert ok["status"] == "answered", ok
+    other = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                        json={"question": "Doanh thu theo vùng?", "dataset_id": 987654321}).json()
+    assert other["status"] == "unsupported" and "rows" not in other

@@ -75,6 +75,8 @@ export interface AnalystTurn {
   code?: string;
   /** The server allows accepting this dropped filter (ANALYST_DROP_CONSENT_ENABLED). */
   consent_available?: boolean;
+  /** A clarification between datasets: each option and the Dataset it pins. */
+  sources?: { label: string; dataset_id: number }[];
   detail?: { dropped?: { field: string; reason: string }[]; query_fingerprint?: string; [k: string]: unknown };
   plan?: Record<string, unknown>;
   answer?: AnalystAnswer;
@@ -104,6 +106,7 @@ export const analystApi = {
     previous_plan?: Record<string, unknown> | null;
     drop_consent?: string | null;
     consented_plan?: Record<string, unknown> | null;
+    dataset_id?: number | null;
   }): Promise<AnalystTurn> => {
     const response = await apiClient.post('/analyst/ask', body, { timeout: 180_000 });
     return response.data;

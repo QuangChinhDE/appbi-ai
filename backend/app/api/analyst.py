@@ -73,6 +73,8 @@ class AskBody(BaseModel):
     drop_consent: Optional[str] = Field(None, max_length=2000)
     # The plan of the refused turn the person is accepting (see services/analyst/service.ask).
     consented_plan: Optional[dict] = None
+    # The Dataset the person chose in a clarification between sources.
+    dataset_id: Optional[int] = None
 
 
 class ConsentBody(BaseModel):
@@ -108,7 +110,8 @@ def ask(body: AskBody, db: Session = Depends(get_db),
     previous = body.previous_plan if isinstance(body.previous_plan, dict) else None
     return run_turn(db, user, body.question, _analyst_deps(), previous=previous,
                     drop_consent=body.drop_consent, turn_id=_turn(body.turn_id),
-                    consented_plan=body.consented_plan if isinstance(body.consented_plan, dict) else None)
+                    consented_plan=body.consented_plan if isinstance(body.consented_plan, dict) else None,
+                    dataset_id=body.dataset_id)
 
 
 @router.post("/consents")

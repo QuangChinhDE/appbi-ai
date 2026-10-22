@@ -176,11 +176,17 @@ def other_source_named(plan, question: str, others) -> list[str]:
             # the WHOLE label, as written, is in the question ("doanh số" in "xu hướng
             # doanh số"; not "doanh thu", which only shares a word)
             if f.kind == "measure" and label and f" {label} " in f" {qf} ":
-                named.append(f"{f.label} — {ex.dataset_name}")
+                named.append({"label": f"{f.label} — {ex.dataset_name}", "dataset_id": ex.dataset_id})
     if not named:
         return []
-    mine = [f"{by_ref[m].label} — {plan.explore.dataset_name}" for m in plan.measures if m in by_ref]
-    return list(dict.fromkeys(mine + named))
+    mine = [{"label": f"{by_ref[m].label} — {plan.explore.dataset_name}", "dataset_id": plan.explore.dataset_id}
+            for m in plan.measures if m in by_ref]
+    seen, out = set(), []
+    for o in mine + named:
+        if o["label"] not in seen:
+            seen.add(o["label"])
+            out.append(o)
+    return out
 
 
 def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | None = None,
