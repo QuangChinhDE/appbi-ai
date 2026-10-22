@@ -145,12 +145,16 @@ def _child_reserve(ledger, n, out):
     settings.LLM_TEST_PRICES_JSON = _json.dumps({"m": [0.0, 0.0, 1000.0]})  # 10 output tokens = 0.01 USD
     settings.ENVIRONMENT = "test"
     ok = 0
-    for _ in range(n):
-        try:
-            b.reserve("openai", "m", "", "", 10)
-            ok += 1
-        except b.BudgetRefused:
-            pass
+    try:
+        for _ in range(n):
+            try:
+                b.reserve("openai", "m", "", "", 10)
+                ok += 1
+            except b.BudgetRefused:
+                pass
+    except Exception as exc:  # a runner crash is a test failure, never a silent 0
+        out.put(f"error: {exc!r}")
+        return
     out.put(ok)
 
 
@@ -165,7 +169,9 @@ def test_concurrent_processes_never_reserve_past_the_cap(tmp_path):
         p.start()
     for p in procs:
         p.join(120)
-    granted = sum(out.get(timeout=5) for _ in procs)
+    results = [out.get(timeout=60) for _ in procs]
+    assert all(isinstance(r, int) for r in results), results
+    granted = sum(results)
     state = B.ledger_state(ledger)
     # cap 0.05, each worst case 0.01 (+ the empty prompt's overhead at price 0): exactly 5 fit
     assert granted == 5 and state["open"] == 5 and state["reserved"] == pytest.approx(0.05)

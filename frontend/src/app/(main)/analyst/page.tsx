@@ -55,8 +55,11 @@ function chartModel(turn: AnalystTurn) {
   const timeRef = Object.keys(plan.time_grains || {})[0];
   const measure = cols.find((c) => c.role === 'measure');
   const time = cols.find((c) => c.role === 'dimension' && c.ref === timeRef);
-  const cat = cols.find((c) => c.role === 'dimension' && c !== time);
-  if (!measure) return null;
+  const cats = cols.filter((c) => c.role === 'dimension' && c !== time);
+  const cat = cats[0];
+  // More than one category cannot be drawn as one series per category without
+  // hiding one of them: the table shows it instead (dogfood: vùng × kênh drew region only).
+  if (!measure || cats.length > 1) return null;
   const rows = turn.rows || [];
   if (time) {
     const totals = new Map<string, number>();
@@ -96,6 +99,7 @@ export default function AnalystPage() {
   /** Index from which the conversation is a new topic: follow-ups refine only
    *  answers after it (the server holds a follow-up to the previous source). */
   const [topicStart, setTopicStart] = useState(0);
+  const [showEarlier, setShowEarlier] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -187,7 +191,13 @@ export default function AnalystPage() {
 
         <SourcesPanel sources={sources} />
 
-        {history.map((ex, i) => (
+        {topicStart > 0 ? (
+          <button type="button" onClick={() => setShowEarlier((v) => !v)} data-testid="analyst-earlier-toggle"
+                  className="text-xs font-medium text-[#1a73e8] hover:underline">
+            {showEarlier ? t('analyst.hideEarlier') : t('analyst.showEarlier', { n: topicStart })}
+          </button>
+        ) : null}
+        {history.map((ex, i) => (i < topicStart && !showEarlier) ? null : (
           <ExchangeCard key={i} ex={ex} locale={locale} onAccept={() => acceptDrop(ex)}
                         onOption={(opt) => {
                           // A metric or source the server offered: the SAME question with that
@@ -229,8 +239,9 @@ export default function AnalystPage() {
             <label htmlFor="analyst-question" className="block text-xs font-medium text-[#5f6368]">
               {lastPlan ? t('analyst.followUp') : t('analyst.ask')}
             </label>
-            {lastPlan ? (
-              <button type="button" onClick={() => setTopicStart(history.length)} data-testid="analyst-new-topic"
+            {history.length > topicStart ? (
+              <button type="button" onClick={() => { setTopicStart(history.length); setShowEarlier(false); }}
+                      data-testid="analyst-new-topic"
                       className="text-xs font-medium text-[#1a73e8] hover:underline">{t('analyst.newTopic')}</button>
             ) : null}
           </div>
@@ -255,21 +266,32 @@ export default function AnalystPage() {
 function SourcesPanel({ sources }: { sources: AnalystSource[] | null }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  // One entry per Dataset: its explores offer nearly the same fields (dogfood: one
+  // Dataset was listed five times with the same measures in another order).
+  const datasets = useMemo(() => {
+    const by = new Map<string, { dataset: string; source_type: string; measures: string[] }>();
+    (sources || []).forEach((s) => {
+      const d = by.get(s.dataset) || { dataset: s.dataset, source_type: s.source_type, measures: [] };
+      s.measures.forEach((m) => { if (!d.measures.includes(m)) d.measures.push(m); });
+      by.set(s.dataset, d);
+    });
+    return [...by.values()];
+  }, [sources]);
   if (sources === null) return null;
   return (
     <section className="rounded-lg border border-[#dadce0] bg-white" data-testid="analyst-sources">
       <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open}
               className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium text-[#202124]">
         <span className="flex items-center gap-2"><Database className="h-4 w-4 text-[#1a73e8]" aria-hidden />
-          {t('analyst.sources')} <span className="rounded-full bg-[#e8f0fe] px-2 text-xs text-[#1a73e8]">{sources.length}</span></span>
+          {t('analyst.sources')} <span className="rounded-full bg-[#e8f0fe] px-2 text-xs text-[#1a73e8]">{datasets.length}</span></span>
         {open ? <ChevronUp className="h-4 w-4" aria-hidden /> : <ChevronDown className="h-4 w-4" aria-hidden />}
       </button>
       {open ? (
         <div className="border-t border-[#dadce0] px-4 py-3">
           {sources.length === 0 ? <p className="text-sm text-[#5f6368]">{t('analyst.sourcesEmpty')}</p> : (
             <ul className="grid gap-2 sm:grid-cols-2">
-              {sources.map((s) => (
-                <li key={s.explore_id} className="rounded-md border border-[#e8eaed] p-2 text-xs">
+              {datasets.map((s) => (
+                <li key={s.dataset} className="rounded-md border border-[#e8eaed] p-2 text-xs" data-testid="analyst-source">
                   <div className="font-medium text-[#202124]">{s.dataset} <span className="text-[#80868b]">· {s.source_type}</span></div>
                   <div className="mt-1 text-[#5f6368]">{s.measures.join(', ')}</div>
                 </li>
@@ -363,7 +385,9 @@ function AnswerView({ turn, locale }: { turn: AnalystTurn; locale: string }) {
                 {model.kind === 'line' ? (
                   <LineChart data={model.points} margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e8eaed" />
-                    <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+                    <XAxis dataKey="period" tick={{ fontSize: 11 }} interval={0} angle={model.points.length > 4 ? -30 : 0}
+                           textAnchor={model.points.length > 4 ? 'end' : 'middle'} height={model.points.length > 4 ? 56 : 30}
+                           tickFormatter={(v: string) => (String(v).length > 14 ? `${String(v).slice(0, 13)}…` : String(v))} />
                     <YAxis tick={{ fontSize: 11 }} width={72} tickFormatter={(v) => Number(v).toLocaleString(locale, { notation: 'compact' })} />
                     <Tooltip formatter={(v) => fmt(v, locale)} />
                     <Legend wrapperStyle={{ fontSize: 11 }} />
@@ -374,7 +398,9 @@ function AnswerView({ turn, locale }: { turn: AnalystTurn; locale: string }) {
                 ) : (
                   <BarChart data={model.points} margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e8eaed" />
-                    <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+                    <XAxis dataKey="period" tick={{ fontSize: 11 }} interval={0} angle={model.points.length > 4 ? -30 : 0}
+                           textAnchor={model.points.length > 4 ? 'end' : 'middle'} height={model.points.length > 4 ? 56 : 30}
+                           tickFormatter={(v: string) => (String(v).length > 14 ? `${String(v).slice(0, 13)}…` : String(v))} />
                     <YAxis tick={{ fontSize: 11 }} width={72} tickFormatter={(v) => Number(v).toLocaleString(locale, { notation: 'compact' })} />
                     <Tooltip formatter={(v) => fmt(v, locale)} />
                     <Bar dataKey={model.measure} fill="#1a73e8" isAnimationActive={false} />
@@ -406,7 +432,8 @@ function AnswerView({ turn, locale }: { turn: AnalystTurn; locale: string }) {
           <dl className="mt-2 space-y-1.5 text-[#3c4043]">
             <Row k={t('analyst.evidence.source')} v={`${ev.source} · ${ev.source_type}`} />
             <Row k={t('analyst.evidence.measures')} v={ev.measures.join(', ')} />
-            <Row k={t('analyst.evidence.filters')} v={ev.filters_applied.length ? ev.filters_applied.join(', ') : t('analyst.evidence.none')} />
+            <Row k={t('analyst.evidence.filters')} v={(ev.filters_described ?? ev.filters_applied).length
+              ? (ev.filters_described ?? ev.filters_applied).join('; ') : t('analyst.evidence.none')} />
             <Row k={t('analyst.evidence.bounds')} v={t('analyst.evidence.boundsValue', { rows: ev.bounds.max_rows, seconds: ev.bounds.timeout_seconds })} />
             <Row k={t('analyst.evidence.duration')} v={`${ev.duration_ms} ms`} />
             <Row k={t('analyst.evidence.freshness')} v={ev.freshness} />

@@ -51,6 +51,8 @@ export interface AnalystEvidence {
   policy_fingerprint: string;
   semantic_epoch: string;
   filters_applied: string[];
+  /** The applied filters as the person reads them ("Kênh bán là Online"). */
+  filters_described?: string[];
   filters_dropped: { field: string; reason: string; accepted_by_user: boolean }[];
   bounds: { max_rows: number; timeout_seconds: number; bq_max_bytes: number };
   rows_returned: number;

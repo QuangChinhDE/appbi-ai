@@ -103,7 +103,8 @@ def _ledger_lock(path: str):
             try:
                 os.mkdir(lockdir)
                 break
-            except FileExistsError:
+            except (FileExistsError, PermissionError):
+                # Windows answers PermissionError while another runner is removing it
                 try:
                     if time.time() - os.path.getmtime(lockdir) > LOCK_STALE_SECONDS:
                         os.rmdir(lockdir)  # its holder died inside the section
@@ -116,10 +117,14 @@ def _ledger_lock(path: str):
         try:
             yield
         finally:
-            try:
-                os.rmdir(lockdir)
-            except OSError:
-                pass
+            for _ in range(50):  # Windows may refuse briefly while another runner probes it
+                try:
+                    os.rmdir(lockdir)
+                    break
+                except FileNotFoundError:
+                    break
+                except OSError:
+                    time.sleep(0.01)
 
 
 def ledger_state(path: Optional[str] = None) -> dict:

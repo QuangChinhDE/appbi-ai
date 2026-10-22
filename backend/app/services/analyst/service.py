@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional
 
 from app.services.analyst import narrative
 from app.services.analyst.catalog import discover
-from app.services.analyst.planner import (Clarify, Plan, Unsupported, describe_plan, plan as make_plan, retarget,
+from app.services.analyst.planner import (_describe_filter, Clarify, Plan, Unsupported, describe_plan, plan as make_plan, retarget,
                                           validate)
 from app.services.governed_query.principal import GovernedRefusal
 
@@ -262,6 +262,8 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
             "explore_id": p.explore.explore_id, "datasets": list(ev.datasets), "dialect": ev.dialect,
             "sql_fingerprint": ev.sql_fingerprint[:16], "policy_fingerprint": ev.policy_fingerprint[:16],
             "semantic_epoch": ev.semantic_epoch, "filters_applied": list(ev.filters_applied),
+            # the same filters as the person reads them (label, operator, value), not internal refs
+            "filters_described": [_describe_filter(labels_of(p).get(r, r), c) for r, c in p.filters.items()],
             "filters_dropped": list(ev.filters_dropped), "bounds": ev.bounds.as_dict(),
             "rows_returned": ev.rows_returned, "duration_ms": ev.duration_ms, "freshness": ev.freshness.mode,
             "measures": [labels.get(m, m) for m in p.measures],

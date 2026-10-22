@@ -329,7 +329,11 @@ def _describe_filter(label: str, cond: dict) -> str:
         except ValueError:
             last = str(v.get("to"))
         return f"{label} từ {v.get('from')} đến {last} (gồm cả hai ngày)"
-    return f"{label} {cond.get('operator')} {v}"
+    op = cond.get("operator")
+    words = {"eq": "là", "ne": "không phải", "in": "thuộc", "not_in": "không thuộc", "gt": ">", "gte": "≥",
+             "lt": "<", "lte": "≤", "contains": "chứa", "starts_with": "bắt đầu bằng", "ends_with": "kết thúc bằng"}
+    shown = ", ".join(str(x) for x in v) if isinstance(v, list) else v
+    return f"{label} {words.get(str(op), op)} {shown}"
 
 
 def describe_plan(p: Plan) -> str:
