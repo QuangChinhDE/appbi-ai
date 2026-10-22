@@ -305,7 +305,7 @@ def install_guard() -> bool:
     return True
 
 
-def replay_lookup(question: str, followup: bool) -> Optional[dict]:
+def replay_lookup(question: str, followup: bool, choice: Optional[str] = None) -> Optional[dict]:
     """The recorded planner output for this exact question (and follow-up-ness),
     from the replay file, or None. Refused in production."""
     s = _settings()
@@ -322,6 +322,6 @@ def replay_lookup(question: str, followup: bool) -> Optional[dict]:
             except ValueError:
                 continue
             if row.get("question") == question and bool(row.get("followup")) == bool(followup) \
-                    and isinstance(row.get("raw"), dict):
+                    and (row.get("choice") or None) == (choice or None) and isinstance(row.get("raw"), dict):
                 hit = row["raw"]  # the last recording wins
     return hit

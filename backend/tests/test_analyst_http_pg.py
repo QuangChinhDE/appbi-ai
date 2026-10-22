@@ -590,3 +590,125 @@ def test_a_value_the_question_never_says_is_re_resolved_from_its_words_or_refuse
     body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
                        json={"question": "Doanh thu vùng Atlantis"}).json()
     assert body["status"] != "answered" and "rows" not in body, body
+
+
+# ── Metric/source clarification: a server-signed, re-validated choice (PO 2026-10-22) ──
+# A pick re-asked as "<question> — <option>" was refused by grounding ("tốt"). The
+# option now carries a token binding user, question, Dataset, explore, metric and the
+# catalog version, with an expiry; the pick is re-authorised against the current
+# catalog, so a replayed or forged token never widens access.
+
+def _clarify_then(world, after):
+    v, ex = world["v"], world["explore"].id
+    state = {"n": 0}
+
+    def complete(prompt, system=None, max_tokens=None):
+        state["n"] += 1
+        if '"chosen_metric"' in prompt:
+            return after
+        return {"status": "clarify", "question": "Tốt theo nghĩa nào?",
+                "options": [{"label": "Doanh thu", "explore_id": ex, "measure": f"{v}.revenue"},
+                            {"label": "Số đơn", "explore_id": ex, "measure": f"{v}.orders"},
+                            {"label": "Ngoài phạm vi", "explore_id": 987654321, "measure": "x.y"}]}
+    return complete
+
+
+def _region_plan(world):
+    v = world["v"]
+    return {"status": "plan", "explore_id": world["explore"].id, "dimensions": [f"{v}.region"],
+            "measures": [f"{v}.revenue"], "covered": {"vùng": f"{v}.region"}}
+
+
+Q_BEST = "Vùng nào tốt nhất?"
+
+
+def test_a_metric_pick_is_answered_with_exactly_that_metric_as_a_ranking(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    model(_clarify_then(world, _region_plan(world)))
+    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": Q_BEST}).json()
+    assert first["status"] == "clarify", first
+    assert [c["label"] for c in first["choices"]] == ["Doanh thu", "Số đơn"]   # the out-of-catalog option is not pickable
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": Q_BEST, "choice_token": first["choices"][0]["token"]}).json()
+    assert body["status"] == "answered", body
+    v = world["v"]
+    assert body["plan"]["measures"] == [f"{v}.revenue"]
+    assert body["plan"]["sorts"] == [{"field": f"{v}.revenue", "direction": "desc"}]
+    assert body["answer"]["headline"].startswith(body["answer"]["headline"].split(":")[0]) and "Bắc" in body["answer"]["headline"]
+
+
+def test_a_forged_foreign_or_misdirected_choice_is_refused(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"], world["viewer"])
+    model(_clarify_then(world, _region_plan(world)))
+    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": Q_BEST}).json()
+    token = first["choices"][0]["token"]
+    body, mac = token.rsplit(".", 1)
+    for who, question, tok in ((world["analyst"], Q_BEST, body + "." + ("0" * len(mac))),   # tampered
+                               (world["viewer"], Q_BEST, token),                          # another person
+                               (world["analyst"], "Doanh thu theo vùng?", token)):       # another question
+        r = client.post("/api/v1/analyst/ask", headers=who.headers, json={"question": question, "choice_token": tok})
+        assert r.status_code in (200, 403), r.text
+        if r.status_code == 200:
+            assert r.json()["status"] == "unsupported" and "rows" not in r.json(), r.json()
+
+
+def test_an_expired_stale_or_revoked_choice_is_refused(client, db, world, model, monkeypatch):  # noqa: F811
+    from app.models.dataset import DatasetGrant
+    from app.models.semantic import SemanticView
+    from app.services.analyst import service as svc
+
+    _grant_module(db, world["analyst"])
+    model(_clarify_then(world, _region_plan(world)))
+
+    def pick():
+        first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": Q_BEST}).json()
+        return first["choices"][0]["token"]
+
+    def ask(tok):
+        return client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                           json={"question": Q_BEST, "choice_token": tok}).json()
+
+    monkeypatch.setattr(svc, "CHOICE_TTL_SECONDS", -1)
+    assert "hết hạn" in ask(pick())["message"]
+    monkeypatch.setattr(svc, "CHOICE_TTL_SECONDS", 900)
+    tok = pick()
+    view = db.query(SemanticView).filter(SemanticView.name == world["v"]).one()
+    view.measures = [{**m, "label": "Doanh thu gộp"} if m.get("name") == "revenue" else m for m in view.measures]
+    db.commit()
+    assert "thay đổi" in ask(tok)["message"]                     # the catalog moved under the pick
+    tok = pick()
+    db.query(DatasetGrant).filter(DatasetGrant.dataset_id == world["ds"].id,
+                                  DatasetGrant.user_id == world["analyst"].id).delete()
+    db.commit()
+    gone = ask(tok)
+    assert gone["status"] == "unsupported" and "rows" not in gone, gone
+
+
+def test_asking_again_after_a_pick_is_not_a_loop(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    again = {"status": "clarify", "question": "?", "options": ["a", "b"]}
+    model(_clarify_then(world, again))
+    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": Q_BEST}).json()
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": Q_BEST, "choice_token": first["choices"][1]["token"]}).json()
+    assert body["status"] == "unsupported" and "rows" not in body
+
+
+def test_a_source_choice_token_pins_the_dataset_and_is_bound_to_the_person(client, db, world, model):  # noqa: F811
+    from app.services.analyst import service as svc
+    from app.services.analyst.catalog import discover
+    from app.services.governed_query import AuthorizationContext, EffectivePrincipal, SurfaceCeiling
+
+    _grant_module(db, world["analyst"])
+    u = world["analyst"]
+    from app.models.user import User
+
+    user = db.get(User, u.id)
+    authz = AuthorizationContext(db=db, principal=EffectivePrincipal.for_user(user, surface="analyst", request_id="t"),
+                                 user=user, ceiling=SurfaceCeiling.of(None))
+    cat = discover(authz)
+    tok = svc.sign_choice(user_id=str(u.id), question="Doanh thu?", catalog=cat, dataset_id=world["ds"].id)
+    ok, why = svc.verify_choice(tok, user_id=str(u.id), question="Doanh thu?", catalog=cat)
+    assert ok == {"dataset_id": world["ds"].id, "explore_id": None, "measure": None}, why
+    assert svc.verify_choice(tok, user_id="someone-else", question="Doanh thu?", catalog=cat)[0] is None
+    assert svc.verify_choice(tok, user_id=str(u.id), question="Doanh thu?", catalog=[])[0] is None

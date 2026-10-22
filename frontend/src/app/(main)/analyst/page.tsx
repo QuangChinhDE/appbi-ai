@@ -118,7 +118,8 @@ export default function AnalystPage() {
   }, [history, topicStart]);
 
   const ask = useCallback(async (q: string, opts: { followUp?: boolean; consent?: string; plan?: Record<string, unknown>; datasetId?: number;
-                                          valueChoice?: { plan: Record<string, unknown>; field: string; value: string } } = {}) => {
+                                          valueChoice?: { plan: Record<string, unknown>; field: string; value: string };
+                                          choiceToken?: string } = {}) => {
     const text = q.trim();
     if (!text || running) return;
     const turnId = newTurnId();
@@ -132,6 +133,7 @@ export default function AnalystPage() {
         consented_plan: opts.plan ?? null,
         dataset_id: opts.datasetId ?? null,
         value_choice: opts.valueChoice ?? null,
+        choice_token: opts.choiceToken ?? null,
       });
       setHistory((h) => [...h, { question: text, turn }]);
     } catch (err) {
@@ -188,7 +190,11 @@ export default function AnalystPage() {
         {history.map((ex, i) => (
           <ExchangeCard key={i} ex={ex} locale={locale} onAccept={() => acceptDrop(ex)}
                         onOption={(opt) => {
-                          // A choice between datasets re-asks the SAME question pinned to that source.
+                          // A metric or source the server offered: the SAME question with that
+                          // option's signed token (the server re-validates it; no text is appended).
+                          const pick = ex.turn?.choices?.find((c) => c.label === opt)
+                            ?? ex.turn?.sources?.find((s) => s.label === opt && s.token);
+                          if (pick?.token) return ask(ex.question, { choiceToken: pick.token });
                           const src = ex.turn?.sources?.find((s) => s.label === opt);
                           if (src) return ask(ex.question, { datasetId: src.dataset_id });
                           // A real value picked for a filter that matched none: the same plan, that value.

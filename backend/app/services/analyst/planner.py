@@ -50,6 +50,8 @@ class Plan:
 class Clarify:
     question: str
     options: list[str]
+    #: options that name a catalog metric: [{"label", "explore_id", "measure"}] (validated)
+    choices: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -65,7 +67,8 @@ SYSTEM = (
     '"time_grains":{ref:"day|week|month|quarter|year"},"filters":{ref:{"operator":op,"value":v}},'
     '"sorts":[{"field":ref,"direction":"asc|desc"}],"covered":{"<question phrase>":ref|null},'
     '"interpretation":"<one sentence, user language>"}\n'
-    '{"status":"clarify","question":"<user language>","options":["..."]}  when two catalog meanings fit equally\n'
+    '{"status":"clarify","question":"<user language>","options":[{"label":"<user language>","explore_id":<int>,'
+    '"measure":ref}]}  when two catalog metrics or sources fit equally (each option is one catalog metric)\n'
     '{"status":"unsupported","reason":"<user language>"}  when the catalog cannot answer.\n'
     "Allowed filter operators: " + ", ".join(OPERATORS) + ". "
     "For a trend over time include the time dimension in dimensions and give it a grain. "
@@ -83,6 +86,8 @@ SYSTEM = (
     "covered (or return unsupported); never answer a different question. "
     "When previous_plan is given, the question refines it: keep its measures, dimensions and filters and "
     "change only what the question changes. "
+    "When chosen_metric is given, the person already chose that metric for this question: plan with exactly "
+    "that explore_id and measure and do not ask again. "
     "An explicit period in the question (năm 2025, quý 2/2026, tháng 3/2025, từ 05/01/2025 đến 20/01/2025) is a "
     "filter on the metric's date field: {ref:{\"operator\":\"date_range\",\"value\":{\"from\":\"2025-01-01\","
     "\"to\":\"2026-01-01\"}}} where from is the first day INCLUDED and to is the day AFTER the last one (excluded). "
@@ -121,25 +126,45 @@ def retarget(p: "Plan", catalog: list[CatalogExplore]) -> "Plan":
     return p
 
 
-def build_prompt(question: str, catalog: list[CatalogExplore], previous: Optional[dict]) -> str:
+def build_prompt(question: str, catalog: list[CatalogExplore], previous: Optional[dict],
+                 chosen: Optional[dict] = None) -> str:
     body = {"question": question, "catalog": [c.as_prompt() for c in prompt_catalog(catalog)]}
     if previous:
         body["previous_plan"] = previous  # a follow-up refines the last answer
+    if chosen:
+        body["chosen_metric"] = {"explore_id": chosen["explore_id"], "measure": chosen["measure"]}
     return json.dumps(body, ensure_ascii=False)
 
 
+def _hold_to_choice(outcome, chosen: Optional[dict]):
+    """After the person chose a metric, the plan uses exactly it; asking again is not
+    an answer (a loop), and another metric is refused rather than shown."""
+    if not chosen:
+        return outcome
+    if isinstance(outcome, Clarify):
+        return Unsupported("Vẫn chưa xác định được câu hỏi sau lựa chọn của bạn; hãy diễn đạt lại cụ thể hơn.")
+    if isinstance(outcome, Plan) and outcome.measures != [chosen["measure"]]:
+        if chosen["measure"] not in {f.ref for f in outcome.explore.fields if f.kind == "measure"}:
+            return Unsupported("Kế hoạch truy vấn không dùng chỉ số bạn đã chọn, nên không trả lời.")
+        outcome.measures = [chosen["measure"]]
+        outcome.interpretation = describe_plan(outcome)
+    return outcome
+
+
 def plan(question: str, catalog: list[CatalogExplore], *, previous: Optional[dict] = None,
-         complete: Optional[Callable[..., Optional[dict]]] = None):
+         complete: Optional[Callable[..., Optional[dict]]] = None, chosen: Optional[dict] = None):
+    """`chosen`: a metric the person picked from a clarification, already verified by
+    the server ({explore_id, measure}); the catalog passed is that Dataset only."""
     if not catalog:
         return Unsupported("Bạn chưa có quyền khai thác dữ liệu nào phù hợp để trả lời câu hỏi này.")
     from app.core.config import settings as _settings
     from app.services import llm_test_budget as _budget
 
     if str(getattr(_settings, "ANALYST_PLANNER_REPLAY_PATH", "") or ""):
-        raw = _budget.replay_lookup(question, bool(previous))
+        raw = _budget.replay_lookup(question, bool(previous), choice=(chosen or {}).get("measure"))
         if raw is None:
             return Unsupported("Không có kết quả mô hình đã ghi cho câu hỏi này (chế độ phát lại).")
-        return validate(raw, catalog)
+        return _hold_to_choice(validate(raw, catalog), chosen)
     _budget.QUESTION.set(question)
     _budget.FOLLOWUP.set(bool(previous))
     if complete is None:
@@ -149,10 +174,10 @@ def plan(question: str, catalog: list[CatalogExplore], *, previous: Optional[dic
         strong = str(getattr(settings, "ANALYST_PLANNER_MODEL", "default")).strip().lower() == "strong"
         complete = (lambda prompt, system=None, max_tokens=900:
                     LLMClient.complete_json(prompt, system=system, max_tokens=max_tokens, strong=strong))
-    raw = complete(build_prompt(question, catalog, previous), system=SYSTEM, max_tokens=900)
+    raw = complete(build_prompt(question, catalog, previous, chosen), system=SYSTEM, max_tokens=900)
     if raw is None:
         return Unsupported("Chưa kết nối được mô hình AI để hiểu câu hỏi.")
-    return validate(raw, catalog)
+    return _hold_to_choice(validate(raw, catalog), chosen)
 
 
 def validate(raw: Any, catalog: list[CatalogExplore]):
@@ -160,8 +185,28 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
         return Unsupported("Không hiểu được kế hoạch truy vấn.")
     status = raw.get("status")
     if status == "clarify":
-        opts = [str(o)[:200] for o in (raw.get("options") or []) if str(o).strip()][:6]
-        return Clarify(str(raw.get("question") or "Bạn muốn hỏi theo nghĩa nào?")[:400], opts)
+        by_explore = {c.explore_id: c for c in catalog}
+        opts, choices = [], []
+        for o in (raw.get("options") or [])[:6]:
+            if isinstance(o, dict):
+                label = str(o.get("label") or "").strip()[:200]
+                try:
+                    ex = by_explore.get(int(o.get("explore_id")))
+                except (TypeError, ValueError):
+                    ex = None
+                meas = {f.ref: f for f in ex.fields if f.kind == "measure"} if ex else {}
+                want = str(o.get("measure") or "")
+                bare = [r for r in meas if r.rsplit(".", 1)[-1] == want.rsplit(".", 1)[-1]]
+                ref = want if want in meas else (bare[0] if len(bare) == 1 else None)
+                if ex is not None and ref in meas:
+                    # only an option naming a metric THIS person's catalog has is pickable
+                    label = label or f"{meas[ref].label} — {ex.dataset_name}"
+                    choices.append({"label": label, "explore_id": ex.explore_id, "measure": ref})
+                if label:
+                    opts.append(label)
+            elif str(o).strip():
+                opts.append(str(o)[:200])
+        return Clarify(str(raw.get("question") or "Bạn muốn hỏi theo nghĩa nào?")[:400], opts, choices)
     if status == "unsupported":
         return Unsupported(str(raw.get("reason") or "Dữ liệu được phép không trả lời được câu hỏi này.")[:400])
     if status != "plan":

@@ -77,6 +77,8 @@ class AskBody(BaseModel):
     dataset_id: Optional[int] = None
     # A real value picked for a filter that matched none: {plan, field, value}.
     value_choice: Optional[dict] = None
+    # A metric/source picked from a clarification: the server-signed token of that option.
+    choice_token: Optional[str] = Field(None, max_length=2000)
 
 
 class ConsentBody(BaseModel):
@@ -121,7 +123,8 @@ def ask(body: AskBody, request: Request, db: Session = Depends(get_db),
                     drop_consent=body.drop_consent, turn_id=_turn(body.turn_id),
                     consented_plan=body.consented_plan if isinstance(body.consented_plan, dict) else None,
                     dataset_id=body.dataset_id,
-                    value_choice=body.value_choice if isinstance(body.value_choice, dict) else None)
+                    value_choice=body.value_choice if isinstance(body.value_choice, dict) else None,
+                    choice_token=body.choice_token)
 
 
 @router.post("/consents")

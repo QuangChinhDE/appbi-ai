@@ -46,7 +46,8 @@ def ledger_from_settings():
 def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] = None,
         drop_consent: Optional[str] = None, turn_id: Optional[str] = None,
         ceiling_dataset_ids: Optional[list[int]] = None, consented_plan: Optional[dict] = None,
-        dataset_id: Optional[int] = None, value_choice: Optional[dict] = None) -> dict:
+        dataset_id: Optional[int] = None, value_choice: Optional[dict] = None,
+        choice_token: Optional[str] = None) -> dict:
     """One turn. `ceiling_dataset_ids` scopes the Analyst to a set of Datasets
     (a workspace); it can only NARROW what the person may read, never widen it."""
     from app.core.config import settings
@@ -68,6 +69,16 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     steps = []
 
     catalog = discover(authz)
+    chosen = None
+    if choice_token:
+        # A metric/source the person picked from THIS server's clarification. The
+        # token binds user, question, Dataset, explore, metric and the catalog
+        # version, and expires; the pick is re-authorised against THIS turn's
+        # catalog, so replaying it can never widen what the person may read.
+        chosen, why = verify_choice(choice_token, user_id=str(user.id), question=question, catalog=catalog)
+        if chosen is None:
+            return {"status": "unsupported", "turn_id": turn_id or uuid.uuid4().hex, "steps": [], "message": why}
+        dataset_id = chosen["dataset_id"]
     if dataset_id is not None:
         # The person chose the source (a clarification between datasets): only that
         # Dataset's entries, and only if this turn's catalog still offers it.
@@ -108,10 +119,15 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         # changes, and the value is checked against the data again before the query.
         outcome = _apply_value_choice(value_choice, catalog)
     else:
-        outcome = make_plan(question, catalog, previous=previous, complete=deps.complete)
+        outcome = make_plan(question, catalog, previous=previous, complete=deps.complete,
+                            chosen=({"explore_id": chosen["explore_id"], "measure": chosen["measure"]}
+                                    if chosen and chosen.get("measure") else None))
     if isinstance(outcome, Clarify):
+        choices = [{"label": c["label"], "token": sign_choice(
+                        user_id=str(user.id), question=question, catalog=full_catalog,
+                        explore_id=c["explore_id"], measure=c["measure"])} for c in outcome.choices]
         return {"status": "clarify", "turn_id": turn_id, "steps": steps, "message": outcome.question,
-                "options": outcome.options}
+                "options": outcome.options, "choices": [c for c in choices if c["token"]]}
     if isinstance(outcome, Unsupported):
         return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": outcome.reason}
     p: Plan = retarget(outcome, full_catalog)
@@ -122,6 +138,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         carried = [*(previous or {}).get("dimensions", []), *(previous or {}).get("measures", []),
                    *((previous or {}).get("filters") or {}).keys()] if isinstance(previous, dict) else []
         p, why = ground(p, question, carried=carried, covered=p.covered,
+                        chosen_measure=(chosen or {}).get("measure"),
                         previous=previous if isinstance(previous, dict) else None,
                         value_lookup=lambda q, words, used: _find_value_filter(authz, principal, p, q, words,
                                                                                used, settings, turn_id, deps))
@@ -140,6 +157,9 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
             return ask(db, user, question, deps, turn_id=turn_id, ceiling_dataset_ids=ceiling_dataset_ids,
                        dataset_id=next(iter(verbatim)))
         if both:
+            for o in both[:6]:
+                o["token"] = sign_choice(user_id=str(user.id), question=question, catalog=full_catalog,
+                                         dataset_id=o["dataset_id"])
             return {"status": "clarify", "turn_id": turn_id, "steps": steps,
                     "options": [o["label"] for o in both[:6]], "sources": both[:6],
                     "message": "Câu hỏi khớp với chỉ số ở nhiều nguồn dữ liệu. Bạn muốn dùng nguồn nào?"}
@@ -351,6 +371,93 @@ def _can_save_chart(authz, user, p: Plan) -> bool:
 
 def labels_of(p: Plan) -> dict:
     return {f.ref: f.label for f in p.explore.fields}
+
+
+CHOICE_TTL_SECONDS = 15 * 60
+
+
+def _catalog_epoch(entries) -> str:
+    """A fingerprint of what the catalog offers for these explores: a renamed,
+    removed or retyped field makes an earlier pick stale."""
+    import hashlib
+    import json as _json
+
+    body = sorted((e.explore_id, e.dataset_id, sorted((f.ref, f.kind, f.type, f.label) for f in e.fields))
+                  for e in entries)
+    return hashlib.sha256(_json.dumps(body, ensure_ascii=False, default=str).encode()).hexdigest()[:24]
+
+
+def _qhash(question: str) -> str:
+    import hashlib
+    import unicodedata
+
+    return hashlib.sha256(unicodedata.normalize("NFC", question.strip()).encode()).hexdigest()[:24]
+
+
+def _mac(body: bytes) -> str:
+    import hashlib
+    import hmac
+
+    from app.core.config import settings
+
+    key = ("analyst-choice:" + str(settings.SECRET_KEY)).encode()
+    return hmac.new(key, body, hashlib.sha256).hexdigest()
+
+
+def sign_choice(*, user_id: str, question: str, catalog, dataset_id: Optional[int] = None,
+                explore_id: Optional[int] = None, measure: Optional[str] = None) -> Optional[str]:
+    """A signed, expiring handle for one clarification option."""
+    import base64
+    import json as _json
+    import time
+
+    if explore_id is not None:
+        ex = next((c for c in catalog if c.explore_id == explore_id), None)
+        if ex is None:
+            return None
+        dataset_id = ex.dataset_id
+        entries = [ex]
+    else:
+        entries = [c for c in catalog if c.dataset_id == dataset_id]
+        if not entries:
+            return None
+    payload = {"u": user_id, "q": _qhash(question), "d": int(dataset_id), "e": explore_id, "m": measure,
+               "v": _catalog_epoch(entries), "x": int(time.time()) + CHOICE_TTL_SECONDS}
+    body = base64.urlsafe_b64encode(_json.dumps(payload, separators=(",", ":")).encode())
+    return body.decode() + "." + _mac(body)
+
+
+def verify_choice(token: str, *, user_id: str, question: str, catalog):
+    """(choice, None) or (None, reason). Checks signature, owner, question, expiry,
+    that the Dataset/explore/metric are still in THIS turn's catalog, and that the
+    catalog has not changed since the option was offered."""
+    import base64
+    import hmac
+    import json as _json
+    import time
+
+    try:
+        body, mac = str(token).rsplit(".", 1)
+        if not hmac.compare_digest(mac, _mac(body.encode())):
+            raise ValueError
+        payload = _json.loads(base64.urlsafe_b64decode(body.encode()))
+    except (ValueError, TypeError):
+        return None, "Lựa chọn không hợp lệ."
+    if payload.get("u") != user_id or payload.get("q") != _qhash(question):
+        return None, "Lựa chọn không thuộc câu hỏi này của bạn."
+    if int(payload.get("x") or 0) < time.time():
+        return None, "Lựa chọn đã hết hạn; hãy hỏi lại."
+    if payload.get("e") is not None:
+        entries = [c for c in catalog if c.explore_id == payload["e"]]
+        if not entries or payload.get("m") not in {f.ref for f in entries[0].fields if f.kind == "measure"}:
+            return None, "Nguồn hoặc chỉ số bạn chọn không còn trong phạm vi bạn được dùng."
+    else:
+        entries = [c for c in catalog if c.dataset_id == payload.get("d")]
+        if not entries:
+            return None, "Nguồn bạn chọn không còn trong phạm vi bạn được dùng."
+    if _catalog_epoch(entries) != payload.get("v"):
+        return None, "Mô hình dữ liệu đã thay đổi từ lúc bạn được hỏi lại; hãy hỏi lại."
+    return {"dataset_id": int(payload["d"]), "explore_id": payload.get("e"), "measure": payload.get("m")}, None
 
 
 def _relocate_values(p: Plan, values_of) -> Optional[Plan]:

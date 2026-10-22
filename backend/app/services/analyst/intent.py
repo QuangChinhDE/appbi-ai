@@ -40,6 +40,10 @@ _ORDER_DESC = re.compile(r"\btu (?:cao|lon|nhieu) (?:xuong|den|toi) (?:thap|nho|
 _ORDER_ASC = re.compile(r"\btu (?:thap|nho|it) (?:len|den|toi) (?:cao|lon|nhieu)\b")
 _QUANTITY = re.compile(r"\b(?:bao nhieu|may|so)\s+(?:tien|cai|chiec|lan|luot)\b")
 _DESC_WORDS = {"cao", "lon", "nhieu", "chay"}
+# An evaluative superlative ("tốt nhất", "kém nhất") has no meaning of its own: only
+# once the person CHOSE the metric it is measured by does it become a ranking.
+_EVAL_SUPER = re.compile(r"\b(tot|hieu qua|manh|kem|te|xau|yeu)\s+nhat\b")
+_EVAL_ASC = {"kem", "te", "xau", "yeu"}
 
 
 @dataclass
@@ -57,7 +61,7 @@ def _norm(question: str) -> str:
     return " ".join(w for w in re.split(r"[^0-9a-z]+", fold(question)) if w)
 
 
-def extract(question: str) -> Intent:
+def extract(question: str, *, chosen_metric: bool = False) -> Intent:
     text = _norm(question)
     consumed: list[str] = []
 
@@ -90,6 +94,10 @@ def extract(question: str) -> Intent:
         text, m = cut(_SUPER, text)
         if m:
             direction = direction or ("desc" if m.group(1) in _DESC_WORDS else "asc")
+    if chosen_metric and direction is None:
+        text, m = cut(_EVAL_SUPER, text)
+        if m:
+            direction = "asc" if m.group(1) in _EVAL_ASC else "desc"
     text, m = cut(_ORDER_DESC, text)
     if m:
         direction = "desc"

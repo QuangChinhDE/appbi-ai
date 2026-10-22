@@ -283,7 +283,7 @@ def check_obligations(question: str, filters: dict, carried_filters: Iterable[st
 
 
 def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | None = None,
-           value_lookup=None, previous: dict | None = None):
+           value_lookup=None, previous: dict | None = None, chosen_measure: str | None = None):
     """Return (plan, None) when the plan answers the question, possibly with unasked
     fields removed, or (None, reason) when it cannot. `carried`: the refs of the
     previous plan a follow-up refines ("chỉ tính đơn hoàn tất" keeps its breakdown).
@@ -297,7 +297,7 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
 
     # Constructions of the request (framing, ranking, quantity) are recognised as a
     # whole; what grounding must explain is the rest. A ranking is an obligation.
-    intent = extract(question)
+    intent = extract(question, chosen_metric=bool(chosen_measure))
     q = syllables(intent.content)
     qf = intent.content
     carried = set(carried)
@@ -313,7 +313,7 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
     # Measures are named more loosely than breakdowns: "đơn" names "Số đơn hàng" in
     # "số đơn bị huỷ", while it must not make "Ngày đặt hàng" a breakdown.
     measures = [m for m in plan.measures
-                if mentioned(m) or (m in by_ref and (_field_words(by_ref[m]) - {"so", "id", "ma"}) & q)]
+                if m == chosen_measure or mentioned(m) or (m in by_ref and (_field_words(by_ref[m]) - {"so", "id", "ma"}) & q)]
     if not measures:
         asked = ", ".join(sorted(q - _STOP - _TIME)[:6])
         return None, (f"Dữ liệu bạn được dùng không có chỉ số cho “{asked}”, nên không trả lời "
