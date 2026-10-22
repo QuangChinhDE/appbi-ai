@@ -70,6 +70,40 @@ def _synonyms(defn: dict) -> tuple[str, ...]:
     return tuple(str(x).strip()[:60] for x in raw if isinstance(x, str) and str(x).strip())[:8]
 
 
+def governed_aliases(db, dataset_ids: list[int]) -> dict[str, tuple[str, ...]]:
+    """Business names of measures, from APPROVED governed metrics bound to these
+    Datasets: {measure_ref or bare measure name: (display name, synonyms...)}.
+
+    Semantic views carry no synonyms of their own (DimensionDefinition /
+    MeasureDefinition do not declare the key, so a PUT drops it and no editor
+    writes it). The words people use for a metric are governed in the Registry
+    (`govern_metrics.synonyms`, `display_name`) and bound to a measure
+    (`govern_metric_bindings`, the scalar columns as the documented fallback). A
+    Draft or Deprecated metric is not official and adds nothing."""
+    from app.models.governance import GovernMetric, GovernMetricBinding
+
+    out: dict[str, list[str]] = {}
+
+    def add(ref, metric):
+        if not ref:
+            return
+        words = [metric.display_name, *(metric.synonyms or [])]
+        for key in {str(ref), str(ref).rsplit(".", 1)[-1]}:
+            bucket = out.setdefault(key, [])
+            bucket.extend(str(w).strip()[:60] for w in words if isinstance(w, str) and str(w).strip())
+
+    if not dataset_ids:
+        return {}
+    approved = GovernMetric.status == "Approved"
+    for b, m in (db.query(GovernMetricBinding, GovernMetric)
+                 .join(GovernMetric, GovernMetric.id == GovernMetricBinding.metric_id)
+                 .filter(approved, GovernMetricBinding.dataset_id.in_(dataset_ids)).all()):
+        add(b.measure_ref, m)
+    for m in db.query(GovernMetric).filter(approved, GovernMetric.dataset_id.in_(dataset_ids)).all():
+        add(m.measure_ref, m)
+    return {k: tuple(dict.fromkeys(v))[:8] for k, v in out.items()}
+
+
 def _label(defn: dict) -> str:
     return str(defn.get("label") or defn.get("name") or "").replace("_", " ").strip()
 
@@ -112,6 +146,7 @@ def discover(authz: Any, *, limit: int = 40) -> list[CatalogExplore]:
         if stype not in BOUNDED:
             continue
         ex_cols, ex_measures = authz.ai_scope_exclusions([dataset.id, *parents])
+        aliases = governed_aliases(db, [dataset.id, *parents])
         views = [base] + [v for v in _joined_views(db, explore, [dataset.id, *parents]) if v.id != base.id]
         fields: list[CatalogField] = []
         for v in views:
@@ -121,8 +156,10 @@ def discover(authz: Any, *, limit: int = 40) -> list[CatalogExplore]:
                                                _label(d), str(d.get("description") or "")[:200], _synonyms(d)))
             for m in v.measures or []:
                 if isinstance(m, dict) and m.get("name") and norm(m["name"]) not in ex_measures:
+                    gov = aliases.get(f"{v.name}.{m['name']}") or aliases.get(str(m["name"])) or ()
                     fields.append(CatalogField(f"{v.name}.{m['name']}", "measure", str(m.get("type") or "sum"),
-                                               _label(m), str(m.get("description") or "")[:200], _synonyms(m)))
+                                               _label(m), str(m.get("description") or "")[:200],
+                                               tuple(dict.fromkeys([*_synonyms(m), *gov]))[:8]))
         if not any(f.kind == "measure" for f in fields):
             continue
         out.append(CatalogExplore(

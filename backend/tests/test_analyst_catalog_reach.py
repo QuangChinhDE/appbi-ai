@@ -69,3 +69,34 @@ def test_reach_stays_inside_the_dataset_lineage(db):
 
     assert "customers_x" not in {v.name for v in _joined_views(db, db.get(SemanticExplore, 1), [1])}
     assert {v.name for v in _joined_views(db, db.get(SemanticExplore, 1), [2])} == set()
+
+
+def test_governed_metric_names_are_the_measures_synonyms_only_when_approved():
+    """Semantic views carry no synonyms of their own (the PUT schema drops the
+    key); the words people use for a metric are governed in the Registry. Only an
+    APPROVED metric bound to this Dataset adds them."""
+    from app.models.governance import GovernMetric, GovernMetricBinding
+    from app.services.analyst.catalog import governed_aliases
+
+    engine = create_engine("sqlite://", future=True)
+    Base.metadata.create_all(engine, tables=[Dataset.__table__, DatasetTable.__table__,
+                                             GovernMetric.__table__, GovernMetricBinding.__table__])
+    with Session(engine) as s:
+        s.add_all([Dataset(id=1, name="Sales", owner_id=uuid.UUID(int=1)),
+                   Dataset(id=2, name="Other", owner_id=uuid.UUID(int=1))])
+        ok = GovernMetric(name="revenue", display_name="Doanh thu", synonyms=["doanh thu thuần"], status="Approved")
+        draft = GovernMetric(name="orders", display_name="Số đơn", synonyms=["đơn"], status="Draft")
+        other = GovernMetric(name="x", display_name="Khác", synonyms=[], status="Approved")
+        legacy = GovernMetric(name="units", display_name="Số lượng", synonyms=["sản lượng"], status="Approved",
+                              dataset_id=1, measure_ref="units")
+        s.add_all([ok, draft, other, legacy])
+        s.flush()
+        s.add_all([GovernMetricBinding(metric_id=ok.id, dataset_id=1, measure_ref="order_items.revenue"),
+                   GovernMetricBinding(metric_id=draft.id, dataset_id=1, measure_ref="order_items.orders"),
+                   GovernMetricBinding(metric_id=other.id, dataset_id=2, measure_ref="order_items.revenue")])
+        s.commit()
+        got = governed_aliases(s, [1])
+    assert got["order_items.revenue"] == ("Doanh thu", "doanh thu thuần") == got["revenue"]
+    assert "order_items.orders" not in got and "orders" not in got     # Draft: not official
+    assert got["units"] == ("Số lượng", "sản lượng")                     # scalar fallback
+    assert "Khác" not in got.get("revenue", ())                          # another Dataset's metric
