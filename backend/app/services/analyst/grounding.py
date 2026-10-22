@@ -22,6 +22,7 @@ Matching is on syllables with case and Vietnamese tone marks folded, so
 """
 from __future__ import annotations
 
+import contextvars
 import re
 import unicodedata
 from dataclasses import replace
@@ -45,10 +46,23 @@ def syllables(text: str) -> set[str]:
     return {w for w in re.split(r"[^0-9a-z]+", fold(text)) if w}
 
 
+#: the folded question being grounded (set by `ground`): a synonym counts only when
+#: its WHOLE phrase is in it. Dev regression 2026-10-22: the governed synonym
+#: "loại sản phẩm" let the single syllable "loại" in "mỗi loại" name the category.
+_ASKED: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("analyst_asked", default=None)
+
+
+def _phrase_in(phrase: str, folded: str) -> bool:
+    p = " ".join(w for w in re.split(r"[^0-9a-z]+", fold(phrase)) if w)
+    return bool(p) and f" {p} " in f" {folded} "
+
+
 def _field_words(field) -> set[str]:
     words = syllables(field.label) | syllables(field.ref.rsplit(".", 1)[-1].replace("_", " "))
+    asked = _ASKED.get()
     for s in field.synonyms or ():
-        words |= syllables(s)
+        if asked is None or _phrase_in(s, asked):
+            words |= syllables(s)
     return words
 
 
@@ -296,8 +310,16 @@ def check_obligations(question: str, filters: dict, carried_filters: Iterable[st
     return None
 
 
-def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | None = None,
-           value_lookup=None, previous: dict | None = None, chosen_measure: str | None = None):
+def ground(plan, question: str, **kw):
+    token = _ASKED.set(" ".join(w for w in re.split(r"[^0-9a-z]+", fold(question)) if w))
+    try:
+        return _ground(plan, question, **kw)
+    finally:
+        _ASKED.reset(token)
+
+
+def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | None = None,
+            value_lookup=None, previous: dict | None = None, chosen_measure: str | None = None):
     """Return (plan, None) when the plan answers the question, possibly with unasked
     fields removed, or (None, reason) when it cannot. `carried`: the refs of the
     previous plan a follow-up refines ("chỉ tính đơn hoàn tất" keeps its breakdown).

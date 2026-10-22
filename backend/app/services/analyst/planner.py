@@ -239,15 +239,41 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
         out = [resolve(v, allowed) for v in vals]
         return None if any(o is None for o in out) else list(dict.fromkeys(out))
 
-    # Holdout: the model listed the measure among the dimensions too ("segment,
-    # customer_count"); a measure is never a breakdown, so it is taken out first.
-    if isinstance(raw.get("dimensions"), list) and not raw.get("measures"):
-        # Holdout A09: the measure was listed ONLY among the dimensions.
-        raw = {**raw, "measures": [x for x in raw["dimensions"] if isinstance(x, str)
-                                   and resolve(x, meas) is not None and resolve(x, dims) is None]}
-    raw = {**raw, "dimensions": [x for x in (raw.get("dimensions") or []) if not (
-        isinstance(x, str) and resolve(x, meas) is not None and resolve(x, dims) is None)]} \
-        if isinstance(raw.get("dimensions"), list) else raw
+    # Dev regression 2026-10-22: refs written as objects ({"ref": "v.f"}) are the
+    # same refs; nothing else about them is believed.
+    def _flat(vals):
+        if not isinstance(vals, list):
+            return vals
+        return [v.get("ref") or v.get("field") if isinstance(v, dict) else v for v in vals]
+
+    raw = {**raw, "dimensions": _flat(raw.get("dimensions") or []), "measures": _flat(raw.get("measures") or [])}
+    # Holdout: the model listed a measure among the dimensions ("segment,
+    # customer_count"; dev regression: "doanh số và SỐ LƯỢNG BÁN" with units as a
+    # dimension). A measure is never a breakdown: it MOVES to the measures - it is
+    # never silently dropped (its phrase would then be refused as unanswered).
+    if isinstance(raw.get("dimensions"), list):
+        moved = [x for x in raw["dimensions"] if isinstance(x, str)
+                 and resolve(x, meas) is not None and resolve(x, dims) is None]
+        if moved:
+            raw = {**raw, "measures": list(dict.fromkeys([*(raw.get("measures") or []), *moved])),
+                   "dimensions": [x for x in raw["dimensions"] if x not in moved]}
+    # Dev regression: "Tiền hoàn trả theo từng tháng" was grouped by ANOTHER Dataset's
+    # "Tháng" field. A time breakdown on a date this explore does not have is the
+    # date of the metric's own fact, when that fact has exactly one date.
+    grains_raw = dict(raw.get("time_grains") or {})
+    if isinstance(raw.get("dimensions"), list) and raw.get("measures"):
+        first = resolve(raw["measures"][0], meas) if isinstance(raw["measures"][0], str) else None
+        fact = first.rsplit(".", 1)[0] if first else None
+        own = [r for r, f in dims.items() if fact and r.rsplit(".", 1)[0] == fact and is_time(f)]
+        fixed = []
+        for x in raw["dimensions"]:
+            if isinstance(x, str) and resolve(x, dims) is None and x in grains_raw and len(own) == 1 \
+                    and own[0] not in raw["dimensions"]:
+                grains_raw[own[0]] = grains_raw.pop(x)
+                fixed.append(own[0])
+            else:
+                fixed.append(x)
+        raw = {**raw, "dimensions": fixed, "time_grains": grains_raw}
     d, m = refs("dimensions", dims), refs("measures", meas)
     if d is None or m is None or not m:
         return Unsupported("Kế hoạch dùng trường không có trong mô hình dữ liệu được phép.")
