@@ -59,3 +59,14 @@ def test_a_quantity_question_asks_for_a_measure():
 
 def test_the_ranked_words_between_number_and_superlative_stay():
     assert extract("3 vùng có doanh số thấp nhất").content == "vung co doanh so"
+
+
+def test_a_superlative_split_by_the_metric_is_still_a_ranking():
+    """Sealed set 9 S9-023: "2 miền nào có nhiều đơn hàng nhất" listed all 3 regions."""
+    i = extract("2 miền nào có nhiều đơn hàng nhất năm 2025?")
+    assert i.ranking == {"direction": "desc", "n": 2}
+    assert "don hang" in i.content and "nhat" not in i.content.split() and "nhieu" not in i.content.split()
+    i = extract("Kênh nào có ít đơn hàng nhất")
+    assert i.ranking == {"direction": "asc", "n": None} and "don hang" in i.content
+    assert extract("Số đơn có ít nhất 5 sản phẩm").ranking is None
+

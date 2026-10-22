@@ -477,6 +477,14 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
                 g = (previous.get("time_grains") or {}).get(d)
                 if g and d not in grains:
                     grains[d] = g
+        # Sealed set 9 (S9-031): "Còn riêng miền Trung thì sao?" after "Doanh số năm 2025
+        # chia theo từng kênh" dropped the YEAR - all-time numbers presented as 2025's.
+        # A follow-up keeps every previous filter on a field it does not name; a filter
+        # on the same field is replaced by the new one.
+        for ref, cond in (previous.get("filters") or {}).items():
+            if ref in by_ref and ref not in filters and isinstance(cond, dict) \
+                    and not _mentioned(by_ref[ref], q, qf):
+                filters[ref] = cond
 
     carried_filters = list(((previous or {}).get("filters") or {}).keys()) if isinstance(previous, dict) else []
 
