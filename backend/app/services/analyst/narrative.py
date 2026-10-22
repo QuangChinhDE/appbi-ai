@@ -288,9 +288,56 @@ def _checks(rows, measures, tcol, truncated) -> list[dict]:
     return out
 
 
-def chart_draft(plan, title: str) -> dict:
-    """A chart config for the EXISTING chart API (POST /charts): the person saves
-    it with their own rights; the Analyst never saves on their behalf."""
+#: Analyst filter operator -> the chart contract's operator (chart_contracts._OPERATOR_MAP).
+#: A saved chart's base filters are applied on every surface and refused, never
+#: dropped, when they cannot be applied (enforce_no_hard_dropped_filters).
+_CHART_OPS = {"eq": "eq", "ne": "neq", "in": "in", "not_in": "not_in",
+              "gt": "gt", "gte": "gte", "lt": "lt", "lte": "lte"}
+
+
+def chart_filters(plan) -> Optional[list[dict]]:
+    """The plan's filters as chart base filters that select EXACTLY the same rows, or
+    None when one of them has no exact chart equivalent (the draft is then withheld)."""
+    out = []
+    for ref, cond in plan.filters.items():
+        op, value = cond.get("operator"), cond.get("value")
+        if op == "date_range" and isinstance(value, dict):
+            # [from, to) on a certified DATE field == BETWEEN from AND to-1 day (inclusive),
+            # the same conversion the governed query itself applies.
+            try:
+                last = (date.fromisoformat(str(value["to"])) - timedelta(days=1)).isoformat()
+                first = date.fromisoformat(str(value["from"])).isoformat()
+            except (KeyError, ValueError):
+                return None
+            out.append({"field": ref, "semanticField": ref, "operator": "between", "value": [first, last]})
+        elif op in _CHART_OPS:
+            if op in ("in", "not_in") and not isinstance(value, list):
+                value = [value]
+            out.append({"field": ref, "semanticField": ref, "operator": _CHART_OPS[op], "value": value})
+        else:
+            return None
+    return out
+
+
+def chart_draft(plan, title: str, *, rows: Optional[list] = None, columns: Optional[list] = None) -> tuple:
+    """(draft, reason): a chart config for the EXISTING chart API (POST /charts) that
+    reproduces the answer EXACTLY, or (None, why not). The person saves it with their
+    own rights; the Analyst never saves on their behalf."""
+    filters = chart_filters(plan)
+    if filters is None:
+        return None, "Câu trả lời có bộ lọc mà biểu đồ chưa biểu diễn chính xác được, nên không đề xuất lưu."
+    limit_style = {}
+    if plan.limit:
+        # A chart cuts with SQL LIMIT on its FIRST metric: equal to the answer only for
+        # one metric, one breakdown, no tie at the cut and no unknown (NULL) value.
+        m = next((c["name"] for c in (columns or []) if c["role"] == "measure"), None)
+        vals = [r.get(m) for r in rows or []] if m else []
+        direction = next((s.get("direction") for s in plan.sorts if s.get("field") in plan.measures), "desc")
+        if (len(plan.measures) != 1 or len(plan.dimensions) != 1 or plan.time_grains
+                or any(v is None for v in vals) or len(vals) > plan.limit):
+            return None, ("Câu trả lời xếp hạng có giá trị bằng nhau tại ngưỡng hoặc giá trị không xác định; "
+                          "biểu đồ cắt bằng LIMIT sẽ khác câu trả lời nên không đề xuất lưu.")
+        limit_style = {"dataLimit": int(plan.limit), "dataLimitDirection": "bottom" if direction == "asc" else "top"}
     time_ref = next(iter(plan.time_grains), None)
     others = [d for d in plan.dimensions if d != time_ref]
     metrics = [{"field": m, "agg": "auto"} for m in plan.measures[:1]]
@@ -318,6 +365,6 @@ def chart_draft(plan, title: str) -> dict:
     return {
         "name": title[:140], "chart_type": chart_type, "dataset_table_id": plan.explore.dataset_table_id,
         "config": {"chartType": chart_type, "queryMode": "generated", "roleConfig": role,
-                   "generatedRoleConfig": role, "customRoleConfig": {"metrics": []}, "filters": [],
-                   "baseFilters": [], "styleConfig": {"chartTitle": title[:140]}},
-    }
+                   "generatedRoleConfig": role, "customRoleConfig": {"metrics": []}, "filters": filters,
+                   "baseFilters": filters, "styleConfig": {"chartTitle": title[:140], **limit_style}},
+    }, None

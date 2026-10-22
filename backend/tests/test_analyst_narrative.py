@@ -115,9 +115,9 @@ def test_a_shape_a_line_cannot_carry_is_drafted_as_a_table_of_every_column():
     from app.services.analyst.narrative import chart_draft
 
     plan = SimpleNamespace(dimensions=["c.region", "o.channel", "o.order_date"], measures=["l.net_sales"],
-                           time_grains={"o.order_date": "quarter"},
+                           time_grains={"o.order_date": "quarter"}, filters={}, limit=None, sorts=[],
                            explore=SimpleNamespace(dataset_table_id=7))
-    d = chart_draft(plan, "Doanh số theo vùng và kênh hằng quý")
+    d, _ = chart_draft(plan, "Doanh số theo vùng và kênh hằng quý")
     assert d["chart_type"] == "TABLE"
     assert d["config"]["roleConfig"]["selectedColumns"] == ["c.region", "o.channel", "o.order_date", "l.net_sales"]
 
@@ -172,4 +172,41 @@ def test_a_null_group_is_not_ranked_as_zero():
 def test_a_clear_leader_is_still_named():
     story = describe(RANK, [{"c": "A", "r": 5}, {"c": "B", "r": 3}], time_ref=None, truncated=False)
     assert story["headline"] == "Orders cao nhất: A (5)."
+
+
+def test_a_filtered_answer_drafts_a_chart_with_exactly_those_filters():
+    """PO 2026-10-22 (Workstream C): an answer with filters was never offered as a chart.
+    Its filters are now the chart's base filters, selecting exactly the same rows."""
+    from types import SimpleNamespace
+
+    from app.services.analyst.narrative import chart_draft
+
+    plan = SimpleNamespace(dimensions=["c.region"], measures=["l.net_sales"], time_grains={}, sorts=[], limit=None,
+                           explore=SimpleNamespace(dataset_table_id=7), filters={
+                               "o.channel": {"operator": "ne", "value": "Online"},
+                               "o.order_date": {"operator": "date_range", "value": {"from": "2025-01-01", "to": "2026-01-01"}}})
+    d, why = chart_draft(plan, "t")
+    assert d is not None, why
+    assert d["config"]["baseFilters"] == d["config"]["filters"] == [
+        {"field": "o.channel", "semanticField": "o.channel", "operator": "neq", "value": "Online"},
+        {"field": "o.order_date", "semanticField": "o.order_date", "operator": "between", "value": ["2025-01-01", "2025-12-31"]}]
+    plan.filters = {"p.name": {"operator": "contains", "value": "Lap"}}   # no exact chart equivalent
+    d, why = chart_draft(plan, "t")
+    assert d is None and why
+
+
+def test_a_top_n_draft_only_when_the_chart_limit_gives_the_same_rows():
+    from types import SimpleNamespace
+
+    from app.services.analyst.narrative import chart_draft
+
+    cols = [{"name": "c", "role": "dimension"}, {"name": "m", "role": "measure"}]
+    plan = SimpleNamespace(dimensions=["c.region"], measures=["l.net_sales"], time_grains={}, filters={}, limit=2,
+                           sorts=[{"field": "l.net_sales", "direction": "desc"}], explore=SimpleNamespace(dataset_table_id=7))
+    d, why = chart_draft(plan, "t", rows=[{"c": "A", "m": 9}, {"c": "B", "m": 5}], columns=cols)
+    assert d["config"]["styleConfig"]["dataLimit"] == 2 and d["config"]["styleConfig"]["dataLimitDirection"] == "top"
+    tie, why = chart_draft(plan, "t", rows=[{"c": "A", "m": 9}, {"c": "B", "m": 5}, {"c": "C", "m": 5}], columns=cols)
+    assert tie is None and why                        # a tie at the cut: LIMIT would drop one
+    nul, why = chart_draft(plan, "t", rows=[{"c": "A", "m": 9}, {"c": "B", "m": None}], columns=cols)
+    assert nul is None and why
 

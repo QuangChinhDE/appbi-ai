@@ -258,7 +258,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
                                grain=p.time_grains.get(time_ref) if time_ref else None,
                                period=_asked_period(p, time_ref), order=order, top=p.limit)
     steps.append({"step": "verify", "detail": "; ".join(c["detail"] for c in story["checks"])})
-    draft = None if (p.filters or p.limit) else narrative.chart_draft(p, draft_title(question))
+    draft, no_draft = narrative.chart_draft(p, draft_title(question), rows=rows, columns=columns)
     return {
         "status": "answered", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
         "answer": story, "columns": columns, "rows": rows, "truncated": result.truncated,
@@ -275,8 +275,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         },
         "chart_draft": draft,
         "can_save": _can_save_chart(authz, user, p),
-        "chart_draft_unavailable": (None if draft else
-                                    "Câu trả lời có bộ lọc; bản nháp biểu đồ chưa mang được bộ lọc nên không đề xuất lưu."),
+        "chart_draft_unavailable": None if draft else no_draft,
     }
 
 

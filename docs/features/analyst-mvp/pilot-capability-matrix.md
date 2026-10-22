@@ -31,7 +31,7 @@ narrowed after the holdout is opened.
 | Ranking ("cao nhất", "nhiều nhất", "xếp hạng", "từ cao xuống thấp") and Top-N ("top 3", "3 … thấp nhất") | yes, over exactly ONE breakdown | ordered by the metric; Top-N cut server-side; a truncated result or several breakdowns are refused |
 | Business words for fields and metrics | yes, from GOVERNED vocabulary | Approved glossary terms linked to dimensions/measures and Approved governed metrics; a synonym counts only as a whole phrase |
 | Request framing ("anh chị cho em hỏi … ạ") | yes | recognised as framing, not data |
-| Chart draft and save | LINE (time), BAR (category), KPI (total) | saved through the chart API with the person's own rights |
+| Chart draft and save | LINE (time), BAR (category), KPI (total), TABLE (several categories/metrics) | saved through the chart API with the person's own rights; filters (eq/ne/in/not_in/comparisons, a date period as an inclusive range) become the chart's base filters and reproduce the same rows on reopen; a Top-N is drafted only when the chart's LIMIT gives the same rows (one metric, one breakdown, no tie at the cut, no NULL) - otherwise the draft is withheld with the reason |
 
 ## Outside the pilot scope (must be refused or clarified)
 

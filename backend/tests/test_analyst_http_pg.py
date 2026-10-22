@@ -712,3 +712,30 @@ def test_a_source_choice_token_pins_the_dataset_and_is_bound_to_the_person(clien
     assert ok == {"dataset_id": world["ds"].id, "explore_id": None, "measure": None}, why
     assert svc.verify_choice(tok, user_id="someone-else", question="Doanh thu?", catalog=cat)[0] is None
     assert svc.verify_choice(tok, user_id=str(u.id), question="Doanh thu?", catalog=[])[0] is None
+
+
+# ── Workstream C: a filtered answer saved as a chart reproduces the same numbers ──
+
+def test_a_filtered_answer_saved_as_a_chart_gives_the_same_rows_on_reopen(client, db, world, model):  # noqa: F811
+    owner = world["owner"]
+    set_permissions(db, owner, datasets="edit", explore_charts="edit", analyst="view")
+    v = world["v"]
+    model(_planner(world, dims=("region",), extra={
+        "filters": {f"{v}.region": {"operator": "ne", "value": "Trung"}},
+        "covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region", "không tính vùng Trung": f"{v}.region"}}))
+    body = client.post("/api/v1/analyst/ask", headers=owner.headers,
+                       json={"question": "Doanh thu theo vùng không tính vùng Trung"}).json()
+    assert body["status"] == "answered" and body["chart_draft"], body.get("chart_draft_unavailable")
+    want = {r[c["name"]]: float(r[next(x["name"] for x in body["columns"] if x["role"] == "measure")])
+            for r in body["rows"] for c in body["columns"] if c["role"] == "dimension"}
+    assert want == {"Bắc": 150.0, "Nam": 30.0}
+    saved = client.post("/api/v1/charts/", headers=owner.headers, json=body["chart_draft"])
+    assert saved.status_code in (200, 201), saved.text
+    data = client.get(f"/api/v1/charts/{saved.json()['id']}/data", headers=owner.headers)
+    assert data.status_code == 200, data.text
+    rows = data.json()["data"]
+    got = {}
+    for r in rows:
+        region = next(val for key, val in r.items() if isinstance(val, str) and val in ("Bắc", "Nam", "Trung"))
+        got[region] = float(next(val for key, val in r.items() if isinstance(val, (int, float)) and not isinstance(val, bool)))
+    assert got == want                                   # Trung stays excluded on reopen
