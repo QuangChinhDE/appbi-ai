@@ -509,3 +509,21 @@ def test_an_excluded_value_is_matched_to_the_real_value_or_asked():
     fixed, options = _check_filter_values(p, _values(["Hoàn tất", "Huỷ"]))
     assert fixed is None and options == ["Hoàn tất", "Huỷ"]
 
+
+def test_a_whole_year_question_gets_the_whole_year():
+    """Holdout set 6 S6-041: "Năm 2025 ... mỗi quý" was filtered to Q1 2025 only."""
+    q1 = {"operator": "date_range", "value": {"from": "2025-01-01", "to": "2025-04-01"}}
+    p = _plan(["o.order_count"], ["o.order_date"], grains={"o.order_date": "quarter"}, filters={"o.order_date": q1},
+              covered={"số đơn hàng": "o.order_count", "mỗi quý": "o.order_date", "năm 2025": "o.order_date"})
+    out, why = ground(p, "Năm 2025 có bao nhiêu đơn hàng mỗi quý?", covered=p.covered)
+    assert out is not None, why
+    assert out.filters["o.order_date"]["value"] == {"from": "2025-01-01", "to": "2026-01-01"}
+
+
+def test_a_narrower_period_is_left_as_planned():
+    from app.services.analyst.grounding import whole_year
+    assert whole_year("Doanh số năm 2025 theo tháng") == 2025
+    for q in ("Doanh số quý 1 năm 2025", "Doanh số tháng 3/2025", "Doanh số nửa đầu năm 2025",
+              "Doanh số từ 2024 đến 2025", "Doanh số"):
+        assert whole_year(q) is None, q
+
