@@ -216,9 +216,18 @@ def test_a_metric_another_dataset_names_word_for_word_is_a_choice():
     p = Plan(explore=sales, dimensions=[], measures=["i.revenue"])
     # each choice carries the Dataset it pins, so the person's pick re-asks THAT source
     assert other_source_named(p, "Xu hướng doanh số theo tháng", [sales, commerce]) == [
-        {"label": "Revenue — Sales", "dataset_id": 1}, {"label": "Doanh số — Commerce", "dataset_id": 2}]
-    # "doanh thu" only shares a word with "Doanh số": not a second match
-    assert other_source_named(p, "Doanh thu các nhóm sản phẩm theo tháng", [sales, commerce]) == []
+        {"label": "Revenue — Sales", "dataset_id": 1, "verbatim": False},
+        {"label": "Doanh số — Commerce", "dataset_id": 2, "verbatim": True}]
+    # PO 2026-10-22 (changed on purpose): "doanh thu" names NEITHER metric word for
+    # word; the plan reached "Revenue" only through the model's bridge while the
+    # person can read another sum metric - the source is not picked silently.
+    both = other_source_named(p, "Doanh thu các nhóm sản phẩm theo tháng", [sales, commerce])
+    assert [o["dataset_id"] for o in both] == [1, 2] and not any(o["verbatim"] for o in both)
+    # a metric the question names word for word stays: nothing to ask
+    named = Plan(explore=commerce, dimensions=[], measures=["l.net_sales"])
+    assert other_source_named(named, "Doanh số theo tháng", [sales, commerce]) == []
+    # no other Dataset with a metric of that kind: nothing to ask
+    assert other_source_named(p, "Doanh thu theo tháng", [sales]) == []
 
 
 def test_a_filter_value_made_of_field_labels_is_dropped_and_the_breakdown_kept():

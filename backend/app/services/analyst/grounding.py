@@ -205,11 +205,25 @@ def other_source_named(plan, question: str, others) -> list[str]:
             # the WHOLE label, as written, is in the question ("doanh số" in "xu hướng
             # doanh số"; not "doanh thu", which only shares a word)
             if f.kind == "measure" and label and f" {label} " in f" {qf} ":
-                named.append({"label": f"{f.label} — {ex.dataset_name}", "dataset_id": ex.dataset_id})
+                named.append({"label": f"{f.label} — {ex.dataset_name}", "dataset_id": ex.dataset_id,
+                              "verbatim": True})
+    if not named:
+        # PO 2026-10-22: the metric was reached ONLY through the model's bridge
+        # ("doanh thu" -> another source's "Revenue") and the person can read other
+        # Datasets with a metric of the same kind: the model must not pick the
+        # source silently - the person chooses.
+        kinds = {by_ref[m].type for m in plan.measures if m in by_ref}
+        for ex in others:
+            if ex.dataset_id == plan.explore.dataset_id:
+                continue
+            for f in ex.fields:
+                if f.kind == "measure" and f.type in kinds:
+                    named.append({"label": f"{f.label} — {ex.dataset_name}", "dataset_id": ex.dataset_id,
+                                  "verbatim": False})
     if not named:
         return []
-    mine = [{"label": f"{by_ref[m].label} — {plan.explore.dataset_name}", "dataset_id": plan.explore.dataset_id}
-            for m in plan.measures if m in by_ref]
+    mine = [{"label": f"{by_ref[m].label} — {plan.explore.dataset_name}", "dataset_id": plan.explore.dataset_id,
+             "verbatim": False} for m in plan.measures if m in by_ref]
     seen, out = set(), []
     for o in mine + named:
         if o["label"] not in seen:

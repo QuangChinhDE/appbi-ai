@@ -149,8 +149,8 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
 
         both = (other_source_named(p, question, prompt_catalog(full_catalog))
                 if prev_explore is None and dataset_id is None else [])
-        verbatim = {o["dataset_id"] for o in both[1:]}
-        if len(verbatim) == 1:
+        verbatim = {o["dataset_id"] for o in both[1:] if o.get("verbatim")}
+        if len(verbatim) == 1 and all(o.get("verbatim") for o in both[1:]):
             # Another Dataset names the metric WORD FOR WORD while this plan reached
             # its metric only through the model's bridge: plan again on that Dataset
             # (holdout set 6: "doanh số" answered from another source's "Revenue").
