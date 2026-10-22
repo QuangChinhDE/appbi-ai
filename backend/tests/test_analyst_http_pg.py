@@ -424,3 +424,30 @@ def test_the_save_button_is_offered_only_to_someone_the_chart_api_lets_save(clie
     assert body["status"] == "answered" and body["can_save"] is False
     r = client.post("/api/v1/charts/", headers=world["analyst"].headers, json=body["chart_draft"])
     assert r.status_code == 403  # the API agrees with what the page was told
+
+
+# ── dogfood: feedback on an answer ────────────────────────────────────────────
+
+def test_a_person_rates_their_own_answer_and_only_their_own(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"], world["owner"])
+    model(_planner(world))
+    turn = uuid.uuid4().hex
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?", "turn_id": turn}).json()
+    assert body["status"] == "answered"
+    ok = client.post("/api/v1/analyst/feedback", headers=world["analyst"].headers,
+                     json={"turn_id": turn, "verdict": "down", "comment": "sai vùng"})
+    assert ok.status_code == 201, ok.text
+    with sa.create_engine(_owner_url()).connect() as c:
+        row = c.execute(sa.text("SELECT verdict, comment, user_id FROM analyst_feedback WHERE turn_id = :t"),
+                        {"t": turn}).one()
+    assert row[0] == "down" and row[1] == "sai vùng" and str(row[2]) == str(world["analyst"].id)
+    other = client.post("/api/v1/analyst/feedback", headers=world["owner"].headers,
+                        json={"turn_id": turn, "verdict": "up"})
+    assert other.status_code == 404                          # not the owner's turn
+    bad = client.post("/api/v1/analyst/feedback", headers=world["analyst"].headers,
+                      json={"turn_id": turn, "verdict": "maybe"})
+    assert bad.status_code == 422
+    stranger = client.post("/api/v1/analyst/feedback", headers=world["stranger"].headers,
+                           json={"turn_id": turn, "verdict": "up"})
+    assert stranger.status_code == 403

@@ -5,6 +5,12 @@ import type { ModuleCatalog } from '../messages';
 export const analystCatalog: ModuleCatalog = {
   en: {
     'analyst.title': 'Analyst',
+    'analyst.previewLabel': 'Engineering Preview — NOT CERTIFIED',
+    'analyst.feedback': 'Was this answer right?',
+    'analyst.feedbackUp': 'Correct',
+    'analyst.feedbackDown': 'Wrong or misleading',
+    'analyst.feedbackPlaceholder': 'Optional: what was wrong?',
+    'analyst.feedbackThanks': 'Thanks - recorded for review.',
     'analyst.subtitle': 'Ask a new question. Answers come only from data you are allowed to read, through governed queries.',
     'analyst.sources': 'Sources you can ask about',
     'analyst.sourcesEmpty': 'You have no dataset you can explore yet. Ask an owner for explore access.',
@@ -54,6 +60,12 @@ export const analystCatalog: ModuleCatalog = {
   },
   vi: {
     'analyst.title': 'Phân tích AI',
+    'analyst.previewLabel': 'Bản xem trước kỹ thuật — CHƯA CHỨNG NHẬN',
+    'analyst.feedback': 'Câu trả lời này có đúng không?',
+    'analyst.feedbackUp': 'Đúng',
+    'analyst.feedbackDown': 'Sai hoặc gây hiểu nhầm',
+    'analyst.feedbackPlaceholder': 'Không bắt buộc: sai ở đâu?',
+    'analyst.feedbackThanks': 'Cảm ơn - đã ghi nhận để rà soát.',
     'analyst.subtitle': 'Đặt câu hỏi mới. Câu trả lời chỉ đến từ dữ liệu bạn được phép đọc, qua truy vấn có quản trị.',
     'analyst.sources': 'Nguồn bạn có thể hỏi',
     'analyst.sourcesEmpty': 'Bạn chưa có dataset nào được quyền khai thác. Hãy xin chủ sở hữu quyền khai thác.',

@@ -650,6 +650,12 @@ tests:
     requires: postgres
     run: "pytest backend/tests/test_intelligence_gqs_date_range_pg.py"
     locks: "GQS date_range: {from, to} ISO dates, from INCLUDED, to EXCLUDED, only on a certified date field (declared date AND physically DATE); month, quarter, year, single day, year boundary and an empty year give the hand-computed totals; malformed, reversed, open, timed, non-ISO, impossible, over-span and between-shaped values are invalid_filter; an unknown, timestamp, datetime or text-backed field is time_range_unsupported; no access is not_authorized; between stays refused"
+  analyst_intent_obligations:
+    run: "pytest backend/tests/test_analyst_intent_obligations.py"
+    locks: "meaning-changing words oblige the plan: a negation (không/chưa/ngoại trừ/khác) needs ne/not_in or a negated value, a comparison with a number needs gt/gte/lt/lte, a time boundary with a number needs date_range, \"chỉ\" needs a filter; an invented exclusion is refused; yes/no \"không\", \"chi phí\", \"chỉ số\", \"tôi\" and rankings are not obligations; the opposite plan is refused end to end"
+  llm_test_budget:
+    run: "pytest backend/tests/test_llm_test_budget.py"
+    locks: "test-only AI spending cap: worst-case reservation before every paid call, settled with the provider token counts; no call without a verified price, over the cap, or in production; no provider fallback under a budget; an error after sending is charged at worst case; planner replay answers from recorded outputs without a model"
   analyst_catalog_reach:
     run: "pytest backend/tests/test_analyst_catalog_reach.py"
     locks: "the Analyst catalog offers every view the base can reach through the model relationships (multi-hop, the engine's own resolver), inside the explore's Dataset lineage only"

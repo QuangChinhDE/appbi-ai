@@ -51,6 +51,10 @@ ENV NEXT_PUBLIC_PDF_PREVIEW_TAB=$NEXT_PUBLIC_PDF_PREVIEW_TAB
 # lands on Dashboards. See frontend/src/lib/feature-flags.ts.
 ARG NEXT_PUBLIC_HOME_MODULE_ENABLED=false
 ENV NEXT_PUBLIC_HOME_MODULE_ENABLED=$NEXT_PUBLIC_HOME_MODULE_ENABLED
+# AppBI Analyst (pilot). Off unless the build asks for it; the backend's
+# ANALYST_ENABLED + permissions still decide access. Inlined by `next build`.
+ARG NEXT_PUBLIC_ANALYST_ENABLED=false
+ENV NEXT_PUBLIC_ANALYST_ENABLED=$NEXT_PUBLIC_ANALYST_ENABLED
 # The commit this bundle is built from (run.sh / compose pass GIT_SHA). Inlined
 # into the bundle and the HTML <meta name="appbi-build">; empty -> "unknown".
 ARG APPBI_BUILD_SHA=

@@ -168,7 +168,9 @@ export default function AnalystPage() {
         <div className="mx-auto flex max-w-6xl items-start gap-3">
           <div className="mt-0.5 rounded-lg bg-[#e8f0fe] p-2 text-[#1a73e8]"><Sparkles className="h-5 w-5" aria-hidden /></div>
           <div className="min-w-0">
-            <h1 className="text-xl font-medium text-[#202124]">{t('analyst.title')}</h1>
+            <h1 className="flex flex-wrap items-center gap-2 text-xl font-medium text-[#202124]">{t('analyst.title')}
+              <span className="rounded border border-[#f9ab00] bg-[#fef7e0] px-2 py-0.5 text-xs font-medium text-[#b06000]"
+                    data-testid="analyst-preview-label">{t('analyst.previewLabel')}</span></h1>
             <p className="mt-0.5 text-sm text-[#5f6368]">{t('analyst.subtitle')}</p>
           </div>
         </div>
@@ -399,6 +401,7 @@ function AnswerView({ turn, locale }: { turn: AnalystTurn; locale: string }) {
           </dl>
         </section>
         <ChartDraftPanel turn={turn} />
+        <FeedbackPanel turnId={turn.turn_id} />
       </aside>
     </div>
   );
@@ -439,6 +442,41 @@ function DataTable({ turn, locale }: { turn: AnalystTurn; locale: string }) {
           </tbody>
         </table>
       </div>
+    </section>
+  );
+}
+
+function FeedbackPanel({ turnId }: { turnId?: string }) {
+  const { t } = useI18n();
+  const [state, setState] = useState<{ sent?: 'up' | 'down'; comment: string; error?: string }>({ comment: '' });
+  if (!turnId) return null;
+  const send = async (verdict: 'up' | 'down') => {
+    try {
+      await analystApi.feedback(turnId, verdict, state.comment);
+      setState((s) => ({ ...s, sent: verdict, error: undefined }));
+    } catch (err) {
+      setState((s) => ({ ...s, error: errorText(err) }));
+    }
+  };
+  return (
+    <section className="rounded-lg border border-[#dadce0] bg-white p-4 text-sm" data-testid="analyst-feedback">
+      <h2 className="text-xs font-medium uppercase tracking-wide text-[#5f6368]">{t('analyst.feedback')}</h2>
+      {state.sent ? (
+        <p className="mt-1 text-xs text-[#188038]" data-testid="analyst-feedback-sent">{t('analyst.feedbackThanks')}</p>
+      ) : (
+        <>
+          <textarea value={state.comment} onChange={(e) => setState((s) => ({ ...s, comment: e.target.value }))}
+                    maxLength={1000} rows={2} placeholder={t('analyst.feedbackPlaceholder')}
+                    className="mt-2 w-full rounded-md border border-[#dadce0] p-2 text-xs" data-testid="analyst-feedback-comment" />
+          <div className="mt-2 flex gap-2">
+            <button type="button" onClick={() => send('up')} data-testid="analyst-feedback-up"
+                    className="rounded-md border border-[#dadce0] px-3 py-1 text-xs hover:bg-[#f1f3f4]">{t('analyst.feedbackUp')}</button>
+            <button type="button" onClick={() => send('down')} data-testid="analyst-feedback-down"
+                    className="rounded-md border border-[#dadce0] px-3 py-1 text-xs hover:bg-[#f1f3f4]">{t('analyst.feedbackDown')}</button>
+          </div>
+        </>
+      )}
+      {state.error ? <p role="alert" className="mt-1 text-xs text-[#d93025]">{state.error}</p> : null}
     </section>
   );
 }

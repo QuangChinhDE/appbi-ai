@@ -25,11 +25,12 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import replace
-from typing import Iterable
+from typing import Iterable, Optional
 
 # Function words, question words and analysis verbs that carry no data meaning.
 _STOP = set("""
 a ai bao bi bieu bo cac cach chi cho chua co con cua cung da dang dau de den di do doi duoc gi gia giai giup hay hien hoi hon khac khi khong kia la lam lai luon ma moi mot muon nao nay neu nhieu nhu nhung nhat nua o phai qua ra roi sang sao so sanh ta tai tat the theo thi thu thuc tinh to toan trong tu tung va van ve vi voi xem xin tong cong hang tach them rieng bang danh sach liet ke the nao the hien bao nhieu dang ky tu den gan day nhat cao thap lon nho manh yeu tang giam bien dong xu huong ket qua phan tich thay mang lai dem nhieu it minh toi chia ben thoi nhe vay oi a
+cai chiec het du lieu lay gio
 """.split())
 # Words that are explained by grouping on a time field.
 _TIME = set("ngay tuan thang quy nam thoi gian gan day xu huong bien dong".split())
@@ -102,17 +103,11 @@ def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> d
             if not (shared - {"so", "id", "ma"}):
                 continue
             extra = words - shared - _STOP
-            if f.kind == "dimension":
-                # "vùng miền", "theo từng miền": lower-case words beside a breakdown's
-                # label describe it. A Capitalised word ("kênh Online", "ngành Thiết
-                # bị") reads as a data VALUE and must be explained by a real one.
-                lower = {fold(t) for t in re.findall(r"\w+", str(phrase)) if t == t.lower()}
-                words = shared | (extra & lower)
-            else:
-                # A metric phrase keeps only words that are themselves catalog
-                # vocabulary ("số lượng SẢN PHẨM bán ra"); a modifier no field knows
-                # ("dự kiến", "lợi nhuận") stays unexplained and is refused.
-                words = shared | (extra & vocab)
+            # A phrase keeps only extra words that are themselves catalog vocabulary
+            # ("số lượng SẢN PHẨM bán ra"). A word no field knows stays unexplained:
+            # a modifier ("dự kiến"), another entity ("NGƯỜI bán" is not "Kênh bán")
+            # or a synonym the model has not got governed metadata for ("vùng MIỀN").
+            words = shared | (extra & vocab)
         out.setdefault(ref, set()).update(words)
     return out
 
@@ -216,6 +211,60 @@ _FUTURE = re.compile(r"\b(se|du bao|du doan|du kien|sap toi|ky toi|(ngay|tuan|th
 
 def is_forecast(question: str) -> bool:
     return bool(_FUTURE.search(" ".join(w for w in re.split(r"[^0-9a-z]+", fold(question)) if w)))
+
+
+# ── Intent obligations ──────────────────────────────────────────────────────
+# Words that CHANGE the meaning (negation, comparison, a time boundary, "only")
+# are matched on the question as written - lower-cased, tone marks kept - because
+# folded they collide with ordinary words ("chỉ" / "chi phí", "tối đa" / "tôi",
+# "không" as a yes/no particle). Each one obliges the plan to carry the matching
+# operator; a plan that does not is refused, never answered with the opposite.
+_NEG = re.compile(r"(?<!\w)(không|chưa|ngoại trừ|loại trừ|trừ|khác|ngoài)(?=\s+\w)")
+_YES_NO = re.compile(r"(?<!\w)có(?:\s+\w+){1,6}\s+không\s*[?.!]*\s*$")
+_CMP = re.compile(r"(?<!\w)(lớn hơn|nhỏ hơn|cao hơn|thấp hơn|nhiều hơn|ít hơn|ít nhất|tối thiểu|tối đa|trên|dưới|vượt|hơn)"
+                  r"\s+(?:\w+\s+){0,2}\d")
+_TIME_BOUND = re.compile(r"(?<!\w)(trước|sau|từ|đến|tới)\s+(?:(?:ngày|tháng|quý|năm)\s+)?\d")
+_ONLY = re.compile(r"(?<!\w)chỉ(?!\s+số)(?=\s+\w)")
+
+
+def _lower(question: str) -> str:
+    return unicodedata.normalize("NFC", str(question or "")).lower()
+
+
+def intent_obligations(question: str) -> dict:
+    """What the question's own words oblige a plan to contain."""
+    text = _lower(question)
+    neg = [m.group(1) for m in _NEG.finditer(text)]
+    if neg and _YES_NO.search(text) and set(neg) == {"không"}:
+        neg = []  # "có tăng không?" asks yes/no; it does not negate
+    return {"negation": neg, "comparison": [m.group(1) for m in _CMP.finditer(text)],
+            "time_bound": [m.group(1) for m in _TIME_BOUND.finditer(text)],
+            "only": bool(_ONLY.search(text))}
+
+
+def check_obligations(question: str, filters: dict, carried_filters: Iterable[str] = ()) -> Optional[str]:
+    """None when the plan's filters honour the question's meaning-changing words,
+    else the refusal naming them."""
+    ob = intent_obligations(question)
+    ops = {ref: str(c.get("operator")) for ref, c in filters.items()}
+    values = " ".join(_lower(" ".join(c["value"] if isinstance(c.get("value"), list) else [str(c.get("value"))]))
+                      for c in filters.values() if c.get("operator") in ("eq", "in"))
+    if ob["negation"]:
+        negated_value = any(w in values for w in ("chưa", "không"))
+        if not (set(ops.values()) & {"ne", "not_in"}) and not negated_value:
+            return (f"Câu hỏi có phủ định (“{ob['negation'][0]}”) nhưng kế hoạch truy vấn không thể hiện nó, "
+                    "nên không trả lời thay vì trả lời ngược nghĩa.")
+    elif set(ops.values()) & {"ne", "not_in"}:
+        return "Kế hoạch truy vấn có phép loại trừ mà câu hỏi không yêu cầu, nên không chạy."
+    if ob["comparison"] and not (set(ops.values()) & {"gt", "gte", "lt", "lte"}):
+        return (f"Câu hỏi có điều kiện so sánh (“{ob['comparison'][0]}”) mà dữ liệu được phép chưa áp được, "
+                "nên không trả lời phần đó thay vì trả lời sai.")
+    if ob["time_bound"] and "date_range" not in ops.values():
+        return (f"Câu hỏi có mốc thời gian (“{ob['time_bound'][0]} …”) nhưng kế hoạch không lọc theo thời gian, "
+                "nên không trả lời.")
+    if ob["only"] and not filters and not list(carried_filters):
+        return "Câu hỏi giới hạn phạm vi (“chỉ …”) nhưng kế hoạch không có bộ lọc nào, nên không trả lời."
+    return None
 
 
 def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | None = None,
@@ -341,6 +390,11 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
                 g = (previous.get("time_grains") or {}).get(d)
                 if g and d not in grains:
                     grains[d] = g
+
+    carried_filters = list(((previous or {}).get("filters") or {}).keys()) if isinstance(previous, dict) else []
+    broken = check_obligations(question, filters, carried_filters)
+    if broken:
+        return None, broken
 
     explained = set(_STOP) | syllables(plan.explore.dataset_name) | syllables(plan.explore.label)
     for ref in [*measures, *dims, *filters, *carried]:

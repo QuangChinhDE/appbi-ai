@@ -226,6 +226,13 @@ class PostgresLedger:
                 {"r": str(run_id), "u": str(requested_by)}).all()
         return len(rows)
 
+    def run_owner(self, run_id: str) -> Optional[str]:
+        """Who ran this run (an Analyst turn): the user id of its queries, or None."""
+        with self.engine.connect() as conn:
+            row = conn.execute(sa.text(
+                "SELECT user_id FROM governed_query_executions WHERE run_id = :r LIMIT 1"), {"r": str(run_id)}).first()
+        return str(row[0]) if row and row[0] is not None else None
+
     def heartbeat(self, query_ids: Iterable[str]) -> list[str]:
         """Renew this worker's leases; return the ids whose cancel was requested."""
         ids = list(query_ids)

@@ -17,7 +17,7 @@ import re
 import threading
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -103,9 +103,16 @@ def catalog(db: Session = Depends(get_db),
 
 
 @router.post("/ask")
-def ask(body: AskBody, db: Session = Depends(get_db),
+def ask(body: AskBody, request: Request, db: Session = Depends(get_db),
         user: User = Depends(require_analyst)) -> dict[str, Any]:
+    from app.services import llm_test_budget as _budget
     from app.services.analyst.service import ask as run_turn
+
+    if _budget.active():
+        # Test harness labels for the spending ledger (ignored unless a test budget is set).
+        _budget.PURPOSE.set(request.headers.get("x-appbi-test-purpose", "")[:60])
+        _budget.CASE_ID.set(request.headers.get("x-appbi-test-case", "")[:60])
+        _budget.RC_SHA.set(request.headers.get("x-appbi-test-rc", "")[:40])
 
     previous = body.previous_plan if isinstance(body.previous_plan, dict) else None
     return run_turn(db, user, body.question, _analyst_deps(), previous=previous,
@@ -127,6 +134,33 @@ def consent(body: ConsentBody,
 
     return {"drop_consent": c.issue(user_id=user.id, query_fp=body.query_fingerprint, fields=body.fields),
             "expires_in": c.DEFAULT_TTL_SECONDS}
+
+
+class FeedbackBody(BaseModel):
+    turn_id: str = Field(..., pattern=r"^[0-9a-f]{32}$")
+    verdict: str = Field(..., pattern=r"^(up|down)$")
+    comment: Optional[str] = Field(None, max_length=1000)
+
+
+@router.post("/feedback", status_code=201)
+def feedback(body: FeedbackBody, db: Session = Depends(get_db),
+             user: User = Depends(require_analyst)) -> dict[str, Any]:
+    """The person's verdict on one of THEIR answers (engineering dogfood / pilot).
+    Only a turn this person ran (its ledger run id) can be rated."""
+    import os
+
+    from app.models.analyst_feedback import AnalystFeedback
+
+    ledger = _analyst_deps().ledger
+    owner = getattr(ledger, "run_owner", None)
+    if owner is not None and str(owner(body.turn_id) or "") != str(user.id):
+        raise HTTPException(status_code=404, detail="Unknown answer.")
+    row = AnalystFeedback(user_id=user.id, turn_id=body.turn_id, verdict=body.verdict,
+                          comment=(body.comment or "").strip() or None,
+                          rc_sha=(os.environ.get("APPBI_BUILD_SHA") or "")[:40] or None)
+    db.add(row)
+    db.commit()
+    return {"id": row.id}
 
 
 @router.post("/turns/{turn_id}/cancel")

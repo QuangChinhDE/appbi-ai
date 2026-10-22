@@ -246,7 +246,7 @@ def _find_value_filter(authz, principal, p: Plan, question: str, unexplained: se
 
     qtext = " " + " ".join(w for w in __import__("re").split(r"[^0-9a-z]+", fold(question)) if w) + " "
     candidates = [f for f in p.explore.fields if f.kind == "dimension" and f.type == "string"
-                  and not is_identifier(f) and f.ref not in used][:4]
+                  and not is_identifier(f)][:8]
     if not candidates or len(unexplained) > 4:
         return None  # each lookup is a governed read against the person's budget: kept small
     hits = []

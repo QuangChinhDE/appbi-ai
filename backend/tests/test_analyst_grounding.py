@@ -347,9 +347,14 @@ def test_a_date_range_filter_is_kept_and_explains_the_period():
 # ── sealed holdout set 6 (now a development set): rules, not question patches ──
 
 def test_conversational_words_and_a_described_breakdown_are_explained():
-    p, why = ground(_plan(["l.net_sales"], ["c.region"]), "Cho mình xem doanh số theo từng vùng miền nhé",
-                    covered={"doanh số": "l.net_sales", "vùng miền": "c.region"})
+    p, why = ground(_plan(["l.net_sales"], ["c.region"]), "Cho mình xem doanh số theo từng vùng nhé",
+                    covered={"doanh số": "l.net_sales", "vùng": "c.region"})
     assert p is not None, why
+    # "miền" beside "Vùng" is a synonym no governed metadata declares: refused, not guessed
+    # (the same rule keeps "NGƯỜI bán" from being answered by "Kênh bán")
+    p, why = ground(_plan(["l.net_sales"], ["c.region"]), "Doanh số theo từng vùng miền",
+                    covered={"doanh số": "l.net_sales", "vùng miền": "c.region"})
+    assert p is None and "miền" in why
 
 
 def test_a_capitalised_word_in_a_breakdown_phrase_still_needs_a_real_value():
@@ -420,3 +425,28 @@ def test_a_value_word_shared_with_another_metric_does_not_explain_a_missing_filt
     p, why = ground(p0, "Số đơn hàng hoàn tất theo năm", covered={"Số đơn hàng hoàn tất": "o.order_count"},
                     value_lookup=lambda q, words, used: ("o.status", "Hoàn tất"))
     assert p is not None and p.filters == {"o.status": {"operator": "eq", "value": "Hoàn tất"}}, why
+
+
+# ── quality recovery: root-cause class "lexical grounding refusal" ───────────
+
+def test_a_value_of_a_field_the_plan_groups_by_becomes_its_filter():
+    # set 6: "Doanh số ngành Thiết bị chia theo sản phẩm" grouped by category and
+    # left "Thiết bị" unexplained
+    ex = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="l",
+                        source_type="postgresql", label="C", fields=[*FIELDS,
+                            CatalogField("p.product_name", "dimension", "string", "Tên sản phẩm"),
+                            CatalogField("p.cat_vn", "dimension", "string", "Ngành hàng")])
+    p0 = Plan(explore=ex, dimensions=["p.cat_vn", "p.product_name"], measures=["l.net_sales"])
+    p, why = ground(p0, "Doanh số ngành Thiết bị chia theo sản phẩm",
+                    covered={"doanh số": "l.net_sales", "sản phẩm": "p.product_name"},
+                    value_lookup=lambda q, words, used: ("p.cat_vn", "Thiết bị"))
+    assert p is not None, why
+    assert p.dimensions == ["p.product_name"] and p.filters == {"p.cat_vn": {"operator": "eq", "value": "Thiết bị"}}
+
+
+def test_counting_words_are_not_data_but_a_seller_is_not_a_channel():
+    p, why = ground(_plan(["l.net_sales"], ["c.region"]), "Lấy giúp doanh số theo vùng, hết các vùng")
+    assert p is not None, why
+    p, why = ground(_plan(["l.net_sales"], ["o.channel"]), "Doanh số theo người bán",
+                    covered={"doanh số": "l.net_sales", "người bán": "o.channel"})
+    assert p is None and "người" in why  # "người" is not filler: the seller is not the sales channel

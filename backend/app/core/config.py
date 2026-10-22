@@ -162,6 +162,14 @@ class Settings(BaseSettings):
     # Planner model tier: "default" (gpt-4o-mini, the certified baseline) or
     # "strong" (the provider's larger model). Changed only on benchmark evidence.
     ANALYST_PLANNER_MODEL: str = "default"
+    # Test-only AI spending cap (services/llm_test_budget.py). Empty = inert;
+    # refused when ENVIRONMENT=production.
+    LLM_TEST_BUDGET_USD: str = ""
+    LLM_TEST_LEDGER_PATH: str = ""
+    LLM_TEST_PRICES_JSON: str = ""
+    # Test-only: answer planner calls from recorded model outputs (JSONL of
+    # {"question", "followup", "raw"}) instead of calling a model. Refused in production.
+    ANALYST_PLANNER_REPLAY_PATH: str = ""
     ANALYST_MAX_QUERIES_PER_USER_DAY: int = 200
     ANALYST_MAX_CONCURRENT_PER_DATASOURCE: int = 4
     ANALYST_MAX_BQ_BYTES_PER_USER_DAY: int = 20 * 1024**3
