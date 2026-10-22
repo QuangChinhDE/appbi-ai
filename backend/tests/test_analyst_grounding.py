@@ -594,3 +594,18 @@ def test_a_synonym_names_a_field_only_as_a_whole_phrase():
     out, why = ground(p, "Số lượng bán theo loại sản phẩm", covered={"loại sản phẩm": "p.category"})
     assert out is not None and out.dimensions == ["p.category"], why
 
+
+def test_a_metric_named_by_generic_words_is_not_a_bridged_source():
+    """Dev regression 2026-10-22: "Miền Trung có bao nhiêu đơn hàng" asked which source,
+    because every word of "Số đơn hàng" is generic. It names the metric."""
+    from app.services.analyst.grounding import other_source_named
+
+    a = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="Commerce", dataset_table_id=1,
+                       base_view="o", source_type="postgresql", label="Commerce",
+                       fields=[CatalogField("o.order_count", "measure", "count_distinct", "Số đơn hàng")])
+    b = CatalogExplore(explore_id=2, model_id=2, dataset_id=2, dataset_name="Support", dataset_table_id=2,
+                       base_view="t", source_type="postgresql", label="Support",
+                       fields=[CatalogField("t.tickets", "measure", "count_distinct", "Tickets")])
+    p = Plan(explore=a, dimensions=[], measures=["o.order_count"])
+    assert other_source_named(p, "Miền Trung tháng 3/2025 có bao nhiêu đơn hàng?", [a, b]) == []
+
