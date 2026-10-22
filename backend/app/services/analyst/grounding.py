@@ -128,6 +128,18 @@ def _capitalised(question: str) -> set[str]:
 
 _YEAR = re.compile(r"\b(19|20)\d\d\b")
 _GRAIN_ASKED = re.compile(r"\b(theo|moi|tung|hang|qua|cac)\s+(ngay|tuan|thang|quy|nam)\b")
+_SUB_YEAR = re.compile(r"\b(quy|thang|ngay|tuan|nua|dau|cuoi|q[1-4]|tu|den|toi|truoc|sau)\b|\d{1,2}/\d{4}")
+
+
+def whole_year(question: str) -> Optional[int]:
+    """The year when the question's period is exactly one WHOLE calendar year
+    ("năm 2025", "Năm 2025 ... mỗi quý"), else None. A breakdown ("mỗi quý",
+    "theo tháng") is not a narrower period."""
+    qf = _GRAIN_ASKED.sub(" ", fold(str(question or "")))
+    years = {int(m.group(0)) for m in _YEAR.finditer(qf)}
+    if len(years) != 1 or _SUB_YEAR.search(qf):
+        return None
+    return years.pop()
 
 
 def _vietnamese(field) -> bool:
@@ -313,6 +325,12 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
         if cond.get("operator") == "date_range" and not _YEAR.search(str(question)):
             # holdout set 6: "khách hàng MỚI đăng ký" became a 2023 range nobody asked for
             continue
+        year = whole_year(question) if cond.get("operator") == "date_range" else None
+        if year is not None:
+            # Holdout set 6 S6-041: "Năm 2025 ... mỗi quý" was filtered to Q1 2025 only
+            # and answered for one quarter. A question that names a whole year gets
+            # that whole year, whatever range the model wrote.
+            cond = {"operator": "date_range", "value": {"from": f"{year}-01-01", "to": f"{year + 1}-01-01"}}
         filters[ref] = cond
 
     def one_value(ref):
