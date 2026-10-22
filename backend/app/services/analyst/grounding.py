@@ -219,7 +219,7 @@ def is_forecast(question: str) -> bool:
 # folded they collide with ordinary words ("chỉ" / "chi phí", "tối đa" / "tôi",
 # "không" as a yes/no particle). Each one obliges the plan to carry the matching
 # operator; a plan that does not is refused, never answered with the opposite.
-_NEG = re.compile(r"(?<!\w)(không|chưa|ngoại trừ|loại trừ|trừ|khác|ngoài)(?=\s+\w)")
+_NEG = re.compile(r"(?<!\w)(không|chưa|ngoại trừ|loại trừ|loại bỏ|bỏ qua|bỏ|trừ|khác|ngoài)(?=\s+\w)")
 _YES_NO = re.compile(r"(?<!\w)có(?:\s+\w+){1,6}\s+không\s*[?.!]*\s*$")
 _CMP = re.compile(r"(?<!\w)(lớn hơn|nhỏ hơn|cao hơn|thấp hơn|nhiều hơn|ít hơn|ít nhất|tối thiểu|tối đa|trên|dưới|vượt|hơn)"
                   r"\s+(?:\w+\s+){0,2}\d")
@@ -351,6 +351,13 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
                 dims[dims.index(d)] = own_dates[0]
                 plan = replace(plan, time_grains={(own_dates[0] if r == d else r): g
                                                   for r, g in plan.time_grains.items()})
+        # Same for a PERIOD filter (sealed set 8: "Số lượt trả hàng ... năm 2025"
+        # was filtered on the ORDER date, counting returns of 2025 orders).
+        for ref, cond in list(filters.items()):
+            if (cond.get("operator") == "date_range" and ref.rsplit(".", 1)[0] != fact and len(own_dates) == 1
+                    and ref not in carried and ref in by_ref and not _mentioned(by_ref[ref], q, qf)
+                    and own_dates[0] not in filters):
+                filters = {(own_dates[0] if r == ref else r): c for r, c in filters.items()}
     if value_lookup is not None:
         # "kênh Online" is a FILTER on the channel, not a breakdown by channel
         # (holdout set 3): words of a breakdown's phrase beyond its label are looked
@@ -360,6 +367,8 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
             extra &= _capitalised(question)  # only value-like words are looked up (each lookup is a governed read)
             if not extra or d in plan.time_grains or not _vietnamese(by_ref[d]):
                 continue  # an English label is bridged by the phrase: no "extra" words to read
+            if d in filters:
+                continue  # already filtered (e.g. "ne Miền Nam"): its value is not re-read as eq
             found = value_lookup(question, extra, [r for r in [*dims, *filters] if r != d])
             if found and found[0] == d:
                 dims.remove(d)
@@ -417,13 +426,24 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
         found = value_lookup(question, unexplained, [*dims, *filters])
         if found:
             ref, value = found
-            filters = {**filters, ref: {"operator": "eq", "value": value}}
+            prior = (filters.get(ref) or {}).get("operator")
+            if prior in ("ne", "not_in"):
+                # Sealed set 8: "không tính các đơn bị huỷ" was planned "status ne
+                # Cancelled" and this lookup rewrote it to "status eq Huỷ" - the
+                # opposite answer. The real value replaces the written one; the
+                # plan's exclusion stays, and so does any breakdown on the field.
+                filters = {**filters, ref: {"operator": prior, "value": [value] if prior == "not_in" else value}}
+            else:
+                filters = {**filters, ref: {"operator": "eq", "value": value}}
+                dims = [d for d in dims if d != ref]
             explained |= syllables(value) | phrases.get(ref, set())
             if ref in by_ref:
                 explained |= _field_words(by_ref[ref])
-            dims = [d for d in dims if d != ref]
             grains = {r: g for r, g in grains.items() if r in dims}
             unexplained = q - explained
+            broken = check_obligations(question, filters, carried_filters)  # the FINAL filters honour the words
+            if broken:
+                return None, broken
     if unexplained:
         shown = [w for w in re.findall(r"\w+", str(question)) if fold(w) in unexplained]
         shown = list(dict.fromkeys(shown))[:6] or sorted(unexplained)[:6]
