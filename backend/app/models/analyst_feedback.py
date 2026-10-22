@@ -18,7 +18,12 @@ class AnalystFeedback(Base):
     verdict = Column(String(8), nullable=False)
     comment = Column(String(1000), nullable=True)
     rc_sha = Column(String(40), nullable=True)
+    #: what was wrong (or right): one of REASONS, or NULL
+    reason = Column(String(40), nullable=True)
 
     __table_args__ = (
         CheckConstraint("verdict IN ('up', 'down')", name="ck_analyst_feedback_verdict"),
+        CheckConstraint("reason IS NULL OR reason IN ('correct', 'wrong_metric_or_source', 'wrong_filter', "
+                        "'incorrect_number', 'unsupported_but_answerable', 'ux_issue')",
+                        name="ck_analyst_feedback_reason"),
     )

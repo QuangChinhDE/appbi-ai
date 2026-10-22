@@ -489,11 +489,12 @@ function DataTable({ turn, locale }: { turn: AnalystTurn; locale: string }) {
 
 function FeedbackPanel({ turnId }: { turnId?: string }) {
   const { t } = useI18n();
-  const [state, setState] = useState<{ sent?: 'up' | 'down'; comment: string; error?: string }>({ comment: '' });
+  const [state, setState] = useState<{ sent?: 'up' | 'down'; comment: string; reason: string; error?: string }>(
+    { comment: '', reason: '' });
   if (!turnId) return null;
   const send = async (verdict: 'up' | 'down') => {
     try {
-      await analystApi.feedback(turnId, verdict, state.comment);
+      await analystApi.feedback(turnId, verdict, state.comment, verdict === 'up' ? 'correct' : state.reason);
       setState((s) => ({ ...s, sent: verdict, error: undefined }));
     } catch (err) {
       setState((s) => ({ ...s, error: errorText(err) }));
@@ -506,6 +507,14 @@ function FeedbackPanel({ turnId }: { turnId?: string }) {
         <p className="mt-1 text-xs text-[#188038]" data-testid="analyst-feedback-sent">{t('analyst.feedbackThanks')}</p>
       ) : (
         <>
+          <select value={state.reason} onChange={(e) => setState((s) => ({ ...s, reason: e.target.value }))}
+                  aria-label={t('analyst.feedbackReason')} data-testid="analyst-feedback-reason"
+                  className="mt-2 w-full rounded-md border border-[#dadce0] bg-white p-2 text-xs">
+            <option value="">{t('analyst.feedbackReason')}</option>
+            {['wrong_metric_or_source', 'wrong_filter', 'incorrect_number', 'unsupported_but_answerable', 'ux_issue'].map((r) => (
+              <option key={r} value={r}>{t(`analyst.feedbackReason.${r}`)}</option>
+            ))}
+          </select>
           <textarea value={state.comment} onChange={(e) => setState((s) => ({ ...s, comment: e.target.value }))}
                     maxLength={1000} rows={2} placeholder={t('analyst.feedbackPlaceholder')}
                     className="mt-2 w-full rounded-md border border-[#dadce0] p-2 text-xs" data-testid="analyst-feedback-comment" />

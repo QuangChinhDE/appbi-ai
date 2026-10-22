@@ -146,6 +146,8 @@ class FeedbackBody(BaseModel):
     turn_id: str = Field(..., pattern=r"^[0-9a-f]{32}$")
     verdict: str = Field(..., pattern=r"^(up|down)$")
     comment: Optional[str] = Field(None, max_length=1000)
+    reason: Optional[str] = Field(None, pattern=r"^(correct|wrong_metric_or_source|wrong_filter|incorrect_number|"
+                                                 r"unsupported_but_answerable|ux_issue)$")
 
 
 @router.post("/feedback", status_code=201)
@@ -161,7 +163,7 @@ def feedback(body: FeedbackBody, db: Session = Depends(get_db),
     owner = getattr(ledger, "run_owner", None)
     if owner is not None and str(owner(body.turn_id) or "") != str(user.id):
         raise HTTPException(status_code=404, detail="Unknown answer.")
-    row = AnalystFeedback(user_id=user.id, turn_id=body.turn_id, verdict=body.verdict,
+    row = AnalystFeedback(user_id=user.id, turn_id=body.turn_id, verdict=body.verdict, reason=body.reason,
                           comment=(body.comment or "").strip() or None,
                           rc_sha=(os.environ.get("APPBI_BUILD_SHA") or "")[:40] or None)
     db.add(row)

@@ -125,8 +125,8 @@ export const analystApi = {
     const response = await apiClient.post('/analyst/consents', { query_fingerprint, fields });
     return response.data.drop_consent;
   },
-  feedback: async (turnId: string, verdict: 'up' | 'down', comment?: string): Promise<void> => {
-    await apiClient.post('/analyst/feedback', { turn_id: turnId, verdict, comment: comment || null });
+  feedback: async (turnId: string, verdict: 'up' | 'down', comment?: string, reason?: string): Promise<void> => {
+    await apiClient.post('/analyst/feedback', { turn_id: turnId, verdict, comment: comment || null, reason: reason || null });
   },
   cancel: async (turnId: string): Promise<number> => {
     const response = await apiClient.post(`/analyst/turns/${turnId}/cancel`);

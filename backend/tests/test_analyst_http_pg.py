@@ -741,3 +741,19 @@ def test_a_filtered_answer_saved_as_a_chart_gives_the_same_rows_on_reopen(client
         region = next(val for key, val in r.items() if isinstance(val, str) and val in ("Bắc", "Nam", "Trung"))
         got[region] = float(next(val for key, val in r.items() if isinstance(val, (int, float)) and not isinstance(val, bool)))
     assert got == want                                   # Trung stays excluded on reopen
+
+
+def test_feedback_records_what_was_wrong_and_refuses_an_unknown_reason(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    model(_planner(world))
+    turn = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"}).json()["turn_id"]
+    ok = client.post("/api/v1/analyst/feedback", headers=world["analyst"].headers,
+                     json={"turn_id": turn, "verdict": "down", "reason": "wrong_filter", "comment": "thiếu năm"})
+    assert ok.status_code == 201, ok.text
+    bad = client.post("/api/v1/analyst/feedback", headers=world["analyst"].headers,
+                      json={"turn_id": turn, "verdict": "down", "reason": "anything"})
+    assert bad.status_code == 422
+    with sa.create_engine(_owner_url()).connect() as c:
+        assert c.execute(sa.text("SELECT reason FROM analyst_feedback WHERE turn_id = :t"), {"t": turn}).scalar()             == "wrong_filter"
+
