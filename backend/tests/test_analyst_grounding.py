@@ -578,3 +578,19 @@ def test_a_governed_synonym_names_a_breakdown_and_an_ungoverned_one_does_not():
     p2 = _plan(["l.net_sales"], ["c.region"], covered={"doanh số": "l.net_sales", "miền": "c.region"})
     out, why = ground(p2, "Doanh số theo miền", covered=p2.covered)     # FIELDS has no governed "miền"
     assert out is None and "miền" in why
+
+
+def test_a_synonym_names_a_field_only_as_a_whole_phrase():
+    """Dev regression 2026-10-22: the governed synonym "loại sản phẩm" made "mỗi
+    loại" (each of the named products) a breakdown by category."""
+    ex = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="l",
+                        source_type="postgresql", label="C", fields=[
+                            CatalogField("l.units", "measure", "sum", "Số lượng bán"),
+                            CatalogField("p.category", "dimension", "string", "Ngành hàng",
+                                         synonyms=("loại sản phẩm", "nhóm hàng"))])
+    p = Plan(explore=ex, dimensions=["p.category"], measures=["l.units"], covered={"mỗi loại": "p.category"})
+    out, why = ground(p, "Bút ký mỗi loại bán được số lượng bán bao nhiêu")
+    assert out is None or "p.category" not in out.dimensions, out
+    out, why = ground(p, "Số lượng bán theo loại sản phẩm", covered={"loại sản phẩm": "p.category"})
+    assert out is not None and out.dimensions == ["p.category"], why
+

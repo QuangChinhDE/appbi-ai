@@ -150,3 +150,41 @@ def test_the_planner_model_tier_is_a_setting_with_the_baseline_by_default(monkey
     monkeypatch.setattr(settings, "ANALYST_PLANNER_MODEL", "strong", raising=False)
     planner.plan("Doanh thu?", [_explore()])
     assert seen == [False, True]
+
+
+# ── Plan shape variations seen in the dev regression (2026-10-22) ──────────────
+
+def _two_facts():
+    return CatalogExplore(explore_id=7, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="l",
+                          source_type="postgresql", label="C", fields=[
+                              CatalogField("l.net_sales", "measure", "sum", "Doanh số"),
+                              CatalogField("l.units", "measure", "sum", "Số lượng bán"),
+                              CatalogField("r.refund_total", "measure", "sum", "Tiền hoàn trả"),
+                              CatalogField("r.return_date", "dimension", "date", "Ngày trả hàng"),
+                              CatalogField("p.category", "dimension", "string", "Ngành hàng")])
+
+
+def test_a_second_measure_listed_as_a_dimension_moves_to_the_measures():
+    raw = {"status": "plan", "explore_id": 7, "dimensions": ["p.category", "l.units"], "measures": ["l.net_sales"],
+           "covered": {"doanh số": "l.net_sales", "số lượng bán": "l.units", "ngành hàng": "p.category"}}
+    out = validate(raw, [_two_facts()])
+    assert isinstance(out, Plan), getattr(out, "reason", out)
+    assert out.measures == ["l.net_sales", "l.units"] and out.dimensions == ["p.category"]
+
+
+def test_refs_written_as_objects_are_the_same_refs():
+    raw = {"status": "plan", "explore_id": 7, "dimensions": [{"ref": "p.category"}], "measures": [{"ref": "l.units"}]}
+    out = validate(raw, [_two_facts()])
+    assert isinstance(out, Plan) and out.dimensions == ["p.category"] and out.measures == ["l.units"]
+
+
+def test_a_time_breakdown_on_another_datasets_date_is_the_metrics_own_date():
+    raw = {"status": "plan", "explore_id": 7, "dimensions": ["m.spend_month"], "measures": ["r.refund_total"],
+           "time_grains": {"m.spend_month": "month"}}
+    out = validate(raw, [_two_facts()])
+    assert isinstance(out, Plan), getattr(out, "reason", out)
+    assert out.dimensions == ["r.return_date"] and out.time_grains == {"r.return_date": "month"}
+    # a non-time foreign field is still refused, never guessed
+    bad = validate({"status": "plan", "explore_id": 7, "dimensions": ["m.channel"], "measures": ["r.refund_total"]},
+                   [_two_facts()])
+    assert not isinstance(bad, Plan)
