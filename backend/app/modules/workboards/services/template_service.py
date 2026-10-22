@@ -1657,7 +1657,11 @@ def _rebuild_semantic_from_bundle(
             name=_remap_dt_tokens(bv.get("name") or f"view_{new_tid}", id_map),
             sql_table_name=_remap_dt_tokens(bv.get("sql_table_name"), id_map),
             dataset_table_id=new_tid,
-            dimensions=_remap_dt_tokens(bv.get("dimensions") or [], id_map),
+            # `user_edited` is decided by the server on its own write paths, never
+            # carried in from a file: imported labels/descriptions/parents still
+            # survive sync through the unflagged-legacy rule; the type follows the source.
+            dimensions=[{k: v for k, v in d.items() if k != "user_edited"} if isinstance(d, dict) else d
+                        for d in (_remap_dt_tokens(bv.get("dimensions") or [], id_map) or [])],
             measures=_remap_dt_tokens(bv.get("measures") or [], id_map),
             primary_key=_remap_dt_tokens(bv.get("primary_key"), id_map),
             description=bv.get("description"),

@@ -289,6 +289,7 @@ jobs:
             tests/test_semantic_state_contracts.py \
             tests/test_semantic_error_contracts.py \
             tests/test_relationship_contract.py \
+            tests/test_semantic_sync_preserves_dimensions.py \
             tests/test_public_authoritative_bounds.py \
             tests/test_publish_candidate_generation.py \
             tests/test_gc_fails_closed.py \
@@ -640,6 +641,15 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_pair4_surfaces_pg.py
+
+      # Model sync keeps what the owner authored on a dimension (P1): edited
+      # through the real PUT route, regenerated through Generate model (force),
+      # then read back by the Dataset model, a saved chart and a public
+      # dashboard tile against a hand-computed oracle.
+      - name: "GATE — semantic sync keeps authored dimensions (Postgres)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_semantic_sync_authored_dims_pg.py
 
       # Source / Data Prep / Snapshot <-> Drift / Health / Quality /
       # Observability (Pair #5): a calculated column is the Kernel's true
