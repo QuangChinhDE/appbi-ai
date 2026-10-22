@@ -64,6 +64,8 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:?set ADMIN_EMAIL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
       ALLOWED_PRIVATE_SOURCE_CIDRS: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
+      # Govern (glossary, metrics) - the governed business vocabulary the Analyst reads
+      METADATA_CATALOG_ENABLED: "true"
       # The Analyst, for the dogfood cohort only
       ANALYST_ENABLED: ${ANALYST_ENABLED:-true}
       ANALYST_PILOT_ALLOWLIST: ${ANALYST_PILOT_ALLOWLIST:-}
