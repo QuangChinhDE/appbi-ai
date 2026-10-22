@@ -253,7 +253,16 @@ def chart_draft(plan, title: str) -> dict:
     time_ref = next(iter(plan.time_grains), None)
     others = [d for d in plan.dimensions if d != time_ref]
     metrics = [{"field": m, "agg": "auto"} for m in plan.measures[:1]]
-    if time_ref:
+    if len(others) > 1 or len(plan.measures) > 1:
+        # Browser acceptance: "doanh số theo vùng VÀ kênh hằng quý" drafted a LINE
+        # by region only - the chart said less than the answer. A shape a line or
+        # bar cannot carry whole is drafted as a TABLE of every answered column.
+        chart_type = "TABLE"
+        role = {"selectedColumns": [*plan.dimensions, *plan.measures],
+                "metrics": [{"field": m, "agg": "auto"} for m in plan.measures]}
+        if time_ref:
+            role["timeGrains"] = {time_ref: plan.time_grains[time_ref]}
+    elif time_ref:
         chart_type = "LINE"
         role = {"metrics": metrics, "dimension": time_ref, "timeField": time_ref,
                 "timeGrains": {time_ref: plan.time_grains[time_ref]}}

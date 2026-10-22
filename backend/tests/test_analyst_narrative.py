@@ -107,3 +107,16 @@ def test_one_complete_period_with_groups_ranks_the_groups_in_it():
     story = describe(COLS, rows, time_ref="v.order_date", truncated=False, grain="year", today=date(2026, 10, 21))
     assert story["periods"]["window"] == ["2025"] and story["periods"]["partial"] == ["2026"]
     assert story["bullets"][:2] == ["Nam: 30 (75.0%)", "Bắc: 10 (25.0%)"]
+
+
+def test_a_shape_a_line_cannot_carry_is_drafted_as_a_table_of_every_column():
+    from types import SimpleNamespace
+
+    from app.services.analyst.narrative import chart_draft
+
+    plan = SimpleNamespace(dimensions=["c.region", "o.channel", "o.order_date"], measures=["l.net_sales"],
+                           time_grains={"o.order_date": "quarter"},
+                           explore=SimpleNamespace(dataset_table_id=7))
+    d = chart_draft(plan, "Doanh số theo vùng và kênh hằng quý")
+    assert d["chart_type"] == "TABLE"
+    assert d["config"]["roleConfig"]["selectedColumns"] == ["c.region", "o.channel", "o.order_date", "l.net_sales"]

@@ -414,3 +414,13 @@ def test_a_chosen_source_pins_the_turn_and_an_unavailable_one_is_refused(client,
     other = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
                         json={"question": "Doanh thu theo vùng?", "dataset_id": 987654321}).json()
     assert other["status"] == "unsupported" and "rows" not in other
+
+
+def test_the_save_button_is_offered_only_to_someone_the_chart_api_lets_save(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])   # explore_charts: view -> may not save
+    model(_planner(world))
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"}).json()
+    assert body["status"] == "answered" and body["can_save"] is False
+    r = client.post("/api/v1/charts/", headers=world["analyst"].headers, json=body["chart_draft"])
+    assert r.status_code == 403  # the API agrees with what the page was told

@@ -466,6 +466,8 @@ function ChartDraftPanel({ turn }: { turn: AnalystTurn }) {
           {state.id ? (
             <p className="mt-2 text-xs text-[#188038]" data-testid="analyst-chart-saved">{t('analyst.saved')}{' '}
               <Link href={`/explore/${state.id}`} className="font-medium text-[#1a73e8] underline" data-testid="analyst-open-chart">{t('analyst.openChart')}</Link></p>
+          ) : turn.can_save === false ? (
+            <p className="mt-2 text-xs text-[#5f6368]" data-testid="analyst-save-not-allowed">{t('analyst.saveNotAllowed')}</p>
           ) : (
             <button type="button" onClick={save} disabled={state.saving} data-testid="analyst-save-chart"
                     className="mt-2 rounded-md bg-[#1a73e8] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1765cc] disabled:opacity-60">
