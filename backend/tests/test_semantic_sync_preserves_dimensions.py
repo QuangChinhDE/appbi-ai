@@ -260,3 +260,16 @@ def test_a_template_import_does_not_carry_user_edited_in(db):
     db.commit()
     view = db.query(SemanticView).filter(SemanticView.dataset_table_id == 21).one()
     assert view.dimensions == [{"name": "region", "type": "string", "sql": "region", "label": "Vùng"}]
+
+
+def test_a_glossary_link_is_authoring_and_survives_sync():
+    """PO 2026-10-22: the Analyst reads a dimension's governed vocabulary from its
+    glossary-term link; a Generate/Sync must not drop the link the owner added."""
+    stored = [{"name": "region", "type": "string", "label": "Vùng"}]
+    link = [{"fqn": "sales.region", "label": "Vùng"}]
+    out = dms.stamp_authored_dimensions([{"name": "region", "type": "string", "label": "Vùng",
+                                          "glossary_terms": link}], stored)
+    assert out[0]["user_edited"] is True
+    merged = dms.merge_synced_dimensions([{"name": "region", "type": "string", "label": "region"}], out)
+    assert merged[0]["glossary_terms"] == link and merged[0]["label"] == "Vùng"
+

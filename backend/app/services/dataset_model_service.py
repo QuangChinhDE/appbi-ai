@@ -1091,7 +1091,8 @@ def _allocate_unique_semantic_model_name(
 # server on the write paths (never trusted from a client) when a stored
 # dimension's authored keys change; sync then keeps that definition instead of
 # regenerating it. Column visibility stays with the dataset table.
-_AUTHORABLE_DIMENSION_KEYS = ("type", "sql", "label", "description", "parent")
+# glossary_terms: the governed business words linked to the dimension (Analyst vocabulary)
+_AUTHORABLE_DIMENSION_KEYS = ("type", "sql", "label", "description", "parent", "glossary_terms")
 # Facts about the physical column: always the generator's, edited or not.
 _GENERATOR_OWNED_DIMENSION_KEYS = ("hidden", "source_type")
 _LEGACY_DESCRIPTIVE_KEYS = ("label", "description", "parent")
