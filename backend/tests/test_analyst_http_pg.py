@@ -451,3 +451,59 @@ def test_a_person_rates_their_own_answer_and_only_their_own(client, db, world, m
     stranger = client.post("/api/v1/analyst/feedback", headers=world["stranger"].headers,
                            json={"turn_id": turn, "verdict": "up"})
     assert stranger.status_code == 403
+
+
+# ── Dogfood 2026-10-22: picking a real value from a value clarification ──────
+# The UI re-asked "<question> — <value>" and grounding refused the very word the
+# pick replaced ("Atlantis"), so a clarification could never be answered. A pick
+# is now structured {plan, field, value}: the echoed plan is re-validated against
+# this turn's catalog, only that filter changes, and the value is re-checked
+# against the real data before the query.
+
+def _atlantis(world):
+    v = world["v"]
+    return _planner(world, dims=(), extra={"filters": {f"{v}.region": {"operator": "eq", "value": "Atlantis"}},
+                                           "covered": {"doanh thu": f"{v}.revenue", "vùng Atlantis": f"{v}.region"}})
+
+
+def test_a_value_clarification_names_its_field_and_a_pick_is_answered(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    model(_atlantis(world))
+    v = world["v"]
+    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                        json={"question": "Doanh thu vùng Atlantis"}).json()
+    assert first["status"] == "clarify" and set(first["options"]) == {"Bắc", "Nam", "Trung"}, first
+    assert first["choice_field"] == f"{v}.region"
+    model(_never_called)  # the pick re-runs the shown plan; the model is not asked again
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={
+        "question": "Doanh thu vùng Atlantis — Nam",
+        "value_choice": {"plan": first["plan"], "field": first["choice_field"], "value": "Nam"}}).json()
+    assert body["status"] == "answered", body
+    assert body["plan"]["filters"] == {f"{v}.region": {"operator": "eq", "value": "Nam"}}
+    assert [float(r[c["name"]]) for r in body["rows"] for c in body["columns"] if c["role"] == "measure"] == [30.0]
+
+
+def test_a_picked_value_not_in_the_data_is_offered_again_not_queried_as_zero(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    model(_atlantis(world))
+    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                        json={"question": "Doanh thu vùng Atlantis"}).json()
+    model(_never_called)
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={
+        "question": "x", "value_choice": {"plan": first["plan"], "field": first["choice_field"], "value": "Mars"}}).json()
+    assert body["status"] == "clarify" and "rows" not in body
+
+
+def test_a_pick_cannot_change_another_field_or_leave_the_catalog(client, db, world, model):  # noqa: F811
+    _grant_module(db, world["analyst"])
+    model(_atlantis(world))
+    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                        json={"question": "Doanh thu vùng Atlantis"}).json()
+    model(_never_called)
+    v = world["v"]
+    for choice in ({"plan": first["plan"], "field": f"{v}.order_date", "value": "Nam"},  # not a filter of the plan
+                   {"plan": {**first["plan"], "explore_id": 987654321}, "field": f"{v}.region", "value": "Nam"},
+                   {"plan": first["plan"], "field": f"{v}.region", "value": ""}):
+        body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                           json={"question": "x", "value_choice": choice}).json()
+        assert body["status"] == "unsupported" and "rows" not in body, (choice, body)
