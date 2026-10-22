@@ -332,3 +332,13 @@ def test_a_value_past_the_first_page_is_found_by_a_bounded_search_not_called_abs
     _check_filter_values(_plan(["l.net_sales"], filters={"o.status": {"operator": "eq", "value": "Huỷ"}}),
                          _values(["Huỷ"]), search_of)
     assert searched == []
+
+
+def test_a_date_range_filter_is_kept_and_explains_the_period():
+    # RC3 rig: "Doanh số theo vùng năm 2025" lost its date_range (a dict value was
+    # read as a label-only value) and was refused on "năm 2025"
+    p = _plan(["l.net_sales"], ["c.region"],
+              filters={"o.order_date": {"operator": "date_range", "value": {"from": "2025-01-01", "to": "2026-01-01"}}})
+    out, why = ground(p, "Doanh số theo vùng năm 2025?", covered={"năm 2025": "o.order_date"})
+    assert out is not None, why
+    assert out.filters == p.filters and out.dimensions == ["c.region"]
