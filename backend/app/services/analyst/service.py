@@ -203,7 +203,8 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
                 "message": no_match_message(p), "evidence": {"query_id": ev.query_id}}
     time_ref = next(iter(p.time_grains), None)
     story = narrative.describe(columns, rows, time_ref=time_ref, truncated=result.truncated,
-                               grain=p.time_grains.get(time_ref) if time_ref else None)
+                               grain=p.time_grains.get(time_ref) if time_ref else None,
+                               period=_asked_period(p, time_ref))
     steps.append({"step": "verify", "detail": "; ".join(c["detail"] for c in story["checks"])})
     draft = None if p.filters else narrative.chart_draft(p, draft_title(question))
     return {
@@ -269,6 +270,19 @@ def _find_value_filter(authz, principal, p: Plan, question: str, unexplained: se
             if words and words & unexplained and f" {' '.join(w for w in __import__('re').split(r'[^0-9a-z]+', fold(v)) if w)} " in qtext:
                 hits.append((f.ref, v))
     return hits[0] if len({h[0] for h in hits}) == 1 and len(hits) == 1 else None
+
+
+def _asked_period(p, time_ref):
+    """The [from, to) range the question put on the trend's own time field, if any."""
+    from datetime import date
+
+    f = (p.filters or {}).get(time_ref) if time_ref else None
+    if not isinstance(f, dict) or f.get("operator") != "date_range" or not isinstance(f.get("value"), dict):
+        return None
+    try:
+        return date.fromisoformat(str(f["value"]["from"])), date.fromisoformat(str(f["value"]["to"]))
+    except (KeyError, ValueError):
+        return None
 
 
 def _can_save_chart(authz, user, p: Plan) -> bool:
