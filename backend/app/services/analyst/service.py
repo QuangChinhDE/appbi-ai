@@ -219,6 +219,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
             "measures": [labels.get(m, m) for m in p.measures],
         },
         "chart_draft": draft,
+        "can_save": _can_save_chart(authz, user, p),
         "chart_draft_unavailable": (None if draft else
                                     "Câu trả lời có bộ lọc; bản nháp biểu đồ chưa mang được bộ lọc nên không đề xuất lưu."),
     }
@@ -268,6 +269,22 @@ def _find_value_filter(authz, principal, p: Plan, question: str, unexplained: se
             if words and words & unexplained and f" {' '.join(w for w in __import__('re').split(r'[^0-9a-z]+', fold(v)) if w)} " in qtext:
                 hits.append((f.ref, v))
     return hits[0] if len({h[0] for h in hits}) == 1 and len(hits) == 1 else None
+
+
+def _can_save_chart(authz, user, p: Plan) -> bool:
+    """What POST /charts will decide for this person, asked BEFORE offering the
+    button: `explore_charts: edit` and BUILD on the answer's Dataset (browser
+    acceptance: the button was offered and the save failed afterwards). Advisory
+    for the UI only - the chart API still enforces both."""
+    from app.core.authz.decision import Action
+    from app.core.dependencies import _normalize_permissions
+    from app.models.dataset import Dataset
+
+    level = _normalize_permissions(user).get("explore_charts", "none")
+    if level not in ("edit", "full"):
+        return False
+    ds = authz.db.get(Dataset, p.explore.dataset_id)
+    return bool(ds is not None and authz.decide(Action.BUILD, ds).allowed)
 
 
 def labels_of(p: Plan) -> dict:

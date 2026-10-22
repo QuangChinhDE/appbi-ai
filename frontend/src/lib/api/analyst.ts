@@ -75,6 +75,8 @@ export interface AnalystTurn {
   code?: string;
   /** The server allows accepting this dropped filter (ANALYST_DROP_CONSENT_ENABLED). */
   consent_available?: boolean;
+  /** The server's reading of whether this person may save the chart draft. */
+  can_save?: boolean;
   /** A clarification between datasets: each option and the Dataset it pins. */
   sources?: { label: string; dataset_id: number }[];
   detail?: { dropped?: { field: string; reason: string }[]; query_fingerprint?: string; [k: string]: unknown };
