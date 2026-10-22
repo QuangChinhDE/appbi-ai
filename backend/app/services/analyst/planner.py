@@ -245,6 +245,19 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
     return plan_
 
 
+def _describe_filter(label: str, cond: dict) -> str:
+    v = cond.get("value")
+    if cond.get("operator") == "date_range" and isinstance(v, dict):
+        from datetime import date, timedelta
+
+        try:
+            last = (date.fromisoformat(str(v.get("to"))) - timedelta(days=1)).isoformat()
+        except ValueError:
+            last = str(v.get("to"))
+        return f"{label} từ {v.get('from')} đến {last} (gồm cả hai ngày)"
+    return f"{label} {cond.get('operator')} {v}"
+
+
 def describe_plan(p: Plan) -> str:
     labels = {f.ref: f.label for f in p.explore.fields}
     text = ", ".join(labels.get(r, r) for r in p.measures)
@@ -255,6 +268,5 @@ def describe_plan(p: Plan) -> str:
     if parts:
         text += " theo " + ", ".join(parts)
     if p.filters:
-        text += "; lọc " + "; ".join(f"{labels.get(r, r)} {c.get('operator')} {c.get('value')}"
-                                     for r, c in p.filters.items())
+        text += "; lọc " + "; ".join(_describe_filter(labels.get(r, r), c) for r, c in p.filters.items())
     return f"{text} — nguồn {p.explore.dataset_name}"

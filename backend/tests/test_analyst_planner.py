@@ -125,3 +125,14 @@ def test_a_date_range_operator_is_not_in_the_governed_contract():
 def test_a_measure_listed_only_among_dimensions_is_the_measure():
     out = validate(_raw(dimensions=["items.seller_id", "items.revenue"], measures=[]), [_explore()])
     assert isinstance(out, Plan) and out.measures == ["items.revenue"] and out.dimensions == ["items.seller_id"]
+
+
+def test_a_date_range_is_validated_and_described_with_its_inclusive_days():
+    out = validate(_raw(filters={"orders.purchased_at": {"operator": "date_range",
+                                                         "value": {"from": "2025-01-01", "to": "2026-01-01"}}}),
+                   [_explore()])
+    assert isinstance(out, Plan)
+    assert "từ 2025-01-01 đến 2025-12-31 (gồm cả hai ngày)" in out.interpretation
+    out = validate(_raw(filters={"items.status": {"operator": "date_range",
+                                                  "value": {"from": "2025-01-01", "to": "2026-01-01"}}}), [_explore()])
+    assert isinstance(out, Unsupported)  # not a date field
