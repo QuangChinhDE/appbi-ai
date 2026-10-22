@@ -29,13 +29,7 @@ from typing import Iterable
 
 # Function words, question words and analysis verbs that carry no data meaning.
 _STOP = set("""
-a ai bao bi bieu bo cac cach chi cho chua co con cua cung da dang dau de den di do doi duoc gi gia giai
-giup hay hien hoi hon khac khi khong kia la lam lai luon ma moi mot muon nao nay neu nhieu nhu nhung
-nhat nua o phai qua ra roi sang sao se so sanh ta tai tat the theo thi thu thuc tinh to toan trong tu tung
-va van ve vi voi xem xin tong cong hang tach them rieng bang danh sach liet ke the nao the hien bao nhieu
-dang ky tu den gan day nhat cao thap lon nho manh yeu tang giam bien dong xu huong ket qua phan tich thay
-mang lai dem nhieu it
-minh toi chia ben thoi nhe vay oi a
+a ai bao bi bieu bo cac cach chi cho chua co con cua cung da dang dau de den di do doi duoc gi gia giai giup hay hien hoi hon khac khi khong kia la lam lai luon ma moi mot muon nao nay neu nhieu nhu nhung nhat nua o phai qua ra roi sang sao so sanh ta tai tat the theo thi thu thuc tinh to toan trong tu tung va van ve vi voi xem xin tong cong hang tach them rieng bang danh sach liet ke the nao the hien bao nhieu dang ky tu den gan day nhat cao thap lon nho manh yeu tang giam bien dong xu huong ket qua phan tich thay mang lai dem nhieu it minh toi chia ben thoi nhe vay oi a
 """.split())
 # Words that are explained by grouping on a time field.
 _TIME = set("ngay tuan thang quy nam thoi gian gan day xu huong bien dong".split())
@@ -86,7 +80,8 @@ def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> d
     content = q - _STOP
     vocab: set[str] = set()
     for fld in fields.values():
-        vocab |= _field_words(fld)
+        if fld.kind == "dimension":  # entities ("sản phẩm"), never another metric's words
+            vocab |= _field_words(fld)
     vocab -= _GENERIC
     for phrase, ref in (covered or {}).items():
         words = syllables(phrase)
@@ -213,6 +208,16 @@ def other_source_named(plan, question: str, others) -> list[str]:
     return out
 
 
+# A question about the future is a forecast; the Analyst only reads what happened
+# (sealed holdout 7: "Tháng sau chi phí marketing sẽ là bao nhiêu?" was answered
+# with history).
+_FUTURE = re.compile(r"\b(se|du bao|du doan|du kien|sap toi|ky toi|(ngay|tuan|thang|quy|nam|ky) (sau|toi))\b")
+
+
+def is_forecast(question: str) -> bool:
+    return bool(_FUTURE.search(" ".join(w for w in re.split(r"[^0-9a-z]+", fold(question)) if w)))
+
+
 def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | None = None,
            value_lookup=None, previous: dict | None = None):
     """Return (plan, None) when the plan answers the question, possibly with unasked
@@ -221,6 +226,9 @@ def ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict | 
     `covered`: the model's question-phrase -> ref map; it bridges languages (a
     Vietnamese question over English labels) but is only believed where the phrase
     really is in the question."""
+    if is_forecast(question):
+        return None, ("Câu hỏi hỏi về tương lai (dự báo). Phân tích AI chỉ trả lời từ dữ liệu đã có, "
+                      "không dự báo.")
     q = syllables(question)
     qf = " ".join(re.split(r"[^0-9a-z]+", fold(question))).strip()
     carried = set(carried)

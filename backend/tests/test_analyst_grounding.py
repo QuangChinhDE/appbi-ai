@@ -391,3 +391,32 @@ def test_a_period_phrase_the_model_left_unmapped_is_not_a_missing_field():
 
     assert is_function_phrase("Quý 1/2026", has_time=True)
     assert not is_function_phrase("Quý 1/2026", has_time=False)
+
+
+# ── sealed holdout set 7 (now a development set) ─────────────────────────────
+
+def test_a_question_about_the_future_is_refused_as_a_forecast():
+    from app.services.analyst.grounding import is_forecast
+
+    for q in ("Tháng sau chi phí marketing sẽ là bao nhiêu?", "Dự báo doanh số quý tới",
+              "Doanh số dự kiến năm sau", "Số đơn hàng sắp tới"):
+        assert is_forecast(q), q
+        p, why = ground(_plan(["l.net_sales"]), q)
+        assert p is None and "dự báo" in why
+    for q in ("Doanh số theo tháng", "Số đơn hàng tháng 6/2025", "Chi phí marketing từng quý"):
+        assert not is_forecast(q), q
+
+
+def test_a_value_word_shared_with_another_metric_does_not_explain_a_missing_filter():
+    # set 7: "Số đơn hàng hoàn tất theo năm" lost status=Hoàn tất: "hoàn" was taken from
+    # the metric "Tiền hoàn trả" as vocabulary
+    ex = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="o",
+                        source_type="postgresql", label="C", fields=[*FIELDS,
+                            CatalogField("r.refund_total", "measure", "sum", "Tiền hoàn trả")])
+    p0 = Plan(explore=ex, dimensions=["o.order_date"], measures=["o.order_count"], time_grains={"o.order_date": "year"})
+    p, why = ground(p0, "Số đơn hàng hoàn tất theo năm", covered={"Số đơn hàng hoàn tất": "o.order_count"},
+                    value_lookup=lambda *_a: None)
+    assert p is None and "hoàn" in why
+    p, why = ground(p0, "Số đơn hàng hoàn tất theo năm", covered={"Số đơn hàng hoàn tất": "o.order_count"},
+                    value_lookup=lambda q, words, used: ("o.status", "Hoàn tất"))
+    assert p is not None and p.filters == {"o.status": {"operator": "eq", "value": "Hoàn tất"}}, why
