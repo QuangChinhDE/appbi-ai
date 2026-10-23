@@ -98,6 +98,19 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python scripts/ci/check_tier1_oracles.py
 
+      # THE KNOWN-DEFECT LEDGER, RUN ON ITS OWN SO IT IS READ.
+      #
+      # Each Phase 0 security finding is an executable statement of the SAFE
+      # behaviour. A reproduced defect is `xfail(strict=True)`: `-rxX` prints
+      # every one by name in the log. The day a fix lands its test XPASSes and
+      # this step fails until the marker is removed in the same change, so a
+      # defect can neither be fixed silently nor "closed" without its lock.
+      # The matrix: docs/features/intelligence-foundation/security-matrix.md
+      - name: Phase 0 security reproduction ledger (xfail = reproduced defect)
+        run: |
+          python -m pytest -q --tb=short -rxX -p no:cacheprovider \
+            tests/test_intelligence_phase0_security_repro.py
+
       - name: Run semantic-contract + engine unit tests (no BigQuery)
         # THE FAILURE HAS TO BE READABLE BY WHOEVER SEES IT GO RED.
         #
