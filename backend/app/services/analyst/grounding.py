@@ -161,6 +161,8 @@ def _capitalised(question: str) -> set[str]:
 
 
 _YEAR = re.compile(r"\b(19|20)\d\d\b")
+# a follow-up that ADDS a breakdown to the previous one ("chia tiếp", "thêm", "cả", "kèm")
+_ADD_BREAKDOWN = re.compile(r"\b(chia tiep|tiep theo|them|ca|kem|cung voi|va)\b")
 _GRAIN_ASKED = re.compile(r"\b(theo|moi|tung|hang|qua|cac)\s+(ngay|tuan|thang|quy|nam)\b")
 _SUB_YEAR = re.compile(r"\b(quy|thang|ngay|tuan|nua|dau|cuoi|q[1-4]|tu|den|toi|truoc|sau)\b|\d{1,2}/\d{4}")
 
@@ -526,7 +528,18 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
                          for m in measures)
         if prev_meas and not new_metric:
             measures = prev_meas
-        for d in previous.get("dimensions") or []:
+        # ...unless it names a breakdown of its own: "theo ngành hàng thì sao" after
+        # "Doanh số Miền Bắc theo kênh bán" swaps channel for category (browser D, 9
+        # groups instead of 3). Only "chia tiếp / thêm / cả" ADDS to the old breakdown.
+        prev_dims = previous.get("dimensions") or []
+        swaps = any(d not in prev_dims for d in dims) and not _ADD_BREAKDOWN.search(fold(question))
+        if swaps:
+            # the planner is told to keep the previous breakdowns, so the model carries
+            # them itself (live browser smoke: category x channel again) - drop the ones
+            # the question does not name
+            dims = [d for d in dims if d not in prev_dims or (d in by_ref and _mentioned(by_ref[d], q, qf))]
+            grains = {r: g for r, g in grains.items() if r in dims}
+        for d in [] if swaps else prev_dims:
             if d in by_ref and d not in dims and d not in filters:
                 dims.append(d)
                 g = (previous.get("time_grains") or {}).get(d)

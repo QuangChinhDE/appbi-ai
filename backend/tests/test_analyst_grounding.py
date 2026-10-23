@@ -102,6 +102,39 @@ def test_a_follow_up_keeps_the_breakdown_it_refines():
     assert p.dimensions == ["o.channel"] and p.filters == {"o.status": {"operator": "eq", "value": "Hoàn tất"}}
 
 
+def test_a_follow_up_naming_a_new_breakdown_replaces_the_old_one_and_keeps_the_filters():
+    # browser D: "theo ngành hàng thì sao" after "Doanh số Miền Bắc theo kênh bán năm 2025"
+    previous = {"measures": ["l.net_sales"], "dimensions": ["o.channel"],
+                "filters": {"c.region": {"operator": "eq", "value": "Miền Bắc"}}}
+    p, why = ground(_plan(["l.net_sales"], ["p.category"]), "theo ngành hàng thì sao",
+                    covered={"ngành hàng": "p.category"},
+                    carried=["l.net_sales", "o.channel", "c.region"], previous=previous)
+    assert p is not None, why
+    assert p.dimensions == ["p.category"]
+    assert p.filters == {"c.region": {"operator": "eq", "value": "Miền Bắc"}}
+
+
+def test_a_swapped_breakdown_the_model_carried_itself_is_dropped():
+    # live browser smoke: the model kept o.channel next to the new p.category
+    previous = {"measures": ["l.net_sales"], "dimensions": ["o.channel"],
+                "filters": {"c.region": {"operator": "eq", "value": "Miền Bắc"}}}
+    p, why = ground(_plan(["l.net_sales"], ["p.category", "o.channel"],
+                          filters={"c.region": {"operator": "eq", "value": "Miền Bắc"}}),
+                    "theo ngành hàng thì sao", covered={"ngành hàng": "p.category"},
+                    carried=["l.net_sales", "o.channel", "c.region"], previous=previous)
+    assert p is not None, why
+    assert p.dimensions == ["p.category"]
+
+
+def test_a_follow_up_that_adds_a_breakdown_keeps_the_old_one():
+    previous = {"measures": ["l.net_sales"], "dimensions": ["o.channel"], "filters": {}}
+    p, why = ground(_plan(["l.net_sales"], ["p.category"]), "chia tiếp theo ngành hàng",
+                    covered={"ngành hàng": "p.category"},
+                    carried=["l.net_sales", "o.channel"], previous=previous)
+    assert p is not None, why
+    assert sorted(p.dimensions) == ["o.channel", "p.category"]
+
+
 def _values(real):
     def values_of(ref):
         return SimpleNamespace(columns=[SimpleNamespace(name="v", ref=ref)], rows=[{"v": x} for x in real])

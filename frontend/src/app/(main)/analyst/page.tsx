@@ -101,6 +101,9 @@ export default function AnalystPage() {
   const [topicStart, setTopicStart] = useState(0);
   const [showEarlier, setShowEarlier] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  /** The turn in flight, readable from the cancel loop (state in its closure goes stale). */
+  const runningRef = useRef<string | null>(null);
+  useEffect(() => { runningRef.current = running?.turnId ?? null; }, [running]);
 
   useEffect(() => {
     analystApi.catalog().then(setSources).catch((err) => {
@@ -151,8 +154,15 @@ export default function AnalystPage() {
   const cancel = useCallback(async () => {
     if (!running) return;
     setCancelling(true);
+    // The server can only mark a query that is already RUNNING; a click while the
+    // question is still being planned marks nothing and was silently lost (browser G:
+    // the turn ran to its 60 s bound). Ask again each second until the turn ends.
+    const turnId = running.turnId;
     try {
-      await analystApi.cancel(running.turnId);
+      while (runningRef.current === turnId) {
+        if ((await analystApi.cancel(turnId)) > 0) break;
+        await new Promise((ok) => setTimeout(ok, 1000));
+      }
     } catch {
       setCancelling(false);
     }
@@ -403,6 +413,7 @@ function AnswerView({ turn, locale }: { turn: AnalystTurn; locale: string }) {
                            tickFormatter={(v: string) => (String(v).length > 14 ? `${String(v).slice(0, 13)}…` : String(v))} />
                     <YAxis tick={{ fontSize: 11 }} width={72} tickFormatter={(v) => Number(v).toLocaleString(locale, { notation: 'compact' })} />
                     <Tooltip formatter={(v) => fmt(v, locale)} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
                     <Bar dataKey={model.measure} fill="#1a73e8" isAnimationActive={false} />
                   </BarChart>
                 )}
