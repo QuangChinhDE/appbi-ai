@@ -113,6 +113,21 @@ class PostgresLedger:
                 self._insert(conn, {**row, "consent_nonce": None}, status="refused", refusal_code="budget_exceeded")
             raise BudgetExceeded(*over)
 
+    def user_day_exhausted(self, user_id: Any):
+        """The per-user daily query budget, read before a consumer spends anything else
+        on the turn (the Analyst's model call). Advisory only: `begin` still enforces it
+        under the advisory lock. Returns the same (budget, limit, used) as `begin`."""
+        b = self.budgets
+        if not (user_id and b.max_queries_per_user_day):
+            return None
+        with self.engine.connect() as conn:
+            used = int(conn.execute(sa.text(
+                "SELECT count(*) FROM governed_query_executions WHERE user_id = :u "
+                "AND started_at >= date_trunc('day', now()) AND status <> 'refused'"), {"u": str(user_id)}).scalar() or 0)
+        if used >= b.max_queries_per_user_day:
+            return ("queries_per_user_day", b.max_queries_per_user_day, used)
+        return None
+
     def _budget_scopes(self, row: dict) -> Iterable[str]:
         b = self.budgets
         if row["user_id"] and (b.max_queries_per_user_day or b.max_bq_bytes_per_user_day):
