@@ -176,6 +176,42 @@ def whole_year(question: str) -> Optional[int]:
     return years.pop()
 
 
+_QUARTER = re.compile(r"\b(?:quy|q)\s*([1-4])\s*(?:/|nam|-|\s)\s*((?:19|20)\d\d)\b")
+_MONTH = re.compile(r"\bthang\s*(1[0-2]|0?[1-9])\s*(?:/|nam|-|\s)\s*((?:19|20)\d\d)\b")
+_RANGE_WORDS = re.compile(r"\b(tu|den|toi|truoc|sau|nua|dau|cuoi|so voi)\b")
+
+
+def asked_period(question: str) -> Optional[tuple[str, str]]:
+    """[from, to) when the question names exactly ONE whole calendar period - a year
+    ("năm 2025"), a quarter ("quý 4 năm 2025", "Q2/2026") or a month ("tháng 3/2025") -
+    else None. A breakdown ("mỗi quý") is not a period; ranges, comparisons and parts
+    of a period ("từ … đến", "nửa đầu", "so với") are left as planned."""
+    from datetime import date
+
+    year = whole_year(question)
+    if year is not None:
+        return f"{year}-01-01", f"{year + 1}-01-01"
+    qf = _GRAIN_ASKED.sub(" ", fold(str(question or "")))
+    if _RANGE_WORDS.search(qf):
+        return None
+    quarters = {(int(m.group(1)), int(m.group(2))) for m in _QUARTER.finditer(qf)}
+    months = {(int(m.group(1)), int(m.group(2))) for m in _MONTH.finditer(qf)}
+    # every quarter / month the question MENTIONS, with or without a year: "quý 1 và quý 2
+    # năm 2025" names two quarters and is left as planned, never narrowed to one
+    if len(set(re.findall(r"\b(?:quy|q)\s*([1-4])\b", qf))) > 1 or len(set(re.findall(r"\bthang\s*(\d{1,2})\b", qf))) > 1:
+        return None
+    if len(quarters) == 1 and not months:
+        q, y = quarters.pop()
+        start = date(y, 3 * (q - 1) + 1, 1)
+        end = date(y + 1, 1, 1) if q == 4 else date(y, 3 * q + 1, 1)
+        return start.isoformat(), end.isoformat()
+    if len(months) == 1 and not quarters:
+        mo, y = months.pop()
+        end = date(y + 1, 1, 1) if mo == 12 else date(y, mo + 1, 1)
+        return date(y, mo, 1).isoformat(), end.isoformat()
+    return None
+
+
 def _vietnamese(field) -> bool:
     texts = [field.label, *(field.synonyms or ())]
     return any(fold(t) != str(t or "").lower() for t in texts)
@@ -403,12 +439,13 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
         if cond.get("operator") == "date_range" and not _YEAR.search(str(question)):
             # holdout set 6: "khách hàng MỚI đăng ký" became a 2023 range nobody asked for
             continue
-        year = whole_year(question) if cond.get("operator") == "date_range" else None
-        if year is not None:
-            # Holdout set 6 S6-041: "Năm 2025 ... mỗi quý" was filtered to Q1 2025 only
-            # and answered for one quarter. A question that names a whole year gets
-            # that whole year, whatever range the model wrote.
-            cond = {"operator": "date_range", "value": {"from": f"{year}-01-01", "to": f"{year + 1}-01-01"}}
+        period = asked_period(question) if cond.get("operator") == "date_range" else None
+        if period is not None:
+            # Holdout set 6 S6-041: "Năm 2025 ... mỗi quý" was filtered to Q1 2025 only;
+            # set 8 dev (S8-008): "quý 4 năm 2025" became [2025-10-01, 2025-12-31) - the
+            # 31st silently dropped, a wrong number. A question that names ONE whole
+            # calendar period gets exactly that period, whatever range the model wrote.
+            cond = {"operator": "date_range", "value": {"from": period[0], "to": period[1]}}
         filters[ref] = cond
 
     def one_value(ref):

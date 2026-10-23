@@ -673,3 +673,23 @@ def test_an_entity_word_of_a_view_the_plan_does_not_use_is_still_unexplained():
     out, why = ground(p, "Tiền hoàn trả theo kênh của khách", covered=p.covered)
     assert out is None and "khách" in why          # the plan never uses the customer: not explained
 
+
+def test_a_named_quarter_or_month_gets_the_whole_period():
+    """Set 8 dev S8-008: "quý 4 năm 2025" was planned [2025-10-01, 2025-12-31), dropping
+    the 31st - a wrong number. A named whole quarter or month is enforced exactly."""
+    from app.services.analyst.grounding import asked_period
+
+    assert asked_period("Số lượng bán theo kênh bán trong quý 4 năm 2025") == ("2025-10-01", "2026-01-01")
+    assert asked_period("Doanh số Q2/2026") == ("2026-04-01", "2026-07-01")
+    assert asked_period("Chi phí marketing tháng 12/2025") == ("2025-12-01", "2026-01-01")
+    assert asked_period("Doanh số tháng 3 năm 2025 theo vùng") == ("2025-03-01", "2025-04-01")
+    assert asked_period("Doanh số năm 2025 mỗi quý") == ("2025-01-01", "2026-01-01")
+    for q in ("Doanh số từ tháng 4 đến tháng 9 năm 2025", "Doanh số nửa đầu năm 2025",
+              "Doanh số quý 1 và quý 2 năm 2025", "Doanh số quý 1/2025 so với quý 1/2026", "Doanh số theo quý"):
+        assert asked_period(q) is None, q
+    q4 = {"operator": "date_range", "value": {"from": "2025-10-01", "to": "2025-12-31"}}
+    p = _plan(["l.net_sales"], ["o.channel"], filters={"o.order_date": q4},
+              covered={"doanh số": "l.net_sales", "kênh": "o.channel", "quý 4 năm 2025": "o.order_date"})
+    out, why = ground(p, "Doanh số theo kênh trong quý 4 năm 2025", covered=p.covered)
+    assert out is not None and out.filters["o.order_date"]["value"] == {"from": "2025-10-01", "to": "2026-01-01"}, why
+
