@@ -30,6 +30,8 @@ _PRON = r"(?:anh|chi|em|minh|toi|ban|to|cau|sep|ad|admin|moi nguoi|team|ca nha)"
 _HEAD = re.compile(
     rf"^(?:{_PRON}\s+){{0,3}}(?:(?:oi|a)\s+)?(?:(?:xin|lam on|vui long|nho|giup|cho)\s+)+(?:{_PRON}\s+){{0,2}}"
     r"(?:(?:hoi|xem|biet|lay|tim|tra|kiem tra|thong ke|tinh|tong hop)\s+)?")
+# an interjection opening a request ("Ê cho xem ...", "Alo ...", "Nè ..."): framing
+_INTERJ = re.compile(r"^(?:e|ey|alo|ne|nay)\s+(?=\w)")
 # sentence-final particles and polite tails
 _TAIL = re.compile(rf"(?:\s+(?:a|nhe|nha|nhi|voi|di|oi|vay|the|giup {_PRON}|duoc khong|nhe {_PRON}|{_PRON} nhe))+\s*$")
 _TOP = re.compile(r"\btop\s*(\d{1,3})\b")
@@ -87,6 +89,7 @@ def extract(question: str, *, chosen_metric: bool = False, followup: bool = Fals
         consumed.append(m.group(0).strip())
         return (s[:m.start()] + " " + s[m.end():]).strip(), m
 
+    text, _ = cut(_INTERJ, text)
     text, _ = cut(_HEAD, text)
     text, _ = cut(_TAIL, text)
     ranking = None

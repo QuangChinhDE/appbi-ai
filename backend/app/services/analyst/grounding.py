@@ -90,6 +90,23 @@ def is_function_phrase(phrase: str, *, has_time: bool, source_words: set[str] | 
     return not words or (has_time and {w for w in words if not w.isdigit()} <= _TIME)
 
 
+def _entity_words(fields, used_refs) -> set[str]:
+    """Words that name the ENTITY a used field belongs to: shared by the labels of at
+    least two fields of that field's view ("khách" in "Số khách hàng" and "Phân khúc
+    khách hàng" names the customer; set 9: "theo miền của khách"). Derived from the
+    model's own labels, never a word list; generic words excluded."""
+    views = {r.rsplit(".", 1)[0] for r in used_refs}
+    out: set[str] = set()
+    for v in views:
+        counts: dict[str, int] = {}
+        for f in fields:
+            if f.ref.rsplit(".", 1)[0] == v:
+                for w in syllables(f.label) - _GENERIC - _STOP:
+                    counts[w] = counts.get(w, 0) + 1
+        out |= {w for w, n in counts.items() if n >= 2 and not w.isdigit()}
+    return out
+
+
 def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> dict[str, set[str]]:
     """ref -> the question words the model says that field answers. A phrase counts
     only if every word of it is in the question and it is not (nearly) the whole
@@ -157,6 +174,42 @@ def whole_year(question: str) -> Optional[int]:
     if len(years) != 1 or _SUB_YEAR.search(qf):
         return None
     return years.pop()
+
+
+_QUARTER = re.compile(r"\b(?:quy|q)\s*([1-4])\s*(?:/|nam|-|\s)\s*((?:19|20)\d\d)\b")
+_MONTH = re.compile(r"\bthang\s*(1[0-2]|0?[1-9])\s*(?:/|nam|-|\s)\s*((?:19|20)\d\d)\b")
+_RANGE_WORDS = re.compile(r"\b(tu|den|toi|truoc|sau|nua|dau|cuoi|so voi)\b")
+
+
+def asked_period(question: str) -> Optional[tuple[str, str]]:
+    """[from, to) when the question names exactly ONE whole calendar period - a year
+    ("năm 2025"), a quarter ("quý 4 năm 2025", "Q2/2026") or a month ("tháng 3/2025") -
+    else None. A breakdown ("mỗi quý") is not a period; ranges, comparisons and parts
+    of a period ("từ … đến", "nửa đầu", "so với") are left as planned."""
+    from datetime import date
+
+    year = whole_year(question)
+    if year is not None:
+        return f"{year}-01-01", f"{year + 1}-01-01"
+    qf = _GRAIN_ASKED.sub(" ", fold(str(question or "")))
+    if _RANGE_WORDS.search(qf):
+        return None
+    quarters = {(int(m.group(1)), int(m.group(2))) for m in _QUARTER.finditer(qf)}
+    months = {(int(m.group(1)), int(m.group(2))) for m in _MONTH.finditer(qf)}
+    # every quarter / month the question MENTIONS, with or without a year: "quý 1 và quý 2
+    # năm 2025" names two quarters and is left as planned, never narrowed to one
+    if len(set(re.findall(r"\b(?:quy|q)\s*([1-4])\b", qf))) > 1 or len(set(re.findall(r"\bthang\s*(\d{1,2})\b", qf))) > 1:
+        return None
+    if len(quarters) == 1 and not months:
+        q, y = quarters.pop()
+        start = date(y, 3 * (q - 1) + 1, 1)
+        end = date(y + 1, 1, 1) if q == 4 else date(y, 3 * q + 1, 1)
+        return start.isoformat(), end.isoformat()
+    if len(months) == 1 and not quarters:
+        mo, y = months.pop()
+        end = date(y + 1, 1, 1) if mo == 12 else date(y, mo + 1, 1)
+        return date(y, mo, 1).isoformat(), end.isoformat()
+    return None
 
 
 def _vietnamese(field) -> bool:
@@ -289,7 +342,8 @@ def intent_obligations(question: str) -> dict:
             "only": bool(_ONLY.search(text))}
 
 
-def check_obligations(question: str, filters: dict, carried_filters: Iterable[str] = ()) -> Optional[str]:
+def check_obligations(question: str, filters: dict, carried_filters: Iterable[str] = (), *,
+                      top_n: bool = False) -> Optional[str]:
     """None when the plan's filters honour the question's meaning-changing words,
     else the refusal naming them."""
     ob = intent_obligations(question)
@@ -309,7 +363,7 @@ def check_obligations(question: str, filters: dict, carried_filters: Iterable[st
     if ob["time_bound"] and "date_range" not in ops.values():
         return (f"Câu hỏi có mốc thời gian (“{ob['time_bound'][0]} …”) nhưng kế hoạch không lọc theo thời gian, "
                 "nên không trả lời.")
-    if ob["only"] and not filters and not list(carried_filters):
+    if ob["only"] and not filters and not list(carried_filters) and not top_n:  # "chỉ lấy top 2": the cut is the limit
         return "Câu hỏi giới hạn phạm vi (“chỉ …”) nhưng kế hoạch không có bộ lọc nào, nên không trả lời."
     return None
 
@@ -385,12 +439,13 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
         if cond.get("operator") == "date_range" and not _YEAR.search(str(question)):
             # holdout set 6: "khách hàng MỚI đăng ký" became a 2023 range nobody asked for
             continue
-        year = whole_year(question) if cond.get("operator") == "date_range" else None
-        if year is not None:
-            # Holdout set 6 S6-041: "Năm 2025 ... mỗi quý" was filtered to Q1 2025 only
-            # and answered for one quarter. A question that names a whole year gets
-            # that whole year, whatever range the model wrote.
-            cond = {"operator": "date_range", "value": {"from": f"{year}-01-01", "to": f"{year + 1}-01-01"}}
+        period = asked_period(question) if cond.get("operator") == "date_range" else None
+        if period is not None:
+            # Holdout set 6 S6-041: "Năm 2025 ... mỗi quý" was filtered to Q1 2025 only;
+            # set 8 dev (S8-008): "quý 4 năm 2025" became [2025-10-01, 2025-12-31) - the
+            # 31st silently dropped, a wrong number. A question that names ONE whole
+            # calendar period gets exactly that period, whatever range the model wrote.
+            cond = {"operator": "date_range", "value": {"from": period[0], "to": period[1]}}
         filters[ref] = cond
 
     def one_value(ref):
@@ -489,6 +544,7 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
     carried_filters = list(((previous or {}).get("filters") or {}).keys()) if isinstance(previous, dict) else []
 
     explained = set(_STOP) | syllables(plan.explore.dataset_name) | syllables(plan.explore.label)
+    explained |= _entity_words(plan.explore.fields, [*measures, *dims, *filters, *carried])
     for ref in [*measures, *dims, *filters, *carried]:
         if ref in by_ref:
             explained |= _field_words(by_ref[ref])
@@ -530,7 +586,8 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
         names = ", ".join(by_ref[r].label if r in by_ref else r for r in ungrounded)
         return None, (f"Giá trị lọc cho “{names}” không có trong câu hỏi và không tìm được giá trị thật khớp với "
                       "lời bạn hỏi, nên không trả lời thay vì lọc theo một giá trị khác.")
-    broken = check_obligations(question, filters, carried_filters)  # the FINAL filters honour the words
+    broken = check_obligations(question, filters, carried_filters,  # the FINAL filters honour the words
+                               top_n=bool(intent.ranking and intent.ranking.get("n")))
     if broken:
         return None, broken
     if unexplained:

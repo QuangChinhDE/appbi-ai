@@ -127,6 +127,14 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         outcome = make_plan(question, catalog, previous=previous, complete=deps.complete,
                             chosen=({"explore_id": chosen["explore_id"], "measure": chosen["measure"]}
                                     if chosen and chosen.get("measure") else None))
+    if isinstance(outcome, (Unsupported, Clarify)) and isinstance(previous, dict):
+        # Set 9 (S9-034): "Chỉ lấy top 2 thôi" after an answer by one category was
+        # refused by the model. A follow-up that ONLY asks to rank / cut the previous
+        # answer needs no new reading: the previous plan, re-validated against this
+        # turn's catalog, goes through grounding, whose ranking obligation applies it.
+        rerank = _rank_previous(question, previous, catalog)
+        if rerank is not None:
+            outcome = rerank
     if isinstance(outcome, Clarify):
         choices = [{"label": c["label"], "token": sign_choice(
                         user_id=str(user.id), question=question, catalog=full_catalog,
@@ -471,6 +479,19 @@ def verify_choice(token: str, *, user_id: str, question: str, catalog):
     if _catalog_epoch(entries) != payload.get("v"):
         return None, "Mô hình dữ liệu đã thay đổi từ lúc bạn được hỏi lại; hãy hỏi lại."
     return {"dataset_id": int(payload["d"]), "explore_id": payload.get("e"), "measure": payload.get("m")}, None
+
+
+def _rank_previous(question: str, previous: dict, catalog):
+    """The previous plan when the follow-up says nothing but a ranking ("chỉ lấy top 2
+    thôi", "xếp từ cao xuống thấp"), else None."""
+    from app.services.analyst.grounding import _STOP, syllables
+    from app.services.analyst.intent import extract
+
+    it = extract(question, followup=True)
+    if not it.ranking or (syllables(it.content) - _STOP) or len(previous.get("dimensions") or []) != 1:
+        return None
+    out = validate({**previous, "status": "plan"}, catalog)
+    return out if isinstance(out, Plan) else None
 
 
 def _relocate_values(p: Plan, values_of) -> Optional[Plan]:

@@ -757,3 +757,72 @@ def test_feedback_records_what_was_wrong_and_refuses_an_unknown_reason(client, d
     with sa.create_engine(_owner_url()).connect() as c:
         assert c.execute(sa.text("SELECT reason FROM analyst_feedback WHERE turn_id = :t"), {"t": turn}).scalar()             == "wrong_filter"
 
+
+
+def test_a_follow_up_that_only_ranks_reuses_the_previous_plan_when_the_model_refuses(client, db, world, model):  # noqa: F811
+    """Set 9 dev (S9-034): "Chỉ lấy top 2 thôi" after an answer by region was refused by
+    the model. The previous plan, re-validated, is ranked by the server; the model is
+    not trusted to re-read it."""
+    _grant_module(db, world["analyst"])
+    v = world["v"]
+    model(_planner(world, dims=("region",), extra={"covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region"}}))
+    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                        json={"question": "Doanh thu theo vùng"}).json()
+    assert first["status"] == "answered", first
+    model(lambda *a, **k: {"status": "unsupported", "reason": "?"})
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Chỉ lấy top 2 thôi", "previous_plan": first["plan"]}).json()
+    assert body["status"] == "answered", body
+    col = {c["role"]: c["name"] for c in body["columns"]}
+    assert [r[col["dimension"]] for r in body["rows"]] == ["Bắc", "Nam"] and body["plan"]["limit"] == 2
+    # a follow-up that says more than a ranking is NOT re-run from the previous plan
+    other = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                        json={"question": "Chỉ lấy top 2 sản phẩm lợi nhuận", "previous_plan": first["plan"]}).json()
+    assert other["status"] != "answered" and "rows" not in other
+
+
+# ── Gate 4: every drafted chart type re-executes the SAME semantic meaning ────────
+
+def _save_and_requery(client, who, body):
+    saved = client.post("/api/v1/charts/", headers=who.headers, json=body["chart_draft"])
+    assert saved.status_code in (200, 201), saved.text
+    data = client.get(f"/api/v1/charts/{saved.json()['id']}/data", headers=who.headers)
+    assert data.status_code == 200, data.text
+    return saved.json(), data.json()["data"]
+
+
+def _numbers(rows):
+    return sorted(round(float(v), 4) for r in rows for v in r.values()
+                  if isinstance(v, (int, float)) and not isinstance(v, bool))
+
+
+@pytest.mark.parametrize("case", ["kpi_filtered", "line_trend", "table_two_dims", "top_n_bar"])
+def test_a_saved_chart_reproduces_the_answer(client, db, world, model, case):  # noqa: F811
+    owner = world["owner"]
+    set_permissions(db, owner, datasets="edit", explore_charts="edit", analyst="view")
+    v = world["v"]
+    plans = {
+        # (a date range needs a CERTIFIED date field, which this fixture's order_date is not:
+        # GQS refuses it by design; the draft's [from, to) -> between conversion is the one GQS applies)
+        "kpi_filtered": (dict(dims=(), extra={"filters": {f"{v}.region": {"operator": "eq", "value": "Bắc"}},
+                                              "covered": {"doanh thu": f"{v}.revenue", "Bắc": f"{v}.region"}}),
+                         "Doanh thu Bắc", "KPI"),
+        "line_trend": (dict(dims=("order_date",), grain="month"), "Doanh thu theo tháng", "LINE"),
+        "table_two_dims": (dict(dims=("region", "order_date"), grain="month"), "Doanh thu các vùng theo tháng", "LINE"),
+        "top_n_bar": (dict(dims=("region",), extra={"covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region"}}),
+                      "Top 2 vùng có doanh thu cao nhất", "BAR"),
+    }
+    kwargs, question, kind = plans[case]
+    model(_planner(world, **kwargs))
+    body = client.post("/api/v1/analyst/ask", headers=owner.headers, json={"question": question}).json()
+    assert body["status"] == "answered", body
+    assert body["chart_draft"], body.get("chart_draft_unavailable")
+    assert body["chart_draft"]["chart_type"] == kind
+    m = next(c["name"] for c in body["columns"] if c["role"] == "measure")
+    want = sorted(round(float(r[m]), 4) for r in body["rows"])
+    chart, rows = _save_and_requery(client, owner, body)
+    assert [x for x in _numbers(rows) if x in want] == want or _numbers(rows) == want, (want, rows)
+    if case == "kpi_filtered":
+        assert want == [150.0] and _numbers(rows) == [150.0]      # Bắc 100 + 50, the filter kept on reopen
+    if case == "top_n_bar":
+        assert len(rows) == 2 and chart["config"]["styleConfig"]["dataLimit"] == 2
