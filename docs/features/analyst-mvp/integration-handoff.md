@@ -4,26 +4,35 @@ For the **authorized human merger**. The engineering session did not merge, appr
 push any protected branch. All merges go through the normal GitHub PR flow, with
 the required reviews.
 
-## Rehearsal (2026-10-22, local throwaway worktree, nothing pushed)
+## Integration candidate: PR #71 (consolidated, Analyst OFF)
 
-The order below was merged onto `origin/demo @ 1bac25e8` exactly as listed.
+The stack is integrated in ONE branch, `integration/analyst-demo-candidate`, PR #71 into
+`demo`, so required CI runs on the **exact integrated tree**. Merge commits only: each
+original PR keeps its commits and shows as merged when #71 lands.
 
-- **Result:** after #70, the tree equals `rc/pilot-3` for backend, frontend, CI and scripts.
-- **Alembic:** a single head.
-- **Conflicts:** exactly two textual conflicts. Both are list files where each side
-  only adds lines. The resolution is the **union** of both sides; delete nothing.
+Why one PR: #70, CI'd alone on its stacked base (#64, which lacks #65's fix), correctly
+FAILS - the SEC-13 attack still works there. Reproduced locally:
+`test_a_grain_is_never_sql` fails on `9c571b5b`, and the suite passes 3/3 on the integrated
+tree. The failure belongs to #70's base, not to the integration.
 
-| Step | PR | Head | Base | Merge |
-| --- | --- | --- | --- | --- |
-| 1 | #65 SEC-13 grain whitelist (security hotfix) | `ddcbb693` | demo | clean |
-| 2 | #67 chart-config write validation | `b8454c7b` | #65 branch | clean |
-| 3 | #69 semantic sync keeps owner-edited dimensions + glossary link | `d04803ff` | demo | clean |
-| 4 | #53 PR-0A security ledger + foundation | `7b69fcf6` | demo | clean |
-| 5 | #54 PR-0B1 | `f7ec8914` | #53 | **conflict:** `.github/workflows/backend-contract-tests.yml`, resolve by union of both test lists |
-| 6–14 | #55, #56, #57, #58, #59, #60, #61, #62, #63 | stack heads | previous | clean |
-| 15 | #64 SEC-13 ledger regression (strict xfail) | `2062bb9c` | #63 | clean |
-| 16 | **#70** SEC-13 test reconcile (xfail → plain regression once #65 is in) | `9c571b5b` | #64 branch | clean; **required after #64**, or #64's strict xfail XPASSes and fails CI |
-| 17 | #68 GQS 1C–1G + Analyst | current head of `feat/gqs-1c-1d-bounds-cancel` | #63 | **conflict:** `.gitignore`, resolve by union of the `!backend/tests/...` lines |
+Merged in this order onto `origin/demo @ 1bac25e8`:
+
+| Step | PR | Head | Merge |
+| --- | --- | --- | --- |
+| 1 | #65 SEC-13 grain whitelist (security hotfix) | `ddcbb693` | clean |
+| 2 | #67 chart-config write validation | `b8454c7b` | clean |
+| 3 | #69 semantic sync keeps owner-edited dimensions + glossary link | `d04803ff` | clean |
+| 4 | #53 PR-0A security ledger + foundation | `7b69fcf6` | clean |
+| 5 | #54 PR-0B1 | `f7ec8914` | **conflict:** `.github/workflows/backend-contract-tests.yml`, resolved by **union** of the test lists (YAML valid; no list entry from any side missing) |
+| 6–14 | #55 … #63 | stack heads | clean |
+| 15 | #64 SEC-13 ledger regression (strict xfail) | `2062bb9c` | clean |
+| 16 | #70 SEC-13 test reconcile (xfail → plain regression) | `9c571b5b` | clean |
+| 17 | #68 GQS 1C–1G + Analyst | `c9d5b279` | **conflict:** `.gitignore`, resolved by **union** of the `!backend/tests/...` lines |
+
+**Tree equivalence** (corrected): the tree after the **last** step (#68) - not after #70 - is
+identical to the tested release-candidate tree `rc/pilot-3 @ da779c5e` for backend,
+frontend, `.github`, scripts, e2e and docs. The tree after #70 still lacks the Analyst code
+(#68).
 
 **Dependencies that must hold:**
 
