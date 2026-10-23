@@ -1096,6 +1096,13 @@ _AUTHORABLE_DIMENSION_KEYS = ("type", "sql", "label", "description", "parent", "
 # Facts about the physical column: always the generator's, edited or not.
 _GENERATOR_OWNED_DIMENSION_KEYS = ("hidden", "source_type")
 _LEGACY_DESCRIPTIVE_KEYS = ("label", "description", "parent")
+#: generated type -> semantic types a person may declare over that physical type. A legacy
+#: (unflagged) dimension whose stored type is one of these, over an UNCHANGED physical
+#: type, was re-typed by a person: kept. The engine's physical-type guards (STRING-date
+#: conversion, SUM-over-STRING) still decide whether a query on it can run.
+#: Only types MORE SPECIFIC than the physical one count: a plain string/number is what a
+#: generator emits, so a legacy string/number still follows its source (issue #11).
+_LEGACY_RETYPING = {"string": {"yesno", "date", "datetime"}, "number": {"yesno"}, "datetime": {"date"}}
 
 
 def _authored_part(dim: dict) -> dict:
@@ -1153,12 +1160,33 @@ def merge_synced_dimensions(generated: list[dict], existing: list[dict] | None) 
             merged.append(item)
             continue
         if not kept.get("user_edited"):
-            # Stored before the flag existed. Every earlier sync rewrote the
-            # generated label/description/parent, so one that differs now was
-            # written by a person: keep it. Its type stays the generator's —
-            # a legacy type difference cannot be told apart from a source change.
+            # Stored before the flag existed: provenance unknown. Every earlier sync
+            # rewrote the generated label/description/parent, so one that differs now
+            # was written by a person: keep it.
             legacy = {k: kept[k] for k in _LEGACY_DESCRIPTIVE_KEYS
                       if kept.get(k) not in (None, "") and kept.get(k) != item.get(k)}
+            # Gate 2 (real metadata, 2026-10-23): 21 of 2,077 stored dimensions carried a
+            # person's semantic type (e.g. is_weekend: yesno) that a sync over an unchanged
+            # source would have silently reset. The stored physical source_type tells a
+            # source change from a re-typing: same physical type + a known re-typing ->
+            # kept; otherwise regenerated WITH a review marker (never silently).
+            old_t, new_t = kept.get("type"), item.get("type")
+            if old_t and new_t and old_t != new_t:
+                same_physical = (kept.get("source_type") or None) == (item.get("source_type") or None)
+                if same_physical and old_t in _LEGACY_RETYPING.get(str(new_t), ()):
+                    legacy["type"] = old_t
+                elif old_t in ("string", "number"):
+                    pass  # a generator's own plain type: follows its source (issue #11)
+                else:
+                    legacy["type_review"] = {"previous_type": old_t, "reason": (
+                        "physical type changed" if not same_physical else "not a re-typing of the physical type")}
+                    logger.warning("semantic sync: dimension %s type %s -> %s needs owner review (%s)",
+                                   item.get("name"), old_t, new_t, legacy["type_review"]["reason"])
+            # Unknown provenance: a stored hidden dimension is not exposed by a sync (an
+            # older generator default or a person's choice - either way visibility is
+            # changed only by a person).
+            if kept.get("hidden") and not item.get("hidden"):
+                legacy["hidden"] = True
             merged.append({**item, **legacy} if legacy else item)
             continue
         kept = dict(kept)

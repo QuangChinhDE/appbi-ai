@@ -273,3 +273,40 @@ def test_a_glossary_link_is_authoring_and_survives_sync():
     merged = dms.merge_synced_dimensions([{"name": "region", "type": "string", "label": "region"}], out)
     assert merged[0]["glossary_terms"] == link and merged[0]["label"] == "Vùng"
 
+
+# ── Gate 2 (2026-10-23): legacy (pre-flag) metadata on a REAL existing database ──
+# A simulated sync over 550 real stored views (2,077 unflagged dimensions) found 21
+# person-declared semantic types (e.g. is_weekend: yesno) and 20 hidden key columns a
+# sync over an UNCHANGED source would have reset silently.
+
+def test_a_legacy_re_typing_over_the_same_physical_type_survives_sync():
+    stored = [{"name": "is_weekend", "type": "yesno", "sql": "is_weekend", "label": "Cuối tuần", "source_type": None}]
+    generated = [{"name": "is_weekend", "type": "string", "sql": "is_weekend", "label": "is weekend",
+                  "hidden": False, "source_type": None}]
+    merged = dms.merge_synced_dimensions(generated, stored)[0]
+    assert merged["type"] == "yesno" and merged["label"] == "Cuối tuần" and "type_review" not in merged
+
+
+def test_a_legacy_type_is_regenerated_with_a_review_marker_when_the_physical_type_changed():
+    stored = [{"name": "d", "type": "date", "sql": "d", "label": "Ngày", "source_type": "STRING"}]
+    generated = [{"name": "d", "type": "number", "sql": "d", "label": "d", "hidden": False, "source_type": "INT64"}]
+    merged = dms.merge_synced_dimensions(generated, stored)[0]
+    assert merged["type"] == "number"                      # never keeps a type the new column cannot carry
+    assert merged["type_review"] == {"previous_type": "date", "reason": "physical type changed"}
+
+
+def test_an_incompatible_legacy_type_is_flagged_not_kept():
+    stored = [{"name": "n", "type": "date", "sql": "n", "label": "N", "source_type": "INT64"}]
+    generated = [{"name": "n", "type": "number", "sql": "n", "label": "n", "hidden": False, "source_type": "INT64"}]
+    merged = dms.merge_synced_dimensions(generated, stored)[0]
+    assert merged["type"] == "number" and merged["type_review"]["previous_type"] == "date"
+
+
+def test_a_legacy_hidden_dimension_stays_hidden_and_a_flagged_one_keeps_the_table_contract():
+    generated = [{"name": "date_key", "type": "number", "sql": "date_key", "label": "date key", "hidden": False}]
+    legacy = dms.merge_synced_dimensions(generated, [{"name": "date_key", "type": "number", "hidden": True}])[0]
+    assert legacy["hidden"] is True
+    flagged = dms.merge_synced_dimensions(generated, [{"name": "date_key", "type": "number", "hidden": True,
+                                                       "user_edited": True}])[0]
+    assert flagged["hidden"] is False                     # unchanged contract for authored dimensions
+
