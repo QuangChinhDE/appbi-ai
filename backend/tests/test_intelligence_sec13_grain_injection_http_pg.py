@@ -7,10 +7,12 @@ reaches the engine as any string. A caller holding `explore` on ONE Dataset can
 then read anything the source credential can read: here a table that is in no
 Dataset at all.
 
-The reproduction is executed, not inferred, on a disposable database. It is a
-known-defect ledger entry: `xfail(strict=True, raises=REPRODUCED)` until the fix
-(a protected semantic-engine change that needs approval) lands, and the fix
-removes the marker in the same change.
+The reproduction is executed, not inferred, on a disposable database. It was a
+known-defect ledger entry (`xfail(strict=True)`) until the fix landed: #65 (the
+grain whitelisted at the SQL render boundary) and #67 (chart config validated at
+every write). With both present the ledger XPASSed, so the marker is removed and
+the same payload is now a plain regression: preview AND save refuse the grain
+and never return the out-of-Dataset value.
 """
 from __future__ import annotations
 
@@ -68,12 +70,28 @@ def test_a_valid_grain_previews(client, secret_table):  # noqa: F811
     assert r.status_code == 200, r.text
 
 
-@pytest.mark.xfail(strict=True, raises=REPRODUCED,
-                   reason="SEC-13 reproduced: chart preview grain reaches DATE_TRUNC unvalidated")
-def test_a_grain_is_never_sql(client, secret_table):  # noqa: F811
-    evil = (f"day', NOW())::text || (SELECT string_agg(v, ',') FROM {SCHEMA}.not_in_any_dataset) "
+def _evil():
+    return (f"day', NOW())::text || (SELECT string_agg(v, ',') FROM {SCHEMA}.not_in_any_dataset) "
             f"|| DATE_TRUNC('day")
-    r = _preview(client, secret_table, evil)
+
+
+def test_a_grain_is_never_sql(client, secret_table):  # noqa: F811
+    r = _preview(client, secret_table, _evil())
     if SECRET in r.text:
         raise REPRODUCED("a grain read a table that is in no Dataset")
+    assert r.status_code in (400, 422), r.text
+
+
+def test_a_chart_with_such_a_grain_cannot_be_saved(client, secret_table):  # noqa: F811
+    """The write ingress (#67): the same grain in a chart someone SAVES is refused
+    before anything is stored, so no later render can run it."""
+    w = secret_table
+    r = client.post("/api/v1/charts/", headers=w["author"].headers, json={
+        "name": "sec13", "chart_type": "BAR", "dataset_table_id": _table_id(w),
+        "config": {"roleConfig": {"dimension": f"{w['v']}.order_date",
+                                  "metrics": [{"field": f"{w['v']}.revenue", "agg": "sum"}],
+                                  "timeGrains": {f"{w['v']}.order_date": _evil()}}},
+    })
+    if SECRET in r.text:
+        raise REPRODUCED("a saved grain read a table that is in no Dataset")
     assert r.status_code in (400, 422), r.text
