@@ -91,8 +91,10 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
     row.options = options;
     const sales = options.find((o) => /Doanh số/.test(o));
     if (sales) {
+      const before = await page.getByTestId('analyst-exchange').count();
       await r.ex.getByTestId('analyst-clarify').getByRole('button', { name: sales }).click();
-      const done = page.getByTestId('analyst-exchange').last();
+      const done = page.getByTestId('analyst-exchange').nth(before);         // the NEW exchange, not the card
+      await expect(done).toBeVisible({ timeout: 120_000 });
       await expect(done.locator(OUTCOME).first()).toBeVisible({ timeout: 120_000 });
       const got = await tableOf(done);
       row.after_pick = await done.locator(OUTCOME).first().getAttribute('data-testid');
