@@ -555,7 +555,7 @@ features:
     keywords: [governed query, gqs, "effective principal", "authorization context",
                "surface ceiling", refusal]
     invariants: []
-    required_tests: [intelligence_gqs, intelligence_security_ledger]
+    required_tests: [intelligence_gqs, intelligence_gqs_pg, intelligence_security_ledger]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -610,8 +610,12 @@ tests:
     run: "pytest backend/tests/test_knowledge_hit_contract.py backend/tests/test_govern_doc_answerability.py backend/tests/test_semantic_level0.py"
     locks: "one evidence shape for every consumer (no draft served as evidence), the answer/abstain/conflict verdict over document evidence, and a measure reaching the model with its recorded formula and unit even without a description"
   intelligence_gqs:
-    run: "pytest backend/tests/test_intelligence_effective_principal.py"
-    locks: "one intersection-only scope formula on the real authz core: querying needs explore (view is not enough), the surface ceiling only narrows, an Agent Flow delegation never widens a governed decision, PAT is a subset of the person, a system principal cannot answer for a person, a failed AI-scope lookup refuses"
+    run: "pytest backend/tests/test_intelligence_effective_principal.py backend/tests/test_intelligence_gqs_core.py"
+    locks: "one intersection-only scope formula on the real authz core: querying needs explore (view is not enough), the surface ceiling only narrows, an Agent Flow delegation never widens a governed decision, PAT is a subset of the person, a system principal cannot answer for a person, a failed AI-scope lookup refuses; bounds are min(policy, requested); the AI BigQuery bytes limit is its own and only a BigQuery job carries it; GQS is imported by nothing outside its package (not live)"
+  intelligence_gqs_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_execution_pg.py"
+    locks: "a new question compiled by the existing engine returns the hand-computed answer with evidence; view/stranger/missing relation refused alike before any warehouse call; AI scope refuses selecting or filtering an excluded column; operational data and dataset-less explores refused; SQL escape hatches refused by name; a dropped filter refuses unless the user accepted it; no ledger or a failed audit write means nothing executes; a time bound is enforced and audited as timeout; review regressions: a grain is one of five words (never SQL), filters are rebuilt as {operator, value} and an engine-skippable filter is refused, missing/ownerless/operational/forbidden relations look identical, composed parents need explore and carry their AI scope, the AI-scope walk follows expression/formulas/measure filters/bare refs/aliases, unbounded sources are refused"
   source_contracts:
     run: "pytest backend/tests/test_source_security.py backend/tests/test_source_invalidation.py"
     locks: "source outbound policy, stored-secret handling and cache invalidation on credential change"

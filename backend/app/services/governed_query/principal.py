@@ -34,6 +34,10 @@ Surface = Literal["analyst", "agent_flow", "studio_test", "chart", "preview", "p
 #: person is made with that person's rights, not the service's (I-2).
 _HUMAN_ONLY_SURFACES = frozenset({"analyst", "studio_test", "chart", "preview"})
 
+#: Surfaces whose reach is defined by an attachment list, never by the caller's
+#: whole rights: a context for them without a ceiling is refused.
+_CEILING_REQUIRED = frozenset({"studio_test"})
+
 
 class GovernedRefusal(Exception):
     """A typed refusal (spec §2.3). `code` is what a caller branches on;
@@ -101,6 +105,15 @@ class AuthorizationContext:
     def __post_init__(self) -> None:
         if self.user is None or getattr(self.user, "id", None) != self.principal.user_id:
             raise GovernedRefusal("not_authenticated", "Phiên đăng nhập không khớp yêu cầu.")
+        if self.principal.surface in _CEILING_REQUIRED and self.ceiling.dataset_ids is None:
+            # Studio Test answers over the flow's attached datasets only. A context
+            # built without that ceiling would silently mean "everything the
+            # tester can read": refuse instead (fail closed).
+            raise GovernedRefusal(
+                "not_authorized",
+                "Bề mặt này cần phạm vi dữ liệu được gắn; không có phạm vi thì không truy vấn.",
+                {"surface": self.principal.surface},
+            )
         if self.principal.kind == "system" and self.principal.surface in _HUMAN_ONLY_SURFACES:
             raise GovernedRefusal(
                 "not_authorized",
@@ -131,19 +144,25 @@ class AuthorizationContext:
 
     # ── policy constraints ──────────────────────────────────────────────────
     def excluded_columns(self, dataset_ids: Iterable[int]) -> set[str]:
-        """GovernAIScope exclusions for an AI surface. A failed lookup is a REFUSAL
-        (`policy_unavailable`): unknown is not empty (SEC-05 class)."""
+        """GovernAIScope column exclusions for an AI surface. A failed lookup is a
+        REFUSAL (`policy_unavailable`): unknown is not empty (SEC-05 class)."""
+        cols, _measures = self.ai_scope_exclusions(dataset_ids)
+        return cols
+
+    def ai_scope_exclusions(self, dataset_ids: Iterable[int]) -> tuple[set[str], set[str]]:
+        """(columns, measures) GovernAIScope hides from an AI surface, folded the
+        same way the store folds them. Fails closed like `excluded_columns`."""
         ids = {int(d) for d in dataset_ids}
         if not ids:
-            return set()
+            return set(), set()
         try:
             from app.services.governance_ai_service import GovernanceAIService
 
-            cols, _measures = GovernanceAIService.scope_exclusions(self.db, ids)
+            cols, measures = GovernanceAIService.scope_exclusions(self.db, ids)
         except Exception as exc:  # noqa: BLE001 - any failure means "unknown"
             raise GovernedRefusal(
                 "policy_unavailable",
                 "Không đọc được phạm vi dữ liệu AI được phép dùng; tạm không truy vấn.",
                 {"dataset_ids": sorted(ids), "error": type(exc).__name__},
             ) from exc
-        return {str(c).strip().lower() for c in cols}
+        return {str(c).strip().lower() for c in cols}, {str(m).strip().lower() for m in measures}
