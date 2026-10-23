@@ -318,3 +318,35 @@ def test_duckdb_live_time_grain_on_a_varchar_date_column_executes():
     con.execute('CREATE TABLE t ("order_month" VARCHAR)')
     con.execute("INSERT INTO t VALUES ('2024-01-01'), ('2024-05-01')")
     assert len(con.execute(f"SELECT {expr}, COUNT(*) FROM t GROUP BY 1").fetchall()) == 2
+
+
+# ── A time grain over a DATE stays a DATE on Postgres ────────────────────────
+# Found by the Analyst browser acceptance: an Explore chart of a DATE column by
+# month showed "01/01/2025 07:00:00". Postgres DATE_TRUNC over a DATE returns
+# `timestamp with time zone` (midnight UTC), which a browser renders in its own
+# zone - 07:00 in Vietnam, and the PREVIOUS day (31/12) anywhere west of UTC, so
+# the bucket reads as the wrong month. A DATE bucket must stay a calendar DATE; a
+# TIMESTAMP column keeps its instant semantics and is not cast.
+def _pg_engine(dim):
+    engine = SemanticQueryEngine(db=None, database_type="postgresql")  # type: ignore[arg-type]
+    engine.views_cache = {"o": SimpleNamespace(measures=[], dimensions=[dim], table_name="orders", name="o")}
+    return engine
+
+
+@pytest.mark.parametrize("grain", ["day", "week", "month", "quarter", "year"])
+def test_postgres_time_grain_over_a_date_column_stays_a_date(grain):
+    engine = _pg_engine({"name": "order_date", "type": "date", "source_type": "date"})
+    expr = engine._render_dimension_with_time_grain("o.order_date", "o", grain)
+    assert expr.startswith("CAST(DATE_TRUNC(") and expr.endswith(" AS DATE)"), expr
+
+
+@pytest.mark.parametrize("source_type", ["timestamp", "timestamp with time zone", "datetime"])
+def test_postgres_time_grain_over_a_timestamp_column_is_not_cast(source_type):
+    engine = _pg_engine({"name": "created_at", "type": "datetime", "source_type": source_type})
+    expr = engine._render_dimension_with_time_grain("o.created_at", "o", "month")
+    assert expr.startswith("DATE_TRUNC('month', ") and "AS DATE" not in expr, expr
+
+
+def test_postgres_calendar_bucket_of_a_local_date_stays_a_date():
+    assert SemanticQueryEngine._truncate_date_sql("d", "month", "postgresql") == "CAST(DATE_TRUNC('month', d) AS DATE)"
+    assert SemanticQueryEngine._truncate_date_sql("d", "month", "bigquery") == "DATE_TRUNC(d, MONTH)"
