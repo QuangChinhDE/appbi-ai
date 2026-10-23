@@ -190,6 +190,7 @@ protected:
       - backend/app/services/relationship_key_guard.py    # runtime proof of every to-one key a query trusts
       - backend/app/services/semantic_arithmetic.py       # division = true division, NULL on /0, every engine
       - backend/app/services/execution_plan.py            # live / snapshot / published decision; one live statement = one connection
+      - backend/app/services/calculated_field_policy.py   # what user-written calculated SQL may say (SEC-01 allow-list)
     directive: >
       DO NOT rewrite or replace the semantic layer. It is golden-proven
       (multi-fact fan-out, snowflake, calendar, measure isolation). Make the
@@ -206,7 +207,8 @@ protected:
                      filter_matrix, golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity,
                      relationship_contract, relationship_contract_pg, pair1_baseline_parity,
                      public_authoritative_bounds, pair2_golden_topology, pair3_chartservice,
-                     chart_final_hardening, semantic_foundation, pair4_surfaces]
+                     chart_final_hardening, semantic_foundation, pair4_surfaces,
+                     intelligence_calc_field_policy]
 
   - id: public_link_security
     label: "Public-link filter merge / access (data-exposure surface)"
@@ -508,7 +510,33 @@ features:
     invariants: [agent_flow_container_topology, agent_flow_answer_parity]
     required_tests: [agent_flow_contract, agent_flow_replay, agent_flow_container,
                      agent_flow_surface, agent_flow_evidence, tier1_oracles_execute,
-                     agent_flow_credentials]
+                     agent_flow_credentials, intelligence_security_ledger,
+                     intelligence_studio_test_scope_pg]
+
+  # ADDED 2026-10-20 (AppBI Intelligence Phase 0, declared infra change). These
+  # files decide what the model is told is TRUE - KPI definitions, institutional
+  # memory, rules/Q&A/instructions - and matched no feature: the guardrail
+  # keyword-matched a frontend feature instead and the coverage read as UNKNOWN.
+  - id: ai_knowledge_authority
+    label: "AI knowledge authority (knowledge context, institutional memory, quarantine)"
+    files:
+      - backend/app/services/dashboard_ai_bot/knowledge.py
+      - backend/app/services/dashboard_ai_bot/knowledge_context.py
+      - backend/app/services/governance_ai_service.py
+    keywords: [knowledge, memory, "verified qa", playbook, instruction, quarantine,
+               "draft kpi", authority, "learned fact"]
+    invariants: []
+    required_tests: [intelligence_security_ledger, intelligence_knowledge_quarantine,
+                     intelligence_knowledge_quarantine_pg, ai_knowledge_contract]
+
+  # ADDED 2026-10-20: the schema browser reads source metadata AND rows on the
+  # source's stored credential (SEC-02); it matched no feature.
+  - id: datasource_table_preview
+    label: "Data source schema browser + table preview (metadata vs rows)"
+    files: [backend/app/api/datasources.py]
+    keywords: ["schema browser", "table detail", preview, "preview_rows", use_secret]
+    invariants: []
+    required_tests: [intelligence_security_ledger, intelligence_table_preview_pg, source_contracts]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -531,6 +559,38 @@ features:
 #    command; `locks` is what a green run guarantees.
 # ─────────────────────────────────────────────────────────────────────────────
 tests:
+  # ── AppBI Intelligence foundation (registered 2026-10-20, declared) ─────────
+  # Every entry below is run by .github/workflows/backend-contract-tests.yml:
+  # the unit ones in the "Phase 0 security reproduction ledger" step, the _pg ones
+  # in the authz-pg step (AUTHZ_PG_REQUIRED=1 there, so a skip is a failure).
+  intelligence_security_ledger:
+    run: "pytest backend/tests/test_intelligence_phase0_security_repro.py backend/tests/test_intelligence_eval_harness.py"
+    locks: "every Phase 0 security finding as an executable SAFE-behaviour statement (no xfail left once the stack lands), and the sealed eval's independence: oracle == hand-computed, runtime cannot import it, leaks excluded, isolation enforced"
+  intelligence_calc_field_policy:
+    run: "pytest backend/tests/test_intelligence_calc_field_policy.py"
+    locks: "a calculated field reads nothing beyond the query's own ${view.field} refs on default/postgres/bigquery/mysql: no subquery, table, EXISTS, bare/qualified column, unknown function, window, catalog cast, or lexer hazard (the comment-nesting bypass a review found)"
+  intelligence_knowledge_quarantine:
+    run: "pytest backend/tests/test_intelligence_knowledge_quarantine.py"
+    locks: "orphaned Approved rules/playbooks/Q&A/instructions never reach the prompt or refs while quarantined, nothing is deleted, caveats still inject, and GovernAIScope (a security policy) is still enforced"
+  intelligence_knowledge_quarantine_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_knowledge_quarantine_http_pg.py"
+    locks: "the quarantine inventory is Govern-admin only over HTTP, carries no bodies, and the removed rules/qa/playbooks/instructions routes stay 404 even for an admin"
+  intelligence_table_preview_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_table_preview_http_pg.py"
+    locks: "over HTTP on a real Postgres source: a data_sources viewer gets table structure and ZERO rows (rows need use_secret), an editor gets the preview, and even an editor is capped"
+  intelligence_studio_test_scope_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_studio_test_scope_http_pg.py"
+    locks: "Studio Test as chat runs with the TESTER's rights over HTTP: a shared editor reaches only their own datasets, the owner keeps everything attached, a flow viewer cannot press Test"
+  ai_knowledge_contract:
+    run: "pytest backend/tests/test_public_rating_trust_boundary.py backend/tests/test_govern_doc_citation.py backend/tests/test_what_the_ai_sees.py"
+    locks: "a public rating never mutates knowledge, document citations stay grounded, and what the AI is shown is what the governance layer allows"
+  source_contracts:
+    run: "pytest backend/tests/test_source_security.py backend/tests/test_source_invalidation.py"
+    locks: "source outbound policy, stored-secret handling and cache invalidation on credential change"
+
   # ── Agent Flow / Direct Chat ────────────────────────────────────────────────
   # Registered 2026-09-15. Twelve suites in this area were committed with
   # `git add -f` but never allow-listed and never referenced by a workflow, so they
