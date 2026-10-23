@@ -406,21 +406,35 @@ def _managed_block(monkeypatch, db, *, docs=None):
     return K._govern_managed_block(db, 99, "doanh thu")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=REPRODUCED,
-    reason="REPRODUCED SEC-07 (unit-level, real ORM on SQLite): a Draft metric "
-    "is injected under 'ĐỊNH NGHĨA CHÍNH THỐNG'; only Deprecated is filtered",
-)
+def _section(block: str, header_marker: str) -> str:
+    """The lines under the bullet header containing ``header_marker``, up to the
+    next bullet header."""
+    out, inside = [], False
+    for line in block.splitlines():
+        if line.startswith("• "):
+            inside = header_marker in line
+            continue
+        if inside:
+            out.append(line)
+    return "\n".join(out)
+
+
 def test_sec07_a_draft_metric_is_not_presented_as_official(monkeypatch):
+    """FIXED in PR-0B2 (was REPRODUCED SEC-07)."""
     from app.models.governance import GovernMetric
 
     db = _governance_db()
     db.add(GovernMetric(id=1, name="draft_rev", display_name="Doanh thu nháp",
                         definition="AI đề xuất, chưa duyệt", status="Draft"))
     db.commit()
-    block, _refs = _managed_block(monkeypatch, db)
-    assert "Doanh thu nháp" not in block
+    block, refs = _managed_block(monkeypatch, db)
+    official = _section(block, "ĐỊNH NGHĨA CHÍNH THỐNG")
+    assert "Doanh thu nháp" not in official
+    # Spec §4: an authored Draft may be shown, but only labelled as not approved.
+    for line in block.splitlines():
+        if "Doanh thu nháp" in line:
+            assert "[NHÁP]" in line, line
+    assert all(r.get("status") == "Draft" for r in refs if r.get("ref") == "draft_rev")
 
 
 def test_sec07_an_approved_metric_is_still_presented(monkeypatch):
@@ -436,32 +450,21 @@ def test_sec07_an_approved_metric_is_still_presented(monkeypatch):
     assert any(r["kind"] == "metric" and r["ref"] == "rev" for r in refs)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=REPRODUCED,
-    reason="REPRODUCED DEF-07b (unit-level): the RAG source loop references an "
-    "undefined name; the NameError is swallowed and every document citation "
-    "is dropped from the provenance refs",
-)
 def test_def07b_a_retrieved_document_is_cited_in_the_refs(monkeypatch):
+    """FIXED in PR-0B2 (was REPRODUCED DEF-07b)."""
     db = _governance_db()
     chunks = [{"doc_id": 5, "content": "Doanh thu ghi nhận khi giao hàng"}]
-    assembled = {"text": "• Doanh thu ghi nhận khi giao hàng", "sources": [{"title": "Chính sách doanh thu"}]}
+    assembled = {"text": "• Doanh thu ghi nhận khi giao hàng",
+                 "sources": [{"doc_id": 5, "title": "Chính sách doanh thu"}]}
     _block, refs = _managed_block(monkeypatch, db, docs=(chunks, assembled))
-    assert any(r["kind"] == "doc" for r in refs)
+    assert {"kind": "doc", "ref": "5", "name": "Chính sách doanh thu"} in refs
 
 
 # ── SEC-08  the bot promotes its OWN findings to validated knowledge ─────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=REPRODUCED,
-    reason="REPRODUCED SEC-08 (unit-level, real ORM on SQLite): a bot finding "
-    "seen twice becomes `validated` and is injected into every later turn — "
-    "no human reviewed it, and the public stream feeds this path",
-)
 def test_sec08_a_repeated_bot_finding_stays_a_candidate():
+    """FIXED in PR-0B2 (was REPRODUCED SEC-08)."""
     from app.models.ai_bot_knowledge import AiBotKnowledge
     from app.services.dashboard_ai_bot import knowledge as KB
 
@@ -487,6 +490,69 @@ def test_sec08_a_single_bot_finding_is_only_a_candidate():
     db.commit()
     rows = db.query(AiBotKnowledge).filter(AiBotKnowledge.dashboard_id == 8).all()
     assert [r.status for r in rows] == ["candidate"]
+
+
+def _kb_row(db, **kw):
+    from app.models.ai_bot_knowledge import AiBotKnowledge
+
+    base = dict(dashboard_id=7, kind="insight", content="x", confidence=0.9,
+                status="validated", source="bot_finding", support_count=3,
+                contradiction_count=0, dedupe_key=kw.get("content", "x"))
+    base.update(kw)
+    row = AiBotKnowledge(**base)
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_sec08_a_bot_finding_promoted_before_the_fix_is_not_injected():
+    """Rows an earlier version validated on recurrence stay in the table (no data
+    migration) but are never recalled as facts."""
+    from app.models.ai_bot_knowledge import AiBotKnowledge
+    from app.services.dashboard_ai_bot import knowledge as KB
+
+    db = _session(AiBotKnowledge)
+    _kb_row(db, content="Doanh thu tháng 9 giảm 12%", source="bot_finding")
+    _kb_row(db, content="GMV không gồm đơn huỷ", source="user_taught", kind="concept")
+    recalled = [r.content for r in KB.retrieve(db, dashboard_id=7, question="doanh thu GMV")]
+    assert recalled == ["GMV không gồm đơn huỷ"]
+
+
+def test_sec08_the_daily_pass_promotes_nothing():
+    from app.models.ai_bot_knowledge import AiBotKnowledge
+    from app.services.dashboard_ai_bot import knowledge as KB
+
+    db = _session(AiBotKnowledge)
+    _kb_row(db, content="Miền Bắc tăng trưởng nhanh nhất", status="candidate", support_count=9)
+    report = KB.consolidate(db, dashboard_id=7)
+    assert report["promoted"] == 0
+    assert db.query(AiBotKnowledge).one().status == "candidate"
+
+
+def test_sec08_a_thumbs_up_does_not_certify_a_stored_claim():
+    from app.models.ai_bot_knowledge import AiBotKnowledge
+    from app.services.dashboard_ai_bot import knowledge as KB
+
+    db = _session(AiBotKnowledge)
+    _kb_row(db, content="Khách hàng mới chiếm 30% doanh thu", status="candidate", confidence=0.5)
+    KB.apply_feedback(db, dashboard_id=7, claim_text="Khách hàng mới chiếm 30% doanh thu", positive=True)
+    row = db.query(AiBotKnowledge).one()
+    assert row.status == "candidate" and row.confidence > 0.5
+
+
+def test_sec08_a_signed_in_user_still_teaches_directly():
+    """The allow half: a human source is authoritative and is recalled."""
+    from app.models.ai_bot_knowledge import AiBotKnowledge
+    from app.services.dashboard_ai_bot import knowledge as KB
+
+    db = _session(AiBotKnowledge)
+    row = KB.store_learning(db, dashboard_id=7, kind="concept",
+                            content="Đơn hợp lệ là đơn đã giao", source="user_taught")
+    db.commit()
+    assert row.status == "validated"
+    assert [r.content for r in KB.retrieve(db, dashboard_id=7, question="đơn hợp lệ")] == [
+        "Đơn hợp lệ là đơn đã giao"
+    ]
 
 
 # ── SEC-09  /semantic/query is gated at `view`, not at `explore` ─────────────

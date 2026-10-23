@@ -46,6 +46,14 @@ CONTRADICT_RETIRE = 2         # contradicted this many times → retired
 MAX_CONTENT = 400
 VALID_KINDS = {"concept", "fact", "insight", "preference", "correction"}
 
+#: Sources a MACHINE wrote: the bot's own findings, and AI-proposed memories.
+#: Observed is not certified (ADR-007, SEC-08): nothing these sources write is
+#: ever promoted to `validated` by recurrence, feedback or the daily pass, and a
+#: row from them is never injected as a fact — even one an earlier version of
+#: this module already promoted. A human approval rewrites the source to
+#: `user_taught` (governance_ai_service._approve_memory), which is the one door.
+MACHINE_SOURCES = frozenset({"bot_finding", "ai"})
+
 # Domain-truth first (how the company defines things), then evidence, then
 # softer signals. Used to order the injected block.
 _KIND_RANK = {"concept": 0, "correction": 1, "fact": 2, "insight": 3, "preference": 4}
@@ -175,13 +183,15 @@ def store_learning(
         row.last_seen_at = now
         if evidence:
             row.evidence = {**(row.evidence or {}), **evidence}
-        # Recurrence (or an authoritative source) promotes a candidate — but
-        # never when the caller forced candidate status (anonymous teaching):
-        # that path is only promoted by a human approving the review item.
+        # Only an AUTHORITATIVE (human) source promotes a candidate. Recurrence
+        # used to as well: the bot's own finding, seen twice — two anonymous
+        # questions on a public link were enough — became `validated` and was
+        # injected into every later turn (SEC-08). Seeing a claim again is
+        # evidence for it, recorded in support_count; it is not a review.
         if (
             not forced_candidate
             and row.status == "candidate"
-            and (authoritative or row.support_count >= PROMOTE_SUPPORT)
+            and authoritative
         ):
             row.status = "validated"
         if authoritative:
@@ -378,9 +388,9 @@ def apply_feedback(db: Session, *, dashboard_id: int, claim_text: str, positive:
         if overlap < 0.5:
             continue
         if positive:
+            # A thumbs-up on an ANSWER is not an approval of a stored CLAIM that
+            # shares half its words with it (SEC-08): it raises confidence only.
             r.confidence = min(0.99, (r.confidence or 0.5) + FEEDBACK_UP_BOOST)
-            if r.status == "candidate":
-                r.status = "validated"
         else:
             r.confidence = max(0.0, (r.confidence or 0.5) - FEEDBACK_DOWN_PENALTY)
             r.contradiction_count = (r.contradiction_count or 0) + 1
@@ -423,6 +433,9 @@ def retrieve(
         .filter(
             AiBotKnowledge.dashboard_id.in_(sorted(set(ids))),
             AiBotKnowledge.status == "validated",
+            # Machine-written rows are observed, not certified — including the
+            # ones an earlier version promoted on recurrence (SEC-08).
+            AiBotKnowledge.source.notin_(sorted(MACHINE_SOURCES)),
         )
         .all()
     )
@@ -525,7 +538,10 @@ def build_knowledge_prompt_block(db: Session, *, dashboard_id: int, question: st
 def consolidate(db: Session, *, dashboard_id: int) -> dict:
     """The daily 'deep review'. No LLM required. Returns a small report.
 
-    - promote candidates seen ≥ PROMOTE_SUPPORT times → validated
+    - promotes NOTHING: promotion is a human decision (ADR-007, SEC-08). This
+      pass used to validate any candidate seen ≥ PROMOTE_SUPPORT times, which
+      made recurrence a substitute for review. `promoted` stays in the report,
+      always 0, so a reader of it is not broken.
     - decay confidence of entries not seen in > STALE_DAYS
     - retire entries that decayed below RETIRE_CONF or were contradicted enough
     """
@@ -541,10 +557,6 @@ def consolidate(db: Session, *, dashboard_id: int) -> dict:
     now = _now()
     stale_before = now - timedelta(days=STALE_DAYS)
     for r in rows:
-        # Promote well-supported candidates.
-        if r.status == "candidate" and (r.support_count or 1) >= PROMOTE_SUPPORT:
-            r.status = "validated"
-            promoted += 1
         # Decay stale beliefs.
         if r.last_seen_at and _aware(r.last_seen_at) < stale_before:
             r.confidence = round(max(0.0, (r.confidence or 0.5) * 0.8), 3)
