@@ -31,6 +31,9 @@ test('OFF · no Analyst entry, no Analyst API, BI modules and an existing chart 
   await shot(page, 'OFF-1-dashboards-no-analyst');
   await page.goto('/analyst');
   await expect(page.getByTestId('analyst-question')).toHaveCount(0);
+  // a switched-off feature says so; it does not send the person to ask for a permission
+  await expect(page.getByTestId('module-not-enabled')).toBeVisible();
+  await expect(page.getByTestId('module-no-access')).toHaveCount(0);
   await shot(page, 'OFF-2-analyst-route');
   const api = await page.request.get('/api/v1/analyst/catalog');
   expect(api.status(), 'Analyst API is not mounted').toBe(404);
