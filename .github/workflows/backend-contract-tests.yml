@@ -123,6 +123,7 @@ jobs:
             tests/test_semantic_measure_render.py \
             tests/test_dialect_structural.py \
             tests/test_time_grain_whitelist.py \
+            tests/test_chart_config_write_validation.py \
             tests/test_agent_flow_golden.py \
             tests/test_agent_tool_registry.py \
             tests/test_tool_authorization_metadata.py \
@@ -743,6 +744,7 @@ jobs:
             tests/test_authz_audit_http_pg.py \
             tests/test_authz_workboard_rows_rls_pg.py \
             tests/test_time_grain_whitelist_http_pg.py \
+            tests/test_chart_config_write_validation_http_pg.py \
             --junitxml=/tmp/authz-pg.xml
 
       # EVERY MANDATORY SECURITY SUITE, NOT JUST THE FIRST.

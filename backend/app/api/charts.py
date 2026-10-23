@@ -334,6 +334,11 @@ def preview_chart_data(
     dataset_obj, _ = _get_dataset_for_chart_table(db, payload.dataset_table_id)
     _authz.require(db, current_user, _authz.Action.EXPLORE, dataset_obj)
     require_custom_sql_authority(db, current_user, payload.dataset_table_id, payload.config)
+    # The ChartCreate role-config contract applies to a preview too (SEC-13
+    # defense in depth; the engine still refuses an invalid grain at render).
+    from app.services.chart_config_guard import require_valid_chart_config
+
+    require_valid_chart_config(payload.config)
 
     try:
         result = ChartService.preview_chart_data(

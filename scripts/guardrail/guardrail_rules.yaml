@@ -202,7 +202,7 @@ protected:
     # distinct_cascade_bq remain declared (`status: missing`) — they describe the
     # coverage this subsystem should have, and their absence is reported by
     # `guardrail_check.py --health` rather than hidden.
-    required_tests: [measure_render, dialect_structural, time_grain_whitelist, time_grain_whitelist_pg, semantic_state_contracts,
+    required_tests: [measure_render, dialect_structural, time_grain_whitelist, time_grain_whitelist_pg, chart_config_write_validation, chart_config_write_validation_pg, semantic_state_contracts,
                      filter_matrix, golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity,
                      relationship_contract, relationship_contract_pg, pair1_baseline_parity,
                      public_authoritative_bounds, pair2_golden_topology, pair3_chartservice,
@@ -767,7 +767,14 @@ tests:
   time_grain_whitelist_pg:
     requires: postgres
     run: "pytest backend/tests/test_time_grain_whitelist_http_pg.py"
-    locks: "SEC-13 runtime over HTTP on real Postgres: a valid grain previews the hand-computed numbers; an invalid grain is refused 400 BY THE ENGINE before any SQL runs (preview and a stored chart's render), not as a database error; no out-of-scope data is returned; the public link renders a valid chart and refuses a stored invalid-grain chart"
+    locks: "SEC-13 runtime over HTTP on real Postgres: a valid grain previews the hand-computed numbers; an invalid grain is refused before any SQL runs (preview and a stored chart's render), not as a database error; no out-of-scope data is returned; the public link renders a valid chart and refuses a stored invalid-grain chart"
+  chart_config_write_validation:
+    run: "pytest backend/tests/test_chart_config_write_validation.py"
+    locks: "every path that stores or previews a chart config (preview-data, HTML import build+batch, snapshot import+duplicate, in-place fork) applies the ChartCreate role-config contract via one guard, so an out-of-contract config (e.g. an invalid time grain) cannot be stored; the engine stays the last line of defence (SEC-13 defense in depth)"
+  chart_config_write_validation_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_chart_config_write_validation_http_pg.py"
+    locks: "per-path over HTTP on real Postgres: preview-data, HTML import build, build-batch, snapshot import, duplicate and fork refuse an invalid time grain with a 4xx and store nothing (no half-built dashboard); a batch whose later document is invalid builds no page at all; a valid config is created, reopened and renders the hand-computed numbers; custom-SQL authority is still enforced"
   relationship_metadata:
     run: "pytest backend/tests/test_phase1_relationship_metadata.py"
     locks: "cardinality normalize, bidirectional edges, BFS path, ambiguity"

@@ -118,18 +118,27 @@ def test_a_valid_grain_previews_correct_numbers(client, world):  # noqa: F811
 
 
 def _is_grain_refusal(resp) -> bool:
-    """The engine's OWN time-grain refusal (before any SQL runs), distinguished
-    from a database execution error. On the pre-fix engine the malformed grain
-    reaches Postgres and the body is 'Lỗi chạy chart query ... not recognized';
-    the fix refuses at the render boundary and names the grain."""
-    detail = str((resp.json() or {}).get("detail", ""))
-    return ("thời gian" in detail.lower() or "time grain" in detail.lower()) and "not recognized" not in detail
+    """A time-grain refusal raised BEFORE any SQL runs, distinguished from a
+    database execution error. Two layers can raise it and both count:
+
+      * the semantic engine at the render boundary — body names the grain in
+        Vietnamese ('Độ chi tiết thời gian không hợp lệ');
+      * the write-time role-config guard (defense in depth) — body is
+        'role_config shape errors: timeGrains[...] must be one of ...'.
+
+    On the pre-fix engine the malformed grain reaches Postgres instead and the
+    body is 'Lỗi chạy chart query ... not recognized' — which this rejects."""
+    detail = str((resp.json() or {}).get("detail", "")).lower()
+    is_grain = "thời gian" in detail or "time grain" in detail or "timegrains" in detail
+    return is_grain and "not recognized" not in detail
 
 
-# 2 + 3: a benign invalid grain is refused 400 BY THE ENGINE, before any SQL runs
+# 2 + 3: a benign invalid grain is refused before any SQL runs. Two layers may
+# raise it: the write-time role-config guard (422, where present) or the semantic
+# engine at the render boundary (400). Either is a grain refusal, not a DB error.
 def test_a_benign_invalid_grain_is_refused_before_sql(client, world):  # noqa: F811
     r = _preview(client, world, BENIGN_INVALID_GRAIN)
-    assert r.status_code == 400, r.text
+    assert r.status_code in (400, 422), r.text
     assert _is_grain_refusal(r), r.text          # fails on the pre-fix engine (a DB error)
     assert SECRET not in r.text
     assert "data" not in r.json() or not r.json().get("data")

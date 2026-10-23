@@ -5635,6 +5635,9 @@ def build_dashboard_from_import(
         # Custom SQL is datasource authority, not dataset authority.
         from app.services.chart_sql_authority import require_custom_sql_authority
         require_custom_sql_authority(db, current_user, chart_table_id, chart_config)
+        # The ChartCreate role-config contract, before the config is stored.
+        from app.services.chart_config_guard import require_valid_chart_config
+        require_valid_chart_config(chart_config)
         db_chart = Chart(
             name=internal_name,
             description=chart_description or None,
@@ -5842,6 +5845,31 @@ def build_dashboard_from_import(
     }
 
 
+def _prevalidate_batch_chart_configs(documents: List[Dict[str, Any]]) -> None:
+    """Apply the ChartCreate role-config contract to every chart plan of every
+    batch document, before any page is built. Mirrors the per-document plan
+    selection (``included_block_ids``) so a deselected block is not checked.
+    Raises the same 422 the single-build guard raises, with nothing persisted."""
+    from app.services.chart_config_guard import require_valid_chart_config
+
+    for index, raw_document in enumerate(documents):
+        if not isinstance(raw_document, dict):
+            continue
+        analysis = raw_document.get("analysis")
+        if not isinstance(analysis, dict):
+            continue
+        plans = [p for p in (analysis.get("chart_plans") or []) if isinstance(p, dict)]
+        included = raw_document.get("included_block_ids") or []
+        if isinstance(included, list) and included:
+            selected = {str(item) for item in included}
+            plans = [p for p in plans if str(p.get("block_id")) in selected]
+        for plan in plans:
+            widget_type = str(plan.get("widget_type") or "chart").strip().lower()
+            if widget_type in IMPORT_WIDGET_TYPES and widget_type != "chart":
+                continue
+            require_valid_chart_config(_build_chart_config(plan, None))
+
+
 def build_dashboard_from_import_batch(
     db: Session,
     *,
@@ -5867,6 +5895,16 @@ def build_dashboard_from_import_batch(
     normalized_documents = [item for item in (documents or []) if isinstance(item, dict)]
     if not normalized_documents:
         raise ValueError("At least one analyzed document is required for batch build.")
+
+    # Each document commits its own page (per-document build), so a document that
+    # fails AFTER an earlier one committed would leave a half-built dashboard. The
+    # write-time config contract is validated for EVERY chart of EVERY document up
+    # front, before anything is built, so an out-of-contract config (e.g. an
+    # invalid time grain) in a later document refuses the whole batch and stores
+    # nothing. This does NOT make the batch atomic against other mid-build
+    # failures; full atomicity (removing the per-document commits) is a separate,
+    # larger change tracked in the atomicity design note.
+    _prevalidate_batch_chart_configs(normalized_documents)
 
     page_results: List[Dict[str, Any]] = []
     current_target_mode: TargetMode = target_mode
@@ -6584,6 +6622,9 @@ def rebuild_dashboard_from_snapshot(
             from app.services.chart_sql_authority import require_custom_sql_authority
             require_custom_sql_authority(db, current_user, chart_spec.get("dataset_table_id"),
                                          chart_spec.get("config") or {})
+            # The ChartCreate role-config contract, before the config is stored.
+            from app.services.chart_config_guard import require_valid_chart_config
+            require_valid_chart_config(chart_spec.get("config") or {})
             new_chart = Chart(
                 name=chart_name,
                 description=_normalize_text(chart_spec.get("description"), max_len=1024) or None,
