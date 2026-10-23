@@ -123,6 +123,8 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
     row.match = JSON.stringify(values) === JSON.stringify(Object.values(ORACLE.orders_channel_2025).sort((a, b) => a - b));
     await snap('6-chart-reopened');
     await page.goto('/analyst');
+  } else if (r.kind === 'analyst-answer') {
+    row.save_not_offered = (await r.ex.getByTestId('analyst-chart-draft').innerText().catch(() => '')).slice(0, 300);
   }
   results.push(row);
 
