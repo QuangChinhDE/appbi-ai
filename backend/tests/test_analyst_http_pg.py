@@ -757,3 +757,25 @@ def test_feedback_records_what_was_wrong_and_refuses_an_unknown_reason(client, d
     with sa.create_engine(_owner_url()).connect() as c:
         assert c.execute(sa.text("SELECT reason FROM analyst_feedback WHERE turn_id = :t"), {"t": turn}).scalar()             == "wrong_filter"
 
+
+
+def test_a_follow_up_that_only_ranks_reuses_the_previous_plan_when_the_model_refuses(client, db, world, model):  # noqa: F811
+    """Set 9 dev (S9-034): "Chỉ lấy top 2 thôi" after an answer by region was refused by
+    the model. The previous plan, re-validated, is ranked by the server; the model is
+    not trusted to re-read it."""
+    _grant_module(db, world["analyst"])
+    v = world["v"]
+    model(_planner(world, dims=("region",), extra={"covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region"}}))
+    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                        json={"question": "Doanh thu theo vùng"}).json()
+    assert first["status"] == "answered", first
+    model(lambda *a, **k: {"status": "unsupported", "reason": "?"})
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Chỉ lấy top 2 thôi", "previous_plan": first["plan"]}).json()
+    assert body["status"] == "answered", body
+    col = {c["role"]: c["name"] for c in body["columns"]}
+    assert [r[col["dimension"]] for r in body["rows"]] == ["Bắc", "Nam"] and body["plan"]["limit"] == 2
+    # a follow-up that says more than a ranking is NOT re-run from the previous plan
+    other = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                        json={"question": "Chỉ lấy top 2 sản phẩm lợi nhuận", "previous_plan": first["plan"]}).json()
+    assert other["status"] != "answered" and "rows" not in other

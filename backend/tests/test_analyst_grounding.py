@@ -642,3 +642,34 @@ def test_a_tie_at_the_top_n_cut_is_kept_never_an_arbitrary_winner():
     assert [r["c"] for r in _ordered(rows, cols, p, "desc")] == ["B", "C"]
     p.limit = None
     assert [r["c"] for r in _ordered(rows, cols, p, "desc")] == ["B", "C", "A", "D"]  # NULL last, never as 0
+
+
+# ── Stabilization package (2026-10-23, development corpus) ─────────────────────
+
+def test_an_entity_word_shared_by_a_used_views_labels_is_explained():
+    """Set 9 dev: "Tiền hoàn trả theo miền của khách" refused on "khách" although the
+    region belongs to the customers view whose labels say "khách hàng"."""
+    ex = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="r",
+                        source_type="postgresql", label="C", fields=[
+                            CatalogField("r.refund_total", "measure", "sum", "Tiền hoàn trả"),
+                            CatalogField("c.region", "dimension", "string", "Vùng", synonyms=("miền",)),
+                            CatalogField("c.segment", "dimension", "string", "Phân khúc khách hàng"),
+                            CatalogField("c.customer_count", "measure", "count_distinct", "Số khách hàng")])
+    p = Plan(explore=ex, dimensions=["c.region"], measures=["r.refund_total"],
+             covered={"tiền hoàn trả": "r.refund_total", "miền": "c.region"})
+    out, why = ground(p, "Tiền hoàn trả theo miền của khách", covered=p.covered)
+    assert out is not None, why
+
+
+def test_an_entity_word_of_a_view_the_plan_does_not_use_is_still_unexplained():
+    ex = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="C", dataset_table_id=1, base_view="r",
+                        source_type="postgresql", label="C", fields=[
+                            CatalogField("r.refund_total", "measure", "sum", "Tiền hoàn trả"),
+                            CatalogField("o.channel", "dimension", "string", "Kênh bán"),
+                            CatalogField("c.segment", "dimension", "string", "Phân khúc khách hàng"),
+                            CatalogField("c.customer_count", "measure", "count_distinct", "Số khách hàng")])
+    p = Plan(explore=ex, dimensions=["o.channel"], measures=["r.refund_total"],
+             covered={"tiền hoàn trả": "r.refund_total", "kênh": "o.channel"})
+    out, why = ground(p, "Tiền hoàn trả theo kênh của khách", covered=p.covered)
+    assert out is None and "khách" in why          # the plan never uses the customer: not explained
+

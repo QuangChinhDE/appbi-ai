@@ -90,6 +90,23 @@ def is_function_phrase(phrase: str, *, has_time: bool, source_words: set[str] | 
     return not words or (has_time and {w for w in words if not w.isdigit()} <= _TIME)
 
 
+def _entity_words(fields, used_refs) -> set[str]:
+    """Words that name the ENTITY a used field belongs to: shared by the labels of at
+    least two fields of that field's view ("khách" in "Số khách hàng" and "Phân khúc
+    khách hàng" names the customer; set 9: "theo miền của khách"). Derived from the
+    model's own labels, never a word list; generic words excluded."""
+    views = {r.rsplit(".", 1)[0] for r in used_refs}
+    out: set[str] = set()
+    for v in views:
+        counts: dict[str, int] = {}
+        for f in fields:
+            if f.ref.rsplit(".", 1)[0] == v:
+                for w in syllables(f.label) - _GENERIC - _STOP:
+                    counts[w] = counts.get(w, 0) + 1
+        out |= {w for w, n in counts.items() if n >= 2 and not w.isdigit()}
+    return out
+
+
 def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> dict[str, set[str]]:
     """ref -> the question words the model says that field answers. A phrase counts
     only if every word of it is in the question and it is not (nearly) the whole
@@ -289,7 +306,8 @@ def intent_obligations(question: str) -> dict:
             "only": bool(_ONLY.search(text))}
 
 
-def check_obligations(question: str, filters: dict, carried_filters: Iterable[str] = ()) -> Optional[str]:
+def check_obligations(question: str, filters: dict, carried_filters: Iterable[str] = (), *,
+                      top_n: bool = False) -> Optional[str]:
     """None when the plan's filters honour the question's meaning-changing words,
     else the refusal naming them."""
     ob = intent_obligations(question)
@@ -309,7 +327,7 @@ def check_obligations(question: str, filters: dict, carried_filters: Iterable[st
     if ob["time_bound"] and "date_range" not in ops.values():
         return (f"Câu hỏi có mốc thời gian (“{ob['time_bound'][0]} …”) nhưng kế hoạch không lọc theo thời gian, "
                 "nên không trả lời.")
-    if ob["only"] and not filters and not list(carried_filters):
+    if ob["only"] and not filters and not list(carried_filters) and not top_n:  # "chỉ lấy top 2": the cut is the limit
         return "Câu hỏi giới hạn phạm vi (“chỉ …”) nhưng kế hoạch không có bộ lọc nào, nên không trả lời."
     return None
 
@@ -489,6 +507,7 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
     carried_filters = list(((previous or {}).get("filters") or {}).keys()) if isinstance(previous, dict) else []
 
     explained = set(_STOP) | syllables(plan.explore.dataset_name) | syllables(plan.explore.label)
+    explained |= _entity_words(plan.explore.fields, [*measures, *dims, *filters, *carried])
     for ref in [*measures, *dims, *filters, *carried]:
         if ref in by_ref:
             explained |= _field_words(by_ref[ref])
@@ -530,7 +549,8 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
         names = ", ".join(by_ref[r].label if r in by_ref else r for r in ungrounded)
         return None, (f"Giá trị lọc cho “{names}” không có trong câu hỏi và không tìm được giá trị thật khớp với "
                       "lời bạn hỏi, nên không trả lời thay vì lọc theo một giá trị khác.")
-    broken = check_obligations(question, filters, carried_filters)  # the FINAL filters honour the words
+    broken = check_obligations(question, filters, carried_filters,  # the FINAL filters honour the words
+                               top_n=bool(intent.ranking and intent.ranking.get("n")))
     if broken:
         return None, broken
     if unexplained:

@@ -83,3 +83,9 @@ def test_constructions_with_no_data_meaning_are_recognised():
     # "doanh nghiệp" as a customer segment value is not the company
     assert "doanh nghiep" in extract("Doanh số khách doanh nghiệp").content
 
+
+def test_an_opening_interjection_is_framing():
+    assert extract("Ê cho xem doanh số nhóm Thiết bị").content == "doanh so nhom thiet bi"
+    assert extract("Alo, doanh số theo vùng").content == "doanh so theo vung"
+    assert extract("Ếch xanh bán chạy không").content.startswith("ech")   # a word starting with e is not one
+
