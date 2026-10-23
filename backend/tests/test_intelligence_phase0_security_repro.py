@@ -82,27 +82,16 @@ def _bare_engine():
 # ── SEC-01  calculated-field SQL is guarded by a substring blacklist ─────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=REPRODUCED,
-    reason="REPRODUCED SEC-01 (compile-level): a calculated field may embed a "
-    "scalar subquery over any table the datasource credential can read; the "
-    "blacklist only looks for DDL/DML words",
-)
 def test_sec01_a_calculated_field_cannot_read_another_table():
+    """FIXED in PR-0C (was REPRODUCED SEC-01). Matrix: test_intelligence_calc_field_policy.py."""
     with pytest.raises(ValueError):
         _bare_engine()._validate_calculated_field_safety(
             "(SELECT MAX(salary) FROM hr.payroll)"
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ValueError,
-    reason="REPRODUCED SEC-01b (compile-level): the same substring test rejects "
-    "a legitimate field because 'updated_at' contains 'UPDATE'",
-)
 def test_sec01b_a_column_named_updated_at_is_not_a_forbidden_keyword():
+    """FIXED in PR-0C (was REPRODUCED SEC-01b)."""
     _bare_engine()._validate_calculated_field_safety(
         "DATE_DIFF(${orders.updated_at}, ${orders.created_at}, DAY)"
     )
