@@ -205,7 +205,18 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
                 if label:
                     opts.append(label)
             elif str(o).strip():
-                opts.append(str(o)[:200])
+                label = str(o).strip()[:200]
+                opts.append(label)
+                # Internal-preview live smoke: options came back as plain strings ("Doanh
+                # số"), a pick re-asked the question and the model asked again. A plain
+                # option that names exactly ONE metric of this catalog (one Dataset) is
+                # made pickable like a structured one; ambiguous text stays plain.
+                from app.services.analyst.grounding import fold  # local: grounding imports this module
+
+                hits = [(c, f) for c in sorted(catalog, key=lambda c: c.explore_id) for f in c.fields
+                        if f.kind == "measure" and fold(f.label) == fold(label)]
+                if hits and len({c.dataset_id for c, _ in hits}) == 1 and len({f.ref for _, f in hits}) == 1:
+                    choices.append({"label": label, "explore_id": hits[0][0].explore_id, "measure": hits[0][1].ref})
         return Clarify(str(raw.get("question") or "Bạn muốn hỏi theo nghĩa nào?")[:400], opts, choices)
     if status == "unsupported":
         return Unsupported(str(raw.get("reason") or "Dữ liệu được phép không trả lời được câu hỏi này.")[:400])

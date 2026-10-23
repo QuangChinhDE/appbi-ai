@@ -285,16 +285,17 @@ export default function AnalystPage() {
 function HowToPanel({ sources, onExample }: { sources: AnalystSource[] | null; onExample: (q: string) => void }) {
   const { t } = useI18n();
   const examples = useMemo(() => {
-    const out: string[] = [];
+    // one "metric by dimension" per source first, so one source cannot fill the list,
+    // then totals (the catalog lists no identifiers as dimensions)
+    const by: string[] = [];
+    const totals: string[] = [];
     for (const s of sources || []) {
-      const [m1, m2] = s.measures;
-      const [d1, d2] = s.dimensions;
-      if (m1 && d1) out.push(t('analyst.howto.exampleBy', { measure: m1, dimension: d1.toLowerCase() }));
-      if (m1) out.push(t('analyst.howto.exampleTotal', { measure: m1.toLowerCase() }));
-      if (m2 && d2) out.push(t('analyst.howto.exampleBy', { measure: m2, dimension: d2.toLowerCase() }));
-      if (out.length >= 4) break;
+      const [m1] = s.measures;
+      const [d1] = s.dimensions;
+      if (m1 && d1) by.push(t('analyst.howto.exampleBy', { measure: m1, dimension: d1.toLowerCase() }));
+      if (m1) totals.push(t('analyst.howto.exampleTotal', { measure: m1.toLowerCase() }));
     }
-    return [...new Set(out)].slice(0, 4);
+    return [...new Set([...by, ...totals])].slice(0, 4);
   }, [sources, t]);
   if (!sources?.length) return null;
   return (
