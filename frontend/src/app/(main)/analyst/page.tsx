@@ -187,7 +187,7 @@ export default function AnalystPage() {
           <div className="mt-0.5 rounded-lg bg-[#e8f0fe] p-2 text-[#1a73e8]"><Sparkles className="h-5 w-5" aria-hidden /></div>
           <div className="min-w-0">
             <h1 className="flex flex-wrap items-center gap-2 text-xl font-medium text-[#202124]">{t('analyst.title')}
-              <span className="rounded border border-[#f9ab00] bg-[#fef7e0] px-2 py-0.5 text-xs font-medium text-[#b06000]"
+              <span className="rounded border border-[#f9ab00] bg-[#fef7e0] px-2 py-0.5 text-xs font-medium text-[#7a4a00]"
                     data-testid="analyst-preview-label">{t('analyst.previewLabel')}</span></h1>
             <p className="mt-0.5 text-sm text-[#5f6368]">{t('analyst.subtitle')}</p>
           </div>
@@ -209,7 +209,7 @@ export default function AnalystPage() {
 
         {topicStart > 0 ? (
           <button type="button" onClick={() => setShowEarlier((v) => !v)} data-testid="analyst-earlier-toggle"
-                  className="text-xs font-medium text-[#1a73e8] hover:underline">
+                  className="text-xs font-medium text-[#1765cc] hover:underline">
             {showEarlier ? t('analyst.hideEarlier') : t('analyst.showEarlier', { n: topicStart })}
           </button>
         ) : null}

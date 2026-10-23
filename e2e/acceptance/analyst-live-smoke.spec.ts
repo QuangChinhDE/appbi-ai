@@ -129,6 +129,7 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   // 8. a first-visit example (built from the person's own sources) is answerable
   await fresh();
   await page.reload();
+  await expect(page.getByTestId('analyst-example').first()).toBeVisible();   // the guide renders once sources load
   const examples = await page.getByTestId('analyst-example').allInnerTexts();
   const pick = examples.find((e) => /Doanh số/.test(e)) ?? examples[0];
   await page.getByTestId('analyst-example').filter({ hasText: pick }).first().click();
