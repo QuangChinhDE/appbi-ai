@@ -32,7 +32,8 @@ from typing import Iterable, Optional
 _STOP = set("""
 a ai bao bi bieu bo cac cach chi cho chua co con cua cung da dang dau de den di do doi duoc gi gia giai giup hay hien hoi hon khac khi khong kia la lam lai luon ma moi mot muon nao nay neu nhieu nhu nhung nhat nua o phai qua ra roi sang sao so sanh ta tai tat the theo thi thu thuc tinh to toan trong tu tung va van ve vi voi xem xin tong cong hang tach them rieng bang danh sach liet ke the nao the hien bao nhieu dang ky tu den gan day nhat cao thap lon nho manh yeu tang giam bien dong xu huong ket qua phan tich thay mang lai dem nhieu it minh toi chia ben thoi nhe vay oi a
 cai chiec het du lieu lay gio
-""".split())
+by per of in for each and total
+""".split())  # last line: English connectives (the English UI's examples, mixed questions)
 # Words that are explained by grouping on a time field.
 _TIME = set("ngay tuan thang quy nam thoi gian gan day xu huong bien dong".split())
 

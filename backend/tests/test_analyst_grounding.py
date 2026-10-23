@@ -754,3 +754,15 @@ def test_a_named_quarter_or_month_gets_the_whole_period():
     out, why = ground(p, "Doanh số theo kênh trong quý 4 năm 2025", covered=p.covered)
     assert out is not None and out.filters["o.order_date"]["value"] == {"from": "2025-10-01", "to": "2026-01-01"}, why
 
+
+
+def test_english_connectives_in_a_mixed_question_are_not_unexplained_words():
+    # Internal-preview live smoke: the English UI's example "Doanh số by tên sản phẩm"
+    # was refused on "by". Connectives carry no data meaning in either language.
+    p, why = ground(_plan(["l.net_sales"], ["p.category"]), "Doanh số by ngành hàng",
+                    covered={"doanh số": "l.net_sales", "ngành hàng": "p.category"})
+    assert p is not None, why
+    # a content word is still never ignored
+    p, why = ground(_plan(["l.net_sales"], ["p.category"]), "Doanh số by ngành hàng excluding returns",
+                    covered={"doanh số": "l.net_sales", "ngành hàng": "p.category"})
+    assert p is None and why
