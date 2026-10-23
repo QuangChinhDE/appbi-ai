@@ -523,11 +523,19 @@ features:
       - backend/app/services/dashboard_ai_bot/knowledge.py
       - backend/app/services/dashboard_ai_bot/knowledge_context.py
       - backend/app/services/governance_ai_service.py
+      # 0G: the evidence a model is shown and whether it may answer from it. These
+      # read as UNKNOWN before (Agent Flow deliberately does not own govern_doc_*).
+      - backend/app/services/dashboard_ai_bot/knowledge_hit.py
+      - backend/app/services/dashboard_ai_bot/govern_doc_answerability.py
+      - backend/app/services/dashboard_ai_bot/govern_doc_conflict.py
+      - backend/app/services/dashboard_ai_bot/doc_rerank.py
     keywords: [knowledge, memory, "verified qa", playbook, instruction, quarantine,
-               "draft kpi", authority, "learned fact"]
+               "draft kpi", authority, "learned fact", answerability, "knowledge hit",
+               "evidence shape"]
     invariants: []
     required_tests: [intelligence_security_ledger, intelligence_knowledge_quarantine,
-                     intelligence_knowledge_quarantine_pg, ai_knowledge_contract]
+                     intelligence_knowledge_quarantine_pg, ai_knowledge_contract,
+                     ai_evidence_contract]
 
   # ADDED 2026-10-20: the schema browser reads source metadata AND rows on the
   # source's stored credential (SEC-02); it matched no feature.
@@ -598,6 +606,9 @@ tests:
   ai_knowledge_contract:
     run: "pytest backend/tests/test_public_rating_trust_boundary.py backend/tests/test_govern_doc_citation.py backend/tests/test_what_the_ai_sees.py"
     locks: "a public rating never mutates knowledge, document citations stay grounded, and what the AI is shown is what the governance layer allows"
+  ai_evidence_contract:
+    run: "pytest backend/tests/test_knowledge_hit_contract.py backend/tests/test_govern_doc_answerability.py backend/tests/test_semantic_level0.py"
+    locks: "one evidence shape for every consumer (no draft served as evidence), the answer/abstain/conflict verdict over document evidence, and a measure reaching the model with its recorded formula and unit even without a description"
   intelligence_gqs:
     run: "pytest backend/tests/test_intelligence_effective_principal.py"
     locks: "one intersection-only scope formula on the real authz core: querying needs explore (view is not enough), the surface ceiling only narrows, an Agent Flow delegation never widens a governed decision, PAT is a subset of the person, a system principal cannot answer for a person, a failed AI-scope lookup refuses"

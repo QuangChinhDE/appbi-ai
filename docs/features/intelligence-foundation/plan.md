@@ -55,13 +55,20 @@ python scripts/ci/guardrail_check.py --plan "Phase 0 security containment for AI
 
 | PR | Scope | Files (expected) | P | M | A | Status |
 |---|---|---|---|---|---|---|
-| **0A** | Contracts, ADRs, threat model, security ledger (tests only), CI wiring of the ledger | `docs/features/intelligence-foundation/**`, `backend/tests/test_intelligence_phase0_security_repro.py`, `.gitignore`, `.github/workflows/backend-contract-tests.yml` | infra (declared) | – | – | READY FOR REVIEW |
-| **0B1** | Agent Flow containment. **SEC-03:** the studio preview keeps `caller`. **SEC-04:** Studio Test declares the binding's capabilities; the default flip is BLOCKED (see the matrix). **SEC-05:** AI-scope lookup fails closed. | `services/agent_flows/dispatch.py`, `tools/registry.py`, `tools/context.py`, `tools/result.py`, `runtime/agent_runtime.py`, `modules/agent_flows/api.py` | – | – | – (small) | READY FOR REVIEW |
-| **0B2** | Knowledge authority, first slice. **SEC-07:** Draft KPI not presented as official. **DEF-07b:** citation NameError. **SEC-08:** no auto-promotion of bot findings; existing self-promoted rows stop being injected as validated. | `dashboard_ai_bot/knowledge_context.py`, `dashboard_ai_bot/knowledge.py` | – | – | – (small) | READY FOR REVIEW |
-| **0B3** | Data-access gates. **SEC-02:** preview row ceiling. **SEC-09:** `/semantic/query` requires `explore`. | `api/datasources.py`, `routers/semantic.py` | – | – | – (small; security-behaviour change declared) | READY FOR REVIEW |
-| **0C** | **SEC-01:** calculated-field AST allow-list (relations and columns of the view only; no subqueries, set ops or DDL/DML; dialect-correct). **SEC-01b:** false positives. **DEF-06:** triage. | `services/semantic_query_engine.py` | **P** | – | **A** | READY FOR REVIEW |
-| **0D** | **SEC-10/ADR-014:** inventory of orphaned Approved knowledge (a service plus an admin-only read endpoint, not an ad-hoc DB script) and an injection-time quarantine flag | `services/governance_ai_service.py`, `dashboard_ai_bot/knowledge_context.py`, new admin route | – | – | **A** (PO default, intent Q2) | READY FOR REVIEW |
-| **0E** | Sealed eval harness, minimal: YAML case store, deterministic oracle runner on a seeded fixture, leakage check, import-boundary test | `backend/eval/cases/**`, `backend/eval/sealed_harness.py`, test | – | – | – (new, isolated) | READY FOR REVIEW |
+| **0A** (#53) | Contracts, ADRs, threat model, security ledger (tests only), CI wiring of the ledger | `docs/features/intelligence-foundation/**`, `backend/tests/test_intelligence_phase0_security_repro.py`, `.gitignore`, `.github/workflows/backend-contract-tests.yml` | infra (declared) | – | – | CODE COMPLETE · CI VERIFIED |
+| **0B1** (#54) | Agent Flow containment. **SEC-03:** the studio preview keeps `caller`. **SEC-04:** an undeclared capability is refused (fail-closed, PO-approved; fixtures updated, the fail-open test replaced and declared). **SEC-05:** AI-scope lookup fails closed. | `services/agent_flows/dispatch.py`, `tools/registry.py`, `tools/context.py`, `tools/result.py`, `runtime/agent_runtime.py`, `modules/agent_flows/api.py` | – | – | – (small) | CODE COMPLETE · CI VERIFIED |
+| **0B2** (#55) | Knowledge authority, first slice. **SEC-07:** Draft KPI not presented as official. **DEF-07b:** citation NameError. **SEC-08:** no auto-promotion of bot findings; existing self-promoted rows stop being injected as validated. | `dashboard_ai_bot/knowledge_context.py`, `dashboard_ai_bot/knowledge.py` | – | – | – (small) | CODE COMPLETE · CI VERIFIED |
+| **0B3** (#56) | Data-access gates. **SEC-02:** preview rows need `use_secret` on the source, capped at 100 (containment, see Backlog B-1). **SEC-09:** `/semantic/query` requires `explore`. | `api/datasources.py`, `routers/semantic.py` | – | – | – (small; security-behaviour change declared) | CODE COMPLETE · CI VERIFIED |
+| **0E** (#57) | Sealed eval harness, minimal: JSON case store, deterministic DuckDB oracle on a seeded fixture, leakage check, import-boundary test | `backend/eval/sealed/**`, test | – | – | – (new, isolated) | CODE COMPLETE · CI VERIFIED |
+| **0C** (#58) | **SEC-01:** calculated-field AST allow-list (`calculated_field_policy.py`; refs of the query only; no subqueries, set ops, DDL/DML, catalog casts or lexer hazards; 4 dialects). **SEC-01b:** false positives. | `services/calculated_field_policy.py`, `services/semantic_query_engine.py` | **P** | – | **A** (approved) | CODE COMPLETE · CI VERIFIED |
+| **0D** (#59) | **SEC-10/ADR-014:** QUARANTINE of orphaned Approved rules/playbooks/Q&A/instructions at injection; Govern-admin inventory route; nothing deleted; GovernAIScope still enforced | `services/governance_ai_service.py`, `modules/metadata_catalog/api.py`, `route_contract.json` | – | – | **A** (approved) | CODE COMPLETE · CI VERIFIED |
+| **0F** (#60) | Guardrail coverage for AI modules that read as UNKNOWN (`ai_knowledge_authority`, `datasource_table_preview`, Agent Flow required tests) | `scripts/guardrail/guardrail_rules.yaml` | infra (declared) | – | – | CODE COMPLETE · CI VERIFIED |
+| **0G** | Three committed suites that no workflow ran (`test_knowledge_hit_contract`, `test_govern_doc_answerability`, `test_semantic_level0`): allow-listed, wired into CI, registered as `ai_evidence_contract`; their modules join `ai_knowledge_authority` | `.gitignore`, `.github/workflows/backend-contract-tests.yml`, `guardrail_rules.yaml` | infra (declared) | – | – | CODE COMPLETE |
+
+**Status vocabulary (PO, 2026-10-20).** CODE COMPLETE → CI VERIFIED → REVIEW
+APPROVED → MERGED TO DEMO → PRODUCT ACCEPTED, each stated separately; none implies the
+next. No Phase 0 PR is REVIEW APPROVED or MERGED TO DEMO yet: `demo` requires the four
+named checks and a normal PR merge by an actor GitHub allows, after human review.
 
 ### Phase 1: Governed Query Service and data policy
 
@@ -70,7 +77,7 @@ protected semantic layer. **It needs plan approval before PR-1A starts.**
 
 | PR | Scope | P | M | A |
 |---|---|---|---|---|
-| **1A** | `EffectivePrincipal` + `AuthorizationContext` over `core/authz`; one intersection-only formula (I-1), no delegation term (I-3); unit + property tests (PAT ⊆ human; no owner-borrowing; a delegation row never widens; unknown → deny) | – | – | A (phase) |
+| **1A** | `EffectivePrincipal` + `AuthorizationContext` over `core/authz`; one intersection-only formula (I-1), no delegation term (I-3); unit + property tests (PAT ⊆ human; no owner-borrowing; a delegation row never widens; unknown → deny). #61: CODE COMPLETE; CI re-running on the static-rule fix | – | – | A (phase) |
 | **1B** | GQS core (T1): request/result/evidence/refusals per spec §2; calls the existing sequence; `filter_would_drop`; `column_excluded`; `unsupported_expression` for AI calc fields | calls the protected path, does not edit it | – | A |
 | **1C** | Bounds and budgets (spec §2.5): server-clamped; per run/user/datasource; BQ dry-run estimate | – | – | A |
 | **1D** | Cancellation: Postgres/MySQL/BigQuery cancellers + ledger-driven cross-worker cancel | – | – | A |
@@ -92,6 +99,37 @@ protected semantic layer. **It needs plan approval before PR-1A starts.**
 | 0B3 | flip SEC-02, SEC-09; an explore grant is still served; the schema browser's default 5 rows unchanged | `test_semantic_router_object_access.py`, `test_source_security.py`, `semantic_direct_api` |
 | 0C | flip SEC-01/01b; BigQuery + Postgres structural assertions for allowed calc fields | all `semantic_layer.required_tests` |
 | 1x | per spec invariants I-1…I-9, C-1…C-4 | everything above, plus `verify.py task` |
+
+## Backlog and caveats carried forward (PO review, 2026-10-20)
+
+These are not closed by Phase 0. Each names where it is decided.
+
+- **B-1 (SEC-02): `use_secret` is containment, not the permission model for raw rows.**
+  Today a source's raw rows (schema-browser preview) need `use_secret`, the editor
+  level that also unlocks the stored-credential test. That is the closest existing
+  action, chosen so a viewer reads zero rows now. The permanent model is a separate
+  capability for datasource data access (preview, profile, ad-hoc query), decided with
+  the Source Catalog (PR-2A/2B), so that reading sample rows and using a credential stop
+  being the same right. Until then, the code behaviour is exactly: metadata for
+  `data_sources: view`, rows only with `use_secret`, at most 100.
+- **B-2 (SEC-01): structural is not exploit-proof.** The calculated-field allow-list is
+  verified by a dialect policy matrix (sqlglot parse on default, postgres, bigquery,
+  mysql) and by the 17 `semantic_layer` gates on Postgres. The payloads were not
+  executed on BigQuery or MySQL. Runtime verification on a credentialed BigQuery and a
+  MySQL source is a **release-gate item** for any release that exposes calculated
+  fields to a new surface; until it runs, BigQuery/MySQL resistance is NOT VERIFIED.
+- **B-3 (SEC-10): quarantine changes legacy bot answers.** Answers that leaned on an
+  orphaned rule/playbook/Q&A/instruction change, by design. The inventory
+  (`GET /catalog/govern/knowledge-quarantine`) is the input to re-certification in the
+  Business Context Studio: an owner re-approves an item into a governed kind, or it
+  stays quarantined. Nothing is deleted. Security exclusions (GovernAIScope) are not
+  part of the quarantine and stay enforced. A deployment's real inventory count is NOT
+  VERIFIED (no production access).
+- **B-4 (evaluation): committed suites that ran nowhere.** `scripts/ci/audit_test_reachability.py`
+  lists committed tests no workflow runs. The three that guard AI evidence and metric
+  meaning became a required gate in 0G (`ai_evidence_contract`). The remaining
+  never-referenced suites are not claimed as coverage. They are triaged per area, not
+  bulk-wired, because a suite that has never run may encode stale behaviour.
 
 ## Risks
 
@@ -148,3 +186,19 @@ protected semantic layer. **It needs plan approval before PR-1A starts.**
   - isolation preconditions are enforced;
   - mutation control: a runtime module importing the harness makes the boundary test fail;
   - `verify.py task` PASSED.
+- **2026-10-20, 0C:** policy matrix on 4 dialects; two independent semantic-guard
+  reviews (a comment-nesting bypass, unit-word columns, hand-typed placeholders, catalog
+  casts, a unit-slot gap: all closed); 17 `semantic_layer` gates PASS on Postgres.
+  Warehouse execution: NOT VERIFIED (B-2).
+- **2026-10-20, 0D:** quarantine unit suite + HTTP/Postgres inventory suite PASS; the
+  removed routes stay 404 for an admin; control: with the quarantine off all four kinds
+  were injected.
+- **2026-10-20, 0F:** `guardrail_check.py --health`: 65 runnable, 0 gaps.
+- **2026-10-20, 1A:** remote Product gate FAILED on `test_authz_static_rules`: a
+  docstring in `governed_query/principal.py` named the raw permission row. No
+  executable code reads it (every decision is `authz.can`). Only the wording changed;
+  the static rule and its allow-list are untouched. Locally: the CI `authz-core` step
+  (92 passed, CI job env) and the GQS suite PASS.
+- **2026-10-20, 0G:** the three suites PASS locally (34 + 20 + 15); `--health`: 66
+  runnable, 0 gaps; `knowledge_hit.py` / `govern_doc_answerability.py` now resolve to
+  `ai_knowledge_authority` (was UNKNOWN).

@@ -118,6 +118,20 @@ jobs:
             tests/test_intelligence_knowledge_quarantine.py \
             tests/test_intelligence_effective_principal.py
 
+      # WHAT THE ANALYST IS SHOWN AS EVIDENCE, AND WHAT A METRIC MEANS.
+      #
+      # These three suites were committed and never ran in any workflow
+      # (AppBI Intelligence 0G). They lock the one evidence shape every
+      # consumer receives, the answer/abstain/conflict verdict over document
+      # evidence, and that a measure reaches the model with its recorded
+      # formula and unit even when nobody wrote a description.
+      - name: AI evidence + metric-meaning contracts
+        run: |
+          python -m pytest -q --tb=short -p no:cacheprovider \
+            tests/test_knowledge_hit_contract.py \
+            tests/test_govern_doc_answerability.py \
+            tests/test_semantic_level0.py
+
       - name: Run semantic-contract + engine unit tests (no BigQuery)
         # THE FAILURE HAS TO BE READABLE BY WHOEVER SEES IT GO RED.
         #

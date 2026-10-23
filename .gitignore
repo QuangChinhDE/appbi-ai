@@ -533,3 +533,8 @@ integrations/appbi-mcp/.venv/
 !backend/tests/test_intelligence_studio_test_scope_http_pg.py
 !backend/tests/test_intelligence_table_preview_http_pg.py
 !backend/tests/test_intelligence_effective_principal.py
+# AppBI Intelligence 0G: evidence/answerability and metric-meaning suites that were
+# committed with `git add -f`, never allow-listed, and run by no workflow.
+!backend/tests/test_govern_doc_answerability.py
+!backend/tests/test_knowledge_hit_contract.py
+!backend/tests/test_semantic_level0.py
