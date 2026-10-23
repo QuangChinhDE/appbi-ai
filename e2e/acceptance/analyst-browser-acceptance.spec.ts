@@ -130,7 +130,10 @@ test('A · login, sidebar by permission, header, sources, EN/VI, refresh keeps t
   await expect(nav.first()).toBeVisible();                       // entry shown to a permitted person
   await nav.first().click();
   await expect(page).toHaveURL(/\/analyst$/);
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText(/NOT CERTIFIED|CHƯA CHỨNG NHẬN/);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('AppBI Analyst');
+  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Internal AI Preview — NOT CERTIFIED');
+  await expect(page.getByTestId('analyst-warning')).toBeVisible();
+  await expect(page.getByTestId('analyst-question')).toBeEnabled();          // the warning never blocks asking
   await page.getByTestId('analyst-sources').getByRole('button').first().click();
   const sources = await page.getByTestId('analyst-source').allInnerTexts();
   expect(sources.map((s) => s.split('·')[0].trim()).sort()).toEqual(['Dogfood Commerce', 'Dogfood Marketing', 'Dogfood Slow']);
@@ -138,14 +141,32 @@ test('A · login, sidebar by permission, header, sources, EN/VI, refresh keeps t
   // language: the user menu, as a person switches it
   await page.getByRole('button', { name: /^Q$/ }).click();
   await page.getByRole('button', { name: /Tiếng Việt|Vietnamese/ }).click();
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Bản xem trước kỹ thuật — CHƯA CHỨNG NHẬN');
+  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Bản xem trước AI nội bộ — CHƯA CHỨNG NHẬN');
+  await expect(page.getByTestId('analyst-warning')).toHaveText('Kết quả AI đang trong giai đoạn thử nghiệm. Hãy kiểm tra số liệu và nguồn trước khi sử dụng cho quyết định nghiệp vụ.');
   await shot(page, info, 'A2-vietnamese');
   await page.reload();                                           // refresh keeps auth AND language
   await expect(page.getByTestId('analyst-page')).toBeVisible();
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Bản xem trước kỹ thuật — CHƯA CHỨNG NHẬN');
+  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Bản xem trước AI nội bộ — CHƯA CHỨNG NHẬN');
   await page.getByRole('button', { name: /^Q$/ }).click();
   await page.getByRole('button', { name: /English|Tiếng Anh/ }).click();
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Engineering Preview — NOT CERTIFIED');
+  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Internal AI Preview — NOT CERTIFIED');
+});
+
+test('A · first visit: how-to steps and example questions built from the person\'s own sources', async ({ page }, info) => {
+  await analyst(page);
+  const howto = page.getByTestId('analyst-howto');
+  await expect(howto.locator('ol > li')).toHaveCount(6);
+  const examples = await howto.getByTestId('analyst-example').allInnerTexts();
+  expect(examples.length, 'example questions').toBeGreaterThan(0);
+  await shot(page, info, 'A4-howto');
+  // a click fills the box and asks NOTHING: the person decides
+  await howto.getByTestId('analyst-example').first().click();
+  await expect(page.getByTestId('analyst-question')).toHaveValue(examples[0]);
+  await expect(page.getByTestId('analyst-exchange')).toHaveCount(0);
+  // the example is a real question for this person's data: asking it gets an answer, not a refusal
+  const ex = await ask(page, examples[0]);
+  await expect(ex.getByTestId('analyst-answer')).toBeVisible();
+  await expect(page.getByTestId('analyst-howto')).toHaveCount(0);           // out of the way once working
 });
 
 test('A · a person without the Analyst module sees no entry and is blocked on the page', async ({ page }, info) => {
@@ -336,6 +357,9 @@ for (const c of CHARTS) {
     await page.getByTestId('explore-run').click();
     await page.getByRole('button', { name: 'Table', exact: true }).click();
     await expect(page.getByText(/^Showing \d+ rows?$/)).toBeVisible();
+    const timeOfDay = await page.locator('table').last().locator('tbody td').evaluateAll((tds) =>
+      tds.map((td) => (td.textContent || '').trim()).filter((t) => /\d{1,2}:\d{2}:\d{2}/.test(t)));
+    expect(timeOfDay, 'a DATE bucket shown with a time of day').toEqual([]);
     const cells = await page.locator('table').last().locator('tbody tr').evaluateAll((trs) =>
       trs.map((tr) => Array.from(tr.querySelectorAll('td')).map((td) => (td.textContent || '').trim())));
     const values = cells.map((r) => Number(r[r.length - 1].replace(/[^\d.-]/g, ''))).sort((a, b) => a - b);
@@ -367,6 +391,8 @@ test('F · viewer, explore-only, revoked mid-session, feedback', async ({ page }
   await expect(ex.getByTestId('analyst-save-chart')).toHaveCount(0);
   await expect(ex.getByTestId('analyst-save-not-allowed')).toBeVisible();
   await shot(page, info, 'F2-explore-only-no-save');
+  const reasons = await ex.getByTestId('analyst-feedback-reason').locator('option').evaluateAll((o) => o.map((x) => (x as HTMLOptionElement).value).filter(Boolean));
+  expect(reasons).toEqual(['wrong_metric', 'wrong_dataset', 'wrong_filter', 'incorrect_number', 'wrong_interpretation', 'unsupported_but_answerable', 'ux_issue']);
   await ex.getByTestId('analyst-feedback-reason').selectOption('wrong_filter');
   await ex.getByTestId('analyst-feedback-down').click();
   await expect(ex.getByTestId('analyst-feedback-sent')).toBeVisible();
@@ -458,6 +484,9 @@ const VIEWPORTS = [
 async function noPageOverflow(page: Page) {
   const o = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(o, 'horizontal page overflow (px)').toBeLessThanOrEqual(0);
+  // the shell's <main> scrolls on its own: content wider than it is clipped controls, not page overflow
+  const m = await page.evaluate(() => { const el = document.querySelector('main'); return el ? el.scrollWidth - el.clientWidth : 0; });
+  expect(m, 'horizontal overflow inside the app shell <main> (px)').toBeLessThanOrEqual(0);
 }
 
 for (const vp of VIEWPORTS) {
@@ -522,24 +551,23 @@ test('X · keyboard, focus, names and labels on the Analyst (automated scan reco
     return !!(id && document.querySelector(`label[for="${id}"]`)) || !!el.getAttribute('aria-label');
   });
   expect(labelled, 'question box has a label').toBeTruthy();
+  // focus stays in the question box after an answer by Enter: the next question can be typed at once
+  await expect(page.getByTestId('analyst-question')).toBeFocused();
+  // and Tab from there reaches a visible, named control (not lost on <body>)
+  await page.getByTestId('analyst-question').fill('x');
   await page.keyboard.press('Tab');
-  const focus = await page.evaluate(() => {
-    const el = document.activeElement as HTMLElement | null;
-    if (!el) return null;
-    const s = getComputedStyle(el);
-    return { tag: el.tagName, outline: s.outlineStyle, ring: s.boxShadow };
-  });
-  info.annotations.push({ type: 'focus after Tab', description: JSON.stringify(focus) });
-  try {
-    const { default: AxeBuilder } = await import('@axe-core/playwright');
-    const res = await new AxeBuilder({ page }).include('[data-testid="analyst-page"]').analyze();
-    const summary = res.violations.map((v) => `${v.impact} ${v.id} (${v.nodes.length})`);
-    info.annotations.push({ type: 'axe violations', description: summary.join('; ') || 'none' });
-    fs.writeFileSync(info.outputPath('axe.json'), JSON.stringify(res.violations, null, 1));
-    await info.attach('axe.json', { path: info.outputPath('axe.json'), contentType: 'application/json' });
-    expect(res.violations.filter((v) => v.impact === 'critical'), 'critical axe violations').toEqual([]);
-  } catch (err) {
-    if (String(err).includes('Cannot find')) info.annotations.push({ type: 'axe', description: 'not installed: scan not run' });
-    else throw err;
+  await expect(page.getByTestId('analyst-ask')).toBeFocused();
+  await page.getByTestId('analyst-question').fill('');
+  const { default: AxeBuilder } = await import('@axe-core/playwright');
+  const scans: Record<string, unknown[]> = {};
+  for (const [where, scope] of [['answer', '[data-testid="analyst-page"]'], ['clarify', '[data-testid="analyst-page"]']] as const) {
+    if (where === 'clarify') { await newTopic(page); await ask(page, 'Kênh bán nào tốt nhất'); }
+    const res = await new AxeBuilder({ page }).include(scope).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    scans[where] = res.violations;
+    info.annotations.push({ type: `axe ${where}`, description: res.violations.map((v) => `${v.impact} ${v.id} (${v.nodes.length})`).join('; ') || 'none' });
   }
+  fs.writeFileSync(info.outputPath('axe.json'), JSON.stringify(scans, null, 1));
+  await info.attach('axe.json', { path: info.outputPath('axe.json'), contentType: 'application/json' });
+  const blocking = Object.values(scans).flat().filter((v) => ['critical', 'serious'].includes(String((v as { impact?: string }).impact)));
+  expect(blocking.map((v) => (v as { id: string }).id), 'critical/serious WCAG A/AA violations (automated scan, not a certification)').toEqual([]);
 });

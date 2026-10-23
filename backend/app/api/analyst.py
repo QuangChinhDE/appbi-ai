@@ -146,7 +146,9 @@ class FeedbackBody(BaseModel):
     turn_id: str = Field(..., pattern=r"^[0-9a-f]{32}$")
     verdict: str = Field(..., pattern=r"^(up|down)$")
     comment: Optional[str] = Field(None, max_length=1000)
-    reason: Optional[str] = Field(None, pattern=r"^(correct|wrong_metric_or_source|wrong_filter|incorrect_number|"
+    # wrong_metric_or_source is the pre-preview value (kept so older clients still post)
+    reason: Optional[str] = Field(None, pattern=r"^(correct|wrong_metric|wrong_dataset|wrong_metric_or_source|"
+                                                 r"wrong_filter|incorrect_number|wrong_interpretation|"
                                                  r"unsupported_but_answerable|ux_issue)$")
 
 

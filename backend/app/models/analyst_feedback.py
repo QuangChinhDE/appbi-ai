@@ -23,7 +23,9 @@ class AnalystFeedback(Base):
 
     __table_args__ = (
         CheckConstraint("verdict IN ('up', 'down')", name="ck_analyst_feedback_verdict"),
+        # alembic 20261024_0001: the Internal AI Preview classes (a superset of 20261023_0001)
         CheckConstraint("reason IS NULL OR reason IN ('correct', 'wrong_metric_or_source', 'wrong_filter', "
-                        "'incorrect_number', 'unsupported_but_answerable', 'ux_issue')",
+                        "'incorrect_number', 'unsupported_but_answerable', 'ux_issue', "
+                        "'wrong_metric', 'wrong_dataset', 'wrong_interpretation')",
                         name="ck_analyst_feedback_reason"),
     )

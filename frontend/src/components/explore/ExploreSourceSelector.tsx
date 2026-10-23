@@ -78,7 +78,9 @@ export function ExploreSourceSelector({
   if (variant === 'compact') {
     return (
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <div className="min-w-[11rem] flex-1 sm:w-48 sm:flex-none">
+        {/* No fixed minimum below `sm`: 11rem beside the Builder/SQL toggle pushed the
+            editor 36px past a 360px phone and clipped its controls. */}
+        <div className="min-w-0 flex-1 sm:min-w-[11rem] sm:w-48 sm:flex-none">
           <Select
             size="sm"
             value={selectedDatasetId || ''}
@@ -95,7 +97,7 @@ export function ExploreSourceSelector({
         </div>
 
         {selectedDatasetId && !hideTable && (
-          <div className="min-w-[12rem] flex-1 sm:w-56 sm:flex-none">
+          <div className="min-w-0 flex-1 sm:min-w-[12rem] sm:w-56 sm:flex-none">
             <Select
               size="sm"
               value={selectedTableId || ''}

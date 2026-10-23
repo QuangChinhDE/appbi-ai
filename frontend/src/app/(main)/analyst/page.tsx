@@ -195,11 +195,17 @@ export default function AnalystPage() {
       </header>
 
       <main className="mx-auto max-w-6xl space-y-4 px-4 py-4 sm:px-6">
+        {/* Always visible, never in the way: an evaluation build says so on every visit. */}
+        <p role="note" data-testid="analyst-warning"
+           className="flex items-start gap-2 rounded-lg border border-[#f9ab00] bg-[#fef7e0] px-3 py-2 text-sm text-[#7a4a00]">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />{t('analyst.previewWarning')}
+        </p>
         {disabled ? (
           <div role="alert" className="rounded-lg border border-[#dadce0] bg-white p-4 text-sm text-[#5f6368]">{t('analyst.disabled')}</div>
         ) : null}
 
         <SourcesPanel sources={sources} />
+        {history.length === 0 && !running ? <HowToPanel sources={sources} onExample={setQuestion} /> : null}
 
         {topicStart > 0 ? (
           <button type="button" onClick={() => setShowEarlier((v) => !v)} data-testid="analyst-earlier-toggle"
@@ -270,6 +276,45 @@ export default function AnalystPage() {
         <div ref={bottomRef} />
       </main>
     </div>
+  );
+}
+
+/** First-visit guide. The examples are built from THIS person's own sources (their real
+ *  metric and dimension labels), so they are answerable here and never canned. A click
+ *  only fills the question box: the person still decides to ask. */
+function HowToPanel({ sources, onExample }: { sources: AnalystSource[] | null; onExample: (q: string) => void }) {
+  const { t } = useI18n();
+  const examples = useMemo(() => {
+    const out: string[] = [];
+    for (const s of sources || []) {
+      const [m1, m2] = s.measures;
+      const [d1, d2] = s.dimensions;
+      if (m1 && d1) out.push(t('analyst.howto.exampleBy', { measure: m1, dimension: d1.toLowerCase() }));
+      if (m1) out.push(t('analyst.howto.exampleTotal', { measure: m1.toLowerCase() }));
+      if (m2 && d2) out.push(t('analyst.howto.exampleBy', { measure: m2, dimension: d2.toLowerCase() }));
+      if (out.length >= 4) break;
+    }
+    return [...new Set(out)].slice(0, 4);
+  }, [sources, t]);
+  if (!sources?.length) return null;
+  return (
+    <section className="rounded-lg border border-[#dadce0] bg-white p-4 text-sm" data-testid="analyst-howto">
+      <h2 className="text-xs font-medium uppercase tracking-wide text-[#5f6368]">{t('analyst.howto.title')}</h2>
+      <ol className="mt-2 list-decimal space-y-1 pl-5 text-[#3c4043]">
+        {[1, 2, 3, 4, 5, 6].map((n) => <li key={n}>{t(`analyst.howto.step${n}`)}</li>)}
+      </ol>
+      {examples.length ? (
+        <>
+          <p className="mt-3 text-xs font-medium text-[#5f6368]">{t('analyst.howto.examples')}</p>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {examples.map((q) => (
+              <button key={q} type="button" onClick={() => onExample(q)} data-testid="analyst-example"
+                      className="rounded-full border border-[#dadce0] px-3 py-1 text-xs text-[#1a73e8] hover:bg-[#e8f0fe]">{q}</button>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </section>
   );
 }
 
@@ -522,7 +567,8 @@ function FeedbackPanel({ turnId }: { turnId?: string }) {
                   aria-label={t('analyst.feedbackReason')} data-testid="analyst-feedback-reason"
                   className="mt-2 w-full rounded-md border border-[#dadce0] bg-white p-2 text-xs">
             <option value="">{t('analyst.feedbackReason')}</option>
-            {['wrong_metric_or_source', 'wrong_filter', 'incorrect_number', 'unsupported_but_answerable', 'ux_issue'].map((r) => (
+            {['wrong_metric', 'wrong_dataset', 'wrong_filter', 'incorrect_number', 'wrong_interpretation',
+              'unsupported_but_answerable', 'ux_issue'].map((r) => (
               <option key={r} value={r}>{t(`analyst.feedbackReason.${r}`)}</option>
             ))}
           </select>
