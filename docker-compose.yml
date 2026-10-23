@@ -183,6 +183,9 @@ services:
         # Home ("Trang chủ") module. Off = no sidebar row, `/` lands on
         # Dashboards, and /overview redirects instead of loading.
         NEXT_PUBLIC_HOME_MODULE_ENABLED: ${NEXT_PUBLIC_HOME_MODULE_ENABLED:-false}
+        # AppBI Analyst sidebar/route. Baked at build time: setting it only on a
+        # running container does nothing. The backend ANALYST_ENABLED still gates the API.
+        NEXT_PUBLIC_ANALYST_ENABLED: ${NEXT_PUBLIC_ANALYST_ENABLED:-false}
         # Same build identity the backend bakes (APPBI_BUILD_SHA): the bundle
         # can then say which commit it was built from, however it is started.
         APPBI_BUILD_SHA: ${GIT_SHA:-}
