@@ -758,6 +758,25 @@ def test_feedback_records_what_was_wrong_and_refuses_an_unknown_reason(client, d
         assert c.execute(sa.text("SELECT reason FROM analyst_feedback WHERE turn_id = :t"), {"t": turn}).scalar()             == "wrong_filter"
 
 
+def test_feedback_accepts_every_preview_category_with_turn_and_build(client, db, world, model, monkeypatch):  # noqa: F811
+    # Internal AI Preview triage classes; the pre-preview value stays accepted for old clients.
+    monkeypatch.setenv("APPBI_BUILD_SHA", "abc1234")
+    _grant_module(db, world["analyst"])
+    model(_planner(world))
+    turn = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
+                       json={"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"}).json()["turn_id"]
+    reasons = ["correct", "wrong_metric", "wrong_dataset", "wrong_filter", "incorrect_number",
+               "wrong_interpretation", "unsupported_but_answerable", "ux_issue", "wrong_metric_or_source"]
+    for r in reasons:
+        res = client.post("/api/v1/analyst/feedback", headers=world["analyst"].headers,
+                          json={"turn_id": turn, "verdict": "up" if r == "correct" else "down", "reason": r})
+        assert res.status_code == 201, (r, res.text)
+    with sa.create_engine(_owner_url()).connect() as c:
+        rows = c.execute(sa.text("SELECT reason, rc_sha, turn_id FROM analyst_feedback WHERE turn_id = :t"), {"t": turn}).all()
+    assert sorted(r[0] for r in rows) == sorted(reasons)
+    assert {r[1] for r in rows} == {"abc1234"} and {r[2] for r in rows} == {turn}
+
+
 
 def test_a_follow_up_that_only_ranks_reuses_the_previous_plan_when_the_model_refuses(client, db, world, model):  # noqa: F811
     """Set 9 dev (S9-034): "Chỉ lấy top 2 thôi" after an answer by region was refused by
