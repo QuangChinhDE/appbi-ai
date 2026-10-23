@@ -528,5 +528,7 @@ integrations/appbi-mcp/.venv/
 !backend/tests/test_intelligence_phase0_security_repro.py
 !backend/tests/test_intelligence_eval_harness.py
 !backend/tests/test_intelligence_calc_field_policy.py
+!backend/tests/test_intelligence_knowledge_quarantine.py
+!backend/tests/test_intelligence_knowledge_quarantine_http_pg.py
 !backend/tests/test_intelligence_studio_test_scope_http_pg.py
 !backend/tests/test_intelligence_table_preview_http_pg.py
