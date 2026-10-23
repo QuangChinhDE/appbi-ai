@@ -95,14 +95,16 @@ def _turn(turn_id: Optional[str]) -> Optional[str]:
 @router.get("/catalog")
 def catalog(db: Session = Depends(get_db),
             user: User = Depends(require_analyst)) -> dict[str, Any]:
-    from app.services.analyst.catalog import discover
+    from app.services.analyst.catalog import discover, is_identifier
     from app.services.governed_query import AuthorizationContext, EffectivePrincipal
 
     p = EffectivePrincipal.for_user(user, surface="analyst")
     items = discover(AuthorizationContext(db=db, principal=p, user=user))
+    # identifiers (order id, customer id) are never a breakdown to suggest: grounding
+    # refuses them unless named, and the first-visit examples are built from this list
     return {"sources": [{"explore_id": c.explore_id, "dataset": c.dataset_name, "source_type": c.source_type,
                          "measures": [f.label for f in c.fields if f.kind == "measure"][:12],
-                         "dimensions": [f.label for f in c.fields if f.kind == "dimension"][:12]}
+                         "dimensions": [f.label for f in c.fields if f.kind == "dimension" and not is_identifier(f)][:12]}
                         for c in items]}
 
 

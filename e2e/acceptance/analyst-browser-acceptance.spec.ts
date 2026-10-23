@@ -339,14 +339,20 @@ for (const c of CHARTS) {
     await page.keyboard.press('Control+A');
     await page.keyboard.type(name);
     const isPut = (r: import('@playwright/test').Response) => r.url().includes(`/api/v1/charts/${chartId}`) && r.request().method() === 'PUT';
-    const renamed = page.waitForResponse(isPut);                       // the rename saves on its own (name only)
+    // two saves: the rename's own (name only) and Update's (the builder state). They can
+    // overlap, so count both rather than waiting for them in order.
+    const puts: import('@playwright/test').Response[] = [];
+    const onResponse = (r: import('@playwright/test').Response) => { if (isPut(r)) puts.push(r); };
+    page.on('response', onResponse);
     await page.keyboard.press('Enter');
-    expect((await renamed).status()).toBe(200);
-    const put = page.waitForResponse(isPut);                           // then Update saves the builder state
+    await expect.poll(() => puts.length, { message: 'the rename saved' }).toBeGreaterThanOrEqual(1);
     await page.getByTestId('explore-save').click();
-    const updated = await put;
-    expect(updated.status()).toBe(200);
-    info.annotations.push({ type: `chart ${chartId} saved type`, description: String((updated.request().postDataJSON() as { chart_type?: string })?.chart_type) });
+    await expect.poll(() => puts.length, { message: 'Update saved' }).toBeGreaterThanOrEqual(2);
+    page.off('response', onResponse);
+    for (const r of puts) expect(r.status()).toBe(200);
+    const full = puts.find((r) => (r.request().postDataJSON() as { config?: unknown })?.config !== undefined);
+    expect(full, 'the Update save carries the builder state').toBeTruthy();
+    info.annotations.push({ type: `chart ${chartId} saved type`, description: String((full!.request().postDataJSON() as { chart_type?: string })?.chart_type) });
     await page.reload();
     await expect(page.getByText(name, { exact: true }).first()).toBeVisible();
     if (target) await expect(page.getByRole('button', { name: /Change$/ }).first()).not.toHaveText(new RegExp(`^${before}`));

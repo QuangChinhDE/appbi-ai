@@ -188,3 +188,34 @@ def test_a_time_breakdown_on_another_datasets_date_is_the_metrics_own_date():
     bad = validate({"status": "plan", "explore_id": 7, "dimensions": ["m.channel"], "measures": ["r.refund_total"]},
                    [_two_facts()])
     assert not isinstance(bad, Plan)
+
+
+def _marketing():
+    return CatalogExplore(explore_id=9, model_id=2, dataset_id=4, dataset_name="Marketing", dataset_table_id=12,
+                          base_view="m", source_type="mysql", label="Marketing", fields=[
+                              CatalogField("m.spend", "measure", "sum", "Marketing spend"),
+                              CatalogField("m.channel", "dimension", "string", "Channel"),
+                          ])
+
+
+def test_a_plain_text_clarify_option_naming_one_metric_becomes_a_pickable_choice():
+    # Internal-preview live smoke: the model offered "Doanh số" / "Chi phí marketing" as
+    # plain strings; a pick re-asked "<question> - Doanh số" and the model asked again.
+    from app.services.analyst.planner import Clarify
+
+    out = validate({"status": "clarify", "question": "Theo chỉ số nào?", "options": ["revenue", "Marketing spend", "Lợi nhuận"]},
+                   [_explore(), _marketing()])
+    assert isinstance(out, Clarify)
+    assert out.options == ["revenue", "Marketing spend", "Lợi nhuận"]
+    assert out.choices == [{"label": "revenue", "explore_id": 7, "measure": "items.revenue"},
+                           {"label": "Marketing spend", "explore_id": 9, "measure": "m.spend"}]
+
+
+def test_a_plain_text_option_whose_metric_is_in_two_datasets_stays_plain():
+    from dataclasses import replace
+
+    from app.services.analyst.planner import Clarify
+
+    other = replace(_explore(), explore_id=8, dataset_id=5, dataset_name="Sales copy")
+    out = validate({"status": "clarify", "question": "?", "options": ["Revenue"]}, [_explore(), other])
+    assert isinstance(out, Clarify) and out.choices == []
