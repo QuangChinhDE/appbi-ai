@@ -219,6 +219,48 @@ def _vietnamese(field) -> bool:
     return any(fold(t) != str(t or "").lower() for t in texts)
 
 
+_YEARLESS_QUARTER = re.compile(r"\b(?:quy|q)\s*([1-4])\b")
+_YEARLESS_MONTH = re.compile(r"\bthang\s*(1[0-2]|0?[1-9])\b")
+
+
+def yearless_period(question: str) -> Optional[tuple[str, int]]:
+    """("quarter", n) or ("month", n) when the question names exactly ONE quarter or
+    month and no year ("còn quý 3 thì sao", "thế còn tháng 11?"), else None."""
+    if _YEAR.search(str(question or "")):
+        return None
+    qf = _GRAIN_ASKED.sub(" ", fold(str(question or "")))
+    if _RANGE_WORDS.search(qf):
+        return None
+    quarters = set(_YEARLESS_QUARTER.findall(qf))
+    months = set(_YEARLESS_MONTH.findall(qf))
+    if len(quarters) == 1 and not months:
+        return "quarter", int(quarters.pop())
+    if len(months) == 1 and not quarters:
+        return "month", int(months.pop())
+    return None
+
+
+def _period_in_year_of(cond: dict, period: tuple[str, int]) -> Optional[tuple[str, str]]:
+    """The named quarter/month in the ONE calendar year a previous date_range lies in,
+    or None when that range spans more than one year (the year is then unknown)."""
+    from datetime import date, timedelta
+
+    v = cond.get("value") if isinstance(cond, dict) else None
+    try:
+        start = date.fromisoformat(str(v["from"])[:10])
+        last = date.fromisoformat(str(v["to"])[:10]) - timedelta(days=1)  # [from, to)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if start.year != last.year:
+        return None
+    y, (kind, n) = start.year, period
+    if kind == "quarter":
+        begin, end = date(y, 3 * (n - 1) + 1, 1), (date(y + 1, 1, 1) if n == 4 else date(y, 3 * n + 1, 1))
+    else:
+        begin, end = date(y, n, 1), (date(y + 1, 1, 1) if n == 12 else date(y, n + 1, 1))
+    return begin.isoformat(), end.isoformat()
+
+
 def _lexical(field, q: set[str], qf: str) -> bool:
     return _mentioned(field, q, qf)
 
@@ -549,7 +591,21 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
         # chia theo từng kênh" dropped the YEAR - all-time numbers presented as 2025's.
         # A follow-up keeps every previous filter on a field it does not name; a filter
         # on the same field is replaced by the new one.
+        # Internal-preview live smoke: "còn quý 3 thì sao" after a Q2 2025 question was
+        # answered with the Q2 numbers again - the model's yearless range was dropped
+        # above and the previous Q2 filter carried. A follow-up that names another
+        # quarter/month gets THAT period in the previous period's year; when that year is
+        # not one year, ask rather than guess.
+        yearless = yearless_period(question)
         for ref, cond in (previous.get("filters") or {}).items():
+            if ref in by_ref and isinstance(cond, dict) and cond.get("operator") == "date_range" and yearless:
+                rng = _period_in_year_of(cond, yearless)
+                if rng is None:
+                    what = "quý" if yearless[0] == "quarter" else "tháng"
+                    return None, (f"Câu hỏi nêu {what} {yearless[1]} nhưng chưa rõ của năm nào. "
+                                  f"Hãy nói rõ năm, ví dụ “{what} {yearless[1]} năm 2025”.")
+                filters[ref] = {"operator": "date_range", "value": {"from": rng[0], "to": rng[1]}}
+                continue
             if ref in by_ref and ref not in filters and isinstance(cond, dict) \
                     and not _mentioned(by_ref[ref], q, qf):
                 filters[ref] = cond

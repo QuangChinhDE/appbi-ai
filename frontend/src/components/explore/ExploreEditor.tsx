@@ -3221,7 +3221,8 @@ export function ExploreEditor({
                 );
               })()}
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            {/* Below `sm` the run status wraps: unshrinkable, it ran 18px past a 360px phone. */}
+            <div className="flex min-w-0 flex-wrap items-center gap-2 sm:shrink-0 sm:flex-nowrap">
             {isQueryDirty && (
               <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
                 {t('explore.editor.runToRefresh')}

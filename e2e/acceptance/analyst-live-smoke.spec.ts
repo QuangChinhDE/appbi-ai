@@ -126,6 +126,19 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   }
   results.push(row);
 
+  // 8. a first-visit example (built from the person's own sources) is answerable
+  await fresh();
+  await page.reload();
+  const examples = await page.getByTestId('analyst-example').allInnerTexts();
+  const pick = examples.find((e) => /Doanh số/.test(e)) ?? examples[0];
+  await page.getByTestId('analyst-example').filter({ hasText: pick }).first().click();
+  await expect(page.getByTestId('analyst-question')).toHaveValue(pick);
+  await page.getByTestId('analyst-ask').click();
+  const exEx = page.getByTestId('analyst-exchange').last();
+  await expect(exEx.locator(OUTCOME).first()).toBeVisible({ timeout: 120_000 });
+  results.push({ n: 8, q: `first-visit example: ${pick}`, outcome: await exEx.locator(OUTCOME).first().getAttribute('data-testid') });
+  await snap('8-example');
+
   // 7. outside the data: must not be answered with numbers
   await fresh();
   r = await askLive(page, 'Biên lợi nhuận gộp của từng khách hàng là bao nhiêu?');
@@ -137,5 +150,7 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   await info.attach('live-results.json', { path: info.outputPath('live-results.json'), contentType: 'application/json' });
   info.annotations.push({ type: 'live results', description: results.map((x) => `${x.n}:${x.outcome}${'match' in x ? (x.match ? ' ✓' : ' ✗') : ''}`).join(' | ') });
   for (const x of results) if ('match' in x) expect(x.match, `wrong numbers: ${x.q}`).toBe(true);
-  expect(results[6].numbers_shown, 'a question outside the data shows no numbers').toBe(0);
+  const outside = results.find((x) => x.n === 7)!;
+  expect(outside.numbers_shown, 'a question outside the data shows no numbers').toBe(0);
+  expect(results.find((x) => x.n === 8)!.outcome, 'a first-visit example is answered').toBe('analyst-answer');
 });
