@@ -6,7 +6,7 @@ other new paths. This package is built in milestones (plan.md, Phase 1):
   1A  principal.py — EffectivePrincipal + AuthorizationContext
   1B  contracts.py, bounds.py, audit.py, service.py — request / result /
       evidence / refusals over the existing semantic engine sequence
-  1C  budgets      1D  cancellation      1E  audit ledger (the AuditSink)
+  1C  budgets      1D  cancellation (cancellation.py)      1E  audit ledger
 
 NOT LIVE: no route, tool or Analyst uses it, and `execute` refuses
 `audit_unavailable` until the PR-1E ledger exists. A new query path must not go
@@ -30,4 +30,14 @@ from app.services.governed_query.contracts import (  # noqa: F401
     RelationRef,
     SemanticAsk,
 )
+from app.services.governed_query.cancellation import (  # noqa: F401
+    REGISTRY as CANCEL_REGISTRY,
+    BigQueryCanceller,
+    CancelRegistry,
+    MySQLCanceller,
+    PostgresCanceller,
+)
 from app.services.governed_query.service import HUMAN_RENDER_SURFACES, GovernedQueryService  # noqa: F401
+from app.services.governed_query.ledger import (  # noqa: F401
+    BudgetExceeded, CancelWatcher, LedgerBudgets, LedgerConflict, PostgresLedger,
+)

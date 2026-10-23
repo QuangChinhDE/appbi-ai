@@ -555,7 +555,15 @@ features:
     keywords: [governed query, gqs, "effective principal", "authorization context",
                "surface ceiling", refusal]
     invariants: []
-    required_tests: [intelligence_gqs, intelligence_gqs_pg, intelligence_security_ledger]
+    required_tests: [intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_cancel_pg,
+                     intelligence_gqs_ledger_schema_pg, intelligence_gqs_ledger_pg, intelligence_gqs_mysql, intelligence_gqs_mysql_fullpath, intelligence_gqs_bigquery, intelligence_security_ledger]
+
+  - id: analyst
+    label: "AppBI Analyst (M2 MVP): discovery, planner, verified answer - the first GQS consumer"
+    files: [backend/app/services/analyst/**, backend/app/api/analyst.py]
+    keywords: [analyst, "ai analyst", discovery, planner, "chart draft"]
+    invariants: []
+    required_tests: [analyst_http_pg, analyst_narrative, analyst_planner, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -612,6 +620,60 @@ tests:
   intelligence_gqs:
     run: "pytest backend/tests/test_intelligence_effective_principal.py backend/tests/test_intelligence_gqs_core.py"
     locks: "one intersection-only scope formula on the real authz core: querying needs explore (view is not enough), the surface ceiling only narrows, an Agent Flow delegation never widens a governed decision, PAT is a subset of the person, a system principal cannot answer for a person, a failed AI-scope lookup refuses; bounds are min(policy, requested); the AI BigQuery bytes limit is its own and only a BigQuery job carries it; GQS is imported by nothing outside its package (not live)"
+  intelligence_gqs_mysql:
+    requires: mysql
+    run: "pytest backend/tests/test_intelligence_gqs_mysql_runtime.py"
+    locks: "on a real MySQL: the executor's server-side row cap holds, the READ ONLY transaction refuses a write, KILL QUERY from a second connection stops a running statement early, and a different MySQL user cannot kill it"
+  intelligence_gqs_bigquery:
+    status: manual
+    requires: bigquery-qa
+    run: "GQS_BQ_DATASOURCE_ID=<qa datasource> pytest backend/tests/test_intelligence_gqs_bigquery_runtime.py"
+    locks: "on REAL BigQuery, only the approved QA project/tables (refuses otherwise): dry-run estimates before running, a scan over maximum_bytes_billed is refused by BigQuery, the row cap holds and every job carries attribution labels, a BigQueryCanceller cancel stops a running job AT THE WAREHOUSE (job ends DONE/stopped, no rows returned), and a cancel for a nonexistent job is harmless. Manual: CI has no warehouse credential; run with the QA datasource and report it NOT VERIFIED when not run"
+  intelligence_gqs_ledger_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_ledger_pg.py"
+    locks: "the PR-1E ledger SERVICE writing as the least-privilege app role: a governed read leaves a committed running->ok row with fingerprints and no SQL text; an unreachable ledger refuses audit_unavailable before the warehouse; a second begin is a conflict; the first terminal status wins (idempotent repeat, no flip); N concurrent begins on separate connections against a budget admit exactly the budget (advisory-locked reservation, mutation-tested); per-datasource concurrency frees on finish; BigQuery bytes reserved per user/day; an over-budget GQS request refuses budget_exceeded and is recorded refused; cross-worker cancel from another worker identity AND from a separate OS process is performed by the owning worker, refuses cancelled, records cancelled and clears pg_stat_activity; only the owner may request a cancel; a stale lease is recovered to abandoned and cannot be finalized"
+  analyst_narrative:
+    run: "pytest backend/tests/test_analyst_narrative.py"
+    locks: "the Analyst's words never claim more than the governed rows support: a complete result reports the trend computed from the rows; a TRUNCATED result (row bound hit) draws no trend, ranking, total or facts and says it is incomplete (found by the real-model browser run: a mid-period cut read as -98.9%)"
+  analyst_planner:
+    run: "pytest backend/tests/test_analyst_planner.py"
+    locks: "the server validates the model's plan against the person's catalog: a wrongly view-qualified field is resolved only when its name is unique in the explore, an ambiguous or unknown field is refused, a grain on a string-typed field is refused naming the field, and an empty result under a filter is reported as no match (naming field and values), never as an answer (all from the real-model BigQuery evaluation)"
+  analyst_grounding:
+    run: "pytest backend/tests/test_analyst_grounding.py"
+    locks: "a validated plan must answer the QUESTION: a metric the data lacks is refused, never substituted (profit, conversion rate, forecast); a filter the plan dropped is refused naming the words; an unasked breakdown (month, a numeric column) is removed; a label-as-value filter is removed; the model's phrase map bridges languages only for phrases really in the question and never against a Vietnamese label it shares nothing with; a follow-up keeps what it refines; a filter value is matched to exactly one real value (case/tone folded) or offered as a choice"
+  gqs_date_range_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_date_range_pg.py"
+    locks: "GQS date_range: {from, to} ISO dates, from INCLUDED, to EXCLUDED, only on a certified date field (declared date AND physically DATE); month, quarter, year, single day, year boundary and an empty year give the hand-computed totals; malformed, reversed, open, timed, non-ISO, impossible, over-span and between-shaped values are invalid_filter; an unknown, timestamp, datetime or text-backed field is time_range_unsupported; no access is not_authorized; between stays refused"
+  analyst_intent_obligations:
+    run: "pytest backend/tests/test_analyst_intent_obligations.py"
+    locks: "meaning-changing words oblige the plan: a negation (không/chưa/ngoại trừ/khác) needs ne/not_in or a negated value, a comparison with a number needs gt/gte/lt/lte, a time boundary with a number needs date_range, \"chỉ\" needs a filter; an invented exclusion is refused; yes/no \"không\", \"chi phí\", \"chỉ số\", \"tôi\" and rankings are not obligations; the opposite plan is refused end to end"
+  analyst_intent:
+    run: "pytest backend/tests/test_analyst_intent.py"
+    locks: "question constructions are recognised whole, not word by word: request framing (anh chị cho em hỏi ... ạ) is removed and nothing else; a ranking (top N, N ... cao/thấp nhất, xếp hạng, từ cao xuống thấp, nhiều nhất) becomes an obligation with direction and count; a quantity question asks for a measure; a comparison (ít nhất 5), an evaluative tốt nhất and a year are not rankings"
+  llm_test_budget:
+    run: "pytest backend/tests/test_llm_test_budget.py"
+    locks: "test-only AI spending cap: worst-case reservation before every paid call, atomic across processes (lock directory beside the ONE shared ledger), fsync'd and kept through crashes; a call without usage evidence is UNKNOWN at worst case until reconciled with evidence; no call without a verified price, over the cap, or in production; no provider fallback; every unmetered request to a paid AI host is refused while a budget is active; planner replay answers from recorded outputs without a model"
+  analyst_catalog_reach:
+    run: "pytest backend/tests/test_analyst_catalog_reach.py"
+    locks: "the Analyst catalog offers every view the base can reach through the model relationships (multi-hop, the engine's own resolver), inside the explore's Dataset lineage only"
+  analyst_http_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_analyst_http_pg.py"
+    locks: "the Analyst over HTTP on real Postgres, model replaced by a fixed planner only: an explore-grant answer equals an independent SQL oracle with evidence, a ledger row (surface analyst, run = turn) and a chart draft; view-only sees no source and gets no rows; no module -> 403; a revoked grant is honoured on the next turn; a plan naming a foreign measure/unknown dimension/foreign explore/bad grain/bad operator is unsupported and nothing reaches the ledger; no SQL text in the response; another person cannot cancel my turn, my cancel stops it and it is recorded cancelled; a consent token is bound to its caller"
+  intelligence_gqs_mysql_fullpath:
+    requires: postgres+mysql
+    run: "pytest backend/tests/test_intelligence_gqs_mysql_fullpath_pg.py"
+    locks: "GQS end to end on a REAL MySQL source (semantic explore -> GQS -> durable ledger -> MySQL), with the source config stored plain AND encrypted at rest: the answer equals an independent oracle, the ledger row is ok with the mysql dialect, the row bound is enforced and reported truncated, a cancel through GQS stops the running statement at MySQL (KILL QUERY) and is recorded cancelled, and a person without explore is refused before MySQL is touched"
+  intelligence_gqs_ledger_schema_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_ledger_schema_pg.py"
+    locks: "the governed_query_executions audit ledger exists at head with its status and terminal/finished constraints, query_id is unique, and the least-privilege appbi_app role can SELECT/INSERT/UPDATE but not DELETE or TRUNCATE (append-only for the application)"
+  intelligence_gqs_cancel_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_cancel_pg.py"
+    locks: "cancelling a governed read stops the statement IN POSTGRES (pg_stat_activity is clear), refuses `cancelled` (not timeout), never returns a completed result - including rows that arrived after the cancel - and the ledger records cancelled; cancel is idempotent, an unknown id is harmless, a cancel before execution touches no data source, and an uncancelled query is unaffected with a clean registry"
   intelligence_gqs_pg:
     requires: postgres
     run: "pytest backend/tests/test_intelligence_gqs_execution_pg.py"

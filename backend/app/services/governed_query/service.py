@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import uuid
 from typing import Any, Iterable, Optional
@@ -38,6 +39,11 @@ from app.services.governed_query.principal import AuthorizationContext, Governed
 #: that declares an unexpected surface is held to the AI scope).
 HUMAN_RENDER_SURFACES = frozenset({"chart"})
 
+def _bq_label(value: str) -> str:
+    """A BigQuery label value: lowercase letters, digits, `_`/`-`, max 63."""
+    return re.sub(r"[^a-z0-9_-]", "_", str(value).lower())[:63]
+
+
 #: Sources whose executor enforces the bounds (timeout, rows, BigQuery bytes).
 _BOUNDED_SOURCES = frozenset({"postgresql", "mysql", "bigquery"})
 
@@ -45,20 +51,55 @@ _BOUNDED_SOURCES = frozenset({"postgresql", "mysql", "bigquery"})
 _FILTER_OPERATORS = frozenset({"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in",
                                "contains", "starts_with", "ends_with"})
 _GRAINS = frozenset({"day", "week", "month", "quarter", "year"})
+#: The one governed time-range operator. `between` stays refused (test_r4): the
+#: engine's BETWEEN is inclusive on both ends over the raw value, which drops most
+#: of the last day of a TIMESTAMP and ignores the calendar timezone. `date_range`
+#: has ONE meaning: {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}, `from` included,
+#: `to` EXCLUDED, on a CERTIFIED date field only (declared date, physically DATE).
+DATE_RANGE = "date_range"
+DATE_RANGE_MAX_DAYS = 366 * 10
+
+#: Refusal code -> the status the audit ledger records. Anything not named here
+#: is a plain refusal; `timeout` and `cancelled` are their own outcomes because
+#: an operator reading the ledger needs to tell "we stopped it" from "it was
+#: refused" (spec §2.4).
+_AUDIT_STATUS = {"timeout": "timeout", "cancelled": "cancelled"}
 
 
 def _sha(obj: Any) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
+def _checked_date_range(ref, value) -> dict:
+    """{"from": ISO date, "to": ISO date}, from < to (to excluded), a bounded span.
+    Nothing else is accepted: no times, no open ends, no extra keys."""
+    import datetime as _dt
+
+    bad = GovernedRefusal("invalid_filter", "Khoảng thời gian không hợp lệ.", {"field": str(ref), "operator": DATE_RANGE})
+    if not isinstance(value, dict) or set(value) != {"from", "to"}:
+        raise bad
+    try:
+        lo, hi = (_dt.date.fromisoformat(str(value["from"])), _dt.date.fromisoformat(str(value["to"])))
+    except ValueError:
+        raise bad from None
+    if len(str(value["from"])) != 10 or len(str(value["to"])) != 10 or not lo < hi \
+            or (hi - lo).days > DATE_RANGE_MAX_DAYS:
+        raise bad
+    return {"from": lo.isoformat(), "to": hi.isoformat()}
+
+
 class GovernedQueryService:
     """Built per request around ONE `AuthorizationContext` (never cached across
     requests, so a revoked grant is honoured on the next question)."""
 
-    def __init__(self, authz: AuthorizationContext, *, audit: Optional[AuditSink] = None):
+    def __init__(self, authz: AuthorizationContext, *, audit: Optional[AuditSink] = None,
+                 cancel_registry: Optional[Any] = None):
         self.authz = authz
         self.db = authz.db
         self.audit = audit
+        #: Where a running statement registers its canceller (PR-1D). None uses
+        #: the process registry; a test passes its own.
+        self.cancel_registry = cancel_registry
 
     # ── plan: nothing here reaches a warehouse ──────────────────────────────
     def plan(self, request: GovernedQueryRequest) -> CompiledQuery:
@@ -150,19 +191,28 @@ class GovernedQueryService:
         dialect = _dialect_for_ds_type(ds_type)
         bounds = effective_bounds(request.requested_bounds)
 
-        sql, out_columns, engine = self._compile(explore, ask, filters, time_grains, dialect, bounds)
-        accepted = {str(a) for a in request.accept_dropped_filters}
+        compile_filters = self._certified_date_ranges(filters, dataset_ids)
+        sql, out_columns, engine = self._compile(explore, ask, compile_filters, time_grains, dialect, bounds)
+        from app.services.governed_query import consent as _consent
+
         dropped = [dict(d) for d in (getattr(engine, "_propagation_drops", None) or []) if isinstance(d, dict)]
-        unaccepted = [d for d in dropped if str(d.get("field") or "") not in accepted]
-        if unaccepted:
-            # I-6: never answer unfiltered with a warning. The refusal names each
-            # filter so the Analyst can ask the USER to accept the wider scope.
-            raise GovernedRefusal(
-                "filter_would_drop",
-                "Không áp được một số bộ lọc của câu hỏi; kết quả sẽ rộng hơn điều bạn hỏi. "
-                "Cần bạn xác nhận chấp nhận phạm vi rộng hơn trước khi chạy.",
-                {"dropped": [{"field": d.get("field"), "reason": d.get("reason")} for d in unaccepted]},
-            )
+        consent = None
+        if dropped:
+            query_fp = _consent.query_fingerprint(request)
+            if not request.drop_consent:
+                # I-6: never answer unfiltered with a warning. The refusal names each
+                # filter so the Analyst can ask the USER to accept the wider scope;
+                # the consent the person gives is bound to this exact query.
+                raise GovernedRefusal(
+                    "filter_would_drop",
+                    "Không áp được một số bộ lọc của câu hỏi; kết quả sẽ rộng hơn điều bạn hỏi. "
+                    "Cần bạn xác nhận chấp nhận phạm vi rộng hơn trước khi chạy.",
+                    {"dropped": [{"field": d.get("field"), "reason": d.get("reason")} for d in dropped],
+                     "query_fingerprint": query_fp},
+                )
+            consent = _consent.verify(request.drop_consent, user_id=principal.user_id, query_fp=query_fp,
+                                      dropped_fields=[str(d.get("field") or "") for d in dropped])
+        accepted = set(consent.fields) if consent else set()
 
         from app.services.execution_plan import refuse_foreign_live_sources
         from app.services.semantic_join_resolver import SemanticRefusal
@@ -210,6 +260,7 @@ class GovernedQueryService:
             columns=self._column_meta(out_columns, ask, engine),
             freshness=Freshness(mode=str(getattr(table, "query_mode", None) or "unknown")),
             key_probes=key_probes,
+            consent_nonce=consent.nonce if consent else None,
             warnings=tuple(str(w) for w in (engine.warnings or [])),
         )
 
@@ -226,6 +277,8 @@ class GovernedQueryService:
         compiled = self.plan(request)
         try:
             self.audit.begin(compiled)
+        except GovernedRefusal:
+            raise  # a budget refusal: the ledger recorded it as refused
         except Exception as exc:  # noqa: BLE001 - any failure: the row is not there
             raise GovernedRefusal(
                 "audit_unavailable",
@@ -238,7 +291,7 @@ class GovernedQueryService:
             columns, rows = self._run(compiled)
             self._refuse_unexpected_output(compiled, columns)
         except GovernedRefusal as refusal:
-            self._finish(compiled, "timeout" if refusal.code == "timeout" else "refused",
+            self._finish(compiled, _AUDIT_STATUS.get(refusal.code, "refused"),
                          refusal_code=refusal.code, started=started)
             raise
         except Exception:
@@ -308,6 +361,9 @@ class GovernedQueryService:
             if not isinstance(ref, str) or not isinstance(cond, dict):
                 raise GovernedRefusal("invalid_filter", "Bộ lọc không hợp lệ.", {"field": str(ref)})
             op, value = cond.get("operator"), cond.get("value")
+            if op == DATE_RANGE:
+                out[ref] = {"operator": DATE_RANGE, "value": _checked_date_range(ref, value)}
+                continue
             if op not in _FILTER_OPERATORS:
                 raise GovernedRefusal("invalid_filter", "Phép lọc này không được hỗ trợ trong truy vấn có quản trị.",
                                       {"field": ref, "operator": str(op)})
@@ -400,6 +456,42 @@ class GovernedQueryService:
             )
         return ds, table
 
+    def _certified_date_ranges(self, filters: dict, dataset_ids) -> dict:
+        """Each `date_range` becomes the engine's inclusive `date_between`
+        [from, to - 1 day], which is EXACT for a DATE value and only for one. The
+        field must be a dimension of a view of these Datasets, declared `date` and
+        physically DATE; anything else (a TIMESTAMP, whose day depends on the
+        calendar timezone; a date declared over text; an unknown physical type) is
+        refused, never approximated."""
+        import datetime as _dt
+
+        from app.models.dataset import DatasetTable
+        from app.models.semantic import SemanticView
+        from app.services.physical_type_map import family
+
+        out = {}
+        for ref, cond in filters.items():
+            if cond.get("operator") != DATE_RANGE:
+                out[ref] = cond
+                continue
+            view_name, _, col = str(ref).rpartition(".")
+            view = (self.db.query(SemanticView).join(DatasetTable, DatasetTable.id == SemanticView.dataset_table_id)
+                    .filter(SemanticView.name == view_name, DatasetTable.dataset_id.in_(list(dataset_ids))).first())
+            dim = next((d for d in (getattr(view, "dimensions", None) or [])
+                        if isinstance(d, dict) and d.get("name") == col), None)
+            declared = str((dim or {}).get("type") or "").lower()
+            physical = family((dim or {}).get("source_type"))
+            if dim is None or declared != "date" or physical != "date":
+                raise GovernedRefusal(
+                    "time_range_unsupported",
+                    "Khoảng thời gian chỉ áp được trên trường ngày đã chứng nhận (kiểu ngày, lưu dạng DATE).",
+                    {"field": ref, "declared": declared or None, "physical": physical},
+                )
+            lo = cond["value"]["from"]
+            hi = (_dt.date.fromisoformat(cond["value"]["to"]) - _dt.timedelta(days=1)).isoformat()
+            out[ref] = {"operator": "date_between", "value": [lo, hi]}
+        return out
+
     def _compile(self, explore, ask, filters: dict, time_grains: dict, dialect: str, bounds):
         """The SAME compile path chart and preview use, fed only the normalized
         filters and checked grains. The LIMIT asks one row past the bound so
@@ -450,6 +542,9 @@ class GovernedQueryService:
 
     def _run(self, compiled: CompiledQuery):
         from app.services.datasource_service import DataSourceConnectionService
+        from app.services.governed_query.cancellation import (
+            REGISTRY, BigQueryCanceller, MySQLCanceller, PostgresCanceller,
+        )
         from app.services.relationship_key_guard import verify_key_probes
 
         ds = compiled.datasource
@@ -459,6 +554,23 @@ class GovernedQueryService:
         except ValueError as exc:
             raise GovernedRefusal("key_probe_failed", str(exc), {"category": getattr(exc, "category", None)}) from exc
         b = compiled.bounds
+        qid = compiled.query_id
+        registry = self.cancel_registry if self.cancel_registry is not None else REGISTRY
+        # A cancel that arrived while this was still planning stops the query
+        # before it reaches the warehouse at all.
+        self._refuse_if_cancelled(registry, qid)
+
+        def _register(backend_id):
+            # The engine reports which backend runs the statement; from here a
+            # cancel arriving on another request can stop it (PR-1D).
+            if compiled.ds_type == "mysql":
+                cid = backend_id.get("connection_id") if isinstance(backend_id, dict) else None
+                registry.register(qid, MySQLCanceller(ds.config, cid))
+            elif compiled.ds_type == "bigquery":
+                registry.register(qid, BigQueryCanceller(ds.config, backend_id))
+            else:
+                registry.register(qid, PostgresCanceller(ds.config, backend_id))
+
         try:
             columns, rows, _elapsed = DataSourceConnectionService.execute_query(
                 ds_type=compiled.ds_type,
@@ -468,14 +580,31 @@ class GovernedQueryService:
                 timeout_seconds=b.timeout_seconds,
                 max_rows=b.max_rows + 1,
                 maximum_bytes_billed=b.bq_max_bytes if compiled.ds_type == "bigquery" else None,
+                on_backend_id=_register,
+                # Attribution on the warehouse side: which governed query ran it.
+                job_labels={"appbi_surface": "gqs", "appbi_query": _bq_label(qid)}
+                if compiled.ds_type == "bigquery" else None,
             )
         except Exception as exc:  # noqa: BLE001 - classify, then re-raise
+            # A cancelled statement surfaces as the driver's "query cancelled"
+            # error. It is reported as cancelled, not as a timeout.
+            self._refuse_if_cancelled(registry, qid)
             name = type(exc).__name__.lower()
             if "querycanceled" in name or "timeout" in name or "statement timeout" in str(exc).lower():
                 raise GovernedRefusal("timeout", "Truy vấn vượt quá thời gian cho phép.",
                                       {"timeout_seconds": b.timeout_seconds}) from exc
             raise
+        finally:
+            registry.unregister(qid)
+        # Rows can arrive a moment after the cancel was asked for: a cancelled
+        # query never returns a completed result.
+        self._refuse_if_cancelled(registry, qid)
         return list(columns or []), list(rows or [])
+
+    @staticmethod
+    def _refuse_if_cancelled(registry, query_id: str) -> None:
+        if registry.is_cancelled(query_id):
+            raise GovernedRefusal("cancelled", "Truy vấn đã được huỷ.", {"query_id": query_id})
 
     # ── evidence helpers ────────────────────────────────────────────────────
     def _semantic_epoch(self, explore, model, dataset_id: int) -> str:
