@@ -7,7 +7,7 @@ import hashlib
 import os
 import re
 import time
-from typing import Generator, Iterator, List, Dict, Any, Tuple, Optional
+from typing import Callable, Generator, Iterator, List, Dict, Any, Tuple, Optional
 import pymysql
 import psycopg2
 from psycopg2 import sql as pg_sql
@@ -1064,6 +1064,8 @@ class DataSourceConnectionService:
         skip_bigquery_cost_check: bool = False,
         max_rows: Optional[int] = None,
         maximum_bytes_billed: Optional[int] = None,
+        on_backend_id: Optional[Callable[[Any], None]] = None,
+        job_labels: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]], float]:
         """
         Execute a SQL query against a data source.
@@ -1099,10 +1101,12 @@ class DataSourceConnectionService:
             if ds_type == DataSourceType.POSTGRESQL.value:
                 result = DataSourceConnectionService._execute_postgresql(
                     config, sql_query, limit, timeout_seconds, query_params, max_rows=max_rows,
+                    on_backend_id=on_backend_id,
                 )
             elif ds_type == DataSourceType.MYSQL.value:
                 result = DataSourceConnectionService._execute_mysql(
                     config, sql_query, limit, timeout_seconds, query_params, max_rows=max_rows,
+                    on_backend_id=on_backend_id,
                 )
             elif ds_type == DataSourceType.BIGQUERY.value:
                 result = DataSourceConnectionService._execute_bigquery(
@@ -1113,6 +1117,8 @@ class DataSourceConnectionService:
                     skip_cost_check=skip_bigquery_cost_check,
                     max_rows=max_rows,
                     maximum_bytes_billed=maximum_bytes_billed,
+                    on_backend_id=on_backend_id,
+                    job_labels=job_labels,
                 )
             elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
                 result = DataSourceConnectionService._execute_google_sheets(config, sql_query, limit)
@@ -1543,8 +1549,14 @@ class DataSourceConnectionService:
         timeout_seconds: int = 30,
         query_params: list = None,
         max_rows: Optional[int] = None,
+        on_backend_id: Optional[Callable[[Any], None]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Execute a (validated) SELECT against PostgreSQL in a READ ONLY transaction."""
+        """Execute a (validated) SELECT against PostgreSQL in a READ ONLY transaction.
+
+        ``on_backend_id`` (optional) receives this statement's backend pid as soon
+        as the connection is open, so a caller that must be able to CANCEL the
+        running statement (the Governed Query Service) can do it from another
+        connection. Default ``None`` — unchanged for every other caller."""
         conn = None
         cursor = None
         try:
@@ -1559,6 +1571,14 @@ class DataSourceConnectionService:
             # SELECT path: the database itself refuses any write the validator missed.
             conn.set_session(readonly=True)
             cursor = conn.cursor()
+            if on_backend_id is not None:
+                # (pid, backend_start) identifies THIS session; a pid alone can be
+                # reused by another session once this one ends.
+                cursor.execute(
+                    "SELECT pid, backend_start FROM pg_stat_activity WHERE pid = pg_backend_pid()"
+                )
+                _id_row = cursor.fetchone()
+                on_backend_id({"pid": _id_row[0], "backend_start": _id_row[1]} if _id_row else None)
 
             # Set statement timeout
             cursor.execute("SET statement_timeout = %s", (int(timeout_seconds) * 1000,))
@@ -1596,8 +1616,13 @@ class DataSourceConnectionService:
         timeout_seconds: int = 30,
         query_params: list = None,
         max_rows: Optional[int] = None,
+        on_backend_id: Optional[Callable[[Any], None]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Execute a (validated) SELECT against MySQL in a READ ONLY transaction."""
+        """Execute a (validated) SELECT against MySQL in a READ ONLY transaction.
+
+        ``on_backend_id`` (optional) receives this connection's CONNECTION_ID()
+        so the Governed Query Service can KILL QUERY it from another connection.
+        Default ``None`` — unchanged for every other caller."""
         conn = None
         cursor = None
         try:
@@ -1612,6 +1637,10 @@ class DataSourceConnectionService:
                 write_timeout=timeout_seconds
             )
             cursor = conn.cursor()
+            if on_backend_id is not None:
+                cursor.execute("SELECT CONNECTION_ID()")
+                _cid_row = cursor.fetchone()
+                on_backend_id({"connection_id": _cid_row[0]} if _cid_row else None)
             cursor.execute("START TRANSACTION READ ONLY")
 
             # Apply limit if specified
@@ -1647,8 +1676,14 @@ class DataSourceConnectionService:
         skip_cost_check: bool = False,
         max_rows: Optional[int] = None,
         maximum_bytes_billed: Optional[int] = None,
+        on_backend_id: Optional[Callable[[Any], None]] = None,
+        job_labels: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
         """Execute query against BigQuery.
+
+        ``on_backend_id`` receives ``{"job_id", "project", "location"}`` of every
+        job this call submits, so a cancel arriving on another request can stop
+        exactly that job (GQS 1D). ``job_labels`` tag the job for attribution.
 
         Cost control (F14): unless an INTERNAL caller skipped the cost check, the
         real job always carries ``maximum_bytes_billed`` — so a dry run that
@@ -1668,6 +1703,13 @@ class DataSourceConnectionService:
                 bigquery.QueryJobConfig(maximum_bytes_billed=int(maximum_bytes_billed))
                 if maximum_bytes_billed else None
             )
+            if job_labels:
+                job_config = job_config or bigquery.QueryJobConfig()
+                job_config.labels = dict(job_labels)
+
+            def _report(job):
+                if on_backend_id is not None:
+                    on_backend_id({"job_id": job.job_id, "project": job.project, "location": job.location})
 
             if not skip_cost_check:
                 # Phase-15.59b — cost-check dry-run hits the SAME
@@ -1702,6 +1744,7 @@ class DataSourceConnectionService:
 
             try:
                 query_job = client.query(query, job_config=job_config) if job_config else client.query(query)
+                _report(query_job)
                 results = query_job.result(timeout=timeout_seconds, max_results=max_rows) if max_rows else query_job.result(timeout=timeout_seconds)
             except Exception as first_err:
                 # Phase-15.58/59 — retry-with-dedup for ambiguous-column
@@ -1729,6 +1772,7 @@ class DataSourceConnectionService:
                     raise
                 logger.info("[bq_sql_retry] retrying with deduplicated outer SELECT")
                 query_job = client.query(rewritten, job_config=job_config) if job_config else client.query(rewritten)
+                _report(query_job)
                 results = query_job.result(timeout=timeout_seconds, max_results=max_rows) if max_rows else query_job.result(timeout=timeout_seconds)
             
             # Get column names

@@ -117,6 +117,13 @@ jobs:
             tests/test_intelligence_calc_field_policy.py \
             tests/test_intelligence_knowledge_quarantine.py \
             tests/test_intelligence_effective_principal.py \
+            tests/test_analyst_narrative.py \
+            tests/test_analyst_planner.py \
+            tests/test_analyst_catalog_reach.py \
+            tests/test_analyst_grounding.py \
+            tests/test_analyst_intent_obligations.py \
+            tests/test_analyst_intent.py \
+            tests/test_llm_test_budget.py \
             tests/test_intelligence_gqs_core.py
 
       # WHAT THE ANALYST IS SHOWN AS EVIDENCE, AND WHAT A METRIC MEANS.
@@ -681,6 +688,25 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_semantic_cross_view_formula_mysql_pg.py
+      # GQS executor bounds + cancellation on this job's real MySQL 8.4: the row
+      # cap, the READ ONLY refusal, KILL QUERY stopping a running statement, and
+      # another MySQL user unable to kill it. GQS_MYSQL_REQUIRED makes a missing
+      # MySQL a failure, never a skip.
+      - name: "GATE — GQS bounds + cancellation on MySQL"
+        env:
+          GQS_MYSQL_ROOT_URL: "mysql://root:appbi@127.0.0.1:3306"
+          GQS_MYSQL_REQUIRED: "1"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_intelligence_gqs_mysql_runtime.py
+      # BigQuery runtime evidence needs the QA warehouse credential, which CI does
+      # not have: here the module SKIPS, and a skip is not coverage. The gate is
+      # registered `manual` (intelligence_gqs_bigquery) and reported NOT VERIFIED
+      # unless run locally with GQS_BQ_DATASOURCE_ID on the approved QA project.
+      - name: "GQS BigQuery runtime (skips without the QA credential)"
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            tests/test_intelligence_gqs_bigquery_runtime.py
   # ── Authorization / security gate ─────────────────────────────────────────
   #
   # EVERY MODULE MOUNTED, PINNED DEPENDENCIES, REAL POSTGRES ROLES.
@@ -714,13 +740,30 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      # GQS end to end on a MySQL source (metadata + ledger in the Postgres above,
+      # data in MySQL): test_intelligence_gqs_mysql_fullpath_pg.py. Root is used
+      # only by the fixture to create a read-only user and the source tables.
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: appbi
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -pappbi --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
     env:
       PYTHONPATH: ${{ github.workspace }}/backend
       ENVIRONMENT: test
+      GQS_MYSQL_ROOT_URL: "mysql://root:appbi@127.0.0.1:3306"
+      GQS_MYSQL_REQUIRED: "1"
       METADATA_CATALOG_ENABLED: "true"
       GOVERN_ENABLED: "true"
       WORKBOARDS_ENABLED: "true"
       OBSERVABILITY_ENABLED: "true"
+      ANALYST_ENABLED: "true"
       AUTHZ_PG_REQUIRED: "1"
       AUTHZ_PG_OWNER_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
       AUTHZ_PG_APP_URL: "postgresql://appbi_app:appbi_app@localhost:5432/appbi"
@@ -794,6 +837,12 @@ jobs:
             tests/test_intelligence_table_preview_http_pg.py \
             tests/test_intelligence_knowledge_quarantine_http_pg.py \
             tests/test_intelligence_gqs_execution_pg.py \
+            tests/test_intelligence_gqs_date_range_pg.py \
+            tests/test_intelligence_gqs_cancel_pg.py \
+            tests/test_intelligence_gqs_ledger_pg.py \
+            tests/test_analyst_http_pg.py \
+            tests/test_intelligence_gqs_mysql_fullpath_pg.py \
+            tests/test_intelligence_gqs_ledger_schema_pg.py \
             --junitxml=/tmp/authz-pg.xml
 
       # A KNOWN-DEFECT LEDGER ON POSTGRES, RUN ON ITS OWN SO IT IS READ.

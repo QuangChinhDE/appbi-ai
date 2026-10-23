@@ -2,10 +2,10 @@
 
 GQS writes the audit row BEFORE anything reaches a warehouse and finalizes it
 after. If that first write fails, the query is refused (`audit_unavailable`).
-With NO sink, nothing executes: the durable ledger (`governed_query_executions`)
-is PR-1E, and until it exists `GovernedQueryService.execute` refuses by
-construction. The best-effort `audit_service.audit` is not this ledger: it
-swallows its own failures, which is exactly what I-7 forbids.
+With NO sink, nothing executes: `GovernedQueryService.execute` refuses by
+construction. The durable implementation is `ledger.PostgresLedger` (PR-1E).
+The best-effort `audit_service.audit` is not this ledger: it swallows
+its own failures, which is exactly what I-7 forbids.
 """
 from __future__ import annotations
 

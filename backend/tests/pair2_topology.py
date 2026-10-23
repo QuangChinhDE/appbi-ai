@@ -33,6 +33,42 @@ from __future__ import annotations
 
 S = "p2g"
 
+
+# The physical schema is ONE name (the golden SQL and the oracles name it), so two
+# runs against the same database used to drop it under each other: a Pair 3 run
+# beside another p2g suite failed 250 of 462 (reproduced 2026-10-22). Whoever
+# builds the schema now holds a Postgres advisory lock on a dedicated connection
+# until it is dropped: a second run WAITS for the first instead of destroying it.
+P2G_LOCK_KEY = 0x7032675F6C6F636B  # "p2g_lock"
+
+
+@__import__("contextlib").contextmanager
+def owned_pg_schema(engine):
+    """Build schema `S` on `engine` for the duration of the block, exclusively."""
+    import sqlalchemy as sa
+
+    holder = engine.connect()
+    try:
+        holder.execute(sa.text("SELECT pg_advisory_lock(:k)"), {"k": P2G_LOCK_KEY})
+        holder.commit()
+        with engine.begin() as c:
+            c.execute(sa.text(f"DROP SCHEMA IF EXISTS {S} CASCADE"))
+            c.execute(sa.text(f"CREATE SCHEMA {S}"))
+            for stmt in physical_sql("postgresql"):
+                c.execute(sa.text(stmt))
+        try:
+            yield engine
+        finally:
+            with engine.begin() as c:
+                c.execute(sa.text(f"DROP SCHEMA IF EXISTS {S} CASCADE"))
+    finally:
+        try:
+            holder.execute(sa.text("SELECT pg_advisory_unlock(:k)"), {"k": P2G_LOCK_KEY})
+            holder.commit()
+        finally:
+            holder.close()
+            engine.dispose()
+
 # table -> ([(column, type)], rows). The single source of the physical data:
 # DDL/INSERTs (Postgres, DuckDB, MySQL) and inline literals (BigQuery — nothing
 # is written to the warehouse) are generated from it.

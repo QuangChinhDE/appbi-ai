@@ -27,6 +27,10 @@ class DimensionDefinition(BaseModel):
     label: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False
+    # Governance Registry glossary terms this dimension means (pure metadata, no SQL
+    # impact), the same link measures carry: the governed business words people use
+    # for it ("miền" for a region column). Only APPROVED terms are read as vocabulary.
+    glossary_terms: List["MeasureVocabRef"] = Field(default_factory=list)
     # Phase-13: optional drill-down parent. Pure metadata — engine doesn't
     # consume it; FE Explore uses it to surface "drill down to <child>"
     # actions and to group related dimensions in the column panel.
@@ -152,6 +156,9 @@ class MeasureVocabRef(BaseModel):
     `label` is the denormalized display name (refreshed on re-assign)."""
     fqn: str
     label: Optional[str] = None
+
+
+DimensionDefinition.model_rebuild()
 
 
 class MeasureDefinition(BaseModel):

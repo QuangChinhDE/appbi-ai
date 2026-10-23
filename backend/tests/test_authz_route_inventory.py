@@ -45,6 +45,7 @@ MIN_API_ROUTES = 450
 #: module was not mounted in this process — usually a feature flag the job forgot.
 REQUIRED_PREFIXES = (
     "/api/v1/agent-flows",
+    "/api/v1/analyst",
     "/api/v1/auth",
     "/api/v1/catalog",
     "/api/v1/charts",

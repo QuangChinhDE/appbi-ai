@@ -39,6 +39,12 @@ if settings.WORKBOARDS_ENABLED:
 
 api_router.include_router(semantic.router)
 
+# AppBI Analyst (M2 MVP) — the first Governed Query Service consumer. Mounted
+# ONLY when enabled; every read it makes goes through GQS and the audit ledger.
+if settings.ANALYST_ENABLED:
+    from app.api.analyst import router as analyst_router
+    api_router.include_router(analyst_router)
+
 # Metadata Catalog — AppBI-native Govern backend (Vocabulary + Metrics + Knowledge Hub),
 # proxied under /catalog. Imported ONLY when enabled so the core app is unaffected while OFF.
 if settings.METADATA_CATALOG_ENABLED:
