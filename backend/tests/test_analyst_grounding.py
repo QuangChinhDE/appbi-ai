@@ -662,6 +662,34 @@ def test_a_follow_up_keeps_the_previous_period_it_does_not_name():
     assert out.filters == {"c.region": {"operator": "eq", "value": "Miền Trung"}}, why
 
 
+def test_a_follow_up_naming_another_quarter_gets_that_quarter_not_the_previous_one():
+    """Internal-preview live smoke: "còn quý 3 thì sao" after "Doanh số từng ngành hàng
+    trong quý 2 năm 2025" was answered with the Q2 numbers again (the model's yearless
+    Q3 range was dropped, and the previous Q2 filter was carried) - a wrong answer."""
+    q2 = {"operator": "date_range", "value": {"from": "2025-04-01", "to": "2025-07-01"}}
+    previous = {"dimensions": ["p.category"], "measures": ["l.net_sales"], "time_grains": {},
+                "filters": {"o.order_date": q2}}
+    for model_filters in ({}, {"o.order_date": {"operator": "date_range", "value": {"from": "2024-07-01", "to": "2024-10-01"}}}):
+        p = _plan(["l.net_sales"], ["p.category"], filters=model_filters)
+        out, why = ground(p, "còn quý 3 thì sao", previous=previous, carried=["p.category", "l.net_sales", "o.order_date"])
+        assert out is not None, why
+        assert out.filters == {"o.order_date": {"operator": "date_range", "value": {"from": "2025-07-01", "to": "2025-10-01"}}}
+    # a month, in the previous period's year
+    out, why = ground(_plan(["l.net_sales"], ["p.category"]), "thế còn tháng 11?", previous=previous,
+                      carried=["p.category", "l.net_sales", "o.order_date"])
+    assert out is not None, why
+    assert out.filters["o.order_date"]["value"] == {"from": "2025-11-01", "to": "2025-12-01"}
+
+
+def test_a_yearless_period_after_a_multi_year_range_asks_which_year():
+    span = {"operator": "date_range", "value": {"from": "2024-01-01", "to": "2026-01-01"}}
+    previous = {"dimensions": ["p.category"], "measures": ["l.net_sales"], "time_grains": {},
+                "filters": {"o.order_date": span}}
+    out, why = ground(_plan(["l.net_sales"], ["p.category"]), "còn quý 3 thì sao", previous=previous,
+                      carried=["p.category", "l.net_sales", "o.order_date"])
+    assert out is None and "năm" in why
+
+
 
 def test_a_tie_at_the_top_n_cut_is_kept_never_an_arbitrary_winner():
     from app.services.analyst.service import _ordered
