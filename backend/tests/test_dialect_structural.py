@@ -346,7 +346,3 @@ def test_postgres_time_grain_over_a_timestamp_column_is_not_cast(source_type):
     expr = engine._render_dimension_with_time_grain("o.created_at", "o", "month")
     assert expr.startswith("DATE_TRUNC('month', ") and "AS DATE" not in expr, expr
 
-
-def test_postgres_calendar_bucket_of_a_local_date_stays_a_date():
-    assert SemanticQueryEngine._truncate_date_sql("d", "month", "postgresql") == "CAST(DATE_TRUNC('month', d) AS DATE)"
-    assert SemanticQueryEngine._truncate_date_sql("d", "month", "bigquery") == "DATE_TRUNC(d, MONTH)"

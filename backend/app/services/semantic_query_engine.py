@@ -1345,9 +1345,6 @@ class SemanticQueryEngine:
             return date_sql
         if g not in {"day", "week", "month", "quarter", "year"}:
             g = "day"
-        if dialect in {"postgresql", "postgres"}:
-            # DATE_TRUNC over a DATE returns timestamptz on Postgres; keep the calendar date
-            return f"CAST(DATE_TRUNC('{g}', {date_sql}) AS DATE)"
         return f"DATE_TRUNC('{g}', {date_sql})"
 
     def _render_dimension_with_time_grain(
