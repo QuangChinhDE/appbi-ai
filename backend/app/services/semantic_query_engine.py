@@ -1335,6 +1335,22 @@ class SemanticQueryEngine:
         phys = (dim or {}).get("source_type") or self._physical_source_type(view, col)
         return is_instant_column(phys, (dim or {}).get("type"))
 
+    def _dimension_is_calendar_date(self, field_ref: str) -> bool:
+        """True when the dimension is a calendar DATE (no time of day): its physical
+        type is DATE, or - with no physical type recorded - its model type is date."""
+        try:
+            view_name, col = self._parse_field_ref(field_ref)
+        except ValueError:
+            return False
+        view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
+        if view is None:
+            return False
+        dim = next((d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col), None) or {}
+        phys = str(dim.get("source_type") or self._physical_source_type(view, col) or "").strip().lower()
+        if phys:
+            return phys == "date"
+        return str(dim.get("type") or "").strip().lower() == "date"
+
     @staticmethod
     def _truncate_date_sql(date_sql: str, grain: str, dialect: str) -> str:
         """Start of the `grain` bucket of a DATE expression (ISO Monday weeks).
@@ -1443,6 +1459,11 @@ class SemanticQueryEngine:
             return f"DATE({base_sql})"
 
         # PostgreSQL + DuckDB both support DATE_TRUNC with text-literal grain.
+        if dialect in {"postgresql", "postgres"} and self._dimension_is_calendar_date(field_ref):
+            # Postgres DATE_TRUNC over a DATE returns timestamptz (midnight UTC); a browser
+            # shows that instant in its own zone - 07:00, or the previous day west of UTC.
+            # A DATE bucket stays a DATE. A TIMESTAMP column keeps its instant semantics.
+            return f"CAST(DATE_TRUNC('{grain}', {base_sql}) AS DATE)"
         return f"DATE_TRUNC('{grain}', {base_sql})"
     
     def _render_symmetric_aggregate(
