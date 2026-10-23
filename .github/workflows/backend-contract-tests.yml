@@ -796,6 +796,21 @@ jobs:
             tests/test_intelligence_gqs_execution_pg.py \
             --junitxml=/tmp/authz-pg.xml
 
+      # A KNOWN-DEFECT LEDGER ON POSTGRES, RUN ON ITS OWN SO IT IS READ.
+      #
+      # SEC-13 (security-matrix.md) is reproduced over HTTP: `xfail(strict=True,
+      # raises=REPRODUCED)`. It is NOT in the authz-pg JUnit report on purpose: an
+      # xfail is reported as "skipped", and the skip check below must keep failing
+      # on any genuinely skipped security test. `-rxX` prints the reproduction by
+      # name. When the fix lands the test XPASSes, this step fails, and the marker
+      # is removed in the same change.
+      - name: "Security ledger on Postgres (xfail = reproduced defect)"
+        env:
+          DATABASE_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
+        run: |
+          python -m pytest -q --tb=short -rxX -p no:cacheprovider \
+            tests/test_intelligence_sec13_grain_injection_http_pg.py
+
       # EVERY MANDATORY SECURITY SUITE, NOT JUST THE FIRST.
       #
       # Each security step writes its own JUnit report. A suite whose report is

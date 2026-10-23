@@ -285,7 +285,7 @@ features:
     files: [backend/app/services/semantic_query_engine.py, backend/app/services/semantic_query_compiler.py]
     keywords: [measure, aggregate, group by, sql, fan-out, fanout, "sai so", "double count", grain, having]
     invariants: [fanout_exists_not_join, agg_default_auto, sum_over_string_gate, symmetric_flag_default]
-    required_tests: [golden_sql, galaxy_golden, measure_render, filter_matrix]
+    required_tests: [golden_sql, galaxy_golden, measure_render, filter_matrix, intelligence_sec13_ledger_pg]
 
   - id: join_resolution
     label: "Semantic join resolver (multi-hop, cardinality, role-play, chasm)"
@@ -606,6 +606,10 @@ tests:
   ai_knowledge_contract:
     run: "pytest backend/tests/test_public_rating_trust_boundary.py backend/tests/test_govern_doc_citation.py backend/tests/test_what_the_ai_sees.py"
     locks: "a public rating never mutates knowledge, document citations stay grounded, and what the AI is shown is what the governance layer allows"
+  intelligence_sec13_ledger_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_sec13_grain_injection_http_pg.py"
+    locks: "SEC-13 known-defect ledger: a chart time grain reaching DATE_TRUNC unvalidated is reproduced over HTTP as xfail(strict); the fix must turn it XPASS and remove the marker in the same change"
   ai_evidence_contract:
     run: "pytest backend/tests/test_knowledge_hit_contract.py backend/tests/test_govern_doc_answerability.py backend/tests/test_semantic_level0.py"
     locks: "one evidence shape for every consumer (no draft served as evidence), the answer/abstain/conflict verdict over document evidence, and a measure reaching the model with its recorded formula and unit even without a description"
