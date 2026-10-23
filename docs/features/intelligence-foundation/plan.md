@@ -61,7 +61,7 @@ python scripts/ci/guardrail_check.py --plan "Phase 0 security containment for AI
 | **0B3** | Data-access gates. **SEC-02:** preview row ceiling. **SEC-09:** `/semantic/query` requires `explore`. | `api/datasources.py`, `routers/semantic.py` | – | – | – (small; security-behaviour change declared) | READY FOR REVIEW |
 | **0C** | **SEC-01:** calculated-field AST allow-list (relations and columns of the view only; no subqueries, set ops or DDL/DML; dialect-correct). **SEC-01b:** false positives. **DEF-06:** triage. | `services/semantic_query_engine.py` | **P** | – | **A** | PLANNED: needs plan approval + golden gates |
 | **0D** | **SEC-10/ADR-014:** inventory of orphaned Approved knowledge (a service plus an admin-only read endpoint, not an ad-hoc DB script) and an injection-time quarantine flag | `services/governance_ai_service.py`, `dashboard_ai_bot/knowledge_context.py`, new admin route | – | – | **A** (PO default, intent Q2) | BLOCKED on PO decision Q2 |
-| **0E** | Sealed eval harness, minimal: YAML case store, deterministic oracle runner on a seeded fixture, leakage check, import-boundary test | `backend/eval/cases/**`, `backend/eval/sealed_harness.py`, test | – | – | – (new, isolated) | PLANNED |
+| **0E** | Sealed eval harness, minimal: YAML case store, deterministic oracle runner on a seeded fixture, leakage check, import-boundary test | `backend/eval/cases/**`, `backend/eval/sealed_harness.py`, test | – | – | – (new, isolated) | READY FOR REVIEW |
 
 ### Phase 1: Governed Query Service and data policy
 
@@ -139,3 +139,12 @@ protected semantic layer. **It needs plan approval before PR-1A starts.**
   - fail-first: SEC-02 and SEC-09 fail on base and pass with the fix;
   - `verify.py task` PASSED: `error_contracts`, `relationship_contract`, `semantic_router_access`;
   - `relationship_contract_pg` was run on a disposable `pgvector:pg16` container (alembic head): 10 passed. 3 tests are NOT VERIFIED locally: they need CI's `bcfix` seed, and `scripts/seed_snowflake_ci_fixture.py` hard-codes `localhost:5432`, so it was not pointed at any non-disposable database. CI runs it.
+- **2026-10-19, 0E:**
+  - sealed harness `backend/eval/sealed/` (JSON cases, because PyYAML is not a backend dependency; a JSON fixture, because `*.csv` is gitignored); 5 dev and 2 holdout cases on `retail_vn`;
+  - `test_intelligence_eval_harness.py`: 27 passed;
+  - every case's DuckDB oracle equals its hand-computed value;
+  - the fan-out trap (80 vs 50) is graded wrong;
+  - leakage is excluded;
+  - isolation preconditions are enforced;
+  - mutation control: a runtime module importing the harness makes the boundary test fail;
+  - `verify.py task` PASSED.
