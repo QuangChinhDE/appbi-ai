@@ -165,4 +165,6 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   const outside = results.find((x) => x.n === 7)!;
   expect(outside.numbers_shown, 'a question outside the data shows no numbers').toBe(0);
   expect(results.find((x) => x.n === 8)!.outcome, 'a first-visit example is answered').toBe('analyst-answer');
+  // MySQL spend by channel is answerable from the person's sources: a refusal or "unsupported" is a failure
+  expect(results.find((x) => x.n === 9)!.outcome, 'the MySQL question is answered, not refused').toBe('analyst-answer');
 });

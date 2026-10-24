@@ -82,12 +82,29 @@ test('BI · datasources, datasets, dashboard, public link, revoke, anonymous', a
   const pub = await anon.newPage();
   const authedCalls: string[] = [];
   pub.on('request', (r) => { if (r.headers()['authorization']) authedCalls.push(r.url()); });
+  // every row the public page receives: an object holding a region label and its number
+  const publicRows: Record<string, unknown>[] = [];
+  const walk = (x: unknown) => {
+    if (Array.isArray(x)) x.forEach(walk);
+    else if (x && typeof x === 'object') { publicRows.push(x as Record<string, unknown>); Object.values(x).forEach(walk); }
+  };
+  pub.on('response', async (r) => {
+    if (!r.url().includes('/public/') || !(r.headers()['content-type'] || '').includes('json')) return;
+    try { walk(await r.json()); } catch { /* not JSON */ }
+  });
   await pub.goto(`${BASE}/d/${link.token}`);
   for (const l of labels) await expect(pub.getByText(l).first()).toBeVisible();
   const values = Object.values(ORACLE.region);
   const text = await pub.locator('body').innerText();
   await pub.screenshot({ path: test.info().outputPath('BI-4-public.png'), fullPage: true });
   expect(authedCalls, 'public page made an authed call').toEqual([]);
+  // SQL parity on the public surface: each region's number, as served to the logged-out page, equals the oracle
+  const publicValue = (region: string) => publicRows
+    .filter((o) => Object.values(o).includes(region))
+    .flatMap((o) => Object.values(o).map(Number).filter((n) => Number.isFinite(n)));
+  for (const [region, want] of Object.entries(ORACLE.region)) {
+    expect(publicValue(region).some((n) => Math.abs(n - want) < 0.51), `public dashboard ${region} = ${want} (SQL)`).toBe(true);
+  }
 
   // Anonymous visit of the private dashboard -> login, never data
   const p2 = await anon.newPage();
