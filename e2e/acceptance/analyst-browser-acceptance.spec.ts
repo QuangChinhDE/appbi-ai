@@ -492,6 +492,26 @@ async function noPageOverflow(page: Page) {
   expect(m, 'horizontal overflow inside the app shell <main> (px)').toBeLessThanOrEqual(0);
 }
 
+// Chart Builder panel headers: labels, chips and tabs never sit on top of each other or
+// spill out of the header (they overlapped at 360 px before the headers could wrap).
+async function noHeaderOverlap(page: Page, testId: string) {
+  const bad = await page.getByTestId(testId).evaluate((h) => {
+    const hb = h.getBoundingClientRect();
+    const items = Array.from(h.querySelectorAll('span, button'))
+      .filter((e) => !e.querySelector('span, button'))
+      .map((e) => ({ t: (e.textContent || '').trim(), r: e.getBoundingClientRect() }))
+      .filter((x) => x.r.width > 0 && x.r.height > 0);
+    const out: string[] = [];
+    for (const a of items) if (a.r.left < hb.left - 1 || a.r.right > hb.right + 1) out.push(`outside: ${a.t}`);
+    for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
+      const a = items[i].r, b = items[j].r;
+      if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) out.push(`${items[i].t} x ${items[j].t}`);
+    }
+    return out;
+  });
+  expect(bad, `${testId}: overlapping or clipped header items`).toEqual([]);
+}
+
 for (const vp of VIEWPORTS) {
   test(`V · ${vp.name}: empty, sources, answer+chart, wide table, evidence, clarify, refusal, error, Explore`, async ({ page }, info) => {
     await page.setViewportSize({ width: vp.width, height: vp.height });
@@ -534,6 +554,8 @@ for (const vp of VIEWPORTS) {
     await expect(page.getByRole('heading', { name: 'Chart Type' })).toBeVisible();
     await page.getByTestId('explore-run').click();
     await expect(page.getByText(/^\d+ rows?$/).first()).toBeVisible({ timeout: 60_000 });  // the PREVIEW row-count chip
+    await noHeaderOverlap(page, 'explore-configure-header');
+    await noHeaderOverlap(page, 'explore-preview-header');
     await noPageOverflow(page); await shot(page, info, `${vp.name}-8-explore`);
   });
 }
