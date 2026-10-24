@@ -15,7 +15,7 @@ const OUTCOME = '[data-testid="analyst-answer"], [data-testid="analyst-clarify"]
 
 async function login(page: Page) {
   await page.goto('/login');
-  await page.locator('input[type="email"]').first().fill('qa-analyst@rig.appbi.io');
+  await page.locator('input[type="email"]').first().fill(process.env.LIVE_USER || 'qa-analyst@rig.appbi.io');  // a dedicated live tester keeps quota separate
   await page.locator('input[type="password"]').first().fill(PASSWORD);
   await page.getByRole('button', { name: /sign in|đăng nhập|log in/i }).first().click();
   await page.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 60_000 });
