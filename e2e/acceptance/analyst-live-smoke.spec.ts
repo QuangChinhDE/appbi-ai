@@ -15,7 +15,7 @@ const OUTCOME = '[data-testid="analyst-answer"], [data-testid="analyst-clarify"]
 
 async function login(page: Page) {
   await page.goto('/login');
-  await page.locator('input[type="email"]').first().fill('qa-analyst@rig.appbi.io');
+  await page.locator('input[type="email"]').first().fill(process.env.LIVE_USER || 'qa-analyst@rig.appbi.io');  // a dedicated live tester keeps quota separate
   await page.locator('input[type="password"]').first().fill(PASSWORD);
   await page.getByRole('button', { name: /sign in|đăng nhập|log in/i }).first().click();
   await page.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 60_000 });
@@ -130,6 +130,13 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   }
   results.push(row);
 
+  // 9. the second engine (MySQL marketing spend): its numbers are checked like the rest
+  await fresh();
+  r = await askLive(page, 'Chi phí marketing năm 2025 của từng kênh là bao nhiêu?');
+  row = { n: 9, q: 'marketing spend by channel 2025 (MySQL)', outcome: r.kind };
+  if (r.kind === 'analyst-answer') row = { ...row, match: matches(await tableOf(r.ex), 'marketing_channel_2025') };
+  results.push(row); await snap('9-mysql');
+
   // 8. a first-visit example (built from the person's own sources) is answerable
   await fresh();
   await page.reload();
@@ -158,4 +165,6 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   const outside = results.find((x) => x.n === 7)!;
   expect(outside.numbers_shown, 'a question outside the data shows no numbers').toBe(0);
   expect(results.find((x) => x.n === 8)!.outcome, 'a first-visit example is answered').toBe('analyst-answer');
+  // MySQL spend by channel is answerable from the person's sources: a refusal or "unsupported" is a failure
+  expect(results.find((x) => x.n === 9)!.outcome, 'the MySQL question is answered, not refused').toBe('analyst-answer');
 });

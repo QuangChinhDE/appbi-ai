@@ -845,3 +845,31 @@ def test_a_saved_chart_reproduces_the_answer(client, db, world, model, case):  #
         assert want == [150.0] and _numbers(rows) == [150.0]      # Bắc 100 + 50, the filter kept on reopen
     if case == "top_n_bar":
         assert len(rows) == 2 and chart["config"]["styleConfig"]["dataLimit"] == 2
+
+
+def test_a_person_over_the_daily_query_budget_is_refused_before_the_model_is_asked(client, db, world, model,  # noqa: F811
+                                                                                   monkeypatch):
+    """QA live run (2026-10-24): a tester past ANALYST_MAX_QUERIES_PER_USER_DAY was refused
+    every question, yet each one still went to the paid model first - GQS only checks
+    the budget after planning. The daily budget is a cost control: once it is spent,
+    the turn is refused with the same reason and the model is not called."""
+    from app.api import analyst as api
+
+    _grant_module(db, world["analyst"])
+    model(_planner(world))
+    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": "Doanh thu?"})
+    assert first.json()["status"] == "answered", first.json()
+    with sa.create_engine(_owner_url()).connect() as c:
+        used = int(c.execute(sa.text("SELECT count(*) FROM governed_query_executions WHERE user_id = :u "
+                                     "AND started_at >= date_trunc('day', now()) AND status <> 'refused'"),
+                             {"u": str(world["analyst"].id)}).scalar())
+    import dataclasses
+
+    ledger = api._analyst_deps().ledger
+    monkeypatch.setattr(ledger, "budgets", dataclasses.replace(ledger.budgets, max_queries_per_user_day=used))
+    calls = []
+    model(lambda prompt, system=None, max_tokens=None: calls.append(1) or _planner(world)(prompt))
+    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": "Doanh thu?"}).json()
+    assert body["status"] == "refused" and body["code"] == "budget_exceeded" and "rows" not in body, body
+    assert body["message"] == "Đã vượt hạn mức truy vấn được phép."
+    assert calls == [], "the model was asked although the daily query budget was spent"
