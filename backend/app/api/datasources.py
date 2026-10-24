@@ -555,6 +555,14 @@ def get_schema_browser(
             f"Không đọc được schema từ nguồn: {describe_source_error(e, ds.config)}"))
 
 
+#: The schema browser's preview is a glance at a table, not a read of it. The
+#: request could ask for any number of rows and the connector ran `SELECT * ...
+#: LIMIT <that>`, so `data_sources: view` read whole tables — including tables no
+#: Dataset grants (SEC-02). Clamped server-side; the request cannot lift it. The
+#: UI asks for 5 and the MCP integration caps itself at 20.
+TABLE_PREVIEW_MAX_ROWS = 100
+
+
 @router.get("/{data_source_id}/tables/{schema_name}/{table_name}")
 def get_table_detail(
     data_source_id: int,
@@ -570,10 +578,25 @@ def get_table_detail(
         raise HTTPException(status_code=404, detail="Data source not found")
     require_view_access(db, current_user, ds, "data_sources")
     _require_tabular(ds, "discover")
+    preview_rows = max(0, min(int(preview_rows or 0), TABLE_PREVIEW_MAX_ROWS))
+    # METADATA IS NOT A READ OF THE DATA (SEC-02 closure, ADR-002). Seeing a table's
+    # columns needs `view` on the source; reading its ROWS runs a query on the
+    # source's stored credential, which is using that secret — `use_secret`, the
+    # editor level. A viewer gets the metadata and an explicit refusal of the rows,
+    # never a silent empty preview and never the rows.
+    preview_refused = None
+    if preview_rows > 0 and not _authz.can(db, current_user, _authz.Action.USE_SECRET, ds):
+        preview_rows = 0
+        preview_refused = (
+            "Không hiển thị dữ liệu mẫu: xem cấu trúc bảng chỉ cần quyền xem nguồn dữ "
+            "liệu, còn đọc dữ liệu thật cần quyền sửa nguồn (use_secret)."
+        )
     try:
         detail = DataSourceConnectionService.get_table_detail(
             ds.type.value, ds.config, schema_name, table_name, preview_rows
         )
+        if preview_refused is not None:
+            detail = {**detail, "preview": [], "preview_refused": preview_refused}
         return detail
     except Exception as e:
         logger.error("Table detail failed for %s.%s: %s", schema_name, table_name,

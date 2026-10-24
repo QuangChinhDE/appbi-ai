@@ -90,20 +90,33 @@ def _call_openai(
         ]
     else:
         content = prompt
-    resp = httpx.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    return _parse_json_object(resp.json()["choices"][0]["message"]["content"])
+    from app.services import llm_test_budget as _budget
+
+    rid = _budget.reserve("openai", model, system, prompt, max_tokens)  # inert unless a test budget is set
+    try:
+        with _budget.metered(rid):
+            resp = httpx.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
+                    "max_tokens": max_tokens,
+                    "temperature": 0.2,
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=timeout,
+            )
+        resp.raise_for_status()
+        body = resp.json()
+    except Exception as exc:
+        # An error after sending may still be billed and no usage exists: the
+        # call is recorded UNKNOWN at its worst case, never as free.
+        _budget.settle(rid, "openai", model, {}, error=type(exc).__name__)
+        raise
+    parsed = _parse_json_object(body["choices"][0]["message"]["content"])
+    _budget.settle(rid, "openai", model, body.get("usage") or {}, raw=parsed, model_returned=str(body.get("model") or ""))
+    return parsed
 
 
 def _call_gemini(
@@ -197,8 +210,17 @@ class LLMClient:
         system: str = "You are a helpful AI assistant. Always respond with valid JSON.",
         model: Optional[str] = None,  # accepted for backward-compat; models are fixed per provider
         max_tokens: int = 512,
+        strong: bool = False,
     ) -> Optional[dict]:
-        providers = _providers()
+        # `strong` selects the providers' larger model (the one the design surfaces
+        # already use); every caller that does not ask for it is unchanged.
+        providers = _providers(design=strong)
+        from app.services import llm_test_budget as _budget
+
+        if _budget.active():
+            # Under a test budget there is no automatic fallback to another provider
+            # (PO policy: no fallback to a model whose cost was not reserved).
+            providers = providers[:1]
         if not providers:
             logger.debug("LLMClient: no AI provider key configured (OPENAI/GEMINI/ANTHROPIC)")
             return None

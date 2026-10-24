@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import {
   Plug, Database, Search, LayoutDashboard, Radar, Gauge, Inbox,
-  LineChart, Compass, Landmark, ClipboardList, Shield, Workflow, MessagesSquare,
+  LineChart, Compass, Landmark, ClipboardList, Shield, Workflow, MessagesSquare, Sparkles,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -82,6 +82,7 @@ export const MODULE_LABEL_KEYS: Record<string, string> = {
   govern: 'settings.module.govern',
   agent_flows: 'settings.module.agent_flows',
   chat: 'settings.module.chat',
+  analyst: 'settings.module.analyst',
   observability: 'settings.module.observability',
   explore_charts: 'settings.module.explore_charts',
   dashboards: 'settings.module.dashboards',
@@ -104,6 +105,7 @@ export const MODULE_ICONS: Record<string, LucideIcon> = {
   // Same icon the sidebar uses for AI Chat, so the row and the nav entry are
   // recognisably the same thing.
   chat: MessagesSquare,
+  analyst: Sparkles,
   workboards: ClipboardList,
   settings: Shield,
 };
@@ -111,7 +113,7 @@ export const MODULE_ICONS: Record<string, LucideIcon> = {
 /** Area groups mirror the sidebar so the access panel is self-labeled. */
 export const MODULE_GROUPS: { key: string; labelKey: string; modules: string[] }[] = [
   { key: 'data', labelKey: 'settings.area.data', modules: ['data_sources', 'datasets'] },
-  { key: 'analyze', labelKey: 'settings.area.analyze', modules: ['explore_charts', 'dashboards', 'observability'] },
+  { key: 'analyze', labelKey: 'settings.area.analyze', modules: ['explore_charts', 'analyst', 'dashboards', 'observability'] },
   // `chat` sits straight after `agent_flows`, mirroring the sidebar: authoring
   // first, then the surface people actually use it through.
   { key: 'intelligence', labelKey: 'settings.area.intelligence', modules: ['intelligence', 'ai_inbox', 'semantics', 'ai_guidance', 'govern', 'agent_flows', 'chat'] },

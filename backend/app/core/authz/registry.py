@@ -50,6 +50,11 @@ MODULES: Tuple[ModuleSpec, ...] = (
     ModuleSpec("agent_flows", enabled=_flag("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED")),
     ModuleSpec("chat", enabled=_flag("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED")),
     ModuleSpec("observability", enabled=_flag("METADATA_CATALOG_ENABLED", "OBSERVABILITY_ENABLED")),
+    # Use of the Analyst (ask questions of governed data). none/view like `chat`:
+    # there is nothing to edit or administer. Holding it is necessary, never
+    # sufficient: explore_charts, the pilot allowlist and each dataset's EXPLORE
+    # relation + GovernAIScope still apply (api/analyst.py, services/analyst).
+    ModuleSpec("analyst", levels=("none", "view"), enabled=_flag("ANALYST_ENABLED")),
     ModuleSpec("explore_charts", pat_eligible=True),
     ModuleSpec("dashboards", pat_eligible=True),
     ModuleSpec("workboards", enabled=_flag("WORKBOARDS_ENABLED"), pat_eligible=True),

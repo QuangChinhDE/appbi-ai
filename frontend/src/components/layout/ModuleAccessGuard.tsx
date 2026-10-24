@@ -17,9 +17,10 @@
  */
 import { useMemo } from 'react';
 import { usePathname } from 'next/navigation';
-import { ShieldOff } from 'lucide-react';
+import { PowerOff, ShieldOff } from 'lucide-react';
 
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
+import { ANALYST_MODULE_ENABLED } from '@/lib/feature-flags';
 import { moduleForPath } from '@/lib/moduleRoutes';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -38,25 +39,30 @@ export function ModuleAccessGuard({ children }: { children: React.ReactNode }) {
   // that wait onto the critical path of every user who does have access, to tidy
   // the console for the rare one who does not. The requests are refused, which is
   // the system working.
+  // A module switched off for this build is not a permission problem: say so,
+  // instead of sending the reader to an administrator for a grant that cannot help.
+  if (module === 'analyst' && !ANALYST_MODULE_ENABLED) return <NoModuleAccess module={module} notEnabled />;
   if (!module || isLoading || isError || !data) return <>{children}</>;
   if (hasPermission(data.permissions, module, 'view')) return <>{children}</>;
 
   return <NoModuleAccess module={module} />;
 }
 
-function NoModuleAccess({ module }: { module: string }) {
+function NoModuleAccess({ module, notEnabled = false }: { module: string; notEnabled?: boolean }) {
   const { t } = useI18n();
+  const name = t(`settings.module.${module}`);
+  const Icon = notEnabled ? PowerOff : ShieldOff;
   return (
-    <div className="flex min-h-[70vh] items-center justify-center p-6">
+    <div className="flex min-h-[70vh] items-center justify-center p-6" data-testid={notEnabled ? 'module-not-enabled' : 'module-no-access'}>
       <div className="max-w-md text-center">
         <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2">
-          <ShieldOff className="h-6 w-6 text-text-tertiary" aria-hidden="true" />
+          <Icon className="h-6 w-6 text-text-tertiary" aria-hidden="true" />
         </div>
         <h1 className="text-title font-emphasis text-text-primary">
-          {t('permissions.noModuleAccess.title')}
+          {notEnabled ? t('permissions.moduleNotEnabled.title', { module: name }) : t('permissions.noModuleAccess.title')}
         </h1>
         <p className="mt-2 text-body text-text-secondary">
-          {t('permissions.noModuleAccess.body', { module: t(`settings.module.${module}`) })}
+          {notEnabled ? t('permissions.moduleNotEnabled.body') : t('permissions.noModuleAccess.body', { module: name })}
         </p>
       </div>
     </div>
