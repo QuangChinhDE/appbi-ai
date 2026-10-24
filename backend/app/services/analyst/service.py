@@ -16,6 +16,7 @@ from app.services.analyst import narrative
 from app.services.analyst.catalog import datasets_named, discover
 from app.services.analyst.planner import (_describe_filter, Clarify, Plan, Unsupported, describe_plan, plan as make_plan, retarget,
                                           validate)
+from app.services.governed_query.ledger import BudgetExceeded
 from app.services.governed_query.principal import GovernedRefusal
 
 
@@ -119,6 +120,15 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         # changes, and the value is checked against the data again before the query.
         outcome = _apply_value_choice(value_choice, catalog)
     else:
+        # The daily query budget is a cost control: once it is spent, the paid model
+        # is not asked to plan a query GQS would refuse anyway (QA live run 2026-10-24).
+        exhausted = getattr(deps.ledger, "user_day_exhausted", None)
+        over = exhausted(principal.user_id) if exhausted else None
+        if over is not None:
+            refusal = BudgetExceeded(*over)
+            steps.append({"step": "governed_query", "detail": f"Từ chối: {refusal.code}"})
+            return {"status": "refused", "turn_id": turn_id, "steps": steps, "code": refusal.code,
+                    "message": refusal.message_vi, "detail": _safe_detail(refusal)}
         named = datasets_named(catalog, question) if prev_explore is None and dataset_id is None else set()
         if named and len(named) < len({c.dataset_id for c in catalog}):
             # the person named these Datasets' metrics (or the Dataset): the planner
