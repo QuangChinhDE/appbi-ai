@@ -382,3 +382,19 @@ def get_chart_active_role_config(config: dict[str, Any] | None) -> dict[str, Any
     if isinstance(config.get("roleConfig"), dict):
         return config.get("roleConfig") or {}
     return {}
+
+
+def role_config_shape_errors(config: dict[str, Any] | None) -> List[str]:
+    """THE role-config shape contract for a chart config about to be stored or run.
+
+    One definition, used by ChartCreate and by every other path that writes or
+    previews a chart config (preview-data, HTML import build/batch, snapshot
+    import/duplicate, fork). It checks the role config the RUNTIME will use (same
+    resolver as the runtime) and skips custom-SQL mode, exactly as ChartCreate
+    does. This is a write-time gate; the semantic engine still refuses an invalid
+    time grain at render (SEC-13), so a config that bypassed or pre-dates this
+    check is still refused when it runs."""
+    role = get_chart_active_role_config(config) or None
+    if role is None or get_chart_query_mode(config) == CHART_QUERY_MODE_CUSTOM:
+        return []
+    return check_role_config_shape(role)

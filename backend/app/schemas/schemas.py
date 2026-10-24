@@ -316,8 +316,11 @@ class ChartCreate(ChartBase):
         if role_to_check is not None and get_chart_query_mode(self.config) != CHART_QUERY_MODE_CUSTOM:
             # Phase-15.82 — structural shape check fires BEFORE required-key
             # check so a malformed `metrics: "foo"` doesn't masquerade as
-            # missing role keys (more helpful error).
-            shape_errors = check_role_config_shape(role_to_check)
+            # missing role keys (more helpful error). The shape contract is the
+            # one every other write path applies too (role_config_shape_errors).
+            from app.schemas.chart_config import role_config_shape_errors
+
+            shape_errors = role_config_shape_errors(self.config)
             if shape_errors:
                 raise ValueError(
                     f"role_config shape errors: {'; '.join(shape_errors)}"

@@ -3221,7 +3221,8 @@ export function ExploreEditor({
                 );
               })()}
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            {/* Below `sm` the run status wraps: unshrinkable, it ran 18px past a 360px phone. */}
+            <div className="flex min-w-0 flex-wrap items-center gap-2 sm:shrink-0 sm:flex-nowrap">
             {isQueryDirty && (
               <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
                 {t('explore.editor.runToRefresh')}
@@ -3381,14 +3382,14 @@ export function ExploreEditor({
       <div className="min-h-0 flex-1 overflow-hidden">
         <div className="flex h-full flex-col gap-4 p-4 lg:flex-row">
           <div className="flex min-h-[24rem] min-w-0 flex-1 flex-col overflow-hidden rounded-[20px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm lg:min-h-0">
-            <div className={`flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] px-4 py-2.5 ${
+            <div data-testid="explore-configure-header" className={`flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-[rgb(var(--border-line))] px-4 py-2.5 ${
               sqlMode === 'custom' ? 'bg-warning/10' : 'bg-surface-2'
             }`}>
-              <div className="flex items-center gap-2 min-w-0">
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.configure')}</span>
                 {selectedDatasetId && (
                   <>
-                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary">{chartType}</span>
+                    <span className="whitespace-nowrap rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary">{chartType}</span>
                     {hasActiveTransforms && (
                       <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">{t('explore.editor.transforms')}</span>
                     )}
@@ -3578,10 +3579,10 @@ export function ExploreEditor({
           </div>
 
           <div className="flex min-h-[24rem] min-w-0 flex-1 flex-col overflow-hidden rounded-[20px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm lg:min-h-0">
-            <div className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] px-4 py-2.5">
+            <div data-testid="explore-preview-header" className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-[rgb(var(--border-line))] px-4 py-2.5">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.preview')}</span>
-                <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
+                <span className="whitespace-nowrap rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
                   {displayedQueryState
                     ? t(displayedQueryState.rows.length === 1 ? 'explore.editor.rowCountOne' : 'explore.editor.rowCountMany', { count: displayedQueryState.rows.length })
                     : t('explore.editor.noRunYet')}

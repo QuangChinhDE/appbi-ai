@@ -147,6 +147,34 @@ class Settings(BaseSettings):
     # NEXT_PUBLIC_* flags) to restore it exactly as it was.
     WORKBOARDS_ENABLED: bool = False
 
+    # ── AppBI Analyst (M2 MVP, the first GQS consumer) ──────────────────
+    # Default OFF: /api/v1/analyst/* is not even mounted until enabled. Every
+    # query it runs goes through the Governed Query Service, the durable ledger
+    # and these SERVER-SIDE budgets (never taken from a request). 0 = unlimited.
+    ANALYST_ENABLED: bool = False
+    # Pilot allowlist: comma-separated e-mails allowed to use the Analyst. EMPTY
+    # MEANS NOBODY (fail closed) - the module permission alone does not open it.
+    ANALYST_PILOT_ALLOWLIST: str = ""
+    # Accepting a dropped filter (a wider answer than asked). OFF until the consent
+    # journey is certified in the browser: with it off a dropped filter is a plain
+    # refusal, the consent endpoint answers 403 and a consent token is never spent.
+    ANALYST_DROP_CONSENT_ENABLED: bool = False
+    # Planner model tier: "default" (gpt-4o-mini, the certified baseline) or
+    # "strong" (the provider's larger model). Changed only on benchmark evidence.
+    ANALYST_PLANNER_MODEL: str = "default"
+    # Test-only AI spending cap (services/llm_test_budget.py). Empty = inert;
+    # refused when ENVIRONMENT=production.
+    LLM_TEST_BUDGET_USD: str = ""
+    LLM_TEST_LEDGER_PATH: str = ""
+    LLM_TEST_PRICES_JSON: str = ""
+    # Test-only: answer planner calls from recorded model outputs (JSONL of
+    # {"question", "followup", "raw"}) instead of calling a model. Refused in production.
+    ANALYST_PLANNER_REPLAY_PATH: str = ""
+    ANALYST_MAX_QUERIES_PER_USER_DAY: int = 200
+    ANALYST_MAX_CONCURRENT_PER_DATASOURCE: int = 4
+    ANALYST_MAX_BQ_BYTES_PER_USER_DAY: int = 20 * 1024**3
+    ANALYST_MAX_ROWS: int = 500
+
     # ── Metadata Catalog / Governance (DB-backed) ───────────────────────
     # Default OFF — the catalog module is fully INERT until enabled (not even
     # imported while off; see app/api/__init__.py). When True, /api/v1/catalog/*
@@ -330,6 +358,13 @@ class Settings(BaseSettings):
     # Hard cap BigQuery enforces on the job itself (QueryJobConfig.maximum_bytes_billed)
     # for user-submitted Query Runner SQL — bounds cost even when the dry run fails.
     BQ_MAX_BYTES_BILLED: int = 60 * 1024**3
+    # ── Governed Query Service bounds (intelligence-foundation spec §2.5) ───────
+    # A request may only LOWER these. The AI BigQuery bytes limit is its OWN hard
+    # limit, not the warehouse ceiling above: the job carries min(this, ceiling).
+    # Per-run / per-user-day BigQuery budgets need the audit ledger (PR-1C/1E).
+    GQS_MAX_ROWS: int = 5_000
+    GQS_TIMEOUT_SECONDS: int = 60
+    AI_BQ_MAX_BYTES_PER_QUERY: int = 1 * 1024**3
 
     # ── Source hardening (docs/features/source-core-hardening/spec.md) ──────────
     # Outbound policy for PostgreSQL/MySQL sources. Private addresses are refused

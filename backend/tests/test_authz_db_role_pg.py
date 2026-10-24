@@ -96,13 +96,27 @@ def test_session_local_uses_the_app_role(monkeypatch):
     monkeypatch.setenv("DATABASE_URL_APP", APP_URL)
     from app.core import config, database
 
-    importlib.reload(config)
-    db_mod = importlib.reload(database)
-    s = db_mod.SessionLocal()
+    # reload() re-runs each module INTO the same module object: a fresh `Base`,
+    # engine and settings replace the ones every model was mapped on. Left in
+    # place, every later test that imports `Base` saw an empty registry
+    # (test_authz_registry failed only when run after this file). Restore both
+    # modules exactly as they were.
+    saved = {m: dict(m.__dict__) for m in (config, database)}
     try:
-        assert s.execute(text("SELECT current_user")).scalar() == "appbi_app"
+        importlib.reload(config)
+        db_mod = importlib.reload(database)
+        s = db_mod.SessionLocal()
+        try:
+            assert s.execute(text("SELECT current_user")).scalar() == "appbi_app"
+        finally:
+            s.close()
+            db_mod.engine.dispose()
+            if db_mod.app_engine is not db_mod.engine:
+                db_mod.app_engine.dispose()
     finally:
-        s.close()
+        for m, d in saved.items():
+            m.__dict__.clear()
+            m.__dict__.update(d)
 
 
 def test_drafts_are_invisible_to_the_app_role(app_role, chunks):

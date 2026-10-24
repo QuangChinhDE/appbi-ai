@@ -303,6 +303,10 @@ def fork_chart_for_report(db: Session, dash, row, *, payload, user):
                                                DashboardChart.id != row.id).first() is None
     )
     if in_place:
+        # The copy branch goes through ChartCreate; the in-place branch writes
+        # chart.config directly, so it gets the same role-config contract here.
+        from app.services.chart_config_guard import require_valid_chart_config
+        require_valid_chart_config(config)
         chart = current
         chart.name = _free_chart_name(db, payload.name, chart.owner_id, exclude_chart_id=chart.id)
         chart.description = payload.description

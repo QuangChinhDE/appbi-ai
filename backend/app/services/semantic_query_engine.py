@@ -35,6 +35,33 @@ import re
 logger = logging.getLogger(__name__)
 
 
+#: The ONLY time grains that may reach SQL generation. A grain is rendered as a
+#: SQL fragment (DATE_TRUNC / TIMESTAMP_TRUNC / DATE_FORMAT), so any value that is
+#: not one of these would be SQL syntax, not data. This is the render-boundary
+#: authority; `app.schemas.chart_config.check_role_config_shape` enforces the same
+#: five at the API layer, but the engine never trusts that an input was validated.
+VALID_TIME_GRAINS = frozenset({"day", "week", "month", "quarter", "year"})
+
+
+class InvalidTimeGrainError(ValueError):
+    """A time grain that is not one of VALID_TIME_GRAINS reached SQL generation.
+    A ValueError, so the chart/semantic layer surfaces it as a 400 refusal and
+    never a silent fall-back to another grain (which would answer a different
+    question than the one asked)."""
+
+
+def normalize_time_grain(grain: Any) -> str:
+    """Canonical lower-case grain, or raise. The one gate every render path for a
+    time grain passes through. It never maps an unknown value to a default."""
+    g = str(grain).strip().lower() if grain is not None else ""
+    if g not in VALID_TIME_GRAINS:
+        raise InvalidTimeGrainError(
+            f"Độ chi tiết thời gian không hợp lệ: {grain!r}. "
+            f"Chỉ chấp nhận: {', '.join(sorted(VALID_TIME_GRAINS))}."
+        )
+    return g
+
+
 class AmbiguousFieldError(ValueError):
     """Raised when a bare field reference (no view prefix) matches multiple
     views in the dataset. The chart layer catches this to surface a
@@ -1308,10 +1335,28 @@ class SemanticQueryEngine:
         phys = (dim or {}).get("source_type") or self._physical_source_type(view, col)
         return is_instant_column(phys, (dim or {}).get("type"))
 
+    def _dimension_is_calendar_date(self, field_ref: str) -> bool:
+        """True when the dimension is a calendar DATE (no time of day): its physical
+        type is DATE, or - with no physical type recorded - its model type is date."""
+        try:
+            view_name, col = self._parse_field_ref(field_ref)
+        except ValueError:
+            return False
+        view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
+        if view is None:
+            return False
+        dim = next((d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col), None) or {}
+        phys = str(dim.get("source_type") or self._physical_source_type(view, col) or "").strip().lower()
+        if phys:
+            return phys == "date"
+        return str(dim.get("type") or "").strip().lower() == "date"
+
     @staticmethod
     def _truncate_date_sql(date_sql: str, grain: str, dialect: str) -> str:
-        """Start of the `grain` bucket of a DATE expression (ISO Monday weeks)."""
-        g = (grain or "day").lower()
+        """Start of the `grain` bucket of a DATE expression (ISO Monday weeks).
+        `grain` is validated here (not mapped to a default) so this helper is
+        safe even if a future caller reaches it without pre-validating."""
+        g = normalize_time_grain(grain)
         if dialect == "bigquery":
             if g == "day":
                 return date_sql
@@ -1327,8 +1372,6 @@ class SemanticQueryEngine:
             if g == "year":
                 return f"MAKEDATE(YEAR({date_sql}), 1)"
             return date_sql
-        if g not in {"day", "week", "month", "quarter", "year"}:
-            g = "day"
         return f"DATE_TRUNC('{g}', {date_sql})"
 
     def _render_dimension_with_time_grain(
@@ -1348,6 +1391,12 @@ class SemanticQueryEngine:
         start, matching ISO-8601 (which is what DATE_TRUNC('week', ...)
         does on PG/DuckDB).
         """
+        # THE render boundary for a time grain (SEC-13). Every path that turns a
+        # grain into SQL — dimension SELECT, WHERE, the instant/timezone path
+        # below, every dialect — passes here first. Validate once, up front, and
+        # use the normalized value everywhere: an unknown grain is a refusal, not
+        # a silent fall-back, and never reaches a SQL fragment.
+        grain = normalize_time_grain(grain)
         base_sql = self._render_dimension(field_ref, view_alias)
         dialect = (self.database_type or "").lower()
         # A time grain over a column that is PHYSICALLY TEXT is invalid SQL, not a
@@ -1410,6 +1459,11 @@ class SemanticQueryEngine:
             return f"DATE({base_sql})"
 
         # PostgreSQL + DuckDB both support DATE_TRUNC with text-literal grain.
+        if dialect in {"postgresql", "postgres"} and self._dimension_is_calendar_date(field_ref):
+            # Postgres DATE_TRUNC over a DATE returns timestamptz (midnight UTC); a browser
+            # shows that instant in its own zone - 07:00, or the previous day west of UTC.
+            # A DATE bucket stays a DATE. A TIMESTAMP column keeps its instant semantics.
+            return f"CAST(DATE_TRUNC('{grain}', {base_sql}) AS DATE)"
         return f"DATE_TRUNC('{grain}', {base_sql})"
     
     def _render_symmetric_aggregate(
@@ -3868,16 +3922,16 @@ class SemanticQueryEngine:
         return f"({result})"
     
     def _validate_calculated_field_safety(self, sql: str):
-        """Validate calculated field SQL for safety"""
-        sql_upper = sql.upper()
-        dangerous_keywords = [
-            'DROP', 'DELETE', 'INSERT', 'UPDATE', 'CREATE', 'ALTER', 
-            'TRUNCATE', 'EXEC', 'EXECUTE', ';'
-        ]
-        
-        for keyword in dangerous_keywords:
-            if keyword in sql_upper:
-                raise ValueError(f"Calculated field contains forbidden keyword: {keyword}")
+        """Validate calculated field SQL against the AST allow-list (SEC-01).
+
+        Was a substring list of DDL/DML words: a scalar subquery reading any table
+        the source credential can read passed it, and `updated_at` failed it.
+        The policy lives in `calculated_field_policy`; it raises a ValueError
+        (400 at the API) before anything is rendered.
+        """
+        from app.services.calculated_field_policy import validate_calculated_field
+
+        validate_calculated_field(sql, dialect=getattr(self, "database_type", None))
     
     def _snapshot_renamed_columns(self, tid) -> Dict[str, str]:
         """``{original_name: safe_name}`` for columns of dataset_table ``tid``

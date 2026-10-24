@@ -1085,6 +1085,120 @@ def _allocate_unique_semantic_model_name(
     return f"{desired} [{suffix}]"
 
 
+# A dimension is a friendly mapping over ONE column (DimensionDefinition), so
+# the generator owns which dimensions exist (one per column) and their default
+# type, while the owner owns what they edit. `user_edited` is stamped by the
+# server on the write paths (never trusted from a client) when a stored
+# dimension's authored keys change; sync then keeps that definition instead of
+# regenerating it. Column visibility stays with the dataset table.
+# glossary_terms: the governed business words linked to the dimension (Analyst vocabulary)
+_AUTHORABLE_DIMENSION_KEYS = ("type", "sql", "label", "description", "parent", "glossary_terms")
+# Facts about the physical column: always the generator's, edited or not.
+_GENERATOR_OWNED_DIMENSION_KEYS = ("hidden", "source_type")
+_LEGACY_DESCRIPTIVE_KEYS = ("label", "description", "parent")
+#: generated type -> semantic types a person may declare over that physical type. A legacy
+#: (unflagged) dimension whose stored type is one of these, over an UNCHANGED physical
+#: type, was re-typed by a person: kept. The engine's physical-type guards (STRING-date
+#: conversion, SUM-over-STRING) still decide whether a query on it can run.
+#: Only types MORE SPECIFIC than the physical one count: a plain string/number is what a
+#: generator emits, so a legacy string/number still follows its source (issue #11).
+_LEGACY_RETYPING = {"string": {"yesno", "date", "datetime"}, "number": {"yesno"}, "datetime": {"date"}}
+
+
+def _authored_part(dim: dict) -> dict:
+    """What the owner can author, normalized so a schema round-trip (defaults
+    filled in, `${TABLE}.col` vs `col`) is not mistaken for an edit."""
+    out = {}
+    for k, v in dim.items():
+        # Only keys the owner can write count: generator-only keys such as
+        # `source_type` are dropped by the PUT schema and must not read as an edit.
+        if k not in _AUTHORABLE_DIMENSION_KEYS or v is None or v == "" or v is False or v == []:
+            continue
+        if k == "sql" and isinstance(v, str):
+            v = v.strip().rsplit("}", 1)[-1].lstrip(".").rsplit(".", 1)[-1]
+        out[k] = v
+    return out
+
+
+def stamp_authored_dimensions(incoming: list[dict], stored: list[dict] | None) -> list[dict]:
+    """Mark the dimensions this write changed (or that were changed before) as
+    user-edited. A dimension the request sends back unchanged keeps its flag;
+    a new name is authored by definition."""
+    stored_by_name = {
+        str(d.get("name")): d for d in (stored or []) if isinstance(d, dict) and d.get("name")
+    }
+    out: list[dict] = []
+    for dim in incoming:
+        if not isinstance(dim, dict):
+            continue
+        dim = {k: v for k, v in dim.items() if k != "user_edited"}
+        prev = stored_by_name.get(str(dim.get("name") or ""))
+        # The PUT schema drops generator-owned keys; carry them over from the
+        # stored dimension. `source_type` is how the engine knows a column is
+        # physically text and must be converted before a time grain — losing
+        # it sent TIMESTAMP_TRUNC(STRING) to BigQuery.
+        for k in _GENERATOR_OWNED_DIMENSION_KEYS:
+            if k != "hidden" and prev is not None and k in prev:
+                dim[k] = prev[k]
+        if prev is None or prev.get("user_edited") or _authored_part(prev) != _authored_part(dim):
+            dim["user_edited"] = True
+        out.append(dim)
+    return out
+
+
+def merge_synced_dimensions(generated: list[dict], existing: list[dict] | None) -> list[dict]:
+    """The dimensions a sync should store: one per current column, the owner's
+    definition where they edited it, the regenerated one otherwise. A dimension
+    whose column is gone is dropped either way (it could only fail to query)."""
+    existing_by_name = {
+        str(d.get("name")): d for d in (existing or []) if isinstance(d, dict) and d.get("name")
+    }
+    merged: list[dict] = []
+    for item in generated:
+        kept = existing_by_name.get(str(item.get("name") or ""))
+        if kept is None:
+            merged.append(item)
+            continue
+        if not kept.get("user_edited"):
+            # Stored before the flag existed: provenance unknown. Every earlier sync
+            # rewrote the generated label/description/parent, so one that differs now
+            # was written by a person: keep it.
+            legacy = {k: kept[k] for k in _LEGACY_DESCRIPTIVE_KEYS
+                      if kept.get(k) not in (None, "") and kept.get(k) != item.get(k)}
+            # Gate 2 (real metadata, 2026-10-23): 21 of 2,077 stored dimensions carried a
+            # person's semantic type (e.g. is_weekend: yesno) that a sync over an unchanged
+            # source would have silently reset. The stored physical source_type tells a
+            # source change from a re-typing: same physical type + a known re-typing ->
+            # kept; otherwise regenerated WITH a review marker (never silently).
+            old_t, new_t = kept.get("type"), item.get("type")
+            if old_t and new_t and old_t != new_t:
+                same_physical = (kept.get("source_type") or None) == (item.get("source_type") or None)
+                if same_physical and old_t in _LEGACY_RETYPING.get(str(new_t), ()):
+                    legacy["type"] = old_t
+                elif old_t in ("string", "number"):
+                    pass  # a generator's own plain type: follows its source (issue #11)
+                else:
+                    legacy["type_review"] = {"previous_type": old_t, "reason": (
+                        "physical type changed" if not same_physical else "not a re-typing of the physical type")}
+                    logger.warning("semantic sync: dimension %s type %s -> %s needs owner review (%s)",
+                                   item.get("name"), old_t, new_t, legacy["type_review"]["reason"])
+            # Unknown provenance: a stored hidden dimension is not exposed by a sync (an
+            # older generator default or a person's choice - either way visibility is
+            # changed only by a person).
+            if kept.get("hidden") and not item.get("hidden"):
+                legacy["hidden"] = True
+            merged.append({**item, **legacy} if legacy else item)
+            continue
+        kept = dict(kept)
+        for k in _GENERATOR_OWNED_DIMENSION_KEYS:
+            if k in item:
+                kept[k] = item[k]
+            else:
+                kept.pop(k, None)
+        merged.append(kept)
+    return merged
+
+
 def _upsert_semantic_view(
     db: Session,
     *,
@@ -1155,6 +1269,7 @@ def _upsert_semantic_view(
         # Pass view.measures directly (not `or []`) so merge can distinguish
         # "user explicitly cleared to []" from "never set".
         next_measures = merge_existing_measures(measures, view.measures)
+        dimensions = merge_synced_dimensions(dimensions, view.dimensions)
         changed = (
             view.name != name
             or view.sql_table_name != sql_table_name
@@ -1949,7 +2064,7 @@ def _model_views_drifted(db: Session, dataset_id: int) -> bool:
         if view is None:
             return True  # issue #12: a table with data but no view IS drift
         expected_dims, _ = _classify_columns(t.columns_cache, auto_generate_measures=auto_measures)
-        if _dim_signature(expected_dims) != _dim_signature(view.dimensions):
+        if _dim_signature(merge_synced_dimensions(expected_dims, view.dimensions)) != _dim_signature(view.dimensions):
             return True  # issue #11: name-or-type change
         # Stale definition: a measure/dimension referencing a column no longer
         # in columns_cache — `${TABLE}.col` inside its SQL, source_columns and

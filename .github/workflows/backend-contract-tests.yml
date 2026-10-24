@@ -98,6 +98,48 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python scripts/ci/check_tier1_oracles.py
 
+      # THE KNOWN-DEFECT LEDGER, RUN ON ITS OWN SO IT IS READ.
+      #
+      # Each Phase 0 security finding is an executable statement of the SAFE
+      # behaviour. A reproduced defect is `xfail(strict=True)`: `-rxX` prints
+      # every one by name in the log. The day a fix lands its test XPASSes and
+      # this step fails until the marker is removed in the same change, so a
+      # defect can neither be fixed silently nor "closed" without its lock.
+      # The matrix: docs/features/intelligence-foundation/security-matrix.md
+      # The sealed-eval harness rides in the same step: its guarantees (oracle
+      # equals hand-computed values, runtime cannot import it, leaks excluded)
+      # are part of the same foundation and must be read the same way.
+      - name: Phase 0 security reproduction ledger (xfail = reproduced defect)
+        run: |
+          python -m pytest -q --tb=short -rxX -p no:cacheprovider \
+            tests/test_intelligence_phase0_security_repro.py \
+            tests/test_intelligence_eval_harness.py \
+            tests/test_intelligence_calc_field_policy.py \
+            tests/test_intelligence_knowledge_quarantine.py \
+            tests/test_intelligence_effective_principal.py \
+            tests/test_analyst_narrative.py \
+            tests/test_analyst_planner.py \
+            tests/test_analyst_catalog_reach.py \
+            tests/test_analyst_grounding.py \
+            tests/test_analyst_intent_obligations.py \
+            tests/test_analyst_intent.py \
+            tests/test_llm_test_budget.py \
+            tests/test_intelligence_gqs_core.py
+
+      # WHAT THE ANALYST IS SHOWN AS EVIDENCE, AND WHAT A METRIC MEANS.
+      #
+      # These three suites were committed and never ran in any workflow
+      # (AppBI Intelligence 0G). They lock the one evidence shape every
+      # consumer receives, the answer/abstain/conflict verdict over document
+      # evidence, and that a measure reaches the model with its recorded
+      # formula and unit even when nobody wrote a description.
+      - name: AI evidence + metric-meaning contracts
+        run: |
+          python -m pytest -q --tb=short -p no:cacheprovider \
+            tests/test_knowledge_hit_contract.py \
+            tests/test_govern_doc_answerability.py \
+            tests/test_semantic_level0.py
+
       - name: Run semantic-contract + engine unit tests (no BigQuery)
         # THE FAILURE HAS TO BE READABLE BY WHOEVER SEES IT GO RED.
         #
@@ -122,6 +164,8 @@ jobs:
             tests/test_source_manual_ingestion.py \
             tests/test_semantic_measure_render.py \
             tests/test_dialect_structural.py \
+            tests/test_time_grain_whitelist.py \
+            tests/test_chart_config_write_validation.py \
             tests/test_agent_flow_golden.py \
             tests/test_agent_tool_registry.py \
             tests/test_tool_authorization_metadata.py \
@@ -248,6 +292,7 @@ jobs:
             tests/test_semantic_state_contracts.py \
             tests/test_semantic_error_contracts.py \
             tests/test_relationship_contract.py \
+            tests/test_semantic_sync_preserves_dimensions.py \
             tests/test_public_authoritative_bounds.py \
             tests/test_publish_candidate_generation.py \
             tests/test_gc_fails_closed.py \
@@ -600,6 +645,15 @@ jobs:
           python -m pytest -q -p no:cacheprovider \
             tests/test_pair4_surfaces_pg.py
 
+      # Model sync keeps what the owner authored on a dimension (P1): edited
+      # through the real PUT route, regenerated through Generate model (force),
+      # then read back by the Dataset model, a saved chart and a public
+      # dashboard tile against a hand-computed oracle.
+      - name: "GATE — semantic sync keeps authored dimensions (Postgres)"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_semantic_sync_authored_dims_pg.py
+
       # Source / Data Prep / Snapshot <-> Drift / Health / Quality /
       # Observability (Pair #5): a calculated column is the Kernel's true
       # division on every engine; the transformation chain runs in order or
@@ -634,6 +688,25 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_semantic_cross_view_formula_mysql_pg.py
+      # GQS executor bounds + cancellation on this job's real MySQL 8.4: the row
+      # cap, the READ ONLY refusal, KILL QUERY stopping a running statement, and
+      # another MySQL user unable to kill it. GQS_MYSQL_REQUIRED makes a missing
+      # MySQL a failure, never a skip.
+      - name: "GATE — GQS bounds + cancellation on MySQL"
+        env:
+          GQS_MYSQL_ROOT_URL: "mysql://root:appbi@127.0.0.1:3306"
+          GQS_MYSQL_REQUIRED: "1"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_intelligence_gqs_mysql_runtime.py
+      # BigQuery runtime evidence needs the QA warehouse credential, which CI does
+      # not have: here the module SKIPS, and a skip is not coverage. The gate is
+      # registered `manual` (intelligence_gqs_bigquery) and reported NOT VERIFIED
+      # unless run locally with GQS_BQ_DATASOURCE_ID on the approved QA project.
+      - name: "GQS BigQuery runtime (skips without the QA credential)"
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            tests/test_intelligence_gqs_bigquery_runtime.py
   # ── Authorization / security gate ─────────────────────────────────────────
   #
   # EVERY MODULE MOUNTED, PINNED DEPENDENCIES, REAL POSTGRES ROLES.
@@ -667,13 +740,30 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      # GQS end to end on a MySQL source (metadata + ledger in the Postgres above,
+      # data in MySQL): test_intelligence_gqs_mysql_fullpath_pg.py. Root is used
+      # only by the fixture to create a read-only user and the source tables.
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: appbi
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -pappbi --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
     env:
       PYTHONPATH: ${{ github.workspace }}/backend
       ENVIRONMENT: test
+      GQS_MYSQL_ROOT_URL: "mysql://root:appbi@127.0.0.1:3306"
+      GQS_MYSQL_REQUIRED: "1"
       METADATA_CATALOG_ENABLED: "true"
       GOVERN_ENABLED: "true"
       WORKBOARDS_ENABLED: "true"
       OBSERVABILITY_ENABLED: "true"
+      ANALYST_ENABLED: "true"
       AUTHZ_PG_REQUIRED: "1"
       AUTHZ_PG_OWNER_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
       AUTHZ_PG_APP_URL: "postgresql://appbi_app:appbi_app@localhost:5432/appbi"
@@ -741,7 +831,34 @@ jobs:
             tests/test_authz_chart_sql_http_pg.py \
             tests/test_authz_audit_http_pg.py \
             tests/test_authz_workboard_rows_rls_pg.py \
+            tests/test_time_grain_whitelist_http_pg.py \
+            tests/test_chart_config_write_validation_http_pg.py \
+            tests/test_intelligence_studio_test_scope_http_pg.py \
+            tests/test_intelligence_table_preview_http_pg.py \
+            tests/test_intelligence_knowledge_quarantine_http_pg.py \
+            tests/test_intelligence_gqs_execution_pg.py \
+            tests/test_intelligence_gqs_date_range_pg.py \
+            tests/test_intelligence_gqs_cancel_pg.py \
+            tests/test_intelligence_gqs_ledger_pg.py \
+            tests/test_analyst_http_pg.py \
+            tests/test_intelligence_gqs_mysql_fullpath_pg.py \
+            tests/test_intelligence_gqs_ledger_schema_pg.py \
             --junitxml=/tmp/authz-pg.xml
+
+      # A KNOWN-DEFECT LEDGER ON POSTGRES, RUN ON ITS OWN SO IT IS READ.
+      #
+      # SEC-13 (security-matrix.md) is reproduced over HTTP: `xfail(strict=True,
+      # raises=REPRODUCED)`. It is NOT in the authz-pg JUnit report on purpose: an
+      # xfail is reported as "skipped", and the skip check below must keep failing
+      # on any genuinely skipped security test. `-rxX` prints the reproduction by
+      # name. When the fix lands the test XPASSes, this step fails, and the marker
+      # is removed in the same change.
+      - name: "Security ledger on Postgres (xfail = reproduced defect)"
+        env:
+          DATABASE_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
+        run: |
+          python -m pytest -q --tb=short -rxX -p no:cacheprovider \
+            tests/test_intelligence_sec13_grain_injection_http_pg.py
 
       # EVERY MANDATORY SECURITY SUITE, NOT JUST THE FIRST.
       #

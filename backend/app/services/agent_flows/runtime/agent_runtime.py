@@ -60,6 +60,8 @@ logger = logging.getLogger(__name__)
 _FINAL_ERROR_CODES = frozenset({
     "chart_out_of_scope", "not_granted", "bad_argument", "bad_tool_arguments",
     "not_applicable", "no_data", "doc_out_of_scope", "unsupported_dimension",
+    # Retrying cannot help inside the turn: the policy store is unavailable.
+    "policy_unavailable",
 })
 
 #: How many ignored recoveries a node tolerates before it stops offering tools.
