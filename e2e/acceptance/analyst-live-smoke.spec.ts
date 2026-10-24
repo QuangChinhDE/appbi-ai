@@ -130,6 +130,13 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   }
   results.push(row);
 
+  // 9. the second engine (MySQL marketing spend): its numbers are checked like the rest
+  await fresh();
+  r = await askLive(page, 'Chi phí marketing năm 2025 của từng kênh là bao nhiêu?');
+  row = { n: 9, q: 'marketing spend by channel 2025 (MySQL)', outcome: r.kind };
+  if (r.kind === 'analyst-answer') row = { ...row, match: matches(await tableOf(r.ex), 'marketing_channel_2025') };
+  results.push(row); await snap('9-mysql');
+
   // 8. a first-visit example (built from the person's own sources) is answerable
   await fresh();
   await page.reload();
