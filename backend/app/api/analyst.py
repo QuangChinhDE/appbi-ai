@@ -140,7 +140,7 @@ def consent(body: ConsentBody,
     from app.core.config import settings
 
     if not getattr(settings, "ANALYST_DROP_CONSENT_ENABLED", False):
-        raise HTTPException(status_code=403, detail="Accepting a dropped filter is not enabled in this pilot.")
+        raise HTTPException(status_code=403, detail="Accepting a dropped filter is not enabled on this server.")
     from app.services.governed_query import consent as c
 
     return {"drop_consent": c.issue(user_id=user.id, query_fp=body.query_fingerprint, fields=body.fields),

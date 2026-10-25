@@ -131,7 +131,7 @@ test('A · login, sidebar by permission, header, sources, EN/VI, refresh keeps t
   await nav.first().click();
   await expect(page).toHaveURL(/\/analyst$/);
   await expect(page.getByRole('heading', { level: 1 })).toContainText('AppBI Analyst');
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Internal AI Preview — NOT CERTIFIED');
+  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Accuracy not certified');
   await expect(page.getByTestId('analyst-warning')).toBeVisible();
   await expect(page.getByTestId('analyst-question')).toBeEnabled();          // the warning never blocks asking
   await page.getByTestId('analyst-sources').getByRole('button').first().click();
@@ -141,15 +141,15 @@ test('A · login, sidebar by permission, header, sources, EN/VI, refresh keeps t
   // language: the user menu, as a person switches it
   await page.getByRole('button', { name: /^Q$/ }).click();
   await page.getByRole('button', { name: /Tiếng Việt|Vietnamese/ }).click();
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Bản xem trước AI nội bộ — CHƯA CHỨNG NHẬN');
-  await expect(page.getByTestId('analyst-warning')).toHaveText('Kết quả AI đang trong giai đoạn thử nghiệm. Hãy kiểm tra số liệu và nguồn trước khi sử dụng cho quyết định nghiệp vụ.');
+  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Chưa chứng nhận độ chính xác');
+  await expect(page.getByTestId('analyst-warning')).toHaveText('Câu trả lời chỉ đến từ truy vấn có quản trị trên dữ liệu bạn được đọc, nhưng độ chính xác chưa được chứng nhận. Hãy kiểm tra số liệu và nguồn trước khi dùng cho quyết định nghiệp vụ.');
   await shot(page, info, 'A2-vietnamese');
   await page.reload();                                           // refresh keeps auth AND language
   await expect(page.getByTestId('analyst-page')).toBeVisible();
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Bản xem trước AI nội bộ — CHƯA CHỨNG NHẬN');
+  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Chưa chứng nhận độ chính xác');
   await page.getByRole('button', { name: /^Q$/ }).click();
   await page.getByRole('button', { name: /English|Tiếng Anh/ }).click();
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Internal AI Preview — NOT CERTIFIED');
+  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Accuracy not certified');
 });
 
 test('A · first visit: how-to steps and example questions built from the person\'s own sources', async ({ page }, info) => {

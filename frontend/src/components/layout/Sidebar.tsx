@@ -93,21 +93,28 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    // Intelligence = the knowledge system feeding AI Insight. Five modules,
-    // one job each; all gated by the existing 'govern' permission key.
-    labelKey: 'sidebar.group.intelligence',
+    // AI = the two ways a person USES AI, side by side so the difference is
+    // visible: an assistant to talk to (Chat: shared Agent Flows and their
+    // knowledge) and governed analysis of their own data (Analyst: semantic
+    // Datasets, verified numbers). Two engines, two module keys - each entry is
+    // gated by its own permission, so one never implies the other.
+    labelKey: 'sidebar.group.ai',
     items: [
+      // The reading side of Agent Flows, and its OWN key. It shared `agent_flows`
+      // until letting somebody ask an assistant also let them into the builder.
+      // WHICH assistants appear is still decided per user by sharing.
+      { labelKey: 'sidebar.nav.aiChat', href: '/chat', icon: <MessagesSquare className="h-4 w-4" />, module: 'chat' },
       ...(ANALYST_MODULE_ENABLED
         ? [{ labelKey: 'sidebar.nav.analyst', href: '/analyst', icon: <Sparkles className="h-4 w-4" />, module: 'analyst' as const }]
         : []),
+    ],
+  },
+  {
+    // Intelligence = the knowledge system and the flows that feed the AI above.
+    labelKey: 'sidebar.group.intelligence',
+    items: [
       { labelKey: 'sidebar.nav.knowledgeHub', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
       { labelKey: 'sidebar.nav.agentFlows', href: '/agent-flows', icon: <Workflow className="h-4 w-4" />, module: 'agent_flows' },
-      // The reading side, and its OWN key. It shared `agent_flows` until this
-      // was the only place in the product where two nav entries pointed at one
-      // module — which meant letting somebody ask an assistant a question also
-      // let them into the flow builder. WHICH assistants appear is still decided
-      // per user by sharing; an empty list explains itself on the page.
-      { labelKey: 'sidebar.nav.aiChat', href: '/chat', icon: <MessagesSquare className="h-4 w-4" />, module: 'chat' },
     ],
   },
   {

@@ -49,7 +49,7 @@ async function ask(page: Page, q: string) {
 test('dogfood: label, one source per dataset, ranking order, readable evidence, new question, value pick', async ({ page }) => {
   await login(page, 'qa-analyst');
   await page.goto('/analyst');
-  await expect(page.getByTestId('analyst-preview-label')).toContainText(/NOT CERTIFIED|CHƯA CHỨNG NHẬN/);
+  await expect(page.getByTestId('analyst-preview-label')).toContainText(/not certified|chưa chứng nhận/i);
 
   await page.getByTestId('analyst-sources').getByRole('button').first().click();
   const sources = page.getByTestId('analyst-source');

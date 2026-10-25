@@ -995,9 +995,9 @@ export const agentFlowsCatalog: ModuleCatalog = {
     'agentFlows.binding.summaryNotReady': 'Not ready. See step 3',
 
     // ── AI Chat: the reading side of this module ──────────────────────────
-    'chat.title': 'AI Chat',
+    'chat.title': 'AI Assistant',
     'chat.description': 'Ask an assistant your team has published. Each one answers only from the sources its author attached — sharing an assistant lends you its author\u2019s access to those sources.',
-    'chat.overviewTitle': 'AI Chat',
+    'chat.overviewTitle': 'AI Assistant',
     'chat.stat.assistants': 'Assistants',
     'chat.stat.conversations': 'Conversations',
     'chat.stat.knowledge': 'Attached sources',
@@ -2056,9 +2056,9 @@ export const agentFlowsCatalog: ModuleCatalog = {
     'agentFlows.binding.summaryNotReady': 'Chưa đủ điều kiện. Xem bước 3',
 
     // ── AI Chat ───────────────────────────────────────────────────────────
-    'chat.title': 'Chat AI',
+    'chat.title': 'Trợ lý AI',
     'chat.description': 'Hỏi các trợ lý mà đội của bạn đã phát hành. Mỗi trợ lý chỉ trả lời từ những nguồn tác giả đã gắn — được chia sẻ trợ lý là được mượn quyền đọc của tác giả trên đúng các nguồn đó.',
-    'chat.overviewTitle': 'Chat AI',
+    'chat.overviewTitle': 'Trợ lý AI',
     'chat.stat.assistants': 'Trợ lý',
     'chat.stat.conversations': 'Cuộc trò chuyện',
     'chat.stat.knowledge': 'Nguồn được gắn',
