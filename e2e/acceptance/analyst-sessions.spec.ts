@@ -86,6 +86,7 @@ async function ask(page: Page, q: string): Promise<Locator> {
 }
 
 async function tableOf(scope: Locator): Promise<Record<string, number>> {
+  await expect(scope.getByTestId('analyst-table')).toBeVisible();   // a reloaded session renders after its fetch
   const rows = await scope.getByTestId('analyst-table').locator('tbody tr').evaluateAll((trs) =>
     trs.map((tr) => Array.from(tr.querySelectorAll('td')).map((td) => (td.textContent || '').trim())));
   const out: Record<string, number> = {};
@@ -137,6 +138,17 @@ test.beforeAll(async () => {
   expect((await a.level('qa-viewer', 'view')).status()).toBe(200);
   await a.grant('qa-analyst', 'build');
   await a.revoke('qa-viewer');                      // the recipient holds NO grant on the Dataset
+  await a.ctx.dispose();
+});
+
+// Put the seeded fixtures back (the other acceptance suites depend on them):
+// qa-viewer holds VIEW (not explore) on the Dogfood Datasets; qa-analyst is analyst: view, no chat.
+test.afterAll(async () => {
+  const a = await adminApi();
+  await a.revoke('qa-viewer');
+  expect((await a.grant('qa-viewer', 'view')).status()).toBe(200);
+  expect((await a.level('qa-analyst', 'view', { chat: 'none' })).status()).toBe(200);
+  expect((await a.level('qa-viewer', 'view')).status()).toBe(200);
   await a.ctx.dispose();
 });
 
@@ -215,7 +227,7 @@ test('S4 · shared at view with someone WITHOUT the Dataset: questions only, num
 
 test('S5 · the same recipient, once the Dataset itself is granted, sees the numbers - and loses them on revoke', async ({ page }) => {
   const a = await adminApi();
-  await a.grant('qa-viewer', 'explore');                      // precondition: the Dataset's own grant
+  expect((await a.grant('qa-viewer', 'explore')).status()).toBe(200);   // precondition: the Dataset's own grant
   await login(page, 'qa-viewer');
   await page.goto(sessionUrl);
   expectOracle(await tableOf(page.getByTestId('analyst-exchange').first()), 'north_channel_2025');
@@ -238,6 +250,7 @@ test('S6 · edit share: the recipient may ask, as themselves (no Dataset -> no n
 
   await login(page, 'qa-viewer');
   await page.goto(sessionUrl);
+  await expect(page.getByTestId('analyst-exchange')).toHaveCount(2);         // the stored turns have rendered
   await expect(page.getByTestId('analyst-read-only')).toHaveCount(0);
   const ex = await ask(page, Q1);
   await expect(ex.getByTestId('analyst-table')).toHaveCount(0);   // their own rights: no explore grant
@@ -263,9 +276,11 @@ test('S7 · revoking the share in the dialog removes access on the next load; th
 
 test('S8 · team share reads; leaving the team removes it', async ({ page }) => {
   const a = await adminApi();
-  const team = await (await a.ctx.post('/api/v1/permissions/teams', {
+  const created = await a.ctx.post('/api/v1/permissions/teams', {
     headers: a.headers, data: { name: `QA analyst team ${Date.now()}`, member_ids: [a.userId('qa-viewer'), a.userId('qa-analyst')] },
-  })).json();                                                           // precondition: a configured team
+  });                                                                  // precondition: a configured team
+  expect(created.status()).toBe(201);
+  const team = await created.json();
   await login(page, 'qa-analyst');
   await page.goto(sessionUrl);
   await page.getByTestId('analyst-session-share').click();
@@ -280,7 +295,8 @@ test('S8 · team share reads; leaving the team removes it', async ({ page }) => 
   await login(page, 'qa-viewer');
   await page.goto(sessionUrl);
   await expect(page.getByTestId('analyst-session-title')).toBeVisible();
-  await a.ctx.patch(`/api/v1/permissions/teams/${team.id}`, { headers: a.headers, data: { member_ids: [a.userId('qa-analyst')] } });
+  const left = await a.ctx.put(`/api/v1/permissions/teams/${team.id}`, { headers: a.headers, data: { member_ids: [a.userId('qa-analyst')] } });
+  expect(left.status(), 'precondition: qa-viewer leaves the team').toBe(200);
   await page.reload();
   await expect(page.getByText(/analysis not available|không mở được phiên phân tích/i)).toBeVisible();
   await a.ctx.delete(`/api/v1/permissions/teams/${team.id}`, { headers: a.headers });
