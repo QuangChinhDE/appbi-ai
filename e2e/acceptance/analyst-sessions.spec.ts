@@ -63,7 +63,8 @@ async function adminApi() {
   const userId = (who: string) => users.find((u: { email: string }) => u.email === `${who}@${DOMAIN}`).user_id as string;
   return {
     ctx, headers, ds, userId,
-    level: (who: string, analyst: string) => ctx.put(`/api/v1/permissions/${userId(who)}`, { headers, data: { permissions: { analyst } } }),
+    level: (who: string, analyst: string, extra: Record<string, string> = {}) =>
+      ctx.put(`/api/v1/permissions/${userId(who)}`, { headers, data: { permissions: { analyst, ...extra } } }),
     revoke: (who: string) => ctx.delete(`/api/v1/datasets/${ds}/grants?user_id=${userId(who)}`, { headers }),
     grant: (who: string, verb: string) => ctx.post(`/api/v1/datasets/${ds}/grants`, { headers, data: { verb, user_id: userId(who) } }),
   };
@@ -108,9 +109,14 @@ function recordResponses(page: Page) {
   return bodies;
 }
 
+/** The share dialog. AppBI's Modal carries no dialog role, so it is found by its own content. */
+function shareDialog(page: Page) {
+  return page.locator('div.space-y-5').filter({ has: page.getByPlaceholder(/search by name or email|tìm theo tên hoặc email/i) });
+}
+
 async function shareWith(page: Page, who: string, permission: 'view' | 'edit') {
   await page.getByTestId('analyst-session-share').click();
-  const dialog = page.getByRole('dialog');
+  const dialog = shareDialog(page);
   await expect(dialog).toBeVisible();
   await dialog.getByPlaceholder(/search by name or email|tìm theo tên hoặc email/i).fill(`${who}@${DOMAIN}`);
   await dialog.getByRole('button', { name: new RegExp(`${who}@${DOMAIN}`) }).click();
@@ -126,7 +132,8 @@ let sessionUrl = '';
 // ── preconditions ──────────────────────────────────────────────────────────────
 test.beforeAll(async () => {
   const a = await adminApi();
-  expect((await a.level('qa-analyst', 'edit')).status(), 'precondition: owner may share (analyst: edit)').toBe(200);
+  // owner may share (analyst: edit) and also holds AI Chat, so both AI modes are offered to them
+  expect((await a.level('qa-analyst', 'edit', { chat: 'view' })).status(), 'precondition: owner levels').toBe(200);
   expect((await a.level('qa-viewer', 'view')).status()).toBe(200);
   await a.grant('qa-analyst', 'build');
   await a.revoke('qa-viewer');                      // the recipient holds NO grant on the Dataset
@@ -167,7 +174,7 @@ test('S2 · first question opens a session URL; reload restores the answer; the 
   const follow = await ask(page, Q2);
   expectOracle(await tableOf(follow), 'north_category_2025');
   expect(sent.every((b) => !b.includes('previous_plan')), 'no client-side previous plan').toBe(true);
-  await expect(page.getByTestId('analyst-session-item').filter({ hasText: Q1 })).toBeVisible();
+  await expect(page.locator(`[data-testid="analyst-session-item"][href="${sessionUrl}"]`)).toContainText(Q1);
   await shot(page, info, 'S2-session-restored');
 });
 
@@ -222,7 +229,7 @@ test('S6 · edit share: the recipient may ask, as themselves (no Dataset -> no n
   await login(page, 'qa-analyst');
   await page.goto(sessionUrl);
   await page.getByTestId('analyst-session-share').click();
-  const dialog = page.getByRole('dialog');
+  const dialog = shareDialog(page);
   const row = dialog.locator('li').filter({ hasText: `qa-viewer@${DOMAIN}` });
   const updated = page.waitForResponse((r) => r.url().includes('/shares/analyst_session/') && r.request().method() === 'PUT');
   await row.locator('select').selectOption('edit');
@@ -241,7 +248,7 @@ test('S7 · revoking the share in the dialog removes access on the next load; th
   await login(page, 'qa-analyst');
   await page.goto(sessionUrl);
   await page.getByTestId('analyst-session-share').click();
-  const dialog = page.getByRole('dialog');
+  const dialog = shareDialog(page);
   const removed = page.waitForResponse((r) => r.url().includes('/shares/analyst_session/') && r.request().method() === 'DELETE');
   await dialog.locator('li').filter({ hasText: `qa-viewer@${DOMAIN}` }).getByRole('button', { name: /remove access|gỡ quyền/i }).click();
   expect((await removed).status()).toBe(204);
@@ -262,7 +269,7 @@ test('S8 · team share reads; leaving the team removes it', async ({ page }) => 
   await login(page, 'qa-analyst');
   await page.goto(sessionUrl);
   await page.getByTestId('analyst-session-share').click();
-  const dialog = page.getByRole('dialog');
+  const dialog = shareDialog(page);
   const teamSelect = dialog.locator('select').nth(1);
   await teamSelect.selectOption(String(await teamSelect.locator('option', { hasText: team.name }).getAttribute('value')));
   const saved = page.waitForResponse((r) => r.url().includes('/shares/analyst_session/') && r.request().method() === 'POST');
@@ -306,9 +313,9 @@ test('S11 · the owner deletes the session; it is gone from the list and the lin
   await login(page, 'qa-analyst');
   await page.goto(sessionUrl);
   await page.getByTestId('analyst-session-delete').click();
-  await page.getByRole('dialog').getByRole('button', { name: /^(delete|xóa)$/i }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: /^(delete|xóa)$/i }).click();
   await expect(page).toHaveURL(/\/analyst$/);
-  await expect(page.getByTestId('analyst-session-item').filter({ hasText: 'Miền Bắc 2025' })).toHaveCount(0);
+  await expect(page.locator(`[data-testid="analyst-session-item"][href="${sessionUrl}"]`)).toHaveCount(0);
   await page.goto(sessionUrl);
   await expect(page.getByText(/analysis not available|không mở được phiên phân tích/i)).toBeVisible();
 });

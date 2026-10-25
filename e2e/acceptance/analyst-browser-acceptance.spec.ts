@@ -130,7 +130,7 @@ test('A · login, sidebar by permission, header, sources, EN/VI, refresh keeps t
   await expect(nav.first()).toBeVisible();                       // entry shown to a permitted person
   await nav.first().click();
   await expect(page).toHaveURL(/\/analyst$/);
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('AppBI Analyst');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Data Analysis');
   await expect(page.getByTestId('analyst-preview-label')).toHaveText('Accuracy not certified');
   await expect(page.getByTestId('analyst-warning')).toBeVisible();
   await expect(page.getByTestId('analyst-question')).toBeEnabled();          // the warning never blocks asking
@@ -443,12 +443,12 @@ test('G · loading, cancel, unsupported, no data, double click, server errors, n
     ['503', (r: import('@playwright/test').Route) => r.fulfill({ status: 503, body: '{"detail":"unavailable"}', contentType: 'application/json' })],
     ['offline', (r: import('@playwright/test').Route) => r.abort('internetdisconnected')],
   ] as const) {
-    await page.route('**/api/v1/analyst/ask', handler);
+    await page.route('**/api/v1/analyst/**ask', handler);
     await newTopic(page);
     ex = await ask(page, 'Doanh số theo vùng');
     await expect(ex.getByTestId('analyst-error')).toBeVisible();
     await shot(page, info, `G3-error-${label}`);
-    await page.unroute('**/api/v1/analyst/ask');
+    await page.unroute('**/api/v1/analyst/**ask');
   }
   // retry after the outage: the same question works again
   await newTopic(page);
@@ -545,11 +545,12 @@ for (const vp of VIEWPORTS) {
     await newTopic(page);
     ex = await ask(page, 'Lợi nhuận theo vùng');
     await noPageOverflow(page); await shot(page, info, `${vp.name}-6-refusal`, { fullPage: false });
-    await page.route('**/api/v1/analyst/ask', (r) => r.fulfill({ status: 503, body: '{"detail":"unavailable"}', contentType: 'application/json' }));
+    await page.route('**/api/v1/analyst/**ask', (r) => r.fulfill({ status: 503, body: '{"detail":"unavailable"}', contentType: 'application/json' }));
     await newTopic(page);
     ex = await ask(page, 'Doanh số theo vùng');
+    await expect(ex.getByTestId('analyst-error')).toBeVisible();
     await noPageOverflow(page); await shot(page, info, `${vp.name}-7-error`, { fullPage: false });
-    await page.unroute('**/api/v1/analyst/ask');
+    await page.unroute('**/api/v1/analyst/**ask');
     await page.goto('/explore/1');
     await expect(page.getByRole('heading', { name: 'Chart Type' })).toBeVisible();
     await page.getByTestId('explore-run').click();
