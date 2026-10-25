@@ -38,6 +38,7 @@ export type Exchange = {
   error?: string;
   /** a stored turn the viewer may not read now (no response is sent) */
   redacted?: boolean;
+  redactedReason?: 'source_access' | 'asker_only' | null;
   askedAt?: string | null;
   askedByMe?: boolean;
 };
@@ -120,7 +121,7 @@ export function ExchangeCard({ ex, locale, onAccept, onOption, readOnly }: {
       {ex.redacted ? (
         <div className={`${CARD} flex items-start gap-2 p-4 text-caption text-text-secondary`} data-testid="analyst-redacted">
           <Lock className="mt-0.5 h-4 w-4 shrink-0 text-text-tertiary" aria-hidden />
-          <span>{t('analyst.session.redacted')}</span>
+          <span>{ex.redactedReason === 'asker_only' ? t('analyst.session.redactedAskerOnly') : t('analyst.session.redacted')}</span>
         </div>
       ) : ex.error || !turn ? (
         <div role="alert" className="rounded-lg border border-danger/30 bg-danger-bg p-3 text-caption text-danger" data-testid="analyst-error">

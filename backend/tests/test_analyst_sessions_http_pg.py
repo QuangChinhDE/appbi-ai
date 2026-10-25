@@ -88,7 +88,9 @@ def _assert_redacted(body):
     text = json.dumps(body)
     for leak in ('"rows"', '"evidence"', '"columns"', '"plan"', "query_id"):
         assert leak not in text, f"{leak} reached a viewer without the Dataset"
-    assert set(turn) == {"seq", "turn_id", "question", "status", "asked_at", "asked_by_me", "response", "redacted"}
+    assert set(turn) == {"seq", "turn_id", "question", "status", "asked_at", "asked_by_me", "response", "redacted",
+                         "redacted_reason"}
+    assert turn["redacted_reason"] == "source_access"
     oracle = set(_oracle())
 
     def numbers(x):
@@ -150,6 +152,9 @@ def test_a_view_recipient_cannot_ask_and_an_edit_recipient_asks_as_themselves(cl
     assert r.status_code == 200 and r.json()["status"] == "unsupported" and "rows" not in r.json()
     assert _ledger_rows(turn_id) == []                       # nothing was read with the owner's rights
     _assert_redacted({"turns": _get(client, world["viewer"], answered).json()["turns"][:1]})
+    # the recipient's turn read no source: private to them, and the owner is told exactly that
+    theirs = _get(client, world["analyst"], answered).json()["turns"][1]
+    assert theirs["redacted"] is True and theirs["redacted_reason"] == "asker_only" and theirs["asked_by_me"] is False
 
 
 def test_revoking_the_share_removes_access_next_request(client, db, world, answered):  # noqa: F811

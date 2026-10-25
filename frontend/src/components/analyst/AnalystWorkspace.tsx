@@ -40,7 +40,8 @@ type AskOpts = {
 
 function toExchanges(detail: AnalystSessionDetail): Exchange[] {
   return detail.turns.map((t) => ({
-    question: t.question, turn: t.response, redacted: t.redacted, askedAt: t.asked_at, askedByMe: t.asked_by_me,
+    question: t.question, turn: t.response, redacted: t.redacted, redactedReason: t.redacted_reason,
+    askedAt: t.asked_at, askedByMe: t.asked_by_me,
   }));
 }
 

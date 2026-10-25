@@ -176,8 +176,11 @@ def turn_view(turn: AnalystSessionTurn, scope: dict[int, set[str]], viewer_id: A
             "asked_at": turn.created_at.isoformat() if turn.created_at else None,
             "asked_by_me": str(turn.asked_by) == str(viewer_id)}
     if visible(turn, scope, viewer_id):
-        return {**base, "response": turn.response or {}, "redacted": False}
-    return {**base, "response": None, "redacted": True}
+        return {**base, "response": turn.response or {}, "redacted": False, "redacted_reason": None}
+    # why, so the page says the true thing: no rights on the turn's sources, or a turn
+    # that recorded no source at all (shown only to the person who asked it)
+    reason = "source_access" if turn.dataset_ids else "asker_only"
+    return {**base, "response": None, "redacted": True, "redacted_reason": reason}
 
 
 def session_view(db: Session, user: Any, s: AnalystSession, level: str, scope: dict[int, set[str]],

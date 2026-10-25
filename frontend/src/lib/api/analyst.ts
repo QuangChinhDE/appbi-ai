@@ -119,6 +119,8 @@ export interface AnalystStoredTurn {
   asked_at: string | null;
   asked_by_me: boolean;
   redacted: boolean;
+  /** source_access: no rights on its sources now; asker_only: it read no source and is private to whoever asked */
+  redacted_reason: 'source_access' | 'asker_only' | null;
   response: AnalystTurn | null;
 }
 
