@@ -563,7 +563,7 @@ features:
     files: [backend/app/services/analyst/**, backend/app/api/analyst.py]
     keywords: [analyst, "ai analyst", discovery, planner, "chart draft"]
     invariants: []
-    required_tests: [analyst_http_pg, analyst_narrative, analyst_planner, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg]
+    required_tests: [analyst_http_pg, analyst_sessions_http_pg, analyst_narrative, analyst_planner, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -666,6 +666,10 @@ tests:
     requires: postgres
     run: "pytest backend/tests/test_analyst_http_pg.py"
     locks: "the Analyst over HTTP on real Postgres, model replaced by a fixed planner only: an explore-grant answer equals an independent SQL oracle with evidence, a ledger row (surface analyst, run = turn) and a chart draft; view-only sees no source and gets no rows; no module -> 403; a revoked grant is honoured on the next turn; a plan naming a foreign measure/unknown dimension/foreign explore/bad grain/bad operator is unsupported and nothing reaches the ledger; no SQL text in the response; another person cannot cancel my turn, my cancel stops it and it is recorded cancelled; a consent token is bound to its caller"
+  analyst_sessions_http_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_analyst_sessions_http_pg.py"
+    locks: "AI Analyst sessions on real Postgres: a session keeps its oracle-equal answer across a reload; sharing via /shares needs analyst>=edit; a recipient (user, team, or analyst:full oversight) without EXPLORE on the Dataset sees the question and redacted, never rows/evidence/numbers; a revoked Dataset grant redacts the owner's own stored answer; a view recipient cannot ask, an edit recipient asks as themselves; share revoke and team removal apply next request; no access is 404 for foreign and unknown ids alike; rename/delete are the owner's; the follow-up plan comes from the session, never the request"
   intelligence_gqs_mysql_fullpath:
     requires: postgres+mysql
     run: "pytest backend/tests/test_intelligence_gqs_mysql_fullpath_pg.py"

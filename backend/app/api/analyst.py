@@ -1,7 +1,7 @@
 """AppBI Analyst API (M2 MVP). Mounted only when ANALYST_ENABLED.
 
-Gate (every route, router level): `analyst: view` AND `explore_charts: view` AND
-the e-mail in ANALYST_PILOT_ALLOWLIST (empty = nobody). The per-Dataset decision
+Gate (every route, router level): `analyst: view` AND `explore_charts: view` AND,
+when ANALYST_PILOT_ALLOWLIST is set, the e-mail in it (empty = no extra restriction). The per-Dataset decision
 (EXPLORE relation, GovernAIScope) is made by the Governed Query Service on every
 read. Nothing here executes SQL: `ask` goes through GQS, the ledger and the
 server's budgets.
@@ -10,6 +10,8 @@ server's budgets.
   POST /analyst/ask                     one turn: plan -> governed read -> answer
   POST /analyst/consents                the PERSON accepts a dropped filter
   POST /analyst/turns/{turn_id}/cancel  stop this person's running turn
+  /analyst/sessions[...]                persisted, shareable conversations
+                                        (services/analyst/sessions.py)
 """
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ import re
 import threading
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -35,12 +37,13 @@ def _pilot_allowlist() -> set[str]:
 def require_analyst(user: User = Depends(require_permission("analyst", "view")),
                     _explore: User = Depends(require_permission("explore_charts", "view"))) -> User:
     """Who may use the Analyst at all: the `analyst` module permission AND
-    `explore_charts: view` AND the pilot allowlist. Read from the stored user on
-    every request, so a revocation applies to the next request. Which DATA a
-    question may touch is decided after this, per dataset (EXPLORE relation and
-    GovernAIScope in services/analyst/catalog.py)."""
-    if str(getattr(user, "email", "") or "").strip().lower() not in _pilot_allowlist():
-        raise HTTPException(status_code=403, detail="The Analyst pilot is not enabled for this account.")
+    `explore_charts: view` AND, when one is configured, the allowlist. Read from the
+    stored user on every request, so a revocation applies to the next request. Which
+    DATA a question may touch is decided after this, per dataset (EXPLORE relation
+    and GovernAIScope in services/analyst/catalog.py)."""
+    allowed = _pilot_allowlist()
+    if allowed and str(getattr(user, "email", "") or "").strip().lower() not in allowed:
+        raise HTTPException(status_code=403, detail="AI Analyst is not enabled for this account.")
     return user
 
 
@@ -137,7 +140,7 @@ def consent(body: ConsentBody,
     from app.core.config import settings
 
     if not getattr(settings, "ANALYST_DROP_CONSENT_ENABLED", False):
-        raise HTTPException(status_code=403, detail="Accepting a dropped filter is not enabled in this pilot.")
+        raise HTTPException(status_code=403, detail="Accepting a dropped filter is not enabled on this server.")
     from app.services.governed_query import consent as c
 
     return {"drop_consent": c.issue(user_id=user.id, query_fp=body.query_fingerprint, fields=body.fields),
@@ -180,3 +183,121 @@ def cancel(turn_id: str, user: User = Depends(require_analyst)) -> dict[str, Any
     _turn(turn_id)
     marked = _analyst_deps().ledger.request_cancel_run(turn_id, requested_by=user.id)
     return {"cancel_requested": marked}
+
+
+# ── sessions: persisted, shareable conversations ─────────────────────────────
+# Registers `analyst_session` with the share endpoints (core must not import it).
+from app.services.analyst import sessions as _sessions  # noqa: E402
+
+
+class SessionBody(BaseModel):
+    title: Optional[str] = Field(None, max_length=255)
+
+
+class SessionAskBody(BaseModel):
+    """`/ask` inside a session. No `previous_plan`: the server reads it from the session."""
+
+    question: str = Field(..., min_length=1, max_length=1000)
+    turn_id: Optional[str] = None
+    drop_consent: Optional[str] = Field(None, max_length=2000)
+    consented_plan: Optional[dict] = None
+    dataset_id: Optional[int] = None
+    value_choice: Optional[dict] = None
+    choice_token: Optional[str] = Field(None, max_length=2000)
+    #: False = a new topic in the same session (no follow-up context)
+    follow_up: bool = True
+
+
+def _scope(db, user):
+    from app.services.analyst.catalog import discover
+    from app.services.governed_query import AuthorizationContext, EffectivePrincipal
+
+    catalog = discover(AuthorizationContext(db=db, principal=EffectivePrincipal.for_user(user, surface="analyst"),
+                                            user=user))
+    return catalog, _sessions.viewer_scope(catalog)
+
+
+def _readable(db, user, session_id: int):
+    s, level = _sessions.get_session(db, user, session_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail="Analysis session not found.")
+    return s, level
+
+
+@router.get("/sessions")
+def list_sessions(db: Session = Depends(get_db), user: User = Depends(require_analyst)) -> dict[str, Any]:
+    return {"sessions": [_sessions.session_view(db, user, s, level, {}, with_turns=False)
+                         for s, level in _sessions.list_sessions(db, user)]}
+
+
+@router.post("/sessions", status_code=201)
+def create_session(body: SessionBody, db: Session = Depends(get_db),
+                   user: User = Depends(require_analyst)) -> dict[str, Any]:
+    s = _sessions.create(db, user, body.title)
+    return _sessions.session_view(db, user, s, "owner", {}, with_turns=False)
+
+
+@router.get("/sessions/{session_id}")
+def get_session(session_id: int, db: Session = Depends(get_db),
+                user: User = Depends(require_analyst)) -> dict[str, Any]:
+    s, level = _readable(db, user, session_id)
+    _, scope = _scope(db, user)
+    return _sessions.session_view(db, user, s, level, scope)
+
+
+@router.patch("/sessions/{session_id}")
+def rename_session(session_id: int, body: SessionBody, db: Session = Depends(get_db),
+                   user: User = Depends(require_analyst)) -> dict[str, Any]:
+    s, level = _readable(db, user, session_id)
+    if level != "owner":
+        raise HTTPException(status_code=403, detail="Only the owner can rename this session.")
+    s.title = (body.title or "").strip()[:255] or None
+    db.commit()
+    return _sessions.session_view(db, user, s, level, {}, with_turns=False)
+
+
+@router.delete("/sessions/{session_id}", status_code=204, response_model=None)
+def delete_session(session_id: int, db: Session = Depends(get_db),
+                   user: User = Depends(require_analyst)) -> Response:
+    from datetime import datetime, timezone
+
+    s, level = _readable(db, user, session_id)
+    if level not in ("owner", "full"):
+        raise HTTPException(status_code=403, detail="Only the owner can delete this session.")
+    s.deleted_at = datetime.now(timezone.utc)
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/sessions/{session_id}/ask")
+def ask_in_session(session_id: int, body: SessionAskBody, request: Request, db: Session = Depends(get_db),
+                   user: User = Depends(require_analyst)) -> dict[str, Any]:
+    """One turn in a session, run AS THE CALLER (their grants, quota, ledger rows).
+    The follow-up context is the session's own last answer the caller may read."""
+    from app.core.config import settings
+    from app.services import llm_test_budget as _budget
+    from app.services.analyst.service import ask as run_turn
+
+    s, level = _readable(db, user, session_id)
+    if not _sessions.can_ask(level):
+        raise HTTPException(status_code=403, detail="You can read this session but not ask in it.")
+    if _budget.active():
+        _budget.PURPOSE.set(request.headers.get("x-appbi-test-purpose", "")[:60])
+        _budget.CASE_ID.set(request.headers.get("x-appbi-test-case", "")[:60])
+        _budget.RC_SHA.set(request.headers.get("x-appbi-test-rc", "")[:40])
+    if body.turn_id and db.query(_sessions.AnalystSessionTurn.id).filter(
+            _sessions.AnalystSessionTurn.turn_id == _turn(body.turn_id)).first():
+        raise HTTPException(status_code=409, detail="This turn id was already used.")
+    catalog, scope = _scope(db, user)
+    previous = _sessions.previous_plan(db, s, scope, user.id) if body.follow_up else None
+    response = run_turn(db, user, body.question, _analyst_deps(), previous=previous,
+                        drop_consent=body.drop_consent, turn_id=_turn(body.turn_id),
+                        consented_plan=body.consented_plan if isinstance(body.consented_plan, dict) else None,
+                        dataset_id=body.dataset_id,
+                        value_choice=body.value_choice if isinstance(body.value_choice, dict) else None,
+                        choice_token=body.choice_token)
+    if not response.get("turn_id"):
+        return response
+    turn = _sessions.record(db, s, user, body.question, response, catalog, int(settings.ANALYST_MAX_ROWS))
+    # the caller gets the LIVE response (tokens included: they are bound to the caller)
+    return {**response, "session_id": s.id, "seq": turn.seq}

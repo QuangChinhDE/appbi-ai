@@ -1,5 +1,5 @@
 /**
- * AppBI Analyst API (M2 MVP). Thin wrappers over `apiClient` — the backend runs
+ * AI Analyst API. Thin wrappers over `apiClient` — the backend runs
  * every read through the Governed Query Service; nothing here sends SQL.
  */
 import apiClient from '@/lib/api-client';
@@ -96,6 +96,38 @@ export interface AnalystTurn {
   chart_draft_unavailable?: string | null;
 }
 
+/** Who the caller is to a session (backend services/analyst/sessions.py). */
+export type AnalystSessionAccess = 'owner' | 'full' | 'edit' | 'view';
+
+export interface AnalystSessionSummary {
+  id: number;
+  title: string | null;
+  access: AnalystSessionAccess;
+  can_ask: boolean;
+  is_owner: boolean;
+  created_at: string | null;
+  last_active_at: string | null;
+}
+
+/** A stored turn. `redacted`: the caller may not read its sources NOW, so only the
+ *  question and its status are returned (a share never grants a Dataset). */
+export interface AnalystStoredTurn {
+  seq: number;
+  turn_id: string;
+  question: string;
+  status: AnalystTurn['status'];
+  asked_at: string | null;
+  asked_by_me: boolean;
+  redacted: boolean;
+  /** source_access: no rights on its sources now; asker_only: it read no source and is private to whoever asked */
+  redacted_reason: 'source_access' | 'asker_only' | null;
+  response: AnalystTurn | null;
+}
+
+export interface AnalystSessionDetail extends AnalystSessionSummary {
+  turns: AnalystStoredTurn[];
+}
+
 export function newTurnId(): string {
   const raw = typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
@@ -127,6 +159,40 @@ export const analystApi = {
   },
   feedback: async (turnId: string, verdict: 'up' | 'down', comment?: string, reason?: string): Promise<void> => {
     await apiClient.post('/analyst/feedback', { turn_id: turnId, verdict, comment: comment || null, reason: reason || null });
+  },
+  sessions: async (): Promise<AnalystSessionSummary[]> => {
+    const response = await apiClient.get('/analyst/sessions');
+    return response.data.sessions;
+  },
+  createSession: async (title?: string): Promise<AnalystSessionSummary> => {
+    const response = await apiClient.post('/analyst/sessions', { title: title || null });
+    return response.data;
+  },
+  session: async (id: number): Promise<AnalystSessionDetail> => {
+    const response = await apiClient.get(`/analyst/sessions/${id}`);
+    return response.data;
+  },
+  renameSession: async (id: number, title: string): Promise<AnalystSessionSummary> => {
+    const response = await apiClient.patch(`/analyst/sessions/${id}`, { title });
+    return response.data;
+  },
+  deleteSession: async (id: number): Promise<void> => {
+    await apiClient.delete(`/analyst/sessions/${id}`);
+  },
+  /** A turn inside a session. The server reads the follow-up context from the
+   *  session itself; `follow_up: false` starts a new topic in it. */
+  askInSession: async (id: number, body: {
+    question: string;
+    turn_id: string;
+    follow_up: boolean;
+    drop_consent?: string | null;
+    consented_plan?: Record<string, unknown> | null;
+    dataset_id?: number | null;
+    value_choice?: { plan: Record<string, unknown>; field: string; value: string } | null;
+    choice_token?: string | null;
+  }): Promise<AnalystTurn> => {
+    const response = await apiClient.post(`/analyst/sessions/${id}/ask`, body, { timeout: 180_000 });
+    return response.data;
   },
   cancel: async (turnId: string): Promise<number> => {
     const response = await apiClient.post(`/analyst/turns/${turnId}/cancel`);

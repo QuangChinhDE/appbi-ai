@@ -841,6 +841,7 @@ jobs:
             tests/test_intelligence_gqs_cancel_pg.py \
             tests/test_intelligence_gqs_ledger_pg.py \
             tests/test_analyst_http_pg.py \
+            tests/test_analyst_sessions_http_pg.py \
             tests/test_intelligence_gqs_mysql_fullpath_pg.py \
             tests/test_intelligence_gqs_ledger_schema_pg.py \
             --junitxml=/tmp/authz-pg.xml

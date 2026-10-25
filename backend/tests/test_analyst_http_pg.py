@@ -252,17 +252,20 @@ def test_the_analyst_permission_without_explore_is_403(client, db, world, model)
     assert _ask(client, world["analyst"]).status_code == 403
 
 
-def test_off_the_allowlist_is_403_and_an_empty_allowlist_admits_nobody(client, db, world, model, monkeypatch):  # noqa: F811
+def test_a_set_allowlist_restricts_and_an_empty_one_leaves_it_to_the_module_permission(client, db, world, model, monkeypatch):  # noqa: F811
+    """Official module (2026-10-26): the allowlist is an optional EXTRA restriction.
+    Empty = the `analyst` module permission decides; it never admits someone without it."""
     from app.core.config import settings
 
     _grant_module(db, world["analyst"])
     model(_planner(world))
     assert _ask(client, world["analyst"]).json()["status"] == "answered"
     monkeypatch.setattr(settings, "ANALYST_PILOT_ALLOWLIST", "someone-else@x.test")
-    assert _ask(client, world["analyst"]).status_code == 403
-    monkeypatch.setattr(settings, "ANALYST_PILOT_ALLOWLIST", "")
     r = _ask(client, world["analyst"])
     assert r.status_code == 403 and "rows" not in r.text
+    monkeypatch.setattr(settings, "ANALYST_PILOT_ALLOWLIST", "")
+    assert _ask(client, world["analyst"]).json()["status"] == "answered"
+    assert _ask(client, world["stranger"]).status_code == 403   # no module permission: still nothing
 
 
 def test_revoking_the_analyst_permission_applies_to_the_next_request(client, db, world, model):  # noqa: F811
@@ -278,7 +281,7 @@ def test_revoking_the_analyst_permission_applies_to_the_next_request(client, db,
 def test_no_preset_but_admin_grants_the_analyst():
     from app.api.permissions import PRESETS
 
-    assert PRESETS["admin"].get("analyst") == "view"
+    assert PRESETS["admin"].get("analyst") == "full"
     assert all(PRESETS[p].get("analyst", "none") == "none" for p in ("editor", "viewer", "minimal"))
 
 

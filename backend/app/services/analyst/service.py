@@ -62,7 +62,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         return {"status": "unsupported", "message": "Hãy nhập câu hỏi."}
     consent_enabled = bool(getattr(settings, "ANALYST_DROP_CONSENT_ENABLED", False))
     if not consent_enabled and (drop_consent or consented_plan is not None):
-        return {"status": "unsupported", "message": "Chấp nhận bỏ bộ lọc chưa được bật trong giai đoạn thử nghiệm."}
+        return {"status": "unsupported", "message": "Máy chủ chưa bật chức năng chấp nhận bỏ bộ lọc."}
     turn_id = turn_id or uuid.uuid4().hex
     principal = EffectivePrincipal.for_user(user, surface="analyst", request_id=turn_id)
     authz = AuthorizationContext(db=db, principal=principal, user=user,

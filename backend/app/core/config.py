@@ -152,8 +152,11 @@ class Settings(BaseSettings):
     # query it runs goes through the Governed Query Service, the durable ledger
     # and these SERVER-SIDE budgets (never taken from a request). 0 = unlimited.
     ANALYST_ENABLED: bool = False
-    # Pilot allowlist: comma-separated e-mails allowed to use the Analyst. EMPTY
-    # MEANS NOBODY (fail closed) - the module permission alone does not open it.
+    # Optional extra restriction: comma-separated e-mails. EMPTY = no extra
+    # restriction; the `analyst` module permission decides (presets grant it to
+    # admin only, so enabling the module exposes it to nobody else by default).
+    # Non-empty = only these people, ON TOP of the module permission. The operator
+    # kill switch is ANALYST_ENABLED.
     ANALYST_PILOT_ALLOWLIST: str = ""
     # Accepting a dropped filter (a wider answer than asked). OFF until the consent
     # journey is certified in the browser: with it off a dropped filter is a plain
