@@ -69,7 +69,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "agent_flows": "full",
         "chat": "full",
         "observability": "full",
-        "analyst": "view",
+        "analyst": "full",
         "explore_charts": "full",
         "dashboards": "full",
         "workboards": "full",

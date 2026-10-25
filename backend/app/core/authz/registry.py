@@ -50,11 +50,13 @@ MODULES: Tuple[ModuleSpec, ...] = (
     ModuleSpec("agent_flows", enabled=_flag("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED")),
     ModuleSpec("chat", enabled=_flag("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED")),
     ModuleSpec("observability", enabled=_flag("METADATA_CATALOG_ENABLED", "OBSERVABILITY_ENABLED")),
-    # Use of the Analyst (ask questions of governed data). none/view like `chat`:
-    # there is nothing to edit or administer. Holding it is necessary, never
-    # sufficient: explore_charts, the pilot allowlist and each dataset's EXPLORE
-    # relation + GovernAIScope still apply (api/analyst.py, services/analyst).
-    ModuleSpec("analyst", levels=("none", "view"), enabled=_flag("ANALYST_ENABLED")),
+    # AI Analyst (ask questions of governed data). The standard four levels, like
+    # `chat`: view = ask and keep your own sessions, edit = also share them (an owner
+    # reaches `full` on their own row only at edit+, see share_access), full = module
+    # oversight. Holding it is necessary, never sufficient, and NO level is a data
+    # grant: explore_charts and each dataset's EXPLORE relation + GovernAIScope still
+    # decide every read, stored answers included (api/analyst.py, services/analyst).
+    ModuleSpec("analyst", enabled=_flag("ANALYST_ENABLED")),
     ModuleSpec("explore_charts", pat_eligible=True),
     ModuleSpec("dashboards", pat_eligible=True),
     ModuleSpec("workboards", enabled=_flag("WORKBOARDS_ENABLED"), pat_eligible=True),
@@ -110,6 +112,7 @@ RESOURCES: Tuple[ResourceSpec, ...] = (
     # only owner_id/owner_email, so the owner of a thread could not share it.
     ResourceSpec("chat_thread", "AgentFlowChatThread", "chat", owner_attrs=("user_id",)),
     ResourceSpec("ai_credential", "AiProviderCredential", "agent_flows"),
+    ResourceSpec("analyst_session", "AnalystSession", "analyst", owner_attrs=("user_id",)),
 )
 
 RESOURCE_SPECS: Dict[str, ResourceSpec] = {r.resource_type: r for r in RESOURCES}

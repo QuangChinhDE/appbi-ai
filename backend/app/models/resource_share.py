@@ -38,6 +38,10 @@ class ResourceType(str, enum.Enum):
     #: A stored AI provider key (`ai_provider_credentials`). A share lets the
     #: recipient USE the key in their own Agent Flow steps; no share ever reveals it.
     AI_CREDENTIAL = "ai_credential"
+    #: One AI Analyst conversation. Sharing it NEVER grants a Dataset: every read
+    #: re-checks the viewer's own rights and redacts what they cannot read
+    #: (services/analyst/sessions.py).
+    ANALYST_SESSION = "analyst_session"
 
 
 class SharePermission(str, enum.Enum):
