@@ -5,7 +5,7 @@ import json
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from app.models.audit_log import AuditAction
 from app.services.audit_service import audit
 from app.services.report_pptx_service import ReportPptxRequest
@@ -3437,17 +3437,82 @@ def _aware(value):
 
 
 def _sanitize_link_for_admin(link: DashboardPublicLink) -> DashboardPublicLink:
-    """Strip ai_bot_key from a public link before returning to admin clients.
+    """A public link as an admin client receives it: never a secret.
 
-    The actual key stays in the DB; the response gets ai_bot_key_configured=True/False
-    instead. This prevents the key from appearing in browser Network/Console logs.
+    A link's own provider key lives in the encrypted credential store
+    (`ai_provider_credentials`); the link holds only `ai_bot_credential_id`.
+    `ai_bot_key_configured` says whether the link has its own key. Shaped on the
+    served copy only (set_committed_value): never a change the session could flush.
     """
     if link.appearance_config:
+        from sqlalchemy.orm.attributes import set_committed_value
+
         raw = dict(link.appearance_config)
-        key_present = bool(raw.pop("ai_bot_key", None))
-        raw["ai_bot_key_configured"] = key_present
-        link.appearance_config = raw
+        raw.pop("ai_bot_key", None)
+        raw["ai_bot_key_configured"] = bool(raw.get("ai_bot_credential_id"))
+        set_committed_value(link, "appearance_config", raw)
     return link
+
+
+def _apply_ai_credential(db: Session, user: User, incoming: dict, existing: dict | None,
+                         link_id: int | None) -> dict:
+    """The appearance config to STORE: no plaintext key, ever.
+
+    * `ai_bot_key` (an older client typing a key) is moved into the encrypted
+      credential store, owned by the person saving, and the link references it;
+      without encryption configured the save is refused rather than stored plain.
+    * `ai_bot_credential_id` may only name a live credential the saver owns.
+    * absent -> the link keeps the credential it had; null -> it has none (the
+      server's key, under the link's budget, answers).
+    """
+    from app.core.crypto import encrypt_value
+    from app.models.ai_provider_credential import AiProviderCredential
+    from app.services.dashboard_ai_bot.public_link_config import _infer_provider_from_key
+
+    out = dict(incoming or {})
+    out.pop("ai_bot_key_configured", None)
+    previous = dict(existing or {})
+    typed = str(out.pop("ai_bot_key", None) or "").strip()
+    if typed:
+        try:
+            secret_enc = encrypt_value(typed)
+        except Exception:
+            raise HTTPException(status_code=422, detail="Máy chủ chưa cấu hình mã hoá nên không lưu được API key.")
+        if not str(secret_enc).startswith("_enc:"):
+            raise HTTPException(status_code=422, detail="Máy chủ chưa cấu hình mã hoá nên không lưu được API key.")
+        provider = (str(out.get("ai_bot_provider") or "").strip().lower()
+                    or _infer_provider_from_key(typed) or "openai")
+        if provider not in ("openai", "anthropic", "gemini"):
+            raise HTTPException(status_code=422, detail="Nhà cung cấp không hợp lệ.")
+        cred = AiProviderCredential(name=f"Public link {link_id or 'new'} AI bot key "
+                                         f"({datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')})",
+                                    provider=provider, secret_enc=secret_enc, key_hint=typed[-4:],
+                                    owner_id=user.id)
+        db.add(cred)
+        db.flush()
+        out["ai_bot_credential_id"] = int(cred.id)
+        out["ai_bot_provider"] = provider
+    elif "ai_bot_credential_id" not in out:
+        if previous.get("ai_bot_credential_id"):
+            out["ai_bot_credential_id"] = previous["ai_bot_credential_id"]
+    elif out.get("ai_bot_credential_id") in (None, "", 0):
+        out.pop("ai_bot_credential_id", None)
+    else:
+        try:
+            cred_id = int(out["ai_bot_credential_id"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="ai_bot_credential_id không hợp lệ.")
+        cred = db.get(AiProviderCredential, cred_id)
+        if cred_id != previous.get("ai_bot_credential_id") and (
+                cred is None or cred.deleted_at is not None or str(cred.owner_id) != str(user.id)):
+            raise HTTPException(status_code=422, detail="Chỉ dùng được API key do chính bạn lưu.")
+        out["ai_bot_credential_id"] = cred_id
+    if previous.get("ai_bot_credential_migrated") and out.get("ai_bot_credential_id") == \
+            previous.get("ai_bot_credential_id"):
+        out["ai_bot_credential_migrated"] = True
+    else:
+        out.pop("ai_bot_credential_migrated", None)
+    return out
 
 
 # ============ Multi Public Links ============
@@ -3521,7 +3586,7 @@ def create_public_link(
         name=request.name,
         token=secrets.token_urlsafe(32),
         filters_config=request.filters_config or [],
-        appearance_config=request.appearance_config or {},
+        appearance_config=_apply_ai_credential(db, current_user, request.appearance_config or {}, None, None),
         created_by=current_user.id,
         password_hash=_pwd_context.hash(request.password) if request.password else None,
         expires_at=_aware(request.expires_at),
@@ -3597,8 +3662,8 @@ def create_public_link_preview(
             .delete(synchronize_session=False)
         )
     appearance = dict(request.appearance_config or {})
-    appearance.pop("ai_bot_key", None)
-    appearance.pop("ai_bot_key_configured", None)
+    for _k in ("ai_bot_key", "ai_bot_key_configured", "ai_bot_credential_id", "ai_bot_credential_migrated"):
+        appearance.pop(_k, None)
     # A preview shows the report; it must not open (or spend) the AI bot.
     appearance["ai_bot_enabled"] = False
     link = DashboardPublicLink(
@@ -3614,6 +3679,31 @@ def create_public_link_preview(
     db.add(link)
     db.commit()
     return {"token": link.token, "expires_at": link.expires_at}
+
+
+@router.get("/{dashboard_id}/public-links/{link_id}/ai-status")
+def get_public_link_ai_status(
+    dashboard_id: int,
+    link_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Is the AI model ready for this link's assistant, and whose key pays (the
+    server's or the link's own)? Never a key, never a credential secret."""
+    from app.services.ai_runtime import gateway
+
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_publish_access(db, current_user, dash, "dashboards")
+    link = (
+        db.query(DashboardPublicLink)
+        .filter(DashboardPublicLink.id == link_id, DashboardPublicLink.dashboard_id == dashboard_id)
+        .first()
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Public link not found")
+    return gateway.readiness(db, dict(link.appearance_config or {}))
 
 
 @router.patch("/{dashboard_id}/public-links/{link_id}", response_model=PublicLinkResponse)
@@ -3648,22 +3738,8 @@ def update_public_link(
         _refuse_unappliable_link_filters(request.filters_config)
         link.filters_config = request.filters_config
     if request.appearance_config is not None:
-        new_config = dict(request.appearance_config)
-        existing_config = dict(link.appearance_config or {})
-        incoming_key = new_config.get("ai_bot_key")
-        if incoming_key is None or incoming_key == "":
-            # Key absent or empty → keep existing key (empty string = explicit clear)
-            existing_key = existing_config.get("ai_bot_key")
-            if incoming_key is None and existing_key:
-                # No key field sent at all — preserve current key silently
-                new_config["ai_bot_key"] = existing_key
-            else:
-                # Empty string sent explicitly → delete the key
-                new_config.pop("ai_bot_key", None)
-                new_config.pop("ai_bot_key_configured", None)
-        # ai_bot_key_configured is computed server-side; strip any client-sent value
-        new_config.pop("ai_bot_key_configured", None)
-        link.appearance_config = new_config
+        link.appearance_config = _apply_ai_credential(db, current_user, dict(request.appearance_config),
+                                                      dict(link.appearance_config or {}), link.id)
     # Every security-changing edit moves the link to a new security generation,
     # which invalidates every password session minted before it (see
     # public._create_public_session). That includes re-enabling a disabled link:
@@ -3797,144 +3873,9 @@ class _SuggestSystemPromptBody(BaseModel):
 
 
 @router.post("/{dashboard_id}/ai/suggest-system-prompt")
-async def suggest_ai_system_prompt(
-    dashboard_id: int,
-    body: _SuggestSystemPromptBody,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    x_user_ai_key: str | None = Header(default=None),
-    x_user_ai_provider: str | None = Header(default=None),
-    x_user_ai_model: str | None = Header(default=None),
-):
-    """Let the AI read the dashboard and draft a report-flow SYSTEM PROMPT
-    for the DA to review/edit. Reads the chart manifest + a few insight packs
-    (recon) and asks the LLM to write, in Vietnamese, how the AI should read
-    THIS report (domain, reading flow, key metrics, what to prioritise).
-
-    Uses the key the DA is configuring (X-User-Ai-Key) or, if absent, a key
-    already stored on one of this dashboard's public links.
-    """
-    from app.models.models import DashboardPublicLink
-    from app.services.dashboard_ai_bot.public_link_config import _infer_provider_from_key
-    from app.services.dashboard_ai_bot.tool_context import ToolContext
-    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
-    from app.services.dashboard_ai_bot.providers import (
-        stream_anthropic, stream_gemini_singleshot, stream_openai,
-    )
-
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
-    if not dash:
-        raise HTTPException(status_code=404, detail="Dashboard not found")
-    require_view_access(db, current_user, dash, "dashboards")
-
-    # Resolve key: typed key wins; else any stored link key for this dashboard.
-    key = (x_user_ai_key or "").strip()
-    stored_provider = ""
-    if not key:
-        for link in db.query(DashboardPublicLink).filter(
-            DashboardPublicLink.dashboard_id == dashboard_id
-        ).all():
-            ac = link.appearance_config or {}
-            if ac.get("ai_bot_key"):
-                key = str(ac["ai_bot_key"]).strip()
-                stored_provider = str(ac.get("ai_bot_provider") or "").strip().lower()
-                break
-    if not key:
-        raise HTTPException(
-            status_code=400,
-            detail="Cần API key (nhập key vào ô API key trước, hoặc lưu key cho link).",
-        )
-
-    provider = (
-        (body.provider or x_user_ai_provider or "").strip().lower()
-        or stored_provider or _infer_provider_from_key(key) or "openai"
-    )
-    if provider not in ("anthropic", "openai", "gemini"):
-        raise HTTPException(status_code=400, detail="Nhà cung cấp không hợp lệ.")
-    # A concrete model is required (passing None makes some providers 400).
-    _DEFAULT_MODEL = {
-        "anthropic": "claude-haiku-4-5-20251001",
-        "openai": "gpt-4o-mini",
-        "gemini": "gemini-2.0-flash",
-    }
-    model = (body.model or x_user_ai_model or "").strip() or _DEFAULT_MODEL[provider]
-
-    # Build recon (chart manifest + a few insight packs).
-    try:
-        ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=[])
-        recon = build_proactive_recon(ctx)
-    except Exception:
-        logger.exception("suggest_system_prompt recon failed dashboard=%s", dashboard_id)
-        raise HTTPException(status_code=500, detail="Không đọc được dashboard.")
-
-    manifest = (recon or {}).get("manifest") or {}
-    charts = manifest.get("charts") or []
-    chart_lines = []
-    for c in charts[:40]:
-        flds = c.get("fields") or {}
-        measures = ", ".join(
-            f"{m.get('label')}({m.get('agg')})" for m in (flds.get("measures") or []) if m.get("label")
-        )
-        dims = ", ".join(d for d in (flds.get("dimensions") or []) if d)
-        chart_lines.append(
-            f"- [{c.get('role_hint')}] {c.get('chart_name')} ({c.get('chart_type')})"
-            + (f" | đo: {measures}" if measures else "")
-            + (f" | chiều: {dims}" if dims else "")
-        )
-    manifest_text = "\n".join(chart_lines) or "(không có biểu đồ)"
-
-    # The report's PAGE flow (the DA's intended reading narrative).
-    _name_by_id = {c.get("chart_id"): c.get("chart_name") for c in charts}
-    page_lines = []
-    for i, p in enumerate(getattr(ctx, "pages", None) or [], 1):
-        cnames = ", ".join(str(_name_by_id.get(cid) or cid) for cid in (p.get("chart_ids") or []))
-        page_lines.append(f"  {i}. {p.get('name')}: {cnames or '(trống)'}")
-    pages_text = "\n".join(page_lines) or "(báo cáo 1 trang)"
-
-    system_prompt = (
-        "Bạn là chuyên gia BI giúp một Data Analyst cấu hình trợ lý AI cho MỘT báo cáo. "
-        "Dựa trên danh sách biểu đồ dưới đây, hãy VIẾT một SYSTEM PROMPT (bằng tiếng Việt) "
-        "hướng dẫn AI cách đọc báo cáo này: (1) lĩnh vực/bối cảnh; (2) FLOW đọc tự nhiên — "
-        "đọc chart nào trước, thứ tự kể chuyện; (3) các chỉ số chính & ý nghĩa; (4) cần ưu tiên/cảnh báo điều gì; "
-        "(5) khi nào nên tra cứu thêm trên web để có bối cảnh thị trường. "
-        "Viết ngắn gọn, dạng gạch đầu dòng, dùng đúng thuật ngữ trong báo cáo. "
-        "CHỈ trả về nội dung system prompt, không thêm lời dẫn."
-    )
-    user_prompt = (
-        f"Tên báo cáo: {dash.name or '(chưa đặt tên)'}\n"
-        f"Mô tả: {getattr(dash, 'description', '') or '(không có)'}\n\n"
-        f"CẤU TRÚC TRANG (flow tự nhiên người xem đi qua):\n{pages_text}\n\n"
-        f"Các biểu đồ ({len(charts)} duy nhất):\n{manifest_text}\n\n"
-        "Hãy viết system prompt điều hướng AI đọc báo cáo này, FLOW bám theo "
-        "thứ tự các trang ở trên (mỗi trang là một bước trong câu chuyện)."
-    )
-
-    streamer = (
-        stream_anthropic if provider == "anthropic"
-        else stream_openai if provider == "openai"
-        else stream_gemini_singleshot
-    )
-    parts: list[str] = []
-    try:
-        async for ev in streamer(
-            api_key=key,
-            system_prompt=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-            tools=None,
-            model=model,
-            max_tokens=1200,
-        ):
-            if getattr(ev, "type", None) == "text" and getattr(ev, "text", ""):
-                parts.append(ev.text)
-            elif getattr(ev, "type", None) == "error":
-                raise HTTPException(status_code=502, detail=ev.text or "AI provider error")
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("suggest_system_prompt LLM failed dashboard=%s", dashboard_id)
-        raise HTTPException(status_code=502, detail="Gọi AI thất bại.")
-
-    text = "".join(parts).strip()
-    if not text:
-        raise HTTPException(status_code=502, detail="AI không trả về nội dung.")
-    return {"system_prompt": text[:4000]}
+def suggest_ai_system_prompt(dashboard_id: int, current_user: User = Depends(get_current_user)):
+    """RETIRED (2026-10-28). It called a model with a key typed into a header or
+    read from a link's JSON, outside every budget, to draft the Flow-first bot's
+    report note. The public AI Bot answers through the Answer Core, which does not
+    read that note; no paid call bypasses the Model Gateway."""
+    raise HTTPException(status_code=410, detail="Tính năng này đã ngừng; trợ lý AI của báo cáo không cần ghi chú này.")

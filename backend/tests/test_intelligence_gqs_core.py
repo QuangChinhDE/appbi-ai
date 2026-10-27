@@ -128,8 +128,12 @@ def test_a_bigquery_read_records_the_bytes_it_scanned(monkeypatch, outcome):
 #: Since the unified AI Chat the consumer is Chat: its API (consents), its
 #: conversation store (the viewer's catalog) and orchestrator (ledger, cancel), and
 #: the Data Core that plans and executes.
+#: 2026-10-28: the Core reads through a data scope; the signed-in asker's scope
+#: (`data_core/scope.py`, moved out of `service.py` unchanged) is the GQS consumer.
+#: The public bot's published-report scope is NOT a GQS consumer and is not listed.
 APPROVED_CONSUMERS = {"api/chat.py", "services/chat/conversations.py", "services/chat/orchestrator.py",
-                      "services/data_core/service.py", "services/data_core/catalog.py"}
+                      "services/data_core/service.py", "services/data_core/catalog.py",
+                      "services/data_core/scope.py"}
 
 
 def test_only_the_approved_consumers_reach_gqs():

@@ -1,11 +1,15 @@
-"""The Data Core of AI Chat: question -> discovery -> plan -> GQS -> verified answer.
+"""THE Answer Core: question -> discovery -> plan -> governed read -> verified answer.
 
 (Built as the AI Analyst; since the unified chat it is the one data path of every
-Chat turn - services/chat/orchestrator.py owns the turn, this owns its numbers.)
-It holds no query path of its own: every read is `GovernedQueryService.execute`
-with a request-bound principal on the `chat` surface, the durable ledger as its audit sink, the
-server's budgets and the server's bounds. A refusal from GQS is shown as a
-refusal; nothing is answered around it.
+AI Chat turn, and since 2026-10-28 of every public Dashboard AI Bot turn too.
+services/chat/orchestrator.py and services/answer_core/public_turn.py own their
+turns; this owns the numbers.)
+
+It holds no query path of its own: every read goes through the turn's DATA SCOPE
+(services/data_core/scope.py) - GQS under the signed-in asker's principal for AI
+Chat, the link's published charts through the governed public chart path for the
+public bot. The planner, grounding, value checks, ranking and narrative are the
+same for both. A refusal is shown as a refusal; nothing is answered around it.
 """
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from app.services.data_core import narrative
-from app.services.data_core.catalog import datasets_named, discover
+from app.services.data_core.catalog import datasets_named
 from app.services.data_core.planner import (_describe_filter, Clarify, Plan, Unsupported, describe_plan, plan as make_plan, retarget,
                                           validate)
 from app.services.governed_query.ledger import BudgetExceeded
@@ -45,46 +49,45 @@ def ledger_from_settings():
     ))
 
 
-def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = None,
+def ask(db, user, question: str, deps: Optional[CoreDeps], *, previous: Optional[dict] = None,
         drop_consent: Optional[str] = None, turn_id: Optional[str] = None,
         ceiling_dataset_ids: Optional[list[int]] = None, consented_plan: Optional[dict] = None,
         dataset_id: Optional[int] = None, value_choice: Optional[dict] = None,
         choice_token: Optional[str] = None, on_step: Optional[Callable[[dict], None]] = None,
-        should_stop: Optional[Callable[[], bool]] = None) -> dict:
-    """One turn. `ceiling_dataset_ids` scopes the Core to a set of Datasets (a
-    workspace); it can only NARROW what the person may read, never widen it.
-    `on_step` sees each progress step as it happens; `should_stop` is asked before
-    the model and before each governed read, and a True raises TurnStopped."""
+        should_stop: Optional[Callable[[], bool]] = None, scope=None) -> dict:
+    """One turn. `scope` is where the turn may read (services/data_core/scope.py);
+    without one it is the signed-in `user` through GQS. `ceiling_dataset_ids` scopes
+    that to a set of Datasets (a workspace); it can only NARROW what the person may
+    read, never widen it. `on_step` sees each progress step as it happens;
+    `should_stop` is asked before the model and before each read, and a True raises
+    TurnStopped."""
     from app.core.config import settings
-    from app.services.governed_query import (
-        AuthorizationContext, EffectivePrincipal, GovernedQueryRequest, GovernedQueryService, QueryBounds,
-        RelationRef, SemanticAsk, SurfaceCeiling,
-    )
+    from app.services.data_core.scope import GovernedScope
 
     question = (question or "").strip()
     if not question:
         return {"status": "unsupported", "message": "Hãy nhập câu hỏi."}
-    consent_enabled = bool(getattr(settings, "ANALYST_DROP_CONSENT_ENABLED", False))
+    turn_id = turn_id or uuid.uuid4().hex
+    if scope is None:
+        scope = GovernedScope(db, user, deps, turn_id=turn_id, ceiling_dataset_ids=ceiling_dataset_ids,
+                              drop_consent=drop_consent)
+    consent_enabled = scope.consent_enabled
     if not consent_enabled and (drop_consent or consented_plan is not None):
         return {"status": "unsupported", "message": "Máy chủ chưa bật chức năng chấp nhận bỏ bộ lọc."}
-    turn_id = turn_id or uuid.uuid4().hex
-    principal = EffectivePrincipal.for_user(user, surface="chat", request_id=turn_id)
-    authz = AuthorizationContext(db=db, principal=principal, user=user,
-                                 ceiling=SurfaceCeiling.of(ceiling_dataset_ids))
     steps = _Steps(on_step)
 
     def checkpoint():
         if should_stop is not None and should_stop():
             raise TurnStopped()
 
-    catalog = discover(authz)
+    catalog = scope.catalog()
     chosen = None
     if choice_token:
         # A metric/source the person picked from THIS server's clarification. The
-        # token binds user, question, Dataset, explore, metric and the catalog
+        # token binds asker, question, Dataset, explore, metric and the catalog
         # version, and expires; the pick is re-authorised against THIS turn's
         # catalog, so replaying it can never widen what the person may read.
-        chosen, why = verify_choice(choice_token, user_id=str(user.id), question=question, catalog=catalog)
+        chosen, why = verify_choice(choice_token, user_id=scope.subject, question=question, catalog=catalog)
         if chosen is None:
             return {"status": "unsupported", "turn_id": turn_id or uuid.uuid4().hex, "steps": [], "message": why}
         dataset_id = chosen["dataset_id"]
@@ -130,8 +133,7 @@ def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = N
     else:
         # The daily query budget is a cost control: once it is spent, the paid model
         # is not asked to plan a query GQS would refuse anyway (QA live run 2026-10-24).
-        exhausted = getattr(deps.ledger, "user_day_exhausted", None)
-        over = exhausted(principal.user_id) if exhausted else None
+        over = scope.exhausted()
         if over is not None:
             refusal = BudgetExceeded(*over)
             steps.append({"step": "governed_query", "detail": f"Từ chối: {refusal.code}"})
@@ -156,7 +158,7 @@ def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = N
             outcome = rerank
     if isinstance(outcome, Clarify):
         choices = [{"label": c["label"], "token": sign_choice(
-                        user_id=str(user.id), question=question, catalog=full_catalog,
+                        user_id=scope.subject, question=question, catalog=full_catalog,
                         explore_id=c["explore_id"], measure=c["measure"])} for c in outcome.choices]
         return {"status": "clarify", "turn_id": turn_id, "steps": steps, "message": outcome.question,
                 "options": outcome.options, "choices": [c for c in choices if c["token"]]}
@@ -173,8 +175,7 @@ def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = N
         p, why = ground(p, question, carried=carried, covered=p.covered,
                         chosen_measure=(chosen or {}).get("measure"),
                         previous=previous if isinstance(previous, dict) else None,
-                        value_lookup=lambda q, words, used: _find_value_filter(authz, principal, p, q, words,
-                                                                               used, settings, turn_id, deps))
+                        value_lookup=lambda q, words, used: scope.find_value(p, q, words, used))
         if p is None:
             return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": why}
         from app.services.data_core.grounding import other_source_named
@@ -188,10 +189,10 @@ def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = N
             # its metric only through the model's bridge: plan again on that Dataset
             # (holdout set 6: "doanh số" answered from another source's "Revenue").
             return ask(db, user, question, deps, turn_id=turn_id, ceiling_dataset_ids=ceiling_dataset_ids,
-                       dataset_id=next(iter(verbatim)), on_step=on_step, should_stop=should_stop)
+                       dataset_id=next(iter(verbatim)), on_step=on_step, should_stop=should_stop, scope=scope)
         if both:
             for o in both[:6]:
-                o["token"] = sign_choice(user_id=str(user.id), question=question, catalog=full_catalog,
+                o["token"] = sign_choice(user_id=scope.subject, question=question, catalog=full_catalog,
                                          dataset_id=o["dataset_id"])
             return {"status": "clarify", "turn_id": turn_id, "steps": steps,
                     "options": [o["label"] for o in both[:6]], "sources": both[:6],
@@ -199,25 +200,12 @@ def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = N
     steps.append({"step": "plan", "detail": p.interpretation or "Đã chọn chỉ số, chiều và độ chi tiết thời gian.",
                   "source": p.explore.dataset_name})
 
-    def governed(dims, measures, filters, sorts, grains, max_rows):
-        return GovernedQueryRequest(
-            principal=principal,
-            relation=RelationRef(kind="semantic_explore", id=p.explore.explore_id, model_id=p.explore.model_id),
-            ask=SemanticAsk(dimensions=tuple(dims), measures=tuple(measures), filters=dict(filters),
-                            sorts=tuple(sorts), time_grains=dict(grains)),
-            requested_bounds=QueryBounds(max_rows=max_rows, timeout_seconds=60,
-                                         bq_max_bytes=int(settings.ANALYST_MAX_BQ_BYTES_PER_USER_DAY)),
-            run_id=turn_id,
-            drop_consent=drop_consent,
-        )
-
-    def main_request(plan):
-        return governed(plan.dimensions, plan.measures, plan.filters,
-                        plan.sorts or [{"field": t, "direction": "asc"} for t in plan.time_grains],
-                        plan.time_grains, int(settings.ANALYST_MAX_ROWS))
+    def main_read(plan):
+        return scope.read(plan, plan.dimensions, plan.measures, plan.filters,
+                          plan.sorts or [{"field": t, "direction": "asc"} for t in plan.time_grains],
+                          plan.time_grains, int(settings.ANALYST_MAX_ROWS))
 
     checkpoint()
-    gqs = GovernedQueryService(authz, audit=deps.ledger, cancel_registry=deps.registry)
     try:
         if p.filters and consented_plan is None:
             # A filter value must EXIST in the data before the query runs. The model
@@ -226,11 +214,11 @@ def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = N
             # like a fact (holdout set 3: "Số khách hàng: 0"). The field's real values
             # are read through GQS (this person's rights, ledgered): each filter value
             # is replaced by the ONE real value matching it, or the person chooses.
-            values_of = lambda ref: gqs.execute(governed([ref], p.measures[:1], {}, [], {}, 200))  # noqa: E731
+            values_of = lambda ref: scope.read(p, [ref], p.measures[:1], {}, [], {}, 200)  # noqa: E731
             checked, options = _check_filter_values(
                 p, values_of,
-                lambda ref, text: gqs.execute(governed([ref], p.measures[:1],
-                                                       {ref: {"operator": "contains", "value": text}}, [], {}, 50)))
+                lambda ref, text: scope.read(p, [ref], p.measures[:1],
+                                             {ref: {"operator": "contains", "value": text}}, [], {}, 50))
             if checked is None:
                 moved = _relocate_values(p, values_of)
                 if moved is not None:
@@ -250,15 +238,16 @@ def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = N
                     f"{labels_of(p).get(r, r)} = {c['value']}" for r, c in checked.filters.items())})
             p = checked
         checkpoint()
-        result = gqs.execute(main_request(p))
+        result = main_read(p)
     except GovernedRefusal as refusal:
         steps.append({"step": "governed_query", "detail": f"Từ chối: {refusal.code}"})
         return {"status": "refused", "turn_id": turn_id, "steps": steps, "code": refusal.code,
                 "message": refusal.message_vi, "detail": _safe_detail(refusal), "plan": p.as_dict(),
                 "consent_available": consent_enabled and refusal.code == "filter_would_drop"}
-    ev = result.evidence
-    steps.append({"step": "governed_query", "detail": f"{ev.rows_returned} dòng · {ev.duration_ms} ms",
-                  "query_id": ev.query_id})
+    evidence = scope.evidence(p, result)
+    steps.append({"step": "governed_query",
+                  "detail": f"{evidence.get('rows_returned')} dòng · {evidence.get('duration_ms')} ms",
+                  "query_id": evidence.get("query_id")})
 
     labels = {f.ref: f.label for f in p.explore.fields}
     columns = [{"name": c.name, "ref": c.ref, "role": c.role, "label": labels.get(c.ref or "", c.name)}
@@ -273,7 +262,7 @@ def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = N
         # was filtered and draw no conclusion; the read stays in the ledger.
         steps.append({"step": "verify", "detail": "0 dòng khớp bộ lọc"})
         return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
-                "message": no_match_message(p), "evidence": {"query_id": ev.query_id}}
+                "message": no_match_message(p), "evidence": {"query_id": evidence.get("query_id")}}
     time_ref = next(iter(p.time_grains), None)
     order = _ranking_order(p)
     if p.limit and result.truncated:
@@ -281,7 +270,7 @@ def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = N
         steps.append({"step": "verify", "detail": "kết quả vượt giới hạn dòng"})
         return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
                 "message": "Kết quả vượt giới hạn dòng nên không xếp hạng được chính xác; hãy thu hẹp câu hỏi.",
-                "evidence": {"query_id": ev.query_id}}
+                "evidence": {"query_id": evidence.get("query_id")}}
     if order and not time_ref and len([c for c in columns if c["role"] == "dimension"]) == 1:
         rows = _ordered(rows, columns, p, order)
     story = narrative.describe(columns, rows, time_ref=time_ref, truncated=result.truncated,
@@ -293,18 +282,13 @@ def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = N
         "status": "answered", "turn_id": turn_id, "steps": steps, "plan": p.as_dict(),
         "answer": story, "columns": columns, "rows": rows, "truncated": result.truncated,
         "evidence": {
-            "query_id": ev.query_id, "source": p.explore.dataset_name, "source_type": p.explore.source_type,
-            "explore_id": p.explore.explore_id, "datasets": list(ev.datasets), "dialect": ev.dialect,
-            "sql_fingerprint": ev.sql_fingerprint[:16], "policy_fingerprint": ev.policy_fingerprint[:16],
-            "semantic_epoch": ev.semantic_epoch, "filters_applied": list(ev.filters_applied),
+            **evidence,
             # the same filters as the person reads them (label, operator, value), not internal refs
             "filters_described": [_describe_filter(labels_of(p).get(r, r), c) for r, c in p.filters.items()],
-            "filters_dropped": list(ev.filters_dropped), "bounds": ev.bounds.as_dict(),
-            "rows_returned": ev.rows_returned, "duration_ms": ev.duration_ms, "freshness": ev.freshness.mode,
             "measures": [labels.get(m, m) for m in p.measures],
         },
         "chart_draft": draft,
-        "can_save": _can_save_chart(authz, user, p),
+        "can_save": scope.can_save(p),
         "chart_draft_unavailable": None if draft else no_draft,
     }
 
@@ -336,43 +320,6 @@ def draft_title(question: str, now=None) -> str:
 
     stamp = (now or _dt.datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
     return f"{question.strip()[:100]} · {stamp}"
-
-
-def _find_value_filter(authz, principal, p: Plan, question: str, unexplained: set, used: list, settings, turn_id,
-                       deps):
-    """(ref, real value) when exactly one text field of the explore has a real value
-    whose words are in the question and cover an unexplained word; else None.
-    Each field's values are read through GQS (this person, ledgered, bounded)."""
-    from app.services.data_core.catalog import is_identifier
-    from app.services.data_core.grounding import fold, syllables
-    from app.services.governed_query import (GovernedQueryRequest, GovernedQueryService, QueryBounds,
-                                             RelationRef, SemanticAsk)
-
-    qtext = " " + " ".join(w for w in __import__("re").split(r"[^0-9a-z]+", fold(question)) if w) + " "
-    candidates = [f for f in p.explore.fields if f.kind == "dimension" and f.type == "string"
-                  and not is_identifier(f)][:8]
-    if not candidates or len(unexplained) > 4:
-        return None  # each lookup is a governed read against the person's budget: kept small
-    hits = []
-    gqs = GovernedQueryService(authz, audit=deps.ledger, cancel_registry=deps.registry)
-    for f in candidates:
-        try:
-            res = gqs.execute(GovernedQueryRequest(
-                principal=principal,
-                relation=RelationRef(kind="semantic_explore", id=p.explore.explore_id, model_id=p.explore.model_id),
-                ask=SemanticAsk(dimensions=(f.ref,), measures=tuple(p.measures[:1]), filters={}, sorts=(), time_grains={}),
-                requested_bounds=QueryBounds(max_rows=200, timeout_seconds=30,
-                                             bq_max_bytes=int(settings.ANALYST_MAX_BQ_BYTES_PER_USER_DAY)),
-                run_id=turn_id))
-        except Exception:  # a refused lookup only means no value from this field
-            continue
-        col = next((c.name for c in res.columns if c.ref == f.ref), None)
-        for r in res.rows if col else []:
-            v = r.get(col)
-            words = syllables(v) if isinstance(v, str) else set()
-            if words and words & unexplained and f" {' '.join(w for w in __import__('re').split(r'[^0-9a-z]+', fold(v)) if w)} " in qtext:
-                hits.append((f.ref, v))
-    return hits[0] if len({h[0] for h in hits}) == 1 and len(hits) == 1 else None
 
 
 def _ranking_order(p) -> Optional[str]:
@@ -414,22 +361,6 @@ def _asked_period(p, time_ref):
         return date.fromisoformat(str(f["value"]["from"])), date.fromisoformat(str(f["value"]["to"]))
     except (KeyError, ValueError):
         return None
-
-
-def _can_save_chart(authz, user, p: Plan) -> bool:
-    """What POST /charts will decide for this person, asked BEFORE offering the
-    button: `explore_charts: edit` and BUILD on the answer's Dataset (browser
-    acceptance: the button was offered and the save failed afterwards). Advisory
-    for the UI only - the chart API still enforces both."""
-    from app.core.authz.decision import Action
-    from app.core.dependencies import _normalize_permissions
-    from app.models.dataset import Dataset
-
-    level = _normalize_permissions(user).get("explore_charts", "none")
-    if level not in ("edit", "full"):
-        return False
-    ds = authz.db.get(Dataset, p.explore.dataset_id)
-    return bool(ds is not None and authz.decide(Action.BUILD, ds).allowed)
 
 
 def labels_of(p: Plan) -> dict:

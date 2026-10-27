@@ -1,6 +1,6 @@
 # Unified AI Chat — architecture contract
 
-**Status:** ACCEPTED by the Product Owner (2026-10-27): ADR-1 approved, ADR-3 approved with strict isolation, ADR-4 approved. Implemented on `feat/unified-ai-chat-contract` (section G).
+**Status:** ACCEPTED by the Product Owner (2026-10-27): ADR-1 approved, ADR-4 approved. **ADR-3 REVISED by the Product Owner (2026-10-28):** the public Dashboard AI Bot is a consumer of the one Answer Core, not a Flow-engine surface (see ADR-3 and section H). Implemented on `feat/unified-ai-chat-contract` (sections G and H).
 **Version:** 1.0
 **Baseline audited:** `origin/demo` at `0b48f597` (2026-10-27)
 **Supersedes:** the Agent-Flow-first decisions in `docs/features/agent-flow-chat-rework/*`, and the decision in `docs/features/analyst-official-module/*` to keep Analyst as a separate product.
@@ -138,21 +138,19 @@ Rows 3 and 4 are not the authenticated AI Chat. See ADR-3.
 
   Migrate `agent_flow_chat_threads` into `chat_conversations`, one turn per run, with `status` mapped and authors and timestamps kept. Those turns are read-only legacy turns marked `origin="flow_v0"` and are never re-executed. `agent_flow_runs` stays as the execution record of Flow invocations.
 
-### ADR-3: The public dashboard assistant and Studio preview are not AI Chat. RECOMMEND PO DECISION
+### ADR-3 (REVISED 2026-10-28): One Answer Core; the public Dashboard AI Bot is its second consumer
 
-- **A. Requirement:** C1/§5, "Không tồn tại hai giao diện chat có chức năng hỏi dữ liệu trùng lặp", and the retirement of "Duplicate final answer authority".
-- **B. Evidence:**
-  - `public.py:5184` `run_for_link` serves anonymous viewers of a published report.
-  - GQS requires a person principal (`principal.py:54-78`: `human|pat`), and EXPLORE grants do not exist for anonymous viewers.
-  - Studio preview (`agent_flows/api.py`) is the author testing their own flow.
-- **C. Failure mode if forced through the Core:**
-  - Either the public assistant stops working (an external contract break for published links),
-  - or GQS gains an anonymous principal, which weakens a protected subsystem.
-- **D. Alternative:**
-  - These two stay on the Flow engine as **non-Chat surfaces**: the Report Assistant, scoped to the charts a publisher already made public, and author preview.
-  - A CI check forbids any authenticated `/chat` path from reaching `run_for_link`, `run_for_chat_thread` or `run_preview`.
-- **E. Trade-offs:** a second LLM answer path remains in the codebase. It is limited to already-published chart data and to authors' tests, and it is not a competing chat for signed-in users.
-- **F. Recommendation: RECOMMEND PO CHANGE.** Add an explicit scope note to the directive: "One AI Chat for signed-in users; the public Report Assistant and Studio preview are separate, bounded surfaces." If the PO rejects this, the public assistant needs its own design (anonymous GQS principal), which is out of this rework's scope.
+The 2026-10-27 recommendation (keep the public assistant on the Flow engine as a separate surface) was **not accepted** by the Product Owner. The decision:
+
+> AppBI has ONE Answer Core for AI question answering. AI Chat and the Dashboard AI Bot are two consumers of the Core. Agent Flow is an add-on module the Core may call when needed. Every final answer, data access, number verification, credential and token budget is under the Core's control and the system's common policy.
+
+- **How an anonymous viewer is answered without weakening GQS.** GQS keeps its person principal; no anonymous principal is added. The Core reads through a **data scope** (`services/data_core/scope.py`):
+  - `GovernedScope`: a signed-in asker, GQS on the `chat` surface (unchanged behaviour);
+  - `PublishedReportScope` (`services/answer_core/published_report.py`): the link's PUBLISHED charts, read through `_fetch_chart_data` on the link's tool context - the governed public chart path the tiles render through (dashboard filters, the link's locks and hidden filters, page slicers and page bounds, exposed fields, AI-scope exclusions, freshness). No SQL, no dataset-wide read, no owner rights.
+- **The answer** is the Core's: the same planner, grounding, filter-value checks, ranking and deterministic narrative as AI Chat; numbers come only from the chart rows. A grouping the chart does not show is computed only for additive measures; an average/distinct count is answered at the chart's own grouping or refused.
+- **Agent Flow** bound to the link is an optional documents-only add-on (`services/answer_core/link_extension.py`): `data_reads_forbidden`, the link's own knowledge ceiling, validated by the same `chat.extension.accept` as AI Chat's add-on. No flow is needed for the bot to answer.
+- **Studio preview** (`run_preview`) stays the author's diagnostic; it is not a viewer's answer path.
+- **Enforced by:** `tests/test_public_answer_core.py` (the public route is served by the Core; no public route reaches `run_for_link` or reads `X-User-Ai-Key`; the published scope reads only through the governed public chart path; the link budget fails closed), `tests/test_answer_core_published_scope.py`, `tests/test_ai_runtime_gateway.py`, and the frontend `check-answer-parity.mjs` (sections 6-7).
 
 ### ADR-4: `analyst` permission module. ACCEPT AS WRITTEN
 
@@ -386,13 +384,37 @@ This section names the real modules. Sections A–F above are the design and aud
 
 No old address ever answers a question.
 
-### G.4 Kept separate (ADR-3)
+### G.4 Studio preview (ADR-3 revised)
 
-The public dashboard assistant (`api/public.py` → `dispatch.run_for_link`) and Studio preview (`run_preview`) stay on the Flow engine as bounded non-Chat surfaces:
-- They are anonymous, published-chart scoped, or author-only.
-- No `/chat` code path can reach them; `test_unified_chat_architecture` enforces this.
+Studio preview (`run_preview`) stays on the Flow engine as the author's diagnostic. The public Dashboard AI Bot no longer does: see section H.
 
 ### G.5 Test-only switches (refused in production)
 
 - `ANALYST_PLANNER_REPLAY_PATH`: replays the Data Core planner's model output.
 - `AI_CHAT_EXTENSION_REPLAY_PATH`: replays an extension flow's model output. Every gate and validation around it still runs.
+
+---
+
+## H. The public Dashboard AI Bot and the central AI runtime (PO directive 2026-10-28)
+
+### H.1 Call paths
+
+| Consumer | Route | Turn owner | Data scope | Final answer |
+|---|---|---|---|---|
+| AI Chat | `POST /api/v1/chat/conversations/{id}/turns` | `services/chat/orchestrator.py` | `GovernedScope` (GQS, asker) | the Core |
+| Dashboard AI Bot | `POST /api/v1/public/dashboards/{token}/ai/answer` | `services/answer_core/public_turn.py` | `PublishedReportScope` (published charts) | the Core |
+| Optional add-on (both) | - | the consumer's turn | none (`data_reads_forbidden`), documents only | never |
+
+Retired (410 Gone): `/public/dashboards/{token}/ai/agent/chat` (Flow-first answering), `/ai/briefing/brief` and `/ai/agent/explore` (second answering engines on the public link), `/dashboards/{id}/ai/suggest-system-prompt` (a paid call outside every budget). No viewer route reads `X-User-Ai-Key`.
+
+### H.2 The public turn
+
+`begin` (admission before anything is spent: question size, idempotency key -> the same turn, one running turn per viewer conversation, a per-link running cap, the link's USD/turn pre-check, fail closed) -> `run` (the Core in a worker thread on its own session, the link re-authenticated there; optional add-on) -> ONE terminal write (`WHERE status = 'running'`, so Stop and an answer cannot both win). `public_answer_turns` holds the turn, the envelope the viewer got, the plan a follow-up refines (re-validated against the link's catalog), and the viewer's rating.
+
+### H.3 The Model Gateway (`services/ai_runtime/gateway.py`)
+
+Every paid model call - the Core's planner (AI Chat and the public bot), an Agent Flow step (`runtime/handlers/agent.py::_stream`), any other `LLMClient` user - reserves its worst case in `ai_usage_ledger` under a transaction-scoped advisory lock on every scope it bills (global, user, public link, turn), is clamped to the output-token cap, and settles with the reported usage; an error after sending keeps the worst case. A ledger that cannot be read refuses the call. Ceilings: `AI_GLOBAL_USD_PER_DAY`, `AI_USER_USD_PER_DAY`, the link's `ai_bot_budget_usd_per_day` (never unlimited), `AI_MAX_MODEL_CALLS_PER_TURN`, `AI_MAX_USD_PER_TURN`, `AI_MAX_OUTPUT_TOKENS_PER_CALL`, `AI_MAX_INPUT_TOKENS_PER_CALL`.
+
+### H.4 Credentials
+
+Server-side only: the deployment's provider keys, or a public link's own key held in the encrypted credential store (`ai_provider_credentials`) and referenced by `ai_bot_credential_id`. Migration `20261028_0001` moves any plaintext `appearance_config.ai_bot_key` there (idempotent; downgrade restores). The credential a turn uses and the budget it spends belong to the same billing principal (the link). A key that was ever stored in plain text should be rotated at the provider.

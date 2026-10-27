@@ -148,8 +148,14 @@ def test_the_chat_core_reads_data_only_through_gqs():
         if hit:
             bad[str(f.relative_to(BACKEND))] = hit
     assert bad == {}, f"the chat Core reaches business data outside GQS: {bad}"
+    # Since the Answer Core serves two consumers (2026-10-28) it reads ONLY through a
+    # data scope: the signed-in asker's scope is GQS on the `chat` surface, and the
+    # Core itself holds no query path.
+    scope = (APP / "services" / "data_core" / "scope.py").read_text(encoding="utf-8")
+    assert "GovernedQueryService" in scope and 'surface="chat"' in scope
     service = (APP / "services" / "data_core" / "service.py").read_text(encoding="utf-8")
-    assert "GovernedQueryService" in service and 'surface="chat"' in service
+    assert "GovernedQueryService" not in service and "scope.read(" in service, (
+        "the Answer Core must read through its turn's data scope, never a query path of its own")
 
 
 def test_an_extension_context_cannot_read_chart_data(monkeypatch):
