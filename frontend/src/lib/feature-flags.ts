@@ -29,12 +29,3 @@ export const HOME_MODULE_ENABLED =
  * bounces to. Dashboards is the landing module while Home is switched off.
  */
 export const DEFAULT_LANDING_PATH = HOME_MODULE_ENABLED ? '/overview' : '/dashboards';
-
-/**
- * AppBI Analyst (M2 MVP) — ask a new question, answered through the Governed
- * Query Service. OFF by default; the backend has its own switch
- * (`ANALYST_ENABLED`) and is the boundary: with this on and the backend off,
- * the page explains that the module is not enabled.
- */
-export const ANALYST_MODULE_ENABLED =
-  String(process.env.NEXT_PUBLIC_ANALYST_ENABLED ?? 'false').toLowerCase() === 'true';

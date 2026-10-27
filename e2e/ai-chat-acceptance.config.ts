@@ -9,21 +9,21 @@ import { defineConfig, devices } from '@playwright/test';
  * "Rig Sales" + "Rig Slow Archive" datasets). Run explicitly:
  *
  *   E2E_BASE_URL=… ANALYST_RIG_PASSWORD=… ANALYST_RIG_DOMAIN=… \
- *     npx playwright test -c analyst-acceptance.config.ts
+ *     npx playwright test -c ai-chat-acceptance.config.ts
  *
- * Screenshots go to ../.artifacts/analyst-acceptance (gitignored local evidence).
+ * Screenshots go to ../.artifacts/ai-chat-acceptance (gitignored local evidence).
  * A missing rig FAILS; it never passes by skipping.
  */
 export default defineConfig({
   testDir: './acceptance',
-  testMatch: /analyst-journey\.spec\.ts/,
+  testMatch: /ai-chat-journey\.spec\.ts/,
   timeout: 240_000,
   expect: { timeout: 60_000 },
   fullyParallel: false,
   workers: 1,
   retries: 0,
   reporter: [['list']],
-  outputDir: '../.artifacts/analyst-acceptance/results',
+  outputDir: '../.artifacts/ai-chat-acceptance/results',
   use: {
     baseURL: process.env.E2E_BASE_URL || 'http://localhost:3231',
     trace: 'retain-on-failure',

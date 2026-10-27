@@ -20,7 +20,6 @@ import { usePathname } from 'next/navigation';
 import { PowerOff, ShieldOff } from 'lucide-react';
 
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
-import { ANALYST_MODULE_ENABLED } from '@/lib/feature-flags';
 import { moduleForPath } from '@/lib/moduleRoutes';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -39,9 +38,6 @@ export function ModuleAccessGuard({ children }: { children: React.ReactNode }) {
   // that wait onto the critical path of every user who does have access, to tidy
   // the console for the rare one who does not. The requests are refused, which is
   // the system working.
-  // A module switched off for this build is not a permission problem: say so,
-  // instead of sending the reader to an administrator for a grant that cannot help.
-  if (module === 'analyst' && !ANALYST_MODULE_ENABLED) return <NoModuleAccess module={module} notEnabled />;
   if (!module || isLoading || isError || !data) return <>{children}</>;
   if (hasPermission(data.permissions, module, 'view')) return <>{children}</>;
 

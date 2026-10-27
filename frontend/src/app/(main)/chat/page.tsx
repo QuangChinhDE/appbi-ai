@@ -2,20 +2,20 @@
 
 import React from 'react';
 
-import { ChatModule } from '@/components/chat/ChatModule';
+import ChatWorkspace from '@/components/chat/ChatWorkspace';
 
 /**
- * SUSPENSE IS REQUIRED, NOT DECORATION.
+ * AI Chat: a new conversation. The first question opens it (/chat/c/{id}).
  *
- * The page reads `?brain=` and `?thread=` so a conversation is addressable.
- * `useSearchParams()` cannot be resolved while prerendering — the query string only
- * exists in the browser — so Next fails the export unless the component that reads
- * it sits behind a boundary.
+ * SUSPENSE IS REQUIRED, NOT DECORATION: the page reads `?thread=` (an old
+ * Flow-chat link) and `?brain=` (an add-on to start with). `useSearchParams()`
+ * cannot be resolved while prerendering, so Next fails the build unless the
+ * component that reads it sits behind a boundary.
  */
 export default function Page() {
   return (
     <React.Suspense fallback={null}>
-      <ChatModule />
+      <ChatWorkspace />
     </React.Suspense>
   );
 }

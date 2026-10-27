@@ -1,13 +1,27 @@
 'use client';
 
-/** AI Analyst: one saved (or shared) analysis session. Access is decided by the server. */
-import { useParams } from 'next/navigation';
+/**
+ * An old /analyst/s/{id} link. The session was imported into AI Chat (alembic
+ * 20261027_0001); the server resolves it to that conversation only for someone who
+ * may read it, and nothing is ever answered on the retired engine.
+ */
+import { useEffect } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 
-import AnalystWorkspace from '@/components/analyst/AnalystWorkspace';
+import { chatApi } from '@/lib/api/chat';
 
-export default function AnalystSessionPage() {
+export default function AnalystSessionRedirect() {
+  const router = useRouter();
   const params = useParams<{ id: string }>();
-  const id = Number(params?.id);
-  // the key remounts the workspace when another session is opened from the list
-  return <AnalystWorkspace key={id} sessionId={Number.isInteger(id) && id > 0 ? id : -1} />;
+  useEffect(() => {
+    const id = Number(params?.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      router.replace('/chat');
+      return;
+    }
+    chatApi.resolveLegacy('analyst_session', id)
+      .then((cid) => router.replace(`/chat/c/${cid}`))
+      .catch(() => router.replace('/chat/c/-1'));
+  }, [params, router]);
+  return null;
 }

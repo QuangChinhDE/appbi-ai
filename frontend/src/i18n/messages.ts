@@ -28,8 +28,7 @@ const baseEn: MessageCatalog = {
   'sidebar.nav.datasets': 'Datasets',
   'sidebar.nav.knowledgeHub': 'Knowledge Hub',
   'sidebar.nav.agentFlows': 'Agent Flows',
-  'sidebar.nav.aiChat': 'AI Assistant',
-  'sidebar.nav.analyst': 'Data Analysis',
+  'sidebar.nav.aiChat': 'AI Chat',
   'sidebar.nav.observability': 'Observability',
   'sidebar.nav.explore': 'Explore',
   'sidebar.nav.dashboards': 'Dashboards',
@@ -184,8 +183,7 @@ const baseVi: MessageCatalog = {
   'sidebar.nav.datasets': 'Dataset',
   'sidebar.nav.knowledgeHub': 'Knowledge Hub',
   'sidebar.nav.agentFlows': 'Agent Flows',
-  'sidebar.nav.aiChat': 'Trợ lý AI',
-  'sidebar.nav.analyst': 'Phân tích dữ liệu',
+  'sidebar.nav.aiChat': 'AI Chat',
   'sidebar.nav.observability': 'Observability',
   'sidebar.nav.explore': 'Khám phá',
   'sidebar.nav.dashboards': 'Dashboard',
@@ -332,7 +330,7 @@ import { dashboardsGridCatalog } from './catalog/dashboards-grid';
 import { reportExperienceCatalog } from './catalog/report-experience';
 import { datasetsCatalog } from './catalog/datasets';
 import { exploreCatalog } from './catalog/explore';
-import { analystCatalog } from './catalog/analyst';
+import { aiChatCatalog } from './catalog/ai-chat';
 import { governCatalog } from './catalog/govern';
 import { agentFlowsCatalog } from './catalog/agent-flows';
 import { workboardsCatalog } from './catalog/workboards';
@@ -353,7 +351,7 @@ const moduleCatalogs: ModuleCatalog[] = [
   reportExperienceCatalog,
   datasetsCatalog,
   exploreCatalog,
-  analystCatalog,
+  aiChatCatalog,
   governCatalog,
   agentFlowsCatalog,
   workboardsCatalog,

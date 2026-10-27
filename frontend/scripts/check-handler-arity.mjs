@@ -21,7 +21,8 @@ const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src');
 const FILES = [
   'components/dashboards/DashboardAiBot.tsx',
   'components/agent-flows/TestChat.tsx',
-  'components/chat/ConversationView.tsx',
+  'components/chat/ChatWorkspace.tsx',
+  'components/chat/ChatTurnView.tsx',
 ];
 
 /** A handler that genuinely wants the event is correct. */

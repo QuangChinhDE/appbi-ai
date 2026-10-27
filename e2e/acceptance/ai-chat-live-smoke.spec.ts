@@ -11,7 +11,7 @@ import fs from 'node:fs';
  */
 const PASSWORD = process.env.DOGFOOD_PASSWORD || '';
 const ORACLE: Record<string, Record<string, number>> = JSON.parse(fs.readFileSync(process.env.ORACLE_FILE || '', 'utf-8'));
-const OUTCOME = '[data-testid="analyst-answer"], [data-testid="analyst-clarify"], [data-testid="analyst-unsupported"], [data-testid="analyst-refused"], [data-testid="analyst-error"]';
+const OUTCOME = '[data-testid="chat-answer"], [data-testid="chat-clarify"], [data-testid="chat-unsupported"], [data-testid="chat-refused"], [data-testid="chat-error"]';
 
 async function login(page: Page) {
   await page.goto('/login');
@@ -22,16 +22,16 @@ async function login(page: Page) {
 }
 
 async function askLive(page: Page, q: string): Promise<{ ex: Locator; kind: string | null }> {
-  const before = await page.getByTestId('analyst-exchange').count();
-  await page.getByTestId('analyst-question').fill(q);
-  await page.getByTestId('analyst-ask').click();
-  const ex = page.getByTestId('analyst-exchange').nth(before);
+  const before = await page.getByTestId('chat-exchange').count();
+  await page.getByTestId('chat-question').fill(q);
+  await page.getByTestId('chat-ask').click();
+  const ex = page.getByTestId('chat-exchange').nth(before);
   await expect(ex.locator(OUTCOME).first()).toBeVisible({ timeout: 120_000 });
   return { ex, kind: await ex.locator(OUTCOME).first().getAttribute('data-testid') };
 }
 
 async function tableOf(ex: Locator): Promise<Record<string, number>> {
-  const rows = await ex.getByTestId('analyst-table').locator('tbody tr').evaluateAll((trs) =>
+  const rows = await ex.getByTestId('chat-table').locator('tbody tr').evaluateAll((trs) =>
     trs.map((tr) => Array.from(tr.querySelectorAll('td')).map((td) => (td.textContent || '').trim())));
   const got: Record<string, number> = {};
   for (const cells of rows) got[cells.slice(0, -1).join(' / ') || 'total'] = Number(cells[cells.length - 1].replace(/[^\d.-]/g, ''));
@@ -48,37 +48,37 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   test.setTimeout(600_000);
   if (!PASSWORD) throw new Error('DOGFOOD_PASSWORD not set: the QA stack is required');
   await login(page);
-  await page.goto('/analyst');
+  await page.goto('/chat');
   const results: Record<string, unknown>[] = [];
   const snap = async (n: string) => {
     const path = info.outputPath(`LIVE-${n}.png`);
     await page.screenshot({ path, fullPage: true });
     await info.attach(`LIVE-${n}`, { path, contentType: 'image/png' });
   };
-  const fresh = async () => { if (await page.getByTestId('analyst-new-topic').count()) await page.getByTestId('analyst-new-topic').click(); };
+  const fresh = async () => { if (await page.getByTestId('chat-new-topic').count()) await page.getByTestId('chat-new-topic').click(); };
 
   // 1. orders by channel for a year (revenue/order question)
   let r = await askLive(page, 'Năm 2025 mỗi kênh bán có bao nhiêu đơn hàng?');
   let row: Record<string, unknown> = { n: 1, q: 'orders by channel 2025', outcome: r.kind };
-  if (r.kind === 'analyst-answer') row = { ...row, match: matches(await tableOf(r.ex), 'orders_channel_2025') };
+  if (r.kind === 'chat-answer') row = { ...row, match: matches(await tableOf(r.ex), 'orders_channel_2025') };
   results.push(row); await snap('1-orders-channel');
 
   // 2. a filtered question
   await fresh();
   r = await askLive(page, 'Doanh số của kênh Online ở từng vùng');
   row = { n: 2, q: 'online sales by region', outcome: r.kind };
-  if (r.kind === 'analyst-answer') row = { ...row, match: matches(await tableOf(r.ex), 'online_region') };
+  if (r.kind === 'chat-answer') row = { ...row, match: matches(await tableOf(r.ex), 'online_region') };
   results.push(row); await snap('2-filtered');
 
   // 3. a time range, then 4. a follow-up that changes only the period
   await fresh();
   r = await askLive(page, 'Doanh số từng ngành hàng trong quý 2 năm 2025');
   row = { n: 3, q: 'category Q2 2025', outcome: r.kind };
-  if (r.kind === 'analyst-answer') row = { ...row, match: matches(await tableOf(r.ex), 'category_q2_2025') };
+  if (r.kind === 'chat-answer') row = { ...row, match: matches(await tableOf(r.ex), 'category_q2_2025') };
   results.push(row); await snap('3-time-range');
   r = await askLive(page, 'còn quý 3 thì sao');
   row = { n: 4, q: 'follow-up: Q3', outcome: r.kind };
-  if (r.kind === 'analyst-answer') row = { ...row, match: matches(await tableOf(r.ex), 'category_q3_2025') };
+  if (r.kind === 'chat-answer') row = { ...row, match: matches(await tableOf(r.ex), 'category_q3_2025') };
   results.push(row); await snap('4-follow-up');
 
   // 5. an ambiguous metric: a clarification is the right move; if the model answers
@@ -86,14 +86,14 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   await fresh();
   r = await askLive(page, 'Kênh nào hiệu quả nhất?');
   row = { n: 5, q: 'which channel is most effective', outcome: r.kind };
-  if (r.kind === 'analyst-clarify') {
-    const options = await r.ex.getByTestId('analyst-clarify').getByRole('button').allInnerTexts();
+  if (r.kind === 'chat-clarify') {
+    const options = await r.ex.getByTestId('chat-clarify').getByRole('button').allInnerTexts();
     row.options = options;
     const sales = options.find((o) => /Doanh số/.test(o));
     if (sales) {
-      const before = await page.getByTestId('analyst-exchange').count();
-      await r.ex.getByTestId('analyst-clarify').getByRole('button', { name: sales }).click();
-      const done = page.getByTestId('analyst-exchange').nth(before);         // the NEW exchange, not the card
+      const before = await page.getByTestId('chat-exchange').count();
+      await r.ex.getByTestId('chat-clarify').getByRole('button', { name: sales }).click();
+      const done = page.getByTestId('chat-exchange').nth(before);         // the NEW exchange, not the card
       await expect(done).toBeVisible({ timeout: 120_000 });
       await expect(done.locator(OUTCOME).first()).toBeVisible({ timeout: 120_000 });
       const got = await tableOf(done);
@@ -109,10 +109,10 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   await fresh();
   r = await askLive(page, 'Năm 2025 mỗi kênh bán có bao nhiêu đơn hàng?');
   row = { n: 6, q: 'save + reopen chart', outcome: r.kind };
-  if (r.kind === 'analyst-answer' && (await r.ex.getByTestId('analyst-save-chart').count())) {
-    await r.ex.getByTestId('analyst-save-chart').click();
-    await expect(r.ex.getByTestId('analyst-chart-saved')).toBeVisible();
-    await r.ex.getByTestId('analyst-open-chart').click();
+  if (r.kind === 'chat-answer' && (await r.ex.getByTestId('chat-save-chart').count())) {
+    await r.ex.getByTestId('chat-save-chart').click();
+    await expect(r.ex.getByTestId('chat-chart-saved')).toBeVisible();
+    await r.ex.getByTestId('chat-open-chart').click();
     await expect(page).toHaveURL(/\/explore\/\d+$/);
     await page.reload();
     await page.getByTestId('explore-run').click();
@@ -124,9 +124,9 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
     row.chart = page.url().split('/').pop();
     row.match = JSON.stringify(values) === JSON.stringify(Object.values(ORACLE.orders_channel_2025).sort((a, b) => a - b));
     await snap('6-chart-reopened');
-    await page.goto('/analyst');
-  } else if (r.kind === 'analyst-answer') {
-    row.save_not_offered = (await r.ex.getByTestId('analyst-chart-draft').innerText().catch(() => '')).slice(0, 300);
+    await page.goto('/chat');
+  } else if (r.kind === 'chat-answer') {
+    row.save_not_offered = (await r.ex.getByTestId('chat-chart-draft').innerText().catch(() => '')).slice(0, 300);
   }
   results.push(row);
 
@@ -134,19 +134,19 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   await fresh();
   r = await askLive(page, 'Chi phí marketing năm 2025 của từng kênh là bao nhiêu?');
   row = { n: 9, q: 'marketing spend by channel 2025 (MySQL)', outcome: r.kind };
-  if (r.kind === 'analyst-answer') row = { ...row, match: matches(await tableOf(r.ex), 'marketing_channel_2025') };
+  if (r.kind === 'chat-answer') row = { ...row, match: matches(await tableOf(r.ex), 'marketing_channel_2025') };
   results.push(row); await snap('9-mysql');
 
   // 8. a first-visit example (built from the person's own sources) is answerable
   await fresh();
   await page.reload();
-  await expect(page.getByTestId('analyst-example').first()).toBeVisible();   // the guide renders once sources load
-  const examples = await page.getByTestId('analyst-example').allInnerTexts();
+  await expect(page.getByTestId('chat-example').first()).toBeVisible();   // the guide renders once sources load
+  const examples = await page.getByTestId('chat-example').allInnerTexts();
   const pick = examples.find((e) => /Doanh số/.test(e)) ?? examples[0];
-  await page.getByTestId('analyst-example').filter({ hasText: pick }).first().click();
-  await expect(page.getByTestId('analyst-question')).toHaveValue(pick);
-  await page.getByTestId('analyst-ask').click();
-  const exEx = page.getByTestId('analyst-exchange').last();
+  await page.getByTestId('chat-example').filter({ hasText: pick }).first().click();
+  await expect(page.getByTestId('chat-question')).toHaveValue(pick);
+  await page.getByTestId('chat-ask').click();
+  const exEx = page.getByTestId('chat-exchange').last();
   await expect(exEx.locator(OUTCOME).first()).toBeVisible({ timeout: 120_000 });
   results.push({ n: 8, q: `first-visit example: ${pick}`, outcome: await exEx.locator(OUTCOME).first().getAttribute('data-testid') });
   await snap('8-example');
@@ -155,7 +155,7 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   await fresh();
   r = await askLive(page, 'Biên lợi nhuận gộp của từng khách hàng là bao nhiêu?');
   results.push({ n: 7, q: 'gross margin per customer (not in the data)', outcome: r.kind,
-                 numbers_shown: await r.ex.getByTestId('analyst-table').count() });
+                 numbers_shown: await r.ex.getByTestId('chat-table').count() });
   await snap('7-unsupported');
 
   fs.writeFileSync(info.outputPath('live-results.json'), JSON.stringify(results, null, 1));
@@ -164,7 +164,7 @@ test('LIVE · new questions through the browser: numbers against SQL, clarificat
   for (const x of results) if ('match' in x) expect(x.match, `wrong numbers: ${x.q}`).toBe(true);
   const outside = results.find((x) => x.n === 7)!;
   expect(outside.numbers_shown, 'a question outside the data shows no numbers').toBe(0);
-  expect(results.find((x) => x.n === 8)!.outcome, 'a first-visit example is answered').toBe('analyst-answer');
+  expect(results.find((x) => x.n === 8)!.outcome, 'a first-visit example is answered').toBe('chat-answer');
   // MySQL spend by channel is answerable from the person's sources: a refusal or "unsupported" is a failure
-  expect(results.find((x) => x.n === 9)!.outcome, 'the MySQL question is answered, not refused').toBe('analyst-answer');
+  expect(results.find((x) => x.n === 9)!.outcome, 'the MySQL question is answered, not refused').toBe('chat-answer');
 });

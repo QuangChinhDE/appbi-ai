@@ -3,10 +3,10 @@
 # main stack. Its own project, network, volumes and databases; localhost ports only.
 #
 #   docker compose -p appbi-dogfood -f docker-compose.dogfood.yml --env-file <secrets.env> up -d --build
-#   emergency OFF: set ANALYST_ENABLED=false (or stop the stack) - no data is shared
+#   emergency OFF: set AI_CHAT_ENABLED=false (or stop the stack) - no data is shared
 #
 # <secrets.env> must define SECRET_KEY, DATASOURCE_ENCRYPTION_KEY, DB_PASSWORD,
-# MYSQL_ROOT_PASSWORD, ADMIN_EMAIL, ADMIN_PASSWORD, ANALYST_PILOT_ALLOWLIST and,
+# MYSQL_ROOT_PASSWORD, ADMIN_EMAIL, ADMIN_PASSWORD and,
 # for real-model runs only, OPENAI_API_KEY + LLM_TEST_* (docs/features/analyst-mvp/dogfood-runbook.md).
 name: appbi-dogfood
 
@@ -66,9 +66,9 @@ services:
       ALLOWED_PRIVATE_SOURCE_CIDRS: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
       # Govern (glossary, metrics) - the governed business vocabulary the Analyst reads
       METADATA_CATALOG_ENABLED: "true"
-      # The Analyst, for the dogfood cohort only
-      ANALYST_ENABLED: ${ANALYST_ENABLED:-true}
-      ANALYST_PILOT_ALLOWLIST: ${ANALYST_PILOT_ALLOWLIST:-}
+      # AI Chat (its Data Core tunables keep the historical ANALYST_ prefix); who may
+      # use it is the `chat` module permission, per account
+      AI_CHAT_ENABLED: ${AI_CHAT_ENABLED:-true}
       ANALYST_DROP_CONSENT_ENABLED: "false"
       ANALYST_MAX_QUERIES_PER_USER_DAY: ${ANALYST_MAX_QUERIES_PER_USER_DAY:-200}
       ANALYST_MAX_ROWS: "500"
@@ -93,7 +93,6 @@ services:
       context: ./frontend
       args:
         NEXT_PUBLIC_API_URL: /api/v1
-        NEXT_PUBLIC_ANALYST_ENABLED: "true"
         NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED: "true"
         APPBI_BUILD_SHA: ${GIT_SHA:-}
     depends_on:

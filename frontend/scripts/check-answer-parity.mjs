@@ -43,7 +43,10 @@ const RENDERER = 'components/dashboards/AnswerBlocks.tsx';
 /** Every surface that renders a flow's answer to a person. */
 const SURFACES = [
   ['components/agent-flows/TestChat.tsx', 'Studio test panel'],
-  ['components/chat/ConversationView.tsx', 'Direct Chat'],
+  // AI Chat is NOT a surface for a flow's answer blocks since the unified chat
+  // (docs/features/unified-ai-chat/contract.md): the data core writes the answer,
+  // and what an extension flow returned reaches the page only as validated
+  // supporting evidence (documents, findings) - never as AnswerBlocks of its own.
   ['components/dashboards/DashboardAiBot.tsx', 'Dashboard / public bot'],
 ];
 

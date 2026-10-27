@@ -2,7 +2,8 @@ import { expect, request, test, type Locator, type Page, type TestInfo } from '@
 import fs from 'node:fs';
 
 /**
- * AppBI Analyst V1 - REAL BROWSER PRODUCT ACCEPTANCE (Deterministic Replay Mode).
+ * The one AI Chat, data answers - REAL BROWSER PRODUCT ACCEPTANCE (Deterministic Replay Mode).
+ * (Written for AppBI Analyst V1; since the unified chat these journeys run in /chat.)
  *
  * Production Next.js build, real backend + GQS + PostgreSQL/MySQL QA sources, real
  * permissions, real Chart Builder - and every step under test done the way a person
@@ -11,10 +12,10 @@ import fs from 'node:fs';
  * labelled as such; it never stands in for a step the journey is proving.
  *
  * Numbers are compared with an INDEPENDENT SQL oracle (hand-written SQL on the QA
- * warehouse, ORACLE_FILE), never with the Analyst's own output.
+ * warehouse, ORACLE_FILE), never with the chat's own output.
  *
  *   E2E_BASE_URL=http://localhost:3341 DOGFOOD_PASSWORD=... ADMIN_EMAIL=... ADMIN_PASSWORD=... \
- *   ORACLE_FILE=.../oracle.json npx playwright test -c analyst-browser.config.ts
+ *   ORACLE_FILE=.../oracle.json npx playwright test -c ai-chat-browser.config.ts
  */
 const PASSWORD = process.env.DOGFOOD_PASSWORD || '';
 const ADMIN = { email: process.env.ADMIN_EMAIL || '', password: process.env.ADMIN_PASSWORD || '' };
@@ -79,14 +80,14 @@ async function shot(page: Page, info: TestInfo, name: string, opts: { fullPage?:
   await info.attach(name, { path, contentType: 'image/png' });
 }
 
-const OUTCOME = '[data-testid="analyst-answer"], [data-testid="analyst-clarify"], [data-testid="analyst-unsupported"], [data-testid="analyst-refused"], [data-testid="analyst-error"]';
+const OUTCOME = '[data-testid="chat-answer"], [data-testid="chat-clarify"], [data-testid="chat-unsupported"], [data-testid="chat-refused"], [data-testid="chat-failed"], [data-testid="chat-cancelled"], [data-testid="chat-error"]';
 
 /** Type a question and press Ask; wait for the NEW exchange's outcome (state-based). */
 async function ask(page: Page, q: string): Promise<Locator> {
-  const before = await page.getByTestId('analyst-exchange').count();
-  await page.getByTestId('analyst-question').fill(q);
-  await page.getByTestId('analyst-ask').click();
-  const ex = page.getByTestId('analyst-exchange').nth(before);
+  const before = await page.getByTestId('chat-exchange').count();
+  await page.getByTestId('chat-question').fill(q);
+  await page.getByTestId('chat-ask').click();
+  const ex = page.getByTestId('chat-exchange').nth(before);
   await expect(ex).toBeVisible({ timeout: 120_000 });
   await expect(ex.locator(OUTCOME).first()).toBeVisible({ timeout: 120_000 });
   return ex;
@@ -98,7 +99,7 @@ function num(text: string): number {
 
 /** The answer's data table as {label: value}; label = every dimension cell joined by " / ". */
 async function tableOf(scope: Locator): Promise<Record<string, number>> {
-  const rows = await scope.getByTestId('analyst-table').locator('tbody tr').evaluateAll((trs) =>
+  const rows = await scope.getByTestId('chat-table').locator('tbody tr').evaluateAll((trs) =>
     trs.map((tr) => Array.from(tr.querySelectorAll('td')).map((td) => (td.textContent || '').trim())));
   const out: Record<string, number> = {};
   for (const cells of rows) out[cells.slice(0, -1).join(' / ') || 'total'] = Number(cells[cells.length - 1].replace(/[^\d.-]/g, ''));
@@ -111,14 +112,14 @@ function expectOracle(got: Record<string, number>, key: string) {
   for (const [k, v] of Object.entries(want)) expect(Math.abs(got[k] - v), `${key} / ${k}: ${got[k]} vs SQL ${v}`).toBeLessThan(0.51);
 }
 
-async function analyst(page: Page, who = 'qa-analyst') {
+async function openChat(page: Page, who = 'qa-analyst') {
   await login(page, who);
-  await page.goto('/analyst');
-  await expect(page.getByTestId('analyst-page')).toBeVisible();
+  await page.goto('/chat');
+  await expect(page.getByTestId('chat-page')).toBeVisible();
 }
 
 async function newTopic(page: Page) {
-  const btn = page.getByTestId('analyst-new-topic');
+  const btn = page.getByTestId('chat-new-topic');
   if (await btn.count()) await btn.click();
 }
 
@@ -126,72 +127,72 @@ async function newTopic(page: Page) {
 test('A · login, sidebar by permission, header, sources, EN/VI, refresh keeps the session', async ({ page }, info) => {
   await login(page, 'qa-analyst');
   await page.goto('/dashboards');
-  const nav = page.locator('a[href="/analyst"]');
+  const nav = page.locator('a[href="/chat"]');
   await expect(nav.first()).toBeVisible();                       // entry shown to a permitted person
   await nav.first().click();
-  await expect(page).toHaveURL(/\/analyst$/);
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Data Analysis');
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Accuracy not certified');
-  await expect(page.getByTestId('analyst-warning')).toBeVisible();
-  await expect(page.getByTestId('analyst-question')).toBeEnabled();          // the warning never blocks asking
-  await page.getByTestId('analyst-sources').getByRole('button').first().click();
-  const sources = await page.getByTestId('analyst-source').allInnerTexts();
+  await expect(page).toHaveURL(/\/chat$/);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('AI Chat');
+  await expect(page.getByTestId('chat-preview-label')).toHaveText('Accuracy not certified');
+  await expect(page.getByTestId('chat-warning')).toBeVisible();
+  await expect(page.getByTestId('chat-question')).toBeEnabled();          // the warning never blocks asking
+  await page.getByTestId('chat-sources').getByRole('button').first().click();
+  const sources = await page.getByTestId('chat-source').allInnerTexts();
   expect(sources.map((s) => s.split('·')[0].trim()).sort()).toEqual(['Dogfood Commerce', 'Dogfood Marketing', 'Dogfood Slow']);
   await shot(page, info, 'A1-overview-sources');
   // language: the user menu, as a person switches it
   await page.getByRole('button', { name: /^Q$/ }).click();
   await page.getByRole('button', { name: /Tiếng Việt|Vietnamese/ }).click();
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Chưa chứng nhận độ chính xác');
-  await expect(page.getByTestId('analyst-warning')).toHaveText('Câu trả lời chỉ đến từ truy vấn có quản trị trên dữ liệu bạn được đọc, nhưng độ chính xác chưa được chứng nhận. Hãy kiểm tra số liệu và nguồn trước khi dùng cho quyết định nghiệp vụ.');
+  await expect(page.getByTestId('chat-preview-label')).toHaveText('Chưa chứng nhận độ chính xác');
+  await expect(page.getByTestId('chat-warning')).toHaveText('Số liệu chỉ đến từ truy vấn có quản trị trên dữ liệu bạn được đọc, nhưng độ chính xác chưa được chứng nhận. Hãy kiểm tra số liệu và nguồn trước khi dùng cho quyết định nghiệp vụ.');
   await shot(page, info, 'A2-vietnamese');
   await page.reload();                                           // refresh keeps auth AND language
-  await expect(page.getByTestId('analyst-page')).toBeVisible();
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Chưa chứng nhận độ chính xác');
+  await expect(page.getByTestId('chat-page')).toBeVisible();
+  await expect(page.getByTestId('chat-preview-label')).toHaveText('Chưa chứng nhận độ chính xác');
   await page.getByRole('button', { name: /^Q$/ }).click();
   await page.getByRole('button', { name: /English|Tiếng Anh/ }).click();
-  await expect(page.getByTestId('analyst-preview-label')).toHaveText('Accuracy not certified');
+  await expect(page.getByTestId('chat-preview-label')).toHaveText('Accuracy not certified');
 });
 
 test('A · first visit: how-to steps and example questions built from the person\'s own sources', async ({ page }, info) => {
-  await analyst(page);
-  const howto = page.getByTestId('analyst-howto');
+  await openChat(page);
+  const howto = page.getByTestId('chat-howto');
   await expect(howto.locator('ol > li')).toHaveCount(6);
-  const examples = await howto.getByTestId('analyst-example').allInnerTexts();
+  const examples = await howto.getByTestId('chat-example').allInnerTexts();
   expect(examples.length, 'example questions').toBeGreaterThan(0);
   await shot(page, info, 'A4-howto');
   // a click fills the box and asks NOTHING: the person decides
-  await howto.getByTestId('analyst-example').first().click();
-  await expect(page.getByTestId('analyst-question')).toHaveValue(examples[0]);
-  await expect(page.getByTestId('analyst-exchange')).toHaveCount(0);
-  // (that an example is ANSWERABLE needs the real model: analyst-live-smoke.spec.ts asks one)
+  await howto.getByTestId('chat-example').first().click();
+  await expect(page.getByTestId('chat-question')).toHaveValue(examples[0]);
+  await expect(page.getByTestId('chat-exchange')).toHaveCount(0);
+  // (that an example is ANSWERABLE needs the real model: ai-chat-live-smoke.spec.ts asks one)
 });
 
-test('A · a person without the Analyst module sees no entry and is blocked on the page', async ({ page }, info) => {
+test('A · a person without the chat module sees no entry and is blocked on the page', async ({ page }, info) => {
   await login(page, 'qa-nomodule');
   await page.goto('/dashboards');
-  await expect(page.locator('a[href="/analyst"]')).toHaveCount(0);
-  await page.goto('/analyst');
-  await expect(page.getByTestId('analyst-question')).toHaveCount(0);
+  await expect(page.locator('a[href="/chat"]')).toHaveCount(0);
+  await page.goto('/chat');
+  await expect(page.getByTestId('chat-question')).toHaveCount(0);
   await expect(page.getByText(/no permission|không có quyền|do not have access/i).first()).toBeVisible();
   await shot(page, info, 'A3-no-module-blocked');
 });
 
 // ── Journey B: new question -> verified answer ─────────────────────────────────
 test('B · ask -> answer with source, metric, table, chart marks and evidence equal to SQL', async ({ page }, info) => {
-  await analyst(page);
+  await openChat(page);
   await shot(page, info, 'B0-empty');
   const ex = await ask(page, 'Doanh số theo vùng');
-  const answer = ex.getByTestId('analyst-answer');
+  const answer = ex.getByTestId('chat-answer');
   await expect(answer).toBeVisible();
-  await expect(ex.getByTestId('analyst-headline')).toContainText('Miền Nam');
-  const ev = ex.getByTestId('analyst-evidence');
+  await expect(ex.getByTestId('chat-headline')).toContainText('Miền Nam');
+  const ev = ex.getByTestId('chat-evidence');
   await expect(ev).toContainText('Dogfood Commerce');
   await expect(ev).toContainText('Doanh số');
   await expect(ev).toContainText(/None|Không có/);                // no filter on this answer
-  await expect(ex.getByTestId('analyst-query-id')).toHaveText(/[0-9a-f]{16,}/);
+  await expect(ex.getByTestId('chat-query-id')).toHaveText(/[0-9a-f]{16,}/);
   expectOracle(await tableOf(ex), 'region');
   // the chart really draws: one bar per region, every axis label, the metric in the legend
-  const chart = ex.getByTestId('analyst-chart');
+  const chart = ex.getByTestId('chat-chart');
   await expect(chart.locator('.recharts-bar-rectangle')).toHaveCount(3);
   const ticks = await chart.locator('.recharts-xAxis .recharts-cartesian-axis-tick').evaluateAll((e) => e.map((x) => x.textContent || ''));
   expect(ticks.join('|')).toMatch(/Miền Nam.*Miền Trung.*Miền Bắc/);
@@ -201,15 +202,15 @@ test('B · ask -> answer with source, metric, table, chart marks and evidence eq
 
 // ── Journey C: real clarification ──────────────────────────────────────────────
 test('C · metric/source clarification -> a click completes the answer', async ({ page }, info) => {
-  await analyst(page);
+  await openChat(page);
   const ex = await ask(page, 'Kênh bán nào tốt nhất');
-  const card = ex.getByTestId('analyst-clarify');
+  const card = ex.getByTestId('chat-clarify');
   await expect(card.getByRole('button')).toHaveCount(2);
   await shot(page, info, 'C1-clarification');
   await card.getByRole('button', { name: 'Doanh số (Dogfood Commerce)' }).click();
-  const done = page.getByTestId('analyst-exchange').last();
-  await expect(done.getByTestId('analyst-answer')).toBeVisible({ timeout: 120_000 });
-  await expect(done.getByTestId('analyst-evidence')).toContainText('Dogfood Commerce');
+  const done = page.getByTestId('chat-exchange').last();
+  await expect(done.getByTestId('chat-answer')).toBeVisible({ timeout: 120_000 });
+  await expect(done.getByTestId('chat-evidence')).toContainText('Dogfood Commerce');
   // "kênh NÀO tốt nhất" by the chosen metric = the top channel(s); every channel ties on this data
   const got = await tableOf(done);
   const top = Math.max(...Object.values(ORACLE.channel_sales));
@@ -219,20 +220,20 @@ test('C · metric/source clarification -> a click completes the answer', async (
 });
 
 test('C · an unknown filter value -> a real value is offered -> the pick is answered', async ({ page }, info) => {
-  await analyst(page);
+  await openChat(page);
   const ex = await ask(page, 'Doanh số vùng Atlantis');
-  const card = ex.getByTestId('analyst-clarify');
+  const card = ex.getByTestId('chat-clarify');
   await expect(card).toContainText(/không có trong dữ liệu/);
   await card.getByRole('button', { name: 'Miền Nam' }).click();
-  const done = page.getByTestId('analyst-exchange').last();
-  await expect(done.getByTestId('analyst-answer')).toBeVisible({ timeout: 120_000 });
+  const done = page.getByTestId('chat-exchange').last();
+  await expect(done.getByTestId('chat-answer')).toBeVisible({ timeout: 120_000 });
   expectOracle(await tableOf(done), 'south_total');
-  await expect(done.getByTestId('analyst-evidence')).toContainText('Miền Nam');
+  await expect(done.getByTestId('chat-evidence')).toContainText('Miền Nam');
   await shot(page, info, 'C3-value-pick');
 });
 
 test('C · a stale or revoked choice ends in a reason, never in data', async ({ page }) => {
-  await analyst(page);
+  await openChat(page);
   const a = await adminApi();
   const model = await (await a.ctx.get(`/api/v1/datasets/${a.ds}/model`, { headers: a.headers })).json();
   const lines = model.views.find((v: { name: string }) => v.name === 'dataset_table_3');
@@ -244,19 +245,19 @@ test('C · a stale or revoked choice ends in a reason, never in data', async ({ 
     // stale: the catalog changes between the question and the click (PRECONDITION via API)
     let ex = await ask(page, 'Kênh bán nào tốt nhất');
     expect((await relabel('Doanh số (đổi tên)')).status()).toBe(200);
-    await ex.getByTestId('analyst-clarify').getByRole('button', { name: 'Doanh số (Dogfood Commerce)' }).click();
-    let done = page.getByTestId('analyst-exchange').last();
-    await expect(done.locator('[data-testid="analyst-unsupported"]')).toContainText(/thay đổi|hỏi lại/);
-    await expect(done.getByTestId('analyst-table')).toHaveCount(0);
+    await ex.getByTestId('chat-clarify').getByRole('button', { name: 'Doanh số (Dogfood Commerce)' }).click();
+    let done = page.getByTestId('chat-exchange').last();
+    await expect(done.locator('[data-testid="chat-unsupported"]')).toContainText(/thay đổi|hỏi lại/);
+    await expect(done.getByTestId('chat-table')).toHaveCount(0);
     expect((await relabel('Doanh số')).status()).toBe(200);
     // revoked: the grant goes away between the question and the click (PRECONDITION via API)
     await page.reload();
     ex = await ask(page, 'Kênh bán nào tốt nhất');
     expect((await a.revoke('qa-analyst')).status()).toBe(200);
-    await ex.getByTestId('analyst-clarify').getByRole('button', { name: 'Doanh số (Dogfood Commerce)' }).click();
-    done = page.getByTestId('analyst-exchange').last();
-    await expect(done.locator('[data-testid="analyst-unsupported"]')).toBeVisible({ timeout: 60_000 });
-    await expect(done.getByTestId('analyst-table')).toHaveCount(0);
+    await ex.getByTestId('chat-clarify').getByRole('button', { name: 'Doanh số (Dogfood Commerce)' }).click();
+    done = page.getByTestId('chat-exchange').last();
+    await expect(done.locator('[data-testid="chat-unsupported"]')).toBeVisible({ timeout: 60_000 });
+    await expect(done.getByTestId('chat-table')).toHaveCount(0);
   } finally {
     await relabel('Doanh số');
     await a.grant('qa-analyst', 'build');
@@ -266,29 +267,29 @@ test('C · a stale or revoked choice ends in a reason, never in data', async ({ 
 
 // ── Journey D: filters and follow-up ───────────────────────────────────────────
 test('D · year, region, exclusion, date range, two breakdowns, follow-up keeps filters, new question resets', async ({ page }, info) => {
-  await analyst(page);
+  await openChat(page);
   let ex = await ask(page, 'Tổng doanh số năm 2025');
   expectOracle(await tableOf(ex), 'total_2025');
-  await expect(ex.getByTestId('analyst-evidence')).toContainText('2025-01-01');
+  await expect(ex.getByTestId('chat-evidence')).toContainText('2025-01-01');
   await newTopic(page);
   ex = await ask(page, 'Doanh số Miền Bắc theo kênh bán năm 2025');
   expectOracle(await tableOf(ex), 'north_channel_2025');
-  await expect(ex.getByTestId('analyst-evidence')).toContainText('Vùng là Miền Bắc');
+  await expect(ex.getByTestId('chat-evidence')).toContainText('Vùng là Miền Bắc');
   // follow-up changes the breakdown only: region AND year must stay (the recording omits them)
   ex = await ask(page, 'theo ngành hàng thì sao');
   expectOracle(await tableOf(ex), 'north_category_2025');
-  await expect(ex.getByTestId('analyst-evidence')).toContainText('Vùng là Miền Bắc');
-  await expect(ex.getByTestId('analyst-evidence')).toContainText('2025-01-01');
+  await expect(ex.getByTestId('chat-evidence')).toContainText('Vùng là Miền Bắc');
+  await expect(ex.getByTestId('chat-evidence')).toContainText('2025-01-01');
   await shot(page, info, 'D1-follow-up-keeps-filters');
   await newTopic(page);
-  await expect(page.getByTestId('analyst-exchange')).toHaveCount(0);     // a new question starts clean
+  await expect(page.getByTestId('chat-exchange')).toHaveCount(0);     // a new question starts clean
   ex = await ask(page, 'Doanh số không tính đơn bị huỷ năm 2025');
   expectOracle(await tableOf(ex), 'not_cancelled_2025');
-  await expect(ex.getByTestId('analyst-evidence')).toContainText('không phải Huỷ');
+  await expect(ex.getByTestId('chat-evidence')).toContainText('không phải Huỷ');
   await newTopic(page);
   ex = await ask(page, 'Doanh số theo vùng từ 01/03/2025 đến 31/05/2025');
   expectOracle(await tableOf(ex), 'region_mar_may_2025');
-  await expect(ex.getByTestId('analyst-evidence')).toContainText('2025-03-01');
+  await expect(ex.getByTestId('chat-evidence')).toContainText('2025-03-01');
   await newTopic(page);
   ex = await ask(page, 'Doanh số theo vùng và kênh bán năm 2025');
   expectOracle(await tableOf(ex), 'region_channel_2025');
@@ -306,15 +307,15 @@ const CHARTS: { q: string; oracle: string; draft: RegExp; role: RegExp; filter?:
 
 for (const c of CHARTS) {
   test(`E · "${c.q}": save -> open in Chart Builder -> edit type and title in the UI -> save -> reload -> persisted, same numbers`, async ({ page }, info) => {
-    await analyst(page);
+    await openChat(page);
     const ex = await ask(page, c.q);
-    const draftPanel = ex.getByTestId('analyst-chart-draft');
+    const draftPanel = ex.getByTestId('chat-chart-draft');
     await expect(draftPanel).toContainText(c.draft);
     const saved = page.waitForResponse((r) => /\/api\/v1\/charts\/?$/.test(new URL(r.url()).pathname) && r.request().method() === 'POST');
-    await ex.getByTestId('analyst-save-chart').click();                // the person's click
+    await ex.getByTestId('chat-save-chart').click();                // the person's click
     expect((await saved).status()).toBe(201);
-    await expect(ex.getByTestId('analyst-chart-saved')).toBeVisible();
-    await ex.getByTestId('analyst-open-chart').click();                // the person's navigation
+    await expect(ex.getByTestId('chat-chart-saved')).toBeVisible();
+    await ex.getByTestId('chat-open-chart').click();                // the person's navigation
     await expect(page).toHaveURL(/\/explore\/\d+$/);
     const chartId = Number(page.url().split('/').pop());
     info.annotations.push({ type: 'saved chart', description: `id ${chartId} for "${c.q}"` });
@@ -374,38 +375,38 @@ for (const c of CHARTS) {
 }
 
 test('E · an answer the chart cannot reproduce exactly is not offered for saving, with the reason', async ({ page }, info) => {
-  await analyst(page);
+  await openChat(page);
   const ex = await ask(page, 'Top 2 kênh bán có số đơn hàng cao nhất');
-  await expect(ex.getByTestId('analyst-save-chart')).toHaveCount(0);
-  await expect(ex.getByTestId('analyst-chart-draft')).toContainText(/bằng nhau tại ngưỡng|không đề xuất lưu/);
+  await expect(ex.getByTestId('chat-save-chart')).toHaveCount(0);
+  await expect(ex.getByTestId('chat-chart-draft')).toContainText(/bằng nhau tại ngưỡng|không đề xuất lưu/);
   await shot(page, info, 'E-unsafe-top-n-withheld');
 });
 
 // ── Journey F: permission UX ───────────────────────────────────────────────────
 test('F · viewer, explore-only, revoked mid-session, feedback', async ({ page }, info) => {
-  await analyst(page, 'qa-viewer');
+  await openChat(page, 'qa-viewer');
   let ex = await ask(page, 'Doanh số theo vùng');
-  await expect(ex.locator('[data-testid="analyst-unsupported"]')).toContainText(/quyền/);
+  await expect(ex.locator('[data-testid="chat-unsupported"]')).toContainText(/quyền/);
   await shot(page, info, 'F1-viewer-denied');
   await page.context().clearCookies();
-  await analyst(page, 'qa-revoked');
+  await openChat(page, 'qa-revoked');
   ex = await ask(page, 'Doanh số theo vùng');
-  await expect(ex.getByTestId('analyst-answer')).toBeVisible();
-  await expect(ex.getByTestId('analyst-save-chart')).toHaveCount(0);
-  await expect(ex.getByTestId('analyst-save-not-allowed')).toBeVisible();
+  await expect(ex.getByTestId('chat-answer')).toBeVisible();
+  await expect(ex.getByTestId('chat-save-chart')).toHaveCount(0);
+  await expect(ex.getByTestId('chat-save-not-allowed')).toBeVisible();
   await shot(page, info, 'F2-explore-only-no-save');
-  const reasons = await ex.getByTestId('analyst-feedback-reason').locator('option').evaluateAll((o) => o.map((x) => (x as HTMLOptionElement).value).filter(Boolean));
-  expect(reasons).toEqual(['wrong_metric', 'wrong_dataset', 'wrong_filter', 'incorrect_number', 'wrong_interpretation', 'unsupported_but_answerable', 'ux_issue']);
-  await ex.getByTestId('analyst-feedback-reason').selectOption('wrong_filter');
-  await ex.getByTestId('analyst-feedback-down').click();
-  await expect(ex.getByTestId('analyst-feedback-sent')).toBeVisible();
+  const reasons = await ex.getByTestId('chat-feedback-reason').locator('option').evaluateAll((o) => o.map((x) => (x as HTMLOptionElement).value).filter(Boolean));
+  expect(reasons).toEqual(['wrong_metric', 'wrong_dataset', 'wrong_filter', 'incorrect_number', 'wrong_interpretation', 'unsupported_but_answerable', 'wrong_document', 'ux_issue']);
+  await ex.getByTestId('chat-feedback-reason').selectOption('wrong_filter');
+  await ex.getByTestId('chat-feedback-down').click();
+  await expect(ex.getByTestId('chat-feedback-sent')).toBeVisible();
   // the grant is revoked while the page is open (PRECONDITION via API); the next ask is refused
   const a = await adminApi();
   try {
     expect((await a.revoke('qa-revoked')).status()).toBe(200);
     ex = await ask(page, 'Doanh số theo vùng');
-    await expect(ex.locator('[data-testid="analyst-unsupported"]')).toContainText(/quyền|phạm vi bạn được dùng/);
-    await expect(ex.getByTestId('analyst-table')).toHaveCount(0);
+    await expect(ex.locator('[data-testid="chat-unsupported"]')).toContainText(/quyền|phạm vi bạn được dùng/);
+    await expect(ex.getByTestId('chat-table')).toHaveCount(0);
     await shot(page, info, 'F3-revoked-mid-session');
   } finally {
     await a.grant('qa-revoked', 'explore');
@@ -415,65 +416,66 @@ test('F · viewer, explore-only, revoked mid-session, feedback', async ({ page }
 
 // ── Journey G: failure and resilience ──────────────────────────────────────────
 test('G · loading, cancel, unsupported, no data, double click, server errors, network loss, refresh, back/forward', async ({ page }, info) => {
-  await analyst(page);
+  await openChat(page);
   // loading + cancel (a deliberately slow QA source)
-  await page.getByTestId('analyst-question').fill('Doanh thu chậm');
-  await page.getByTestId('analyst-ask').dblclick();                 // a person double-clicks
-  await expect(page.getByTestId('analyst-running')).toBeVisible();
-  await expect(page.getByTestId('analyst-ask')).toBeDisabled();
+  await page.getByTestId('chat-question').fill('Doanh thu chậm');
+  await page.getByTestId('chat-ask').dblclick();                 // a person double-clicks
+  await expect(page.getByTestId('chat-running')).toBeVisible();
+  await expect(page.getByTestId('chat-ask')).toBeDisabled();
   await shot(page, info, 'G1-loading');
-  await page.getByTestId('analyst-cancel').click();
-  const cancelled = page.getByTestId('analyst-exchange').last();
+  await page.getByTestId('chat-cancel').click();
+  const cancelled = page.getByTestId('chat-exchange').last();
   await expect(cancelled.locator(OUTCOME).first()).toBeVisible({ timeout: 60_000 });
-  await expect(cancelled.getByTestId('analyst-table')).toHaveCount(0);
-  await expect(page.getByTestId('analyst-exchange')).toHaveCount(1);  // the double click asked ONCE
+  await expect(cancelled.getByTestId('chat-cancelled')).toBeVisible();   // one terminal state: cancelled
+  await expect(cancelled.getByTestId('chat-table')).toHaveCount(0);
+  await expect(page.getByTestId('chat-exchange')).toHaveCount(1);  // the double click asked ONCE
   await newTopic(page);
   let ex = await ask(page, 'Lợi nhuận theo vùng');
-  await expect(ex.getByTestId('analyst-unsupported')).toBeVisible();
-  await expect(ex.getByTestId('analyst-headline')).toHaveCount(0);
+  await expect(ex.getByTestId('chat-unsupported')).toBeVisible();
+  await expect(ex.getByTestId('chat-headline')).toHaveCount(0);
   await shot(page, info, 'G2-refusal');
   await newTopic(page);
   // a period with no orders: COUNT over nothing is 0, said plainly, with the 2027 filter in the evidence
   ex = await ask(page, 'Số đơn hàng năm 2027');
-  await expect(ex.getByTestId('analyst-headline')).toHaveText(/: 0\.?$/);
-  await expect(ex.getByTestId('analyst-evidence')).toContainText('2027-01-01');
+  await expect(ex.getByTestId('chat-headline')).toHaveText(/: 0\.?$/);
+  await expect(ex.getByTestId('chat-evidence')).toContainText('2027-01-01');
   // server failure and network loss are shown as errors, not as answers (simulated at the network layer)
   for (const [label, handler] of [
     ['500', (r: import('@playwright/test').Route) => r.fulfill({ status: 500, body: '{"detail":"boom"}', contentType: 'application/json' })],
     ['503', (r: import('@playwright/test').Route) => r.fulfill({ status: 503, body: '{"detail":"unavailable"}', contentType: 'application/json' })],
     ['offline', (r: import('@playwright/test').Route) => r.abort('internetdisconnected')],
   ] as const) {
-    await page.route('**/api/v1/analyst/**ask', handler);
+    await page.route('**/api/v1/chat/conversations/*/turns', handler);
     await newTopic(page);
     ex = await ask(page, 'Doanh số theo vùng');
-    await expect(ex.getByTestId('analyst-error')).toBeVisible();
+    await expect(ex.getByTestId('chat-error')).toBeVisible();
     await shot(page, info, `G3-error-${label}`);
-    await page.unroute('**/api/v1/analyst/**ask');
+    await page.unroute('**/api/v1/chat/conversations/*/turns');
   }
   // retry after the outage: the same question works again
   await newTopic(page);
   ex = await ask(page, 'Doanh số theo vùng');
   expectOracle(await tableOf(ex), 'region');
   // refresh during a running turn, then back/forward
-  await page.getByTestId('analyst-question').fill('Doanh thu chậm');
-  await page.getByTestId('analyst-ask').click();
-  await expect(page.getByTestId('analyst-running')).toBeVisible();
+  await page.getByTestId('chat-question').fill('Doanh thu chậm');
+  await page.getByTestId('chat-ask').click();
+  await expect(page.getByTestId('chat-running')).toBeVisible();
   await page.reload();
-  await expect(page.getByTestId('analyst-page')).toBeVisible();
-  await expect(page.getByTestId('analyst-question')).toBeEnabled();
+  await expect(page.getByTestId('chat-page')).toBeVisible();
+  await expect(page.getByTestId('chat-question')).toBeEnabled();
   await page.goto('/dashboards');
   await page.goBack();
-  await expect(page.getByTestId('analyst-page')).toBeVisible();
+  await expect(page.getByTestId('chat-page')).toBeVisible();
   await page.goForward();
   await expect(page).toHaveURL(/dashboards/);
 });
 
 test('G · the 60 s bound stops a slow source with a clear message', async ({ page }, info) => {
   test.setTimeout(240_000);
-  await analyst(page);
+  await openChat(page);
   const ex = await ask(page, 'Doanh thu chậm');
   await expect(ex.locator(OUTCOME).first()).toContainText(/thời gian|time/i);
-  await expect(ex.getByTestId('analyst-table')).toHaveCount(0);
+  await expect(ex.getByTestId('chat-table')).toHaveCount(0);
   await shot(page, info, 'G4-timeout');
 });
 
@@ -515,22 +517,22 @@ async function noHeaderOverlap(page: Page, testId: string) {
 for (const vp of VIEWPORTS) {
   test(`V · ${vp.name}: empty, sources, answer+chart, wide table, evidence, clarify, refusal, error, Explore`, async ({ page }, info) => {
     await page.setViewportSize({ width: vp.width, height: vp.height });
-    await analyst(page);
+    await openChat(page);
     await noPageOverflow(page); await shot(page, info, `${vp.name}-1-empty`, { fullPage: false });
-    await page.getByTestId('analyst-sources').getByRole('button').first().click();
+    await page.getByTestId('chat-sources').getByRole('button').first().click();
     await noPageOverflow(page); await shot(page, info, `${vp.name}-2-sources`, { fullPage: false });
     let ex = await ask(page, 'Doanh số theo vùng');
-    await ex.getByTestId('analyst-headline').scrollIntoViewIfNeeded();
+    await ex.getByTestId('chat-headline').scrollIntoViewIfNeeded();
     await noPageOverflow(page); await shot(page, info, `${vp.name}-3-answer`);
-    const ticks = await ex.getByTestId('analyst-chart').locator('.recharts-xAxis .recharts-cartesian-axis-tick').evaluateAll((e) => e.map((x) => x.textContent || ''));
+    const ticks = await ex.getByTestId('chat-chart').locator('.recharts-xAxis .recharts-cartesian-axis-tick').evaluateAll((e) => e.map((x) => x.textContent || ''));
     for (const r of ['Miền Nam', 'Miền Trung', 'Miền Bắc']) expect(ticks.join('|')).toContain(r);
     // the sticky question bar never hides the evidence's last row
-    const ev = ex.getByTestId('analyst-evidence');
+    const ev = ex.getByTestId('chat-evidence');
     await ev.scrollIntoViewIfNeeded();
     await expect(ev).toBeInViewport();
     await newTopic(page);
     ex = await ask(page, 'Doanh số theo vùng và kênh bán năm 2025');
-    const table = ex.getByTestId('analyst-table');
+    const table = ex.getByTestId('chat-table');
     await table.scrollIntoViewIfNeeded();
     await noPageOverflow(page);                                        // a wide table scrolls INSIDE its box
     const box = await table.evaluate((el) => {
@@ -545,12 +547,12 @@ for (const vp of VIEWPORTS) {
     await newTopic(page);
     ex = await ask(page, 'Lợi nhuận theo vùng');
     await noPageOverflow(page); await shot(page, info, `${vp.name}-6-refusal`, { fullPage: false });
-    await page.route('**/api/v1/analyst/**ask', (r) => r.fulfill({ status: 503, body: '{"detail":"unavailable"}', contentType: 'application/json' }));
+    await page.route('**/api/v1/chat/conversations/*/turns', (r) => r.fulfill({ status: 503, body: '{"detail":"unavailable"}', contentType: 'application/json' }));
     await newTopic(page);
     ex = await ask(page, 'Doanh số theo vùng');
-    await expect(ex.getByTestId('analyst-error')).toBeVisible();
+    await expect(ex.getByTestId('chat-error')).toBeVisible();
     await noPageOverflow(page); await shot(page, info, `${vp.name}-7-error`, { fullPage: false });
-    await page.unroute('**/api/v1/analyst/**ask');
+    await page.unroute('**/api/v1/chat/conversations/*/turns');
     await page.goto('/explore/1');
     await expect(page.getByRole('heading', { name: 'Chart Type' })).toBeVisible();
     await page.getByTestId('explore-run').click();
@@ -563,30 +565,30 @@ for (const vp of VIEWPORTS) {
 
 // ── Accessibility basics on the Analyst ────────────────────────────────────────
 test('X · keyboard, focus, names and labels on the Analyst (automated scan recorded, not a certification)', async ({ page }, info) => {
-  await analyst(page);
-  await page.getByTestId('analyst-question').focus();
+  await openChat(page);
+  await page.getByTestId('chat-question').focus();
   await page.keyboard.type('Doanh số theo vùng');
   await page.keyboard.press('Enter');                                // Ask by keyboard
-  const ex = page.getByTestId('analyst-exchange').last();
-  await expect(ex.getByTestId('analyst-answer')).toBeVisible({ timeout: 120_000 });
-  const unnamed = await page.locator('[data-testid^="analyst"] button, [data-testid^="analyst"] a').evaluateAll((els) =>
+  const ex = page.getByTestId('chat-exchange').last();
+  await expect(ex.getByTestId('chat-answer')).toBeVisible({ timeout: 120_000 });
+  const unnamed = await page.locator('[data-testid^="chat"] button, [data-testid^="chat"] a').evaluateAll((els) =>
     els.filter((e) => !(e.getAttribute('aria-label') || (e.textContent || '').trim())).length);
   expect(unnamed, 'buttons/links without an accessible name').toBe(0);
-  const labelled = await page.getByTestId('analyst-question').evaluate((el) => {
+  const labelled = await page.getByTestId('chat-question').evaluate((el) => {
     const id = el.getAttribute('id');
     return !!(id && document.querySelector(`label[for="${id}"]`)) || !!el.getAttribute('aria-label');
   });
   expect(labelled, 'question box has a label').toBeTruthy();
   // focus stays in the question box after an answer by Enter: the next question can be typed at once
-  await expect(page.getByTestId('analyst-question')).toBeFocused();
+  await expect(page.getByTestId('chat-question')).toBeFocused();
   // and Tab from there reaches a visible, named control (not lost on <body>)
-  await page.getByTestId('analyst-question').fill('x');
+  await page.getByTestId('chat-question').fill('x');
   await page.keyboard.press('Tab');
-  await expect(page.getByTestId('analyst-ask')).toBeFocused();
-  await page.getByTestId('analyst-question').fill('');
+  await expect(page.getByTestId('chat-ask')).toBeFocused();
+  await page.getByTestId('chat-question').fill('');
   const { default: AxeBuilder } = await import('@axe-core/playwright');
   const scans: Record<string, unknown[]> = {};
-  for (const [where, scope] of [['answer', '[data-testid="analyst-page"]'], ['clarify', '[data-testid="analyst-page"]']] as const) {
+  for (const [where, scope] of [['answer', '[data-testid="chat-page"]'], ['clarify', '[data-testid="chat-page"]']] as const) {
     if (where === 'clarify') { await newTopic(page); await ask(page, 'Kênh bán nào tốt nhất'); }
     const res = await new AxeBuilder({ page }).include(scope).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
     scans[where] = res.violations;

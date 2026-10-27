@@ -74,10 +74,6 @@ for (const { href, module } of navEntries) {
  * exemptions — rather than letting it pass silently. */
 const SHARED_KEY_BY_DESIGN = new Set([
   // '/some-route|some_module',
-  // The Analyst (M2 MVP) answers a question by exploring governed data: the same
-  // right `explore_charts` grants, re-decided per Dataset by GQS on every read.
-  // Its own matrix key is a product decision left open (see the review package).
-  '/analyst|explore_charts',
 ]);
 
 const byModule = new Map();

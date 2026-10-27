@@ -5,20 +5,20 @@ import { defineConfig, devices } from '@playwright/test';
  * dogfood stack (docker-compose.dogfood.yml) with recorded planner outputs - no
  * paid model calls. Not CI: it needs the seeded stack. Run explicitly:
  *
- *   E2E_BASE_URL=http://localhost:3341 DOGFOOD_PASSWORD=...  *     npx playwright test -c analyst-dogfood.config.ts
+ *   E2E_BASE_URL=http://localhost:3341 DOGFOOD_PASSWORD=...  *     npx playwright test -c ai-chat-dogfood.config.ts
  *
  * A missing stack FAILS; it never passes by skipping.
  */
 export default defineConfig({
   testDir: './acceptance',
-  testMatch: /analyst-dogfood\.spec\.ts/,
+  testMatch: /ai-chat-dogfood\.spec\.ts/,
   timeout: 240_000,
   expect: { timeout: 60_000 },
   fullyParallel: false,
   workers: 1,
   retries: 0,
   reporter: [['list']],
-  outputDir: '../.artifacts/analyst-dogfood/results',
+  outputDir: '../.artifacts/ai-chat-dogfood/results',
   use: {
     baseURL: process.env.E2E_BASE_URL || 'http://localhost:3341',
     trace: 'retain-on-failure',

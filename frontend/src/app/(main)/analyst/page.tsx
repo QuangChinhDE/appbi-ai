@@ -1,8 +1,14 @@
 'use client';
 
-/** AI Analyst: a new analysis. The first question opens a session (/analyst/s/{id}). */
-import AnalystWorkspace from '@/components/analyst/AnalystWorkspace';
+/**
+ * The retired AI Analyst address. Data questions are asked in the one AI Chat
+ * (docs/features/unified-ai-chat/contract.md); nothing is answered here.
+ */
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 
-export default function AnalystPage() {
-  return <AnalystWorkspace />;
+export default function AnalystRedirect() {
+  const router = useRouter();
+  useEffect(() => { router.replace('/chat'); }, [router]);
+  return null;
 }

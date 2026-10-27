@@ -33,12 +33,11 @@ import {
   X,
   Workflow,
   MessagesSquare,
-  Sparkles,
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { cn } from '@/lib/utils';
-import { ANALYST_MODULE_ENABLED, DEFAULT_LANDING_PATH, HOME_MODULE_ENABLED } from '@/lib/feature-flags';
+import { DEFAULT_LANDING_PATH, HOME_MODULE_ENABLED } from '@/lib/feature-flags';
 import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { authApi } from '@/lib/api-client';
@@ -93,20 +92,13 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    // AI = the two ways a person USES AI, side by side so the difference is
-    // visible: an assistant to talk to (Chat: shared Agent Flows and their
-    // knowledge) and governed analysis of their own data (Analyst: semantic
-    // Datasets, verified numbers). Two engines, two module keys - each entry is
-    // gated by its own permission, so one never implies the other.
+    // AI = ONE chat (docs/features/unified-ai-chat/contract.md). It answers from the
+    // person's own explorable Datasets through governed queries, with no assistant
+    // to pick first; an Agent Flow is an optional add-on inside it, never a second
+    // chat. `chat` is its own key, so asking never needs the flow builder.
     labelKey: 'sidebar.group.ai',
     items: [
-      // The reading side of Agent Flows, and its OWN key. It shared `agent_flows`
-      // until letting somebody ask an assistant also let them into the builder.
-      // WHICH assistants appear is still decided per user by sharing.
       { labelKey: 'sidebar.nav.aiChat', href: '/chat', icon: <MessagesSquare className="h-4 w-4" />, module: 'chat' },
-      ...(ANALYST_MODULE_ENABLED
-        ? [{ labelKey: 'sidebar.nav.analyst', href: '/analyst', icon: <Sparkles className="h-4 w-4" />, module: 'analyst' as const }]
-        : []),
     ],
   },
   {

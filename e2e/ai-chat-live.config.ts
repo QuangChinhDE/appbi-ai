@@ -7,19 +7,19 @@ import { defineConfig, devices } from '@playwright/test';
  * test; an HTML report for reviewers. A missing stack FAILS, it never skips.
  *
  *   E2E_BASE_URL=http://localhost:3341 DOGFOOD_PASSWORD=... ADMIN_EMAIL=... ADMIN_PASSWORD=... \
- *   ORACLE_FILE=.../oracle.json npx playwright test -c analyst-browser.config.ts
+ *   ORACLE_FILE=.../oracle.json npx playwright test -c ai-chat-browser.config.ts
  */
 export default defineConfig({
   testDir: './acceptance',
-  testMatch: /analyst-live-smoke\.spec\.ts/,
+  testMatch: /ai-chat-live-smoke\.spec\.ts/,
   timeout: 300_000,
   expect: { timeout: 60_000 },
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  reporter: [['list'], ['html', { outputFolder: '../.artifacts/analyst-live/report', open: 'never' }],
-             ['json', { outputFile: '../.artifacts/analyst-live/results.json' }]],
-  outputDir: '../.artifacts/analyst-live/results',
+  reporter: [['list'], ['html', { outputFolder: '../.artifacts/ai-chat-live/report', open: 'never' }],
+             ['json', { outputFile: '../.artifacts/ai-chat-live/results.json' }]],
+  outputDir: '../.artifacts/ai-chat-live/results',
   use: {
     baseURL: process.env.E2E_BASE_URL || 'http://localhost:3341',
     trace: 'on',
