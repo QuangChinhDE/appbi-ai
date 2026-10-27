@@ -923,10 +923,12 @@ export function PublicLinksManager({
       ai_bot_model: link.appearance_config?.ai_bot_model,
       ai_bot_web_search_enabled: link.appearance_config?.ai_bot_web_search_enabled,
       ai_bot_report_context_note: link.appearance_config?.ai_bot_report_context_note,
-      // ai_bot_key is stripped by backend response (security). Use
-      // ai_bot_key_configured to show "key is set" indicator in the editor.
-      ai_bot_key: undefined,
+      // No key ever comes back: the link's own key (if any) is a reference into
+      // the encrypted store; leaving it untouched keeps it on save.
+      ai_bot_credential_id: link.appearance_config?.ai_bot_credential_id,
       ai_bot_key_configured: link.appearance_config?.ai_bot_key_configured,
+      ai_bot_budget_usd_per_day: link.appearance_config?.ai_bot_budget_usd_per_day,
+      ai_bot_turns_per_hour: link.appearance_config?.ai_bot_turns_per_hour,
     });
     setFormPassword('');
     setFormExpiresAt(link.expires_at ? toLocalInputValue(link.expires_at) : '');

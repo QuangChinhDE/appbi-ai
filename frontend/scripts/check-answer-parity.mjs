@@ -47,7 +47,11 @@ const SURFACES = [
   // (docs/features/unified-ai-chat/contract.md): the data core writes the answer,
   // and what an extension flow returned reaches the page only as validated
   // supporting evidence (documents, findings) - never as AnswerBlocks of its own.
-  ['components/dashboards/DashboardAiBot.tsx', 'Dashboard / public bot'],
+  // The PUBLIC Dashboard AI Bot is not one either since 2026-10-28 (PO: one Answer
+  // Core; ADR-3 revised): the Core writes its answer (`chat.v1`), and a bound flow
+  // is an optional documents-only add-on whose output reaches the viewer as
+  // validated supporting evidence - never as AnswerBlocks. Section 6 below locks
+  // that the Core's terminal envelope is consumed; section 7 that no key is sent.
 ];
 
 // ── 1 + 2. one renderer, no private flatten ─────────────────────────────────
@@ -143,27 +147,38 @@ for (const [path, label] of SURFACES) {
 
 // ── 6. the terminal envelope must actually be consumed ──────────────────────
 //
-// The backend has emitted `{type: "result", envelope}` since typed answers
-// existed. The public SSE union did not list it, so `applyEvent` had no branch,
-// `onResult` was declared and passed and never called, and every notice the
-// runtime produced for a reader was thrown away one function short of the state
-// that renders it. A negative control found it: the notice was in the response
-// body and nowhere on the page.
+// The public bot's server ends every turn with `{type: "final", envelope}` - the
+// Answer Core's one answer, its refusal or its failure, with the notices a reader
+// must see. A client that has no branch for it, or never renders the notices,
+// drops the answer one function short of the state that shows it (the defect this
+// section was first written for, when the event was the flow's `result`).
 
 {
   const bot = code(read('components/dashboards/DashboardAiBot.tsx'));
-  if (/onResult\?\./.test(bot) === false) {
-    fail('DashboardAiBot declares `onResult` but never calls it — the terminal '
-       + 'envelope, and every notice in it, is dropped.');
+  if (!/ev\.type === 'final'/.test(bot)) {
+    fail("DashboardAiBot's event handler has no `final` branch, so the Core's envelope "
+       + 'never reaches message state.');
   }
-  if (!/ev\.type === 'result'/.test(bot)) {
-    fail("DashboardAiBot's event handler has no `result` branch, so the typed "
-       + 'envelope never reaches message state.');
+  if (!/\.notices/.test(bot)) {
+    fail('DashboardAiBot never renders the envelope notices - every notice a reader must see is dropped.');
   }
   const api = code(read('lib/api/public.ts'));
-  if (!/type: 'result'/.test(api)) {
-    fail("the public SSE union does not list `result`, so a handler for it is "
-       + 'unreachable by construction — which is how this was missed.');
+  if (!/type: 'final'/.test(api)) {
+    fail("the public SSE union does not list `final`, so a handler for it is "
+       + 'unreachable by construction.');
+  }
+}
+
+// ── 7. a public viewer never brings a provider key ──────────────────────────
+//
+// Found on PR #77: a viewer-supplied `X-User-Ai-Key` lifted the link's USD
+// ceiling while the turn could run on the organisation's key. The server no
+// longer reads it; the client must not send one, nor a model or a "mode".
+
+for (const path of ['components/dashboards/DashboardAiBot.tsx', 'lib/api/public.ts']) {
+  const src = code(read(path));
+  if (/X-User-Ai-(Key|Provider|Model|Mode)/.test(src)) {
+    fail(`${path} sends a viewer-chosen provider key/model/mode header; the server resolves credentials.`);
   }
 }
 

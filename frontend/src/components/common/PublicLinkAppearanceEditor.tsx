@@ -140,8 +140,10 @@ export function PublicLinkAppearanceEditor({
     ai_bot_model: value.ai_bot_model,
     ai_bot_web_search_enabled: value.ai_bot_web_search_enabled,
     ai_bot_report_context_note: value.ai_bot_report_context_note,
-    ai_bot_key: value.ai_bot_key,
+    ai_bot_credential_id: value.ai_bot_credential_id,
     ai_bot_key_configured: value.ai_bot_key_configured,
+    ai_bot_budget_usd_per_day: value.ai_bot_budget_usd_per_day,
+    ai_bot_turns_per_hour: value.ai_bot_turns_per_hour,
     // Snapshot freshness TTL lives on the same appearance_config object —
     // preserve it so editing layout here never resets the data-freshness choice.
     cache_ttl_minutes: value.cache_ttl_minutes,

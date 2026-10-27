@@ -783,16 +783,21 @@ export interface PublicLinkAppearanceConfig {
    */
   ai_bot_web_search_enabled?: boolean | null;
   /**
-   * Admin-configured API key. Written via the authenticated admin API.
-   * The public API NEVER returns this field — it strips it and sets
-   * `ai_bot_key_configured: true` instead.
+   * WRITE-ONLY, legacy: a key typed by an older client. The server never stores
+   * it as text - it is moved into the encrypted credential store and the link
+   * keeps `ai_bot_credential_id`. No API returns it.
    */
   ai_bot_key?: string;
-  /**
-   * Read-only, public-safe flag. True when the admin has pre-configured an
-   * API key for this link so public viewers don't need to enter one.
-   */
+  /** The link's own provider key in the encrypted store (null = the server's key). */
+  ai_bot_credential_id?: number | null;
+  /** Admin view: the link has its own key. Public view: the assistant is ready. */
   ai_bot_key_configured?: boolean;
+  /** Public view only: the assistant can answer now (model and budget available). */
+  ai_bot_ready?: boolean;
+  /** The link's USD ceiling per rolling 24h (> 0; empty = the server default). */
+  ai_bot_budget_usd_per_day?: number | null;
+  /** The link's question ceiling per rolling hour (empty = the server default). */
+  ai_bot_turns_per_hour?: number | null;
 }
 
 // --- Chart Metadata (semantic/business layer) ---

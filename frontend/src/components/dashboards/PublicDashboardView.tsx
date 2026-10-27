@@ -2860,8 +2860,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           token={token}
           sessionToken={getPublicSession(token)}
           dashboardName={presentationTitle}
-          keyConfigured={dashboard.public_link_appearance?.ai_bot_key_configured === true}
           viewerFilters={appliedViewerFilters}
+          pageId={activePageId}
         />
       )}
     </DashboardThemeProvider>

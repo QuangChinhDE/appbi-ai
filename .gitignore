@@ -542,6 +542,9 @@ integrations/appbi-mcp/.venv/
 !backend/tests/test_analyst_sessions_http_pg.py
 !backend/tests/test_unified_chat_architecture.py
 !backend/tests/test_sse_streams_unbuffered.py
+!backend/tests/test_public_answer_core.py
+!backend/tests/test_ai_runtime_gateway.py
+!backend/tests/test_answer_core_published_scope.py
 !backend/tests/test_chat_extension.py
 !backend/tests/test_chat_extension_http_pg.py
 !backend/tests/test_chat_legacy_import_pg.py

@@ -572,6 +572,15 @@ features:
       - backend/app/api/chat.py
       - backend/app/models/chat_conversation.py
       - backend/alembic/versions/20261027_0001_unified_chat.py
+      # PO 2026-10-28: the public Dashboard AI Bot is the Answer Core's second
+      # consumer, and every paid model call passes the Model Gateway.
+      - backend/app/services/answer_core/**
+      - backend/app/services/ai_runtime/**
+      - backend/app/models/ai_runtime.py
+      - backend/alembic/versions/20261028_0001_ai_runtime.py
+      - backend/app/services/dashboard_ai_bot/budget.py
+      - frontend/src/components/dashboards/DashboardAiBot.tsx
+      - frontend/src/components/common/PublicLinkAiBotEditor.tsx
       - frontend/src/components/chat/**
       - frontend/src/lib/api/chat.ts
       - frontend/src/app/(main)/chat/**
@@ -581,7 +590,8 @@ features:
     invariants: []
     required_tests: [unified_chat_architecture, analyst_http_pg, analyst_sessions_http_pg, chat_extension,
                      chat_extension_http_pg, chat_legacy_import_pg, direct_chat_contract, analyst_narrative,
-                     analyst_planner, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg]
+                     analyst_planner, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg,
+                     public_answer_core, ai_runtime_gateway, answer_core_published_scope]
 
   # Since the unified AI Chat this is only the door: which flows can run with no
   # report (and so may be an AI Chat extension). The chat itself is `ai_chat`.
@@ -674,6 +684,15 @@ tests:
   analyst_catalog_reach:
     run: "pytest backend/tests/test_analyst_catalog_reach.py"
     locks: "the Analyst catalog offers every view the base can reach through the model relationships (multi-hop, the engine's own resolver), inside the explore's Dataset lineage only"
+  public_answer_core:
+    run: "pytest backend/tests/test_public_answer_core.py"
+    locks: "PO 2026-10-28, one Answer Core: the public Dashboard AI Bot route is served by the Core turn over the published scope; no public route answers through an Agent Flow (run_for_link) or reads X-User-Ai-Key; the published scope reads only through the governed public chart path (_fetch_chart_data); a link's USD ceiling is the link's whatever a viewer sends, never unlimited, and an unreadable usage store refuses the paid turn"
+  ai_runtime_gateway:
+    run: "pytest backend/tests/test_ai_runtime_gateway.py"
+    locks: "THE Model Gateway: a paid call reserves its worst case before the request (no prompt, no key in the ledger), settles with the reported usage, output tokens are clamped, a link/user/turn over its ceiling or an oversized context is refused before anything is sent, an unreadable ledger refuses (fail closed), an error after sending keeps the worst case, a request that never left is released, inside a turn a policy refusal is raised and never routed around, and a pinned link credential is the only key used"
+  answer_core_published_scope:
+    run: "pytest backend/tests/test_answer_core_published_scope.py"
+    locks: "the public bot's published-report scope: the chart's own grouping as shown; an additive measure is regrouped and a filter on a shown dimension stays local; an average/distinct is never regrouped into a wrong number; a filter on another field goes to the governed engine (date_range as gte/lt); a field or chart outside the published report is refused; the evidence names the chart and only disclosed filters; an anonymous viewer can save nothing"
   unified_chat_architecture:
     run: "pytest backend/tests/test_unified_chat_architecture.py"
     locks: "the unified AI Chat contract, executable: no /analyst or /agent-flows/chat route even with every flag on; the one turn route needs no Flow; no analyst module, no ANALYST_ENABLED/allowlist setting or build flag; no Flow runner owns a signed-in turn; the chat Core imports no ChartService/Flow tool/dashboard bot; an extension context cannot reach ChartService; only services/chat writes turns; no runtime use of the retired stores; one chat in the sidebar, no retired module imported, sending never requires a Flow"
