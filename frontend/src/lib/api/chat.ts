@@ -11,6 +11,8 @@ import { parseSseStream } from '@/lib/api/sse';
 
 export interface ChatSource {
   explore_id: number;
+  /** the Dataset this explore belongs to: what "choose a source" pins (TurnBody.dataset_id) */
+  dataset_id: number;
   dataset: string;
   source_type: string;
   measures: string[];

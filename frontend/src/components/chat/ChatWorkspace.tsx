@@ -70,6 +70,8 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
   const [pendingFlow, setPendingFlow] = useState<string>(params?.get('brain') || '');
   /** Ask the add-on on THIS question even if it does not look like a document question. */
   const [useFlowNow, setUseFlowNow] = useState(false);
+  /** The Dataset the person chose to ask about; '' = every source they may use. */
+  const [sourceId, setSourceId] = useState<string>('');
   /** Index from which the conversation is a new topic: the next question is sent
    *  without follow-up context (the server holds a follow-up to the previous source). */
   const [topicStart, setTopicStart] = useState(0);
@@ -161,7 +163,8 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
       const body: TurnBody = {
         question: text, idempotency_key: newIdempotencyKey(), follow_up: hasAnswer,
         extension: useFlowNow ? 'always' : 'auto',
-        drop_consent: opts.consent ?? null, consented_plan: opts.plan ?? null, dataset_id: opts.datasetId ?? null,
+        drop_consent: opts.consent ?? null, consented_plan: opts.plan ?? null,
+        dataset_id: opts.datasetId ?? (sourceId ? Number(sourceId) : null),
         value_choice: opts.valueChoice ?? null, choice_token: opts.choiceToken ?? null,
       };
       for await (const ev of chatApi.ask(id, body, abort.signal)) {
@@ -193,7 +196,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
       setBusy(false);
       setCancelling(false);
     }
-  }, [busy, readOnly, currentId, pendingFlow, hasAnswer, useFlowNow, refreshList, t, flowName]);
+  }, [busy, readOnly, currentId, pendingFlow, hasAnswer, useFlowNow, sourceId, refreshList, t, flowName]);
 
   const cancel = useCallback(async () => {
     const live = liveRef.current;
@@ -201,9 +204,12 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
     setCancelling(true);
     try {
       // The server ends the turn now, whatever stage it is in (planning, the governed
-      // read, or the add-on); the stream is then closed here.
-      await chatApi.cancel(live.turnId);
-      live.abort.abort();
+      // read, or the add-on), and says whether it did: a turn that had already
+      // finished keeps its answer, and the stream delivers it - the page never shows
+      // "cancelled" for a turn the server answered.
+      const r = await chatApi.cancel(live.turnId);
+      if (r.cancelled) live.abort.abort();
+      else setCancelling(false);
     } catch {
       setCancelling(false);
     }
@@ -247,6 +253,11 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
     }
   };
 
+  const datasetOptions = useMemo(() => {
+    const by = new Map<number, string>();
+    (sources || []).forEach((s) => { if (!by.has(s.dataset_id)) by.set(s.dataset_id, s.dataset); });
+    return [...by.entries()].map(([id, name]) => ({ id, name }));
+  }, [sources]);
   const title = conv?.title || t('aichat.session.untitled');
   const canChooseFlow = !readOnly && (!conv || conv.is_owner) && extensions.length > 0;
 
@@ -410,6 +421,21 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
                       ) : null}
                     </div>
                   </div>
+                  {sources && sources.length ? (
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <label htmlFor="chat-source" className="text-label text-text-tertiary">{t('aichat.source.label')}</label>
+                      <Select id="chat-source" value={sourceId} data-testid="chat-source-select"
+                              className="min-w-0 flex-1 sm:max-w-xs"
+                              onChange={(e) => {
+                                setSourceId(e.target.value);
+                                // a different source is a new topic: no follow-up across sources
+                                if (history.length > topicStart) { setTopicStart(history.length); setShowEarlier(false); }
+                              }}>
+                        <option value="">{t('aichat.source.all')}</option>
+                        {datasetOptions.map((d) => <option key={d.id} value={String(d.id)}>{d.name}</option>)}
+                      </Select>
+                    </div>
+                  ) : null}
                   <div className="flex items-end gap-2">
                     <Textarea id="chat-question" data-testid="chat-question" value={question} rows={2} maxLength={4000}
                               onChange={(e) => setQuestion(e.target.value)}

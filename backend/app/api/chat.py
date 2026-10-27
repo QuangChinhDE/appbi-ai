@@ -116,7 +116,8 @@ def catalog(lang: str = "vi", db: Session = Depends(get_db), user: User = Depend
     from app.services.data_core.catalog import is_identifier
 
     items = conversations.data_catalog(db, user)
-    sources = [{"explore_id": c.explore_id, "dataset": c.dataset_name, "source_type": c.source_type,
+    sources = [{"explore_id": c.explore_id, "dataset_id": c.dataset_id, "dataset": c.dataset_name,
+                "source_type": c.source_type,
                 "measures": [f.label for f in c.fields if f.kind == "measure"][:12],
                 "dimensions": [f.label for f in c.fields if f.kind == "dimension" and not is_identifier(f)][:12]}
                for c in items]
