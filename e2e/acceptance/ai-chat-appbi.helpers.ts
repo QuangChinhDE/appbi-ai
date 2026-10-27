@@ -32,6 +32,7 @@ export function watch(page: Page) {
     // Google's own Sign-In button iframe on /login intermittently answers 403 for this
     // localhost origin (OAuth client configuration, not AppBI) - reported, not hidden
     if (m.location().url.startsWith('https://accounts.google.com/')) return;
+    if (m.text().startsWith('[GSI_LOGGER]: The given origin is not allowed for the given client ID')) return;
     // KNOWN PRE-EXISTING DEFECT (unchanged since demo 0b48f597, reported): Dashboards /
     // Datasets / Explore list data sources for every user, so a user without the
     // data_sources module gets a 403 the backend rightly returns. Only this exact call.

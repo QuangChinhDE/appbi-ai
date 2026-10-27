@@ -302,6 +302,10 @@ test('R12 · a reader who cannot open the cited document does not see it', async
   await expect(page.getByTestId('chat-exchange').first().getByTestId('chat-redacted')).toBeVisible();
   expect(bodies.join('\n')).not.toContain('QĐ-07/2026');
   await shot(page, info, 'R12-document-redacted');
+  // leave nothing behind: R8 of the next run expects the viewer to have no conversations
+  const shares = await (await owner.ctx.get(`/api/v1/shares/chat_conversation/${cid}`, { headers: owner.headers })).json();
+  const mine = (shares as { id: number; user_id?: string }[]).find((s) => s.user_id === viewer.id)!;
+  expect((await owner.ctx.delete(`/api/v1/shares/chat_conversation/${cid}/entries/${mine.id}`, { headers: owner.headers })).status()).toBe(204);
   await owner.ctx.dispose();
 });
 
